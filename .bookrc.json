@@ -1,0 +1,13 @@
+{
+  "model": "sf/glm-5",
+  "baseUrl": "http://localhost:20128/v1",
+  "maxTurns": 25,
+  "animation": {
+    "typewriterSpeed": 3,
+    "spinnerStyle": "braille"
+  },
+  "tools": {
+    "browser": { "enabled": true, "headless": true },
+    "design": { "enabled": true }
+  }
+}
