@@ -14,12 +14,23 @@ searching code, and interacting with git. Use them to help the user.
 Be concise and direct. Write code when asked. Explain only when asked.`;
 }
 
+type ProviderMessage = {
+  role: string;
+  content: string | null;
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: string };
+  }>;
+  tool_call_id?: string;
+};
+
 export function buildMessages(
   config: AgentConfig,
   history: Message[],
   tools: ToolDefinition[],
-): { role: string; content: string | null }[] {
-  const messages: { role: string; content: string | null }[] = [];
+): ProviderMessage[] {
+  const messages: ProviderMessage[] = [];
 
   messages.push({ role: 'system', content: buildSystemPrompt(config) });
 
@@ -27,10 +38,45 @@ export function buildMessages(
     if (msg.role === 'user') {
       messages.push({ role: 'user', content: msg.content });
     } else if (msg.role === 'assistant') {
-      messages.push({
+      const assistant: ProviderMessage = {
         role: 'assistant',
-        content: msg.content || null,
-      });
+        // OpenAI rejects null content when tool_calls is absent, so coerce to ''.
+        content:
+          msg.content && msg.content.length > 0
+            ? msg.content
+            : msg.toolCalls?.length
+              ? null
+              : '',
+      };
+      if (msg.toolCalls && msg.toolCalls.length > 0) {
+        assistant.tool_calls = msg.toolCalls.map((tc) => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: {
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments ?? {}),
+          },
+        }));
+      }
+      messages.push(assistant);
+
+      // Tool results MUST follow the assistant message that produced them,
+      // in the same order as the tool_calls array.
+      if (msg.toolResults) {
+        const byId = new Map(msg.toolCalls?.map((tc) => [tc.id, tc]));
+        for (const result of msg.toolResults) {
+          // Only emit results for tool calls present on this assistant message.
+          if (byId.has(result.toolCallId)) {
+            messages.push({
+              role: 'tool',
+              tool_call_id: result.toolCallId,
+              content: result.success
+                ? result.output
+                : `ERROR: ${result.error ?? 'tool failed'}\n${result.output ?? ''}`,
+            });
+          }
+        }
+      }
     }
   }
 
