@@ -108,3 +108,34 @@ describe('runHeadless — stream-json output', () => {
     expect(types[types.length - 1]).toBe('result');
   });
 });
+
+describe('runHeadless — stream-json input', () => {
+  it('reads newline-delimited user messages from stdin', async () => {
+    const { Readable } = await import('stream');
+    const writes: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        writes.push(s);
+        return true;
+      },
+    };
+    const stdin = Readable.from([
+      JSON.stringify({ type: 'user', content: 'first' }) + '\n',
+      JSON.stringify({ type: 'user', content: 'second' }) + '\n',
+    ]);
+    await runHeadless(config, createDefaultRegistry(), {
+      inputFormat: 'stream-json',
+      outputFormat: 'json',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+      stdin,
+    });
+    const parsed = JSON.parse(writes.join('').trim());
+    // Two prompts -> at least two assistant messages in history.
+    const assistantCount = parsed.result.messages.filter(
+      (m: { role: string }) => m.role === 'assistant',
+    ).length;
+    expect(assistantCount).toBeGreaterThanOrEqual(2);
+  });
+});
