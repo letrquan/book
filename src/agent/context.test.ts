@@ -1,19 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { buildMessages } from './context.js';
-import type { AgentConfig } from '../types.js';
-import { userMsg, assistantMsg, toolCall, toolResult } from '../test/fixtures.js';
+import { userMsg, assistantMsg, toolCall, toolResult, defaultConfig } from '../test/fixtures.js';
 
-const config: AgentConfig = {
-  apiKey: 'k',
-  baseUrl: 'http://x/v1',
-  model: 'm',
-  maxTurns: 5,
-  maxTokens: 128000,
-  autoCompactEnabled: false,
-  workspace: '.',
-  animation: { typewriterSpeed: 3, spinnerStyle: 'braille' },
-  accessibility: { screenReader: false, reducedMotion: false },
-};
+const config = defaultConfig();
 
 describe('buildMessages', () => {
   it('emits tool_calls on assistant messages and a tool role message per result', () => {

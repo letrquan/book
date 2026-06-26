@@ -1,0 +1,1184 @@
+ Overview - Claude Code Docs !function(){var b="/docs";
+function a(p){if(p==null)return"/";p=""+p;if(""===p)return"/";return"/"===p.charAt(0)?p:"/"+p}
+function u(p){if(p==null)return p;p=""+p;if(!p||p.charAt(p.length-1)==="/")return p.slice(0,-1);return p}
+function i(p){if(p==null)return p;p=""+p;if(6<=p.length&&p.substring(p.length-6)==="/index")return p.substring(0,p.length-6);if("index"===p)return"";return p}
+var p=(location.pathname||"").split("?")[0].split("#")[0]||"";
+if(b)if(p===b)p="";else if(0===p.indexOf(b+"/"))p=p.substring(b.length);
+p=a(p);p=u(p);p=i(p);p=""===p||"index"===p?"/":a(p);
+document.documentElement.setAttribute("data-current-path",p);
+}(); (function(a,b){try{let c=document.getElementById("banner")?.innerText;if(c){for(let d=0;d<localStorage.length;d++){let e=localStorage.key(d);if(e?.endsWith(a)&&localStorage.getItem(e)===c)return void document.documentElement.setAttribute(b,"hidden")}document.documentElement.setAttribute(b,"visible");return}for(let c=0;c<localStorage.length;c++){let d=localStorage.key(c);if(d?.endsWith(a)&&localStorage.getItem(d))return void document.documentElement.setAttribute(b,"hidden")}document.documentElement.setAttribute(b,"visible")}catch(a){document.documentElement.setAttribute(b,"hidden")}})(
+ "bannerDismissed",
+ "data-banner-state",
+) :root {
+ --font-family-headings-custom: "Anthropic Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+ 
+ --font-family-body-custom: "Anthropic Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+ 
+ 
+}
+ :root {
+ --primary: 14 14 14;
+ --primary-light: 212 162 127;
+ --primary-dark: 14 14 14;
+ --tooltip-foreground: 255 255 255;
+ --background-light: 253 253 247;
+ --background-dark: 9 9 11;
+ --gray-50: 243 243 243;
+ --gray-100: 238 238 238;
+ --gray-200: 222 222 222;
+ --gray-300: 206 206 206;
+ --gray-400: 158 158 158;
+ --gray-500: 112 112 112;
+ --gray-600: 80 80 80;
+ --gray-700: 62 62 62;
+ --gray-800: 37 37 37;
+ --gray-900: 23 23 23;
+ --gray-950: 10 10 10;
+ } 
+ (function() {
+ function loadKatex() {
+ const link = document.querySelector('link[href="https://d4tuoctqmanu0.cloudfront.net/katex.min.css"]');
+ if (link) link.rel = 'stylesheet';
+ }
+ if (document.readyState === 'loading') {
+ document.addEventListener('DOMContentLoaded', loadKatex);
+ } else {
+ loadKatex();
+ }
+ })();
+ Skip to main content (function g(a,b,c,d){try{if(window.matchMedia("(max-width: 1024px)").matches||!d){document.documentElement.style.setProperty(c,"0px"),document.documentElement.setAttribute("data-assistant-state","closed"),d||localStorage.setItem(a,"false");return}let e=localStorage.getItem(a);if(null===e){document.documentElement.style.setProperty(c,"0px"),document.documentElement.setAttribute("data-assistant-state","closed");return}let f=JSON.parse(e),g=localStorage.getItem(b),h=null!==g?JSON.parse(g):368;document.documentElement.style.setProperty(c,f?h+"px":"0px"),document.documentElement.setAttribute("data-assistant-state",f?"open":"closed")}catch(a){document.documentElement.style.setProperty(c,"0px"),document.documentElement.setAttribute("data-assistant-state","closed")}})(
+ "chat-assistant-sheet-open",
+ "chat-assistant-sheet-width",
+ "--assistant-sheet-width",
+ true
+ ) Claude Code Docs home page English Search... ⌘ K Ask Assistant Claude Developer Platform Claude Code on the Web Claude Code on the Web Search... Navigation Getting started Overview Getting started Build with Claude Code Administration Configuration Reference Agent SDK What&#x27;s New Resources Getting started Overview Quickstart Changelog Core concepts How Claude Code works Extend Claude Code Explore the .claude directory Explore the context window Prompt caching Use Claude Code Store instructions and memories Permission modes Manage sessions Common workflows Prompt library Best practices Platforms and integrations Overview Remote Control Claude Code on the web Claude Code on desktop Chrome extension (beta) Computer use (preview) Visual Studio Code JetBrains IDEs Code review & CI/CD Claude Code in Slack (function () {
+ try {
+ if (window.__mintlifyInitialSidebarScrollDone) return;
+ window.__mintlifyInitialSidebarScrollDone = true;
+ var path = (window.location.pathname || '/').split('#')[0].split('?')[0];
+ if (path.endsWith('/index')) path = path.slice(0, -6);
+ else if (path === 'index') path = '';
+ var candidates = [];
+ if (path) candidates.push(path);
+ if (path.startsWith('/')) candidates.push(path.slice(1));
+ else candidates.push('/' + path);
+ var item = null;
+ for (var i = 0; i < candidates.length && !item; i++) {
+ var matches = document.querySelectorAll('[id="' + candidates[i].replace(/"/g, '\\"') + '"]');
+ for (var j = 0; j < matches.length; j++) {
+ if (matches[j].closest('#sidebar, #sidebar-content')) {
+ item = matches[j];
+ break;
+ }
+ }
+ }
+ if (!item) return;
+ var parent = item.parentElement;
+ while (parent) {
+ var style = getComputedStyle(parent);
+ if (style.overflowY === 'auto' || style.overflowY === 'scroll') break;
+ parent = parent.parentElement;
+ }
+ if (!parent) return;
+ var parentRect = parent.getBoundingClientRect();
+ var itemRect = item.getBoundingClientRect();
+ if (itemRect.top >= parentRect.top && itemRect.bottom <= parentRect.bottom) return;
+ var itemTopRelative = itemRect.top - parentRect.top + parent.scrollTop;
+ parent.scrollTop = itemTopRelative - parentRect.height / 2 + itemRect.height / 2;
+ } catch (e) {}
+})(); 
+/* These styles mirror our design system (converted to plain CSS with Claude's help) from https://ui.product.ant.dev/button */
+/* Base button styles */
+.btn {
+ position: relative;
+ display: inline-flex;
+ gap: 0.5rem;
+ align-items: center;
+ justify-content: center;
+ flex-shrink: 0;
+ min-width: 5rem;
+ height: 2.25rem;
+ padding: 0.5rem 1rem;
+ white-space: nowrap;
+ font-family: Styrene;
+ font-weight: 600;
+ border-radius: 0.5rem;
+ &:active {
+ transform: scale(0.985);
+ }
+ /* Size variants */
+ &.size-xs {
+ height: 1.75rem;
+ min-width: 3.5rem;
+ padding: 0 0.5rem;
+ border-radius: 0.25rem;
+ font-size: 0.75rem;
+ gap: 0.25rem;
+ }
+ 
+ &.size-sm {
+ height: 2rem;
+ min-width: 4rem;
+ padding: 0 0.75rem;
+ border-radius: 0.375rem;
+ font-size: 0.75rem;
+ }
+ &.size-lg {
+ height: 2.75rem;
+ min-width: 6rem;
+ padding: 0 1.25rem;
+ border-radius: 0.6rem;
+ }
+ &:disabled {
+ pointer-events: none;
+ opacity: 0.5;
+ box-shadow: none;
+ }
+ &:focus-visible {
+ outline: none;
+ --tw-ring-offset-shadow: var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);
+ --tw-ring-shadow: var(--tw-ring-inset) 0 0 0 calc(1px + var(--tw-ring-offset-width)) var(--tw-ring-color);
+ box-shadow: var(--tw-ring-offset-shadow), var(--tw-ring-shadow);
+ }
+ /* Primary variant */
+ &.primary {
+ font-weight: 600;
+ color: hsl(var(--oncolor-100));
+ background-color: hsl(var(--accent-main-100));
+ background-image: linear-gradient(
+ to right,
+ hsl(var(--accent-main-100)) 0%,
+ hsl(var(--accent-main-200) / 0.5) 50%,
+ hsl(var(--accent-main-200)) 100%
+ );
+ background-size: 200% 100%;
+ background-position: 0% 0%;
+ border: 0.5px solid hsl(var(--border-300) / 0.25);
+ box-shadow: 
+ inset 0 0.5px 0px rgba(255, 255, 0, 0.15),
+ 0 1px 1px rgba(0, 0, 0, 0.05);
+ text-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+ transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+ &:hover {
+ background-position: 100% 0%;
+ background-image: linear-gradient(
+ to right,
+ hsl(var(--accent-main-200)) 0%,
+ hsl(var(--accent-main-200)) 100%
+ );
+ }
+ &:active {
+ background-color: hsl(var(--accent-main-000));
+ box-shadow: inset 0 1px 6px rgba(0, 0, 0, 0.2);
+ transform: scale(0.985);
+ }
+ }
+ /* Flat variant */
+ &.flat {
+ font-weight: 500;
+ color: hsl(var(--oncolor-100));
+ background-color: hsl(var(--accent-main-100));
+ transition: background-color 150ms;
+ &:hover {
+ background-color: hsl(var(--accent-main-200));
+ }
+ }
+ /* Secondary variant */
+ &.secondary {
+ font-weight: 600;
+ color: hsl(var(--text-100) / 0.9);
+ background-image: radial-gradient(
+ ellipse at center,
+ hsl(var(--bg-500) / 0.1) 50%,
+ hsl(var(--bg-500) / 0.3) 100%
+ );
+ border: 0.5px solid hsl(var(--border-400));
+ transition: color 150ms, background-color 150ms;
+ &:hover {
+ color: hsl(var(--text-000));
+ background-color: hsl(var(--bg-500) / 0.6);
+ }
+ &:active {
+ background-color: hsl(var(--bg-500) / 0.5);
+ }
+ }
+ /* Outline variant */
+ &.outline {
+ font-weight: 600;
+ color: hsl(var(--text-200));
+ background-color: transparent;
+ border: 1.5px solid currentColor;
+ transition: color 150ms, background-color 150ms;
+ &:hover {
+ color: hsl(var(--text-100));
+ background-color: hsl(var(--bg-400));
+ border-color: hsl(var(--bg-400));
+ }
+ }
+ /* Ghost variant */
+ &.ghost {
+ color: hsl(var(--text-200));
+ border-color: transparent;
+ transition: color 150ms, background-color 150ms;
+ &:hover {
+ color: hsl(var(--text-100));
+ background-color: hsl(var(--bg-500) / 0.4);
+ }
+ &:active {
+ background-color: hsl(var(--bg-400));
+ }
+ }
+ /* Underline variant */
+ &.underline {
+ opacity: 0.8;
+ text-decoration-line: none;
+ text-underline-offset: 3px;
+ transition: all 150ms;
+ &:hover {
+ opacity: 1;
+ text-decoration-line: underline;
+ }
+ &:active {
+ transform: scale(0.985);
+ }
+ }
+ /* Danger variant */
+ &.danger {
+ font-weight: 600;
+ color: hsl(var(--oncolor-100));
+ background-color: hsl(var(--danger-100));
+ transition: background-color 150ms;
+ &:hover {
+ background-color: hsl(var(--danger-200));
+ }
+ }
+}
+ /* Anthropic Sans - Static fonts from assets.claude.ai */
+@font-face {
+ font-family: "Anthropic Sans";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSans-Text-Regular-Static.otf") format("opentype");
+ font-weight: 400;
+ font-style: normal;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Sans";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSans-Text-RegularItalic-Static.otf") format("opentype");
+ font-weight: 400;
+ font-style: italic;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Sans";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSans-Text-Medium-Static.otf") format("opentype");
+ font-weight: 500;
+ font-style: normal;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Sans";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSans-Text-MediumItalic-Static.otf") format("opentype");
+ font-weight: 500;
+ font-style: italic;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Sans";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSans-Text-Semibold-Static.otf") format("opentype");
+ font-weight: 600;
+ font-style: normal;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Sans";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSans-Text-SemiboldItalic-Static.otf") format("opentype");
+ font-weight: 600;
+ font-style: italic;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Sans";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSans-Text-Bold-Static.otf") format("opentype");
+ font-weight: 700;
+ font-style: normal;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Sans";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSans-Text-BoldItalic-Static.otf") format("opentype");
+ font-weight: 700;
+ font-style: italic;
+ font-display: swap;
+}
+/* Anthropic Serif Display - for headlines */
+@font-face {
+ font-family: "Anthropic Serif Display";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSerif-Display-Regular-Static.otf") format("opentype");
+ font-weight: 400;
+ font-style: normal;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Serif Display";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSerif-Display-RegularItalic-Static.otf") format("opentype");
+ font-weight: 400;
+ font-style: italic;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Serif Display";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSerif-Display-Medium-Static.otf") format("opentype");
+ font-weight: 500;
+ font-style: normal;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Serif Display";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSerif-Display-Semibold-Static.otf") format("opentype");
+ font-weight: 600;
+ font-style: normal;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Serif Display";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSerif-Display-Bold-Static.otf") format("opentype");
+ font-weight: 700;
+ font-style: normal;
+ font-display: swap;
+}
+/* Anthropic Serif - Static fonts from assets.claude.ai */
+@font-face {
+ font-family: "Anthropic Serif";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSerif-Text-Regular-Static.otf") format("opentype");
+ font-weight: 400;
+ font-style: normal;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Serif";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSerif-Text-RegularItalic-Static.otf") format("opentype");
+ font-weight: 400;
+ font-style: italic;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Serif";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSerif-Text-Medium-Static.otf") format("opentype");
+ font-weight: 500;
+ font-style: normal;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Serif";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSerif-Text-MediumItalic-Static.otf") format("opentype");
+ font-weight: 500;
+ font-style: italic;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Serif";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSerif-Text-Semibold-Static.otf") format("opentype");
+ font-weight: 600;
+ font-style: normal;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Serif";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSerif-Text-SemiboldItalic-Static.otf") format("opentype");
+ font-weight: 600;
+ font-style: italic;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Serif";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSerif-Text-Bold-Static.otf") format("opentype");
+ font-weight: 700;
+ font-style: normal;
+ font-display: swap;
+}
+@font-face {
+ font-family: "Anthropic Serif";
+ src: url("https://assets.claude.ai/Fonts/AnthropicSerif-Text-BoldItalic-Static.otf") format("opentype");
+ font-weight: 700;
+ font-style: italic;
+ font-display: swap;
+}
+/* Color variables copied from https://github.com/anthropics/apps/blob/main/packages/ui/themes/generated/theme-colors.css */
+:root {
+ --always-white: 0 0% 100%;
+ --always-black: 0 0% 0%;
+ --constant-book-cloth: 15 55% 80%;
+ --constant-clay: 15 60% 85%;
+ --constant-kraft: 25 40% 83%;
+ --constant-manilla: 40 20% 92%;
+ --constant-slate-000: 0 0% 100%;
+ --constant-slate-050: 48 33.3% 97.1%;
+ --constant-slate-100: 53 28.6% 94.5%;
+ --constant-slate-150: 48 25% 92.2%;
+ --constant-slate-200: 50 20.7% 88.6%;
+ --constant-slate-250: 51 16.5% 84.5%;
+ --constant-slate-300: 50 11.5% 79.6%;
+ --constant-slate-350: 50 9% 73.7%;
+ --constant-slate-400: 49 6.5% 66.9%;
+ --constant-slate-450: 48 4.8% 59.2%;
+ --constant-slate-500: 53 3.2% 51.4%;
+ --constant-slate-550: 51 3.1% 43.7%;
+ --constant-slate-600: 48 2.7% 35.9%;
+ --constant-slate-650: 48 3.4% 29.2%;
+ --constant-slate-700: 60 2.5% 23.3%;
+ --constant-slate-750: 60 2.1% 18.4%;
+ --constant-slate-800: 60 2.7% 14.5%;
+ --constant-slate-850: 30 3.3% 11.8%;
+ --constant-slate-900: 30 4% 9.8%;
+ --constant-slate-950: 60 2.6% 7.6%;
+ --constant-slate-1000: 60 3.4% 5.7%;
+}
+:root:not(.dark) {
+ --accent-brand: 15 63.1% 59.6%;
+ --accent-main-000: 15 55.6% 52.4%;
+ --accent-main-100: 15 55.6% 52.4%;
+ --accent-main-200: 15 63.1% 59.6%;
+ --accent-main-900: 0 0% 0%;
+ --accent-pro-000: 251 34.2% 33.3%;
+ --accent-pro-100: 251 40% 45.1%;
+ --accent-pro-200: 251 61% 72.2%;
+ --accent-pro-900: 253 33.3% 91.8%;
+ --accent-secondary-000: 210 73.7% 40.2%;
+ --accent-secondary-100: 210 70.9% 51.6%;
+ --accent-secondary-200: 210 70.9% 51.6%;
+ --accent-secondary-900: 211 72% 90%;
+ --bg-000: 0 0% 100%;
+ --bg-100: 48 33.3% 97.1%;
+ --bg-200: 53 28.6% 94.5%;
+ --bg-300: 48 25% 92.2%;
+ --bg-400: 50 20.7% 88.6%;
+ --bg-500: 50 20.7% 88.6%;
+ --border-100: 30 3.3% 11.8%;
+ --border-200: 30 3.3% 11.8%;
+ --border-300: 30 3.3% 11.8%;
+ --border-400: 30 3.3% 11.8%;
+ --danger-000: 0 61.4% 22.4%;
+ --danger-100: 0 58.6% 34.1%;
+ --danger-200: 0 58.6% 34.1%;
+ --danger-900: 0 50% 95%;
+ --oncolor-100: 0 0% 100%;
+ --oncolor-200: 60 6.7% 97.1%;
+ --oncolor-300: 60 6.7% 97.1%;
+ --text-000: 60 2.6% 7.6%;
+ --text-100: 60 2.6% 7.6%;
+ --text-200: 60 2.5% 23.3%;
+ --text-300: 60 2.5% 23.3%;
+ --text-400: 51 3.1% 43.7%;
+ --text-500: 51 3.1% 43.7%;
+}
+:root.dark {
+ --accent-brand: 15 63.1% 59.6%;
+ --accent-main-000: 15 55.6% 52.4%;
+ --accent-main-100: 15 63.1% 59.6%;
+ --accent-main-200: 15 63.1% 59.6%;
+ --accent-main-900: 0 0% 0%;
+ --accent-pro-000: 251 84.6% 74.5%;
+ --accent-pro-100: 251 40.2% 54.1%;
+ --accent-pro-200: 251 40% 45.1%;
+ --accent-pro-900: 250 25.3% 19.4%;
+ --accent-secondary-000: 210 71.1% 62%;
+ --accent-secondary-100: 210 70.9% 51.6%;
+ --accent-secondary-200: 210 70.9% 51.6%;
+ --accent-secondary-900: 210 55.9% 24.6%;
+ --bg-000: 60 2.1% 18.4%;
+ --bg-100: 60 2.7% 14.5%;
+ --bg-200: 30 3.3% 11.8%;
+ --bg-300: 60 2.6% 7.6%;
+ --bg-400: 60 3.4% 5.7%;
+ --bg-500: 60 3.4% 5.7%;
+ --border-100: 51 16.5% 84.5%;
+ --border-200: 51 16.5% 84.5%;
+ --border-300: 51 16.5% 84.5%;
+ --border-400: 51 16.5% 84.5%;
+ --danger-000: 0 73.1% 66.5%;
+ --danger-100: 0 58.6% 34.1%;
+ --danger-200: 0 58.6% 34.1%;
+ --danger-900: 0 23% 15.6%;
+ --oncolor-100: 0 0% 100%;
+ --oncolor-200: 60 6.7% 97.1%;
+ --oncolor-300: 60 6.7% 97.1%;
+ --text-000: 48 33.3% 97.1%;
+ --text-100: 48 33.3% 97.1%;
+ --text-200: 50 9% 73.7%;
+ --text-300: 50 9% 73.7%;
+ --text-400: 48 4.8% 59.2%;
+ --text-500: 48 4.8% 59.2%;
+}
+#home-header {
+ font-family: "Anthropic Sans", system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+ font-weight: 400 !important;
+ font-size: 50px;
+ line-height: 1.2;
+ margin-bottom: 1rem;
+ color: --text-000;
+ display: flex;
+ align-items: baseline;
+ justify-content: center;
+ flex-wrap: nowrap;
+}
+#localization-select-trigger > :has(img[src*="flags"]) {
+ display: none;
+}
+div[id^="localization-select-item"] > :has(img[src*="flags"]) {
+ display: none;
+}
+/* Keep home header centered on all screen sizes */
+@media (min-width: 768px) {
+ #home-header {
+ justify-content: center;
+ }
+}
+.build-with {
+ font-family: "Anthropic Sans", system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+ letter-spacing: -0.02em;
+}
+.claude-wordmark-wrapper {
+ display: inline-flex;
+ align-items: baseline;
+ margin-left: 10px; /* Space between "Build with" and the wordmark */
+}
+.claude-wordmark {
+ height: 40px; /* Adjust this value to match your desired size */
+ width: auto;
+ position: relative;
+}
+.dark #home-header {
+ color: white;
+}
+.description-text {
+ color: black;
+}
+.dark .description-text {
+ color: white;
+}
+.dark .claude-wordmark {
+ filter: invert(1);
+}
+:root {
+ --bg-color: #f0efea;
+}
+.dark {
+ --bg-color: #2b2b2b;
+}
+body,
+input,
+#category-select,
+.dropdown-item,
+#table-of-contents {
+ font-family: "Anthropic Sans", system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+.eyebrow {
+ font-family: "Anthropic Sans", system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+ text-transform: uppercase;
+ letter-spacing: 0.02rem;
+}
+#content-container {
+ font-family: "Anthropic Sans", system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+#content-container h1,
+#content-container h2,
+#content-container h3,
+#content-container h4,
+#content-container h5,
+#content-container h6 {
+ font-family: "Anthropic Serif Display", Georgia, "Times New Roman", Times, serif;
+ font-weight: 400;
+ /* Mintlify applies tracking-tight (-0.025em) to #page-title, which collapses
+ word gaps in Serif Display's already-narrow space glyph. Reset tracking to
+ the font's natural metrics and widen word gaps slightly. */
+ letter-spacing: 0;
+ word-spacing: 0.1em;
+}
+#content-container p {
+ font-size: 1rem;
+ line-height: 1.65rem;
+}
+.font-extrabold {
+ font-weight: 600 !important;
+}
+.wide-table {
+ width: 100%;
+ overflow-x: auto;
+}
+.wide-table table {
+ width: 175%;
+ margin-bottom: 0;
+}
+/* Prompt Library */
+#prompt-library-container {
+ margin: 4rem auto;
+ max-width: 48rem;
+ padding-left: 1.25rem;
+ padding-right: 1.25rem;
+}
+.prompt-library-title {
+ font-size: 24px;
+ text-align: center;
+ font-weight: 700;
+ color: #1f2937;
+}
+.dark .prompt-library-title {
+ color: #e5e7eb;
+}
+.prompt-library-description {
+ margin-top: 1rem;
+ text-align: center;
+}
+.main-content {
+ margin-bottom: 10rem;
+ max-width: 64rem;
+ margin-left: auto;
+ margin-right: auto;
+ padding-left: 1.25rem;
+ padding-right: 1.25rem;
+}
+.prompt-controllers {
+ display: flex;
+ gap: 0.5rem;
+}
+.prompt-search-container {
+ position: relative;
+ flex: 1 1 0%;
+}
+.prompt-search-icon-container {
+ display: flex;
+ position: absolute;
+ top: 0;
+ bottom: 0;
+ left: 0;
+ align-items: center;
+ padding-left: 0.75rem;
+}
+.prompt-search-icon {
+ margin-left: 0.25rem;
+ margin-right: 0.75rem;
+ flex: none;
+ width: 1rem;
+ height: 1rem;
+ background-color: #6b7280;
+ mask-image: url(https://mintlify.b-cdn.net/v6.5.1/solid/magnifying-glass.svg);
+ mask-repeat: no-repeat;
+ mask-position: center center;
+}
+input.prompt-search-bar {
+ display: block;
+ height: 2.5rem;
+ padding-left: 2.5rem;
+ border-radius: 0.75rem;
+ border-width: 1px;
+ background-color: #ffffff;
+ width: 100%;
+ color: #111827;
+ box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+}
+.dark input.prompt-search-bar {
+ color: #ffffff;
+ background-color: rgb(var(--background-dark));
+ border-color: #d1d5db1a;
+}
+input.prompt-search-bar:focus {
+ outline-color: rgb(var(--primary));
+}
+.dark input.prompt-search-bar:focus {
+ outline-color: rgb(var(--primary-light));
+}
+.dark .prompt-search-icon {
+ background-color: #ffffff80;
+}
+#category-select {
+ padding-left: 1rem;
+ padding-right: 2.5rem;
+ height: 2.5rem;
+ display: flex;
+ align-items: center;
+ border-radius: 0.75rem;
+ border-width: 1px;
+ color: #111827;
+ background-color: #ffffff;
+ cursor: pointer;
+ box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+ white-space: nowrap;
+}
+.dark #category-select {
+ background-color: rgb(var(--background-dark));
+ border-color: #d1d5db1a;
+ color: #ffffff;
+}
+#category-select:hover {
+ background-color: #f9fafb;
+}
+.dark #category-select:hover {
+ background-color: #ffffff0d;
+}
+#category-select:focus {
+ outline-color: rgb(var(--primary));
+}
+.dark #category-select:focus {
+ outline-color: rgb(var(--primary-light));
+}
+#categories-dropdown {
+ top: calc(100% + 4px);
+ padding: 0.5rem 0.5rem;
+ display: none;
+ position: absolute;
+ z-index: 10;
+ border-radius: 0.75rem;
+ border-width: 1px;
+ width: 100%;
+ color: #111827;
+ background-color: #ffffff;
+ box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+}
+.dark #categories-dropdown {
+ background-color: rgb(var(--background-dark));
+ border-color: #d1d5db1a;
+ color: #ffffff;
+}
+#categories-dropdown-clickout {
+ position: fixed;
+ top: 0;
+ right: 0;
+ bottom: 0;
+ left: 0;
+ z-index: 0;
+}
+.dropdown-icon-container {
+ display: flex;
+ position: absolute;
+ top: 0;
+ bottom: 0;
+ right: 0;
+ align-items: center;
+ padding-right: 0.25rem;
+}
+.dropdown-icon {
+ margin-left: 0.25rem;
+ margin-right: 0.75rem;
+ flex: none;
+ width: 0.75rem;
+ height: 0.75rem;
+ background-color: #6b7280;
+ mask-image: url(https://mintlify.b-cdn.net/v6.5.1/solid/caret-down.svg);
+ mask-repeat: no-repeat;
+ mask-position: center center;
+}
+.dark .dropdown-icon {
+ background-color: #ffffff80;
+}
+#prompts-container {
+ grid-template-columns: repeat(1, minmax(0, 1fr));
+ gap: 2rem;
+}
+.dropdown-item {
+ padding: 0.25rem 0.5rem;
+ border-radius: 0.375rem;
+ display: flex;
+ align-items: center;
+ cursor: pointer;
+}
+.dropdown-item:hover {
+ background-color: #f9fafb;
+}
+.dark .dropdown-item:hover {
+ background-color: #ffffff0d;
+}
+.check-icon {
+ mask-image: url(https://mintlify.b-cdn.net/v6.5.1/solid/check.svg);
+ height: 0.875rem;
+ width: 1rem;
+ background-color: rgb(var(--primary-light));
+ mask-repeat: no-repeat;
+ mask-position: center center;
+}
+.prompt-card {
+ margin: -0.75rem;
+ padding: 0.75rem;
+ display: flex;
+ border-radius: 1rem;
+}
+.prompt-card:hover {
+ background-color: #03071208;
+}
+.dark .prompt-card:hover {
+ background-color: #ffffff08;
+}
+.prompt-icon-container {
+ display: flex;
+ flex: none;
+ align-items: center;
+ justify-content: center;
+ margin-right: 1.5rem;
+ border-radius: 0.75rem;
+ height: 4rem;
+ width: 4rem;
+ background-color: #cb785c1a;
+}
+.prompt-icon {
+ height: 1.5rem;
+ width: 1.5rem;
+ background-color: rgb(var(--primary-light));
+ mask-repeat: no-repeat;
+ mask-position: center center;
+}
+.prompt-title {
+ color: rgb(31 41 55);
+ font-weight: 600;
+}
+.dark .prompt-title {
+ color: rgb(229 231 235);
+}
+.prompt-description {
+ margin-top: 0.25rem;
+}
+#prompts-container {
+ display: grid;
+ margin-top: 2.5rem;
+}
+@media (min-width: 640px) {
+ #category-select {
+ width: 16rem;
+ }
+}
+@media (min-width: 1024px) {
+ #prompts-container {
+ grid-template-columns: repeat(2, minmax(0, 1fr));
+ }
+}
+/* Home page card styling */
+.home-cards-custom {
+ display: grid;
+ grid-template-columns: repeat(3, 1fr);
+ grid-template-rows: repeat(2, auto);
+ gap: 1.5rem;
+}
+.home-cards-custom .card {
+ background: transparent;
+ border: 0.5px solid hsl(var(--border-300));
+ border-radius: 12px;
+ padding: 0.25rem;
+}
+/* Responsive: change to 2 columns on tablet, single column on mobile */
+@media (max-width: 1024px) {
+ .home-cards-custom {
+ grid-template-columns: repeat(2, 1fr);
+ grid-template-rows: repeat(3, auto);
+ }
+}
+@media (max-width: 768px) {
+ .home-cards-custom {
+ grid-template-columns: 1fr;
+ grid-template-rows: repeat(6, auto);
+ }
+}
+/* Utility classes */
+.relative {
+ position: relative;
+}
+.flex-1 {
+ flex: 1 1 0%;
+}
+/* Mermaid diagram styling with graph paper background using Anthropic brand colors */
+.mermaid {
+ position: relative;
+ background-color: #FDFDFB; /* Very light version of neutral #F0F0EB */
+ background-image:
+ linear-gradient(rgba(235, 219, 188, .25) 1px, transparent 1px), /* Secondary color #EBDBBC with low opacity */
+ linear-gradient(90deg, rgba(235, 219, 188, .25) 1px, transparent 1px),
+ linear-gradient(rgba(235, 219, 188, .1) 1px, transparent 1px),
+ linear-gradient(90deg, rgba(235, 219, 188, .1) 1px, transparent 1px);
+ background-size:
+ 20px 20px,
+ 20px 20px,
+ 4px 4px,
+ 4px 4px;
+ background-position:
+ -1px -1px,
+ -1px -1px,
+ -1px -1px,
+ -1px -1px;
+ padding: 20px;
+ border-radius: 8px;
+ border: 1px solid rgba(235, 219, 188, .4); /* Secondary color border */
+ box-shadow: 0 2px 4px rgba(64, 64, 62, 0.08); /* Subtle shadow using #40403E */
+}
+.dark .mermaid {
+ background-color: #1a1918; /* Dark version maintaining brand tone */
+ background-image:
+ linear-gradient(rgba(212, 162, 127, .15) 1px, transparent 1px), /* Tertiary color #D4A27F with low opacity */
+ linear-gradient(90deg, rgba(212, 162, 127, .15) 1px, transparent 1px),
+ linear-gradient(rgba(212, 162, 127, .08) 1px, transparent 1px),
+ linear-gradient(90deg, rgba(212, 162, 127, .08) 1px, transparent 1px);
+ border: 1px solid rgba(102, 102, 99, .5); /* Using #666663 from brand */
+ box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+/* ============================================================
+ What's New digest — feature block component
+ ============================================================ */
+.digest-meta {
+ display: flex;
+ align-items: center;
+ justify-content: space-between;
+ flex-wrap: wrap;
+ gap: 0.5rem 1rem;
+ padding: 0.75rem 1rem;
+ margin: 1.5rem 0 2.5rem;
+ border: 1px solid hsl(var(--border-300) / 0.15);
+ background: hsl(var(--bg-200));
+ font-variant-numeric: tabular-nums;
+ font-size: 0.875rem;
+ color: hsl(var(--text-400));
+}
+#content-container .digest-meta a {
+ color: hsl(var(--accent-main-100));
+ font-weight: 500;
+ text-decoration: none;
+ border-bottom: none;
+}
+#content-container .digest-meta a:hover {
+ text-decoration: underline;
+}
+.digest-feature {
+ position: relative;
+ margin: 2.5rem 0;
+ padding: 1.875rem 1.875rem 1.625rem;
+ background:
+ radial-gradient(circle, hsl(var(--text-000) / 0.025) 1px, transparent 1px) 0 0 / 18px 18px,
+ linear-gradient(180deg, hsl(var(--constant-manilla) / 0.55), hsl(var(--constant-manilla) / 0.38));
+ border: 1px solid hsl(var(--border-300) / 0.12);
+ box-shadow:
+ inset 0 1px 0 hsl(var(--text-000) / 0.04),
+ 0 1px 2px hsl(var(--always-black) / 0.04);
+}
+.digest-feature::before {
+ content: "";
+ position: absolute;
+ inset: 0 auto 0 0;
+ width: 4px;
+ background: hsl(var(--accent-brand));
+}
+.dark .digest-feature {
+ background:
+ radial-gradient(circle, hsl(var(--text-000) / 0.02) 1px, transparent 1px) 0 0 / 18px 18px,
+ linear-gradient(180deg, hsl(var(--bg-000) / 0.75), hsl(var(--bg-000) / 0.5));
+ border-color: hsl(var(--border-300) / 0.1);
+ box-shadow:
+ inset 0 1px 0 hsl(var(--text-000) / 0.03),
+ 0 1px 2px hsl(var(--always-black) / 0.25);
+}
+.digest-feature > :first-child {
+ margin-top: 0;
+}
+.digest-feature > :last-child {
+ margin-bottom: 0;
+}
+.digest-feature-header {
+ display: flex;
+ align-items: center;
+ flex-wrap: wrap;
+ gap: 0.625rem;
+ margin: 0 0 0.75rem;
+}
+#content-container .digest-feature-title {
+ font-family: "Anthropic Serif Display", Georgia, serif;
+ font-size: 1.75rem;
+ line-height: 1.15;
+ font-weight: 500;
+ letter-spacing: -0.015em;
+ color: hsl(var(--text-000));
+ margin: 0;
+}
+#content-container .digest-feature-pill {
+ font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+ font-size: 0.75rem;
+ line-height: 1;
+ letter-spacing: 0.01em;
+ padding: 0.3rem 0.6rem;
+ border-radius: 999px;
+ background: hsl(var(--accent-brand) / 0.12);
+ color: hsl(var(--accent-main-000));
+ border: 1px solid hsl(var(--accent-brand) / 0.25);
+ white-space: nowrap;
+ transform: translateY(1px);
+}
+#content-container .digest-feature-lede {
+ font-size: 1.0625rem;
+ line-height: 1.65;
+ color: hsl(var(--text-100));
+ margin: 0 0 1.25rem;
+ max-width: none;
+}
+#content-container .digest-feature-lede code {
+ font-size: 0.875em;
+ padding: 0.1em 0.35em;
+}
+#content-container .digest-feature-try {
+ font-size: 0.875rem;
+ color: hsl(var(--text-400));
+ margin: 1.25rem 0 0.5rem;
+}
+#content-container .digest-feature .frame {
+ margin: 1rem 0;
+ border-radius: 0;
+ padding: 0;
+}
+#content-container .digest-feature .frame > * {
+ border-radius: 0;
+}
+#content-container .digest-feature pre,
+#content-container .digest-feature [class*="CodeBlock"] {
+ border-radius: 0;
+}
+#content-container .digest-feature-link {
+ display: inline-flex;
+ align-items: center;
+ gap: 0.35rem;
+ font-size: 0.875rem;
+ font-weight: 500;
+ color: hsl(var(--accent-main-100));
+ text-decoration: none;
+ border-bottom: none;
+ margin-top: 0.75rem;
+}
+#content-container .digest-feature-link::after {
+ content: "→";
+ transition: transform 120ms ease-out;
+}
+#content-container .digest-feature-link:hover::after {
+ transform: translateX(3px);
+}
+/* Other wins — compact companion block */
+.digest-wins {
+ margin: 2.5rem 0;
+ padding: 1.5rem 1.75rem 1.25rem;
+ background: hsl(var(--bg-200));
+ border: 1px solid hsl(var(--border-300) / 0.1);
+}
+.dark .digest-wins {
+ background: hsl(var(--bg-200) / 0.6);
+}
+#content-container .digest-wins-title {
+ font-family: "Anthropic Serif Display", Georgia, serif;
+ font-size: 1.25rem;
+ font-weight: 500;
+ color: hsl(var(--text-000));
+ margin: 0 0 0.75rem;
+}
+.digest-wins-grid {
+ display: grid;
+ grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+ column-gap: 2rem;
+}
+#content-container .digest-wins-grid > div {
+ position: relative;
+ font-size: 0.875rem;
+ line-height: 1.5;
+ color: hsl(var(--text-300));
+ padding: 0.5rem 0 0.5rem 1.125rem;
+ border-top: 1px solid hsl(var(--border-300) / 0.06);
+ margin: 0;
+}
+#content-container .digest-wins-grid > div::before {
+ content: "+";
+ position: absolute;
+ left: 0;
+ top: 0.5rem;
+ font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+ font-size: 0.8125rem;
+ font-weight: 600;
+ color: hsl(var(--accent-brand));
+}
+#content-container .digest-wins-grid > div:first-child,
+#content-container .digest-wins-grid > div:nth-child(2) {
+ border-top: none;
+ padding-top: 0;
+}
+#content-container .digest-wins-grid > div:first-child::before,
+#content-container .digest-wins-grid > div:nth-child(2)::before {
+ top: 0;
+}
+#content-container .digest-wins-grid code {
+ font-size: 0.8125rem;
+ padding: 0.1em 0.3em;
+}
+@media (max-width: 640px) {
+ .digest-feature {
+ padding: 1.25rem 1rem 1rem;
+ margin: 1.5rem 0;
+ }
+ #content-container .digest-feature-title {
+ font-size: 1.375rem;
+ }
+ .digest-wins {
+ padding: 1.25rem 1rem 1rem;
+ }
+ .digest-wins-grid {
+ grid-template-columns: 1fr;
+ }
+ #content-container .digest-wins-grid > div:nth-child(2) {
+ border-top: 1px solid hsl(var(--border-300) / 0.06);
+ padding-top: 0.5rem;
+ }
+ #content-container .digest-wins-grid > div:nth-child(2)::before {
+ top: 0.5rem;
+ }
+}
+ On this page Get started What you can do Use Claude Code everywhere Next steps Getting started Overview Copy page Claude Code is an agentic coding tool that reads your codebase, edits files, runs commands, and integrates with your development tools. Available in your terminal, IDE, desktop app, and browser. Copy page Claude Code is an AI-powered coding assistant that helps you build features, fix bugs, and automate development tasks. It understands your entire codebase and can work across multiple files and tools to get things done. 
+ ​ Get started 
+ Choose your environment to get started. Most surfaces require a Claude subscription or Anthropic Console account. The Terminal CLI and VS Code also support third-party providers . 
+ Terminal VS Code Desktop app Web JetBrains The full-featured CLI for working with Claude Code directly in your terminal. Edit files, run commands, and manage your entire project from the command line. To install Claude Code, use one of the following methods: Native Install (Recommended) Homebrew WinGet macOS, Linux, WSL: curl -fsSL https://claude.ai/install.sh | bash 
+ Windows PowerShell: irm https: // claude.ai / install.ps1 | iex 
+ Windows CMD: curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd 
+ If you see The token &#x27;&&&#x27; is not a valid statement separator , you’re in PowerShell, not CMD. If you see &#x27;irm&#x27; is not recognized as an internal or external command , you’re in CMD, not PowerShell. Your prompt shows PS C:\ when you’re in PowerShell and C:\ without the PS when you’re in CMD. If the install command fails with syntax error near unexpected token &#x27;<&#x27; , a 403 , or another curl error, see Troubleshoot installation to match the error to a fix and for alternative install methods. Git for Windows is recommended on native Windows so Claude Code can use the Bash tool. If Git for Windows is not installed, Claude Code uses PowerShell as the shell tool instead. WSL setups do not need Git for Windows. Native installations automatically update in the background to keep you on the latest version. brew install --cask claude-code 
+ Homebrew offers two casks. claude-code tracks the stable release channel, which is typically about a week behind and skips releases with major regressions. claude-code@latest tracks the latest channel and receives new versions as soon as they ship. Homebrew installations do not auto-update. Run brew upgrade claude-code or brew upgrade claude-code@latest , depending on which cask you installed, to get the latest features and security fixes. winget install Anthropic.ClaudeCode 
+ WinGet installations do not auto-update. Run winget upgrade Anthropic.ClaudeCode periodically to get the latest features and security fixes. You can also install with apt, dnf, or apk on Debian, Fedora, RHEL, and Alpine. Then start Claude Code in any project: cd your-project 
+ claude 
+ You’ll be prompted to log in on first use. That’s it! Continue with the Quickstart → See advanced setup for installation options, manual updates, or uninstallation instructions. Visit installation troubleshooting if you hit issues. The VS Code extension provides inline diffs, @-mentions, plan review, and conversation history directly in your editor. 
+ Install for VS Code 
+ Install for Cursor 
+ Or search for “Claude Code” in the Extensions view ( Cmd+Shift+X on Mac, Ctrl+Shift+X on Windows/Linux). After installing, open the Command Palette ( Cmd+Shift+P / Ctrl+Shift+P ), type “Claude Code”, and select Open in New Tab . Get started with VS Code → A standalone app for running Claude Code outside your IDE or terminal. Review diffs visually, run multiple sessions side by side, schedule recurring tasks, and kick off cloud sessions. Download and install: 
+ macOS (Intel and Apple Silicon) 
+ Windows (x64) 
+ Windows ARM64 
+ After installing, launch Claude, sign in, and click the Code tab to start coding. A paid subscription is required. Learn more about the desktop app → Run Claude Code in your browser with no local setup. Kick off long-running tasks and check back when they’re done, work on repos you don’t have locally, or run multiple tasks in parallel. Available on desktop browsers and the Claude iOS app. Start coding at claude.ai/code . Get started on the web → A plugin for IntelliJ IDEA, PyCharm, WebStorm, and other JetBrains IDEs with interactive diff viewing and selection context sharing. Install the Claude Code plugin from the JetBrains Marketplace and restart your IDE. The plugin requires the Claude Code CLI, installed separately; see the JetBrains setup steps . Get started with JetBrains → 
+ ​ What you can do 
+ Here are some of the ways you can use Claude Code: 
+ Automate the work you keep putting off Claude Code handles the tedious tasks that eat up your day: writing tests for untested code, fixing lint errors across a project, resolving merge conflicts, updating dependencies, and writing release notes. claude "write tests for the auth module, run them, and fix any failures" 
+ Build features and fix bugs Describe what you want in plain language. Claude Code plans the approach, writes the code across multiple files, and verifies it works. For bugs, paste an error message or describe the symptom. Claude Code traces the issue through your codebase, identifies the root cause, and implements a fix. See common workflows for more examples. Create commits and pull requests Claude Code works directly with git. It stages changes, writes commit messages, creates branches, and opens pull requests. claude "commit my changes with a descriptive message" 
+ In CI, you can automate code review and issue triage with GitHub Actions or GitLab CI/CD . Connect your tools with MCP The Model Context Protocol (MCP) is an open standard for connecting AI tools to external data sources. With MCP, Claude Code can read your design docs in Google Drive, update tickets in Jira, pull data from Slack, or use your own custom tooling. The MCP quickstart connects your first server end to end. Customize with instructions, skills, and hooks CLAUDE.md is a markdown file you add to your project root that Claude Code reads at the start of every session. Use it to set coding standards, architecture decisions, preferred libraries, and review checklists. Claude also builds auto memory as it works, saving learnings like build commands and debugging insights across sessions without you writing anything. Create skills to package repeatable workflows your team can share, like /review-pr or /deploy-staging . Hooks let you run shell commands before or after Claude Code actions, like auto-formatting after every file edit or running lint before a commit. Run agent teams and build custom agents Spawn multiple Claude Code agents that work on different parts of a task simultaneously. A lead agent coordinates the work, assigns subtasks, and merges results. To run several full sessions in parallel and watch them from one screen, use background agents . For fully custom workflows, the Agent SDK lets you build your own agents powered by Claude Code’s tools and capabilities, with full control over orchestration, tool access, and permissions. Pipe, script, and automate with the CLI Claude Code is composable and follows the Unix philosophy. Pipe logs into it, run it in CI, or chain it with other tools: # Analyze recent log output 
+ tail -200 app.log | claude -p "Slack me if you see any anomalies" 
+ 
+ # Automate translations in CI 
+ claude -p "translate new strings into French and raise a PR for review" 
+ 
+ # Bulk operations across files 
+ git diff main --name-only | claude -p "review these changed files for security issues" 
+ See the CLI reference for the full set of commands and flags. Schedule recurring tasks Run Claude on a schedule to automate work that repeats: morning PR reviews, overnight CI failure analysis, weekly dependency audits, or syncing docs after PRs merge. 
+ Routines run on Anthropic-managed infrastructure, so they keep running even when your computer is off. They can also trigger on API calls or GitHub events. Create them from the web, the Desktop app, or by running /schedule in the CLI. 
+ Desktop scheduled tasks run on your machine, with direct access to your local files and tools 
+ /loop repeats a prompt within a CLI session for quick polling 
+ Work from anywhere Sessions aren’t tied to a single surface. Move work between environments as your context changes: 
+ Step away from your desk and keep working from your phone or any browser with Remote Control 
+ Message Dispatch a task from your phone and open the Desktop session it creates 
+ Kick off a long-running task on the web or iOS app , then pull it into your terminal with claude --teleport . Teleport requires a claude.ai subscription. 
+ Hand off a terminal session to the Desktop app with /desktop for visual diff review 
+ Route tasks from team chat: mention @Claude in Slack with a bug report and get a pull request back 
+ 
+ ​ Use Claude Code everywhere 
+ Each surface connects to the same underlying Claude Code engine, so your CLAUDE.md files, settings, and MCP servers work across all of them. 
+ Beyond the Terminal , VS Code , JetBrains , Desktop , and Web environments above, Claude Code integrates with CI/CD, chat, and browser workflows: 
+ I want to… Best option Continue a local session from my phone or another device Remote Control Push events from Telegram, Discord, iMessage, or my own webhooks into a session Channels Start a task locally, continue on mobile Web or Claude iOS app Run Claude on a recurring schedule Routines or Desktop scheduled tasks Automate PR reviews and issue triage GitHub Actions or GitLab CI/CD Get automatic code review on every PR GitHub Code Review Route bug reports from Slack to pull requests Slack Debug live web applications Chrome Build custom agents for your own workflows Agent SDK 
+ ​ Next steps 
+ Once you’ve installed Claude Code, these guides help you go deeper. 
+ 
+ Quickstart : walk through your first real task, from exploring a codebase to committing a fix 
+ Store instructions and memories : give Claude persistent instructions with CLAUDE.md files and auto memory 
+ Common workflows and best practices : patterns for getting the most out of Claude Code 
+ Settings : customize Claude Code for your workflow 
+ Troubleshooting : solutions for common issues 
+ code.claude.com : demos, pricing, and product details 
+ Was this page helpful? Yes No Quickstart ⌘ I Claude Code Docs home page x linkedin Company Anthropic Careers Economic Futures Research News Trust center Transparency Help and security Availability Status Support center Learn Courses MCP connectors Customer stories Engineering blog Events Powered by Claude Service partners Startups program Terms and policies Privacy choices Privacy policy Disclosure policy Usage policy Commercial terms Consumer terms Assistant Responses are generated using AI and may contain mistakes. 

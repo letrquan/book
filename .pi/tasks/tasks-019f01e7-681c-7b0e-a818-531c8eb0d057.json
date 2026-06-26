@@ -1,0 +1,65 @@
+{
+  "nextId": 6,
+  "tasks": [
+    {
+      "id": "1",
+      "subject": "Refactor useAgent to update messages incrementally",
+      "description": "In src/tui/hooks/useAgent.ts: on send(), immediately append user message + an empty assistant placeholder message to `messages` state (optimistic). Track the in-progress assistant message id via a ref (for callbacks) + state (for rendering). Wire onText/onToolCall/onToolResult to mutate that message by id. On onTurnStart(turn>1) create a new placeholder. Use finally to reset isThinking/streaming id. Drop the separate streamedText state. Expose streamingMessageId. Pass pre-user `messages` as history to runAgentLoop (loop keeps its own internal copy for API context).",
+      "status": "completed",
+      "activeForm": "Refactoring useAgent hook",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1782443547818,
+      "updatedAt": 1782443574658
+    },
+    {
+      "id": "2",
+      "subject": "Update app.tsx to use streamingMessageId",
+      "description": "In src/tui/app.tsx: drop streamedText, drop the streamingMessage = messages[last] computation. Read streamingMessageId from useAgent and pass it down to ChatPanel instead of streamingMessage + streamedText.",
+      "status": "completed",
+      "activeForm": "Updating app.tsx",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1782443549412,
+      "updatedAt": 1782443593273
+    },
+    {
+      "id": "3",
+      "subject": "Switch ChatPanel to streamingMessageId prop",
+      "description": "In src/tui/components/ChatPanel.tsx: replace streamingMessage (Message|undefined) + streamedText (string) props with a single streamingMessageId (string|null) prop. Set isStreaming={msg.id === streamingMessageId} on AgentMessage. Remove streamedText passthrough.",
+      "status": "completed",
+      "activeForm": "Updating ChatPanel",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1782443551703,
+      "updatedAt": 1782443601539
+    },
+    {
+      "id": "4",
+      "subject": "Drop streamedText from AgentMessage, use message.content",
+      "description": "In src/tui/components/AgentMessage.tsx: remove the streamedText prop. displayContent is always message.content (now updated live by the hook while streaming). Keep isStreaming for the Thinking spinner + streaming spinner logic.",
+      "status": "completed",
+      "activeForm": "Updating AgentMessage",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1782443555266,
+      "updatedAt": 1782443610222
+    },
+    {
+      "id": "5",
+      "subject": "Typecheck after refactor",
+      "description": "Run npm run typecheck (tsc --noEmit) to ensure the refactor compiles cleanly with no dangling references to removed props/state.",
+      "status": "completed",
+      "activeForm": "Typechecking the build",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1782443558752,
+      "updatedAt": 1782443783195
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "nextId": 25,
+  "tasks": [
+    {
+      "id": "17",
+      "subject": "M3.1a Headless text + json output",
+      "description": "M3.1 Task 1-2: Create runHeadless with text + json output. Test-first (headless.test.ts), implement HeadlessOptions/Result types, capture loop return into history.",
+      "status": "completed",
+      "activeForm": "Implementing headless text+json output",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1782449245698,
+      "updatedAt": 1782449432193
+    },
+    {
+      "id": "18",
+      "subject": "M3.1b stream-json output + --print CLI flag",
+      "description": "M3.1 Task 3: Add stream-json output + --print/-p, --output-format, --input-format, --max-turns, --max-budget-usd, --permission-mode, --verbose CLI flags in index.ts. Route to runHeadless when -p.",
+      "status": "completed",
+      "activeForm": "Adding stream-json + CLI flag",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1782449245701,
+      "updatedAt": 1782449621503
+    },
+    {
+      "id": "19",
+      "subject": "M3.1c stream-json input from stdin",
+      "description": "M3.1 Task 4: stream-json input — read newline-delimited user messages from stdin. Test with Readable.from.",
+      "status": "completed",
+      "activeForm": "Adding stream-json input",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1782449245703,
+      "updatedAt": 1782449711947
+    },
+    {
+      "id": "20",
+      "subject": "M3.2 --json-schema structured output",
+      "description": "M3.2 Task 5: --json-schema returns validated JSON matching a provided schema. Parse last assistant text as JSON, attach as result.structured.",
+      "status": "completed",
+      "activeForm": "Adding json-schema structured output",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1782449245705,
+      "updatedAt": 1782449863240
+    },
+    {
+      "id": "21",
+      "subject": "M3.3a SessionStore (JSONL persistence)",
+      "description": "M3.3 Task 6-7: JSONL SessionStore (create/append/load/list/mostRecentInCwd/findByName/cleanup). Test-first with tmpdir.",
+      "status": "completed",
+      "activeForm": "Implementing session store",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1782449245706,
+      "updatedAt": 1782450161143
+    },
+    {
+      "id": "22",
+      "subject": "M3.3b Session resume + CLI flags + /resume",
+      "description": "M3.3 Task 8-9: Wire SessionStore into runHeadless (persist records), add -r/--resume, -c/--continue, --session-id, -n/--name, --no-session-persistence, --fork-session flags, startup cleanup, /resume slash command.",
+      "status": "completed",
+      "activeForm": "Wiring sessions into headless + CLI",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1782449245708,
+      "updatedAt": 1782450536461
+    },
+    {
+      "id": "23",
+      "subject": "M3.4 Context compaction + /compact",
+      "description": "M3.4 Task 10-12: shouldCompact + compactHistory + buildCompactPrompt, wire auto-compaction into loop, /compact slash command. Test-first.",
+      "status": "completed",
+      "activeForm": "Implementing context compaction",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1782449245711,
+      "updatedAt": 1782451239604
+    },
+    {
+      "id": "24",
+      "subject": "M3 regression + smoke test",
+      "description": "M3 Task 13: tsc --noEmit, vitest run, npm run build, smoke test print mode + session resume.",
+      "status": "completed",
+      "activeForm": "Running M3 regression",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1782449245713,
+      "updatedAt": 1782451411081
+    }
+  ]
+}

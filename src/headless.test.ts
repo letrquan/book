@@ -1,19 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { runHeadless } from './headless.js';
 import { createDefaultRegistry } from './tools/registry.js';
-import type { AgentConfig } from './types.js';
+import { defaultConfig } from './test/fixtures.js';
 
-const config: AgentConfig = {
-  apiKey: 'k',
-  baseUrl: 'http://localhost/v1',
-  model: 'm',
-  maxTurns: 5,
-  maxTokens: 128000,
-  autoCompactEnabled: false,
-  workspace: '.',
-  animation: { typewriterSpeed: 3, spinnerStyle: 'braille' },
-  accessibility: { screenReader: false, reducedMotion: false },
-};
+const config = defaultConfig({ baseUrl: 'http://localhost/v1' });
 
 beforeEach(() => {
   // Fake provider: yields one text chunk then [DONE] with usage.

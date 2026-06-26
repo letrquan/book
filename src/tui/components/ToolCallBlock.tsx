@@ -1,5 +1,6 @@
 import { Text, Box } from 'ink';
 import { Spinner } from './Spinner.js';
+import { useTheme } from '../theme.js';
 import type { ToolResult } from '../../types.js';
 
 interface ToolCallBlockProps {
@@ -9,6 +10,8 @@ interface ToolCallBlockProps {
   isExpanded: boolean;
   onToggle: () => void;
   isPending?: boolean;
+  agentColor?: string;
+  reducedMotion?: boolean;
 }
 
 function getPrimaryArg(args: Record<string, unknown>): string {
@@ -32,12 +35,12 @@ function getResultLabel(result?: ToolResult): { label: string; color: string } {
   return { label: '[OK]', color: 'green' };
 }
 
-function renderDiff(output: string): Array<{ text: string; bgColor?: string }> {
+function renderDiff(output: string): Array<{ text: string; color: string }> {
   const lines = output.split('\n');
   return lines.map((line) => {
-    if (line.startsWith('+')) return { text: line, bgColor: 'green' };
-    if (line.startsWith('-')) return { text: line, bgColor: 'red' };
-    return { text: line };
+    if (line.startsWith('+')) return { text: line, color: 'green' };
+    if (line.startsWith('-')) return { text: line, color: 'red' };
+    return { text: line, color: 'gray' };
   });
 }
 
@@ -51,52 +54,52 @@ function isDiffOutput(toolName: string, result: ToolResult | undefined): boolean
   return plusLines > 0 || minusLines > 0;
 }
 
-export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPending }: ToolCallBlockProps) {
+export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPending, agentColor, reducedMotion = false }: ToolCallBlockProps) {
+  const theme = useTheme();
   const isRunning = !result && !isPending;
   const primaryArg = getPrimaryArg(args);
   const { label, color } = getResultLabel(result);
+  const toolColor = agentColor || theme.brand;
 
   return (
     <Box flexDirection="column" marginLeft={2}>
       <Box>
-        <Text color="magenta">
-          {isExpanded ? '\u25bc' : '\u25b6'}{' '}
+        <Text color={theme.subtle}>
+          {isExpanded ? '▼' : '▶'}{' '}
         </Text>
         {isRunning ? (
-          <Spinner active style="dots" />
+          <Spinner active style="dots" reducedMotion={reducedMotion} />
         ) : (
           <Text color={color}>{label} </Text>
         )}
-        <Text color="magenta">{name}</Text>
+        <Text color={toolColor}>{name}</Text>
         {primaryArg ? (
-          <Text color="gray"> {primaryArg.slice(0, 60)}</Text>
+          <Text color={theme.subtle}> {primaryArg.slice(0, 60)}</Text>
         ) : null}
       </Box>
       {isExpanded && result && isDiffOutput(name, result) ? (
         renderDiff(result.output).map((line, i) => (
           <Box key={i} marginLeft={2}>
-            <Text
-              color={line.bgColor === 'green' ? 'green' : line.bgColor === 'red' ? 'red' : 'gray'}
-            >
-              {'\u2502'} {line.text.slice(0, 120)}
+            <Text color={line.color}>
+              {'│'} {line.text.slice(0, 120)}
             </Text>
           </Box>
         ))
       ) : isExpanded && result?.output ? (
         result.output.split('\n').slice(0, 20).map((line, i) => (
           <Box key={i} marginLeft={2}>
-            <Text color="gray">{'\u2502'} {line.slice(0, 120)}</Text>
+            <Text color={theme.subtle}>{'│'} {line.slice(0, 120)}</Text>
           </Box>
         ))
       ) : null}
       {isExpanded && result?.error && !result.error.startsWith('SKIPPED') ? (
         <Box marginLeft={2}>
-          <Text color="red">{'\u2502'} {result.error.slice(0, 120)}</Text>
+          <Text color={theme.error}>{'│'} {result.error.slice(0, 120)}</Text>
         </Box>
       ) : null}
       {isPending ? (
         <Box marginLeft={2}>
-          <Text color="yellow">[needs approval]</Text>
+          <Text color={theme.warning}>[needs approval]</Text>
         </Box>
       ) : null}
     </Box>

@@ -1,4 +1,21 @@
-import type { Message, ToolCall, ToolResult } from '../types.js';
+import type { Message, ToolCall, ToolResult, AgentConfig } from '../types.js';
+import { DEFAULT_SETTINGS } from '../settings.js';
+
+export function defaultConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
+  return {
+    apiKey: 'k',
+    baseUrl: 'http://x/v1',
+    model: 'm',
+    maxTurns: 5,
+    maxTokens: 128000,
+    autoCompactEnabled: false,
+    workspace: '.',
+    animation: { typewriterSpeed: 3, spinnerStyle: 'braille' },
+    accessibility: { screenReader: false, reducedMotion: false },
+    settings: structuredClone(DEFAULT_SETTINGS),
+    ...overrides,
+  };
+}
 
 export function userMsg(content: string): Message {
   return { id: 'u1', role: 'user', content, timestamp: 0 };

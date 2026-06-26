@@ -1,0 +1,173 @@
+{
+  "nextId": 10,
+  "tasks": [
+    {
+      "id": "1",
+      "subject": "Define BookSettings Zod schema with all M4 keys",
+      "description": "Create a comprehensive Zod schema for settings.json covering: permissions (allow/ask/deny arrays), sandbox (enabled, failIfUnavailable, autoAllowBashIfSandboxed, excludedCommands, allowUnsandboxedCommands, filesystem.allowWrite/denyWrite/denyRead, network.allowedDomains/deniedDomains), model, maxTurns, maxTokens, autoCompactEnabled, defaultMode, disableBypassPermissionsMode, additionalDirectories, env. This schema is the single source of truth for all layered settings.",
+      "status": "completed",
+      "metadata": {
+        "agentType": "general-purpose"
+      },
+      "blocks": [
+        "3",
+        "4",
+        "5",
+        "9"
+      ],
+      "blockedBy": [],
+      "createdAt": 1782454915121,
+      "updatedAt": 1782455557640
+    },
+    {
+      "id": "2",
+      "subject": "Implement layered settings loader with merge logic",
+      "description": "Implement resolveSettings(workspace) that loads and merges settings from three scopes: ~/.book/settings.json (user), .book/settings.json (project), .book/settings.local.json (local). Priority: Local > Project > User. Scalar keys override, arrays (permissions.allow/ask/deny, additionalDirectories) concatenate. Write tests for all merge scenarios.",
+      "status": "completed",
+      "metadata": {
+        "agentType": "general-purpose"
+      },
+      "blocks": [
+        "3",
+        "4",
+        "5",
+        "9"
+      ],
+      "blockedBy": [],
+      "createdAt": 1782454924674,
+      "updatedAt": 1782455557644
+    },
+    {
+      "id": "3",
+      "subject": "Integrate settings into AgentConfig and CLI with legacy fallback",
+      "description": "Wire the resolved settings into AgentConfig and the CLI entry point. Deprecate loadConfig() reading ~/.bookrc.json (keep as fallback with console.warn). The agent loop should receive resolved permissions/sandbox config instead of consulting a standalone PermissionStore. Write tests: settings-driven config, legacy fallback, deprecation warning.",
+      "status": "in_progress",
+      "metadata": {
+        "agentType": "general-purpose"
+      },
+      "blocks": [
+        "7",
+        "8",
+        "9"
+      ],
+      "blockedBy": [
+        "1",
+        "2"
+      ],
+      "createdAt": 1782454936068,
+      "updatedAt": 1782455570376
+    },
+    {
+      "id": "4",
+      "subject": "Implement Tool(specifier) rule parser and evaluator",
+      "description": "Parse Tool(specifier) strings into {toolName, pattern} objects. Support glob patterns (*, **) inside the parentheses. Implement evaluatePermission(toolCall, rules) with deny→ask→allow evaluation order (first match wins). Rules from all scopes are merged. Replace the existing PermissionStore.evaluate() call in loop.ts and headless.ts. Write tests: exact match, glob match, deny beats allow, multi-scope rule merge, empty parens (match-all).",
+      "status": "pending",
+      "metadata": {
+        "agentType": "general-purpose"
+      },
+      "blocks": [
+        "7",
+        "9"
+      ],
+      "blockedBy": [
+        "1",
+        "2"
+      ],
+      "createdAt": 1782454950018,
+      "updatedAt": 1782455169281
+    },
+    {
+      "id": "5",
+      "subject": "Implement bash sandbox with bwrap detection and command wrapping",
+      "description": "Implement createSandbox(config) that detects bubblewrap (bwrap) on macOS/Linux/WSL2. Build a command wrapper for filesystem + network isolation from sandbox settings. Return {wrap(cmd): string} or null if unavailable. On Windows: warn gracefully, run unsandboxed unless failIfUnavailable. Write tests: bwrap present/absent, command wrapping, Windows detection.",
+      "status": "pending",
+      "metadata": {
+        "agentType": "general-purpose"
+      },
+      "blocks": [
+        "6",
+        "9"
+      ],
+      "blockedBy": [
+        "1",
+        "2"
+      ],
+      "createdAt": 1782454973049,
+      "updatedAt": 1782455169281
+    },
+    {
+      "id": "6",
+      "subject": "Integrate sandbox into Bash tool execution",
+      "description": "Integrate sandbox into the Bash tool: wrap commands through the sandbox when sandbox.enabled is true. Auto-approve when sandbox.autoAllowBashIfSandboxed. Honor sandbox.excludedCommands (skip sandbox for matching commands). Honor sandbox.allowUnsandboxedCommands (escape hatch). Wire filesystem.allowWrite/denyWrite/denyRead and network.allowedDomains/deniedDomains into the bwrap invocation. Write integration tests.",
+      "status": "pending",
+      "metadata": {
+        "agentType": "general-purpose"
+      },
+      "blocks": [
+        "9"
+      ],
+      "blockedBy": [
+        "5"
+      ],
+      "createdAt": 1782454995353,
+      "updatedAt": 1782455169281
+    },
+    {
+      "id": "7",
+      "subject": "Remove PermissionStore, migrate rules to settings.local.json",
+      "description": "Remove the standalone PermissionStore class (~130 loc) and ~/.book/permissions.json file. Migrate any existing persisted rules into .book/settings.local.json on first load. The permission evaluation now uses the resolved settings object directly. Update all imports and tests. Write migration test.",
+      "status": "pending",
+      "metadata": {
+        "agentType": "general-purpose"
+      },
+      "blocks": [
+        "9"
+      ],
+      "blockedBy": [
+        "3",
+        "4"
+      ],
+      "createdAt": 1782455021796,
+      "updatedAt": 1782455169281
+    },
+    {
+      "id": "8",
+      "subject": "Add --settings and --no-settings CLI flags",
+      "description": "Add --settings <path> CLI flag for ad-hoc settings file override (matching CC's --settings). Add --no-settings flag to skip all settings layers. Update the CLI entry point to pass the override into resolveSettings. Test both flags in headless mode.",
+      "status": "pending",
+      "metadata": {
+        "agentType": "general-purpose"
+      },
+      "blocks": [
+        "9"
+      ],
+      "blockedBy": [
+        "3"
+      ],
+      "createdAt": 1782455032211,
+      "updatedAt": 1782455169281
+    },
+    {
+      "id": "9",
+      "subject": "End-to-end verification and full test suite pass",
+      "description": "Write end-to-end verification: create test settings.json files with deny/allow rules, run headless mode, confirm tools are granted/blocked per rules. Verify sandbox wraps bash correctly. Verify settings merge across scopes (user→project→local). Verify malformed settings.json produces clear error. Verify legacy .bookrc.json still works with deprecation warning. Run full test suite (vitest run) and tsc --noEmit.",
+      "status": "pending",
+      "metadata": {
+        "agentType": "general-purpose"
+      },
+      "blocks": [],
+      "blockedBy": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8"
+      ],
+      "createdAt": 1782455081179,
+      "updatedAt": 1782455169281
+    }
+  ]
+}

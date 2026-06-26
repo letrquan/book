@@ -1,6 +1,7 @@
 import { Box, Text } from 'ink';
 import { useState } from 'react';
 import { useInput } from 'ink';
+import { useTheme } from '../theme.js';
 import type { PermissionResult, ToolCall } from '../../types.js';
 
 interface PermissionButtonsProps {
@@ -15,9 +16,10 @@ const BUTTONS: { label: string; value: PermissionResult }[] = [
 ];
 
 export function PermissionButtons({ toolCall, onResolve }: PermissionButtonsProps) {
+  const theme = useTheme();
   const [selected, setSelected] = useState(0);
 
-  useInput((input, key) => {
+  useInput((_input, key) => {
     if (key.leftArrow) {
       setSelected((s) => (s - 1 + BUTTONS.length) % BUTTONS.length);
     } else if (key.rightArrow) {
@@ -35,7 +37,7 @@ export function PermissionButtons({ toolCall, onResolve }: PermissionButtonsProp
         <Box key={btn.label} marginRight={1}>
           <Text
             backgroundColor={i === selected ? 'white' : undefined}
-            color={i === selected ? 'black' : 'white'}
+            color={i === selected ? theme.inverseText : theme.text}
           >
             [{btn.label}]
           </Text>

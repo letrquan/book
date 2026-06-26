@@ -1,19 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runAgentLoop } from './loop.js';
 import { createRegistry } from '../tools/registry.js';
-import type { AgentConfig } from '../types.js';
+import { defaultConfig } from '../test/fixtures.js';
 
-const config: AgentConfig = {
-  apiKey: 'k',
-  baseUrl: 'http://x/v1',
-  model: 'm',
-  maxTurns: 5,
-  maxTokens: 128000,
-  autoCompactEnabled: false,
-  workspace: '.',
-  animation: { typewriterSpeed: 3, spinnerStyle: 'braille' },
-  accessibility: { screenReader: false, reducedMotion: false },
-};
+const config = defaultConfig();
 
 describe('runAgentLoop abort', () => {
   it('stops streaming when the abort signal fires', async () => {

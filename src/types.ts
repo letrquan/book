@@ -1,3 +1,5 @@
+import type { ResolvedSettings } from './settings.js';
+
 export type PermissionMode = 'default' | 'auto' | 'plan' | 'accept-edits' | 'dontAsk' | 'bypassPermissions';
 
 /**
@@ -147,6 +149,8 @@ export interface AgentConfig {
     screenReader: boolean;
     reducedMotion: boolean;
   };
+  /** Resolved layered settings (permissions, sandbox, etc.). */
+  settings: ResolvedSettings;
 }
 
 export interface ProviderStreamEvent {

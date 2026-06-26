@@ -10,20 +10,23 @@ interface PendingPermission {
 
 interface ChatPanelProps {
   messages: Message[];
-  streamingMessage?: Message;
-  streamedText: string;
+  /** id of the assistant message currently being streamed into, or null. */
+  streamingMessageId?: string | null;
   pendingPermission?: PendingPermission | null;
   onResolvePermission?: (result: PermissionResult) => void;
   activeToolCallId?: string | null;
+  reducedMotion?: boolean;
+  screenReader?: boolean;
 }
 
 export function ChatPanel({
   messages,
-  streamingMessage,
-  streamedText,
+  streamingMessageId,
   pendingPermission,
   onResolvePermission,
   activeToolCallId,
+  reducedMotion = false,
+  screenReader = false,
 }: ChatPanelProps) {
   return (
     <Box flexDirection="column" flexGrow={1}>
@@ -35,11 +38,12 @@ export function ChatPanel({
           <AgentMessage
             key={msg.id}
             message={msg}
-            isStreaming={msg === streamingMessage}
-            streamedText={streamedText}
+            isStreaming={msg.id === streamingMessageId}
             pendingPermission={pendingPermission}
             onResolvePermission={onResolvePermission}
             activeToolCallId={activeToolCallId}
+            reducedMotion={reducedMotion}
+            screenReader={screenReader}
           />
         );
       })}

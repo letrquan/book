@@ -1,18 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { chatCompletionStream } from './openai-compatible.js';
-import type { AgentConfig } from '../types.js';
+import { defaultConfig } from '../test/fixtures.js';
 
-const config: AgentConfig = {
-  apiKey: 'k',
-  baseUrl: 'http://localhost/v1',
-  model: 'm',
-  maxTurns: 25,
-  maxTokens: 128000,
-  autoCompactEnabled: false,
-  workspace: '.',
-  animation: { typewriterSpeed: 3, spinnerStyle: 'braille' },
-  accessibility: { screenReader: false, reducedMotion: false },
-};
+const config = defaultConfig({ maxTurns: 25, baseUrl: 'http://localhost/v1' });
 
 let capturedBody: any;
 
