@@ -4,6 +4,7 @@ import { buildMessages } from './context.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type { PermissionStore } from '../tui/permissionStore.js';
 import { loadGitignore } from '../tools/gitignore.js';
+import { shouldCompact } from './compact.js';
 
 const PERMISSION_TOOLS = new Set(['Bash', 'Write', 'Edit', 'MultiEdit', 'git_commit']);
 
@@ -73,9 +74,27 @@ export async function runAgentLoop(
 
   let turn = 0;
   let approveAll: string[] = [];
+  let lastUsage: Usage | null = null;
 
   while (turn < config.maxTurns) {
     if (signal?.aborted) break;
+
+    // Auto-compact when usage approaches the context limit.
+    if (
+      config.autoCompactEnabled !== false &&
+      callbacks.onCompact &&
+      shouldCompact(lastUsage, config.maxTokens ?? 128000)
+    ) {
+      try {
+        const compacted = await callbacks.onCompact(newHistory, lastUsage);
+        newHistory.length = 0;
+        newHistory.push(...compacted);
+        lastUsage = null;
+      } catch {
+        // non-fatal: continue with full history this turn
+      }
+    }
+
     turn++;
     callbacks.onTurnStart(turn);
 
@@ -100,6 +119,7 @@ export async function runAgentLoop(
           return newHistory;
         } else if (event.type === 'done' && event.usage) {
           turnUsage = event.usage;
+          lastUsage = turnUsage;
         }
       }
     } catch (e) {

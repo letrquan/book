@@ -7,6 +7,8 @@ const config: AgentConfig = {
   baseUrl: 'http://localhost/v1',
   model: 'm',
   maxTurns: 25,
+  maxTokens: 128000,
+  autoCompactEnabled: false,
   workspace: '.',
   animation: { typewriterSpeed: 3, spinnerStyle: 'braille' },
   accessibility: { screenReader: false, reducedMotion: false },

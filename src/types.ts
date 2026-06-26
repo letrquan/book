@@ -136,6 +136,8 @@ export interface AgentConfig {
   baseUrl: string;
   model: string;
   maxTurns: number;
+  maxTokens: number;
+  autoCompactEnabled: boolean;
   workspace: string;
   animation: {
     typewriterSpeed: number;
@@ -166,6 +168,8 @@ export interface AgentLoopCallbacks {
   /** @deprecated use onUsage for real token counts from the API. */
   onTokenCount?: (count: number) => void;
   onUsage?: (usage: Usage) => void;
+  /** Called when the context approaches its limit; returns a compacted history. */
+  onCompact?: (history: Message[], usage: Usage | null) => Promise<Message[]>;
 }
 
 export type OutputFormat = 'text' | 'json' | 'stream-json';

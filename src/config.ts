@@ -8,6 +8,8 @@ const configSchema = z.object({
   model: z.string().default('gpt-4o'),
   baseUrl: z.string().url().default('https://api.openai.com/v1'),
   maxTurns: z.number().int().min(1).max(100).default(25),
+  maxTokens: z.number().int().min(1000).default(128000),
+  autoCompactEnabled: z.boolean().default(true),
   animation: z.object({
     typewriterSpeed: z.number().int().min(1).max(50).default(3),
     spinnerStyle: z.enum(['braille', 'dots']).default('braille'),
@@ -56,6 +58,8 @@ export function loadConfig(workspace?: string): AgentConfig {
     baseUrl: process.env.BOOK_BASE_URL || fileConfig.baseUrl || baseUrl,
     model: process.env.BOOK_MODEL || fileConfig.model || model,
     maxTurns: process.env.BOOK_MAX_TURNS ? parseInt(process.env.BOOK_MAX_TURNS, 10) : fileConfig.maxTurns || maxTurns,
+    maxTokens: process.env.BOOK_MAX_TOKENS ? parseInt(process.env.BOOK_MAX_TOKENS, 10) : fileConfig.maxTokens,
+    autoCompactEnabled: fileConfig.autoCompactEnabled ?? true,
     workspace: resolvedWorkspace,
     animation: fileConfig.animation || { typewriterSpeed: 3, spinnerStyle: 'braille' },
     accessibility: fileConfig.accessibility || { screenReader: false, reducedMotion: false },

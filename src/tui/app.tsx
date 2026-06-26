@@ -31,6 +31,7 @@ export function App({ config }: AppProps) {
     resolvePermission,
     cancelPermission,
     cancel,
+    compact,
     cycleMode,
   } = useAgent(config);
 
@@ -85,6 +86,8 @@ export function App({ config }: AppProps) {
     (value: string) => {
       if (value.startsWith('/clear')) {
         clear();
+      } else if (value.startsWith('/compact')) {
+        compact();
       } else if (value.startsWith('/exit')) {
         process.exit(0);
       } else if (value.startsWith('/task ')) {

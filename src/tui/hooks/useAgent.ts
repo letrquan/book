@@ -154,6 +154,39 @@ export function useAgent(config: AgentConfig) {
     setStreamingMessageId(null);
   }, []);
 
+  // Manually compact the conversation (summarize older turns).
+  const compact = useCallback(async () => {
+    if (messages.length <= 4) return;
+    const { compactHistory, buildCompactPrompt } = await import('../../agent/compact.js');
+    const { kept, summarized } = compactHistory(messages, 4);
+    if (summarized.length === 0) return;
+    // Summarize via a one-shot provider call.
+    const { chatCompletionStream } = await import('../../provider/openai-compatible.js');
+    let summary = '';
+    try {
+      const stream = chatCompletionStream(
+        config,
+        [
+          { role: 'system', content: 'You are a conversation summarizer. Produce a concise prose summary.' },
+          { role: 'user', content: buildCompactPrompt(summarized) },
+        ],
+        [],
+      );
+      for await (const ev of stream) {
+        if (ev.type === 'text' && ev.content) summary += ev.content;
+      }
+    } catch {
+      return; // non-fatal
+    }
+    const summaryMsg: Message = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: `[Compacted summary of earlier conversation]\n${summary}`,
+      timestamp: Date.now(),
+    };
+    setMessages([summaryMsg, ...kept]);
+  }, [config, messages]);
+
   const clear = useCallback(() => {
     setMessages([]);
     setError(null);
@@ -188,6 +221,7 @@ export function useAgent(config: AgentConfig) {
     resolvePermission,
     cancelPermission,
     cancel,
+    compact,
     cycleMode,
   };
 }
