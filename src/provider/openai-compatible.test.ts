@@ -52,3 +52,65 @@ describe('chatCompletionStream request body', () => {
     expect(capturedBody.stream_options).toEqual({ include_usage: true });
   });
 });
+
+describe('chatCompletionStream retry', () => {
+  it('retries on 429 then succeeds', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        if (calls < 3) {
+          return new Response('rate limited', {
+            status: 429,
+            headers: { 'retry-after': '0' },
+          });
+        }
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(
+              enc.encode('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'),
+            );
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const e of chatCompletionStream(
+      config,
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      events.push(e);
+    }
+    expect(calls).toBe(3);
+    expect(events.some((e) => e.type === 'text' && e.content === 'ok')).toBe(true);
+  });
+
+  it('yields an error after exhausting retries', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return new Response('rate limited', { status: 429 });
+      }),
+    );
+
+    const events = [];
+    for await (const e of chatCompletionStream(
+      config,
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      events.push(e);
+    }
+    expect(calls).toBe(4); // initial + 3 retries
+    expect(events.some((e) => e.type === 'error')).toBe(true);
+  }, 15000); // real backoff 1s+2s+4s = 7s
+});

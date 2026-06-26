@@ -1,9 +1,53 @@
 import type { AgentConfig, ProviderStreamEvent, ToolDefinition } from '../types.js';
 
+const MAX_RETRIES = 3;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function backoffMs(attempt: number, retryAfter?: string | null): number {
+  if (retryAfter) {
+    const secs = Number(retryAfter);
+    if (!Number.isNaN(secs)) return Math.min(secs * 1000, 8000);
+  }
+  return Math.min(1000 * 2 ** attempt, 8000);
+}
+
+/** Fetch with exponential backoff retry on 429/5xx and transient network errors. */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  signal?: AbortSignal,
+): Promise<Response> {
+  let lastError: string | null = null;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    let resp: Response;
+    try {
+      resp = await fetch(url, { ...init, signal });
+    } catch (e) {
+      // Network error — retry with backoff.
+      lastError = e instanceof Error ? e.message : String(e);
+      if (attempt === MAX_RETRIES) break;
+      await sleep(backoffMs(attempt));
+      continue;
+    }
+    if (resp.status === 429 || resp.status >= 500) {
+      lastError = `API error ${resp.status}`;
+      if (attempt === MAX_RETRIES) return resp;
+      await sleep(backoffMs(attempt, resp.headers.get('retry-after')));
+      continue;
+    }
+    return resp;
+  }
+  throw new Error(lastError ?? 'request failed after retries');
+}
+
 export async function* chatCompletionStream(
   config: AgentConfig,
   messages: { role: string; content: string | null; tool_calls?: unknown[] }[],
   tools: ToolDefinition[],
+  options?: { signal?: AbortSignal },
 ): AsyncGenerator<ProviderStreamEvent> {
   const url = `${config.baseUrl}/chat/completions`;
 
@@ -26,22 +70,27 @@ export async function* chatCompletionStream(
     }));
   }
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
-  });
+  let response: Response;
+  try {
+    response = await fetchWithRetry(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify(body),
+      },
+      options?.signal,
+    );
+  } catch (e) {
+    yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
+    return;
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
-    if (response.status === 429) {
-      yield { type: 'error', error: 'Rate limited. Retrying...' };
-      return;
-    }
     yield { type: 'error', error: `API error ${response.status}: ${errorText}` };
     return;
   }
