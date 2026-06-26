@@ -2,12 +2,27 @@ import type { AgentConfig, Message, ToolCall, ToolResult, ToolContext, AgentLoop
 import { chatCompletionStream } from '../provider/openai-compatible.js';
 import { buildMessages } from './context.js';
 import type { ToolRegistry } from '../tools/registry.js';
+import type { PermissionStore } from '../tui/permissionStore.js';
 
 const PERMISSION_TOOLS = new Set(['bash', 'write_file', 'edit_file', 'git_commit']);
 
+/** Extract the primary argument used for rule pattern matching (e.g. bash command, file path). */
+function primaryArgForRule(toolName: string, args: Record<string, unknown>): string {
+  if (typeof args.command === 'string') return args.command.split('\n')[0];
+  if (typeof args.filePath === 'string') return args.filePath;
+  if (typeof args.pattern === 'string') return args.pattern;
+  if (typeof args.message === 'string') return args.message;
+  const keys = Object.keys(args);
+  if (keys.length > 0) {
+    const v = args[keys[0]];
+    return typeof v === 'string' ? v : '';
+  }
+  return '';
+}
+
 function needsPermission(toolName: string, mode: string): boolean {
-  if (mode === 'auto') return false;
-  if (mode === 'plan') return true;
+  if (mode === 'auto' || mode === 'bypassPermissions') return false;
+  if (mode === 'plan' || mode === 'dontAsk') return true;
   if (mode === 'accept-edits') {
     return toolName !== 'edit_file' && toolName !== 'write_file';
   }
@@ -21,7 +36,10 @@ export async function runAgentLoop(
   history: Message[],
   callbacks: AgentLoopCallbacks,
   mode: string = 'default',
+  permissionStore?: PermissionStore,
+  options?: { signal?: AbortSignal },
 ): Promise<Message[]> {
+  const signal = options?.signal;
   const newHistory = [...history];
 
   newHistory.push({
@@ -40,6 +58,7 @@ export async function runAgentLoop(
   let approveAll: string[] = [];
 
   while (turn < config.maxTurns) {
+    if (signal?.aborted) break;
     turn++;
     callbacks.onTurnStart(turn);
 
@@ -47,19 +66,29 @@ export async function runAgentLoop(
     let assistantContent = '';
     const toolCalls: ToolCall[] = [];
 
-    const stream = chatCompletionStream(config, messages, registry.getDefinitions());
+    const stream = chatCompletionStream(config, messages, registry.getDefinitions(), { signal });
 
-    for await (const event of stream) {
-      if (event.type === 'text' && event.content) {
-        assistantContent += event.content;
-        callbacks.onText(event.content);
-      } else if (event.type === 'tool_call' && event.toolCall) {
-        toolCalls.push(event.toolCall);
-        callbacks.onToolCall(event.toolCall);
-      } else if (event.type === 'error' && event.error) {
-        callbacks.onError(event.error);
-        return newHistory;
+    try {
+      for await (const event of stream) {
+        if (signal?.aborted) break;
+        if (event.type === 'text' && event.content) {
+          assistantContent += event.content;
+          callbacks.onText(event.content);
+        } else if (event.type === 'tool_call' && event.toolCall) {
+          toolCalls.push(event.toolCall);
+          callbacks.onToolCall(event.toolCall);
+        } else if (event.type === 'error' && event.error) {
+          callbacks.onError(event.error);
+          return newHistory;
+        }
       }
+    } catch (e) {
+      // Abort looks like an AbortError; keep whatever content we have and stop.
+      if (signal?.aborted) {
+        break;
+      }
+      callbacks.onError(e instanceof Error ? e.message : String(e));
+      return newHistory;
     }
 
     const estimatedTokens = assistantContent.length > 0
@@ -69,8 +98,24 @@ export async function runAgentLoop(
 
     const toolResults: ToolResult[] = [];
     for (const call of toolCalls) {
+      if (signal?.aborted) break;
       if (needsPermission(call.name, mode) && !approveAll.includes(call.name)) {
-        const permission = await callbacks.onPermissionRequired(call);
+        // First consult the persisted rule store (evaluates deny → ask → allow).
+        let permission: 'allow' | 'deny' | 'always' | undefined;
+        if (permissionStore && mode !== 'plan' && mode !== 'dontAsk') {
+          const verdict = permissionStore.evaluate(call.name, primaryArgForRule(call.name, call.arguments));
+          if (verdict === 'allow') {
+            permission = 'allow';
+          } else if (verdict === 'deny') {
+            permission = 'deny';
+          }
+          // 'ask' falls through to the interactive prompt below
+        }
+
+        if (permission === undefined) {
+          permission = await callbacks.onPermissionRequired(call);
+        }
+
         if (permission === 'deny') {
           toolResults.push({
             toolCallId: call.id,
@@ -82,6 +127,10 @@ export async function runAgentLoop(
         }
         if (permission === 'always') {
           approveAll.push(call.name);
+          // Persist the allow-rule for this exact command/path going forward.
+          if (permissionStore) {
+            permissionStore.allowAlways(call.name, primaryArgForRule(call.name, call.arguments), 'project');
+          }
         }
       }
 
@@ -100,7 +149,7 @@ export async function runAgentLoop(
       timestamp: Date.now(),
     });
 
-    if (toolCalls.length === 0) {
+    if (toolCalls.length === 0 || signal?.aborted) {
       break;
     }
   }
