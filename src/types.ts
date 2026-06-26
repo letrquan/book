@@ -167,3 +167,39 @@ export interface AgentLoopCallbacks {
   onTokenCount?: (count: number) => void;
   onUsage?: (usage: Usage) => void;
 }
+
+export type OutputFormat = 'text' | 'json' | 'stream-json';
+export type InputFormat = 'text' | 'stream-json';
+
+export interface SessionRecord {
+  type: 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'usage' | 'session_meta';
+  timestamp: number;
+  data: unknown;
+}
+
+export interface HeadlessOptions {
+  prompt?: string;
+  inputFormat: InputFormat;
+  outputFormat: OutputFormat;
+  history: Message[];
+  mode: PermissionMode;
+  maxTurns?: number;
+  maxBudgetUsd?: number;
+  verbose?: boolean;
+  signal?: AbortSignal;
+  stdout?: { write: (s: string) => boolean };
+  stdin?: NodeJS.ReadableStream;
+  jsonSchema?: Record<string, unknown>;
+  sessionStore?: unknown; // SessionStore; typed loosely to avoid a circular import
+  sessionId?: string;
+  sessionName?: string;
+}
+
+export interface HeadlessResult {
+  messages: Message[];
+  usage: Usage | null;
+  costUsd?: number;
+  sessionId?: string;
+  structured?: unknown;
+  structuredError?: string;
+}
