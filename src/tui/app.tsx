@@ -3,6 +3,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { TaskList } from './components/TaskList.js';
+import { AgentTodoList } from './components/AgentTodoList.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
 import { ThemeContext } from './theme.js';
@@ -24,6 +25,7 @@ export function App({ config }: AppProps) {
     tokenCount,
     mode,
     pendingPermission,
+    agentTodos,
     send,
     clear,
     resolvePermission,
@@ -111,6 +113,7 @@ export function App({ config }: AppProps) {
             <Text color={theme.error}>{error}</Text>
           </Box>
         )}
+        {agentTodos.length > 0 && <AgentTodoList todos={agentTodos} />}
         {showTasks && (
           <TaskList
             tasks={tasks}

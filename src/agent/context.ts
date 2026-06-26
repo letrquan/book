@@ -1,7 +1,28 @@
 import { platform, release, hostname } from 'os';
 import type { AgentConfig, Message, ToolDefinition } from '../types.js';
+import { getTodos } from '../tools/todo.js';
 
 function buildSystemPrompt(config: AgentConfig): string {
+  const todos = getTodos();
+  const todoSection =
+    todos.length > 0
+      ? '\n\n## Current task list\n' +
+        todos
+          .map((t) => {
+            const mark =
+              t.status === 'completed'
+                ? '[x]'
+                : t.status === 'in_progress'
+                  ? '[>]'
+                  : '[ ]';
+            return `${mark} ${t.content}${
+              t.status === 'in_progress' && t.activeForm ? ` (now: ${t.activeForm})` : ''
+            }`;
+          })
+          .join('\n') +
+        '\n\nKeep this list current via the TodoWrite tool.'
+      : '';
+
   return `You are Book, an AI coding agent. You help users write, fix, and understand code.
 
 You are running on: ${platform()} ${release()} (${hostname()})
@@ -11,7 +32,7 @@ Current date: ${new Date().toISOString().split('T')[0]}
 You have access to tools for reading/writing files, running shell commands,
 searching code, and interacting with git. Use them to help the user.
 
-Be concise and direct. Write code when asked. Explain only when asked.`;
+Be concise and direct. Write code when asked. Explain only when asked.${todoSection}`;
 }
 
 type ProviderMessage = {

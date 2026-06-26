@@ -3,6 +3,7 @@ import type { Message, ToolCall, ToolResult, PermissionResult, PermissionMode, U
 import { runAgentLoop } from '../../agent/loop.js';
 import { createDefaultRegistry } from '../../tools/registry.js';
 import { PermissionStore } from '../permissionStore.js';
+import { getTodos, type Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types.js';
 
 function makeMessage(role: 'user' | 'assistant', content: string): Message {
@@ -22,6 +23,7 @@ export function useAgent(config: AgentConfig) {
   const [currentTurn, setCurrentTurn] = useState(0);
   const [usage, setUsage] = useState<Usage | null>(null);
   const [mode, setMode] = useState<PermissionMode>('default');
+  const [agentTodos, setAgentTodos] = useState<Todo[]>([]);
   const [pendingPermission, setPendingPermission] = useState<{
     toolCall: ToolCall;
     resolve: (value: PermissionResult) => void;
@@ -84,6 +86,8 @@ export function useAgent(config: AgentConfig) {
               ...m,
               toolResults: [...(m.toolResults ?? []), result],
             }));
+            // Sync the agent's todo list from the module store (TodoWrite writes here).
+            setAgentTodos([...getTodos()]);
           },
           onError: (err) => {
             setError(err);
@@ -155,6 +159,7 @@ export function useAgent(config: AgentConfig) {
     setError(null);
     setCurrentTurn(0);
     setUsage(null);
+    setAgentTodos([]);
     setPendingPermission(null);
     streamingIdRef.current = null;
     setStreamingMessageId(null);
@@ -177,6 +182,7 @@ export function useAgent(config: AgentConfig) {
     tokenCount: usage?.totalTokens ?? 0,
     mode,
     pendingPermission,
+    agentTodos,
     send,
     clear,
     resolvePermission,
