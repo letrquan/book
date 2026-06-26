@@ -1,4 +1,4 @@
-import type { AgentConfig, ProviderStreamEvent, ToolDefinition } from '../types.js';
+import type { AgentConfig, ProviderStreamEvent, ToolDefinition, Usage } from '../types.js';
 
 const MAX_RETRIES = 3;
 
@@ -104,6 +104,7 @@ export async function* chatCompletionStream(
   const decoder = new TextDecoder();
   let buffer = '';
   let currentToolCall: { id: string; name: string; arguments: string } | null = null;
+  let currentUsage: Usage | null = null;
 
   try {
     while (true) {
@@ -130,12 +131,20 @@ export async function* chatCompletionStream(
               },
             };
           }
-          yield { type: 'done' };
+          yield { type: 'done', usage: currentUsage ?? undefined };
           return;
         }
 
         try {
           const parsed = JSON.parse(data);
+          // OpenAI sends usage on the final chunk when stream_options.include_usage is set.
+          if (parsed.usage) {
+            currentUsage = {
+              promptTokens: parsed.usage.prompt_tokens ?? 0,
+              completionTokens: parsed.usage.completion_tokens ?? 0,
+              totalTokens: parsed.usage.total_tokens ?? 0,
+            };
+          }
           const choice = parsed.choices?.[0];
           if (!choice) continue;
 
@@ -188,5 +197,5 @@ export async function* chatCompletionStream(
       },
     };
   }
-  yield { type: 'done' };
+  yield { type: 'done', usage: currentUsage ?? undefined };
 }

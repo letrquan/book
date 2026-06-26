@@ -114,3 +114,44 @@ describe('chatCompletionStream retry', () => {
     expect(events.some((e) => e.type === 'error')).toBe(true);
   }, 15000); // real backoff 1s+2s+4s = 7s
 });
+
+describe('chatCompletionStream usage', () => {
+  it('emits a done event with usage from the final chunk', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(
+              enc.encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'),
+            );
+            c.enqueue(
+              enc.encode(
+                'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n',
+              ),
+            );
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const e of chatCompletionStream(
+      config,
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      events.push(e);
+    }
+    const done = events.find((e) => e.type === 'done');
+    expect(done?.usage).toEqual({
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+    });
+  });
+});

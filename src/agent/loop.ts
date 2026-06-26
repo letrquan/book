@@ -1,4 +1,4 @@
-import type { AgentConfig, Message, ToolCall, ToolResult, ToolContext, AgentLoopCallbacks } from '../types.js';
+import type { AgentConfig, Message, ToolCall, ToolResult, ToolContext, AgentLoopCallbacks, Usage } from '../types.js';
 import { chatCompletionStream } from '../provider/openai-compatible.js';
 import { buildMessages } from './context.js';
 import type { ToolRegistry } from '../tools/registry.js';
@@ -65,6 +65,7 @@ export async function runAgentLoop(
     const messages = buildMessages(config, newHistory, registry.getDefinitions());
     let assistantContent = '';
     const toolCalls: ToolCall[] = [];
+    let turnUsage: Usage | null = null;
 
     const stream = chatCompletionStream(config, messages, registry.getDefinitions(), { signal });
 
@@ -80,6 +81,8 @@ export async function runAgentLoop(
         } else if (event.type === 'error' && event.error) {
           callbacks.onError(event.error);
           return newHistory;
+        } else if (event.type === 'done' && event.usage) {
+          turnUsage = event.usage;
         }
       }
     } catch (e) {
@@ -91,10 +94,9 @@ export async function runAgentLoop(
       return newHistory;
     }
 
-    const estimatedTokens = assistantContent.length > 0
-      ? Math.ceil(assistantContent.length / 4)
-      : 0;
-    callbacks.onTokenCount(estimatedTokens);
+    if (turnUsage) {
+      callbacks.onUsage?.(turnUsage);
+    }
 
     const toolResults: ToolResult[] = [];
     for (const call of toolCalls) {

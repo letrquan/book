@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useRef } from 'react';
-import type { Message, ToolCall, ToolResult, PermissionResult, PermissionMode } from '../../types.js';
+import type { Message, ToolCall, ToolResult, PermissionResult, PermissionMode, Usage } from '../../types.js';
 import { runAgentLoop } from '../../agent/loop.js';
 import { createDefaultRegistry } from '../../tools/registry.js';
 import { PermissionStore } from '../permissionStore.js';
@@ -20,7 +20,7 @@ export function useAgent(config: AgentConfig) {
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [currentTurn, setCurrentTurn] = useState(0);
-  const [tokenCount, setTokenCount] = useState(0);
+  const [usage, setUsage] = useState<Usage | null>(null);
   const [mode, setMode] = useState<PermissionMode>('default');
   const [pendingPermission, setPendingPermission] = useState<{
     toolCall: ToolCall;
@@ -58,7 +58,7 @@ export function useAgent(config: AgentConfig) {
       setIsThinking(true);
       setError(null);
       setCurrentTurn(0);
-      setTokenCount(0);
+      setUsage(null);
       setMessages((prev) => [...prev, userMsg, placeholder]);
 
       const registry = createDefaultRegistry();
@@ -108,8 +108,8 @@ export function useAgent(config: AgentConfig) {
               setPendingPermission({ toolCall, resolve });
             });
           },
-          onTokenCount: (count: number) => {
-            setTokenCount((prev) => prev + count);
+          onUsage: (u: Usage) => {
+            setUsage(u);
           },
         }, mode, permissionStore, { signal: controller.signal });
       } catch (e) {
@@ -154,7 +154,7 @@ export function useAgent(config: AgentConfig) {
     setMessages([]);
     setError(null);
     setCurrentTurn(0);
-    setTokenCount(0);
+    setUsage(null);
     setPendingPermission(null);
     streamingIdRef.current = null;
     setStreamingMessageId(null);
@@ -174,7 +174,7 @@ export function useAgent(config: AgentConfig) {
     streamingMessageId,
     error,
     currentTurn,
-    tokenCount,
+    tokenCount: usage?.totalTokens ?? 0,
     mode,
     pendingPermission,
     send,
