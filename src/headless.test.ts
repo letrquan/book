@@ -83,3 +83,28 @@ describe('runHeadless — json output', () => {
     expect(parsed.result.messages.length).toBeGreaterThan(0);
   });
 });
+
+describe('runHeadless — stream-json output', () => {
+  it('emits system, assistant, result events as newline-delimited JSON', async () => {
+    const writes: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        writes.push(s);
+        return true;
+      },
+    };
+    await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'say hi',
+      inputFormat: 'text',
+      outputFormat: 'stream-json',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+    });
+    const lines = writes.join('').split('\n').filter(Boolean);
+    const types = lines.map((l) => JSON.parse(l).type);
+    expect(types[0]).toBe('system');
+    expect(types).toContain('assistant');
+    expect(types[types.length - 1]).toBe('result');
+  });
+});
