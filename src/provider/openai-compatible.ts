@@ -11,7 +11,8 @@ export async function* chatCompletionStream(
     model: config.model,
     messages,
     stream: true,
-    max_turns: config.maxTurns,
+    // Request token usage in the final SSE chunk so we can track cost.
+    stream_options: { include_usage: true },
   };
 
   if (tools.length > 0) {
