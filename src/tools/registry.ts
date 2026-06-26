@@ -2,8 +2,17 @@ import type { ToolDefinition, ToolContext, ToolResult, ToolCall } from '../types
 import { fileTools } from './file.js';
 import { shellTools } from './shell.js';
 import { gitTools } from './git.js';
-import { designTools } from './design.js';
-import { browserTools } from './browser.js';
+
+/** Legacy tool-name aliases, resolved to their canonical CC-style names at execute time. */
+const ALIASES: Record<string, string> = {
+  read_file: 'Read',
+  write_file: 'Write',
+  edit_file: 'Edit',
+  multi_edit: 'MultiEdit',
+  glob: 'Glob',
+  grep: 'Grep',
+  bash: 'Bash',
+};
 
 export function createRegistry() {
   const tools = new Map<string, ToolDefinition>();
@@ -20,7 +29,7 @@ export function createRegistry() {
     },
 
     getTool(name: string): ToolDefinition | undefined {
-      return tools.get(name);
+      return tools.get(ALIASES[name] ?? name);
     },
 
     getDefinitions(): ToolDefinition[] {
@@ -28,7 +37,7 @@ export function createRegistry() {
     },
 
     async execute(call: ToolCall, context: ToolContext): Promise<ToolResult> {
-      const tool = tools.get(call.name);
+      const tool = tools.get(ALIASES[call.name] ?? call.name);
       if (!tool) {
         return {
           toolCallId: call.id,
@@ -54,7 +63,7 @@ export function createRegistry() {
 
 export function createDefaultRegistry(): ReturnType<typeof createRegistry> {
   const registry = createRegistry();
-  registry.registerAll([...fileTools, ...shellTools, ...gitTools, ...designTools, ...browserTools]);
+  registry.registerAll([...fileTools, ...shellTools, ...gitTools]);
   return registry;
 }
 

@@ -12,14 +12,9 @@ const configSchema = z.object({
     typewriterSpeed: z.number().int().min(1).max(50).default(3),
     spinnerStyle: z.enum(['braille', 'dots']).default('braille'),
   }).default({}),
-  tools: z.object({
-    browser: z.object({
-      enabled: z.boolean().default(true),
-      headless: z.boolean().default(true),
-    }).default({}),
-    design: z.object({
-      enabled: z.boolean().default(true),
-    }).default({}),
+  accessibility: z.object({
+    screenReader: z.boolean().default(false),
+    reducedMotion: z.boolean().default(false),
   }).default({}),
 });
 
@@ -63,9 +58,6 @@ export function loadConfig(workspace?: string): AgentConfig {
     maxTurns: process.env.BOOK_MAX_TURNS ? parseInt(process.env.BOOK_MAX_TURNS, 10) : fileConfig.maxTurns || maxTurns,
     workspace: resolvedWorkspace,
     animation: fileConfig.animation || { typewriterSpeed: 3, spinnerStyle: 'braille' },
-    tools: fileConfig.tools || {
-      browser: { enabled: true, headless: true },
-      design: { enabled: true },
-    },
+    accessibility: fileConfig.accessibility || { screenReader: false, reducedMotion: false },
   };
 }

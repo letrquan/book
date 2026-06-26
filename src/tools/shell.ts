@@ -50,7 +50,7 @@ async function bash(args: Record<string, unknown>, ctx: ToolContext): Promise<To
 
 export const shellTools: ToolDefinition[] = [
   {
-    name: 'bash',
+    name: 'Bash',
     description: 'Execute a shell command in the workspace',
     parameters: {
       type: 'object',

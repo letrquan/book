@@ -3,8 +3,23 @@ import { chatCompletionStream } from '../provider/openai-compatible.js';
 import { buildMessages } from './context.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type { PermissionStore } from '../tui/permissionStore.js';
+import { loadGitignore } from '../tools/gitignore.js';
 
-const PERMISSION_TOOLS = new Set(['bash', 'write_file', 'edit_file', 'git_commit']);
+const PERMISSION_TOOLS = new Set(['Bash', 'Write', 'Edit', 'MultiEdit', 'git_commit']);
+
+/** Map a (possibly aliased) tool name to its canonical name for rule matching. */
+function canonicalToolName(name: string): string {
+  const ALIASES: Record<string, string> = {
+    read_file: 'Read',
+    write_file: 'Write',
+    edit_file: 'Edit',
+    multi_edit: 'MultiEdit',
+    glob: 'Glob',
+    grep: 'Grep',
+    bash: 'Bash',
+  };
+  return ALIASES[name] ?? name;
+}
 
 /** Extract the primary argument used for rule pattern matching (e.g. bash command, file path). */
 function primaryArgForRule(toolName: string, args: Record<string, unknown>): string {
@@ -21,12 +36,13 @@ function primaryArgForRule(toolName: string, args: Record<string, unknown>): str
 }
 
 function needsPermission(toolName: string, mode: string): boolean {
+  const canonical = canonicalToolName(toolName);
   if (mode === 'auto' || mode === 'bypassPermissions') return false;
   if (mode === 'plan' || mode === 'dontAsk') return true;
   if (mode === 'accept-edits') {
-    return toolName !== 'edit_file' && toolName !== 'write_file';
+    return canonical !== 'Edit' && canonical !== 'Write';
   }
-  return PERMISSION_TOOLS.has(toolName);
+  return PERMISSION_TOOLS.has(canonical);
 }
 
 export async function runAgentLoop(
@@ -52,6 +68,7 @@ export async function runAgentLoop(
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
     env: process.env as Record<string, string>,
+    gitignorePatterns: loadGitignore(config.workspace).patterns,
   };
 
   let turn = 0;
@@ -102,10 +119,11 @@ export async function runAgentLoop(
     for (const call of toolCalls) {
       if (signal?.aborted) break;
       if (needsPermission(call.name, mode) && !approveAll.includes(call.name)) {
+        const canonName = canonicalToolName(call.name);
         // First consult the persisted rule store (evaluates deny → ask → allow).
         let permission: 'allow' | 'deny' | 'always' | undefined;
         if (permissionStore && mode !== 'plan' && mode !== 'dontAsk') {
-          const verdict = permissionStore.evaluate(call.name, primaryArgForRule(call.name, call.arguments));
+          const verdict = permissionStore.evaluate(canonName, primaryArgForRule(call.name, call.arguments));
           if (verdict === 'allow') {
             permission = 'allow';
           } else if (verdict === 'deny') {
@@ -131,7 +149,7 @@ export async function runAgentLoop(
           approveAll.push(call.name);
           // Persist the allow-rule for this exact command/path going forward.
           if (permissionStore) {
-            permissionStore.allowAlways(call.name, primaryArgForRule(call.name, call.arguments), 'project');
+            permissionStore.allowAlways(canonName, primaryArgForRule(call.name, call.arguments), 'project');
           }
         }
       }

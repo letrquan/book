@@ -127,6 +127,8 @@ export interface ToolDefinition {
 export interface ToolContext {
   workspaceRoot: string;
   env: Record<string, string>;
+  /** Glob patterns to ignore during file discovery (e.g. from .gitignore). */
+  gitignorePatterns?: string[];
 }
 
 export interface AgentConfig {
@@ -142,10 +144,6 @@ export interface AgentConfig {
   accessibility: {
     screenReader: boolean;
     reducedMotion: boolean;
-  };
-  tools: {
-    browser: { enabled: boolean; headless: boolean };
-    design: { enabled: boolean };
   };
 }
 

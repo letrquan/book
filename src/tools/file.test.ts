@@ -14,20 +14,20 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-const read = fileTools.find((t) => t.name === 'read_file')!;
-const edit = fileTools.find((t) => t.name === 'edit_file')!;
-const grep = fileTools.find((t) => t.name === 'grep')!;
+const read = fileTools.find((t) => t.name === 'Read')!;
+const edit = fileTools.find((t) => t.name === 'Edit')!;
+const grep = fileTools.find((t) => t.name === 'Grep')!;
 
 describe('edit_file', () => {
-  it('replaces the first occurrence by default', async () => {
-    writeFileSync(join(dir, 'a.txt'), 'foo foo bar');
+  it('replaces the single occurrence when oldString is unique', async () => {
+    writeFileSync(join(dir, 'a.txt'), 'foo bar baz');
     const r = await edit.execute(
-      { filePath: 'a.txt', oldString: 'foo', newString: 'qux' },
+      { filePath: 'a.txt', oldString: 'bar', newString: 'qux' },
       ctx,
     );
     expect(r.success).toBe(true);
     const after = await read.execute({ filePath: 'a.txt' }, ctx);
-    expect(after.output).toContain('qux foo bar');
+    expect(after.output).toContain('foo qux baz');
   });
 
   it('fails when oldString is absent', async () => {

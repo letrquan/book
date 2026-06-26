@@ -10,7 +10,6 @@ const config: AgentConfig = {
   workspace: '.',
   animation: { typewriterSpeed: 3, spinnerStyle: 'braille' },
   accessibility: { screenReader: false, reducedMotion: false },
-  tools: { browser: { enabled: false, headless: true }, design: { enabled: false } },
 };
 
 let capturedBody: any;
