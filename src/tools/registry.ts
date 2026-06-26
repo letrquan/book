@@ -3,6 +3,7 @@ import { fileTools } from './file.js';
 import { shellTools } from './shell.js';
 import { gitTools } from './git.js';
 import { todoTools } from './todo.js';
+import { webTools } from './web.js';
 
 /** Legacy tool-name aliases, resolved to their canonical CC-style names at execute time. */
 const ALIASES: Record<string, string> = {
@@ -64,7 +65,7 @@ export function createRegistry() {
 
 export function createDefaultRegistry(): ReturnType<typeof createRegistry> {
   const registry = createRegistry();
-  registry.registerAll([...fileTools, ...shellTools, ...gitTools, ...todoTools]);
+  registry.registerAll([...fileTools, ...shellTools, ...gitTools, ...todoTools, ...webTools]);
   return registry;
 }
 
