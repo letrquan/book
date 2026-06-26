@@ -20,6 +20,7 @@ program
   .option('--max-budget-usd <amount>', 'Max USD spend (print mode)')
   .option('--permission-mode <mode>', 'default | acceptEdits | plan | auto | dontAsk | bypassPermissions')
   .option('--verbose', 'Full turn-by-turn output')
+  .option('--json-schema <schema>', 'Return validated JSON matching a JSON Schema (print mode)')
   .action(async (options) => {
     try {
       const config = loadConfig(options.workspace);
@@ -46,6 +47,7 @@ program
           maxTurns: options.maxTurns ? parseInt(options.maxTurns, 10) : undefined,
           maxBudgetUsd: options.maxBudgetUsd ? parseFloat(options.maxBudgetUsd) : undefined,
           verbose: options.verbose,
+          jsonSchema: options.jsonSchema ? JSON.parse(options.jsonSchema) : undefined,
         });
         return;
       }

@@ -139,3 +139,50 @@ describe('runHeadless — stream-json input', () => {
     expect(assistantCount).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe('runHeadless — json-schema', () => {
+  it('returns validated JSON matching the schema', async () => {
+    // Provider yields JSON content.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(
+              enc.encode(
+                'data: {"choices":[{"delta":{"content":"{\\"name\\":\\"book\\"}"}}]}\n\n',
+              ),
+            );
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const writes: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        writes.push(s);
+        return true;
+      },
+    };
+    await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'return json',
+      inputFormat: 'text',
+      outputFormat: 'json',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+      jsonSchema: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+        required: ['name'],
+      },
+    });
+    const parsed = JSON.parse(writes.join('').trim());
+    expect(parsed.result.structured).toEqual({ name: 'book' });
+  });
+});
