@@ -190,9 +190,11 @@ export interface HeadlessOptions {
   stdout?: { write: (s: string) => boolean };
   stdin?: NodeJS.ReadableStream;
   jsonSchema?: Record<string, unknown>;
-  sessionStore?: unknown; // SessionStore; typed loosely to avoid a circular import
+  sessionStore?: unknown; // SessionStore instance (typed loosely to avoid circular import)
   sessionId?: string;
   sessionName?: string;
+  forkSession?: boolean;
+  persistSession?: boolean;
 }
 
 export interface HeadlessResult {

@@ -6,9 +6,11 @@ import type {
   HeadlessOptions,
   HeadlessResult,
   Usage,
+  SessionRecord,
 } from './types.js';
 import { runAgentLoop } from './agent/loop.js';
 import type { ToolRegistry } from './tools/registry.js';
+import type { SessionStore } from './session/store.js';
 
 export async function runHeadless(
   config: AgentConfig,
@@ -22,6 +24,22 @@ export async function runHeadless(
 
   if (opts.outputFormat === 'stream-json') {
     emit({ type: 'system', model: config.model, cwd: config.workspace });
+  }
+
+  // Resolve or create a session for persistence.
+  const store = opts.persistSession === false ? undefined : (opts.sessionStore as SessionStore | undefined);
+  let sessionId = opts.sessionId;
+  if (store && !sessionId && opts.sessionName) {
+    sessionId = store.findByName(opts.sessionName)?.id;
+  }
+  if (store && sessionId && opts.forkSession) {
+    sessionId = undefined; // start a new session, copy history only
+  }
+  if (store && !sessionId) {
+    sessionId = store.create({ cwd: config.workspace, name: opts.sessionName });
+    if (opts.outputFormat === 'stream-json') {
+      emit({ type: 'session', session_id: sessionId });
+    }
   }
 
   // Headless permission policy: if a prompt would be shown and no rule resolves
@@ -56,6 +74,9 @@ export async function runHeadless(
   }
 
   for (const prompt of prompts) {
+    if (store && sessionId) {
+      store.append(sessionId, { type: 'user', timestamp: Date.now(), data: { content: prompt } } satisfies SessionRecord);
+    }
     const updated = await runAgentLoop(
       { ...config, maxTurns: opts.maxTurns ?? config.maxTurns },
       registry,
@@ -63,6 +84,9 @@ export async function runHeadless(
       newHistory,
       {
         onText: (text) => {
+          if (store && sessionId) {
+            store.append(sessionId, { type: 'assistant', timestamp: Date.now(), data: { content: text } } satisfies SessionRecord);
+          }
           if (opts.outputFormat === 'stream-json') {
             emit({ type: 'assistant', text });
           }
@@ -103,6 +127,7 @@ export async function runHeadless(
   const result: HeadlessResult = {
     messages: newHistory,
     usage: lastUsage,
+    sessionId,
   };
 
   if (opts.jsonSchema) {
