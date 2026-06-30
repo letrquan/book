@@ -1,16 +1,11 @@
 import { Box, Text } from 'ink';
 import { useTheme } from '../theme.js';
+import { STATUS_INDICATORS } from '../status-indicators.js';
 import type { Todo } from '../../tools/todo.js';
 
 interface AgentTodoListProps {
   todos: Todo[];
 }
-
-const STATUS_INDICATORS = {
-  pending: { icon: '○', color: 'gray' },
-  in_progress: { icon: '◉', color: 'cyan' },
-  completed: { icon: '✓', color: 'green' },
-} as const;
 
 export function AgentTodoList({ todos }: AgentTodoListProps) {
   const theme = useTheme();

@@ -7,10 +7,10 @@ import type {
   HeadlessResult,
   Usage,
   SessionRecord,
+  SessionStoreInterface,
 } from './types.js';
 import { runAgentLoop } from './agent/loop.js';
 import type { ToolRegistry } from './tools/registry.js';
-import type { SessionStore } from './session/store.js';
 
 export async function runHeadless(
   config: AgentConfig,
@@ -27,7 +27,7 @@ export async function runHeadless(
   }
 
   // Resolve or create a session for persistence.
-  const store = opts.persistSession === false ? undefined : (opts.sessionStore as SessionStore | undefined);
+  const store = opts.persistSession === false ? undefined : opts.sessionStore;
   let sessionId = opts.sessionId;
   if (store && !sessionId && opts.sessionName) {
     sessionId = store.findByName(opts.sessionName)?.id;
@@ -116,7 +116,6 @@ export async function runHeadless(
         },
       },
       opts.mode,
-      undefined,
       { signal: opts.signal },
     );
     // Replace newHistory with the loop's authoritative return.

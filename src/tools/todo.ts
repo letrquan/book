@@ -8,25 +8,13 @@ export interface Todo {
   activeForm?: string;
 }
 
-// Module-level store. The agent loop reads this each turn to inject the current
-// todo list into the system prompt (mirrors Claude Code's TodoWrite behavior).
-let currentTodos: Todo[] = [];
-
-export function getTodos(): Todo[] {
-  return currentTodos;
-}
-
-export function resetTodos(): void {
-  currentTodos = [];
-}
-
 function isTodoList(value: unknown): value is Todo[] {
   return Array.isArray(value);
 }
 
 async function todoWrite(
   args: Record<string, unknown>,
-  _ctx: ToolContext,
+  ctx: ToolContext,
 ): Promise<ToolResult> {
   const todos = args.todos;
   if (!isTodoList(todos)) {
@@ -77,7 +65,8 @@ async function todoWrite(
     };
   }
 
-  currentTodos = parsed;
+  // Write todos into ToolContext (eliminates module-level mutable state).
+  ctx.todos = parsed;
 
   const summary = parsed.length
     ? parsed

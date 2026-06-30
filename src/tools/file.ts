@@ -305,6 +305,7 @@ async function grepSearch(
 export const fileTools: ToolDefinition[] = [
   {
     name: 'Read',
+    idempotent: true,
     description:
       'Read a file from the workspace. Returns lines with line numbers. Supports offset/limit for large files.',
     parameters: {
@@ -408,6 +409,7 @@ export const fileTools: ToolDefinition[] = [
   },
   {
     name: 'Glob',
+    idempotent: true,
     description: 'Find files matching a glob pattern. Respects .gitignore.',
     parameters: {
       type: 'object',
@@ -423,6 +425,7 @@ export const fileTools: ToolDefinition[] = [
   },
   {
     name: 'Grep',
+    idempotent: true,
     description:
       'Search file contents for a regex pattern. output_mode: content (default), files_with_matches, or count. Supports context lines (-A/-B), multiline, and head_limit. Respects .gitignore.',
     parameters: {

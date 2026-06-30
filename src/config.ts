@@ -2,8 +2,8 @@ import { z } from 'zod';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import type { AgentConfig } from './types.js';
-import { resolveSettings } from './settings-loader.js';
+import type { AgentConfig, RetryConfig } from './types.js';
+import { resolveSettings, migrateLegacyPermissions } from './settings-loader.js';
 import { DEFAULT_SETTINGS } from './settings.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
@@ -54,10 +54,17 @@ function loadLegacyConfig(workspace: string): Partial<AgentConfig> | null {
   }
 }
 
-export function loadConfig(
-  workspace?: string,
-  settingsOverridePath?: string,
-): AgentConfig {
+export interface LoadConfigOptions {
+  /** Path to an ad-hoc settings file (--settings flag); takes highest priority. */
+  settingsOverridePath?: string;
+  /** If true, skip all settings.json layers entirely (use defaults + legacy .bookrc.json). */
+  noSettings?: boolean;
+}
+
+export function loadConfig(workspace?: string, options?: LoadConfigOptions): AgentConfig {
+  const settingsOverridePath = options?.settingsOverridePath;
+  const noSettings = options?.noSettings ?? false;
+
   const apiKey = process.env.BOOK_API_KEY;
   if (!apiKey) {
     throw new Error('BOOK_API_KEY not set. Set it via environment variable or .bookrc.json');
@@ -72,8 +79,43 @@ export function loadConfig(
   // Load legacy .bookrc.json (deprecated) for backward compat.
   const legacy = loadLegacyConfig(resolvedWorkspace);
 
-  // Resolve layered settings.json from user/project/local scopes.
-  const settings = resolveSettings(resolvedWorkspace, settingsOverridePath);
+  // Resolve layered settings.json from user/project/local scopes, or skip
+  // entirely when --no-settings is set (useful for scripted/isolated runs).
+  const settings = noSettings
+    ? structuredClone(DEFAULT_SETTINGS)
+    : resolveSettings(resolvedWorkspace, settingsOverridePath);
+
+  // Migrate any legacy ~/.book/permissions.json rules into .book/settings.local.json.
+  if (!noSettings) {
+    migrateLegacyPermissions(resolvedWorkspace);
+  }
+
+  // Resolve retry configuration: env vars take precedence over settings.json.
+  const retry: RetryConfig = {
+    maxAttempts: process.env.BOOK_RETRY_MAX_ATTEMPTS
+      ? clampInt(process.env.BOOK_RETRY_MAX_ATTEMPTS, 0, 15)
+      : (settings.retry?.maxAttempts ?? DEFAULT_SETTINGS.retry.maxAttempts),
+    baseDelayMs: process.env.BOOK_RETRY_BASE_DELAY_MS
+      ? clampInt(process.env.BOOK_RETRY_BASE_DELAY_MS, 100, 60000)
+      : (settings.retry?.baseDelayMs ?? DEFAULT_SETTINGS.retry.baseDelayMs),
+    maxDelayMs: process.env.BOOK_RETRY_MAX_DELAY_MS
+      ? clampInt(process.env.BOOK_RETRY_MAX_DELAY_MS, 100, 300000)
+      : (settings.retry?.maxDelayMs ?? DEFAULT_SETTINGS.retry.maxDelayMs),
+    totalBudgetMs: process.env.BOOK_RETRY_TOTAL_BUDGET_MS
+      ? clampInt(process.env.BOOK_RETRY_TOTAL_BUDGET_MS, 0, 600000)
+      : (settings.retry?.totalBudgetMs ?? DEFAULT_SETTINGS.retry.totalBudgetMs),
+    requestTimeoutMs: process.env.BOOK_REQUEST_TIMEOUT_MS
+      ? clampInt(process.env.BOOK_REQUEST_TIMEOUT_MS, 5000, 600000)
+      : (settings.retry?.requestTimeoutMs ?? DEFAULT_SETTINGS.retry.requestTimeoutMs),
+    streamStallTimeoutMs: process.env.BOOK_STREAM_STALL_TIMEOUT_MS
+      ? clampInt(process.env.BOOK_STREAM_STALL_TIMEOUT_MS, 5000, 120000)
+      : (settings.retry?.streamStallTimeoutMs ?? DEFAULT_SETTINGS.retry.streamStallTimeoutMs),
+    toolRetries: process.env.BOOK_TOOL_RETRIES
+      ? clampInt(process.env.BOOK_TOOL_RETRIES, 0, 3)
+      : (settings.retry?.toolRetries ?? DEFAULT_SETTINGS.retry.toolRetries),
+    watchdog: process.env.BOOK_RETRY_WATCHDOG === '1'
+      || settings.retry?.watchdog === true,
+  };
 
   return {
     apiKey,
@@ -91,5 +133,12 @@ export function loadConfig(
     animation: legacy?.animation || { typewriterSpeed: 3, spinnerStyle: 'braille' },
     accessibility: legacy?.accessibility || { screenReader: false, reducedMotion: false },
     settings,
+    retry,
   };
+}
+
+function clampInt(raw: string, min: number, max: number): number {
+  const n = parseInt(raw, 10);
+  if (Number.isNaN(n)) return min;
+  return Math.max(min, Math.min(max, n));
 }

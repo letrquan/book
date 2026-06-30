@@ -40,6 +40,61 @@ export const permissionsSchema = z.object({
 });
 
 /**
+ * Hook entry: a shell command that runs at a lifecycle event.
+ * Matches Claude Code's hook configuration format.
+ */
+export const hookEntrySchema = z.object({
+  /** Tool(specifier) pattern to filter which events trigger this hook. */
+  matcher: z.string().optional(),
+  /** Shell command to run (passed through system shell). */
+  command: z.string().min(1),
+  /** Extra environment variables for this hook. */
+  env: z.record(z.string()).default({}),
+});
+
+export type HookEntry = z.infer<typeof hookEntrySchema>;
+
+/** Hook events supported by book. */
+export const HOOK_EVENTS = [
+  'SessionStart',
+  'SessionEnd',
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+  'Stop',
+  'PreCompact',
+] as const;
+
+export type HookEvent = (typeof HOOK_EVENTS)[number];
+
+/**
+ * Hooks configuration — a map from event name to an array of hook entries.
+ */
+export const hooksSchema = z.object(
+  Object.fromEntries(
+    HOOK_EVENTS.map((e) => [e, z.array(hookEntrySchema).default([])]),
+  ) as { [K in HookEvent]: z.ZodDefault<z.ZodArray<typeof hookEntrySchema>> },
+);
+
+export type HooksConfig = z.infer<typeof hooksSchema>;
+
+/**
+ * Retry configuration schema — mirrors Claude Code's retry tunables.
+ */
+export const retrySettingsSchema = z.object({
+  maxAttempts: z.number().int().min(0).max(15).default(10),
+  baseDelayMs: z.number().int().min(100).max(60000).default(1000),
+  maxDelayMs: z.number().int().min(100).max(300000).default(30000),
+  totalBudgetMs: z.number().int().min(0).max(600000).default(0),
+  requestTimeoutMs: z.number().int().min(5000).max(600000).default(600000),
+  streamStallTimeoutMs: z.number().int().min(5000).max(120000).default(20000),
+  toolRetries: z.number().int().min(0).max(3).default(1),
+  watchdog: z.boolean().default(false),
+});
+
+export type RetrySettings = z.infer<typeof retrySettingsSchema>;
+
+/**
  * Full settings.json schema — all keys that book supports.
  * New keys added in later milestones extend this schema.
  */
@@ -56,6 +111,8 @@ export const bookSettingsSchema = z.object({
   env: z.record(z.string()).default({}),
   permissions: permissionsSchema.default({}),
   sandbox: sandboxSchema.default({}),
+  hooks: hooksSchema.default({}),
+  retry: retrySettingsSchema.default({}),
 });
 
 export type BookSettings = z.infer<typeof bookSettingsSchema>;
@@ -81,6 +138,25 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     filesystem: { allowWrite: [], denyWrite: [], denyRead: [] },
     network: { allowedDomains: [], deniedDomains: [] },
   },
+  hooks: {
+    SessionStart: [],
+    SessionEnd: [],
+    UserPromptSubmit: [],
+    PreToolUse: [],
+    PostToolUse: [],
+    Stop: [],
+    PreCompact: [],
+  },
   additionalDirectories: [],
   env: {},
+  retry: {
+    maxAttempts: 10,
+    baseDelayMs: 1000,
+    maxDelayMs: 30000,
+    totalBudgetMs: 0,
+    requestTimeoutMs: 600000,
+    streamStallTimeoutMs: 20000,
+    toolRetries: 1,
+    watchdog: false,
+  },
 };

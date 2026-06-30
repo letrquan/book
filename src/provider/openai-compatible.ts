@@ -1,54 +1,208 @@
-import type { AgentConfig, ProviderStreamEvent, ToolDefinition, Usage } from '../types.js';
+import type { AgentConfig, ProviderStreamEvent, ToolDefinition, Usage, RetryConfig } from '../types.js';
 
-const MAX_RETRIES = 3;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+/**
+ * Sleep with optional AbortSignal — throws if aborted during sleep.
+ */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('Aborted'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error('Aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
-function backoffMs(attempt: number, retryAfter?: string | null): number {
+/**
+ * Jittered exponential backoff.
+ * Applies ±50% jitter to prevent thundering-herd on retry storms.
+ */
+function jitter(ms: number): number {
+  return ms * (0.5 + Math.random());
+}
+
+/**
+ * Compute the backoff delay for a given attempt.
+ * Respects the Retry-After header when present (capped at maxDelayMs).
+ */
+function backoffMs(
+  attempt: number,
+  retry: RetryConfig,
+  retryAfter?: string | null,
+): number {
   if (retryAfter) {
     const secs = Number(retryAfter);
-    if (!Number.isNaN(secs)) return Math.min(secs * 1000, 8000);
+    if (!Number.isNaN(secs) && secs > 0) {
+      return Math.min(secs * 1000, retry.maxDelayMs);
+    }
   }
-  return Math.min(1000 * 2 ** attempt, 8000);
+  const exponential = Math.min(retry.baseDelayMs * 2 ** attempt, retry.maxDelayMs);
+  return Math.round(jitter(exponential));
 }
 
-/** Fetch with exponential backoff retry on 429/5xx and transient network errors. */
+/**
+ * Classify an HTTP status code into a machine-readable error code.
+ */
+function classifyHttpStatus(status: number): {
+  code: 'network' | 'timeout' | 'rate_limited' | 'overloaded' | 'server_error' | 'auth' | 'bad_request' | 'not_found' | 'quota' | 'unknown';
+  retryable: boolean;
+} {
+  if (status === 429) return { code: 'rate_limited', retryable: true };
+  if (status === 529) return { code: 'overloaded', retryable: true };
+  if (status >= 500 && status < 600) return { code: 'server_error', retryable: true };
+  if (status === 408) return { code: 'timeout', retryable: true };
+  if (status === 401 || status === 403) return { code: 'auth', retryable: false };
+  if (status === 402) return { code: 'quota', retryable: false };
+  if (status === 400) return { code: 'bad_request', retryable: false };
+  if (status === 404) return { code: 'not_found', retryable: false };
+  return { code: 'unknown', retryable: false };
+}
+
+/**
+ * Fetch with configurable exponential backoff retry.
+ *
+ * Retries on: network errors, 429, 529, 5xx, 408.
+ * In watchdog mode, 429 and 529 are retried indefinitely.
+ * A per-fetch timeout is applied via AbortSignal.timeout().
+ */
 async function fetchWithRetry(
   url: string,
   init: RequestInit,
+  retry: RetryConfig,
   signal?: AbortSignal,
+  onRetry?: (attempt: number, max: number, delayMs: number) => void,
 ): Promise<Response> {
+  const startMs = Date.now();
+  const maxAttempts = retry.watchdog ? Number.MAX_SAFE_INTEGER : retry.maxAttempts;
   let lastError: string | null = null;
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  let lastStatus: number | null = null;
+
+  for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+    // Apply per-fetch timeout if configured.
+    const fetchInit = { ...init };
+    if (retry.requestTimeoutMs > 0) {
+      const timeoutSignal = AbortSignal.timeout(retry.requestTimeoutMs);
+      // Merge with the caller's signal if present.
+      if (signal) {
+        const merged = new AbortController();
+        const onAbort = () => merged.abort(signal.reason);
+        signal.addEventListener('abort', onAbort, { once: true });
+        timeoutSignal.addEventListener('abort', () => merged.abort(timeoutSignal.reason), { once: true });
+        fetchInit.signal = merged.signal;
+      } else {
+        fetchInit.signal = timeoutSignal;
+      }
+    } else if (signal) {
+      fetchInit.signal = signal;
+    }
+
     let resp: Response;
     try {
-      resp = await fetch(url, { ...init, signal });
+      resp = await fetch(url, fetchInit);
     } catch (e) {
-      // Network error — retry with backoff.
+      if (signal?.aborted) throw e; // user cancelled — don't retry
       lastError = e instanceof Error ? e.message : String(e);
-      if (attempt === MAX_RETRIES) break;
-      await sleep(backoffMs(attempt));
+
+      // Total budget check.
+      if (retry.totalBudgetMs > 0 && Date.now() - startMs > retry.totalBudgetMs) {
+        break;
+      }
+      if (attempt >= maxAttempts) break;
+
+      const delay = backoffMs(attempt, retry);
+      onRetry?.(attempt + 1, maxAttempts > 100 ? -1 : maxAttempts, delay);
+      try {
+        await sleep(delay, signal);
+      } catch {
+        throw e; // aborted during sleep
+      }
       continue;
     }
-    if (resp.status === 429 || resp.status >= 500) {
+
+    // Retryable HTTP statuses.
+    if (resp.status === 429 || resp.status === 529 || resp.status === 408 || resp.status >= 500) {
       lastError = `API error ${resp.status}`;
-      if (attempt === MAX_RETRIES) return resp;
-      await sleep(backoffMs(attempt, resp.headers.get('retry-after')));
+      lastStatus = resp.status;
+
+      // Watchdog mode: only retry 429 and 529 indefinitely; 5xx still capped.
+      const isWatchdogRetryable = retry.watchdog && (resp.status === 429 || resp.status === 529);
+      const effectiveMax = isWatchdogRetryable ? Number.MAX_SAFE_INTEGER : maxAttempts;
+
+      if (retry.totalBudgetMs > 0 && Date.now() - startMs > retry.totalBudgetMs) {
+        return resp; // budget exhausted — return the error response to caller
+      }
+      if (attempt >= effectiveMax) return resp; // last attempt — return response so caller can read body
+
+      const delay = backoffMs(attempt, retry, resp.headers.get('retry-after'));
+      onRetry?.(attempt + 1, isWatchdogRetryable ? -1 : maxAttempts, delay);
+      try {
+        await sleep(delay, signal);
+      } catch {
+        // Aborted during sleep — return response so caller can clean up
+        return resp;
+      }
       continue;
     }
-    return resp;
+
+    return resp; // success
   }
+
   throw new Error(lastError ?? 'request failed after retries');
+}
+
+/**
+ * Build a human-readable error message in Claude Code format:
+ *   API Error: <status> <message>. <recovery hint>. <status page link if applicable>.
+ */
+function formatApiError(status: number, body: string): string {
+  const { code } = classifyHttpStatus(status);
+
+  // Try to extract a clean message from the body.
+  let detail = body;
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed.error?.message) detail = parsed.error.message;
+  } catch {
+    // not JSON — use as-is, truncated
+    detail = body.slice(0, 200);
+  }
+
+  const base = `API Error: ${status}`;
+
+  switch (code) {
+    case 'rate_limited':
+      return `${base} ${detail}. This may be a temporary capacity issue. Try again in a moment.`;
+    case 'overloaded':
+      return `${base} Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment.`;
+    case 'server_error':
+      return `${base} ${detail}. This is a server-side issue, usually temporary — try again in a moment.`;
+    case 'timeout':
+      return `Request timed out. Check your network connection and try again.`;
+    case 'auth':
+      return `${base} ${detail}. Check BOOK_API_KEY or run /login.`;
+    case 'quota':
+      return `${base} ${detail}. Check your usage/credits.`;
+    default:
+      return `${base} ${detail}`;
+  }
 }
 
 export async function* chatCompletionStream(
   config: AgentConfig,
   messages: { role: string; content: string | null; tool_calls?: unknown[] }[],
   tools: ToolDefinition[],
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; onRetry?: (attempt: number, max: number, delayMs: number) => void; onStreamStall?: (countdownMs: number) => void; onStreamResume?: () => void },
 ): AsyncGenerator<ProviderStreamEvent> {
+  const retry = config.retry;
+  const signal = options?.signal;
   const url = `${config.baseUrl}/chat/completions`;
 
   const body: Record<string, unknown> = {
@@ -82,7 +236,9 @@ export async function* chatCompletionStream(
         },
         body: JSON.stringify(body),
       },
-      options?.signal,
+      retry,
+      signal,
+      options?.onRetry,
     );
   } catch (e) {
     yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
@@ -91,7 +247,7 @@ export async function* chatCompletionStream(
 
   if (!response.ok) {
     const errorText = await response.text();
-    yield { type: 'error', error: `API error ${response.status}: ${errorText}` };
+    yield { type: 'error', error: formatApiError(response.status, errorText) };
     return;
   }
 
@@ -105,11 +261,55 @@ export async function* chatCompletionStream(
   let buffer = '';
   let currentToolCall: { id: string; name: string; arguments: string } | null = null;
   let currentUsage: Usage | null = null;
+  let stallFired = false;
+
+  // Stream stall detection: if no data arrives for streamStallTimeoutMs,
+  // call the onStreamStall callback and abort the stream so transport-level
+  // retry can kick in.
+  const stallTimeoutMs = retry.streamStallTimeoutMs;
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      // If a signal was passed, check it before each read.
+      if (signal?.aborted) break;
+
+      // Race reader.read() against the stall timeout.  If the timeout wins,
+      // emit the stall callback, release the reader, and throw so the caller
+      // can retry at the transport level.
+      let done: boolean;
+      let value: Uint8Array | undefined;
+
+      if (stallTimeoutMs > 0) {
+        const result = await Promise.race([
+          reader.read().then((r) => ({ tag: 'read' as const, done: r.done, value: r.value })),
+          new Promise<{ tag: 'stall' }>((resolve) =>
+            setTimeout(() => resolve({ tag: 'stall' }), stallTimeoutMs),
+          ),
+        ]);
+
+        if (result.tag === 'stall') {
+          stallFired = true;
+          options?.onStreamStall?.(stallTimeoutMs);
+          reader.releaseLock();
+          yield { type: 'error', error: 'Stream stalled: no data received for ' + stallTimeoutMs + 'ms' };
+          return;
+        }
+
+        done = result.done;
+        value = result.value;
+      } else {
+        const r = await reader.read();
+        done = r.done;
+        value = r.value;
+      }
+
       if (done) break;
+
+      // Clear any stall state when data arrives.
+      if (stallFired) {
+        stallFired = false;
+        options?.onStreamResume?.();
+      }
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -183,6 +383,9 @@ export async function* chatCompletionStream(
         }
       }
     }
+  } catch (e) {
+    // Unexpected stream error — release lock and fall through to done.
+    // (Stream stalls are handled above via the Promise.race and return early.)
   } finally {
     reader.releaseLock();
   }

@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink';
 import { useTheme } from '../theme.js';
+import { STATUS_INDICATORS } from '../status-indicators.js';
 import type { Task } from '../hooks/useTasks.js';
 
 interface TaskListProps {
@@ -7,12 +8,6 @@ interface TaskListProps {
   onUpdateStatus: (id: string, status: Task['status']) => void;
   onRemove: (id: string) => void;
 }
-
-const STATUS_INDICATORS: Record<Task['status'], { icon: string; color: string }> = {
-  pending: { icon: '○', color: 'gray' },       // ○
-  in_progress: { icon: '◉', color: 'cyan' },   // ◉
-  completed: { icon: '✓', color: 'green' },     // ✓
-};
 
 export function TaskList({ tasks }: TaskListProps) {
   const theme = useTheme();

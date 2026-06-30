@@ -43,25 +43,28 @@ async function gitBranch(_args: Record<string, unknown>, ctx: ToolContext): Prom
 
 export const gitTools: ToolDefinition[] = [
   {
-    name: 'git_status',
+    name: 'GitStatus',
+    idempotent: true,
     description: 'Show the working tree status (git status --short)',
     parameters: { type: 'object', properties: {}, required: [] },
     execute: gitStatus,
   },
   {
-    name: 'git_diff',
+    name: 'GitDiff',
+    idempotent: true,
     description: 'Show changes between commits, commit and working tree, etc.',
     parameters: { type: 'object', properties: {}, required: [] },
     execute: gitDiff,
   },
   {
-    name: 'git_log',
+    name: 'GitLog',
+    idempotent: true,
     description: 'Show recent commit logs (last 20, oneline)',
     parameters: { type: 'object', properties: {}, required: [] },
     execute: gitLog,
   },
   {
-    name: 'git_commit',
+    name: 'GitCommit',
     description: 'Create a new commit with a message',
     parameters: {
       type: 'object',
@@ -71,7 +74,8 @@ export const gitTools: ToolDefinition[] = [
     execute: gitCommit,
   },
   {
-    name: 'git_branch',
+    name: 'GitBranch',
+    idempotent: true,
     description: 'List branches',
     parameters: { type: 'object', properties: {}, required: [] },
     execute: gitBranch,

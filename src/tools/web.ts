@@ -148,6 +148,7 @@ async function webSearch(
 export const webTools: ToolDefinition[] = [
   {
     name: 'WebFetch',
+    idempotent: true,
     description:
       'Fetch a URL over http(s) and return its text content (HTML is stripped to text). Use `prompt` to describe what to extract. 30s timeout; content truncated at 20k chars.',
     parameters: {
@@ -165,6 +166,7 @@ export const webTools: ToolDefinition[] = [
   },
   {
     name: 'WebSearch',
+    idempotent: true,
     description:
       'Search the web via a configured backend. Set BOOK_SEARCH_BACKEND env or pass `backend`. Backend should return JSON {results:[{title,url,snippet}]}.',
     parameters: {

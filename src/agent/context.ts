@@ -1,9 +1,11 @@
 import { platform, release, hostname } from 'os';
 import type { AgentConfig, Message, ToolDefinition } from '../types.js';
-import { getTodos } from '../tools/todo.js';
+import { discoverSkills, generateSkillListing } from '../skills.js';
 
-function buildSystemPrompt(config: AgentConfig): string {
-  const todos = getTodos();
+function buildSystemPrompt(
+  config: AgentConfig,
+  todos: Array<{ content: string; status: string; activeForm?: string }>,
+): string {
   const todoSection =
     todos.length > 0
       ? '\n\n## Current task list\n' +
@@ -23,6 +25,13 @@ function buildSystemPrompt(config: AgentConfig): string {
         '\n\nKeep this list current via the TodoWrite tool.'
       : '';
 
+  // Skill listing — loaded from conventional directories, injected compactly.
+  const skills = discoverSkills(config.workspace);
+  const skillListing = generateSkillListing(skills, 1536);
+  const skillSection = skillListing
+    ? `\n\n${skillListing}\n`
+    : '';
+
   return `You are Book, an AI coding agent. You help users write, fix, and understand code.
 
 You are running on: ${platform()} ${release()} (${hostname()})
@@ -32,7 +41,7 @@ Current date: ${new Date().toISOString().split('T')[0]}
 You have access to tools for reading/writing files, running shell commands,
 searching code, and interacting with git. Use them to help the user.
 
-Be concise and direct. Write code when asked. Explain only when asked.${todoSection}`;
+Be concise and direct. Write code when asked. Explain only when asked.${todoSection}${skillSection}`;
 }
 
 type ProviderMessage = {
@@ -50,10 +59,11 @@ export function buildMessages(
   config: AgentConfig,
   history: Message[],
   tools: ToolDefinition[],
+  todos?: Array<{ content: string; status: string; activeForm?: string }>,
 ): ProviderMessage[] {
   const messages: ProviderMessage[] = [];
 
-  messages.push({ role: 'system', content: buildSystemPrompt(config) });
+  messages.push({ role: 'system', content: buildSystemPrompt(config, todos ?? []) });
 
   for (const msg of history) {
     if (msg.role === 'user') {

@@ -13,6 +13,16 @@ export function defaultConfig(overrides: Partial<AgentConfig> = {}): AgentConfig
     animation: { typewriterSpeed: 3, spinnerStyle: 'braille' },
     accessibility: { screenReader: false, reducedMotion: false },
     settings: structuredClone(DEFAULT_SETTINGS),
+    retry: {
+      maxAttempts: 3,
+      baseDelayMs: 0,
+      maxDelayMs: 100,
+      totalBudgetMs: 0,
+      requestTimeoutMs: 0,
+      streamStallTimeoutMs: 0,
+      toolRetries: 0,
+      watchdog: false,
+    },
     ...overrides,
   };
 }

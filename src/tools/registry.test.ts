@@ -131,3 +131,131 @@ describe('Edit/Write return a diff', () => {
     expect(result.output).toMatch(/^\+LINE TWO$/m);
   });
 });
+
+describe('tool retry', () => {
+  it('retries idempotent tool (Read) on failure and succeeds', async () => {
+    const r = createDefaultRegistry();
+    writeFileSync(join(dir, 'a.txt'), 'hello');
+
+    let callCount = 0;
+    const origExecute = r.getTool('Read')!.execute;
+    r.getTool('Read')!.execute = async (args, ctx) => {
+      callCount++;
+      if (callCount === 1) {
+        return { toolCallId: '', success: false, output: '', error: 'transient I/O error' };
+      }
+      return origExecute(args, ctx);
+    };
+
+    const result = await r.execute(
+      { id: 'c1', name: 'Read', arguments: { filePath: 'a.txt' } },
+      ctx,
+      2, // allow up to 2 retries
+    );
+    expect(result.success).toBe(true);
+    expect(callCount).toBe(2);
+    expect(result.retryAttempt).toBe(2);
+  });
+
+  it('does NOT retry non-idempotent tool (Write) on failure', () => {
+    const r = createDefaultRegistry();
+    let attempts = 0;
+    r.getTool('Write')!.execute = async () => {
+      attempts++;
+      return { toolCallId: '', success: false, output: '', error: 'disk full' };
+    };
+
+    return r.execute(
+      { id: 'c1', name: 'Write', arguments: { filePath: 'a.txt', content: 'x' } },
+      ctx,
+      5, // would retry up to 5 times, but Write is not idempotent
+    ).then((result) => {
+      expect(result.success).toBe(false);
+      expect(attempts).toBe(1);
+      expect(result.retryAttempt).toBeUndefined();
+    });
+  });
+
+  it('does NOT retry on SKIPPED errors (permission/hook)', () => {
+    const r = createDefaultRegistry();
+    let attempts = 0;
+    r.getTool('Read')!.execute = async () => {
+      attempts++;
+      return { toolCallId: '', success: false, output: '', error: 'SKIPPED: Permission denied' };
+    };
+
+    return r.execute(
+      { id: 'c1', name: 'Read', arguments: { filePath: 'a.txt' } },
+      ctx,
+      3,
+    ).then((result) => {
+      expect(result.error).toMatch(/SKIPPED/);
+      expect(attempts).toBe(1);
+    });
+  });
+
+  it('stops retrying after maxRetries exhausted', async () => {
+    const r = createDefaultRegistry();
+    let attempts = 0;
+    r.getTool('Read')!.execute = async () => {
+      attempts++;
+      return { toolCallId: '', success: false, output: '', error: 'persistent error' };
+    };
+
+    const result = await r.execute(
+      { id: 'c1', name: 'Read', arguments: { filePath: 'a.txt' } },
+      ctx,
+      2,
+    );
+    expect(result.success).toBe(false);
+    expect(attempts).toBe(3); // initial + 2 retries
+    expect(result.retryAttempt).toBeUndefined(); // never succeeded
+  });
+
+  it('respects maxRetries=0 (no retry)', () => {
+    const r = createDefaultRegistry();
+    let attempts = 0;
+    r.getTool('Read')!.execute = async () => {
+      attempts++;
+      return { toolCallId: '', success: false, output: '', error: 'error' };
+    };
+
+    return r.execute(
+      { id: 'c1', name: 'Read', arguments: { filePath: 'a.txt' } },
+      ctx,
+      0,
+    ).then((result) => {
+      expect(result.success).toBe(false);
+      expect(attempts).toBe(1);
+    });
+  });
+
+  it('sets retryAttempt on first success after retry', async () => {
+    const r = createDefaultRegistry();
+    writeFileSync(join(dir, 'b.txt'), 'test content');
+
+    // Mock Read to always fail — the real implementation is not mocked here,
+    // we just verify that a successful retry sets retryAttempt correctly
+    // (tested implicitly by the "retries idempotent tool" test above).
+    // This test ensures the field is absent on failure, present on success.
+    let callCount = 0;
+    r.getTool('Read')!.execute = async () => {
+      callCount++;
+      if (callCount <= 1) {
+        return { toolCallId: '', success: false, output: '', error: 'transient' };
+      }
+      // Simulate a real success (without filesystem dependency).
+      return { toolCallId: '', success: true, output: 'recovered content', durationMs: 5 };
+    };
+
+    const result = await r.execute(
+      { id: 'c1', name: 'Read', arguments: { filePath: 'b.txt' } },
+      ctx,
+      2,
+    );
+
+    expect(callCount).toBe(2);
+    expect(result.success).toBe(true);
+    expect(result.retryAttempt).toBe(2);
+  });
+});

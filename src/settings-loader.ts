@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import {
@@ -108,3 +108,67 @@ export function resolveSettings(
 }
 
 export { mergeSettings, loadSettingsFile };
+
+/**
+ * Migrate rules from the legacy ~/.book/permissions.json into the local
+ * settings file (<workspace>/.book/settings.local.json). Runs once on first
+ * load when the legacy file exists and the local settings don't have rules yet.
+ *
+ * @returns true if migration occurred, false otherwise
+ */
+export function migrateLegacyPermissions(workspace: string): boolean {
+  const legacyPath = join(homedir(), '.book', 'permissions.json');
+  if (!existsSync(legacyPath)) return false;
+
+  let legacyRules: Array<{ toolName: string; pattern?: string; effect: string }> = [];
+  try {
+    const raw = readFileSync(legacyPath, 'utf-8');
+    const parsed = JSON.parse(raw) as { rules: Array<{ toolName: string; pattern?: string; effect: string }> };
+    legacyRules = parsed.rules ?? [];
+  } catch {
+    return false; // corrupt — leave the legacy file alone
+  }
+
+  if (legacyRules.length === 0) return false;
+
+  const localDir = join(workspace, '.book');
+  const localPath = join(localDir, 'settings.local.json');
+  mkdirSync(localDir, { recursive: true });
+
+  // Read existing local settings (if any).
+  let existing: Record<string, unknown> = {};
+  if (existsSync(localPath)) {
+    try {
+      existing = JSON.parse(readFileSync(localPath, 'utf-8'));
+    } catch {
+      existing = {};
+    }
+  }
+
+  const permissions = (existing.permissions ?? {}) as {
+    allow?: string[];
+    ask?: string[];
+    deny?: string[];
+  };
+  for (const key of ['allow', 'ask', 'deny'] as const) {
+    if (!Array.isArray(permissions[key])) permissions[key] = [];
+  }
+
+  // Convert each legacy rule to a Tool(specifier) string.
+  for (const rule of legacyRules) {
+    const specifier = rule.pattern ? `${rule.toolName}(${rule.pattern})` : rule.toolName;
+    const effect = rule.effect as 'allow' | 'ask' | 'deny';
+    if (!permissions[effect]!.includes(specifier)) {
+      permissions[effect]!.push(specifier);
+    }
+  }
+
+  existing.permissions = permissions;
+  writeFileSync(localPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+
+  console.warn(
+    `⚠  Migrated ${legacyRules.length} permission rule(s) from ~/.book/permissions.json to ${localPath}. ` +
+      'Delete the legacy file after verifying the migration.',
+  );
+  return true;
+}

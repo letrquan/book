@@ -1,9 +1,8 @@
-import { useState, useCallback, useMemo, useRef } from 'react';
-import type { Message, ToolCall, ToolResult, PermissionResult, PermissionMode, Usage } from '../../types.js';
+import { useState, useCallback, useRef, useEffect } from 'react';
+import type { Message, ToolCall, ToolResult, PermissionResult, PermissionMode, Usage, RetryPhase } from '../../types.js';
 import { runAgentLoop } from '../../agent/loop.js';
 import { createDefaultRegistry } from '../../tools/registry.js';
-import { PermissionStore } from '../permissionStore.js';
-import { getTodos, type Todo } from '../../tools/todo.js';
+import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types.js';
 
 function makeMessage(role: 'user' | 'assistant', content: string): Message {
@@ -28,13 +27,39 @@ export function useAgent(config: AgentConfig) {
     toolCall: ToolCall;
     resolve: (value: PermissionResult) => void;
   } | null>(null);
-  const permissionStore = useMemo(() => new PermissionStore(config.workspace), [config.workspace]);
+  const [turnDurationMs, setTurnDurationMs] = useState<number>(0);
+
+  // Retry state for the spinner label.
+  const [retryPhase, setRetryPhase] = useState<RetryPhase>('none');
+  const [retryAttempt, setRetryAttempt] = useState(0);
+  const [retryMax, setRetryMax] = useState(0);
+  const [retryCountdownMs, setRetryCountdownMs] = useState(0);
 
   // Mutable id of the assistant message currently being streamed into.
   // Callbacks read this ref (not state) so multi-turn updates always target
   // the latest in-progress message without stale-closure issues.
   const streamingIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const turnStartRef = useRef(Date.now());
+  // Countdown timer ref for retry countdown.
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Clean up countdown timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (countdownRef.current) {
+        clearInterval(countdownRef.current);
+        countdownRef.current = null;
+      }
+    };
+  }, []);
+
+  const clearCountdown = useCallback(() => {
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+  }, []);
 
   const patchStreaming = useCallback(
     (patch: (m: Message) => Message) => {
@@ -61,6 +86,10 @@ export function useAgent(config: AgentConfig) {
       setError(null);
       setCurrentTurn(0);
       setUsage(null);
+      setRetryPhase('none');
+      setRetryAttempt(0);
+      setRetryMax(0);
+      setRetryCountdownMs(0);
       setMessages((prev) => [...prev, userMsg, placeholder]);
 
       const registry = createDefaultRegistry();
@@ -86,14 +115,16 @@ export function useAgent(config: AgentConfig) {
               ...m,
               toolResults: [...(m.toolResults ?? []), result],
             }));
-            // Sync the agent's todo list from the module store (TodoWrite writes here).
-            setAgentTodos([...getTodos()]);
+          },
+          onTodos: (todos) => {
+            setAgentTodos(todos as Todo[]);
           },
           onError: (err) => {
             setError(err);
           },
           onTurnStart: (turn) => {
             setCurrentTurn(turn);
+            turnStartRef.current = Date.now();
             // Each new agentic turn is its own assistant message, so the
             // previous turn's content stays intact above while we stream a
             // new one below — no overwriting.
@@ -105,7 +136,9 @@ export function useAgent(config: AgentConfig) {
             }
           },
           onDone: () => {
+            setTurnDurationMs(Date.now() - turnStartRef.current);
             setIsThinking(false);
+            clearCountdown();
           },
           onPermissionRequired: (toolCall: ToolCall): Promise<PermissionResult> => {
             return new Promise((resolve) => {
@@ -115,7 +148,45 @@ export function useAgent(config: AgentConfig) {
           onUsage: (u: Usage) => {
             setUsage(u);
           },
-        }, mode, permissionStore, { signal: controller.signal });
+          onRetry: (phase, attempt, max, delayMs) => {
+            setRetryPhase(phase);
+            setRetryAttempt(attempt);
+            setRetryMax(max);
+            setRetryCountdownMs(delayMs);
+
+            // Start countdown timer.
+            clearCountdown();
+            countdownRef.current = setInterval(() => {
+              setRetryCountdownMs((prev) => {
+                const next = prev - 1000;
+                if (next <= 0) {
+                  clearCountdown();
+                  return 0;
+                }
+                return next;
+              });
+            }, 1000);
+          },
+          onStreamStall: (countdownMs) => {
+            setRetryPhase('stalled');
+            setRetryCountdownMs(countdownMs);
+            clearCountdown();
+            countdownRef.current = setInterval(() => {
+              setRetryCountdownMs((prev) => {
+                const next = prev - 1000;
+                if (next <= 0) {
+                  clearCountdown();
+                  return 0;
+                }
+                return next;
+              });
+            }, 1000);
+          },
+          onStreamResume: () => {
+            setRetryPhase('none');
+            clearCountdown();
+          },
+        }, mode, { signal: controller.signal });
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -123,9 +194,12 @@ export function useAgent(config: AgentConfig) {
         streamingIdRef.current = null;
         setStreamingMessageId(null);
         abortRef.current = null;
+        clearCountdown();
+        setRetryPhase('none');
+        setRetryCountdownMs(0);
       }
     },
-    [config, isThinking, messages, mode, patchStreaming, permissionStore],
+    [config, isThinking, messages, mode, patchStreaming, clearCountdown],
   );
 
   const resolvePermission = useCallback(
@@ -152,7 +226,9 @@ export function useAgent(config: AgentConfig) {
     setIsThinking(false);
     streamingIdRef.current = null;
     setStreamingMessageId(null);
-  }, []);
+    clearCountdown();
+    setRetryPhase('none');
+  }, [clearCountdown]);
 
   // Manually compact the conversation (summarize older turns).
   const compact = useCallback(async () => {
@@ -196,7 +272,9 @@ export function useAgent(config: AgentConfig) {
     setPendingPermission(null);
     streamingIdRef.current = null;
     setStreamingMessageId(null);
-  }, []);
+    clearCountdown();
+    setRetryPhase('none');
+  }, [clearCountdown]);
 
   const cycleMode = useCallback(() => {
     const modes: PermissionMode[] = ['default', 'auto', 'plan', 'accept-edits', 'dontAsk', 'bypassPermissions'];
@@ -216,6 +294,11 @@ export function useAgent(config: AgentConfig) {
     mode,
     pendingPermission,
     agentTodos,
+    turnDurationMs,
+    retryPhase,
+    retryAttempt,
+    retryMax,
+    retryCountdownMs,
     send,
     clear,
     resolvePermission,

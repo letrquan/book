@@ -58,7 +58,7 @@ describe('mergeSettings', () => {
     const base = structuredClone(DEFAULT_SETTINGS);
     base.permissions.deny = ['Read(./.env)'];
     const result = mergeSettings(base, {
-      permissions: { deny: ['Bash(curl *)'] },
+      permissions: { allow: [], ask: [], deny: ['Bash(curl *)'] },
     });
     expect(result.permissions.deny).toEqual(['Read(./.env)', 'Bash(curl *)']);
   });
@@ -69,7 +69,12 @@ describe('mergeSettings', () => {
     const result = mergeSettings(base, {
       sandbox: {
         enabled: true,
-        filesystem: { allowWrite: ['/tmp'] },
+        failIfUnavailable: false,
+        autoAllowBashIfSandboxed: true,
+        excludedCommands: [],
+        allowUnsandboxedCommands: true,
+        filesystem: { allowWrite: ['/tmp'], denyWrite: [], denyRead: [] },
+        network: { allowedDomains: [], deniedDomains: [] },
       },
     });
     expect(result.sandbox.enabled).toBe(true);
