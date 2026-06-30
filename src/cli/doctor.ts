@@ -1,0 +1,81 @@
+import { loadConfig } from '../config.js';
+import { exit } from './exit.js';
+
+export async function runDoctorCommand(workspace: string): Promise<void> {
+  const config = loadConfig(workspace);
+  const { resolveSettings } = await import('../settings-loader.js');
+  const settings = resolveSettings(workspace);
+
+  console.log('Book Doctor');
+  console.log('===========');
+  console.log();
+  console.log('Version:', '0.1.0');
+  console.log('Node:', process.version);
+  console.log('Platform:', process.platform, process.arch);
+  console.log('Workspace:', config.workspace);
+  console.log('Model:', config.model, '(' + config.baseUrl + ')');
+  console.log();
+
+  // Settings layers.
+  console.log('Settings layers:');
+  const { existsSync } = await import('fs');
+  const { join } = await import('path');
+  const { homedir } = await import('os');
+  const layers = [
+    ['User', join(homedir(), '.book', 'settings.json')],
+    ['Project', join(config.workspace, '.book', 'settings.json')],
+    ['Local', join(config.workspace, '.book', 'settings.local.json')],
+  ];
+  for (const [label, path] of layers) {
+    console.log('  ' + (existsSync(path) ? '[x]' : '[ ]') + ' ' + label + ': ' + path);
+  }
+  console.log();
+
+  // Permissions.
+  const perms = settings.permissions;
+  console.log('Permissions:');
+  console.log('  Allow rules: ' + perms.allow.length);
+  console.log('  Ask rules:   ' + perms.ask.length);
+  console.log('  Deny rules:  ' + perms.deny.length);
+  console.log();
+
+  // Hooks.
+  const hooks = settings.hooks;
+  let hookTotal = 0;
+  for (const entries of Object.values(hooks)) hookTotal += entries.length;
+  console.log('Hooks:');
+  for (const [event, entries] of Object.entries(hooks)) {
+    if (entries.length > 0) console.log('  ' + event + ': ' + entries.length);
+  }
+  if (hookTotal === 0) console.log('  (none)');
+  console.log();
+
+  // MCP.
+  const { loadMcpConfig } = await import('../mcp.js');
+  const mcpServers = loadMcpConfig(config.workspace);
+  console.log('MCP Servers:');
+  for (const [name, cfg] of Object.entries(mcpServers)) {
+    console.log('  ' + name + ': ' + cfg.command + ' ' + (cfg.args ?? []).join(' '));
+  }
+  if (Object.keys(mcpServers).length === 0) console.log('  (none)');
+  console.log();
+
+  // Sandbox.
+  const { createSandbox } = await import('../sandbox.js');
+  const sandbox = createSandbox(settings.sandbox);
+  console.log('Sandbox:');
+  console.log('  Enabled: ' + settings.sandbox.enabled);
+  console.log('  Available: ' + (sandbox !== null));
+  console.log();
+
+  // Environment.
+  console.log('Environment:');
+  for (const key of ['BOOK_API_KEY', 'BOOK_BASE_URL', 'BOOK_MODEL', 'BOOK_WORKSPACE']) {
+    const val = process.env[key];
+    if (key === 'BOOK_API_KEY' && val) {
+      console.log('  ' + key + ': *** (set)');
+    } else {
+      console.log('  ' + key + ': ' + (val || '(not set)'));
+    }
+  }
+}

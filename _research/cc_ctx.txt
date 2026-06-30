@@ -1,0 +1,1161 @@
+
+
+########################################
+### TERM: spinner
+########################################
+
+--- hit 1 ---
+without Git Bash).······················Shell interpreter. 'bash' uses your $SHELL (bash/zsh/sh); 'powershell' uses pwsh. Defaults to bash (powershell on Windows without Git Bash).················,···Timeout in seconds for this specific command················;···Custom status message to display in spinner while hook runs·················6···If true, hook runs once and is removed after execution··············1···If true, hook runs in background without blocking···················d···If true, hook runs in background and wakes the model on exit code 2 (blocking error). Implies async.·························@internal Custom prefix for the system-reminder shown to the model when an asyncRewake hook exits with code 2. The hook output is appended after this prefix.··················@internal One-line summary shown to the user in the terminal when an asyncRewake hook exits with code 2. Defaults to "S
+
+--- hit 2 ---
+ecurity policies············m···P·r·o·b·a·b·i·l·i·t·y· ·(·0·· 1·)· ·t·h·a·t· ·t·h·e· ·s·e·s·s·i·o·n· ·q·u·a·l·i·t·y· ·s·u·r·v·e·y· ·a·p·p·e·a·r·s· ·w·h·e·n· ·e·l·i·g·i·b·l·e·.· ·0·.·0·5· ·i·s· ·a· ·r·e·a·s·o·n·a·b·l·e· ·s·t·a·r·t·i·n·g· ·p·o·i·n·t·.···················#···Whether to show tips in the spinner·····················append··················replace················· ···············(·······························append··················replace·············_···Customize spinner verbs. mode: "append" adds verbs to defaults, "replace" uses only your verbs.·············s···Override spinner tips. tips: array of tip strings. excludeDefault: if true, only show custom tips (default: false).·················/···Whether to disable syntax highlighting in diffs·············t···Whether /rename updates the terminal tab title (defaults to true). Set to false to keep auto-generated topic titles.·······
+
+--- hit 3 ---
+0·5· ·i·s· ·a· ·r·e·a·s·o·n·a·b·l·e· ·s·t·a·r·t·i·n·g· ·p·o·i·n·t·.···················#···Whether to show tips in the spinner·····················append··················replace················· ···············(·······························append··················replace·············_···Customize spinner verbs. mode: "append" adds verbs to defaults, "replace" uses only your verbs.·············s···Override spinner tips. tips: array of tip strings. excludeDefault: if true, only show custom tips (default: false).·················/···Whether to disable syntax highlighting in diffs·············t···Whether /rename updates the terminal tab title (defaults to true). Set to false to keep auto-generated topic titles.················n···When false, thinking is disabled. When absent or true, thinking is enabled automatically for supported models.··················low·····················medium···········
+
+--- hit 4 ---
+in the spinner·····················append··················replace················· ···············(·······························append··················replace·············_···Customize spinner verbs. mode: "append" adds verbs to defaults, "replace" uses only your verbs.·············s···Override spinner tips. tips: array of tip strings. excludeDefault: if true, only show custom tips (default: false).·················/···Whether to disable syntax highlighting in diffs·············t···Whether /rename updates the terminal tab title (defaults to true). Set to false to keep auto-generated topic titles.················n···When false, thinking is disabled. When absent or true, thinking is enabled automatically for supported models.··················low·····················medium··················high····················xhigh···················@···············H···············P···············X·······
+
+--- hit 5 ---
+e·s· ·t·h·e· ·d·e·f·a·u·l·t· ·A·n·t·h·r·o·p·i·c· ·a·l·l·o·w·l·i·s·t· ··  ·a·d·m·i·n·s· ·d·e·c·i·d·e· ·w·h·i·c·h· ···············g···plugins may push inbound messages. Undefined falls back to the default. Requires channelsEnabled: true.·············U···Reduce or disable animations for accessibility (spinner shimmer, flash effects, etc.)··················@internal When true, Claude keeps working until the PR is ready for you to merge, a cron/Monitor is armed to resume later, or it hands you a self-contained next step.··················infinite················fixed···················countdown·······················@···············H···············P···············X·······························off·····················infinite················fixed···················countdown···················5···@internal Emit a <total_tokens>N tokens left</total_tokens> block in the system prompt and after each to
+
+--- hit 6 ---
+············forceLoginOrgUUID·······················forceRemoteSettingsRefresh······················otelHeadersHelper·······················outputStyle·····················viewMode················skipWebFetchPreflight···················sandbox·················feedbackSurveyRate······················spinnerTipsEnabled······················verbs···················spinnerVerbs····················excludeDefault··················tips····················spinnerTipsOverride·····················syntaxHighlightingDisabled······················terminalTitleFromRename·················alwaysThinkingEnabled···················effortLevel·····················ultracode·······················autoCompactWindow·······················advisorModel····················fastMode················fastModePerSessionOptIn·················promptSuggestionEnabled·················awaySummaryEnabled······················showCle
+
+
+########################################
+### TERM: \bframes\b
+########################################
+
+--- hit 1 ---
+H|$ L·wV·········I·HL$0H1u·VWSH0H֋P····t·H@···H9vEH@····P···=9|········.@Ht$ L·-·········I·········H········H8···HP····u;H˹·····HHP···Ht·Ht$ L······HIbD`Hً····· ··uD={···|;H@···H?Ht$(H\$ L·f·········Ig·H······ ·······=J{···|·C?Ht$ L···H0[_^VH HH········H8···HP····u9······HP···Ht#····s···@····r····H frames·HH······ ··u0=z···|'H>L·r·········I······· ······H ^AVVWSHXH·"··H1HD$PLD$@H·,3·H9H···t0=<z·······1>L··········I·········H····A·····H········H8···HP····u<····宪·HHP···Ht#·······@·········H stream·HP······ ·······=y·······H}=L·>·····L;H·······LHx
+··HT$@A····MH····H@(HXXHL$···fD$H··MtrHX
+··H·HD$ HD$(8···LL$HHLE1GW··x···Y····}····|+H<H|$(Dt$ L·9h·········I·H····HT$HHZ····H········H8···HP····u<····L}·IHHP···Ht·L·······HI@`IH····· ······=&x·······HL·<H|$ L··[···H···I9skLH···MLD$HHT$HA····6LH·h···HX(HH·V···=w····(···HHt$@;Ht$ L·|·cH········H8···HP····uA····Lu·IHHP···Ht"H\$ L······HI?`IH····· ······=·
+
+--- hit 2 ---
+ Result::AstAttr·Blob·Date·File·Intl·JSON·Math·Node·Text·atob·blur·btoa·find·name·open·self·stop·Array·Audio·Error·Event·Image·Proxy·Range·alert·close·event·fetch·focus·isNaN·print·BigInt·Crypto·Number·Object·Option·Path2D·Plugin·RegExp·Screen·String·Symbol·VTTCue·Window·Worker·closed·crypto·escape·frames·length·moveBy·moveTo·onblur·ondrag·ondrop·onload·onplay·opener·origin·parent·prompt·screen·scroll·status·window·BarProp·Boolean·CSSRule·Comment·DOMQuad·DOMRect·Element·Gamepad·Headers·History·Promise·Reflect·Request·SVGRect·Storage·UIEvent·WeakMap·WeakSet·confirm·console·history·menubar·onabort·onclick·onended·onerror·onfocus·oninput·onkeyup·onpause·onreset·onwheel·screenX·screenY·toolbar·DOMPoint·DataView·Document·FileList·FontFace·FormData·Function·GainNode·IDBIndex·Infinity·Location·MimeType·NodeList·Response·SVGAngle·SVGPoint·URIError·document·isFinite·location·onchange·ononline·onresize·
+
+--- hit 3 ---
+message:n,stack:r}=e;var o=String(t).trim(),i=String(n).trim();let a=t&&t.length>0&&o.length>0,c=n&&n.length>0&&i.length>0,_="";if((o==="Error"||o==="RangeError"||o==="TypeError"||o==="ReferenceError"||o==="DOMException")&&c?_+=`**${i}**
+`:a&&c?_+=`**${o}**
+${i}
+`:c?_+=`${i}
+`:a&&(_+=`**${o}**
+`),r.frames.length>0){var u=r.frames;if(r.source_lines.length>0){let{file:s="",function_name:f="",position:{line:d=-1,column_start:g=-1,column_stop:b=g}={line:-1,column_start:-1,column_stop:-1},scope:m=0}=r.frames[0],h=M(s,L);if(h&&(f.length>0?_+=`In \`${f}\` \u2013 ${h}`:m>0&&m<7?_+=`${V({functionName:f,scope:m,markdown:!0})} ${h}`:_+=`In ${h}`,d>-1&&(_+=`:${d}`,g>-1&&(_+=`:${g}`)),r.source_lines.length>0)){let v=h.lastIndexOf("."),y=v>-1?h.slice(v+1):"";_+="\n```",_+=y,_+=`
+`,r.source_lines.forEach(x=>{let S=x.text.trimEnd();if(_+=S+`
+`,x.line===d&&r.source_lines.length>1){var N="".padStart(S.length-S.
+
+--- hit 4 ---
+o=String(t).trim(),i=String(n).trim();let a=t&&t.length>0&&o.length>0,c=n&&n.length>0&&i.length>0,_="";if((o==="Error"||o==="RangeError"||o==="TypeError"||o==="ReferenceError"||o==="DOMException")&&c?_+=`**${i}**
+`:a&&c?_+=`**${o}**
+${i}
+`:c?_+=`${i}
+`:a&&(_+=`**${o}**
+`),r.frames.length>0){var u=r.frames;if(r.source_lines.length>0){let{file:s="",function_name:f="",position:{line:d=-1,column_start:g=-1,column_stop:b=g}={line:-1,column_start:-1,column_stop:-1},scope:m=0}=r.frames[0],h=M(s,L);if(h&&(f.length>0?_+=`In \`${f}\` \u2013 ${h}`:m>0&&m<7?_+=`${V({functionName:f,scope:m,markdown:!0})} ${h}`:_+=`In ${h}`,d>-1&&(_+=`:${d}`,g>-1&&(_+=`:${g}`)),r.source_lines.length>0)){let v=h.lastIndexOf("."),y=v>-1?h.slice(v+1):"";_+="\n```",_+=y,_+=`
+`,r.source_lines.forEach(x=>{let S=x.text.trimEnd();if(_+=S+`
+`,x.line===d&&r.source_lines.length>1){var N="".padStart(S.length-S.trimStart().length," ");N
+
+--- hit 5 ---
+o==="DOMException")&&c?_+=`**${i}**
+`:a&&c?_+=`**${o}**
+${i}
+`:c?_+=`${i}
+`:a&&(_+=`**${o}**
+`),r.frames.length>0){var u=r.frames;if(r.source_lines.length>0){let{file:s="",function_name:f="",position:{line:d=-1,column_start:g=-1,column_stop:b=g}={line:-1,column_start:-1,column_stop:-1},scope:m=0}=r.frames[0],h=M(s,L);if(h&&(f.length>0?_+=`In \`${f}\` \u2013 ${h}`:m>0&&m<7?_+=`${V({functionName:f,scope:m,markdown:!0})} ${h}`:_+=`In ${h}`,d>-1&&(_+=`:${d}`,g>-1&&(_+=`:${g}`)),r.source_lines.length>0)){let v=h.lastIndexOf("."),y=v>-1?h.slice(v+1):"";_+="\n```",_+=y,_+=`
+`,r.source_lines.forEach(x=>{let S=x.text.trimEnd();if(_+=S+`
+`,x.line===d&&r.source_lines.length>1){var N="".padStart(S.length-S.trimStart().length," ");N+="/* ".padEnd(g-1-N.length," ")+"^ happened here ",_+=N.padEnd(Math.max(S.length,1)-1," ")+`*/
+`}}),_=_.trimEnd()+"\n```"}}if(u.length>0){_+=`
+Stack trace:
+`;var p=0;let s=u.sl
+
+--- hit 6 ---
+ggable:!1,children:l("div",{className:"BunError-StackFrame-link-content",children:[l("div",{className:"BunError-StackFrame-file",children:u}),a>-1&&l("div",{className:"BunError-StackFrame-line",children:[":",a]}),c>-1&&l("div",{className:"BunError-StackFrame-column",children:[":",c]})]})})]})},gn=({frames:e,urlBuilder:t})=>{let n=new Array(e.length);var r=0;for(let o=0;o<e.length;o++)r=Math.max(yt(e[o]).length,r);for(let o=0;o<e.length;o++)n[o]=l(pn,{maxLength:r,urlBuilder:t,frame:e[o]},o);return l("div",{className:"BunError-StackFrames-container",children:l("div",{className:"BunError-StackFrames",children:n})})},Te=({frames:e,sourceLines:t,setSourceLines:n,children:r,isClient:o=!1})=>{let{file:i="",position:a}=e[0],{cwd:c}=W(A),_=M(i,c),u=o?dn:fn,p=se(null),s=we((f,d)=>u(i,f,d),[i,u]);return l("div",{ref:p,className:"BunError-NativeStackTrace",children:[l("a",{href:u(_,a.line,a.column),"data-
+
+
+########################################
+### TERM: interval
+########################################
+
+--- hit 1 ---
+taxError·TextDecoder·TextEncoder·TextMetrics·Uint16Array·Uint32Array·WebAssembly·WebGLBuffer·WebGLShader·XMLDocument·XPathResult·locationbar·oncuechange·ondragenter·ondragleave·ondragstart·onloadstart·onmousedown·onmousemove·onmouseover·onpointerup·outerHeight·performance·personalbar·postMessage·setInterval·AnalyserNode·CDATASection·CSSAnimation·CSSMediaRule·CSSStyleRule·DOMException·DOMStringMap·DOMTokenList·DataTransfer·DocumentType·Float16Array·Float32Array·Float64Array·GamepadEvent·HTMLDocument·MessageEvent·NamedNodeMap·NodeIterator·Notification·PeriodicWave·PointerEvent·RTCRtpSender·SVGPointList·SVGTransform·SVGUnitTypes·SourceBuffer·StorageEvent·TextTrackCue·WebGLProgram·WebGLSampler·WebGLTexture·clearTimeout·frameElement·getSelection·onafterprint·onhashchange·onloadeddata·onmouseenter·onmouseleave·onpointerout·onratechange·ontimeupdate·AudioListener·CSSImportRule·CSSStyleSheet·CSSTransiti
+
+--- hit 2 ---
+·HTMLLIElement·KeyboardEvent·MediaRecorder·MimeTypeArray·MutationEvent·PopStateEvent·ProgressEvent·RTCDTMFSender·RTCTrackEvent·RadioNodeList·SVGLengthList·SVGNumberList·SVGSVGElement·SVGSetElement·SVGStringList·SVGUseElement·TextTrackList·ValidityState·XMLSerializer·XSLTProcessor·captureEvents·clearInterval·onbeforeprint·oncontextmenu·onpointerdown·onpointermove·onpointerover·releaseEvents·AggregateError·AnimationEvent·CanvasGradient·ClipboardEvent·HTMLCollection·HTMLDivElement·HTMLMapElement·HTMLModElement·HTMLPreElement·IDBObjectStore·IDBTransaction·KeyframeEffect·MediaQueryList·MessageChannel·MutationRecord·OscillatorNode·RTCCertificate·RTCDataChannel·RTCRtpReceiver·RTCStatsReport·ReadableStream·ReferenceError·ResizeObserver·SVGDefsElement·SVGDescElement·SVGLineElement·SVGMaskElement·SVGPathElement·SVGRectElement·SVGStopElement·SVGTextElement·SVGViewElement·StyleSheetList·VisualViewport·WaveS
+
+--- hit 3 ---
+e invalid data URL '·' from '·'··Module not found '·'··Cannot find package '·' from '·'··Cannot find module '·' from '·'··No such built-in module: ·importKindMODULE_NOT_FOUNDERR_UNKNOWN_BUILTIN_MODULEERR_MODULE_NOT_FOUNDRESOLVE_ERRORgc_timer set in init()gc_repeating_timer set in init()BUN_GC_TIMER_INTERVALBUN_GC_RUNS_UNTIL_SKIP_RELEASE_ACCESSBUN_GC_TIMER_DISABLEHotMap already contains keyServerEntryPointGeneratereact.transitional.element5expected depth to be greater than or equal to 0, got ·%expected depth to be an integer, got ·sorted                                                                package manager init already succeeded when the pending task was enqueued@····················@····0@····п@····@··@····[@·····Unable to start IPC pipe '·'·BUN_CONFIG_VERBOSE_FETCH·      at ·
+···[0m      ·[2mat ·[0m··[2m
+···[0m      ·[2mat ·[0m·
+··      at · (·)
+···[0m      ·[2mat ·[0m
+·[2m (·[0m
+·[2m)
+
+--- hit 4 ---
+ct-brkStart CPU profiler and write profile to disk on exitcpu-profSpecify the name of the CPU profile filecpu-prof-nameSpecify the directory where the CPU profile will be savedcpu-prof-dirOutput CPU profile in markdown format (grep-friendly, designed for LLM analysis)cpu-prof-mdSpecify the sampling interval in microseconds for CPU profiling (default: 1000)cpu-prof-intervalGenerate V8 heap snapshot on exit (.heapsnapshot)heap-profSpecify the name of the heap profile fileheap-prof-nameSpecify the directory where the heap profile will be savedheap-prof-dirGenerate markdown heap profile on exit (for CLI analysis)heap-prof-mdExit without an error if the entrypoint does not existif-presentDisable auto install in the Bun runtimeno-installConfigure auto-install behavior. One of "auto" (default, auto-installs when no node_modules), "fallback" (missing packages only), "force" (always).installAuto-install 
+
+--- hit 5 ---
+pecify the name of the CPU profile filecpu-prof-nameSpecify the directory where the CPU profile will be savedcpu-prof-dirOutput CPU profile in markdown format (grep-friendly, designed for LLM analysis)cpu-prof-mdSpecify the sampling interval in microseconds for CPU profiling (default: 1000)cpu-prof-intervalGenerate V8 heap snapshot on exit (.heapsnapshot)heap-profSpecify the name of the heap profile fileheap-prof-nameSpecify the directory where the heap profile will be savedheap-prof-dirGenerate markdown heap profile on exit (for CLI analysis)heap-prof-mdExit without an error if the entrypoint does not existif-presentDisable auto install in the Bun runtimeno-installConfigure auto-install behavior. One of "auto" (default, auto-installs when no node_modules), "fallback" (missing packages only), "force" (always).installAuto-install dependencies during execution. Equivalent to --install=fallback.Eva
+
+--- hit 6 ---
+uded in the source code?·tcc_relocate returned a negative valueTinyCC failed to compileunreachable: enough space Route pattern matched more than · parameters. Path: ·internal error: entered unreachable code: unreachable. Diffing should always reach the end of either `actual` or `expected` first.set_interval: schedulervmdestroying StatWatcherScheduler while it still has watchersImage() expects a path, ArrayBuffer, TypedArray, Blob or data: URLFailed to run script <b>{}<r>exit_code set by finish()script ·error: Failed to run · due to error ·"·[0m·[31merror·[0m: Failed to run ··[1m··[0m due to error ·[1m··[0m·NUL·Utf8CannotEncodeSurrogateHalfUtf8InvalidStartByteCodepointTooLargeSubshellDepthExceeded·················: ·IOWriter::keepalive after last Arc droppedPasswordVerificationFailedUnsupportedAlgorithminfallible: resp boundCannot stream a directory as a response bodyinternal error: entered unrea
+
+
+########################################
+### TERM: daltonized
+########################################
+
+--- hit 1 ---
+················`······················································· ·······················]·······P···············X···············h·······'·······x·······K··············9·······················light···············
+···light-ansi······················dark-ansi·······················dark-daltonized·················light-daltonized········r·······^··············h············h············h············h············h············hh·······················
+·······································@·· ·0················(···:···L···^···p···@LY·VpTXHUPiP····=·······5·g······5····5·¤5······H··H·······XT@Th·······················X·············································································d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d································································································
+
+--- hit 2 ---
+········································· ·······················]·······P···············X···············h·······'·······x·······K··············9·······················light···············
+···light-ansi······················dark-ansi·······················dark-daltonized·················light-daltonized········r·······^··············h············h············h············h············h············hh·······················
+·······································@·· ·0················(···:···L···^···p···@LY·VpTXHUPiP····=·······5·g······5····5·¤5······H··H·······XT@Th·······················X·············································································d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d······························································································································
+
+--- hit 3 ---
+············(··············· ·······························································································································································································································dark····················ansi················
+···daltonized······················truecolor·······
+·································=···········\················Z···········)···········0·····G···········Q···············(·······················P·····3····················"·····.·························$·····W···································································i···················@̟I··L@<I··L@<I··L@ =@0%0=··0m·@·@·m0··`L· m@`ğ|·̟ =·̟<·̟<·̟@·=@·=0··̟L·@l0··̟L·Pm·̟@m@4@05@44@ 埀0··̟L·@l0··̟L·Pm·̟@m@4@05@44ğ·̟<·̟ =·̟ =·̟@·= =·̟m·̟m·̟@m@4@05@440埍·̟m·̟m·̟@m@4@05@44········Y··········.···b···e·············7···@···b···|·············1···:···\···v··
+
+--- hit 4 ---
+·····························C·········································Auto (match terminal)···················auto····················Dark mode·······················dark················
+···Light mode······················light···················Dark mode (colorblind-friendly)·················dark-daltonized············· ···Light mode (colorblind-friendly)················light-daltonized················Dark mode (ANSI colors only)····················dark-ansi·······················Light mode (ANSI colors only)···············
+···light-ansi············································································N·e·w· ·c·u·s·t·o·m· ·t·h·e·m·e·& ········································Let's get started.··························
+···permission······················Theme···························8···Choose the text style that looks best with your terminal ·····!·····"·····#·····················col
+
+--- hit 5 ---
+h terminal)···················auto····················Dark mode·······················dark················
+···Light mode······················light···················Dark mode (colorblind-friendly)·················dark-daltonized············· ···Light mode (colorblind-friendly)················light-daltonized················Dark mode (ANSI colors only)····················dark-ansi·······················Light mode (ANSI colors only)···············
+···light-ansi············································································N·e·w· ·c·u·s·t·o·m· ·t·h·e·m·e·& ········································Let's get started.··························
+···permission······················Theme···························8···Choose the text style that looks best with your terminal ·····!·····"·····#·····················column··$·····%·····················I·······&·····················v·······'·····(···
+
+--- hit 6 ---
+laude.com/docs/en/overview················2.1.183·············0···https://github.com/anthropics/claude-code/issues················2026-06-18T23:04:10Z················(···9d251abdbce0c0a6190d290add83634e0ab481f6················Apple_Terminal······························light···················light-daltonized············
+···light-ansi······················0···············8···············H·······························light···················light-daltonized············
+···light-ansi························:···..........................................................··················:···                                                          ··················:··· · · · · · · · · · · · ·%%%%%% · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · ·················:··· · · · ·%%% · · ·%%%%%%%%%% · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · ··
+
+
+########################################
+### TERM: protanopia
+########################################
+(no matches)
+
+
+########################################
+### TERM: deuteranopia
+########################################
+(no matches)
+
+
+########################################
+### TERM: tritanopia
+########################################
+(no matches)
+
+
+########################################
+### TERM: dark-blindness
+########################################
+(no matches)
+
+
+########################################
+### TERM: light-blindness
+########################################
+(no matches)
+
+
+########################################
+### TERM: dark-ansi
+########################################
+
+--- hit 1 ---
+···················································`······················································· ·······················]·······P···············X···············h·······'·······x·······K··············9·······················light···············
+···light-ansi······················dark-ansi·······················dark-daltonized·················light-daltonized········r·······^··············h············h············h············h············h············hh·······················
+·······································@·· ·0················(···:···L···^···p···@LY·VpTXHUPiP····=·······5·g······5····5·¤5······H··H·······XT@Th·······················X·············································································d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d··························································
+
+--- hit 2 ---
+············dark················
+···Light mode······················light···················Dark mode (colorblind-friendly)·················dark-daltonized············· ···Light mode (colorblind-friendly)················light-daltonized················Dark mode (ANSI colors only)····················dark-ansi·······················Light mode (ANSI colors only)···············
+···light-ansi············································································N·e·w· ·c·u·s·t·o·m· ·t·h·e·m·e·& ········································Let's get started.··························
+···permission······················Theme···························8···Choose the text style that looks best with your terminal ·····!·····"·····#·····················column··$·····%·····················I·······&·····················v·······'·····(·····)·····*·····················n·······+·····,·····-·····.················
+
+--- hit 3 ---
+············0···············8···············@·······························auto····················tmux················
+···in-process······················dark····················light···················light-daltonized················dark-daltonized·············
+···light-ansi······················dark-ansi·······················`···············h···············p············································································dark····················light···················light-daltonized················dark-daltonized·············
+···light-ansi······················dark-ansi·······
+·······················································D·,d··|·,P}·,·~·,S··|··············w@·@.HJ蒶···········F··D0·k···|F··l··F···H·······D··H·······h····································································································d···d···d···d···d···d···d···d···d···
+
+--- hit 4 ---
+···············dark-ansi·······················`···············h···············p············································································dark····················light···················light-daltonized················dark-daltonized·············
+···light-ansi······················dark-ansi·······
+·······················································D·,d··|·,P}·,·~·,S··|··············w@·@.HJ蒶···········F··D0·k···|F··l··F···H·······D··H·······h····································································································d···d···d···d···d···d···d···d···d···d···@···@···@···@···@···@···@···@···@···@···P···P···P···P···P···P······0·········H···H···h···h···h···h···h···h···h···h···h···h···h···h···h···h···h···h···h···h··············x···············P·············································8···········································
+
+--- hit 5 ---
+aged settings.")}).passthrough())});var snn,inn,Cts,VAr,dHt;var pHt=E(()=>{snn=["auto","iterm2","iterm2_with_bell","terminal_bell","kitty","ghostty","notifications_disabled"],inn=["normal","vim"],Cts=["auto","tmux","in-process"],VAr=["dark","light","light-daltonized","dark-daltonized","light-ansi","dark-ansi"],dHt=["auto",...VAr]});function Bts(){return sQc}var mc,fHt="\u2219",xts="\u2315",fq="\u273B",Its="\u2234",kts="\u25CC",oJ="\u2191",mq="\u2193",Dts="\u21B3",Aq="\u2190",Pts="\u2192",GAr="\u23CE",SEe="\u21AF",Lts="\u25CB",ann="\u25D0",qAr="\u25CF",Mts="\u25C9",Rts="\u25C8",lnn="\u2726",cnn="\u25CE",Ots="\u25B6",unn="\u23F8",Nts="\u21BB",$ts="\u2190",zze="\u2442",lv="\u25C7",JO="\u25C6",Uts="\u203B",mHt="\u26A0",zAr="\u29C9",Fts="\u258E",KAr="\u2588",boe="\u2500",AHt,dnn="\xB7\u2714\uFE0E\xB7",pnn="\xD7",o1e="\u25B8",YAr="\u283F",sQc,ZO,jts="\u2013",e1;var sl=E(()=>{js();mc=Kt()==="macos"?"\u2
+
+--- hit 6 ---
+ct.is(i,s))return;n=i,t?.({newState:i,oldState:s});for(let a of r)a()},subscribe:(o)=>(r.add(o),()=>r.delete(o))}}function Nhi(e){return e.startsWith("light")}function rbn(e){return typeof e==="string"&&VAr.includes(e)}function kK(e){switch(e){case"light":return NZu;case"light-ansi":return $Zu;case"dark-ansi":return UZu;case"light-daltonized":return FZu;case"dark-daltonized":return jZu;default:return BZu}}function FUe(e){if(typeof e!=="string")return!1;if(/^rgb\(\s?\d{1,3},\s?\d{1,3},\s?\d{1,3}\s?\)$/.test(e))return!0;if(/^#[0-9a-fA-F]{6}$/.test(e)||/^#[0-9a-fA-F]{3}$/.test(e))return!0;if(/^ansi256\(\d{1,3}\)$/.test(e))return!0;if(e.startsWith("ansi:"))return WZu.has(e.slice(5));return!1}function $hi(e,t){if(!t)return e;let n={...e};for(let[r,o]of Object.entries(t))if(Object.hasOwn(e,r)&&FUe(o))n[r]=o;return n}function obn(e){let t=e.match(/rgb\(\s?(\d+),\s?(\d+),\s?(\d+)\s?\)/);if(t){let n=parse
+
+
+########################################
+### TERM: light-ansi
+########################################
+
+--- hit 1 ---
+·················································································`······················································· ·······················]·······P···············X···············h·······'·······x·······K··············9·······················light···············
+···light-ansi······················dark-ansi·······················dark-daltonized·················light-daltonized········r·······^··············h············h············h············h············h············hh·······················
+·······································@·· ·0················(···:···L···^···p···@LY·VpTXHUPiP····=·······5·g······5····5·¤5······H··H·······XT@Th·······················X·············································································d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···d···························
+
+--- hit 2 ---
+············Dark mode (colorblind-friendly)·················dark-daltonized············· ···Light mode (colorblind-friendly)················light-daltonized················Dark mode (ANSI colors only)····················dark-ansi·······················Light mode (ANSI colors only)···············
+···light-ansi············································································N·e·w· ·c·u·s·t·o·m· ·t·h·e·m·e·& ········································Let's get started.··························
+···permission······················Theme···························8···Choose the text style that looks best with your terminal ·····!·····"·····#·····················column··$·····%·····················I·······&·····················v·······'·····(·····)·····*·····················n·······+·····,·····-·····.·····················l·······/·····0·····1·····2·····3·····4·····5·····6·····7·····8·····9·····:·
+
+--- hit 3 ---
+················2.1.183·············0···https://github.com/anthropics/claude-code/issues················2026-06-18T23:04:10Z················(···9d251abdbce0c0a6190d290add83634e0ab481f6················Apple_Terminal······························light···················light-daltonized············
+···light-ansi······················0···············8···············H·······························light···················light-daltonized············
+···light-ansi························:···..........................................................··················:···                                                          ··················:··· · · · · · · · · · · · ·%%%%%% · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · ·················:··· · · · ·%%% · · ·%%%%%%%%%% · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · ·················:··· · · ·%
+
+--- hit 4 ---
+bce0c0a6190d290add83634e0ab481f6················Apple_Terminal······························light···················light-daltonized············
+···light-ansi······················0···············8···············H·······························light···················light-daltonized············
+···light-ansi························:···..........................................................··················:···                                                          ··················:··· · · · · · · · · · · · ·%%%%%% · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · ·················:··· · · · ·%%% · · ·%%%%%%%%%% · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · ·················:··· · · ·%%%%%%%%%%%%%%%%%%% · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · ·········································
+·····················
+
+--- hit 5 ---
+·········0···············H···············X···············P······························x·····················································,·················@···Cannot destructure property 'theme' from null or undefined value················light···················light-daltonized············
+···light-ansi······················0···············8···············H·······························light···················light-daltonized············
+···light-ansi······················n·······
+·····························r·······················claude·················· ···································react.memo_cache_sentinel·······························v···················D···report the issue at https://github.com/anthropics/claude-code/issues····················@anthropic-ai/claude-code···················(···https://code.claude.com/docs/en/overview················2.1.183·············0···https://
+
+--- hit 6 ---
+········@···Cannot destructure property 'theme' from null or undefined value················light···················light-daltonized············
+···light-ansi······················0···············8···············H·······························light···················light-daltonized············
+···light-ansi······················n·······
+·····························r·······················claude·················· ···································react.memo_cache_sentinel·······························v···················D···report the issue at https://github.com/anthropics/claude-code/issues····················@anthropic-ai/claude-code···················(···https://code.claude.com/docs/en/overview················2.1.183·············0···https://github.com/anthropics/claude-code/issues················2026-06-18T23:04:10Z················(···9d251abdbce0c0a6190d290add83634e0ab481f6················
+
+
+########################################
+### TERM: themeName
+########################################
+
+--- hit 1 ---
+············)···················(···················@$T··M·@T··@=@ ·@<@@···@$@··R@%@··`Q@p'@`L@|@·K···M@ J··3@u·D·@L@04··0=@@`4@@`4`········'···*···.···O···`···q···································=········0·'··············h·················supportsHyperlinks······················themeName·······················blue················
+···blueBright··········L·······P·]······P···P·vP······H··H·······h·······················m@············································································d···d···d···d···d···d···d···d···d···d········································································(···(···(···(···(···H···h···h···h···h···h···h···h···h···h···h···h···h·····························(···············8···············0·······················································································K·s·······$····NX·····························
+
+--- hit 2 ---
+onal): The name of a specific MCP server to get resources from. If not provided,
+  resources from all servers will be returned.
+`;function OU(e,t,n){if(!(n?.supportsHyperlinks??QC())){if(t!==void 0){let c=Hc(t);if(c!==e&&e!==`http://${c}`&&e!==`https://${c}`)return`${t} (${e})`}return e}let l=(((n?.themeName)?Nhi(n.themeName):!1)?yt.blue:yt.blueBright)(t??e);return`${Iji}${e}${kji}${l}${Iji}${kji}`}var Iji="\x1B]8;;",kji="\x07";var s2e=E(()=>{cu();U3();Lve()});function Mji(e){let t=Dji.c(2),{children:n}=e,r;if(t[0]!==n)r=_Rt.createElement(Lji.Provider,{value:!0},n),t[0]=n,t[1]=r;else r=t[1];return r}function Rji(){return Pji.useContext(Lji)}var Dji,_Rt,Pji,Lji;var F5r=E(()=>{Dji=O(rt(),1),_Rt=O(be(),1),Pji=O(be(),1),Lji=_Rt.createContext(!1)});function BId(e){try{let t=Wt(e),n=Re(t),r=e.replaceAll("\\/","/").replace(/\s+/g,""),o=n.replace(/\s+/g,"");if(r!==o)return e;return Re(t,null,2)}catch{ret
+
+--- hit 3 ---
+f a specific MCP server to get resources from. If not provided,
+  resources from all servers will be returned.
+`;function OU(e,t,n){if(!(n?.supportsHyperlinks??QC())){if(t!==void 0){let c=Hc(t);if(c!==e&&e!==`http://${c}`&&e!==`https://${c}`)return`${t} (${e})`}return e}let l=(((n?.themeName)?Nhi(n.themeName):!1)?yt.blue:yt.blueBright)(t??e);return`${Iji}${e}${kji}${l}${Iji}${kji}`}var Iji="\x1B]8;;",kji="\x07";var s2e=E(()=>{cu();U3();Lve()});function Mji(e){let t=Dji.c(2),{children:n}=e,r;if(t[0]!==n)r=_Rt.createElement(Lji.Provider,{value:!0},n),t[0]=n,t[1]=r;else r=t[1];return r}function Rji(){return Pji.useContext(Lji)}var Dji,_Rt,Pji,Lji;var F5r=E(()=>{Dji=O(rt(),1),_Rt=O(be(),1),Pji=O(be(),1),Lji=_Rt.createContext(!1)});function BId(e){try{let t=Wt(e),n=Re(t),r=e.replaceAll("\\/","/").replace(/\s+/g,""),o=n.replace(/\s+/g,"");if(r!==o)return e;return Re(t,null,2)}catch{return e}}function W
+
+--- hit 4 ---
+(e),n=Re(t),r=e.replaceAll("\\/","/").replace(/\s+/g,""),o=n.replace(/\s+/g,"");if(r!==o)return e;return Re(t,null,2)}catch{return e}}function WId(e){if(e.length>jId)return e;return e.split(`
+`).map(BId).join(`
+`)}function $ji(e,t){if(e.length>GId)return e;let n=(r)=>r.replace(VId,(o)=>OU(o,void 0,{themeName:t}));if(!e.includes(twe))return n(e);return e.split(`
+`).map((r)=>r.includes(twe)?r:n(r)).join(`
+`)}function b4(e){let t=Oji.c(14),{content:n,verbose:r,isError:o,isWarning:s}=e,{columns:i}=fr(),[a]=da(),l=Rji(),c=Nji.useContext(yxe),u=r||l,d;if(t[0]!==n||t[1]!==a)d=$ji(WId(n),a),t[0]=n,t[1]=a,t[2]=d;else d=t[2];let p=d,f;e:{if(u){let _;if(t[3]!==p)_=ixn(p),t[3]=p,t[4]=_;else _=t[4];f=_;break e}let y;if(t[5]!==i||t[6]!==p||t[7]!==c)y=ixn(wji(p,i,c)),t[5]=i,t[6]=p,t[7]=c,t[8]=y;else y=t[8];f=y}let m=f,A=o?"error":s?"warning":void 0,g;if(t[9]!==m)g=i2e.createElement(Td,null,m),t[9]=m,t[10]=g;els
+
+--- hit 5 ---
+${c})`}case"link":{let l=e.title?` ("${e.title}")`:"";if(e.href.startsWith("mailto:")){let p=e.href.replace(/^mailto:/,"");return(e.text&&e.text!==p?`${e.text} (${p})`:p)+l}let c=a?lSp(e.href):e.href,u=(e.tokens??[]).map((p)=>YD(p,t,0,null,e,s,!1,a)).join(""),d=Hc(u);if(d&&d!==e.href)return OU(c,u,{themeName:t,supportsHyperlinks:a})+l;return OU(c,e.href,{themeName:t,supportsHyperlinks:a})+l}case"list":return e.items.map((l,c)=>YD(l,t,n,e.ordered?e.start+c:null,e,s,!1,a)).join("");case"list_item":return(e.tokens??[]).map((l)=>{let c=YD(l,t,n+1,r,e,s,!1,a);if(l.type==="code"||l.type==="blockquote"||l.type==="hr")return c;return`${"  ".repeat(n)}${c}`}).join("");case"paragraph":return(e.tokens??[]).map((l)=>YD(l,t,0,null,null,s,!1,a)).join("")+BR;case"space":return BR;case"br":return BR;case"text":if(o?.type==="link")return e.text;if(o?.type==="list_item"){let l=e.tokens?e.tokens.map((p)=>YD(p,t,n,r
+
+--- hit 6 ---
+e.href.startsWith("mailto:")){let p=e.href.replace(/^mailto:/,"");return(e.text&&e.text!==p?`${e.text} (${p})`:p)+l}let c=a?lSp(e.href):e.href,u=(e.tokens??[]).map((p)=>YD(p,t,0,null,e,s,!1,a)).join(""),d=Hc(u);if(d&&d!==e.href)return OU(c,u,{themeName:t,supportsHyperlinks:a})+l;return OU(c,e.href,{themeName:t,supportsHyperlinks:a})+l}case"list":return e.items.map((l,c)=>YD(l,t,n,e.ordered?e.start+c:null,e,s,!1,a)).join("");case"list_item":return(e.tokens??[]).map((l)=>{let c=YD(l,t,n+1,r,e,s,!1,a);if(l.type==="code"||l.type==="blockquote"||l.type==="hr")return c;return`${"  ".repeat(n)}${c}`}).join("");case"paragraph":return(e.tokens??[]).map((l)=>YD(l,t,0,null,null,s,!1,a)).join("")+BR;case"space":return BR;case"br":return BR;case"text":if(o?.type==="link")return e.text;if(o?.type==="list_item"){let l=e.tokens?e.tokens.map((p)=>YD(p,t,n,r,e,s,!0,a)).join(""):$Ra(Nio(e.text,t,a)),c=r===null?"-":
+
+
+########################################
+### TERM: \btheme\b
+########################################
+
+--- hit 1 ---
+heetml.template.main+xmlapplication/vnd.openxmlformats-officedocument.spreadsheetml.usernames+xmlapplication/vnd.openxmlformats-officedocument.spreadsheetml.volatiledependencies+xmlapplication/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xmlapplication/vnd.openxmlformats-officedocument.theme+xmlapplication/vnd.openxmlformats-officedocument.themeoverride+xmlapplication/vnd.openxmlformats-officedocument.vmldrawingapplication/vnd.openxmlformats-officedocument.wordprocessingml.comments+xmlapplication/vnd.openxmlformats-officedocument.wordprocessingml.documentapplication/vnd.openxmlformats-officedocument.wordprocessingml.document.glossary+xmlapplication/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xmlapplication/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xmlapplication/vnd.openxmlformats-officedocument.wordprocessingml.fonttable+xmlapplication/vnd.
+
+--- hit 2 ---
+ngstext/stylustext/t140text/tab-separated-valuestext/trofftext/turtletext/ulpfectext/uri-listtext/vcardtext/vnd.atext/vnd.abctext/vnd.ascii-arttext/vnd.curltext/vnd.curl.dcurltext/vnd.curl.mcurltext/vnd.curl.scurltext/vnd.debian.copyrighttext/vnd.dmclientscripttext/vnd.dvb.subtitletext/vnd.esmertec.theme-descriptortext/vnd.familysearch.gedcomtext/vnd.ficlab.flttext/vnd.flytext/vnd.fmi.flexstortext/vnd.gmltext/vnd.graphviztext/vnd.hanstext/vnd.hgltext/vnd.in3d.3dmltext/vnd.in3d.spottext/vnd.iptc.newsmltext/vnd.iptc.nitftext/vnd.latex-ztext/vnd.motorola.reflextext/vnd.ms-mediapackagetext/vnd.net2phone.commcenter.commandtext/vnd.radisys.msml-basic-layouttext/vnd.senx.warpscripttext/vnd.si.uricataloguetext/vnd.sositext/vnd.sun.j2me.app-descriptortext/vnd.trolltech.linguisttext/vnd.wap.sitext/vnd.wap.sltext/vnd.wap.wmltext/vnd.wap.wmlscripttext/vtttext/x-asmtext/x-ctext/x-componenttext/x-fortrante
+
+--- hit 3 ---
+fnet-node·
+@percy/core·
+@pnpm/exe·
+@prisma/client·
+@prisma/engines·
+@progress/kendo-licensing·
+@pulumi/aws-native·
+@pulumi/awsx·
+@pulumi/command·
+@pulumi/kubernetes·
+@railway/cli·
+@replayio/cypress·
+@replayio/playwright·
+@roots/bud-framework·
+@sap/hana-client·
+@sap/hana-performance-tools·
+@sap/hana-theme-vscode·
+@scarf/scarf·
+@sematext/gc-stats·
+@sentry/capacitor·
+@sentry/profiling-node·
+@serialport/bindings·
+@serialport/bindings-cpp·
+@shopify/ngrok·
+@shopify/plugin-cloudflare·
+@sitespeed.io/chromedriver·
+@sitespeed.io/edgedriver·
+@softvisio/core·
+@splunk/otel·
+@strapi/strapi·
+@sveltejs/kit·
+@syncfusion/ej2-angular-base·
+@taquito/taquito·
+@temporalio/core-bridge·
+@tensorflow/tfjs-node·
+@trufflesuite/bigint-buffer·
+@typescript-tools/rust-implementation·
+@vaadin/vaadin-usage-statistics·
+@vscode/ripgrep·
+@vscode/sqlite3·
+abstract-socket·
+admin-lte·
+appdynamics·
+appium-chromedriver·
+appium-window
+
+--- hit 4 ---
+exPunctuator()||this.createToken("Operator",this.consume(),"syntax-pink");if(Y?.type!=="Whitespace"&&Y?.type!=="Newline")this.isAfterExtendsOrImplements=!1;return Y}*tokenize(){while(this.pos<this.text.length){let Y=this.nextToken();if(Y)yield Y}}highlight(){let Y=this.options.languageName?`dracula-theme language-${this.options.languageName}`:"dracula-theme",Z=this.options.showLineNumbers?`${Y} with-line-numbers`:Y,G="",$="",X=1,J=()=>{if($)G+=this.buildHtmlElement("div",{class:"line"},$),$=""};for(let _ of this.tokenize()){if(_.type==="Newline"){J(),X++;continue}if(_.tokenClass)$+=this.wrap(_.value,_.tokenClass);else $+=this.escapeHtml(_.value)}return J(),this.buildHtmlElement("pre",{class:Z},G)}highlightLine(){let Y="";for(let Z of this.tokenize()){if(Z.type==="Newline")continue;if(Z.tokenClass)Y+=this.wrap(Z.value,Z.tokenClass);else Y+=this.escapeHtml(Z.value)}return Y}escapeHtml(Y){return
+
+--- hit 5 ---
+me(),"syntax-pink");if(Y?.type!=="Whitespace"&&Y?.type!=="Newline")this.isAfterExtendsOrImplements=!1;return Y}*tokenize(){while(this.pos<this.text.length){let Y=this.nextToken();if(Y)yield Y}}highlight(){let Y=this.options.languageName?`dracula-theme language-${this.options.languageName}`:"dracula-theme",Z=this.options.showLineNumbers?`${Y} with-line-numbers`:Y,G="",$="",X=1,J=()=>{if($)G+=this.buildHtmlElement("div",{class:"line"},$),$=""};for(let _ of this.tokenize()){if(_.type==="Newline"){J(),X++;continue}if(_.tokenClass)$+=this.wrap(_.value,_.tokenClass);else $+=this.escapeHtml(_.value)}return J(),this.buildHtmlElement("pre",{class:Z},G)}highlightLine(){let Y="";for(let Z of this.tokenize()){if(Z.type==="Newline")continue;if(Z.tokenClass)Y+=this.wrap(Z.value,Z.tokenClass);else Y+=this.escapeHtml(Z.value)}return Y}escapeHtml(Y){return Y.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(
+
+--- hit 6 ---
+exPunctuator()||this.createToken("Operator",this.consume(),"syntax-pink");if(z?.type!=="Whitespace"&&z?.type!=="Newline")this.isAfterExtendsOrImplements=!1;return z}*tokenize(){while(this.pos<this.text.length){let z=this.nextToken();if(z)yield z}}highlight(){let z=this.options.languageName?`dracula-theme language-${this.options.languageName}`:"dracula-theme",J=this.options.showLineNumbers?`${z} with-line-numbers`:z,K="",Y="",Z=1,$=()=>{if(Y)K+=this.buildHtmlElement("div",{class:"line"},Y),Y=""};for(let X of this.tokenize()){if(X.type==="Newline"){$(),Z++;continue}if(X.tokenClass)Y+=this.wrap(X.value,X.tokenClass);else Y+=this.escapeHtml(X.value)}return $(),this.buildHtmlElement("pre",{class:J},K)}highlightLine(){let z="";for(let J of this.tokenize()){if(J.type==="Newline")continue;if(J.tokenClass)z+=this.wrap(J.value,J.tokenClass);else z+=this.escapeHtml(J.value)}return z}escapeHtml(z){return
+
+
+########################################
+### TERM: Output is truncated
+########################################
+(no matches)
+
+
+########################################
+### TERM: truncated
+########################################
+
+--- hit 1 ---
+CH·      at ·
+···[0m      ·[2mat ·[0m··[2m
+···[0m      ·[2mat ·[0m·
+··      at · (·)
+···[0m      ·[2mat ·[0m
+·[2m (·[0m
+·[2m)·[0m
+·[unknown][source:·
+::error file=·,line=·,col=·,title=·
+::error title=·: ·::··%0A      at ··%0A      at · (·)·· | ·
+···[0m·[1m· |·[0m ·
+···[0m·[1m· |·[0m ··[0m·[2m | ... truncated ·[0m
+··[31m·[1m^·[0m
+· | ·
+
+···[0m·[1m· |·[0m ··[0m·[2m | ... truncated ·[0m
+
+··- | ·
+···[0m·[2m- |·[0m ·
+···[0m·[1m- |·[0m ··[0m·[2m | ... truncated ·[0m
+·······························@····@···· ]C····@····@····@····k@····k@····stackcause· ·: ·· ··[0m·[2m:·[0m ··[0m·[2m,·[0m
+· code: ·
+·· code·[0m·[2m:·[0m ·[32m··[0m
+··    from browser tab ·
+·"    ·[2mfrom ·[0mbrowser tab ·[35m··[0m
+··[31mfrontend·[0m ·
+···[1m··[0m
+·WorkerTerminatedBUN_SHOW_BUN_STACKFRAMESNODE_CHANNEL_FDNODE_CHANNEL_SERIALIZATION_MODE*warn: Failed to parse IPC channel number '·'·;·[33mwarn·[0m·[2m:·[0m Failed to parse IPC ch
+
+--- hit 2 ---
+    at · (·)
+···[0m      ·[2mat ·[0m
+·[2m (·[0m
+·[2m)·[0m
+·[unknown][source:·
+::error file=·,line=·,col=·,title=·
+::error title=·: ·::··%0A      at ··%0A      at · (·)·· | ·
+···[0m·[1m· |·[0m ·
+···[0m·[1m· |·[0m ··[0m·[2m | ... truncated ·[0m
+··[31m·[1m^·[0m
+· | ·
+
+···[0m·[1m· |·[0m ··[0m·[2m | ... truncated ·[0m
+
+··- | ·
+···[0m·[2m- |·[0m ·
+···[0m·[1m- |·[0m ··[0m·[2m | ... truncated ·[0m
+·······························@····@···· ]C····@····@····@····k@····k@····stackcause· ·: ·· ··[0m·[2m:·[0m ··[0m·[2m,·[0m
+· code: ·
+·· code·[0m·[2m:·[0m ·[32m··[0m
+··    from browser tab ·
+·"    ·[2mfrom ·[0mbrowser tab ·[35m··[0m
+··[31mfrontend·[0m ·
+···[1m··[0m
+·WorkerTerminatedBUN_SHOW_BUN_STACKFRAMESNODE_CHANNEL_FDNODE_CHANNEL_SERIALIZATION_MODE*warn: Failed to parse IPC channel number '·'·;·[33mwarn·[0m·[2m:·[0m Failed to parse IPC channel number '·'·NODE_PRESERVE_SYMLINKSBUN_GARBAGE_COLLECTOR_LEVELBUN_FE
+
+--- hit 3 ---
+::error file=·,line=·,col=·,title=·
+::error title=·: ·::··%0A      at ··%0A      at · (·)·· | ·
+···[0m·[1m· |·[0m ·
+···[0m·[1m· |·[0m ··[0m·[2m | ... truncated ·[0m
+··[31m·[1m^·[0m
+· | ·
+
+···[0m·[1m· |·[0m ··[0m·[2m | ... truncated ·[0m
+
+··- | ·
+···[0m·[2m- |·[0m ·
+···[0m·[1m- |·[0m ··[0m·[2m | ... truncated ·[0m
+·······························@····@···· ]C····@····@····@····k@····k@····stackcause· ·: ·· ··[0m·[2m:·[0m ··[0m·[2m,·[0m
+· code: ·
+·· code·[0m·[2m:·[0m ·[32m··[0m
+··    from browser tab ·
+·"    ·[2mfrom ·[0mbrowser tab ·[35m··[0m
+··[31mfrontend·[0m ·
+···[1m··[0m
+·WorkerTerminatedBUN_SHOW_BUN_STACKFRAMESNODE_CHANNEL_FDNODE_CHANNEL_SERIALIZATION_MODE*warn: Failed to parse IPC channel number '·'·;·[33mwarn·[0m·[2m:·[0m Failed to parse IPC channel number '·'·NODE_PRESERVE_SYMLINKSBUN_GARBAGE_COLLECTOR_LEVELBUN_FEATURE_FLAG_FORCE_WAITER_THREADBUN_FEATURE_FLAG_INTERNAL_FOR_TESTINGBUN_FEATURE
+
+--- hit 4 ---
+ be init'd···C·····························ՊC············- ······/tC············Y·C············Y·C············+ ······/tC············c·C············c·C·············Expected: not ········c·C·············Expected: not ··  ·Received·@@ -·,· +·,· @@
+···C·············@@ -·,· +·,· @@·
+··[97m·... (· bytes truncated) ...·Expected: Received: ·········[32m·[7m·······/tC············Y·C············0tC·····················[31m·[7m·······/tC············c·C·············1tC····················1.4.0···_nonelinuxmacoswindowswslandroidfreebsdarchx64armbun_versionplatform·-···TN:
+SF:·
+FNF:·
+FNH:·
+··LF:·
+LH:·
+end_of_record
+·Failed to write merged lcov.info
+{}AnyPromise::wrap called twice----------------------------------------------------------------infallible: store presentFileRef· (fd: 0x·)·· (fd: ·)·· ("·")··name: "·"··offset: ·
+··lastModified: ·
+·[Blob detached][File detached]·[0mFileRef·[0m· (·[0mfd·[2m:·[0m ·[3
+
+--- hit 5 ---
+load is non-nullStream already used, please create a new oneResumableSink.setHandlers requires at least 2 argumentshighWaterMarkResumableSink.write requires a string or bufferResumableSink.write requires at least 1 argumentprefixdelimiterstartAfterencodingTypecontinuationTokennextContinuationTokenisTruncatedkeyCountmaxKeyseTagchecksumAlgorithmechecksumTypelastModifiedstorageClassdisplayNameownercontentscommonPrefixesTextEncoderStreamEncoder.encodeCryptoThe data argument must be an integer-type TypedArrayInput buffers must have the same byte lengthS3Stat························`@····`@······························@······@·····························@·····@····························P·@····P·@····J
+
+Matcher error: <red>received<r> value must be a mock function
+Received: ·called `Result::unwrap_err()` on an `Ok` value(Expected value must be a mock function: ·toBeDatetoBeEventoBeNulltoBeTruetoCont
+
+--- hit 6 ---
+uld not be reachablepipes set aboveinternal error: entered unreachable code: skipped aboveSeq.onIOWriterChunkseq: option requires an argument -- s
+seq: needs positive increment
+seq: needs negative decrement
+seq: zero increment
+seq: invalid argument
+seq: option requires an argument -- t
+
+... [output truncated: would exceed --parallel IPC frame limit]
+fetchThis code path shouldn't be reached - sync_file in PipeWriter.ziginternal error: entered unreachable code: Query: invalid kind tag$$typeofreact.elementreact.fragment.npmignore· · ·failed to {} {} at: "{}{}{}"-std=c11 -nostdlib -Wl,--export-all-symbols·FFI_Callback_call·my_callback_function·missing generated symbol in source codeFailed to add FFI callback symbolFailed to compile source codeFailed to add NAPI env symbolTCCMissingJSFunctionCall·
+encoding '·' is an invalid encoding·Image: pipeline schedule failedImage: collected before read completed
+
+
+########################################
+### TERM: Updated
+########################################
+
+--- hit 1 ---
+l error: entered unreachable code: non-value Expr from JSON parser·.old-··············node_modules\.bun\node_modules···/node_modules/·······························U@····U@····$Overrides changed since last install···········Workspace package "·" has added · dependencies, removed · dependencies, and updated · dependencies··Workspace package "·" has added ·[32m ·[0m dependencies, removed ·[31m$·[0m dependencies, and updated ·[36m··[0m dependencies··Dependency "·" has an unsafe folder path·.No matching version for workspace dependency "·". Version: "·"··"·" originally specified here··Duplicate dependency: "·" specified in package.json·patchedDependencies·····MtC····
+·······MtC····
+······· ·······& expects a map of specifiers, e.g.
+  "··0": {
+    <green>"bun"<r>: <green>"latest"<r>
+  }·/ expects a map of specifiers, e.g.
+  ·[0m·[32m"··4"·[0m: {
+    <green>"bun"<r>: <green>"latest"<r>
+  }·"workspace
+
+--- hit 2 ---
+·/node_modules/·······························U@····U@····$Overrides changed since last install···········Workspace package "·" has added · dependencies, removed · dependencies, and updated · dependencies··Workspace package "·" has added ·[32m ·[0m dependencies, removed ·[31m$·[0m dependencies, and updated ·[36m··[0m dependencies··Dependency "·" has an unsafe folder path·.No matching version for workspace dependency "·". Version: "·"··"·" originally specified here··Duplicate dependency: "·" specified in package.json·patchedDependencies·····MtC····
+·······MtC····
+······· ·······& expects a map of specifiers, e.g.
+  "··0": {
+    <green>"bun"<r>: <green>"latest"<r>
+  }·/ expects a map of specifiers, e.g.
+  ·[0m·[32m"··4"·[0m: {
+    <green>"bun"<r>: <green>"latest"<r>
+  }·"workspaces.packages" expects an array of strings, e.g.
+  "workspaces": {
+    "packages": [
+      "path/to/package"
+    ]
+  }"wo
+
+--- hit 3 ---
+ved ·[32m··[0m (· package·) ··error occurred while resolving ··········failed to read '{}'failed to parse '{}'3error: lockfile had changes, but lockfile is frozen·H·[0m·[31merror·[0m·[2m:·[0m lockfile had changes, but lockfile is frozen·Nnote: try re-running without --frozen-lockfile and commit the updated lockfile·g·[34mnote·[0m·[2m:·[0m try re-running without ·[2m--frozen-lockfile·[0m and commit the updated lockfile··Failed to install · package·
+···[0mFailed to install ·[31m·[1m··[0m package·
+·Installation aborted due to fatal security advisories
+·[31mInstallation aborted due to fatal security advisories·[0m
+security scanner failed: {}failed to watch security scanner processfailed to create IPC pipe for security scannerno packages were installed during security scanner installationfailed to install security scanner packagecannot perform partial install: security scanner package ID is invalids
+
+--- hit 4 ---
+ '{}'3error: lockfile had changes, but lockfile is frozen·H·[0m·[31merror·[0m·[2m:·[0m lockfile had changes, but lockfile is frozen·Nnote: try re-running without --frozen-lockfile and commit the updated lockfile·g·[34mnote·[0m·[2m:·[0m try re-running without ·[2m--frozen-lockfile·[0m and commit the updated lockfile··Failed to install · package·
+···[0mFailed to install ·[31m·[1m··[0m package·
+·Installation aborted due to fatal security advisories
+·[31mInstallation aborted due to fatal security advisories·[0m
+security scanner failed: {}failed to watch security scanner processfailed to create IPC pipe for security scannerno packages were installed during security scanner installationfailed to install security scanner packagecannot perform partial install: security scanner package ID is invalidsecurity scanner failed after partial install. This is probably a bug in Bun. Please report it at https://
+
+--- hit 5 ---
+edfailed to open lockfile: {s}failed to read lockfile: {s}failed to parse lockfile: {s}failed to migrate lockfile: {s}!! No packages selected for update·.·[0m·[33m!·[0m No packages selected for update··
+Installing updates...·#
+·[0m·[36mInstalling updates...·[0m·,
+Dry run mode: showing what would be updated·9
+·[0m·[33mDry run mode: showing what would be updated·[0m··→ Would update · to · in · (·)·#
+Dry run complete - no changes made·0
+·[0m·[33mDry run complete - no changes made·[0m··→ Would update catalog · to ···[2K·[1A·[2K·[?1000h·[?1006h·[1GSpace to toggle, Enter to confirm, a to select all, n to select none, i to invert, l to toggle latest·? Select packages to update - ·/·[0m·[36m?·[0m Select packages to update·[2m - ··[0m··  ↑ · more package· above·
+  ·[2m↑ · more package
+ above·[0m··  ↓ · more package· below·
+  ·[2m↓ · more package
+ below·[0m··✓ Selected · package
+ to update···[0m·[32m✓·[0
+
+--- hit 6 ---
+{s}failed to parse lockfile: {s}failed to migrate lockfile: {s}!! No packages selected for update·.·[0m·[33m!·[0m No packages selected for update··
+Installing updates...·#
+·[0m·[36mInstalling updates...·[0m·,
+Dry run mode: showing what would be updated·9
+·[0m·[33mDry run mode: showing what would be updated·[0m··→ Would update · to · in · (·)·#
+Dry run complete - no changes made·0
+·[0m·[33mDry run complete - no changes made·[0m··→ Would update catalog · to ···[2K·[1A·[2K·[?1000h·[?1006h·[1GSpace to toggle, Enter to confirm, a to select all, n to select none, i to invert, l to toggle latest·? Select packages to update - ·/·[0m·[36m?·[0m Select packages to update·[2m - ··[0m··  ↑ · more package· above·
+  ·[2m↑ · more package
+ above·[0m··  ↓ · more package· below·
+  ·[2m↓ · more package
+ below·[0m··✓ Selected · package
+ to update···[0m·[32m✓·[0m Selected · package
+ to update·
+  ··[0m··[0m···[0m·[1m
+
+
+########################################
+### TERM: \blines\b
+########################################
+
+--- hit 1 ---
+t/grammar-ref-listtext/jadetext/javascript; charset=utf-8text/javascript; charset=utf8text/javascript;charset=utf-8'text/javascript;charset=utf8text/jcr-cndtext/lesstext/markdowntext/mathmltext/mdxtext/mizartext/n3text/parameterstext/parityfectext/provenance-notationtext/prs.fallenstein.rsttext/prs.lines.tagtext/prs.prop.logictext/raptorfectext/redtext/rfc822-headerstext/richtexttext/rtftext/rtp-enc-aescm128text/rtploopbacktext/rtxtext/sgmltext/shaclctext/shextext/slimtext/spdxtext/stringstext/stylustext/t140text/tab-separated-valuestext/trofftext/turtletext/ulpfectext/uri-listtext/vcardtext/vnd.atext/vnd.abctext/vnd.ascii-arttext/vnd.curltext/vnd.curl.dcurltext/vnd.curl.mcurltext/vnd.curl.scurltext/vnd.debian.copyrighttext/vnd.dmclientscripttext/vnd.dvb.subtitletext/vnd.esmertec.theme-descriptortext/vnd.familysearch.gedcomtext/vnd.ficlab.flttext/vnd.flytext/vnd.fmi.flexstortext/vnd.gmltext/v
+
+--- hit 2 ---
+ch":{"file_deletion":{"file_creation":{"file_rename":{"file_mode_change":·{"original":{"start":·,"len":·},"patched":{"start":·,"len":·}}·{"path":,"hunks":,"before_hash":,"after_hash":{"parts":{"from_path":,"to_path":non_executableexecutable·,"mode":"·","hunk":·,"hash":insertiondeletion·{"type":"
+","lines":··,"no_newline_at_end_of_file":·}··,"old_mode":"·","new_mode":"·"}·GIT_CONFIG_NOSYSTEM·XDG_CONFIG_HOME·core.safecrlf=false--ignore-cr-at-eol--irreversible-deleteGIT_CONFIG_NOSYSTEM=1·HOME=·XDG_CONFIG_HOME=·USERPROFILE=·failed to parse patchfileapply: expected at least 1 argument, got 0······························@····validated in parse_apply_argsthis indicates either that the supplied patch file was incorrect, or there is a bug in Bun. Please check your .patch file, or open a GitHub issue :)failed to parse patch fileTestingAPIs.parse: expected at least 1 argument, got 0·failed to make diff
+
+--- hit 3 ---
+ now works
+  ·[2m^·[0m ·[31mthis test is marked as todo but passes.·[0m ·[2mRemove `.todo` if tested behavior now works·[0m
+<d><r><d> <r><d>.tmp·lcov.infoFailed to save lcov.info filelcovCoverageErrorFailed to create lcov file·
+·|---------|---------|-------------------<r>
+ <d>|<r> % Funcs <d>|<r> % Lines <d>|<r> Uncovered Line #s
+All files<r><d> |<r>
+Acceptapplication/vnd.github.v3+jsonapi.github.comGITHUB_API_DOMAIN·https://=/repos/Jarred-Sumner/bun-releases-for-updater/releases/latest·GITHUB_TOKENGITHUB_ACCESS_TOKEN·AuthorizationBearer ·HTTP404HTTPForbiddenHTTPTooManyRequestsreleases.jsontag_nameinfallible: progress active>JSON Error parsing releases from GitHub: tag_name is missing?
+·KJSON Error parsing releases from GitHub: ·[0m·[31mtag_name·[0m is missing?
+·assetscontent_type············bun-windows-x64-baseline.zip····$·······bun-windows-x64-baseline-profile.zip····browser_download_url··
+
+--- hit 4 ---
+) instead.··Cannot call a() here. It cannot be called inside a concurrent test. Use test.serial or remove test.concurrent.··Cannot call #() after the test run has completed··Cannot call 3() in preload. It can only be called inside a test.·InvalidEncodingDon't print the script commandsilentNumber of lines of script output shown when using --filter (default: 10). Set to 0 to show all lines.NUMBERelide-linesPrint version and exitPrint version with revision and exitrevisionRun a script in all workspace packages matching the patternSTRForce a script or package to use Bun's runtime instead of Node.js (via symlinking node)Exit when the parent process dies, and on exit SIGKILL every descendant. Linux/macOS only.no-orphansControl the shell used for package.json scripts. Supports either 'bun' or 'system'shellRun a script in all workspace packages (from the "workspaces" field in package.json)workspacesR
+
+--- hit 5 ---
+est.serial or remove test.concurrent.··Cannot call #() after the test run has completed··Cannot call 3() in preload. It can only be called inside a test.·InvalidEncodingDon't print the script commandsilentNumber of lines of script output shown when using --filter (default: 10). Set to 0 to show all lines.NUMBERelide-linesPrint version and exitPrint version with revision and exitrevisionRun a script in all workspace packages matching the patternSTRForce a script or package to use Bun's runtime instead of Node.js (via symlinking node)Exit when the parent process dies, and on exit SIGKILL every descendant. Linux/macOS only.no-orphansControl the shell used for package.json scripts. Supports either 'bun' or 'system'shellRun a script in all workspace packages (from the "workspaces" field in package.json)workspacesRun multiple scripts concurrently with Foreman-style outputparallelRun multiple script
+
+--- hit 6 ---
+ers for Windows Task Scheduler (max 48). Simplify the expression or use fewer restricted fields.Failed to build task XML· ·: ··error: Failed to start process·+·[0m·[31merror·[0m: Failed to start process·· ·: Exited with code ·
+·· ·: Signaled with code ·
+···[1m··[0m · $ ·[2m··[0m
+···[36m│·[0m ·[2m[· lines elided]·[0m
+··[36m└─·[0m ·[36mRunning...·[0m
+··[36mDone in  ··p· ms·[0m
+···[36mDone in  ··p··· s·[0m
+···[31mExited with code ··[0m
+··[31mInterrupted·[0m
+··[31mSignaled with code ··[0m
+···[36m·[2mWaiting for · other script(s)·[0m
+·Usage: bun run [flags] <file or script>
+
+·[1mUsage·[0m: ·[1m·[32mbun run·[0m ·[36m[flags]·[0m <file or script>
+
+Flags:·[1mFlags:·[0m·······KtC·············KtC············································3KtC····························9KtC····e·······9KtC····e·······KtC····························KtC····························KtC····;·······KtC····;·······,LtC·······
+
+
+########################################
+### TERM: [Tt]hinking
+########################################
+
+--- hit 1 ---
+able</label>relativebringingincreasegovernorplugins/List of Header">" name=" (&quot;graduate</head>
+commercemalaysiadirectormaintain;height:schedulechangingback to catholicpatternscolor: #greatestsuppliesreliable</ul>
+··<select citizensclothingwatching<li id="specificcarryingsentence<center>contrastthinkingcatch(e)southernMichael merchantcarouselpadding:interior.split("lizationOctober ){returnimproved--&gt;
+
+coveragechairman.png" />subjectsRichard whateverprobablyrecoverybaseballjudgmentconnect..css" /> websitereporteddefault"/></a>·
+electricscotlandcreationquantity. ISBN 0did not instance-search-" lang="speakersComputercontainsarchivesministerreactiondiscountItalianocriteriastrongly: 'http:'script'coveringofferingappearedBritish identifyFacebooknumerousvehiclesconcernsAmericanhandlingdiv id="William provider_contentaccuracysection andersonflexibleCategorylawrence<script>layout="approved maximum
+
+--- hit 2 ---
+···········(no content)····················No response requested.··················<synthetic>·····················Auto Mode Active················Fable 5, Opus 4.7+······················Fable 5, Opus 4.6+, Sonnet 4.6··············o···May use excessive tokens resulting in long response times or overthinking. Use sparingly for the hardest tasks.·············i···P·e·r·m·i·s·s·i·o·n· ·m·o·d·e· ·d·o·w·n·g·r·a·d·e·d· ·t·o· ·d·e·f·a·u·l·t· ··  ·b·y·p·a·s·s·/·a·u·t·o· ·r·e·q·u·i·r·e·s· ·a·c·c·e·p·t·i·n·g· ·t·h·e· ·d·i·s·c·l·a·i·m·e·r· ·i·n·t·e·r·a·c·t·i·v·e·l·y· ·f·i·r·s·t·······················.·······················Agent···················Task················9···You are Claude Code, Anthropic's official CLI for Claude.···················^···You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.··············>···You are a Claude agent, built on Anthropic's Clau
+
+--- hit 3 ---
+·d· ·a·p·p·l·y·.· ·<·b·l·o·c·k·>· ·i·m·m·e·d·i·a·t·e·l·y·.·················`···
+Review the classification process and follow it carefully, making sure you deny actions that should be blocked. As a reminder, explicit (not suggestive or implicit) user confirmation is required to override blocks. Use <thinking> before responding with <block>. Think longer on ambiguous or borderline actions; keep reasoning brief for clear-cut ones.················.orphaned_at················]···F·a·s·t· ·r·e·a·d·-·o·n·l·y· ·s·e·a·r·c·h· ·a·g·e·n·t· ·f·o·r· ·l·o·c·a·t·i·n·g· ·c·o·d·e·.· ·U·s·e· ·i·t· ·t·o· ·f·i·n·d· ·f·i·l·e·s· ·b·y· ·p·a·t·t·e·r·n· ·(·e·g·.· ·"·s·r·c·/·c·o·m·p·o·n·e·n·t·s·/·*·*·/·*·.·t·s·x·"·)·,· ·g·r·e·p· ·f·o·r· ·s·y·m·b·o·l·s· ·o·r· ·k·e·y·w·o·r·d·s· ·(·e·g·.· ·"·A·P·I· ·e·n·d·p·o·i·n·t·s·"·)·,· ·o·r· ·a·n·s·w·e·r· ·"·w·h·e·r·e· ·i·s· ·X· ·d·e·f·i·n·e·d· ·/· ·w·h·i·c·h· ·f·i·l·e·s· ·r·e·f·e·r·e·n
+
+--- hit 4 ---
+·····default··········r······waitForScrollIdley·[···········O
+····updateLastInteractionTime2··[···········I
+····switchSession···················snapshotOutputTokensForTurn·····················setUserMsgOptIn··········N····setUseCoworkPlugins··············E%·····setTracerProvider[···········s·····setThinkingTypeOverride·················setTerminalFocusForState················setTeleportedSessionInfo···············setTeamMemoryServerStatusE%················· ···setSystemPromptSectionCacheEntry················setSyncedPluginDirs·············U·····setStrictToolResultPairing[···················setStrictMcpConfig······················setStatsStore···················setSessionTrustAccepted·················setSessionStartType·····················setSessionSource················setSessionSkillAllowlist················setSessionPrResolved··················setSessionPersistenceDisabled···················se
+
+--- hit 5 ---
+·········getTotalDuration················getTotalCostUSD·················getTotalCacheReadInputTokens················ ···getTotalCacheCreationInputTokens············!···getTotalAPIDurationWithoutRetries·······················getTotalAPIDuration·····················getTokenCounter·················getThinkingTypeOverride·················getTerminalFocus················getTeleportedSessionInfo················getTeamMemoryServerStatus·······················getSystemPromptSectionCache·····················getSyncedPluginDirs·····················getStrictToolResultPairing······················getStrictMcpConfig······················getStickyBetas··················getStatsStore···················getSlowOperations·······················getSessionTrustAccepted·················getSessionStartType·····················getSessionSource················getSessionSkillAllowlist················getSessionProjectDi
+
+--- hit 6 ---
+················DISABLE_PROMPT_CACHING_MYTHOS···················DISABLE_PROMPT_CACHING_HAIKU····················DISABLE_PROMPT_CACHING_FABLE····················DISABLE_PROMPT_CACHING··················DISABLE_LOGOUT_COMMAND··················DISABLE_LOGIN_COMMAND···················DISABLE_INTERLEAVED_THINKING················"···DISABLE_INSTALL_GITHUB_APP_COMMAND······················DISABLE_INSTALLATION_CHECKS·····················DISABLE_GROWTHBOOK······················DISABLE_FEEDBACK_COMMAND················DISABLE_EXTRA_USAGE_COMMAND·····················DISABLE_ERROR_REPORTING·················DISABLE_DOCTOR_COMMAND··················DISABLE_COST_WARNINGS···················DISABLE_COMPACT·················DISABLE_BUG_COMMAND·····················DISABLE_BRIEF_MODE_STOP_HOOK····················DISABLE_AUTO_COMPACT····················DISABLE_AUTOUPDATER·····················CLAUDE_PROJECT_TOOL·········
+
+
+########################################
+### TERM: Context left
+########################################
+(no matches)
+
+
+########################################
+### TERM: Context\b
+########################################
+
+--- hit 1 ---
+··@····` ·@····8··············· !·@······A······················A····failed to spawn scoped thread···`··@····8·················@····Vec is sized conservatively·····gC············*internal error: entered unreachable code: ····@·@····(···············@0·@····Invalid UTF8assertion failed: prev_offset < context.memory_blocksassertion failed: prev_offset / context.lane_length == position.laneassertion failed: curr_offset < context.memory_blocksassertion failed: index < context.memory_blocks as u64assertion failed: curr_offset != prev_offset && (curr_offset as u64) != indexassertion failed: index / (context.lane_length as u64) == position.lane as u64 ||
+    index % (context.lane_length as u64) / (context.segment_length as u64) !=
+        position.slice as u64·Bad hash length: ····ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/>?456789:;<=··········
+····················· !"#$%&'()*+,-.
+
+--- hit 2 ---
+···········A····failed to spawn scoped thread···`··@····8·················@····Vec is sized conservatively·····gC············*internal error: entered unreachable code: ····@·@····(···············@0·@····Invalid UTF8assertion failed: prev_offset < context.memory_blocksassertion failed: prev_offset / context.lane_length == position.laneassertion failed: curr_offset < context.memory_blocksassertion failed: index < context.memory_blocks as u64assertion failed: curr_offset != prev_offset && (curr_offset as u64) != indexassertion failed: index / (context.lane_length as u64) == position.lane as u64 ||
+    index % (context.lane_length as u64) / (context.segment_length as u64) !=
+        position.slice as u64·Bad hash length: ····ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/>?456789:;<=··········
+····················· !"#$%&'()*+,-./0123·$·$v=·$m=·,t=·,p=·$·$····./ABCDEFGHIJKLMNOPQRST
+
+--- hit 3 ---
+······@····Vec is sized conservatively·····gC············*internal error: entered unreachable code: ····@·@····(···············@0·@····Invalid UTF8assertion failed: prev_offset < context.memory_blocksassertion failed: prev_offset / context.lane_length == position.laneassertion failed: curr_offset < context.memory_blocksassertion failed: index < context.memory_blocks as u64assertion failed: curr_offset != prev_offset && (curr_offset as u64) != indexassertion failed: index / (context.lane_length as u64) == position.lane as u64 ||
+    index % (context.lane_length as u64) / (context.segment_length as u64) !=
+        position.slice as u64·Bad hash length: ····ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/>?456789:;<=··········
+····················· !"#$%&'()*+,-./0123·$·$v=·$m=·,t=·,p=·$·$····./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789··6789:;<=>?········
+·····
+
+--- hit 4 ---
+··········*internal error: entered unreachable code: ····@·@····(···············@0·@····Invalid UTF8assertion failed: prev_offset < context.memory_blocksassertion failed: prev_offset / context.lane_length == position.laneassertion failed: curr_offset < context.memory_blocksassertion failed: index < context.memory_blocks as u64assertion failed: curr_offset != prev_offset && (curr_offset as u64) != indexassertion failed: index / (context.lane_length as u64) == position.lane as u64 ||
+    index % (context.lane_length as u64) / (context.segment_length as u64) !=
+        position.slice as u64·Bad hash length: ····ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/>?456789:;<=··········
+····················· !"#$%&'()*+,-./0123·$·$v=·$m=·,t=·,p=·$·$····./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789··6789:;<=>?········
+····················· !"#$%&'()*+,-./012345·$·$ ··i·
+
+--- hit 5 ---
+context.memory_blocksassertion failed: prev_offset / context.lane_length == position.laneassertion failed: curr_offset < context.memory_blocksassertion failed: index < context.memory_blocks as u64assertion failed: curr_offset != prev_offset && (curr_offset as u64) != indexassertion failed: index / (context.lane_length as u64) == position.lane as u64 ||
+    index % (context.lane_length as u64) / (context.segment_length as u64) !=
+        position.slice as u64·Bad hash length: ····ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/>?456789:;<=··········
+····················· !"#$%&'()*+,-./0123·$·$v=·$m=·,t=·,p=·$·$····./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789··6789:;<=>?········
+····················· !"#$%&'()*+,-./012345·$·$ ··i···$······························0@····base64 output is always valid UTF-82y2b2a2xwriting into a String is infallibleassertion faile
+
+--- hit 6 ---
+ngth == position.laneassertion failed: curr_offset < context.memory_blocksassertion failed: index < context.memory_blocks as u64assertion failed: curr_offset != prev_offset && (curr_offset as u64) != indexassertion failed: index / (context.lane_length as u64) == position.lane as u64 ||
+    index % (context.lane_length as u64) / (context.segment_length as u64) !=
+        position.slice as u64·Bad hash length: ····ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/>?456789:;<=··········
+····················· !"#$%&'()*+,-./0123·$·$v=·$m=·,t=·,p=·$·$····./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789··6789:;<=>?········
+····················· !"#$%&'()*+,-./012345·$·$ ··i···$······························0@····base64 output is always valid UTF-82y2b2a2xwriting into a String is infallibleassertion failed: cost < 32····1Ѭߘr/·Ḗ~&jE|,G$l··· iciNWqX~=t·XrX͋qJ··T{YZ90·`*#`(
+
+
+########################################
+### TERM: \bCost\b
+########################################
+
+--- hit 1 ---
+23·$·$v=·$m=·,t=·,p=·$·$····./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789··6789:;<=>?········
+····················· !"#$%&'()*+,-./012345·$·$ ··i···$······························0@····base64 output is always valid UTF-82y2b2a2xwriting into a String is infallibleassertion failed: cost < 32····1Ѭߘr/·Ḗ~&jE|,G$l··· iciNWqX~=t·XrX͋qJ··T{YZ90·`*#`(·yA8۸y··:`·l>·w·'K1/x`\`U%U攫UbHW@·cj9U·*4\̴A·Tr|··*oc]ũ+1·t·>\·3֯\$lS2zw(H;Kk·ē!(f·a!`|H2]]]u·#&܈·e>#Ŭom·9BD·.· Ji^·Bh!la·gӫҠQjh/T(·3Ql·n;z·P;*~·ev·9>Yf·C·oEå}^;uos D·@jVbN·w?6r·=·B$7H·
+·ۛIrS·{·y%·P;Lyl··O`@\^c$j·ohSl>9·oR;·Qm,0DE·^·J3·(·fK.·W·tE9_·ӹyU
+2`··yr,@%g̣·饎"2·u<·ka·P/R·=2`#H{1S·>W\o.V·i·B~(2gsUO'[iXʻ]·=·!lJ[-ySeEIҐK3~ˤA·b ·Lw6~д·+MەqՓkю%ǯ/[<ud+····^O·Ïhѭ·"//w··-u···̠to·O·;|٨f_··w·s̓w··!e wBT5·렉>{·AI~·-·%·^q ·h"W6d$···cUYCxSZ٢[} Ź·v·&ϕbh··AJsN-GJ·{R·Q··)S?W·ƛv`+·t恵o···Wk··*!ec.·4dV]-SG·j·npzKD).·u#&·İn}ߧI`fq·ilRdVឱ¥·6·)L·u
+
+--- hit 2 ---
+git+@github:/-/Lockfile is missing resolution data·@link:··· unrecognised dependency format: ·unrecognised dependency format: {}UnrecognizedDependencyFormatSecurityScannerInWorkspaceExpected folder path to contain `patch_hash=`, this is a bug in Bun. Please file a GitHub issue.·warn: ·' postinstall cost you ·
+···[33mwarn·[0m·[2m:·[0m ·' postinstall cost you ·
+··warn: ·'s postinstall cost you ·
+···[33mwarn·[0m·[2m:·[0m ·'s postinstall cost you ·
+·node_modules/.bin·-·.npm··.npm··.npm-·EISNOTDIREACCESSMissingPackageName- reading package.json for workspace package "·" from "·"···U@····0···············\@····$Missing "name" from package.json in ··Workspace not found "·"·Workspaces expects an array of strings, like:
+  <r><green>"workspaces"<r>: [
+    <green>"path/to/package"<r>
+  ]#Failed to run workspace pattern <b>·<r> due to error <b>·<r>·GlobError$Missing "name" from package.json in ··.· @·
+···
+
+--- hit 3 ---
+@link:··· unrecognised dependency format: ·unrecognised dependency format: {}UnrecognizedDependencyFormatSecurityScannerInWorkspaceExpected folder path to contain `patch_hash=`, this is a bug in Bun. Please file a GitHub issue.·warn: ·' postinstall cost you ·
+···[33mwarn·[0m·[2m:·[0m ·' postinstall cost you ·
+··warn: ·'s postinstall cost you ·
+···[33mwarn·[0m·[2m:·[0m ·'s postinstall cost you ·
+·node_modules/.bin·-·.npm··.npm··.npm-·EISNOTDIREACCESSMissingPackageName- reading package.json for workspace package "·" from "·"···U@····0···············\@····$Missing "name" from package.json in ··Workspace not found "·"·Workspaces expects an array of strings, like:
+  <r><green>"workspaces"<r>: [
+    <green>"path/to/package"<r>
+  ]#Failed to run workspace pattern <b>·<r> due to error <b>·<r>·GlobError$Missing "name" from package.json in ··.· @·
+···[2m.· @··[0m
+·· @·
+···[2m· @··[0m
+·· ✓ [·]: ·
+·· ·[
+
+--- hit 4 ---
+ormat: ·unrecognised dependency format: {}UnrecognizedDependencyFormatSecurityScannerInWorkspaceExpected folder path to contain `patch_hash=`, this is a bug in Bun. Please file a GitHub issue.·warn: ·' postinstall cost you ·
+···[33mwarn·[0m·[2m:·[0m ·' postinstall cost you ·
+··warn: ·'s postinstall cost you ·
+···[33mwarn·[0m·[2m:·[0m ·'s postinstall cost you ·
+·node_modules/.bin·-·.npm··.npm··.npm-·EISNOTDIREACCESSMissingPackageName- reading package.json for workspace package "·" from "·"···U@····0···············\@····$Missing "name" from package.json in ··Workspace not found "·"·Workspaces expects an array of strings, like:
+  <r><green>"workspaces"<r>: [
+    <green>"path/to/package"<r>
+  ]#Failed to run workspace pattern <b>·<r> due to error <b>·<r>·GlobError$Missing "name" from package.json in ··.· @·
+···[2m.· @··[0m
+·· @·
+···[2m· @··[0m
+·· ✓ [·]: ·
+·· ·[32m✓·[0m [·]·[2m:·[0m ·[36m··[0m
+··
+
+--- hit 5 ---
+edDependencyFormatSecurityScannerInWorkspaceExpected folder path to contain `patch_hash=`, this is a bug in Bun. Please file a GitHub issue.·warn: ·' postinstall cost you ·
+···[33mwarn·[0m·[2m:·[0m ·' postinstall cost you ·
+··warn: ·'s postinstall cost you ·
+···[33mwarn·[0m·[2m:·[0m ·'s postinstall cost you ·
+·node_modules/.bin·-·.npm··.npm··.npm-·EISNOTDIREACCESSMissingPackageName- reading package.json for workspace package "·" from "·"···U@····0···············\@····$Missing "name" from package.json in ··Workspace not found "·"·Workspaces expects an array of strings, like:
+  <r><green>"workspaces"<r>: [
+    <green>"path/to/package"<r>
+  ]#Failed to run workspace pattern <b>·<r> due to error <b>·<r>·GlobError$Missing "name" from package.json in ··.· @·
+···[2m.· @··[0m
+·· @·
+···[2m· @··[0m
+·· ✓ [·]: ·
+·· ·[32m✓·[0m [·]·[2m:·[0m ·[36m··[0m
+·· [·]: ·
+·· [·]·[2m:·[0m ·[36m··[0m
+·· » [·]: ·
+·· ·[
+
+--- hit 6 ---
+ge/tiff·image/gif·$`...`.cwd(): expected a string argument···············p···············ή@············`················Ϯ@··························· Ϯ@············ ···············@Ϯ@············@···············`Ϯ@············`···············Ϯ@············h···············ή@····algorithmtimeCostTime cost must be greater than 0memoryCostMemory cost must be at least 8Rounds must be between 4 and 31unknown algorithm, expected one of: "bcrypt", "argon2id", "argon2d", "argon2i" (default is "argon2id")options.algorithmiterationspassword is too longsalt is too long·Invalid digest: ·digestSupport serving files from a file descriptor. Please pass a path instead.TODO: support Bun.file(path) in static routesResponse body has already been usedtext/plain; charset=utf-8Body must be fully buffered before it can be used in a static route. Consider calling new Response(await response.blob()) to buffer the bod
+
+
+########################################
+### TERM: \btokens\b
+########################################
+
+--- hit 1 ---
+%u, last: %u·hash state: flags: %X; fin off: %llu; count: %u·Add new packet to buffered queue #%u; count: %u·Add split packet to buffered queue #%u; count: %u·Elide packet from buffered queue #%u; count: %u·flush header protection application, count: %u·send prediction: no, n_rtos: %u·%s: replenish tokens: %u·%s: tokens: %u·randomized QPACK %s settings: table size: %u; risked streams: %u·TX packet #%llu %s (%s), size %hu, ecn: %u, spin: %d; kp: %u, path: %hhu, flags: %u·shaking stream failed: nread: %zd, err: %d, SSL err: %u·nocopy state: frames: %u; holes: %u; cons_far: %u·generated %d-byte PATH_CHALLENGE frame for path %d; challenge: %s, seq: %u·%s: add stream %llu: incr: %u; prio: %u·Unsupported encryption format version: %u·RX packet #%llu %s (mini), ecn: %u·Unknown encryption algorithm: %u·streams at risk: %u·Unknown encryption flag: %u·delayed stream creation.  Backlog size: %u·RX packet
+
+--- hit 2 ---
+sh state: flags: %X; fin off: %llu; count: %u·Add new packet to buffered queue #%u; count: %u·Add split packet to buffered queue #%u; count: %u·Elide packet from buffered queue #%u; count: %u·flush header protection application, count: %u·send prediction: no, n_rtos: %u·%s: replenish tokens: %u·%s: tokens: %u·randomized QPACK %s settings: table size: %u; risked streams: %u·TX packet #%llu %s (%s), size %hu, ecn: %u, spin: %d; kp: %u, path: %hhu, flags: %u·shaking stream failed: nread: %zd, err: %d, SSL err: %u·nocopy state: frames: %u; holes: %u; cons_far: %u·generated %d-byte PATH_CHALLENGE frame for path %d; challenge: %s, seq: %u·%s: add stream %llu: incr: %u; prio: %u·Unsupported encryption format version: %u·RX packet #%llu %s (mini), ecn: %u·Unknown encryption algorithm: %u·streams at risk: %u·Unknown encryption flag: %u·delayed stream creation.  Backlog size: %u·RX packet #%llu, size: %
+
+--- hit 3 ---
+esolve·shieldingPromiseResolve·assertive·toBePositive·case_sensitive·caseSensitive·genitive·op_to_primitive·**to_primitive·value passing between realms must be callable or primitive·Symbol.toPrimitive·ToPrimitive·KnownPrimitive·isBoxedPrimitive·SpecPrimitive·Compact Primitive·Common Primitive·extra tokens after directive·parse error in tokenize directive·malformed #pragma directive·malformed prefix=... directive·malformed detail=... directive·malformed columnsize=... directive·malformed contentless_delete=... directive·malformed locale=... directive·malformed tokendata=... directive·domInteractive·inactive·`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active·cannot commit - no transaction is active·cannot rollback - no transaction is active·setBreakpointsActive·comitative·accusative·, last alternative·nominative·locative_copulative·fields/day/relativ
+
+--- hit 4 ---
+        # Find all Function objects
+·unable to use secure randomness
+·Can't JIT a pattern decoding surrogate pairs
+·# Custom color scheme, overrides default GREP_COLORS parameters
+·Can't JIT a pattern containing parenthesized subpatterns
+·using %zd numa regions
+·out of memory swapping %u unames.icu tokens
+·# Exclude specific file systems
+·# Late paths
+·Skipped %zu file%s of %zu (%.4g%%) not matching %zu indexes
+·# Filter by file signature magic bytes
+·%*sOnly User Certificates
+·%*sOnly Attribute Certificates
+·%*sOnly CA Certificates
+· modules
+·# Ignore files and directories specified in .gitignore, default: no-ignore-files
+·  searched %zu new files
+·  searched %zu changed files
+·# Exclude specific files
+· entries
+·# Exclude specific directories
+·failed to reserve %zu GiB huge pages
+·ures_swap(): unable to allocate memory for tracking resources
+·Can't JIT some patterns containing back reference
+
+--- hit 5 ---
+ task, decide whether/how to respond.·····················(no content)····················No response requested.··················<synthetic>·····················Auto Mode Active················Fable 5, Opus 4.7+······················Fable 5, Opus 4.6+, Sonnet 4.6··············o···May use excessive tokens resulting in long response times or overthinking. Use sparingly for the hardest tasks.·············i···P·e·r·m·i·s·s·i·o·n· ·m·o·d·e· ·d·o·w·n·g·r·a·d·e·d· ·t·o· ·d·e·f·a·u·l·t· ··  ·b·y·p·a·s·s·/·a·u·t·o· ·r·e·q·u·i·r·e·s· ·a·c·c·e·p·t·i·n·g· ·t·h·e· ·d·i·s·c·l·a·i·m·e·r· ·i·n·t·e·r·a·c·t·i·v·e·l·y· ·f·i·r·s·t·······················.·······················Agent···················Task················9···You are Claude Code, Anthropic's official CLI for Claude.···················^···You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.··············>···
+
+--- hit 6 ---
+en-exchange·············'···urn:ietf:params:oauth:token-type:id-jag·············)···urn:ietf:params:oauth:token-type:id_token·······················setMetadata·····················markStepUpPending·······················clientInformation·······················saveClientInformation···················tokens··············
+···saveTokens······················logTokenPersistFailed···············
+···xaaRefresh······················redirectToAuthorization·················saveCodeVerifier················codeVerifier····················invalidateCredentials···················saveDiscoveryState······················discoveryState··················refreshAuthorization····················readConcurrentRefreshWinner·················
+···_doRefresh······················io.modelcontextprotocol/skills··················inode/directory·················tool-results····················</persisted-output>···········
+
+
+########################################
+### TERM: \bTask\b
+########################################
+
+--- hit 1 ---
+g-installer/linux-ia32·
+@ffmpeg-installer/linux-x64·
+@ffprobe-installer/darwin-arm64·
+@ffprobe-installer/darwin-x64·
+@ffprobe-installer/linux-arm·
+@ffprobe-installer/linux-arm64·
+@ffprobe-installer/linux-ia32·
+@ffprobe-installer/linux-x64·
+@fingerprintjs/fingerprintjs-pro-react·
+@ghaiklor/x509·
+@go-task/cli·
+@injectivelabs/sdk-ts·
+@instana/autoprofile·
+@intlify/vue-i18n-bridge·
+@intlify/vue-router-bridge·
+@matteodisabatino/gc_info·
+@memlab/cli·
+@microsoft.azure/autorest-core·
+@microsoft/teamsfx-cli·
+@microsoft/ts-command-line·
+@napi-rs/pinyin·
+@nativescript/core·
+@netlify/esbuild·
+@newrelic/native-metrics·
+@notarize/qlc-cli·
+@nx-dotnet/core·
+@opensearch-project/oui·
+@pact-foundation/pact-node·
+@paloaltonetworks/postman-code-generators·
+@pdftron/pdfnet-node·
+@percy/core·
+@pnpm/exe·
+@prisma/client·
+@prisma/engines·
+@progress/kendo-licensing·
+@pulumi/aws-native·
+@pulumi/awsx·
+@pulumi/command·
+@
+
+--- hit 2 ---
+1·[0m·[31merror:·[0m expected package.json in ·[1m··[0m to be a JSON file: ·
+·git+filegit+ftpgit+httpgit+httpsgit+rsyncgit+ssh·  {
+    "name": ·,
+    "version": "·",
+    "requestedRange": "·",
+    "tarball": ·
+  }··  {
+    "name": ·,
+    "version": "·",
+    "requestedRange": ·,
+    "tarball": ·
+  }·Task.package_manager unset
+404 - GET ·RepositoryNotFound·[Scripts] Finished scripts for ·/·[0m·[2m[Scripts]·[0m Finished scripts for ·[1m··[0m·Failed to run script <b>{}<r> due to error <b>{}<r>·error: · script from "·" exited with · ·[0m·[31merror·[0m·[2m:·[0m ·[1m··[0m script from "·[1m··[0m" exited with ··[0m··error: · script from "·" terminated by · ·[0m·[31merror·[0m·[2m:·[0m ·[1m··[0m script from "·[1m··[0m" terminated by ··[0m··error: Failed to run · script from "·" due to
+·&·[0m·[31merror·[0m: Failed to run ·[1m··[0m script from "·[1m··[0m" due to
+·#<r><red>error<r>: Failed to run <b>·<r> 
+
+--- hit 3 ---
+BufferBuffer·(·) []··(·) [ ···, ... · more··[Setter]··[Getter]··[Getter/Setter]·GetterSetter is a cell[Global Object]·[36m[Global Object]·[0m·<Revoked Proxy>·· { ··[· ...]·{
+  "version":3,
+  "sources": [],
+  "sourcesContent": [],
+  "mappings": <rust>··warn: ···[0m·[33mwarn·[0m·[2m:·[0m ·infallible: task queued· checking out repository for ·! checking out repository for ·[1m··[0m·· downloading package manifest ·. Retry ·/·...·" downloading package manifest ·[1m··[0m. Retry ·/·...·TarballHTTP400TarballHTTP401TarballHTTP402TarballHTTP403TarballHTTP404TarballHTTP5xxTarballHTTP4xx·warn: · downloading tarball ·@·. Retrying ·/·...···[0m·[33mwarn:·[0m · downloading tarball ·[1m·@··[0m. Retrying ·/·...···Pb@····0···············b@····Pb@····0··············· ·@····|\{}()[]^$+*?.-requiredAndOptionalArg us_create_timer: returned null: ·TarballFailedToDownloadFailedTarballFailedToExtractError in workerFai
+
+--- hit 4 ---
+BLEHotMap already contains keyServerEntryPointGeneratereact.transitional.element5expected depth to be greater than or equal to 0, got ·%expected depth to be an integer, got ·sorted                                                                package manager init already succeeded when the pending task was enqueued@····················@····0@····п@····@··@····[@·····Unable to start IPC pipe '·'·BUN_CONFIG_VERBOSE_FETCH·      at ·
+···[0m      ·[2mat ·[0m··[2m
+···[0m      ·[2mat ·[0m·
+··      at · (·)
+···[0m      ·[2mat ·[0m
+·[2m (·[0m
+·[2m)·[0m
+·[unknown][source:·
+::error file=·,line=·,col=·,title=·
+::error title=·: ·::··%0A      at ··%0A      at · (·)·· | ·
+···[0m·[1m· |·[0m ·
+···[0m·[1m· |·[0m ··[0m·[2m | ... truncated ·[0m
+··[31m·[1m^·[0m
+· | ·
+
+···[0m·[1m· |·[0m ··[0m·[2m | ... truncated ·[0m
+
+··- | ·
+···[0m·[2m- |·[0m ·
+···[0m·[1m- |·[0m ··[0m·[2m | ... truncated ·[0m
+··················
+
+--- hit 5 ---
++- ┌─ +-┌─└─·_Ga=T,t=f,f=100,q=2;·_Ga=T,t=d,f=100,q=2;<em><strong><a href="mailto: title="<img src="" alt="<code><del><x-equation><x-equation type="display"><x-wikilink data-target=""><u></em></strong></a></code></del></x-equation></x-wikilink></u><blockquote>
+<ul>
+<ol>
+<ol start="">
+<li><li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled><input type="checkbox" class="task-list-item-checkbox" disabled checked><hr />
+<h1><h2><h3><h4><h5><h6><pre><code class="language-<p><table>
+<thead>
+<tbody>
+<tr><th<td align="</blockquote>
+</ul>
+</ol>
+</li>
+<h1<h2<h3<h4<h5<h6<a href="#</h1>
+</h2>
+</h3>
+</h4>
+</h5>
+</h6>
+</code></pre>
+</p>
+</table>
+</thead>
+</tbody>
+</tr>
+</th></td>&#x27;<br />
+[]\`<[]\`javascriptmtscts··W@····X··············· `@····h@····0@····@····pÊ@····TERM·KITTY_WINDOW_ID·GHOSTTY_RESOURCES_DIR·ghosttyTERM_PROGRAM·weztermCOLORFGBG·image/pngxmpnoembe
+
+--- hit 6 ---
+100,q=2;<em><strong><a href="mailto: title="<img src="" alt="<code><del><x-equation><x-equation type="display"><x-wikilink data-target=""><u></em></strong></a></code></del></x-equation></x-wikilink></u><blockquote>
+<ul>
+<ol>
+<ol start="">
+<li><li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled><input type="checkbox" class="task-list-item-checkbox" disabled checked><hr />
+<h1><h2><h3><h4><h5><h6><pre><code class="language-<p><table>
+<thead>
+<tbody>
+<tr><th<td align="</blockquote>
+</ul>
+</ol>
+</li>
+<h1<h2<h3<h4<h5<h6<a href="#</h1>
+</h2>
+</h3>
+</h4>
+</h5>
+</h6>
+</code></pre>
+</p>
+</table>
+</thead>
+</tbody>
+</tr>
+</th></td>&#x27;<br />
+[]\`<[]\`javascriptmtscts··W@····X··············· `@····h@····0@····@····pÊ@····TERM·KITTY_WINDOW_ID·GHOSTTY_RESOURCES_DIR·ghosttyTERM_PROGRAM·weztermCOLORFGBG·image/pngxmpnoembedplaintext&AElig;&AMP;&Aacute;&Abreve;&Acirc;&
+
+
+########################################
+### TERM: subagent
+########################################
+
+--- hit 1 ---
+·······!···Cancel a scheduled cron job by ID·······················List scheduled cron jobs················WaitForMcpServers·······················Artifact············<···[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}··························tengu_copper_fox················tengu_fork_subagent_enabled·····················fork················'···F·o·r·k· ·s·t·a·r·t·e·d· ··  ·p·r·o·c·e·s·s·i·n·g· ·i·n· ·b·a·c·k·g·r·o·u·n·d··················Fetches full schema definitions for deferred tools so they can be called.
+
+Deferred tools appear by name in <system-reminder> messages.·············e··· ·U·n·t·i·l· ·f·e·t·c·h·e·d·,· ·o·n·l·y· ·t·h·e· ·n·a·m·e· ·i·s· ·k·n·o·w·n· ··  ·t·h·e·r·e· ·i·s· ·n·o· ·p·a·r·a·m·e·t·e·r· ·s·c·h·e·m·a·,· ·s·o· ·t·h·e· ·t·o·o·l· ·c·a·n·n·o·t· ·b·e· ·i·n·v·o·k·e·d·.······················· ·U·n·t·i·l· ·f·e·t·c·h·e·d·,· ·o·n·l·y· ·t·h·e· ·n·a·m·e· ·i·s· ·k·n·o·w·n·
+
+--- hit 2 ---
+ ···https://claude.ai/settings/usage············.···https://www.anthropic.com/legal/consumer-terms··············"···/extra-usage is now /usage-credits······················tengu_pewter_summit·····················{"code":"·······················    ····················%······················cyan_FOR_SUBAGENTS_ONLY·················
+
+Sources: ······················
+···current-pr···························</agent-message>················I·n·i·t·i·a·l·i·z·i·n·g·& ······················tengu_lilac_loom················feature_of_the_week·····················# Scratchpad Directory··················<<:AMPERSAND_TOKEN:>>···················<<:DOLLAR_TOKEN:>>······················readFile················getStats················· ······················· ······················· ······················· ······P····························BACKSLASH·······················PLUS···············
+····QUESTION··········
+
+--- hit 3 ---
+·················ensureCurrentSessionFile················getExistingSessionFile··················persistToRemote·················setRemoteIngressUrl·····················setInternalEventWriter··················clearInternalEventWriter················setInternalEventReader··················setInternalSubagentEventReader··················getInternalEventReader··················getInternalSubagentEventReader··················.session-aliases············'···memory access blocked by /toggle-memory·(···················
+···················XK·························(·················8········X·K·········K··············X··········································· ···············································H········· ·········0·········H·········P························A················5GB·····(···················
+·········· ·K·······pK································x········8·········0·······
+
+--- hit 4 ---
+·········persistToRemote·················setRemoteIngressUrl·····················setInternalEventWriter··················clearInternalEventWriter················setInternalEventReader··················setInternalSubagentEventReader··················getInternalEventReader··················getInternalSubagentEventReader··················.session-aliases············'···memory access blocked by /toggle-memory·(···················
+···················XK·························(·················8········X·K·········K··············X··········································· ···············································H········· ·········0·········H·········P························A················5GB·····(···················
+·········· ·K·······pK································x········8·········0································h·············································(···············
+
+--- hit 5 ---
+················stopHeartbeat···················sendHeartbeat···············
+···writeEvent······················toClientEvent···················flushStreamEventBuffer··················writeInternalEvent······················flushWorkerState················readInternalEvents······················readSubagentInternalEvents······················paginatedGet····················getWithRetry····················reportDelivery··················getWorkerEpoch··p·················
+····(·(9(8(<(4(&('(·(·(····················at_mentioned·······`········A
+ףp=
+?············1···https://github.com/anthropics/claude-code/issues/·······················command-arg-····················slack_search_channels··················A·u·t·o· ·m·o·d·e· ·l·e·t·s· ·C·l·a·u·d·e· ·h·a·n·d·l·e· ·p·e·r·m·i·s·s·i·o·n· ·p·r·o·m·p·t·s· ·a·u·t·o·m·a·t·i·c·a·l·l·y· ··  ·C·l·a·u·d·e· ·c·h·e·c·k·s· ·e·a·c·h· ·t·o·o·l· ·c·a·l·l· ·f·o·r· ·r·
+
+--- hit 6 ---
+·
+| Topic | URL | Extraction prompt |·
+|---|---|---|·
+| Hooks | `https://code.claude.com/docs/en/hooks.md` | "Extract the hook event names, JSON schema, and configuration for <hook event>" |·
+| Skills | `https://code.claude.com/docs/en/skills.md` | "Extract how to create and structure a skill" |·
+| Subagents | `https://code.claude.com/docs/en/sub-agents.md` | "Extract how to define and configure subagents" |·
+| MCP servers | `https://code.claude.com/docs/en/mcp.md` | "Extract how to add, configure, and authenticate MCP servers" |·
+| Plugins | `https://code.claude.com/docs/en/plugins.md` | "Extract how to install and develop plugins" |·
+| Output styles | `https://code.claude.com/docs/en/output-styles.md` | "Extract how to create and apply output styles" |·
+·
+## Workflows and surfaces·
+·
+| Topic | URL | Extraction prompt |·
+|---|---|---|·
+| Commands reference | `https://code.claude.com/docs/en/com
+
+
+########################################
+### TERM: Subagent
+########################################
+
+--- hit 1 ---
+·······!···Cancel a scheduled cron job by ID·······················List scheduled cron jobs················WaitForMcpServers·······················Artifact············<···[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}··························tengu_copper_fox················tengu_fork_subagent_enabled·····················fork················'···F·o·r·k· ·s·t·a·r·t·e·d· ··  ·p·r·o·c·e·s·s·i·n·g· ·i·n· ·b·a·c·k·g·r·o·u·n·d··················Fetches full schema definitions for deferred tools so they can be called.
+
+Deferred tools appear by name in <system-reminder> messages.·············e··· ·U·n·t·i·l· ·f·e·t·c·h·e·d·,· ·o·n·l·y· ·t·h·e· ·n·a·m·e· ·i·s· ·k·n·o·w·n· ··  ·t·h·e·r·e· ·i·s· ·n·o· ·p·a·r·a·m·e·t·e·r· ·s·c·h·e·m·a·,· ·s·o· ·t·h·e· ·t·o·o·l· ·c·a·n·n·o·t· ·b·e· ·i·n·v·o·k·e·d·.······················· ·U·n·t·i·l· ·f·e·t·c·h·e·d·,· ·o·n·l·y· ·t·h·e· ·n·a·m·e· ·i·s· ·k·n·o·w·n·
+
+--- hit 2 ---
+ ···https://claude.ai/settings/usage············.···https://www.anthropic.com/legal/consumer-terms··············"···/extra-usage is now /usage-credits······················tengu_pewter_summit·····················{"code":"·······················    ····················%······················cyan_FOR_SUBAGENTS_ONLY·················
+
+Sources: ······················
+···current-pr···························</agent-message>················I·n·i·t·i·a·l·i·z·i·n·g·& ······················tengu_lilac_loom················feature_of_the_week·····················# Scratchpad Directory··················<<:AMPERSAND_TOKEN:>>···················<<:DOLLAR_TOKEN:>>······················readFile················getStats················· ······················· ······················· ······················· ······P····························BACKSLASH·······················PLUS···············
+····QUESTION··········
+
+--- hit 3 ---
+·················ensureCurrentSessionFile················getExistingSessionFile··················persistToRemote·················setRemoteIngressUrl·····················setInternalEventWriter··················clearInternalEventWriter················setInternalEventReader··················setInternalSubagentEventReader··················getInternalEventReader··················getInternalSubagentEventReader··················.session-aliases············'···memory access blocked by /toggle-memory·(···················
+···················XK·························(·················8········X·K·········K··············X··········································· ···············································H········· ·········0·········H·········P························A················5GB·····(···················
+·········· ·K·······pK································x········8·········0·······
+
+--- hit 4 ---
+·········persistToRemote·················setRemoteIngressUrl·····················setInternalEventWriter··················clearInternalEventWriter················setInternalEventReader··················setInternalSubagentEventReader··················getInternalEventReader··················getInternalSubagentEventReader··················.session-aliases············'···memory access blocked by /toggle-memory·(···················
+···················XK·························(·················8········X·K·········K··············X··········································· ···············································H········· ·········0·········H·········P························A················5GB·····(···················
+·········· ·K·······pK································x········8·········0································h·············································(···············
+
+--- hit 5 ---
+················stopHeartbeat···················sendHeartbeat···············
+···writeEvent······················toClientEvent···················flushStreamEventBuffer··················writeInternalEvent······················flushWorkerState················readInternalEvents······················readSubagentInternalEvents······················paginatedGet····················getWithRetry····················reportDelivery··················getWorkerEpoch··p·················
+····(·(9(8(<(4(&('(·(·(····················at_mentioned·······`········A
+ףp=
+?············1···https://github.com/anthropics/claude-code/issues/·······················command-arg-····················slack_search_channels··················A·u·t·o· ·m·o·d·e· ·l·e·t·s· ·C·l·a·u·d·e· ·h·a·n·d·l·e· ·p·e·r·m·i·s·s·i·o·n· ·p·r·o·m·p·t·s· ·a·u·t·o·m·a·t·i·c·a·l·l·y· ··  ·C·l·a·u·d·e· ·c·h·e·c·k·s· ·e·a·c·h· ·t·o·o·l· ·c·a·l·l· ·f·o·r· ·r·
+
+--- hit 6 ---
+·
+| Topic | URL | Extraction prompt |·
+|---|---|---|·
+| Hooks | `https://code.claude.com/docs/en/hooks.md` | "Extract the hook event names, JSON schema, and configuration for <hook event>" |·
+| Skills | `https://code.claude.com/docs/en/skills.md` | "Extract how to create and structure a skill" |·
+| Subagents | `https://code.claude.com/docs/en/sub-agents.md` | "Extract how to define and configure subagents" |·
+| MCP servers | `https://code.claude.com/docs/en/mcp.md` | "Extract how to add, configure, and authenticate MCP servers" |·
+| Plugins | `https://code.claude.com/docs/en/plugins.md` | "Extract how to install and develop plugins" |·
+| Output styles | `https://code.claude.com/docs/en/output-styles.md` | "Extract how to create and apply output styles" |·
+·
+## Workflows and surfaces·
+·
+| Topic | URL | Extraction prompt |·
+|---|---|---|·
+| Commands reference | `https://code.claude.com/docs/en/com
+
+
+########################################
+### TERM: esc to interrupt
+########################################
+(no matches)
+
+
+########################################
+### TERM: interrupt
+########################################
+
+--- hit 1 ---
+············iC····················iC····················iC····
+···············ȝiC····················՝iC····················conrxvtvt100xterm·[ ·· ·s]···[0m·[2m[·[1m ·· ·s·[0m·[2m]·[0m··[ ·· ·ms]···[0m·[2m[·[1m ·· ·ms·[0m·[2m]·[0m···[·A·Operation not permittedNo such file or directoryNo such processInterrupted system callInput/output errorNo such device or addressArgument list too longExec format errorBad file descriptorNo child processesResource temporarily unavailableCannot allocate memoryPermission deniedBad addressBlock device requiredDevice or resource busyFile existsInvalid cross-device linkNo such deviceNot a directoryIs a directoryInvalid argumentToo many open files in systemToo many open filesInappropriate ioctl for deviceText file busyFile too largeNo space left on deviceIllegal seekRead-only file systemToo many linksNumerical argument out of domainNumerical result out of rangeResource 
+
+--- hit 2 ---
+e on networkFile descriptor in bad stateRemote address changedCan not access a needed shared libraryAccessing a corrupted shared library.lib section in a.out corruptedAttempting to link in too many shared librariesCannot exec a shared library directlyInvalid or incomplete multibyte or wide characterInterrupted system call should be restartedStreams pipe errorToo many usersSocket operation on non-socketDestination address requiredMessage too longProtocol wrong type for socketProtocol not availableProtocol not supportedSocket type not supportedOperation not supportedProtocol family not supportedAddress family not supported by protocolAddress already in useCannot assign requested addressNetwork is downNetwork is unreachableNetwork dropped connection on resetSoftware caused connection abortConnection reset by peerNo buffer space availableTransport endpoint is already connectedTransport endpoint is no
+
+--- hit 3 ---
+-stats·
+gcstats.js·
+geckodriver·
+gentype·
+ghooks·
+gif2webp-bin·
+gifsicle·
+git-commit-msg-linter·
+git-validate·
+git-win·
+gl·
+go-ios·
+grpc·
+grpc-tools·
+handbrake-js·
+hasura-cli·
+heapdump·
+hiredis·
+hnswlib-node·
+hugo-bin·
+hummus·
+ibm_db·
+iconv·
+iedriver·
+iltorb·
+incremental-json-parser·
+install-peers·
+interruptor·
+iobroker.js-controller·
+iso-constants·
+isolated-vm·
+java·
+jest-preview·
+jpeg-recompress-bin·
+jpegtran-bin·
+keccak·
+kerberos·
+keytar·
+lefthook·
+leveldown·
+libpg-query·
+libpq·
+libxmljs·
+libxmljs2·
+lightningcss-cli·
+lint·
+lmdb·
+lmdb-store·
+local-cypress·
+lz4·
+lzma-native·
+lzo·
+macos-alias·
+mbt·
+memlab·
+microtime·
+minidump·
+mmmagic·
+modern-syslog·
+mongodb-client-encryption·
+mongodb-crypt-library-dummy·
+mongodb-crypt-library-version·
+mongodb-memory-server·
+mozjpeg·
+ms-chromium-edge-driver·
+msgpackr-extract·
+msnodesqlv8·
+msw·
+muhammara·
+netlify-cli·
+ngrok·
+ngx-popperjs·
+nice-napi·
+node·
+node-exp
+
+--- hit 4 ---
+VALID_OPTION_VALUEERR_PARSE_ARGS_UNEXPECTED_POSITIONALERR_PARSE_ARGS_UNKNOWN_OPTIONERR_POSTGRES_INVALID_TRANSACTION_STATEERR_POSTGRES_NOT_TAGGED_CALLERR_POSTGRES_QUERY_CANCELLEDERR_POSTGRES_UNSAFE_TRANSACTIONERR_PROXY_INVALID_CONFIGERR_UNHANDLED_REJECTIONERR_REQUIRE_ASYNC_MODULEERR_SCRIPT_EXECUTION_INTERRUPTEDERR_SCRIPT_EXECUTION_TIMEOUTERR_SERVER_ALREADY_LISTENERR_SERVER_NOT_RUNNINGERR_SOCKET_ALREADY_BOUNDERR_SOCKET_BAD_BUFFER_SIZEERR_SOCKET_BAD_PORTERR_SOCKET_BAD_TYPEERR_SOCKET_CLOSED_BEFORE_CONNECTIONERR_SOCKET_CLOSEDERR_SOCKET_CONNECTION_TIMEOUTERR_SOCKET_DGRAM_IS_CONNECTEDERR_SOCKET_DGRAM_NOT_CONNECTEDERR_SOCKET_DGRAM_NOT_RUNNINGERR_SSR_RESPONSE_EXPECTEDERR_STREAM_DESTROYEDERR_STREAM_NULL_VALUESERR_STREAM_PREMATURE_CLOSEERR_STREAM_PUSH_AFTER_EOFERR_STREAM_RELEASE_LOCKERR_STREAM_UNABLE_TO_PIPEERR_STREAM_UNSHIFT_AFTER_END_EVENTERR_STREAM_WRAPERR_STREAM_WRITE_AFTER_ENDERR_STRING_TOO_LONGERR_TLS
+
+--- hit 5 ---
+ start process·+·[0m·[31merror·[0m: Failed to start process·· ·: Exited with code ·
+·· ·: Signaled with code ·
+···[1m··[0m · $ ·[2m··[0m
+···[36m│·[0m ·[2m[· lines elided]·[0m
+··[36m└─·[0m ·[36mRunning...·[0m
+··[36mDone in  ··p· ms·[0m
+···[36mDone in  ··p··· s·[0m
+···[31mExited with code ··[0m
+··[31mInterrupted·[0m
+··[31mSignaled with code ··[0m
+···[36m·[2mWaiting for · other script(s)·[0m
+·Usage: bun run [flags] <file or script>
+
+·[1mUsage·[0m: ·[1m·[32mbun run·[0m ·[36m[flags]·[0m <file or script>
+
+Flags:·[1mFlags:·[0m·······KtC·············KtC············································3KtC····························9KtC····e·······9KtC····e·······KtC····························KtC····························KtC····;·······KtC····;·······,LtC····························[RC·············F··············/LtC····W·······/LtC····W·······································sC·············b··············L
+
+--- hit 6 ---
+··········WC············`C············tC············C············C············C············C············ǍC············ˍC············эC············ٍC············ލC············C············ ' -> 'UNKNOWNFileNotFoundNameTooLongoperation not permittedno such file or directoryno such processinterrupted system calli/o errorno such device or addressbad file descriptorresource temporarily unavailablenot enough memorybad address in system call argumentresource busy or lockedfile already existscross-device link not permittedno such deviceillegal operation on a directoryinvalid argumentfile table overflowtoo many open filesinappropriate ioctl for devicetext file is busyno space left on deviceinvalid seekread-only file systemresult too largename too longfunction not implementedtoo many symbolic links encounteredprotocol driver not attachedno data availablemachine is not on the networkprotocol er

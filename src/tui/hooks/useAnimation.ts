@@ -25,6 +25,37 @@ export function useSpinner(
   return { frame: frames[frame], colorIndex };
 }
 
+/**
+ * Gradient spinner — alternates between brand (cyan) and brandShimmer (#5cf) on each frame tick.
+ * When reducedMotion is true, returns a static frame with no animation.
+ */
+export function useGradientSpinner(
+  active: boolean,
+  style: 'braille' | 'dots' = 'braille',
+  reducedMotion = false,
+): { frame: string; color: string } {
+  const [tick, setTick] = useState(0);
+  const frames = style === 'braille' ? BRAILLE_FRAMES : DOT_FRAMES;
+
+  useEffect(() => {
+    if (!active || reducedMotion) {
+      setTick(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setTick((f) => (f + 1) % frames.length);
+    }, 80);
+    return () => clearInterval(interval);
+  }, [active, frames.length, reducedMotion]);
+
+  // Shimmer gradient: alternate between cyan and a lighter cyan
+  const colors = ['cyan', '#5cf'];
+  const frame = frames[reducedMotion ? 0 : tick];
+  const color = colors[tick % colors.length];
+
+  return { frame, color };
+}
+
 export function useTypewriter(
   text: string,
   speed: number,
