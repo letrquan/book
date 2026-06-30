@@ -76,17 +76,6 @@ export function App({ config }: AppProps) {
   const { stdout } = useStdout();
   const termHeight = stdout?.rows ?? 40;
 
-  // Layout heights (in rows).
-  // Banner: 6 lines of ASCII art
-  // StatusLine: 1 divider + 1 data row (flattened single-row)
-  // InputBar: 1 divider line + 1 input line = 2
-  // The chat area gets the remaining space.
-  const HEADER_ROWS = 6; // banner only
-  const STATUS_ROWS = 1 + 1; // divider + data row
-  const INPUT_ROWS = 2; // divider + input line
-  const FIXED_ROWS = HEADER_ROWS + STATUS_ROWS + INPUT_ROWS;
-  const chatHeight = Math.max(5, termHeight - FIXED_ROWS);
-
   useInput((input, key) => {
     // Escape cancels a pending permission (handled by PermissionButtons),
     // or aborts an in-flight stream. Do NOT double-handle Esc when
@@ -207,8 +196,9 @@ export function App({ config }: AppProps) {
           <AsciiBanner />
         </Box>
 
-        {/* Message area — fills remaining space between banner and bottom panels */}
-        <Box flexDirection="column" flexGrow={1} height={chatHeight}>
+        {/* Message area — fills remaining space between banner and bottom panels.
+         * No height clamp — grows naturally. Root Box height={termHeight} clips. */}
+        <Box flexDirection="column" flexGrow={1}>
           {error && (
             <Box paddingX={1} marginBottom={1}>
               <Text color={theme.error}>✕ {error}</Text>

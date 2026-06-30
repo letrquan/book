@@ -49,7 +49,7 @@ export function ChatPanel({
   const theme = useTheme();
 
   return (
-    <Box flexDirection="column" flexGrow={1}>
+    <Box flexDirection="column">
       {messages.map((msg) => {
         if (msg.role === 'user') {
           return <UserMessage key={msg.id} content={msg.content} />;
