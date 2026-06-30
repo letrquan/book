@@ -43,6 +43,90 @@ interface AgentMessageProps {
  * box borders, expand/collapse toggles) are stripped for flat,
  * accessible rendering.
  */
+
+/**
+ * Strip trailing partial markdown code-fence closings from streaming text.
+ *
+ * While streaming, the LLM may emit incomplete closing fences (e.g. `` ` ``
+ * after a ```rust block). These partial markers cause rendered code blocks
+ * to visually jitter as the fence opens/closes. This function detects when
+ * the last line is a non-empty prefix of the most recent opening fence
+ * marker and strips it.
+ *
+ * ponytail: only handles ``` fences; tilde fences (~~~) are rarer. Add when supported.
+ */
+export function trimPartialClosingFences(text: string): string {
+  // Find last opening fence: line starting with ``` (maybe with lang suffix)
+  const lines = text.split('\n');
+  let lastOpenIdx = -1;
+  for (let i = lines.length - 2; i >= 0; i--) {
+    if (/^```/.test(lines[i])) {
+      lastOpenIdx = i;
+      break;
+    }
+  }
+
+  // No opening fence found — nothing to trim
+  if (lastOpenIdx === -1) return text;
+
+  // Find the corresponding closing fence (same-level ``` line after the open,
+  // including the last line of text)
+  let hasClose = false;
+  for (let i = lastOpenIdx + 1; i < lines.length; i++) {
+    if (/^```\s*$/.test(lines[i])) {
+      hasClose = true;
+      break;
+    }
+  }
+
+  // Already has a closing fence — nothing to trim
+  if (hasClose) return text;
+
+  const lastLine = lines[lines.length - 1];
+
+  // If last line is empty, nothing to trim
+  if (lastLine === '') return text;
+
+  const openMarker = lines[lastOpenIdx];
+  // The closing marker is just ``` (no lang suffix)
+  const closeMarker = '```';
+
+  // If last line is a non-empty strict prefix of the closing marker, strip it
+  // (handles partials like `` or `, not the complete ``` marker)
+  if (lastLine !== closeMarker && closeMarker.startsWith(lastLine)) {
+    return lines.slice(0, -1).join('\n') + (lines.length > 1 ? '\n' : '');
+  }
+
+  return text;
+}
+
+/**
+ * Build the spinner label based on retry state.
+ * Exported for testing.
+ */
+export function getRetryLabel(
+  retryPhase: RetryPhase,
+  retryAttempt: number,
+  retryMax: number,
+  retryCountdownMs: number,
+): string | undefined {
+  if (retryPhase === 'transport') {
+    const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
+    const attemptStr = retryMax > 0
+      ? `attempt ${retryAttempt}/${retryMax}`
+      : `attempt ${retryAttempt}`;
+    return `Retrying in ${countdown}s · ${attemptStr}`;
+  }
+  if (retryPhase === 'stalled') {
+    const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
+    return `Waiting for API response · will retry in ${countdown}s · check your network`;
+  }
+  if (retryPhase === 'watchdog') {
+    return `Retrying (watchdog) · attempt ${retryAttempt}`;
+  }
+  return undefined;
+}
+
 export function AgentMessage({
   message,
   isStreaming,
@@ -57,7 +141,8 @@ export function AgentMessage({
   retryCountdownMs = 0,
 }: AgentMessageProps) {
   const theme = useTheme();
-  const displayContent = message.content;
+  const rawContent = message.content;
+  const displayContent = isStreaming ? trimPartialClosingFences(rawContent) : rawContent;
 
   // Group consecutive tool calls of the same name into runs (for MCP-style summary).
   const toolCalls = message.toolCalls ?? [];
@@ -71,29 +156,18 @@ export function AgentMessage({
     }
   }
 
-  // Build the spinner label based on retry state.
-  const getSpinnerLabel = (): string | undefined => {
-    if (retryPhase === 'transport') {
-      const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
-      const attemptStr = retryMax > 0
-        ? `attempt ${retryAttempt}/${retryMax}`
-        : `attempt ${retryAttempt}`;
-      return `Retrying in ${countdown}s · ${attemptStr}`;
-    }
-    if (retryPhase === 'stalled') {
-      const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
-      return `Waiting for API response · will retry in ${countdown}s · check your network`;
-    }
-    if (retryPhase === 'watchdog') {
-      return `Retrying (watchdog) · attempt ${retryAttempt}`;
-    }
-    return undefined;
-  };
-
-  const spinnerLabel = getSpinnerLabel();
+  const spinnerLabel = getRetryLabel(retryPhase, retryAttempt, retryMax, retryCountdownMs);
   const isRetrying = retryPhase !== 'none';
 
+  // OSC 133 shell integration — marks assistant message output zones so
+  // terminal emulators (iTerm2, WezTerm, Windows Terminal) can display
+  // structured input/output boundaries.
+  // ponytail: non-OSC-133 terminals ignore these sequences safely.
+  const osc133 = isStreaming ? { start: '', end: '' } : { start: '\x1b]133;A\x07', end: '\x1b]133;C\x07' };
+
   return (
+    <>
+      {!isStreaming && <Text>{osc133.start}</Text>}
     <Box flexDirection="column" marginY={1}>
       {/* Agent label — like Claude Code's "Claude" */}
       <Box paddingLeft={1} marginBottom={1}>
@@ -117,15 +191,16 @@ export function AgentMessage({
       {/* Text content with streaming spinner */}
       {displayContent ? (
         <Box marginLeft={screenReader ? 0 : 2} flexDirection="column">
+          {/* Retry message on its own line, separated from response content */}
+          {isRetrying && spinnerLabel && (
+            <Box marginBottom={1}>
+              <Text color={theme.error}>⟳ Retrying: </Text>
+              <Text color={theme.error}>{spinnerLabel}</Text>
+            </Box>
+          )}
           <Box>
             {isStreaming && !isRetrying && (
               <Spinner active style="braille" reducedMotion={reducedMotion} />
-            )}
-            {isRetrying && spinnerLabel && (
-              <Box>
-                <Text color={theme.error}>Retrying: </Text>
-                <Text color={theme.error}>{spinnerLabel} </Text>
-              </Box>
             )}
             <Text color={theme.text} wrap="wrap">{displayContent}</Text>
           </Box>
@@ -182,5 +257,7 @@ export function AgentMessage({
         });
       })}
     </Box>
+      {!isStreaming && <Text>{osc133.end}</Text>}
+    </>
   );
 }

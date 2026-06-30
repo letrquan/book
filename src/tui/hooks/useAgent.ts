@@ -43,6 +43,10 @@ export function useAgent(config: AgentConfig) {
   const turnStartRef = useRef(Date.now());
   // Countdown timer ref for retry countdown.
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Micro-batch text deltas during streaming: 16ms flush (~60fps) cuts React
+  // reconciliation overhead; Ink's own 30fps render throttle caps actual output.
+  const textAccRef = useRef('');
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Clean up countdown timer on unmount.
   useEffect(() => {
@@ -69,6 +73,15 @@ export function useAgent(config: AgentConfig) {
     },
     [],
   );
+
+  // Drain accumulated text into patchStreaming, then reset accumulator.
+  const flushText = useCallback(() => {
+    const acc = textAccRef.current;
+    if (acc.length === 0) return;
+    clearTimeout(flushTimerRef.current);
+    patchStreaming((m) => ({ ...m, content: m.content + acc }));
+    textAccRef.current = '';
+  }, [patchStreaming]);
 
   const send = useCallback(
     async (userMessage: string) => {
@@ -102,15 +115,19 @@ export function useAgent(config: AgentConfig) {
         // returned history — the hook's state is authoritative and updated live.
         await runAgentLoop(config, registry, userMessage, messages, {
           onText: (text) => {
-            patchStreaming((m) => ({ ...m, content: m.content + text }));
+            textAccRef.current += text;
+            clearTimeout(flushTimerRef.current);
+            flushTimerRef.current = setTimeout(flushText, 16);
           },
           onToolCall: (call: ToolCall) => {
+            flushText();
             patchStreaming((m) => ({
               ...m,
               toolCalls: [...(m.toolCalls ?? []), call],
             }));
           },
           onToolResult: (result: ToolResult) => {
+            flushText();
             patchStreaming((m) => ({
               ...m,
               toolResults: [...(m.toolResults ?? []), result],
@@ -136,6 +153,7 @@ export function useAgent(config: AgentConfig) {
             }
           },
           onDone: () => {
+            flushText();
             setTurnDurationMs(Date.now() - turnStartRef.current);
             setIsThinking(false);
             clearCountdown();

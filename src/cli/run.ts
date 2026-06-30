@@ -97,7 +97,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
 
     // Interactive TUI mode.
     const { App } = await import('../tui/app.js');
-    const { unmount } = render(createElement(App, { config }));
+    const { unmount } = render(createElement(App, { config }), { incrementalRendering: true });
     void unmount;
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));

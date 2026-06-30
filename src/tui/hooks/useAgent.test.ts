@@ -171,3 +171,90 @@ describe('useAgent error/isThinking state transitions', () => {
     expect(isThinking).toBe(false);
   });
 });
+
+describe('useAgent micro-batching', () => {
+  it('batches rapid onText calls into a single patchStreaming flush', async () => {
+    // Simulate the flush logic without React: a text accumulator ref,
+    // a setTimeout handle, and flushText that drains and resets.
+    let acc = '';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const patched: string[] = [];
+
+    const flushText = () => {
+      if (acc.length === 0) return;
+      clearTimeout(timer);
+      patched.push(acc);
+      acc = '';
+    };
+
+    const onText = (text: string) => {
+      acc += text;
+      clearTimeout(timer);
+      timer = setTimeout(flushText, 16);
+    };
+
+    // Rapid-fire N calls within 16ms window.
+    onText('Hello');
+    onText(' ');
+    onText('World');
+    onText('!');
+
+    // Flush hasn't fired yet (16ms not elapsed).
+    expect(patched.length).toBe(0);
+    expect(acc).toBe('Hello World!');
+
+    // Advance past flush interval.
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(patched.length).toBe(1);
+    expect(patched[0]).toBe('Hello World!');
+    expect(acc).toBe('');
+  });
+
+  it('flushText is a no-op when accumulator is empty', () => {
+    let acc = '';
+    const patched: string[] = [];
+
+    const flushText = () => {
+      if (acc.length === 0) return;
+      patched.push(acc);
+      acc = '';
+    };
+
+    flushText();
+    expect(patched.length).toBe(0);
+  });
+
+  it('multiple batches flush separately when separated by interval', async () => {
+    let acc = '';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const patched: string[] = [];
+
+    const flushText = () => {
+      if (acc.length === 0) return;
+      clearTimeout(timer);
+      patched.push(acc);
+      acc = '';
+    };
+
+    const onText = (text: string) => {
+      acc += text;
+      clearTimeout(timer);
+      timer = setTimeout(flushText, 16);
+    };
+
+    // Batch 1.
+    onText('A');
+    onText('B');
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Batch 2.
+    onText('C');
+    onText('D');
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(patched.length).toBe(2);
+    expect(patched[0]).toBe('AB');
+    expect(patched[1]).toBe('CD');
+  });
+});

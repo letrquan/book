@@ -1,6 +1,6 @@
-import { Box, Text, useInput, useStdout, useStdin } from 'ink';
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { ChatPanel, estimateMessageLines } from './components/ChatPanel.js';
+import { Box, Text, useInput, useStdout } from 'ink';
+import { useState, useCallback, useEffect, useMemo } from 'react';
+import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { StatusLine } from './components/StatusLine.js';
 import { AsciiBanner } from './components/AsciiBanner.js';
@@ -22,11 +22,11 @@ interface AppProps {
 }
 
 /**
- * Claude Code-style interactive TUI.
+ * Pi-style interactive TUI.
  *
  * Layout (top to bottom):
  *   1. ASCII BOOK banner
- *   2. Chat panel — message area with Up/Down/PgUp/PgDn scroll through history
+ *   2. Chat panel — renders all messages; terminal scrollback handles history
  *   3. Status line — model, turn, tokens, usage meter, mode, git, tasks
  *   4. Input bar — always visible, supports @mentions, !commands, history
  *
@@ -37,10 +37,6 @@ interface AppProps {
  *   Alt+M    — cycle permission mode
  *   Shift+Tab — cycle permission mode
  *   ?        — toggle keyboard shortcuts reference
- *   Up/Down  — scroll 1 line through message history
- *   PgUp/PgDn — scroll 1 page through message history
- *   Home/End — jump to top/bottom of history
- *   Mouse wheel — scroll through message history
  */
 export function App({ config }: AppProps) {
   const {
@@ -70,27 +66,15 @@ export function App({ config }: AppProps) {
   const [showTasks, setShowTasks] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
-  const [scrollOffset, setScrollOffset] = useState(0);
-  const [autoScroll, setAutoScroll] = useState(true);
-  const prevScrollRef = useRef(0);
   const [currentTheme, setCurrentTheme] = useState<ThemeTokens>(DEFAULT_THEME);
   const { tasks, addTask, updateTaskStatus, removeTask } = useTasks();
   const theme = useTheme();
-  const turnStartRef = useRef(Date.now());
-  const prevMessageCountRef = useRef(messages.length);
-
-  // Keep a ref to scrollOffset so the useInput closure always has the latest value
-  // for the "resume auto-scroll when scrolled back to bottom" logic.
-  useEffect(() => {
-    prevScrollRef.current = scrollOffset;
-  }, [scrollOffset]);
 
   // Discover slash commands on startup.
   const commands = useMemo(() => discoverCommands(config.workspace), [config.workspace]);
 
   const { stdout } = useStdout();
   const termHeight = stdout?.rows ?? 40;
-  const termWidth = stdout?.columns ?? 80;
 
   // Layout heights (in rows).
   // Banner: 6 lines of ASCII art
@@ -102,17 +86,6 @@ export function App({ config }: AppProps) {
   const INPUT_ROWS = 2; // divider + input line
   const FIXED_ROWS = HEADER_ROWS + STATUS_ROWS + INPUT_ROWS;
   const chatHeight = Math.max(5, termHeight - FIXED_ROWS);
-
-  // Maximum scroll offset: total estimated message lines minus visible height.
-  // Prevents scrolling past the oldest message.
-  const maxScrollOffset = useMemo(() => {
-    if (messages.length === 0) return 0;
-    let totalLines = 0;
-    for (const msg of messages) {
-      totalLines += estimateMessageLines(msg, termWidth);
-    }
-    return Math.max(0, totalLines - chatHeight);
-  }, [messages, termWidth, chatHeight]);
 
   useInput((input, key) => {
     // Escape cancels a pending permission (handled by PermissionButtons),
@@ -142,109 +115,7 @@ export function App({ config }: AppProps) {
     if (key.ctrl && input === 'l') {
       return;
     }
-    // Ctrl+S — toggle auto-scroll
-    if (key.ctrl && input === 's') {
-      setAutoScroll((s) => !s);
-      return;
-    }
-    // Up arrow — scroll up 1 line through message history
-    if (key.upArrow) {
-      setScrollOffset((prev) => Math.min(prev + 1, maxScrollOffset));
-      // Pause auto-scroll when user manually scrolls while streaming.
-      if (streamingMessageId && autoScroll) {
-        setAutoScroll(false);
-      }
-      return;
-    }
-    // Down arrow — scroll down 1 line through message history
-    if (key.downArrow) {
-      setScrollOffset((prev) => Math.max(0, prev - 1));
-      if (prevScrollRef.current <= 1) {
-        // At bottom — resume auto-scroll if it was paused.
-        setAutoScroll(true);
-      }
-      return;
-    }
-    // PgUp — scroll up one page (screenful) through message history
-    if (key.pageUp) {
-      setScrollOffset((prev) => Math.min(prev + chatHeight - 2, maxScrollOffset));
-      if (streamingMessageId && autoScroll) {
-        setAutoScroll(false);
-      }
-      return;
-    }
-    // PgDn — scroll down one page through message history
-    if (key.pageDown) {
-      setScrollOffset((prev) => Math.max(0, prev - (chatHeight - 2)));
-      return;
-    }
-    // Home — jump to top of history
-    if (key.home) {
-      setScrollOffset(maxScrollOffset);
-      return;
-    }
-    // End — jump to bottom (tail)
-    if (key.end) {
-      setScrollOffset(0);
-      setAutoScroll(true);
-      return;
-    }
   });
-
-  // --- Mouse wheel scrolling ---
-  // Enable SGR extended mouse mode so the terminal sends mouse wheel events
-  // as CSI sequences (scroll up = <64, scroll down = <65).
-  // We listen on the raw stdin event emitter because Ink's useInput does not
-  // expose mouse events.
-  const { internal_eventEmitter: stdinEvents } = useStdin();
-  const scrollOffsetRef = useRef(scrollOffset);
-  scrollOffsetRef.current = scrollOffset;
-  const autoScrollRef = useRef(autoScroll);
-  autoScrollRef.current = autoScroll;
-  const maxScrollOffsetRef = useRef(maxScrollOffset);
-  maxScrollOffsetRef.current = maxScrollOffset;
-  const streamingRef = useRef(streamingMessageId);
-  streamingRef.current = streamingMessageId;
-
-  useEffect(() => {
-    if (!stdout) return;
-
-    // Enable SGR extended mouse mode (tracking + SGR format)
-    stdout.write('\x1b[?1000;1006h');
-
-    const handleInput = (input: string) => {
-      // SGR mouse wheel events: \x1b[<64;col;rowM (up) or \x1b[<65;col;rowM (down)
-      const wheelMatch = input.match(/^\x1b\[<(6[45]);\d+;\d+[Mm]/);
-      if (!wheelMatch) return;
-
-      const button = parseInt(wheelMatch[1], 10); // 64 = scroll up, 65 = scroll down
-      const linesPerTick = 3; // scroll 3 lines per wheel tick
-
-      if (button === 64) {
-        // Scroll up — show older messages
-        setScrollOffset((prev) =>
-          Math.min(prev + linesPerTick, maxScrollOffsetRef.current),
-        );
-        if (streamingRef.current && autoScrollRef.current) {
-          setAutoScroll(false);
-        }
-      } else if (button === 65) {
-        // Scroll down — show newer messages
-        setScrollOffset((prev) => Math.max(0, prev - linesPerTick));
-        if (scrollOffsetRef.current <= linesPerTick) {
-          setAutoScroll(true);
-        }
-      }
-    };
-
-    stdinEvents.on('input', handleInput);
-
-    return () => {
-      // Disable SGR mouse mode on cleanup
-      stdout.write('\x1b[?1000;1006l');
-      stdinEvents.off('input', handleInput);
-    };
-  }, [stdinEvents, stdout]); // stable reference — only mount/unmount once
 
   // Auto-expand the latest tool call while it's running; collapse when done.
   useEffect(() => {
@@ -259,23 +130,8 @@ export function App({ config }: AppProps) {
     }
   }, [messages]);
 
-  // Smart auto-scroll: only reset to bottom when the user is already near
-  // the bottom. This prevents constant scrollOffset recalculations during
-  // streaming that cause message flicker. The scrollOffsetRef is kept in
-  // sync via the useEffect on line 84.
-  useEffect(() => {
-    if (messages.length !== prevMessageCountRef.current) {
-      prevMessageCountRef.current = messages.length;
-      if (autoScroll && streamingMessageId && prevScrollRef.current <= 5) {
-        setScrollOffset(0);
-      }
-    }
-  }, [messages.length, streamingMessageId, autoScroll]);
-
   const handleSubmit = useCallback(
     (value: string) => {
-      // Reset scroll when user submits a new message.
-      setScrollOffset(0);
       // Slash commands: built-in first, then custom.
       if (value.startsWith('/clear')) {
         clear();
@@ -366,10 +222,6 @@ export function App({ config }: AppProps) {
             activeToolCallId={expandedToolId}
             reducedMotion={config.accessibility?.reducedMotion}
             screenReader={config.accessibility?.screenReader}
-            scrollOffset={scrollOffset}
-            autoScroll={autoScroll}
-            maxHeight={chatHeight}
-            terminalWidth={termWidth}
             retryPhase={retryPhase}
             retryAttempt={retryAttempt}
             retryMax={retryMax}
@@ -412,13 +264,8 @@ export function App({ config }: AppProps) {
                 <HelpRow label="Ctrl+T" description="Toggle task list" theme={theme} />
                 <HelpRow label="Ctrl+L" description="Redraw screen" theme={theme} />
                 <HelpRow label="Alt+M" description="Cycle permission mode" theme={theme} />
-                <HelpRow label="PgUp/PgDn" description="Scroll through message history" theme={theme} />
-                <HelpRow label="Home/End" description="Jump to top/bottom of history" theme={theme} />
-                <HelpRow label="Mouse wheel" description="Scroll through message history" theme={theme} />
-                <HelpRow label="Up/Down" description="Navigate input history" theme={theme} />
                 <HelpRow label="Shift+Enter" description="Insert newline (multiline)" theme={theme} />
                 <HelpRow label="Ctrl+/" description="Toggle this reference" theme={theme} />
-                <HelpRow label="Ctrl+S" description="Toggle auto-scroll" theme={theme} />
                 <HelpRow label="@path" description="Expand file contents" theme={theme} />
                 <HelpRow label="!cmd" description="Run shell command" theme={theme} />
               </Box>
