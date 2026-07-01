@@ -49,7 +49,6 @@ describe('ChatPanel Ink rendering', () => {
     expect(frame(view.lastFrame)).toContain('older question');
     expect(frame(view.lastFrame)).toContain('older answer');
     expect(frame(view.lastFrame)).toContain('new question');
-    expect(frame(view.lastFrame)).toContain('Book');
 
     view.rerender(
       withTheme(
@@ -176,5 +175,57 @@ describe('ChatPanel Ink rendering', () => {
 
     expect(frame(retrying.lastFrame)).toContain('Retrying: Retrying in 4s · attempt 2/10');
     expect(frame(retrying.lastFrame)).toContain('partial text');
+  });
+
+  it('merges adjacent assistant messages where later has no content (tool-call-only turn)', () => {
+    const messages: Message[] = [
+      msg('u1', 'user', 'run tests'),
+      {
+        ...msg('a1', 'assistant', 'I will explore the project.'),
+        toolCalls: [{ id: 'call-1', name: 'Glob', arguments: { pattern: '*.ts' } }],
+        toolResults: [{ toolCallId: 'call-1', success: true, output: 'src/index.ts' }],
+      },
+      // Tool-call-only turn — no content, just tool calls/results.
+      {
+        ...msg('a2', 'assistant', ''),
+        toolCalls: [{ id: 'call-2', name: 'Read', arguments: { filePath: 'src/index.ts' } }],
+        toolResults: [{ toolCallId: 'call-2', success: true, output: 'file contents' }],
+      },
+      // Another tool-call-only turn.
+      {
+        ...msg('a3', 'assistant', ''),
+        toolCalls: [{ id: 'call-3', name: 'Grep', arguments: { pattern: 'export' } }],
+        toolResults: [{ toolCallId: 'call-3', success: true, output: '1 match' }],
+      },
+    ];
+
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          activeToolCallId="call-1"
+          terminalWidth={100}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    // All tool calls should appear under a single "I will explore the project" block.
+    // No repeated empty "Book" headers between tools.
+    expect(output).toContain('I will explore the project.');
+    expect(output).toContain('[OK] Glob *.ts');
+    expect(output).toContain('[OK] Read src/index.ts');
+    expect(output).toContain('[OK] Grep');
+
+    // The tool calls should appear in order after the text.
+    const textIdx = output.indexOf('I will explore the project.');
+    const globIdx = output.indexOf('[OK] Glob');
+    const readIdx = output.indexOf('[OK] Read');
+    const grepIdx = output.indexOf('[OK] Grep');
+    expect(textIdx).toBeLessThan(globIdx);
+    expect(globIdx).toBeLessThan(readIdx);
+    expect(readIdx).toBeLessThan(grepIdx);
   });
 });

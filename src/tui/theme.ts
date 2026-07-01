@@ -52,6 +52,8 @@ export const LIGHT_THEME: ThemeTokens = {
   mdLink: 'blue',
   mdListMarker: '#888',
   mdHr: '#ccc',
+
+  userBg: '#e8e8e8',
 };
 
 /**

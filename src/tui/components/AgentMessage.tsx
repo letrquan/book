@@ -31,15 +31,14 @@ interface AgentMessageProps {
  * Claude Code-style agent message block.
  *
  * Each assistant turn renders as:
- *   1. A "Book" label (like Claude Code's "Claude" label)
- *   2. Spinner line — shows thinking tips, or retry countdown during retries
- *   3. Streaming text content
- *   4. Tool call blocks below the text, grouped by consecutive same-name calls
+ *   1. Spinner line — shows thinking tips, or retry countdown during retries
+ *   2. Streaming text content
+ *   3. Tool call blocks below the text, grouped by consecutive same-name calls
  *
  * During retries, the spinner line shows Claude Code-style messages:
- *   - Transport retry: "⟳ Retrying in 4s · attempt 3/10"
- *   - Stream stall:    "⏳ Waiting for API response · will retry in 8s · check your network"
- *   - Watchdog:        "⟳ Retrying (watchdog) · attempt 47"
+ *   - Transport retry: "Retrying in 4s · attempt 3/10"
+ *   - Stream stall:    "Waiting for API response · will retry in 8s · check your network"
+ *   - Watchdog:        "Retrying (watchdog) · attempt 47"
  *
  * When screenReader mode is enabled, all decorations (spinners,
  * box borders, expand/collapse toggles) are stripped for flat,
@@ -99,10 +98,6 @@ export function AgentMessageInner({
 
   return (
     <Box flexDirection="column" marginY={1}>
-      {/* Agent label — like Claude Code's "Claude" */}
-      <Box paddingLeft={1} marginBottom={1}>
-        <Text color={theme.brand} bold>Book</Text>
-      </Box>
 
       {/* Spinner line: shows thinking tips, or retry countdown during retries */}
       {isStreaming && !displayContent && !message.toolCalls?.length ? (

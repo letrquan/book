@@ -101,6 +101,9 @@ export interface ThemeTokens {
   mdLink: string;
   mdListMarker: string;
   mdHr: string;
+
+  /** User message background */
+  userBg: string;
 }
 
 export const DEFAULT_THEME: ThemeTokens = {
@@ -150,6 +153,8 @@ export const DEFAULT_THEME: ThemeTokens = {
   mdLink: 'cyan',
   mdListMarker: 'gray',
   mdHr: 'gray',
+
+  userBg: '#1a1a2e',
 };
 
 export interface Usage {

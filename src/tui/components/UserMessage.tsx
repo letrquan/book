@@ -7,22 +7,14 @@ interface UserMessageProps {
 }
 
 /**
- * Claude Code-style user message block.
- *
- * Renders as:
- *   You  <content>
- * Using the brand color for the "You" label and text color for content.
+ * User message block — rendered with a subtle background to visually
+ * distinguish user messages from assistant messages.
  */
 function UserMessageInner({ content }: UserMessageProps) {
   const theme = useTheme();
 
   return (
-    <Box marginY={1} paddingLeft={1}>
-      <Box marginRight={1}>
-        <Text color={theme.brand} bold>
-          You
-        </Text>
-      </Box>
+    <Box marginY={1} paddingX={2} paddingY={1} backgroundColor={theme.userBg}>
       <Box flexGrow={1}>
         <Text color={theme.text} wrap="wrap">
           {content}

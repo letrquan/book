@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import React from 'react';
+import React, { useMemo } from 'react';
 import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
 import { AgentMessage } from './AgentMessage.js';
 import { UserMessage } from './UserMessage.js';
@@ -29,10 +29,52 @@ interface ChatPanelProps {
 }
 
 /**
+ * Merge adjacent assistant messages where the later message has no content
+ * but has tool calls/results. This avoids showing a separate "Book" label
+ * for tool-call-only turns — they visually merge into the prior message.
+ */
+function mergeAssistantMessages(messages: Message[]): Message[] {
+  if (messages.length <= 1) return messages;
+  const merged: Message[] = [];
+  let i = 0;
+  while (i < messages.length) {
+    const current = messages[i];
+    if (current.role !== 'assistant') {
+      merged.push(current);
+      i++;
+      continue;
+    }
+    // Look ahead: merge any following assistant messages that have no content
+    // but have tool calls/results.
+    let mergedMsg: Message = { ...current };
+    let j = i + 1;
+    while (j < messages.length) {
+      const next = messages[j];
+      if (next.role !== 'assistant') break;
+      if (next.content) break; // has its own text content, don't merge
+      // Merge tool calls and tool results.
+      mergedMsg = {
+        ...mergedMsg,
+        toolCalls: [...(mergedMsg.toolCalls ?? []), ...(next.toolCalls ?? [])],
+        toolResults: [...(mergedMsg.toolResults ?? []), ...(next.toolResults ?? [])],
+      };
+      j++;
+    }
+    merged.push(mergedMsg);
+    i = j;
+  }
+  return merged;
+}
+
+/**
  * Chat panel — renders all messages as Ink components in order.
  *
  * Pi-style: no alt-screen, no virtual scrolling, no viewport culling.
  * All messages are rendered and the terminal emulator owns scrollback.
+ *
+ * Adjacent assistant messages where the later ones have no text content
+ * (only tool calls/results) are merged into the prior message so that
+ * tool calls appear under a single header rather than repeated ones.
  */
 export function ChatPanel({
   messages,
@@ -50,9 +92,12 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const theme = useTheme();
 
+  // Merge tool-call-only assistant messages into their preceding message.
+  const displayMessages = useMemo(() => mergeAssistantMessages(messages), [messages]);
+
   return (
     <Box flexDirection="column">
-      {messages.map((msg) => {
+      {displayMessages.map((msg) => {
         if (msg.role === 'user') {
           return <UserMessage key={msg.id} content={msg.content} />;
         }
