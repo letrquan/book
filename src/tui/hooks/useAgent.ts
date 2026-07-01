@@ -5,11 +5,10 @@ import { createDefaultRegistry } from '../../tools/registry.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types.js';
 import {
-  appendContentToMessage,
-  appendToolCallToMessage,
-  appendToolResultToMessage,
   makeMessage,
 } from './streaming-state.js';
+import { createMessageAccumulator } from './message-accumulator.js';
+import type { MessageAccumulator } from './message-accumulator.js';
 
 export function useAgent(config: AgentConfig) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -41,6 +40,8 @@ export function useAgent(config: AgentConfig) {
   const turnStartRef = useRef(Date.now());
   // Countdown timer ref for retry countdown.
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Message accumulator for batched streaming updates.
+  const accumulatorRef = useRef<MessageAccumulator | null>(null);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -90,6 +91,16 @@ export function useAgent(config: AgentConfig) {
         return next;
       });
 
+      // Create and start the batched message accumulator.
+      // All streaming callbacks push to this queue; it flushes at 16ms.
+      accumulatorRef.current = createMessageAccumulator(
+        placeholder.id,
+        setMessages,
+        messagesRef,
+        16,
+      );
+      accumulatorRef.current.start();
+
       const registry = createDefaultRegistry();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -100,31 +111,13 @@ export function useAgent(config: AgentConfig) {
         // returned history — the hook's state is authoritative and updated live.
         await runAgentLoop(config, registry, userMessage, history, {
           onText: (text) => {
-            const id = streamingIdRef.current;
-            if (!id) return;
-            setMessages((prev) => {
-              const next = appendContentToMessage(prev, id, text);
-              messagesRef.current = next;
-              return next;
-            });
+            accumulatorRef.current?.addText(text);
           },
           onToolCall: (call: ToolCall) => {
-            const id = streamingIdRef.current;
-            if (!id) return;
-            setMessages((prev) => {
-              const next = appendToolCallToMessage(prev, id, call);
-              messagesRef.current = next;
-              return next;
-            });
+            accumulatorRef.current?.addToolCall(call);
           },
           onToolResult: (result: ToolResult) => {
-            const id = streamingIdRef.current;
-            if (!id) return;
-            setMessages((prev) => {
-              const next = appendToolResultToMessage(prev, id, result);
-              messagesRef.current = next;
-              return next;
-            });
+            accumulatorRef.current?.addToolResult(result);
           },
           onTodos: (todos) => {
             setAgentTodos(todos as Todo[]);
@@ -139,6 +132,8 @@ export function useAgent(config: AgentConfig) {
             // previous turn's content stays intact above while we stream a
             // new one below — no overwriting.
             if (turn > 1) {
+              // Stop the old accumulator (flushes remaining ops, syncs messagesRef).
+              accumulatorRef.current?.stop();
               const next = makeMessage('assistant', '');
               streamingIdRef.current = next.id;
               setStreamingMessageId(next.id);
@@ -147,6 +142,14 @@ export function useAgent(config: AgentConfig) {
                 messagesRef.current = updated;
                 return updated;
               });
+              // Start a new accumulator for the new message.
+              accumulatorRef.current = createMessageAccumulator(
+                next.id,
+                setMessages,
+                messagesRef,
+                16,
+              );
+              accumulatorRef.current.start();
             }
           },
           onDone: () => {
@@ -204,6 +207,8 @@ export function useAgent(config: AgentConfig) {
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
+        accumulatorRef.current?.stop();
+        accumulatorRef.current = null;
         setIsThinking(false);
         streamingIdRef.current = null;
         setStreamingMessageId(null);
@@ -235,6 +240,8 @@ export function useAgent(config: AgentConfig) {
 
   // Abort the in-flight agent stream (Esc while thinking).
   const cancel = useCallback(() => {
+    accumulatorRef.current?.stop();
+    accumulatorRef.current = null;
     abortRef.current?.abort();
     abortRef.current = null;
     setIsThinking(false);

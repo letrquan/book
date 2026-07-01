@@ -1,5 +1,14 @@
-import { describe, it, expect } from 'vitest';
-import { estimateMessageLines, getVisibleMessages } from './ChatPanel.js';
+import { describe, it, expect, beforeEach } from 'vitest';
+import {
+  estimateMessageLines,
+  getVisibleMessages,
+  getVisibleViewport,
+  clearLineCache,
+} from './ChatPanel.js';
+
+beforeEach(() => {
+  clearLineCache();
+});
 
 /**
  * Tests for ChatPanel scroll logic.
@@ -198,5 +207,26 @@ describe('ChatPanel virtual viewport', () => {
     );
     const result = computeVisibleMessages(msgs, 0, MAX_HEIGHT, TERM_WIDTH, null);
     expect(result.length).toBe(5);
+  });
+
+  it('one-line scroll changes viewport offset before message boundaries change', () => {
+    const msgs = Array.from(
+      { length: 10 },
+      (_, i) => makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
+    );
+
+    const first = getVisibleViewport(msgs, {
+      scrollOffset: 1,
+      maxHeight: MAX_HEIGHT,
+      terminalWidth: TERM_WIDTH,
+    });
+    const second = getVisibleViewport(msgs, {
+      scrollOffset: 2,
+      maxHeight: MAX_HEIGHT,
+      terminalWidth: TERM_WIDTH,
+    });
+
+    expect(second.messages.map((m) => m.id)).toEqual(first.messages.map((m) => m.id));
+    expect(second.topOffset).toBe(first.topOffset - 1);
   });
 });

@@ -1,6 +1,7 @@
-import { Box, Text, useInput, useStdout, useStdin } from 'ink';
+import { Box, Text, useInput, useStdout, useStdin, useApp } from 'ink';
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { ChatPanel, estimateMessageLines } from './components/ChatPanel.js';
+import { getCachedLineEstimate, clearLineCache } from './hooks/message-line-cache.js';
 import { InputBar } from './components/InputBar.js';
 import { StatusLine } from './components/StatusLine.js';
 import { AsciiBanner } from './components/AsciiBanner.js';
@@ -14,8 +15,6 @@ import type { AgentConfig } from '../types.js';
 import { DEFAULT_THEME } from '../types.js';
 import { useTheme } from './theme.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
-import type { SlashCommand } from '../commands/loader.js';
-import { exit } from '../cli/exit.js';
 
 interface AppProps {
   config: AgentConfig;
@@ -76,6 +75,7 @@ export function App({ config }: AppProps) {
   const [currentTheme, setCurrentTheme] = useState<ThemeTokens>(DEFAULT_THEME);
   const { tasks, addTask, updateTaskStatus, removeTask } = useTasks();
   const theme = useTheme();
+  const { exit: exitApp } = useApp();
 
   // Keep a ref to scrollOffset so the useInput closure always has the latest value
   // for the "resume auto-scroll when scrolled back to bottom" logic.
@@ -107,7 +107,7 @@ export function App({ config }: AppProps) {
     if (messages.length === 0) return 0;
     let totalLines = 0;
     for (const msg of messages) {
-      totalLines += estimateMessageLines(msg, termWidth);
+      totalLines += getCachedLineEstimate(msg, termWidth, estimateMessageLines);
     }
     return Math.max(0, totalLines - chatHeight);
   }, [messages, termWidth, chatHeight]);
@@ -204,6 +204,20 @@ export function App({ config }: AppProps) {
   const streamingRef = useRef(streamingMessageId);
   streamingRef.current = streamingMessageId;
 
+  // Scroll event-loop batching: wheel events update the ref immediately but
+  // defer setScrollOffset to the next macrotask. Rapid wheel ticks are
+  // coalesced into a single React state update.
+  const batchedScrollRef = useRef<number | null>(null);
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushScrollOffset = useCallback(() => {
+    if (batchedScrollRef.current !== null) {
+      setScrollOffset(batchedScrollRef.current);
+      batchedScrollRef.current = null;
+    }
+    scrollTimerRef.current = null;
+  }, []);
+
   useEffect(() => {
     if (!stdout) return;
 
@@ -216,20 +230,33 @@ export function App({ config }: AppProps) {
       if (!wheelMatch) return;
 
       const button = parseInt(wheelMatch[1], 10); // 64 = scroll up, 65 = scroll down
-      const linesPerTick = 3; // scroll 3 lines per wheel tick
+      const linesPerTick = 1;
 
       if (button === 64) {
-        // Scroll up — show older messages
-        setScrollOffset((prev) =>
-          Math.min(prev + linesPerTick, maxScrollOffsetRef.current),
+        // Scroll up — show older messages.
+        const tentative = Math.min(
+          scrollOffsetRef.current + linesPerTick,
+          maxScrollOffsetRef.current,
         );
+        scrollOffsetRef.current = tentative;
+        batchedScrollRef.current = tentative;
+        if (scrollTimerRef.current !== null) {
+          clearTimeout(scrollTimerRef.current);
+        }
+        scrollTimerRef.current = setTimeout(flushScrollOffset, 0);
         if (streamingRef.current && autoScrollRef.current) {
           setAutoScroll(false);
         }
       } else if (button === 65) {
-        // Scroll down — show newer messages
-        setScrollOffset((prev) => Math.max(0, prev - linesPerTick));
-        if (scrollOffsetRef.current <= linesPerTick) {
+        // Scroll down — show newer messages.
+        const tentative = Math.max(0, scrollOffsetRef.current - linesPerTick);
+        scrollOffsetRef.current = tentative;
+        batchedScrollRef.current = tentative;
+        if (scrollTimerRef.current !== null) {
+          clearTimeout(scrollTimerRef.current);
+        }
+        scrollTimerRef.current = setTimeout(flushScrollOffset, 0);
+        if (scrollOffsetRef.current <= 0) {
           setAutoScroll(true);
         }
       }
@@ -241,6 +268,10 @@ export function App({ config }: AppProps) {
       // Disable SGR mouse mode on cleanup
       stdout.write('\x1b[?1000;1006l');
       stdinEvents.off('input', handleInput);
+      if (scrollTimerRef.current) {
+        clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = null;
+      }
     };
   }, [stdinEvents, stdout]); // stable reference — only mount/unmount once
 
@@ -272,11 +303,13 @@ export function App({ config }: AppProps) {
       setScrollOffset(0);
       // Slash commands: built-in first, then custom.
       if (value.startsWith('/clear')) {
+        clearLineCache();
         clear();
       } else if (value.startsWith('/compact')) {
         compact();
+        clearLineCache();
       } else if (value.startsWith('/exit')) {
-        exit(0);
+        exitApp();
       } else if (value.startsWith('/help')) {
         setShowHelp((s) => !s);
       } else if (value.startsWith('/task ')) {
@@ -319,7 +352,7 @@ export function App({ config }: AppProps) {
         send(value);
       }
     },
-    [send, clear, compact, addTask, commands],
+    [send, clear, compact, addTask, commands, exitApp],
   );
 
   const handleGlobalShortcut = useCallback(

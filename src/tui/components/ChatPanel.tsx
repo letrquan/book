@@ -4,6 +4,7 @@ import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../type
 import { AgentMessage } from './AgentMessage.js';
 import { UserMessage } from './UserMessage.js';
 import { useTheme } from '../theme.js';
+import { getCachedLineEstimate, clearLineCache } from '../hooks/message-line-cache.js';
 
 interface PendingPermission {
   toolCall: ToolCall;
@@ -111,7 +112,20 @@ export function getVisibleMessages<T extends Message>(
     autoScroll?: boolean;
   },
 ): T[] {
-  if (messages.length === 0) return [];
+  return getVisibleViewport(messages, options).messages;
+}
+
+export function getVisibleViewport<T extends Message>(
+  messages: T[],
+  options: {
+    scrollOffset?: number;
+    maxHeight?: number;
+    terminalWidth?: number;
+    streamingMessageId?: string | null;
+    autoScroll?: boolean;
+  },
+): { messages: T[]; topOffset: number } {
+  if (messages.length === 0) return { messages: [], topOffset: 0 };
 
   const scrollOffset = options.scrollOffset ?? 0;
   const maxHeight = options.maxHeight ?? 40;
@@ -122,22 +136,24 @@ export function getVisibleMessages<T extends Message>(
 
   let totalLines = 0;
   for (const msg of messages) {
-    totalLines += estimateMessageLines(msg, terminalWidth);
+    totalLines += getCachedLineEstimate(msg, terminalWidth, estimateMessageLines);
   }
 
   const viewportTop = Math.max(0, totalLines - scrollOffset - height);
   const viewportBottom = totalLines - scrollOffset;
   const included: T[] = [];
+  let firstVisibleTop = 0;
   let lineCount = 0;
 
   for (const msg of messages) {
-    const msgLines = estimateMessageLines(msg, terminalWidth);
+    const msgLines = getCachedLineEstimate(msg, terminalWidth, estimateMessageLines);
     const msgTop = lineCount;
     lineCount += msgLines;
 
     if (lineCount <= viewportTop) continue;
     if (msgTop >= viewportBottom) break;
 
+    if (included.length === 0) firstVisibleTop = msgTop;
     included.push(msg);
   }
 
@@ -151,7 +167,10 @@ export function getVisibleMessages<T extends Message>(
     }
   }
 
-  return included;
+  return {
+    messages: included,
+    topOffset: included.length > 0 ? Math.max(0, viewportTop - firstVisibleTop) : 0,
+  };
 }
 
 /**
@@ -180,9 +199,9 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const theme = useTheme();
 
-  const visibleMessages = useMemo(
+  const visibleViewport = useMemo(
     () =>
-      getVisibleMessages(messages, {
+      getVisibleViewport(messages, {
         scrollOffset,
         maxHeight,
         terminalWidth,
@@ -191,6 +210,7 @@ export function ChatPanel({
       }),
     [messages, scrollOffset, maxHeight, terminalWidth, streamingMessageId, autoScroll],
   );
+  const visibleMessages = visibleViewport.messages;
 
   const isBrowsing = scrollOffset > 0 && !streamingMessageId;
 
@@ -216,27 +236,36 @@ export function ChatPanel({
         </Box>
       )}
 
-      {visibleMessages.map((msg) => {
-        if (msg.role === 'user') {
-          return <UserMessage key={msg.id} content={msg.content} />;
-        }
-        return (
-          <AgentMessage
-            key={msg.id}
-            message={msg}
-            isStreaming={msg.id === streamingMessageId}
-            pendingPermission={pendingPermission}
-            onResolvePermission={onResolvePermission}
-            activeToolCallId={activeToolCallId}
-            reducedMotion={reducedMotion}
-            screenReader={screenReader}
-            retryPhase={msg.id === streamingMessageId ? retryPhase : 'none'}
-            retryAttempt={msg.id === streamingMessageId ? retryAttempt : 0}
-            retryMax={msg.id === streamingMessageId ? retryMax : 0}
-            retryCountdownMs={msg.id === streamingMessageId ? retryCountdownMs : 0}
-          />
-        );
-      })}
+      <Box flexDirection="column" flexGrow={1} overflow="hidden">
+        <Box
+          flexDirection="column"
+          marginTop={visibleViewport.topOffset > 0 ? -visibleViewport.topOffset : 0}
+        >
+          {visibleMessages.map((msg) => {
+            if (msg.role === 'user') {
+              return <UserMessage key={msg.id} content={msg.content} />;
+            }
+            return (
+              <AgentMessage
+                key={msg.id}
+                message={msg}
+                isStreaming={msg.id === streamingMessageId}
+                pendingPermission={pendingPermission}
+                onResolvePermission={onResolvePermission}
+                activeToolCallId={activeToolCallId}
+                reducedMotion={reducedMotion}
+                screenReader={screenReader}
+                retryPhase={msg.id === streamingMessageId ? retryPhase : 'none'}
+                retryAttempt={msg.id === streamingMessageId ? retryAttempt : 0}
+                retryMax={msg.id === streamingMessageId ? retryMax : 0}
+                retryCountdownMs={msg.id === streamingMessageId ? retryCountdownMs : 0}
+              />
+            );
+          })}
+        </Box>
+      </Box>
     </Box>
   );
 }
+
+export { clearLineCache };

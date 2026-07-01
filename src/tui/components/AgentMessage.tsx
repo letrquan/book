@@ -1,4 +1,5 @@
 import { Text, Box } from 'ink';
+import React, { useMemo } from 'react';
 import { Spinner } from './Spinner.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
 import { PermissionButtons } from './PermissionButtons.js';
@@ -43,7 +44,7 @@ interface AgentMessageProps {
  * box borders, expand/collapse toggles) are stripped for flat,
  * accessible rendering.
  */
-export function AgentMessage({
+export function AgentMessageInner({
   message,
   isStreaming,
   pendingPermission,
@@ -61,18 +62,21 @@ export function AgentMessage({
 
   // Group consecutive tool calls of the same name into runs (for MCP-style summary).
   const toolCalls = message.toolCalls ?? [];
-  const toolCallGroups: ToolCall[][] = [];
-  for (const tc of toolCalls) {
-    const last = toolCallGroups[toolCallGroups.length - 1];
-    if (last && last[0].name === tc.name) {
-      last.push(tc);
-    } else {
-      toolCallGroups.push([tc]);
+  const toolCallGroups: ToolCall[][] = useMemo(() => {
+    const groups: ToolCall[][] = [];
+    for (const tc of toolCalls) {
+      const last = groups[groups.length - 1];
+      if (last && last[0].name === tc.name) {
+        last.push(tc);
+      } else {
+        groups.push([tc]);
+      }
     }
-  }
+    return groups;
+  }, [toolCalls]);
 
   // Build the spinner label based on retry state.
-  const getSpinnerLabel = (): string | undefined => {
+  const spinnerLabel = useMemo((): string | undefined => {
     if (retryPhase === 'transport') {
       const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
       const attemptStr = retryMax > 0
@@ -88,9 +92,8 @@ export function AgentMessage({
       return `Retrying (watchdog) · attempt ${retryAttempt}`;
     }
     return undefined;
-  };
+  }, [retryPhase, retryAttempt, retryMax, retryCountdownMs]);
 
-  const spinnerLabel = getSpinnerLabel();
   const isRetrying = retryPhase !== 'none';
 
   return (
@@ -184,3 +187,43 @@ export function AgentMessage({
     </Box>
   );
 }
+
+/**
+ * Memoized agent message with a custom comparator.
+ *
+ * Scalar props are compared first (fast path). The `message` object is
+ * compared by id, content, and array lengths — deep comparison is avoided
+ * because arrays are replaced with new references on every append.
+ *
+ * `onResolvePermission` is deliberately excluded from the comparison:
+ * its identity changes every render (it captures `pendingPermission`), but
+ * the important signal — which tool call is pending — is already covered
+ * by `pendingPermission?.toolCall?.id`.
+ */
+export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
+  // Fast path: same references for the most common props.
+  if (
+    prev.isStreaming === next.isStreaming &&
+    prev.activeToolCallId === next.activeToolCallId &&
+    prev.pendingPermission?.toolCall?.id === next.pendingPermission?.toolCall?.id &&
+    prev.retryPhase === next.retryPhase &&
+    prev.retryAttempt === next.retryAttempt &&
+    prev.retryMax === next.retryMax &&
+    prev.retryCountdownMs === next.retryCountdownMs &&
+    prev.reducedMotion === next.reducedMotion &&
+    prev.screenReader === next.screenReader
+  ) {
+    // Check message identity.
+    const pm = prev.message;
+    const nm = next.message;
+    if (
+      pm.id === nm.id &&
+      pm.content === nm.content &&
+      (pm.toolCalls?.length ?? 0) === (nm.toolCalls?.length ?? 0) &&
+      (pm.toolResults?.length ?? 0) === (nm.toolResults?.length ?? 0)
+    ) {
+      return true; // skip re-render
+    }
+  }
+  return false;
+});

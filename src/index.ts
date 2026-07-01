@@ -24,6 +24,7 @@ program
   .option('-n, --name <name>', 'Set a display name for the session')
   .option('--no-session-persistence', 'Do not save the session to disk')
   .option('--fork-session', 'On resume, create a new session id instead of reusing')
+  .option('--scrollback', 'Use terminal-native scrollback instead of the full-screen TUI')
   .option('--settings <path>', 'Path to an ad-hoc settings file (overrides all scopes)')
   .option('--no-settings', 'Skip all settings.json layers (use defaults + legacy .bookrc.json)');
 

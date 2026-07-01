@@ -11,6 +11,26 @@ import { homedir } from 'os';
 import type { AgentConfig } from '../types.js';
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
+const ENTER_ALT_SCREEN = '\x1b[?1049h';
+const EXIT_ALT_SCREEN = '\x1b[?1049l';
+
+export function enterAlternateScreen(
+  stdout: Pick<NodeJS.WriteStream, 'isTTY' | 'write'> = process.stdout,
+): () => void {
+  if (!stdout.isTTY) return () => {};
+
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    stdout.write(EXIT_ALT_SCREEN);
+    process.off('exit', restore);
+  };
+
+  stdout.write(ENTER_ALT_SCREEN);
+  process.once('exit', restore);
+  return restore;
+}
 
 export async function runMainAction(options: Record<string, unknown>): Promise<void> {
   try {
@@ -96,9 +116,32 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     }
 
     // Interactive TUI mode.
+    const rawMode = ((options.permissionMode as string) ?? 'default') as string;
+    const mode = (rawMode === 'acceptEdits' ? 'accept-edits' : rawMode) as
+      | 'default'
+      | 'accept-edits'
+      | 'plan'
+      | 'auto'
+      | 'dontAsk'
+      | 'bypassPermissions';
+    if (options.scrollback) {
+      const { runScrollbackSession } = await import('./scrollback.js');
+      await runScrollbackSession(config, { mode });
+      return;
+    }
+
     const { App } = await import('../tui/app.js');
-    const { unmount } = render(createElement(App, { config }));
-    void unmount;
+    const restoreScreen = config.accessibility?.screenReader
+      ? () => {}
+      : enterAlternateScreen();
+    let app: ReturnType<typeof render> | undefined;
+    try {
+      app = render(createElement(App, { config }));
+      await app.waitUntilExit();
+    } finally {
+      app?.cleanup();
+      restoreScreen();
+    }
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));
     exit(1);
