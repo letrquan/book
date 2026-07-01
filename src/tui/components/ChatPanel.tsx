@@ -1,4 +1,4 @@
-import { Box, Text } from 'ink';
+import { Box, Text, Static } from 'ink';
 import React, { useMemo } from 'react';
 import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
 import { AgentMessage } from './AgentMessage.js';
@@ -95,29 +95,64 @@ export function ChatPanel({
   // Merge tool-call-only assistant messages into their preceding message.
   const displayMessages = useMemo(() => mergeAssistantMessages(messages), [messages]);
 
+  // Split messages: completed ones go into <Static> so they persist in
+  // terminal scrollback; the streaming message stays in the dynamic area.
+  // When not streaming, all messages are completed.
+  const completedMessages = useMemo(
+    () =>
+      streamingMessageId
+        ? displayMessages.filter((msg) => msg.id !== streamingMessageId)
+        : displayMessages,
+    [displayMessages, streamingMessageId],
+  );
+  const activeMessage = useMemo(
+    () =>
+      streamingMessageId
+        ? displayMessages.find((msg) => msg.id === streamingMessageId)
+        : undefined,
+    [displayMessages, streamingMessageId],
+  );
+
   return (
     <Box flexDirection="column">
-      {displayMessages.map((msg) => {
-        if (msg.role === 'user') {
-          return <UserMessage key={msg.id} content={msg.content} />;
-        }
-        return (
-          <AgentMessage
-            key={msg.id}
-            message={msg}
-            isStreaming={msg.id === streamingMessageId}
-            pendingPermission={pendingPermission}
-            onResolvePermission={onResolvePermission}
-            activeToolCallId={activeToolCallId}
-            reducedMotion={reducedMotion}
-            screenReader={screenReader}
-            retryPhase={msg.id === streamingMessageId ? retryPhase : 'none'}
-            retryAttempt={msg.id === streamingMessageId ? retryAttempt : 0}
-            retryMax={msg.id === streamingMessageId ? retryMax : 0}
-            retryCountdownMs={msg.id === streamingMessageId ? retryCountdownMs : 0}
-          />
-        );
-      })}
+      {/* Completed messages rendered via <Static> — preserved in scrollback. */}
+      <Static items={completedMessages}>
+        {(msg) => {
+          if (msg.role === 'user') {
+            return <UserMessage key={msg.id} content={msg.content} />;
+          }
+          return (
+            <AgentMessage
+              key={msg.id}
+              message={msg}
+              isStreaming={false}
+              pendingPermission={pendingPermission}
+              onResolvePermission={onResolvePermission}
+              activeToolCallId={activeToolCallId}
+              reducedMotion={reducedMotion}
+              screenReader={screenReader}
+            />
+          );
+        }}
+      </Static>
+
+      {/* Active streaming message rendered in the dynamic area. */}
+      {activeMessage && (
+        <AgentMessage
+          key={activeMessage.id}
+          message={activeMessage}
+          isStreaming={true}
+          pendingPermission={pendingPermission}
+          onResolvePermission={onResolvePermission}
+          activeToolCallId={activeToolCallId}
+          reducedMotion={reducedMotion}
+          screenReader={screenReader}
+          retryPhase={retryPhase}
+          retryAttempt={retryAttempt}
+          retryMax={retryMax}
+          retryCountdownMs={retryCountdownMs}
+        />
+      )}
     </Box>
   );
 }
