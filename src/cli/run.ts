@@ -133,7 +133,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     const { App } = await import('../tui/app.js');
     let app: ReturnType<typeof render> | undefined;
     try {
-      app = render(createElement(App, { config }));
+      app = render(createElement(App, { config }), { incrementalRendering: true });
       await app.waitUntilExit();
     } finally {
       app?.cleanup();
