@@ -1,7 +1,7 @@
 import { Box, Text, useInput, useStdout, useStdin, useApp } from 'ink';
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { ChatPanel, estimateMessageLines } from './components/ChatPanel.js';
-import { getCachedLineEstimate, clearLineCache } from './hooks/message-line-cache.js';
+import { ChatPanel, getEstimatedTranscriptLines } from './components/ChatPanel.js';
+import { clearLineCache } from './hooks/message-line-cache.js';
 import { InputBar } from './components/InputBar.js';
 import { StatusLine } from './components/StatusLine.js';
 import { AsciiBanner } from './components/AsciiBanner.js';
@@ -10,7 +10,14 @@ import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
-import { ThemeContext, loadCustomTheme, DARK_THEME, LIGHT_THEME, type ThemeTokens, type ThemeName } from './theme.js';
+import {
+  ThemeContext,
+  loadCustomTheme,
+  DARK_THEME,
+  LIGHT_THEME,
+  type ThemeTokens,
+  type ThemeName,
+} from './theme.js';
 import type { AgentConfig } from '../types.js';
 import { DEFAULT_THEME } from '../types.js';
 import { useTheme } from './theme.js';
@@ -101,16 +108,18 @@ export function App({ config }: AppProps) {
   const FIXED_ROWS = HEADER_ROWS + STATUS_ROWS + INPUT_ROWS;
   const chatHeight = Math.max(5, termHeight - FIXED_ROWS);
 
-  // Maximum scroll offset: total estimated message lines minus visible height.
-  // Prevents scrolling past the oldest message.
-  const maxScrollOffset = useMemo(() => {
-    if (messages.length === 0) return 0;
-    let totalLines = 0;
-    for (const msg of messages) {
-      totalLines += getCachedLineEstimate(msg, termWidth, estimateMessageLines);
-    }
+  const messagesRefForScroll = useRef(messages);
+  messagesRefForScroll.current = messages;
+
+  // Compute only when the user scrolls. Streaming renders stay on the tail and
+  // should not rescan the whole transcript every frame.
+  const getMaxScrollOffset = useCallback(() => {
+    if (messagesRefForScroll.current.length === 0) return 0;
+    const totalLines = getEstimatedTranscriptLines(messagesRefForScroll.current, termWidth);
     return Math.max(0, totalLines - chatHeight);
-  }, [messages, termWidth, chatHeight]);
+  }, [termWidth, chatHeight]);
+  const getMaxScrollOffsetRef = useRef(getMaxScrollOffset);
+  getMaxScrollOffsetRef.current = getMaxScrollOffset;
 
   useInput((input, key) => {
     // Escape cancels a pending permission (handled by PermissionButtons),
@@ -147,7 +156,7 @@ export function App({ config }: AppProps) {
     }
     // Up arrow — scroll up 1 line through message history
     if (key.upArrow) {
-      setScrollOffset((prev) => Math.min(prev + 1, maxScrollOffset));
+      setScrollOffset((prev) => Math.min(prev + 1, getMaxScrollOffset()));
       // Pause auto-scroll when user manually scrolls while streaming.
       if (streamingMessageId && autoScroll) {
         setAutoScroll(false);
@@ -165,7 +174,7 @@ export function App({ config }: AppProps) {
     }
     // PgUp — scroll up one page (screenful) through message history
     if (key.pageUp) {
-      setScrollOffset((prev) => Math.min(prev + chatHeight - 2, maxScrollOffset));
+      setScrollOffset((prev) => Math.min(prev + chatHeight - 2, getMaxScrollOffset()));
       if (streamingMessageId && autoScroll) {
         setAutoScroll(false);
       }
@@ -178,7 +187,7 @@ export function App({ config }: AppProps) {
     }
     // Home — jump to top of history
     if (key.home) {
-      setScrollOffset(maxScrollOffset);
+      setScrollOffset(getMaxScrollOffset());
       return;
     }
     // End — jump to bottom (tail)
@@ -199,14 +208,12 @@ export function App({ config }: AppProps) {
   scrollOffsetRef.current = scrollOffset;
   const autoScrollRef = useRef(autoScroll);
   autoScrollRef.current = autoScroll;
-  const maxScrollOffsetRef = useRef(maxScrollOffset);
-  maxScrollOffsetRef.current = maxScrollOffset;
   const streamingRef = useRef(streamingMessageId);
   streamingRef.current = streamingMessageId;
 
-  // Scroll event-loop batching: wheel events update the ref immediately but
-  // defer setScrollOffset to the next macrotask. Rapid wheel ticks are
-  // coalesced into a single React state update.
+  // Scroll event-loop batching: wheel events update the ref immediately, then
+  // commit at most one React update per frame.
+  const SCROLL_FRAME_MS = 16;
   const batchedScrollRef = useRef<number | null>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -217,6 +224,12 @@ export function App({ config }: AppProps) {
     }
     scrollTimerRef.current = null;
   }, []);
+
+  const scheduleScrollFlush = useCallback(() => {
+    if (scrollTimerRef.current === null) {
+      scrollTimerRef.current = setTimeout(flushScrollOffset, SCROLL_FRAME_MS);
+    }
+  }, [flushScrollOffset]);
 
   useEffect(() => {
     if (!stdout) return;
@@ -236,14 +249,11 @@ export function App({ config }: AppProps) {
         // Scroll up — show older messages.
         const tentative = Math.min(
           scrollOffsetRef.current + linesPerTick,
-          maxScrollOffsetRef.current,
+          getMaxScrollOffsetRef.current(),
         );
         scrollOffsetRef.current = tentative;
         batchedScrollRef.current = tentative;
-        if (scrollTimerRef.current !== null) {
-          clearTimeout(scrollTimerRef.current);
-        }
-        scrollTimerRef.current = setTimeout(flushScrollOffset, 0);
+        scheduleScrollFlush();
         if (streamingRef.current && autoScrollRef.current) {
           setAutoScroll(false);
         }
@@ -252,10 +262,7 @@ export function App({ config }: AppProps) {
         const tentative = Math.max(0, scrollOffsetRef.current - linesPerTick);
         scrollOffsetRef.current = tentative;
         batchedScrollRef.current = tentative;
-        if (scrollTimerRef.current !== null) {
-          clearTimeout(scrollTimerRef.current);
-        }
-        scrollTimerRef.current = setTimeout(flushScrollOffset, 0);
+        scheduleScrollFlush();
         if (scrollOffsetRef.current <= 0) {
           setAutoScroll(true);
         }
@@ -273,14 +280,14 @@ export function App({ config }: AppProps) {
         scrollTimerRef.current = null;
       }
     };
-  }, [stdinEvents, stdout]); // stable reference — only mount/unmount once
+  }, [stdinEvents, stdout, scheduleScrollFlush]); // stable reference — only mount/unmount once
 
   // Auto-expand the latest tool call while it's running; collapse when done.
   useEffect(() => {
     const lastMsg = messages[messages.length - 1];
     if (lastMsg?.role === 'assistant' && lastMsg.toolCalls?.length) {
       const latestTool = lastMsg.toolCalls[lastMsg.toolCalls.length - 1];
-      if (!lastMsg.toolResults?.find(r => r.toolCallId === latestTool.id)) {
+      if (!lastMsg.toolResults?.find((r) => r.toolCallId === latestTool.id)) {
         setExpandedToolId(latestTool.id);
       }
     } else {
@@ -356,7 +363,10 @@ export function App({ config }: AppProps) {
   );
 
   const handleGlobalShortcut = useCallback(
-    (input: string, key: { ctrl?: boolean; meta?: boolean; shift?: boolean; tab?: boolean }): boolean => {
+    (
+      input: string,
+      key: { ctrl?: boolean; meta?: boolean; shift?: boolean; tab?: boolean },
+    ): boolean => {
       // Ctrl+/ — toggle keyboard shortcuts reference.
       // Must be handled here (not in the parent useInput) because ink-text-input
       // consumes Ctrl key events before they reach the parent handler.
@@ -373,108 +383,151 @@ export function App({ config }: AppProps) {
     <ThemeContext.Provider value={currentTheme}>
       <ErrorBoundary>
         <Box flexDirection="column" height={termHeight}>
-        {/* ASCII BOOK banner at the top */}
-        <Box overflow="hidden">
-          <AsciiBanner />
-        </Box>
+          {/* ASCII BOOK banner at the top */}
+          <Box overflow="hidden">
+            <AsciiBanner />
+          </Box>
 
-        {/* Message area — fills remaining space between banner and bottom panels */}
-        <Box flexDirection="column" flexGrow={1} height={chatHeight}>
-          {error && (
-            <Box paddingX={1} marginBottom={1}>
-              <Text color={theme.error}>✕ {error}</Text>
-            </Box>
-          )}
-          <ChatPanel
-            messages={messages}
-            streamingMessageId={streamingMessageId}
-            pendingPermission={pendingPermission}
-            onResolvePermission={resolvePermission}
-            activeToolCallId={expandedToolId}
-            reducedMotion={config.accessibility?.reducedMotion}
-            screenReader={config.accessibility?.screenReader}
-            scrollOffset={scrollOffset}
-            autoScroll={autoScroll}
-            maxHeight={chatHeight}
-            terminalWidth={termWidth}
-            retryPhase={retryPhase}
-            retryAttempt={retryAttempt}
-            retryMax={retryMax}
-            retryCountdownMs={retryCountdownMs}
-          />
-          {agentTodos.length > 0 && <AgentTodoList todos={agentTodos} />}
-          {showTasks && (
-            <TaskList
-              tasks={tasks}
-              onUpdateStatus={updateTaskStatus}
-              onRemove={removeTask}
+          {/* Message area — fills remaining space between banner and bottom panels */}
+          <Box flexDirection="column" flexGrow={1} height={chatHeight}>
+            {error && (
+              <Box paddingX={1} marginBottom={1}>
+                <Text color={theme.error}>✕ {error}</Text>
+              </Box>
+            )}
+            <ChatPanel
+              messages={messages}
+              streamingMessageId={streamingMessageId}
+              pendingPermission={pendingPermission}
+              onResolvePermission={resolvePermission}
+              activeToolCallId={expandedToolId}
+              reducedMotion={config.accessibility?.reducedMotion}
+              screenReader={config.accessibility?.screenReader}
+              scrollOffset={scrollOffset}
+              autoScroll={autoScroll}
+              maxHeight={chatHeight}
+              terminalWidth={termWidth}
+              retryPhase={retryPhase}
+              retryAttempt={retryAttempt}
+              retryMax={retryMax}
+              retryCountdownMs={retryCountdownMs}
             />
-          )}
-          {showHelp && (
-            <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1} marginTop={1}>
-              <Text bold color={theme.brand}>Slash Commands</Text>
-              <Box flexDirection="column" marginTop={1}>
-                <HelpRow label="/help" description="Toggle this help" theme={theme} />
-                <HelpRow label="/clear" description="Clear conversation" theme={theme} />
-                <HelpRow label="/compact" description="Summarize older turns" theme={theme} />
-                <HelpRow label="/task <subject>" description="Add a task" theme={theme} />
-                <HelpRow label="/theme [dark|light|auto]" description="Switch theme" theme={theme} />
-                <HelpRow label="/exit" description="Exit book" theme={theme} />
-                {commands.length > 0 && (
-                  <>
-                    <Text color={theme.subtle} dimColor>─── Custom (.book/commands/) ───</Text>
-                    {commands.map((cmd) => (
-                      <HelpRow key={cmd.name} label={`/${cmd.name}${cmd.argumentHint ? ` ${cmd.argumentHint}` : ''}`} description={cmd.description} theme={theme} />
-                    ))}
-                  </>
-                )}
+            {agentTodos.length > 0 && <AgentTodoList todos={agentTodos} />}
+            {showTasks && (
+              <TaskList tasks={tasks} onUpdateStatus={updateTaskStatus} onRemove={removeTask} />
+            )}
+            {showHelp && (
+              <Box
+                flexDirection="column"
+                borderStyle="single"
+                borderColor={theme.subtle}
+                paddingX={1}
+                marginTop={1}
+              >
+                <Text bold color={theme.brand}>
+                  Slash Commands
+                </Text>
+                <Box flexDirection="column" marginTop={1}>
+                  <HelpRow label="/help" description="Toggle this help" theme={theme} />
+                  <HelpRow label="/clear" description="Clear conversation" theme={theme} />
+                  <HelpRow label="/compact" description="Summarize older turns" theme={theme} />
+                  <HelpRow label="/task <subject>" description="Add a task" theme={theme} />
+                  <HelpRow
+                    label="/theme [dark|light|auto]"
+                    description="Switch theme"
+                    theme={theme}
+                  />
+                  <HelpRow label="/exit" description="Exit book" theme={theme} />
+                  {commands.length > 0 && (
+                    <>
+                      <Text color={theme.subtle} dimColor>
+                        ─── Custom (.book/commands/) ───
+                      </Text>
+                      {commands.map((cmd) => (
+                        <HelpRow
+                          key={cmd.name}
+                          label={`/${cmd.name}${cmd.argumentHint ? ` ${cmd.argumentHint}` : ''}`}
+                          description={cmd.description}
+                          theme={theme}
+                        />
+                      ))}
+                    </>
+                  )}
+                </Box>
               </Box>
-            </Box>
-          )}
-          {showShortcuts && (
-            <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1} marginTop={1}>
-              <Text bold color={theme.brand}>Keyboard Shortcuts</Text>
-              <Box flexDirection="column" marginTop={1}>
-                <HelpRow label="Esc" description="Cancel permission / abort stream" theme={theme} />
-                <HelpRow label="Ctrl+T" description="Toggle task list" theme={theme} />
-                <HelpRow label="Ctrl+L" description="Redraw screen" theme={theme} />
-                <HelpRow label="Alt+M" description="Cycle permission mode" theme={theme} />
-                <HelpRow label="PgUp/PgDn" description="Scroll through message history" theme={theme} />
-                <HelpRow label="Home/End" description="Jump to top/bottom of history" theme={theme} />
-                <HelpRow label="Mouse wheel" description="Scroll through message history" theme={theme} />
-                <HelpRow label="Up/Down" description="Navigate input history" theme={theme} />
-                <HelpRow label="Shift+Enter" description="Insert newline (multiline)" theme={theme} />
-                <HelpRow label="Ctrl+/" description="Toggle this reference" theme={theme} />
-                <HelpRow label="Ctrl+S" description="Toggle auto-scroll" theme={theme} />
-                <HelpRow label="@path" description="Expand file contents" theme={theme} />
-                <HelpRow label="!cmd" description="Run shell command" theme={theme} />
+            )}
+            {showShortcuts && (
+              <Box
+                flexDirection="column"
+                borderStyle="single"
+                borderColor={theme.subtle}
+                paddingX={1}
+                marginTop={1}
+              >
+                <Text bold color={theme.brand}>
+                  Keyboard Shortcuts
+                </Text>
+                <Box flexDirection="column" marginTop={1}>
+                  <HelpRow
+                    label="Esc"
+                    description="Cancel permission / abort stream"
+                    theme={theme}
+                  />
+                  <HelpRow label="Ctrl+T" description="Toggle task list" theme={theme} />
+                  <HelpRow label="Ctrl+L" description="Redraw screen" theme={theme} />
+                  <HelpRow label="Alt+M" description="Cycle permission mode" theme={theme} />
+                  <HelpRow
+                    label="PgUp/PgDn"
+                    description="Scroll through message history"
+                    theme={theme}
+                  />
+                  <HelpRow
+                    label="Home/End"
+                    description="Jump to top/bottom of history"
+                    theme={theme}
+                  />
+                  <HelpRow
+                    label="Mouse wheel"
+                    description="Scroll through message history"
+                    theme={theme}
+                  />
+                  <HelpRow label="Up/Down" description="Navigate input history" theme={theme} />
+                  <HelpRow
+                    label="Shift+Enter"
+                    description="Insert newline (multiline)"
+                    theme={theme}
+                  />
+                  <HelpRow label="Ctrl+/" description="Toggle this reference" theme={theme} />
+                  <HelpRow label="Ctrl+S" description="Toggle auto-scroll" theme={theme} />
+                  <HelpRow label="@path" description="Expand file contents" theme={theme} />
+                  <HelpRow label="!cmd" description="Run shell command" theme={theme} />
+                </Box>
               </Box>
-            </Box>
-          )}
-        </Box>
+            )}
+          </Box>
 
-        {/* Input bar — above the status line */}
-        <Box paddingX={1}>
-          <InputBar
-            onSubmit={handleSubmit}
-            disabled={isThinking}
-            mode={mode}
-            onCycleMode={cycleMode}
-            onGlobalShortcut={handleGlobalShortcut}
-          />
-        </Box>
+          {/* Input bar — above the status line */}
+          <Box paddingX={1}>
+            <InputBar
+              onSubmit={handleSubmit}
+              disabled={isThinking}
+              mode={mode}
+              onCycleMode={cycleMode}
+              onGlobalShortcut={handleGlobalShortcut}
+            />
+          </Box>
 
-        {/* Status line — absolute bottom */}
-        <Box overflow="hidden">
-          <StatusLine
-            model={config.model}
-            tokenCount={tokenCount}
-            maxTokens={config.maxTokens}
-            mode={mode}
-            taskCount={tasks.length}
-            activeTaskCount={tasks.filter(t => t.status === 'in_progress').length}
-          />
-        </Box>
+          {/* Status line — absolute bottom */}
+          <Box overflow="hidden">
+            <StatusLine
+              model={config.model}
+              tokenCount={tokenCount}
+              maxTokens={config.maxTokens}
+              mode={mode}
+              taskCount={tasks.length}
+              activeTaskCount={tasks.filter((t) => t.status === 'in_progress').length}
+            />
+          </Box>
         </Box>
       </ErrorBoundary>
     </ThemeContext.Provider>

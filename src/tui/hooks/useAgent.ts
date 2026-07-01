@@ -1,12 +1,18 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import type { Message, ToolCall, ToolResult, PermissionResult, PermissionMode, Usage, RetryPhase } from '../../types.js';
+import type {
+  Message,
+  ToolCall,
+  ToolResult,
+  PermissionResult,
+  PermissionMode,
+  Usage,
+  RetryPhase,
+} from '../../types.js';
 import { runAgentLoop } from '../../agent/loop.js';
 import { createDefaultRegistry } from '../../tools/registry.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types.js';
-import {
-  makeMessage,
-} from './streaming-state.js';
+import { makeMessage } from './streaming-state.js';
 import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
 
@@ -92,12 +98,12 @@ export function useAgent(config: AgentConfig) {
       });
 
       // Create and start the batched message accumulator.
-      // All streaming callbacks push to this queue; it flushes at 16ms.
+      // All streaming callbacks push to this queue; it flushes near 30fps.
       accumulatorRef.current = createMessageAccumulator(
         placeholder.id,
         setMessages,
         messagesRef,
-        16,
+        32,
       );
       accumulatorRef.current.start();
 
@@ -109,101 +115,109 @@ export function useAgent(config: AgentConfig) {
         // `history` (pre-user state) is passed as context; the loop pushes its
         // own copy of the user message for API context. We ignore the loop's
         // returned history — the hook's state is authoritative and updated live.
-        await runAgentLoop(config, registry, userMessage, history, {
-          onText: (text) => {
-            accumulatorRef.current?.addText(text);
-          },
-          onToolCall: (call: ToolCall) => {
-            accumulatorRef.current?.addToolCall(call);
-          },
-          onToolResult: (result: ToolResult) => {
-            accumulatorRef.current?.addToolResult(result);
-          },
-          onTodos: (todos) => {
-            setAgentTodos(todos as Todo[]);
-          },
-          onError: (err) => {
-            setError(err);
-          },
-          onTurnStart: (turn) => {
-            setCurrentTurn(turn);
-            turnStartRef.current = Date.now();
-            // Each new agentic turn is its own assistant message, so the
-            // previous turn's content stays intact above while we stream a
-            // new one below — no overwriting.
-            if (turn > 1) {
-              // Stop the old accumulator (flushes remaining ops, syncs messagesRef).
-              accumulatorRef.current?.stop();
-              const next = makeMessage('assistant', '');
-              streamingIdRef.current = next.id;
-              setStreamingMessageId(next.id);
-              setMessages((prev) => {
-                const updated = [...prev, next];
-                messagesRef.current = updated;
-                return updated;
+        await runAgentLoop(
+          config,
+          registry,
+          userMessage,
+          history,
+          {
+            onText: (text) => {
+              accumulatorRef.current?.addText(text);
+            },
+            onToolCall: (call: ToolCall) => {
+              accumulatorRef.current?.addToolCall(call);
+            },
+            onToolResult: (result: ToolResult) => {
+              accumulatorRef.current?.addToolResult(result);
+            },
+            onTodos: (todos) => {
+              setAgentTodos(todos as Todo[]);
+            },
+            onError: (err) => {
+              setError(err);
+            },
+            onTurnStart: (turn) => {
+              setCurrentTurn(turn);
+              turnStartRef.current = Date.now();
+              // Each new agentic turn is its own assistant message, so the
+              // previous turn's content stays intact above while we stream a
+              // new one below — no overwriting.
+              if (turn > 1) {
+                // Stop the old accumulator (flushes remaining ops, syncs messagesRef).
+                accumulatorRef.current?.stop();
+                const next = makeMessage('assistant', '');
+                streamingIdRef.current = next.id;
+                setStreamingMessageId(next.id);
+                setMessages((prev) => {
+                  const updated = [...prev, next];
+                  messagesRef.current = updated;
+                  return updated;
+                });
+                // Start a new accumulator for the new message.
+                accumulatorRef.current = createMessageAccumulator(
+                  next.id,
+                  setMessages,
+                  messagesRef,
+                  32,
+                );
+                accumulatorRef.current.start();
+              }
+            },
+            onDone: () => {
+              setTurnDurationMs(Date.now() - turnStartRef.current);
+              setIsThinking(false);
+              clearCountdown();
+            },
+            onPermissionRequired: (toolCall: ToolCall): Promise<PermissionResult> => {
+              return new Promise((resolve) => {
+                setPendingPermission({ toolCall, resolve });
               });
-              // Start a new accumulator for the new message.
-              accumulatorRef.current = createMessageAccumulator(
-                next.id,
-                setMessages,
-                messagesRef,
-                16,
-              );
-              accumulatorRef.current.start();
-            }
-          },
-          onDone: () => {
-            setTurnDurationMs(Date.now() - turnStartRef.current);
-            setIsThinking(false);
-            clearCountdown();
-          },
-          onPermissionRequired: (toolCall: ToolCall): Promise<PermissionResult> => {
-            return new Promise((resolve) => {
-              setPendingPermission({ toolCall, resolve });
-            });
-          },
-          onUsage: (u: Usage) => {
-            setUsage(u);
-          },
-          onRetry: (phase, attempt, max, delayMs) => {
-            setRetryPhase(phase);
-            setRetryAttempt(attempt);
-            setRetryMax(max);
-            setRetryCountdownMs(delayMs);
+            },
+            onUsage: (u: Usage) => {
+              setUsage(u);
+            },
+            onRetry: (phase, attempt, max, delayMs) => {
+              setRetryPhase(phase);
+              setRetryAttempt(attempt);
+              setRetryMax(max);
+              setRetryCountdownMs(delayMs);
 
-            // Start countdown timer.
-            clearCountdown();
-            countdownRef.current = setInterval(() => {
-              setRetryCountdownMs((prev) => {
-                const next = prev - 1000;
-                if (next <= 0) {
-                  clearCountdown();
-                  return 0;
-                }
-                return next;
-              });
-            }, 1000);
+              // Start countdown timer.
+              clearCountdown();
+              countdownRef.current = setInterval(() => {
+                setRetryCountdownMs((prev) => {
+                  const next = prev - 1000;
+                  if (next <= 0) {
+                    clearCountdown();
+                    return 0;
+                  }
+                  return next;
+                });
+              }, 1000);
+            },
+            onStreamStall: (countdownMs) => {
+              setRetryPhase('stalled');
+              setRetryCountdownMs(countdownMs);
+              clearCountdown();
+              countdownRef.current = setInterval(() => {
+                setRetryCountdownMs((prev) => {
+                  const next = prev - 1000;
+                  if (next <= 0) {
+                    clearCountdown();
+                    return 0;
+                  }
+                  return next;
+                });
+              }, 1000);
+            },
+            onStreamResume: () => {
+              setRetryPhase('none');
+              clearCountdown();
+            },
           },
-          onStreamStall: (countdownMs) => {
-            setRetryPhase('stalled');
-            setRetryCountdownMs(countdownMs);
-            clearCountdown();
-            countdownRef.current = setInterval(() => {
-              setRetryCountdownMs((prev) => {
-                const next = prev - 1000;
-                if (next <= 0) {
-                  clearCountdown();
-                  return 0;
-                }
-                return next;
-              });
-            }, 1000);
-          },
-          onStreamResume: () => {
-            setRetryPhase('none');
-            clearCountdown();
-          },
-        }, mode, { signal: controller.signal });
+          mode,
+          { signal: controller.signal },
+        );
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -264,7 +278,10 @@ export function useAgent(config: AgentConfig) {
       const stream = chatCompletionStream(
         config,
         [
-          { role: 'system', content: 'You are a conversation summarizer. Produce a concise prose summary.' },
+          {
+            role: 'system',
+            content: 'You are a conversation summarizer. Produce a concise prose summary.',
+          },
           { role: 'user', content: buildCompactPrompt(summarized) },
         ],
         [],
@@ -301,7 +318,14 @@ export function useAgent(config: AgentConfig) {
   }, [clearCountdown]);
 
   const cycleMode = useCallback(() => {
-    const modes: PermissionMode[] = ['default', 'auto', 'plan', 'accept-edits', 'dontAsk', 'bypassPermissions'];
+    const modes: PermissionMode[] = [
+      'default',
+      'auto',
+      'plan',
+      'accept-edits',
+      'dontAsk',
+      'bypassPermissions',
+    ];
     setMode((prev) => {
       const idx = modes.indexOf(prev);
       return modes[(idx + 1) % modes.length];

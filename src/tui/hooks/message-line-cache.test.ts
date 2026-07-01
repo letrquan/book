@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { getCachedLineEstimate, clearLineCache } from './message-line-cache.js';
+import {
+  getCachedLineEstimate,
+  getCachedContentSlice,
+  clearLineCache,
+} from './message-line-cache.js';
 import type { Message } from '../../types.js';
 
 function msg(
@@ -145,5 +149,19 @@ describe('message-line-cache', () => {
 
     getCachedLineEstimate(m, 80, computeFn);
     expect(computeFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a bounded wrapped content slice', () => {
+    const m = msg('m1', '0123456789'.repeat(8));
+
+    expect(getCachedContentSlice(m, 20, 2, 1)).toBe('01234567890123456789');
+  });
+
+  it('extends the content row cache for appended text', () => {
+    const m1 = msg('m1', 'a'.repeat(40));
+    const m2 = msg('m1', 'a'.repeat(40) + 'b'.repeat(40));
+
+    expect(getCachedContentSlice(m1, 20, 1, 1)).toBe('a'.repeat(20));
+    expect(getCachedContentSlice(m2, 20, 2, 1)).toBe('b'.repeat(20));
   });
 });

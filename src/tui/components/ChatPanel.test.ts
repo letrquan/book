@@ -53,40 +53,36 @@ function computeVisibleMessages(
 // Helper
 // ---------------------------------------------------------------------------
 
-function makeMsg(
-  id: string,
-  role: 'user' | 'assistant',
-  content: string,
-): TestMessage {
+function makeMsg(id: string, role: 'user' | 'assistant', content: string): TestMessage {
   return { id, role, content, timestamp: Date.now() };
 }
 
-// Short messages: ~4 lines each (1 gap + 2 label + 1 content)
+// Short user messages: 3 lines each (content row + top/bottom margin)
+// Short assistant messages: 5 lines each (top margin + label + label gap + content + bottom margin)
 // Content length 20 at termWidth=80 = ceil(20/80) = 1 line
-// Total: 1 gap + 2 label + 1 content = 4
 
 describe('estimateMessageLines', () => {
-  it('user message: 1 gap + 2 label + wrapped content', () => {
-    // content 80 chars, width 80 => 1 line. 1+2+1 = 4
+  it('user message: content row plus vertical margins', () => {
+    // content 80 chars, width 80 => 1 line. 2 margins + 1 content = 3
     const msg = makeMsg('a', 'user', 'x'.repeat(80));
-    expect(estimateMessageLines(msg, 80)).toBe(4);
+    expect(estimateMessageLines(msg, 80)).toBe(3);
   });
 
   it('user message: wrapped content adds lines', () => {
-    // content 200 chars, width 80 => ceil(200/80)=3 lines. 1+2+3 = 6
+    // content 200 chars, width 80 => ceil(200/80)=3 lines. 2 margins + 3 content = 5
     const msg = makeMsg('a', 'user', 'x'.repeat(200));
-    expect(estimateMessageLines(msg, 80)).toBe(6);
+    expect(estimateMessageLines(msg, 80)).toBe(5);
   });
 
   it('assistant message: text only', () => {
-    // content 160 chars, width 80 => ceil(160/80)=2. 1+2+2 = 5
+    // content 160 chars, width 80 => ceil(160/80)=2. 4 chrome rows + 2 content = 6
     const msg = makeMsg('a', 'assistant', 'x'.repeat(160));
-    expect(estimateMessageLines(msg, 80)).toBe(5);
+    expect(estimateMessageLines(msg, 80)).toBe(6);
   });
 
   it('assistant message: no text', () => {
     const msg = makeMsg('a', 'assistant', '');
-    expect(estimateMessageLines(msg, 80)).toBe(3); // 1 gap + 2 label, no text
+    expect(estimateMessageLines(msg, 80)).toBe(5); // chrome rows + streaming placeholder line
   });
 
   it('assistant message with tool calls', () => {
@@ -100,8 +96,8 @@ describe('estimateMessageLines', () => {
         { id: 't2', name: 'Write', arguments: {} },
       ],
     };
-    // 1 gap + 2 label + 1 text + 2*2 tool calls = 8
-    expect(estimateMessageLines(msg, 80)).toBe(8);
+    // 4 chrome rows + 1 text + 2 collapsed tool call rows = 7
+    expect(estimateMessageLines(msg, 80)).toBe(7);
   });
 
   it('assistant message with tool results', () => {
@@ -110,12 +106,10 @@ describe('estimateMessageLines', () => {
       role: 'assistant',
       content: '',
       timestamp: Date.now(),
-      toolResults: [
-        { toolCallId: 't1', success: true, output: 'ok' },
-      ],
+      toolResults: [{ toolCallId: 't1', success: true, output: 'ok' }],
     };
-    // 1 gap + 2 label + 0 text + 1 result = 4
-    expect(estimateMessageLines(msg, 80)).toBe(4);
+    // Tool results render through their tool call block; without a call they add no rows.
+    expect(estimateMessageLines(msg, 80)).toBe(5);
   });
 
   it('narrow terminal increases line count', () => {
@@ -127,8 +121,8 @@ describe('estimateMessageLines', () => {
   it('minimum terminal width is 20', () => {
     // Even with width=1, clamp to 20
     const msg = makeMsg('a', 'user', 'x'.repeat(100));
-    // ceil(100/20)=5. 1+2+5 = 8
-    expect(estimateMessageLines(msg, 1)).toBe(8);
+    // ceil(100/20)=5. 2 margins + 5 content = 7
+    expect(estimateMessageLines(msg, 1)).toBe(7);
   });
 });
 
@@ -155,9 +149,8 @@ describe('ChatPanel virtual viewport', () => {
   it('many messages at scrollOffset=0: only last N fit', () => {
     // Each message ~4 lines. 20-line viewport fits ~5 messages.
     // 50 messages total = ~200 lines. At offset=0, only last ~5 visible.
-    const msgs = Array.from(
-      { length: 50 },
-      (_, i) => makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
+    const msgs = Array.from({ length: 50 }, (_, i) =>
+      makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
     );
     const result = computeVisibleMessages(msgs, 0, MAX_HEIGHT, TERM_WIDTH, null);
     expect(result.length).toBeLessThan(50);
@@ -169,9 +162,8 @@ describe('ChatPanel virtual viewport', () => {
   it('scrollOffset > 0 shows older messages', () => {
     // 30 messages = ~120 lines. Viewport 20 lines.
     // offset=40 means skip first 40 lines (10 messages) from tail.
-    const msgs = Array.from(
-      { length: 30 },
-      (_, i) => makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
+    const msgs = Array.from({ length: 30 }, (_, i) =>
+      makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
     );
     const result = computeVisibleMessages(msgs, 40, MAX_HEIGHT, TERM_WIDTH, null);
     // Should show messages from further back, not the newest
@@ -181,19 +173,25 @@ describe('ChatPanel virtual viewport', () => {
     expect(result[result.length - 1].id).not.toBe('m29');
   });
 
-  it('streaming tail stays included when auto-scroll is active', () => {
-    const msgs = Array.from(
-      { length: 30 },
-      (_, i) => makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
+  it('streaming tail stays included when auto-scroll is active at the bottom', () => {
+    const msgs = Array.from({ length: 30 }, (_, i) =>
+      makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
     );
-    const result = computeVisibleMessages(msgs, 60, MAX_HEIGHT, TERM_WIDTH, 'm29', true);
+    const result = computeVisibleMessages(msgs, 0, MAX_HEIGHT, TERM_WIDTH, 'm29', true);
     expect(result.some((m) => m.id === 'm29')).toBe(true);
   });
 
+  it('streaming tail is not forced into a scrolled history viewport', () => {
+    const msgs = Array.from({ length: 30 }, (_, i) =>
+      makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
+    );
+    const result = computeVisibleMessages(msgs, 60, MAX_HEIGHT, TERM_WIDTH, 'm29', true);
+    expect(result.some((m) => m.id === 'm29')).toBe(false);
+  });
+
   it('streaming tail is not forced into view when auto-scroll is paused', () => {
-    const msgs = Array.from(
-      { length: 30 },
-      (_, i) => makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
+    const msgs = Array.from({ length: 30 }, (_, i) =>
+      makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
     );
     const result = computeVisibleMessages(msgs, 60, MAX_HEIGHT, TERM_WIDTH, 'm29', false);
     expect(result.some((m) => m.id === 'm29')).toBe(false);
@@ -201,19 +199,17 @@ describe('ChatPanel virtual viewport', () => {
 
   it('scrollOffset=0 with messages that exactly fill viewport', () => {
     // 5 messages * 4 lines each = 20 lines, exactly the viewport
-    const msgs = Array.from(
-      { length: 5 },
-      (_, i) => makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', 'short'),
+    const msgs = Array.from({ length: 5 }, (_, i) =>
+      makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', 'short'),
     );
     const result = computeVisibleMessages(msgs, 0, MAX_HEIGHT, TERM_WIDTH, null);
     expect(result.length).toBe(5);
   });
 
   it('one-line scroll changes viewport offset before message boundaries change', () => {
-    const msgs = Array.from(
-      { length: 10 },
-      (_, i) => makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
-    );
+    const msgs = [
+      makeMsg('m0', 'assistant', Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n')),
+    ];
 
     const first = getVisibleViewport(msgs, {
       scrollOffset: 1,
@@ -226,7 +222,7 @@ describe('ChatPanel virtual viewport', () => {
       terminalWidth: TERM_WIDTH,
     });
 
-    expect(second.messages.map((m) => m.id)).toEqual(first.messages.map((m) => m.id));
+    expect(second.messages.map((m) => m.id)).toEqual(['m0']);
     expect(second.topOffset).toBe(first.topOffset - 1);
   });
 });
