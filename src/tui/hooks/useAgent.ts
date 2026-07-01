@@ -13,6 +13,9 @@ import { createDefaultRegistry } from '../../tools/registry.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types.js';
 import { makeMessage } from './streaming-state.js';
+import { createDebugLogger } from '../../debug-log.js';
+
+const log = createDebugLogger('tui');
 import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
 
@@ -74,6 +77,8 @@ export function useAgent(config: AgentConfig) {
     async (userMessage: string) => {
       if (isThinking) return;
 
+      log.info('send message', { len: userMessage.length, mode });
+
       // --- Optimistic, Claude-Code-style update ---
       // Render the user's message IMMEDIATELY, and seed a fresh, empty
       // assistant message that we will stream into. Prior messages are never
@@ -134,9 +139,11 @@ export function useAgent(config: AgentConfig) {
               setAgentTodos(todos as Todo[]);
             },
             onError: (err) => {
+              log.warn('agent error', { error: err });
               setError(err);
             },
             onTurnStart: (turn) => {
+              log.debug('TUI turn start', { turn });
               setCurrentTurn(turn);
               turnStartRef.current = Date.now();
               // Each new agentic turn is its own assistant message, so the
@@ -164,6 +171,7 @@ export function useAgent(config: AgentConfig) {
               }
             },
             onDone: () => {
+              log.info('agent done', { durationMs: Date.now() - turnStartRef.current });
               setTurnDurationMs(Date.now() - turnStartRef.current);
               setIsThinking(false);
               clearCountdown();

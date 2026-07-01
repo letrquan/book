@@ -8,6 +8,9 @@ import { evaluatePermission } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import type { HookContext } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
+import { createDebugLogger } from '../debug-log.js';
+
+const log = createDebugLogger('agent');
 
 /**
  * Check whether a tool call should be evaluated against permission rules,
@@ -90,6 +93,7 @@ export async function runAgentLoop(
       callbacks.onCompact &&
       shouldCompact(lastUsage, config.maxTokens ?? 128000)
     ) {
+      log.info('auto-compact triggered', { tokens: lastUsage?.totalTokens ?? 0, maxTokens: config.maxTokens });
       // PreCompact hook — fire-and-forget before compaction.
       runHooks(config.settings.hooks.PreCompact, 'PreCompact', {
         workspace: config.workspace,
@@ -108,6 +112,7 @@ export async function runAgentLoop(
 
     turn++;
     callbacks.onTurnStart(turn);
+    log.debug('turn start', { turn, maxTurns: config.maxTurns, mode });
 
     const messages = buildMessages(config, newHistory, registry.getDefinitions(), toolContext.todos);
     let assistantContent = '';
@@ -169,6 +174,7 @@ export async function runAgentLoop(
     // any partial assistant text/tool call metadata in returned history so
     // callers that persist sessions do not lose what was already rendered.
     if (streamError) {
+      log.warn('stream error', { error: streamError, contentLen: assistantContent.length, toolCallCount: toolCalls.length });
       if (assistantContent.length > 0 || toolCalls.length > 0) {
         newHistory.push({
           id: crypto.randomUUID(),
@@ -254,6 +260,7 @@ export async function runAgentLoop(
           }
 
           if (permission === 'deny') {
+            log.debug('permission denied', { tool: canonName });
             const deniedResult: ToolResult = {
               toolCallId: call.id,
               success: false,
@@ -265,15 +272,23 @@ export async function runAgentLoop(
             continue;
           }
           if (permission === 'always') {
+            log.debug('permission always', { tool: canonName });
             approveAll.push(call.name);
           }
         }
       }
 
       const toolStartMs = Date.now();
+      log.debug('tool start', { name: canonName, id: call.id, args: Object.keys(call.arguments) });
       const result = await registry.execute(call, toolContext, retry.toolRetries);
       result.toolCallId = call.id;
       result.durationMs = Date.now() - toolStartMs;
+      log.info('tool done', {
+        name: canonName,
+        success: result.success,
+        durationMs: result.durationMs,
+        outputLen: result.output?.length ?? 0,
+      });
 
       // PostToolUse hook — can modify the result output.
       const postHookResults = await runHooks(
@@ -317,12 +332,20 @@ export async function runAgentLoop(
       timestamp: Date.now(),
     });
 
+    log.info('turn complete', {
+      turn,
+      contentLen: assistantContent.length,
+      toolCallCount: toolCalls.length,
+      toolResultCount: toolResults.length,
+    });
+
     if (toolCalls.length === 0 || signal?.aborted) {
       break;
     }
   }
 
   if (turn >= config.maxTurns) {
+    log.warn('max turns reached', { maxTurns: config.maxTurns });
     callbacks.onError(`Reached max turns (${config.maxTurns}). Refine your prompt or increase BOOK_MAX_TURNS.`);
   }
 

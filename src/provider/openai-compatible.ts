@@ -1,4 +1,7 @@
 import type { AgentConfig, ProviderStreamEvent, ToolDefinition, Usage, RetryConfig } from '../types.js';
+import { createDebugLogger } from '../debug-log.js';
+
+const log = createDebugLogger('provider');
 
 /**
  * Sleep with optional AbortSignal — throws if aborted during sleep.
@@ -118,6 +121,7 @@ async function fetchWithRetry(
       if (attempt >= maxAttempts) break;
 
       const delay = backoffMs(attempt, retry);
+      log.warn('retry network error', { attempt: attempt + 1, delayMs: delay, error: lastError });
       onRetry?.(attempt + 1, maxAttempts > 100 ? -1 : maxAttempts, delay);
       try {
         await sleep(delay, signal);
@@ -142,6 +146,7 @@ async function fetchWithRetry(
       if (attempt >= effectiveMax) return resp; // last attempt — return response so caller can read body
 
       const delay = backoffMs(attempt, retry, resp.headers.get('retry-after'));
+      log.warn('retry http status', { attempt: attempt + 1, status: resp.status, delayMs: delay });
       onRetry?.(attempt + 1, isWatchdogRetryable ? -1 : maxAttempts, delay);
       try {
         await sleep(delay, signal);
@@ -273,6 +278,13 @@ export async function* chatCompletionStream(
     }));
   }
 
+  log.debug('chatCompletionStream request', {
+    model: config.model,
+    messageCount: messages.length,
+    toolCount: tools.length,
+    maxTokens: config.maxTokens,
+  });
+
   let response: Response;
   try {
     response = await fetchWithRetry(
@@ -290,9 +302,12 @@ export async function* chatCompletionStream(
       options?.onRetry,
     );
   } catch (e) {
+    log.warn('fetchWithRetry failed', e instanceof Error ? e.message : String(e));
     yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
     return;
   }
+
+  log.debug('response received', { status: response.status, ok: response.ok });
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -344,6 +359,7 @@ export async function* chatCompletionStream(
       }
 
       if (result.tag === 'stall') {
+        log.warn('stream stalled', { timeoutMs: stallTimeoutMs });
         options?.onStreamStall?.(stallTimeoutMs);
         try {
           await reader.cancel();
@@ -370,6 +386,11 @@ export async function* chatCompletionStream(
         const data = trimmed.slice(6);
         if (data === '[DONE]') {
           yield* emitToolCalls();
+          log.info('stream done', {
+            promptTokens: currentUsage?.promptTokens ?? 0,
+            completionTokens: currentUsage?.completionTokens ?? 0,
+            totalTokens: currentUsage?.totalTokens ?? 0,
+          });
           yield { type: 'done', usage: currentUsage ?? undefined };
           return;
         }
@@ -391,10 +412,12 @@ export async function* chatCompletionStream(
           if (!delta) continue;
 
           if (delta.content) {
+            log.debug('stream text', { len: delta.content.length });
             yield { type: 'text', content: delta.content };
           }
 
           if (delta.tool_calls) {
+            log.debug('stream tool_call delta', { count: delta.tool_calls.length });
             for (const tc of delta.tool_calls) {
               const explicitIndex = Number.isInteger(tc.index) ? tc.index : undefined;
               let index = explicitIndex;
@@ -436,5 +459,10 @@ export async function* chatCompletionStream(
   }
 
   yield* emitToolCalls();
+  log.info('stream done (end of body)', {
+    promptTokens: currentUsage?.promptTokens ?? 0,
+    completionTokens: currentUsage?.completionTokens ?? 0,
+    totalTokens: currentUsage?.totalTokens ?? 0,
+  });
   yield { type: 'done', usage: currentUsage ?? undefined };
 }
