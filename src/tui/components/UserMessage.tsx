@@ -14,7 +14,7 @@ function UserMessageInner({ content }: UserMessageProps) {
   const theme = useTheme();
 
   return (
-    <Box marginY={1} paddingX={2} paddingY={1} backgroundColor={theme.userBg}>
+    <Box paddingX={2} paddingY={1} backgroundColor={theme.userBg}>
       <Box flexGrow={1}>
         <Text color={theme.text} wrap="wrap">
           {content}

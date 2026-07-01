@@ -97,7 +97,7 @@ export function AgentMessageInner({
   const isRetrying = retryPhase !== 'none';
 
   return (
-    <Box flexDirection="column" marginY={1}>
+    <Box flexDirection="column">
 
       {/* Spinner line: shows thinking tips, or retry countdown during retries */}
       {isStreaming && !displayContent && !message.toolCalls?.length ? (

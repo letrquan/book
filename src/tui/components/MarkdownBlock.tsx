@@ -125,7 +125,6 @@ function renderBlockToken(
   switch (token.type) {
     case 'heading': {
       const t = token as Tokens.Heading;
-      // Terminal has no font-size; indicate heading depth via extra newlines/spacing.
       return (
         <Box key={`h-${index}`} flexDirection="column" marginTop={1} marginBottom={1}>
           <Text bold color={theme.mdHeading}>
@@ -138,7 +137,7 @@ function renderBlockToken(
     case 'paragraph': {
       const t = token as Tokens.Paragraph;
       return (
-        <Box key={`p-${index}`} flexDirection="row" marginBottom={1}>
+        <Box key={`p-${index}`} flexDirection="row">
           <Text wrap="wrap">
             {renderInlineTokens(t.tokens, theme, `p-${index}`)}
           </Text>
@@ -159,7 +158,6 @@ function renderBlockToken(
         <Box
           key={`code-${index}`}
           flexDirection="column"
-          marginY={1}
           paddingX={1}
           borderStyle="round"
           borderColor={theme.mdCodeBorder}
@@ -190,7 +188,6 @@ function renderBlockToken(
           borderLeft
           borderLeftColor={theme.mdBlockquoteBorder}
           paddingLeft={1}
-          marginY={1}
         >
           {t.tokens.map((childToken, ci) =>
             renderBlockToken(childToken, theme, index * 1000 + ci),
@@ -202,7 +199,7 @@ function renderBlockToken(
     case 'list': {
       const t = token as Tokens.List;
       return (
-        <Box key={`list-${index}`} flexDirection="column" marginY={1}>
+        <Box key={`list-${index}`} flexDirection="column">
           {t.items.map((item, ii) => {
             const marker = t.ordered
               ? `${(typeof t.start === 'number' ? t.start : 1) + ii}.`
@@ -244,7 +241,7 @@ function renderBlockToken(
 
     case 'hr': {
       return (
-        <Box key={`hr-${index}`} marginY={1}>
+        <Box key={`hr-${index}`}>
           <Text color={theme.mdHr} dimColor>
             {'─'.repeat(40)}
           </Text>
@@ -268,7 +265,7 @@ function renderBlockToken(
       }
 
       return (
-        <Box key={`table-${index}`} flexDirection="column" marginY={1}>
+        <Box key={`table-${index}`} flexDirection="column">
           {allRows.map((row, ri) => (
             <Box key={`tr-${index}-${ri}`} flexDirection="row">
               {row.map((cell, ci) => {
@@ -293,7 +290,8 @@ function renderBlockToken(
     }
 
     case 'space': {
-      return <Box key={`sp-${index}`} height={1} />;
+      // Skip space tokens — blocks handle their own spacing.
+      return null;
     }
 
     case 'html': {
@@ -301,7 +299,7 @@ function renderBlockToken(
       // HTML blocks: render the text content if available.
       if (t.block && t.text) {
         return (
-          <Box key={`html-${index}`} marginY={1}>
+          <Box key={`html-${index}`}>
             <Text color={theme.subtle} dimColor>
               {t.text}
             </Text>
