@@ -39,7 +39,6 @@ describe('ChatPanel Ink rendering', () => {
         <ChatPanel
           messages={baseMessages}
           streamingMessageId="a1"
-          maxHeight={40}
           terminalWidth={100}
           reducedMotion
           screenReader
@@ -59,7 +58,6 @@ describe('ChatPanel Ink rendering', () => {
             message.id === 'a1' ? { ...message, content: 'streamed reply' } : message,
           )}
           streamingMessageId="a1"
-          maxHeight={40}
           terminalWidth={100}
           reducedMotion
           screenReader
@@ -90,7 +88,6 @@ describe('ChatPanel Ink rendering', () => {
         <ChatPanel
           messages={messages}
           activeToolCallId="call-1"
-          maxHeight={40}
           terminalWidth={100}
           reducedMotion
           screenReader
@@ -130,7 +127,6 @@ describe('ChatPanel Ink rendering', () => {
           pendingPermission={{ toolCall, resolve: onResolve }}
           onResolvePermission={onResolve}
           activeToolCallId="call-pending"
-          maxHeight={40}
           terminalWidth={100}
           reducedMotion
           screenReader
@@ -180,92 +176,5 @@ describe('ChatPanel Ink rendering', () => {
 
     expect(frame(retrying.lastFrame)).toContain('Retrying: Retrying in 4s · attempt 2/10');
     expect(frame(retrying.lastFrame)).toContain('partial text');
-  });
-
-  it('does not mix the streaming tail into a scrolled history viewport', () => {
-    const messages = Array.from({ length: 30 }, (_, i) =>
-      msg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
-    );
-
-    const view = render(
-      withTheme(
-        <ChatPanel
-          messages={messages}
-          streamingMessageId="m29"
-          scrollOffset={60}
-          autoScroll
-          maxHeight={20}
-          terminalWidth={80}
-          reducedMotion
-          screenReader
-        />,
-      ),
-    );
-
-    expect(frame(view.lastFrame)).not.toContain('message 29');
-
-    view.rerender(
-      withTheme(
-        <ChatPanel
-          messages={messages}
-          streamingMessageId="m29"
-          scrollOffset={60}
-          autoScroll={false}
-          maxHeight={20}
-          terminalWidth={80}
-          reducedMotion
-          screenReader
-        />,
-      ),
-    );
-
-    expect(frame(view.lastFrame)).not.toContain('message 29');
-  });
-
-  it('renders only the visible tail slice of a long clipped message', () => {
-    const content = Array.from({ length: 80 }, (_, i) => `row-${String(i).padStart(2, '0')}`).join(
-      '\n',
-    );
-
-    const view = render(
-      withTheme(
-        <ChatPanel
-          messages={[msg('a1', 'assistant', content)]}
-          maxHeight={10}
-          terminalWidth={80}
-          reducedMotion
-          screenReader
-        />,
-      ),
-    );
-
-    const output = frame(view.lastFrame);
-    expect(output).not.toContain('row-00');
-    expect(output).toContain('row-71');
-    expect(output).toContain('row-79');
-  });
-
-  it('clips the bottom of the latest text message while scrolling up', () => {
-    const content = Array.from({ length: 80 }, (_, i) => `row-${String(i).padStart(2, '0')}`).join(
-      '\n',
-    );
-
-    const view = render(
-      withTheme(
-        <ChatPanel
-          messages={[msg('a1', 'assistant', content)]}
-          scrollOffset={3}
-          maxHeight={10}
-          terminalWidth={80}
-          reducedMotion
-          screenReader
-        />,
-      ),
-    );
-
-    const output = frame(view.lastFrame);
-    expect(output).toContain('row-77');
-    expect(output).not.toContain('row-78');
-    expect(output).not.toContain('row-79');
   });
 });

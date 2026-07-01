@@ -131,16 +131,12 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     }
 
     const { App } = await import('../tui/app.js');
-    const restoreScreen = config.accessibility?.screenReader
-      ? () => {}
-      : enterAlternateScreen();
     let app: ReturnType<typeof render> | undefined;
     try {
       app = render(createElement(App, { config }));
       await app.waitUntilExit();
     } finally {
       app?.cleanup();
-      restoreScreen();
     }
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));

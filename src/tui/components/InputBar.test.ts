@@ -367,9 +367,6 @@ function simulateInputHandler(
   // Down arrow — navigate history
   if (key.downArrow) return 'consumed';
 
-  // Page/Home/End — let pass through to parent scroll handler
-  if (key.pageUp || key.pageDown || key.home || key.end) return 'consumed';
-
   // Filter out SGR mouse escape sequences (enabled for scroll wheel).
   // These start with \x1b[< and are not keyboard input.
   if (input.startsWith('\x1b[<')) return 'consumed';
@@ -426,11 +423,11 @@ describe('keyboard shortcut filtering', () => {
     expect(simulateInputHandler('', { downArrow: true }, false)).toBe('consumed');
   });
 
-  it('Page/Home/End keys are consumed (forwarded to parent scroll)', () => {
-    expect(simulateInputHandler('', { pageUp: true }, false)).toBe('consumed');
-    expect(simulateInputHandler('', { pageDown: true }, false)).toBe('consumed');
-    expect(simulateInputHandler('', { home: true }, false)).toBe('consumed');
-    expect(simulateInputHandler('', { end: true }, false)).toBe('consumed');
+  it('Page/Home/End keys are consumed', () => {
+    expect(simulateInputHandler('', { pageUp: true }, false)).toBe('passed-through');
+    expect(simulateInputHandler('', { pageDown: true }, false)).toBe('passed-through');
+    expect(simulateInputHandler('', { home: true }, false)).toBe('passed-through');
+    expect(simulateInputHandler('', { end: true }, false)).toBe('passed-through');
   });
 
   it('punctuation passes through (?, @, !, /, etc. are valid text)', () => {

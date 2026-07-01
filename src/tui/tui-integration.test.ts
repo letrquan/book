@@ -250,16 +250,6 @@ describe('TUI keyboard input', () => {
     expect(output).toContain('Ask me anything');
   }, 20_000);
 
-  it('Ctrl+S toggles auto-scroll without crashing', async () => {
-    session = await startAndWait();
-    session.sendKey(KEYS.ctrlS);
-    await sleep(300);
-    session.sendKey(KEYS.ctrlS);
-    await sleep(300);
-    const output = session.read();
-    expect(output).toContain('Ask me anything');
-  }, 20_000);
-
   it('Escape key does not crash when not streaming', async () => {
     session = await startAndWait();
     session.sendKey(KEYS.escape);
@@ -293,7 +283,6 @@ describe('TUI keyboard input', () => {
     const output = session.read();
     expect(output).toContain('Keyboard Shortcuts');
     expect(output).toContain('Ctrl+T');
-    expect(output).toContain('Ctrl+S');
     expect(output).toContain('Esc');
   }, 20_000);
 });

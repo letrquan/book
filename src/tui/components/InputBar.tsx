@@ -111,10 +111,6 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
       setValue(newIdx >= 0 ? history[newIdx] : '');
       return;
     }
-    // Let PgUp/PgDn/Home/End pass through to parent scroll handler.
-    if (key.pageUp || key.pageDown || key.home || key.end) {
-      return;
-    }
     // Note: SGR/X10 mouse sequences are NOT filtered here because
     // ink-text-input has its own internal useInput listener that we
     // cannot prevent from firing. Filtering happens at the value level
