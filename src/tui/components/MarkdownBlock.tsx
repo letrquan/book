@@ -137,7 +137,7 @@ function renderBlockToken(
     case 'paragraph': {
       const t = token as Tokens.Paragraph;
       return (
-        <Box key={`p-${index}`} flexDirection="row">
+        <Box key={`p-${index}`} flexDirection="row" marginBottom={1}>
           <Text wrap="wrap">
             {renderInlineTokens(t.tokens, theme, `p-${index}`)}
           </Text>
