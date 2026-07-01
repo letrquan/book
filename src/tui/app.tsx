@@ -3,7 +3,6 @@ import { useState, useCallback, useEffect, useMemo } from 'react';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { StatusLine } from './components/StatusLine.js';
-import { AsciiBanner } from './components/AsciiBanner.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
@@ -205,10 +204,6 @@ export function App({ config }: AppProps) {
     <ThemeContext.Provider value={currentTheme}>
       <ErrorBoundary>
         <Box flexDirection="column">
-          {/* ASCII BOOK banner at the top */}
-          <Box>
-            <AsciiBanner />
-          </Box>
 
           {/* Message area — all messages rendered in order */}
           <Box flexDirection="column">

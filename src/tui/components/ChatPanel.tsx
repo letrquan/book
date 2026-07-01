@@ -3,6 +3,7 @@ import React, { useMemo } from 'react';
 import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
 import { AgentMessage } from './AgentMessage.js';
 import { UserMessage } from './UserMessage.js';
+import { AsciiBanner } from './AsciiBanner.js';
 import { useTheme } from '../theme.js';
 
 interface PendingPermission {
@@ -98,11 +99,15 @@ export function ChatPanel({
   // Split messages: completed ones go into <Static> so they persist in
   // terminal scrollback; the streaming message stays in the dynamic area.
   // When not streaming, all messages are completed.
+  // Prepend a sentinel so the banner renders as the first static item.
+  const BANNER_SENTINEL = '__banner__';
   const completedMessages = useMemo(
-    () =>
-      streamingMessageId
+    () => {
+      const msgs = streamingMessageId
         ? displayMessages.filter((msg) => msg.id !== streamingMessageId)
-        : displayMessages,
+        : displayMessages;
+      return [BANNER_SENTINEL, ...msgs] as Array<Message | typeof BANNER_SENTINEL>;
+    },
     [displayMessages, streamingMessageId],
   );
   const activeMessage = useMemo(
@@ -117,7 +122,11 @@ export function ChatPanel({
     <Box flexDirection="column">
       {/* Completed messages rendered via <Static> — preserved in scrollback. */}
       <Static items={completedMessages}>
-        {(msg) => {
+        {(item) => {
+          if (item === BANNER_SENTINEL) {
+            return <AsciiBanner key="banner" />;
+          }
+          const msg = item as Message;
           if (msg.role === 'user') {
             return <UserMessage key={msg.id} content={msg.content} />;
           }
