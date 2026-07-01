@@ -40,6 +40,18 @@ export const LIGHT_THEME: ThemeTokens = {
   success: 'green',
   error: 'red',
   warning: '#c90',
+
+  mdCodeBackground: '#f0f0f0',
+  mdCodeBorder: '#ccc',
+  mdCodeText: '#333',
+  mdInlineCodeBg: '#e8e8e8',
+  mdInlineCodeText: '#b06000',
+  mdHeading: 'black',
+  mdBlockquoteBorder: '#aaa',
+  mdBlockquoteText: '#666',
+  mdLink: 'blue',
+  mdListMarker: '#888',
+  mdHr: '#ccc',
 };
 
 /**

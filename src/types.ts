@@ -88,6 +88,19 @@ export interface ThemeTokens {
 
   /** Subagent colors (8 named colors) */
   subagentColors: string[];
+
+  /** Markdown rendering */
+  mdCodeBackground: string;
+  mdCodeBorder: string;
+  mdCodeText: string;
+  mdInlineCodeBg: string;
+  mdInlineCodeText: string;
+  mdHeading: string;
+  mdBlockquoteBorder: string;
+  mdBlockquoteText: string;
+  mdLink: string;
+  mdListMarker: string;
+  mdHr: string;
 }
 
 export const DEFAULT_THEME: ThemeTokens = {
@@ -125,6 +138,18 @@ export const DEFAULT_THEME: ThemeTokens = {
   shimmerPair: ['cyan', '#5cf'],
 
   subagentColors: ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'pink', 'cyan'],
+
+  mdCodeBackground: '#1a1a2e',
+  mdCodeBorder: '#333',
+  mdCodeText: '#e0e0e0',
+  mdInlineCodeBg: '#2a2a3e',
+  mdInlineCodeText: '#f0c040',
+  mdHeading: 'white',
+  mdBlockquoteBorder: '#555',
+  mdBlockquoteText: '#aaa',
+  mdLink: 'cyan',
+  mdListMarker: 'gray',
+  mdHr: 'gray',
 };
 
 export interface Usage {

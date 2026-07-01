@@ -3,6 +3,7 @@ import React, { useMemo } from 'react';
 import { Spinner } from './Spinner.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
 import { PermissionButtons } from './PermissionButtons.js';
+import { MarkdownBlock } from './MarkdownBlock.js';
 import { useTheme } from '../theme.js';
 import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
 
@@ -130,7 +131,7 @@ export function AgentMessageInner({
                 <Text color={theme.error}>{spinnerLabel} </Text>
               </Box>
             )}
-            <Text color={theme.text} wrap="wrap">{displayContent}</Text>
+            <MarkdownBlock content={displayContent} />
           </Box>
         </Box>
       ) : null}
