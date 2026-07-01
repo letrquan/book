@@ -101,17 +101,65 @@ export function estimateMessageLines(msg: Message, termWidth: number): number {
   return lines;
 }
 
+export function getVisibleMessages<T extends Message>(
+  messages: T[],
+  options: {
+    scrollOffset?: number;
+    maxHeight?: number;
+    terminalWidth?: number;
+    streamingMessageId?: string | null;
+    autoScroll?: boolean;
+  },
+): T[] {
+  if (messages.length === 0) return [];
+
+  const scrollOffset = options.scrollOffset ?? 0;
+  const maxHeight = options.maxHeight ?? 40;
+  const terminalWidth = options.terminalWidth ?? 80;
+  const streamingMessageId = options.streamingMessageId ?? null;
+  const autoScroll = options.autoScroll ?? true;
+  const height = Math.max(5, maxHeight);
+
+  let totalLines = 0;
+  for (const msg of messages) {
+    totalLines += estimateMessageLines(msg, terminalWidth);
+  }
+
+  const viewportTop = Math.max(0, totalLines - scrollOffset - height);
+  const viewportBottom = totalLines - scrollOffset;
+  const included: T[] = [];
+  let lineCount = 0;
+
+  for (const msg of messages) {
+    const msgLines = estimateMessageLines(msg, terminalWidth);
+    const msgTop = lineCount;
+    lineCount += msgLines;
+
+    if (lineCount <= viewportTop) continue;
+    if (msgTop >= viewportBottom) break;
+
+    included.push(msg);
+  }
+
+  // If auto-scroll is enabled while streaming, keep the active tail in the
+  // render tree even when line estimates shift by a row. When the user has
+  // paused auto-scroll, do not force the tail into a historical viewport.
+  if (streamingMessageId && autoScroll) {
+    const tailMessages = messages.slice(-Math.min(3, messages.length));
+    for (const tm of tailMessages) {
+      if (!included.includes(tm)) included.push(tm);
+    }
+  }
+
+  return included;
+}
+
 /**
  * Chat panel — renders messages as Ink components.
  *
- * Uses a virtual viewport: walks oldest→newest, only culls messages below
- * the visible area. Messages above the viewport remain in the React tree
- * but are visually clipped by `overflow: 'hidden'` on the container.
- * This means scrolling up never "discovers" messages — they're already there.
- *
- * scrollOffset controls how many lines above the tail we start from:
- *   0 = show newest messages (tail, auto-scroll)
- *   N = show messages starting N lines above the tail
+ * Uses a virtual viewport: walks oldest→newest and renders the messages that
+ * intersect the visible tail window. scrollOffset controls how many lines above
+ * the tail we start from: 0 = newest messages, N = browse older history.
  */
 export function ChatPanel({
   messages,
@@ -132,55 +180,17 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const theme = useTheme();
 
-  // Walk oldest→newest: messages above the viewport stay in the tree
-  // (clipped by overflow:hidden), only cull messages below the viewport.
-  // scrollOffset = lines above the tail. Compute totalLines, then
-  // viewport covers [totalLines - scrollOffset - height, totalLines - scrollOffset].
-  const visibleMessages = useMemo(() => {
-    if (messages.length === 0) return [];
-
-    const height = Math.max(5, maxHeight);
-
-    // Compute total estimated lines for all messages.
-    let totalLines = 0;
-    for (const msg of messages) {
-      totalLines += estimateMessageLines(msg, terminalWidth);
-    }
-
-    // Viewport with generous buffer above (2x height) for smooth scroll.
-    const viewportTop = Math.max(0, totalLines - scrollOffset - height * 2);
-    const viewportBottom = totalLines - scrollOffset + height;
-
-    const included: Message[] = [];
-    let lineCount = 0;
-
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      const msgLines = estimateMessageLines(msg, terminalWidth);
-      const msgTop = lineCount;
-      lineCount += msgLines;
-
-      // Skip messages entirely above the viewport
-      if (lineCount <= viewportTop) continue;
-      // Stop once past viewport bottom + buffer
-      if (msgTop > viewportBottom) break;
-
-      included.push(msg);
-    }
-
-    // During streaming, always include the last few messages to prevent
-    // flicker as the streaming content changes height.
-    if (streamingMessageId) {
-      const tailMessages = messages.slice(-Math.min(10, messages.length));
-      for (const tm of tailMessages) {
-        if (!included.includes(tm)) {
-          included.push(tm);
-        }
-      }
-    }
-
-    return included;
-  }, [messages, scrollOffset, maxHeight, terminalWidth, streamingMessageId]);
+  const visibleMessages = useMemo(
+    () =>
+      getVisibleMessages(messages, {
+        scrollOffset,
+        maxHeight,
+        terminalWidth,
+        streamingMessageId,
+        autoScroll,
+      }),
+    [messages, scrollOffset, maxHeight, terminalWidth, streamingMessageId, autoScroll],
+  );
 
   const isBrowsing = scrollOffset > 0 && !streamingMessageId;
 

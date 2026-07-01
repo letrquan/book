@@ -76,8 +76,6 @@ export function App({ config }: AppProps) {
   const [currentTheme, setCurrentTheme] = useState<ThemeTokens>(DEFAULT_THEME);
   const { tasks, addTask, updateTaskStatus, removeTask } = useTasks();
   const theme = useTheme();
-  const turnStartRef = useRef(Date.now());
-  const prevMessageCountRef = useRef(messages.length);
 
   // Keep a ref to scrollOffset so the useInput closure always has the latest value
   // for the "resume auto-scroll when scrolled back to bottom" logic.
@@ -259,18 +257,14 @@ export function App({ config }: AppProps) {
     }
   }, [messages]);
 
-  // Smart auto-scroll: only reset to bottom when the user is already near
-  // the bottom. This prevents constant scrollOffset recalculations during
-  // streaming that cause message flicker. The scrollOffsetRef is kept in
-  // sync via the useEffect on line 84.
+  // Smart auto-scroll: when the user is already at/near the tail, keep the
+  // viewport pinned there as streamed text changes height. Manual scrolling
+  // disables auto-scroll, so this does not fight history browsing.
   useEffect(() => {
-    if (messages.length !== prevMessageCountRef.current) {
-      prevMessageCountRef.current = messages.length;
-      if (autoScroll && streamingMessageId && prevScrollRef.current <= 5) {
-        setScrollOffset(0);
-      }
+    if (autoScroll && streamingMessageId && prevScrollRef.current <= 5) {
+      setScrollOffset(0);
     }
-  }, [messages.length, streamingMessageId, autoScroll]);
+  }, [messages, streamingMessageId, autoScroll]);
 
   const handleSubmit = useCallback(
     (value: string) => {

@@ -195,6 +195,55 @@ function formatApiError(status: number, body: string): string {
   }
 }
 
+function parseToolArguments(raw: string): Record<string, unknown> {
+  if (!raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return { __raw: raw };
+  }
+}
+
+async function readStreamChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal | undefined,
+  stallTimeoutMs: number,
+): Promise<
+  | { tag: 'read'; done: boolean; value: Uint8Array | undefined }
+  | { tag: 'stall' }
+  | { tag: 'abort' }
+> {
+  if (signal?.aborted) return { tag: 'abort' };
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+
+  try {
+    return await Promise.race([
+      reader.read().then((r) => ({ tag: 'read' as const, done: r.done, value: r.value })),
+      ...(stallTimeoutMs > 0
+        ? [
+            new Promise<{ tag: 'stall' }>((resolve) => {
+              timeout = setTimeout(() => resolve({ tag: 'stall' }), stallTimeoutMs);
+            }),
+          ]
+        : []),
+      ...(signal
+        ? [
+            new Promise<{ tag: 'abort' }>((resolve) => {
+              onAbort = () => resolve({ tag: 'abort' });
+              signal.addEventListener('abort', onAbort, { once: true });
+            }),
+          ]
+        : []),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
+
 export async function* chatCompletionStream(
   config: AgentConfig,
   messages: { role: string; content: string | null; tool_calls?: unknown[] }[],
@@ -259,57 +308,56 @@ export async function* chatCompletionStream(
 
   const decoder = new TextDecoder();
   let buffer = '';
-  let currentToolCall: { id: string; name: string; arguments: string } | null = null;
+  const toolCallParts: Array<{ index: number; id: string; name: string; arguments: string }> = [];
   let currentUsage: Usage | null = null;
-  let stallFired = false;
+
+  const emitToolCalls = function* (): Generator<ProviderStreamEvent> {
+    for (const part of [...toolCallParts].sort((a, b) => a.index - b.index)) {
+      if (!part.id && !part.name) continue;
+      yield {
+        type: 'tool_call',
+        toolCall: {
+          id: part.id || `tool-${part.index}`,
+          name: part.name,
+          arguments: parseToolArguments(part.arguments),
+        },
+      };
+    }
+  };
 
   // Stream stall detection: if no data arrives for streamStallTimeoutMs,
-  // call the onStreamStall callback and abort the stream so transport-level
-  // retry can kick in.
+  // call the onStreamStall callback and yield a visible error instead of
+  // leaving the TUI stuck in a pending read forever.
   const stallTimeoutMs = retry.streamStallTimeoutMs;
 
   try {
     while (true) {
-      // If a signal was passed, check it before each read.
-      if (signal?.aborted) break;
+      const result = await readStreamChunk(reader, signal, stallTimeoutMs);
 
-      // Race reader.read() against the stall timeout.  If the timeout wins,
-      // emit the stall callback, release the reader, and throw so the caller
-      // can retry at the transport level.
-      let done: boolean;
-      let value: Uint8Array | undefined;
-
-      if (stallTimeoutMs > 0) {
-        const result = await Promise.race([
-          reader.read().then((r) => ({ tag: 'read' as const, done: r.done, value: r.value })),
-          new Promise<{ tag: 'stall' }>((resolve) =>
-            setTimeout(() => resolve({ tag: 'stall' }), stallTimeoutMs),
-          ),
-        ]);
-
-        if (result.tag === 'stall') {
-          stallFired = true;
-          options?.onStreamStall?.(stallTimeoutMs);
-          reader.releaseLock();
-          yield { type: 'error', error: 'Stream stalled: no data received for ' + stallTimeoutMs + 'ms' };
-          return;
+      if (result.tag === 'abort') {
+        try {
+          await reader.cancel();
+        } catch {
+          // ignore cancellation failures
         }
-
-        done = result.done;
-        value = result.value;
-      } else {
-        const r = await reader.read();
-        done = r.done;
-        value = r.value;
+        return;
       }
 
-      if (done) break;
-
-      // Clear any stall state when data arrives.
-      if (stallFired) {
-        stallFired = false;
-        options?.onStreamResume?.();
+      if (result.tag === 'stall') {
+        options?.onStreamStall?.(stallTimeoutMs);
+        try {
+          await reader.cancel();
+        } catch {
+          // ignore cancellation failures
+        }
+        yield { type: 'error', error: 'Stream stalled: no data received for ' + stallTimeoutMs + 'ms' };
+        return;
       }
+
+      if (result.done) break;
+
+      const value = result.value;
+      if (!value) continue;
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -321,16 +369,7 @@ export async function* chatCompletionStream(
 
         const data = trimmed.slice(6);
         if (data === '[DONE]') {
-          if (currentToolCall) {
-            yield {
-              type: 'tool_call',
-              toolCall: {
-                id: currentToolCall.id,
-                name: currentToolCall.name,
-                arguments: JSON.parse(currentToolCall.arguments || '{}'),
-              },
-            };
-          }
+          yield* emitToolCalls();
           yield { type: 'done', usage: currentUsage ?? undefined };
           return;
         }
@@ -357,25 +396,25 @@ export async function* chatCompletionStream(
 
           if (delta.tool_calls) {
             for (const tc of delta.tool_calls) {
-              if (tc.id) {
-                if (currentToolCall) {
-                  yield {
-                    type: 'tool_call',
-                    toolCall: {
-                      id: currentToolCall.id,
-                      name: currentToolCall.name,
-                      arguments: JSON.parse(currentToolCall.arguments || '{}'),
-                    },
-                  };
-                }
-                currentToolCall = {
-                  id: tc.id,
-                  name: tc.function?.name || '',
-                  arguments: tc.function?.arguments || '',
-                };
-              } else if (currentToolCall && tc.function?.arguments) {
-                currentToolCall.arguments += tc.function.arguments;
+              const explicitIndex = Number.isInteger(tc.index) ? tc.index : undefined;
+              let index = explicitIndex;
+
+              if (index === undefined && tc.id) {
+                index = toolCallParts.find((part) => part.id === tc.id)?.index;
               }
+              if (index === undefined) {
+                index = toolCallParts.length;
+              }
+
+              let part = toolCallParts.find((p) => p.index === index);
+              if (!part) {
+                part = { index, id: '', name: '', arguments: '' };
+                toolCallParts.push(part);
+              }
+
+              if (tc.id) part.id = tc.id;
+              if (tc.function?.name) part.name = tc.function.name;
+              if (tc.function?.arguments) part.arguments += tc.function.arguments;
             }
           }
         } catch {
@@ -384,21 +423,18 @@ export async function* chatCompletionStream(
       }
     }
   } catch (e) {
-    // Unexpected stream error — release lock and fall through to done.
-    // (Stream stalls are handled above via the Promise.race and return early.)
+    // Unexpected stream error — surface it instead of silently completing,
+    // otherwise the TUI can show an empty completed assistant message.
+    yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
+    return;
   } finally {
-    reader.releaseLock();
+    try {
+      reader.releaseLock();
+    } catch {
+      // ignore: the reader may already have been cancelled/released
+    }
   }
 
-  if (currentToolCall) {
-    yield {
-      type: 'tool_call',
-      toolCall: {
-        id: currentToolCall.id,
-        name: currentToolCall.name,
-        arguments: JSON.parse(currentToolCall.arguments || '{}'),
-      },
-    };
-  }
+  yield* emitToolCalls();
   yield { type: 'done', usage: currentUsage ?? undefined };
 }

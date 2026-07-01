@@ -642,6 +642,67 @@ describe('chatCompletionStream retry — edge cases', () => {
   });
 });
 
+describe('chatCompletionStream tool call streaming', () => {
+  it('reconstructs multiple interleaved tool calls by index', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(
+              enc.encode(
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"Read","arguments":"{\\"filePath\\":\\"a"}},{"index":1,"id":"call_2","function":{"name":"Grep","arguments":"{\\"pattern\\":\\"needle"}}]}}]}\n\n',
+              ),
+            );
+            c.enqueue(
+              enc.encode(
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":".txt\\"}"}},{"index":1,"function":{"arguments":"\\",\\"path\\":\\"src\\"}"}}]}}]}\n\n',
+              ),
+            );
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(e);
+    }
+
+    const calls = events.filter((e) => e.type === 'tool_call').map((e) => e.toolCall);
+    expect(calls).toEqual([
+      { id: 'call_1', name: 'Read', arguments: { filePath: 'a.txt' } },
+      { id: 'call_2', name: 'Grep', arguments: { pattern: 'needle', path: 'src' } },
+    ]);
+    expect(events[events.length - 1].type).toBe('done');
+  });
+
+  it('does not hang when an already-open stream is aborted', async () => {
+    const controller = new AbortController();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(hangingStream(), { status: 200 })),
+    );
+
+    setTimeout(() => controller.abort(), 10);
+    const events = [];
+    for await (const e of chatCompletionStream(
+      defaultConfig({ retry: { maxAttempts: 0, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 0, watchdog: false } }),
+      [{ role: 'user', content: 'hi' }],
+      [],
+      { signal: controller.signal },
+    )) {
+      events.push(e);
+    }
+
+    expect(events).toEqual([]);
+  });
+});
+
 describe('chatCompletionStream usage', () => {
   it('emits a done event with usage from the final chunk', async () => {
     vi.stubGlobal(

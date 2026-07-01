@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { estimateMessageLines } from './ChatPanel.js';
+import { estimateMessageLines, getVisibleMessages } from './ChatPanel.js';
 
 /**
  * Tests for ChatPanel scroll logic.
@@ -29,46 +29,15 @@ function computeVisibleMessages(
   maxHeight: number,
   termWidth: number,
   streamingMessageId: string | null,
+  autoScroll = true,
 ): TestMessage[] {
-  if (messages.length === 0) return [];
-
-  const height = Math.max(5, maxHeight);
-
-  // Compute total estimated lines
-  let totalLines = 0;
-  for (const msg of messages) {
-    totalLines += estimateMessageLines(msg, termWidth);
-  }
-
-  const viewportTop = Math.max(0, totalLines - scrollOffset - height * 2);
-  const viewportBottom = totalLines - scrollOffset + height;
-
-  const included: TestMessage[] = [];
-  let lineCount = 0;
-
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    const msgLines = estimateMessageLines(msg, termWidth);
-    const msgTop = lineCount;
-    lineCount += msgLines;
-
-    if (lineCount <= viewportTop) continue;
-    if (msgTop > viewportBottom) break;
-
-    included.push(msg);
-  }
-
-  // During streaming, always include the last few messages
-  if (streamingMessageId) {
-    const tailMessages = messages.slice(-Math.min(10, messages.length));
-    for (const tm of tailMessages) {
-      if (!included.includes(tm)) {
-        included.push(tm);
-      }
-    }
-  }
-
-  return included;
+  return getVisibleMessages(messages, {
+    scrollOffset,
+    maxHeight,
+    terminalWidth: termWidth,
+    streamingMessageId,
+    autoScroll,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -203,15 +172,22 @@ describe('ChatPanel virtual viewport', () => {
     expect(result[result.length - 1].id).not.toBe('m29');
   });
 
-  it('streaming message always included even if above viewport', () => {
-    // 30 messages. At offset=60, the newest messages are above viewport.
-    // But the streaming message (m29) should still be included.
+  it('streaming tail stays included when auto-scroll is active', () => {
     const msgs = Array.from(
       { length: 30 },
       (_, i) => makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
     );
-    const result = computeVisibleMessages(msgs, 60, MAX_HEIGHT, TERM_WIDTH, 'm29');
+    const result = computeVisibleMessages(msgs, 60, MAX_HEIGHT, TERM_WIDTH, 'm29', true);
     expect(result.some((m) => m.id === 'm29')).toBe(true);
+  });
+
+  it('streaming tail is not forced into view when auto-scroll is paused', () => {
+    const msgs = Array.from(
+      { length: 30 },
+      (_, i) => makeMsg(`m${i}`, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`),
+    );
+    const result = computeVisibleMessages(msgs, 60, MAX_HEIGHT, TERM_WIDTH, 'm29', false);
+    expect(result.some((m) => m.id === 'm29')).toBe(false);
   });
 
   it('scrollOffset=0 with messages that exactly fill viewport', () => {

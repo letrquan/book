@@ -33,6 +33,99 @@ function noopCallbacks(overrides: Record<string, any> = {}) {
   };
 }
 
+describe('runAgentLoop streaming render callbacks', () => {
+  it('streams text chunks in order before onDone and returns assistant content', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n'));
+            c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"lo"}}]}\n\n'));
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events: string[] = [];
+    const result = await runAgentLoop(
+      config,
+      createRegistry(),
+      'hi',
+      [],
+      noopCallbacks({
+        onText: (t: string) => events.push(`text:${t}`),
+        onDone: () => events.push('done'),
+      }),
+    );
+
+    expect(events).toEqual(['text:Hel', 'text:lo', 'done']);
+    expect(result.map((m) => [m.role, m.content])).toEqual([
+      ['user', 'hi'],
+      ['assistant', 'Hello'],
+    ]);
+  });
+
+  it('keeps tool calls and results attached to the assistant turn that produced them', async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            if (fetchCalls === 1) {
+              c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"I will read it."}}]}\n\n'));
+              c.enqueue(enc.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tool_1","function":{"name":"Echo","arguments":"{\\"value\\":\\"abc\\"}"}}]}}]}\n\n'));
+            } else {
+              c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"Tool said abc."}}]}\n\n'));
+            }
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const registry = createRegistry();
+    registry.register({
+      name: 'Echo',
+      description: 'Echo value',
+      parameters: { type: 'object', properties: { value: { type: 'string' } } },
+      execute: async (args) => ({ toolCallId: '', success: true, output: String(args.value) }),
+    });
+
+    const turns: Array<{ texts: string[]; calls: string[]; results: string[] }> = [];
+    const result = await runAgentLoop(
+      config,
+      registry,
+      'read',
+      [],
+      noopCallbacks({
+        onTurnStart: (turn: number) => { turns[turn - 1] = { texts: [], calls: [], results: [] }; },
+        onText: (t: string) => turns[turns.length - 1].texts.push(t),
+        onToolCall: (call: { id: string }) => turns[turns.length - 1].calls.push(call.id),
+        onToolResult: (toolResult: { toolCallId: string; output: string }) => turns[turns.length - 1].results.push(`${toolResult.toolCallId}:${toolResult.output}`),
+      }),
+      'auto',
+    );
+
+    expect(turns).toEqual([
+      { texts: ['I will read it.'], calls: ['tool_1'], results: ['tool_1:abc'] },
+      { texts: ['Tool said abc.'], calls: [], results: [] },
+    ]);
+    const firstAssistant = result.find((m) => m.role === 'assistant' && m.toolCalls?.length);
+    expect(firstAssistant?.toolCalls?.[0].id).toBe('tool_1');
+    expect(firstAssistant?.toolResults?.[0].toolCallId).toBe('tool_1');
+  });
+});
+
 describe('runAgentLoop abort', () => {
   it('stops streaming when the abort signal fires', async () => {
     const controller = new AbortController();
@@ -81,6 +174,39 @@ describe('runAgentLoop abort', () => {
 
     // Aborted mid-stream: we should NOT have looped into more turns.
     expect(seen.length).toBeLessThanOrEqual(3);
+  });
+
+  it('keeps partial assistant content in returned history after abort', async () => {
+    const controller = new AbortController();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'));
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const result = await runAgentLoop(
+      config,
+      createRegistry(),
+      'hi',
+      [],
+      noopCallbacks({
+        onText: () => controller.abort(),
+      }),
+      'default',
+      { signal: controller.signal },
+    );
+
+    expect(result.map((m) => [m.role, m.content])).toEqual([
+      ['user', 'hi'],
+      ['assistant', 'partial'],
+    ]);
   });
 });
 
@@ -156,6 +282,43 @@ describe('runAgentLoop error handling', () => {
     );
 
     expect(errorMsg).toMatch(/max turns/);
+  });
+
+  it('emits a skipped tool result when permission is denied', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return new Response(
+          new ReadableStream({
+            start(c) {
+              const enc = new TextEncoder();
+              c.enqueue(
+                enc.encode(
+                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"deny_1","function":{"name":"Read","arguments":"{\\"filePath\\":\\"x\\"}"}}]}}]}\n\n',
+                ),
+              );
+              c.enqueue(enc.encode('data: [DONE]\n\n'));
+              c.close();
+            },
+          }),
+          { status: 200 },
+        );
+      }),
+    );
+
+    const results: string[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hi',
+      [],
+      noopCallbacks({
+        onPermissionRequired: async () => 'deny',
+        onToolResult: (r: { toolCallId: string; error?: string }) => results.push(`${r.toolCallId}:${r.error}`),
+      }),
+    );
+
+    expect(results).toEqual(['deny_1:SKIPPED: Permission denied']);
   });
 
   it('calls onRetry callback during transport retries', async () => {

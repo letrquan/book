@@ -4,15 +4,12 @@ import { runAgentLoop } from '../../agent/loop.js';
 import { createDefaultRegistry } from '../../tools/registry.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types.js';
-
-function makeMessage(role: 'user' | 'assistant', content: string): Message {
-  return {
-    id: crypto.randomUUID(),
-    role,
-    content,
-    timestamp: Date.now(),
-  };
-}
+import {
+  appendContentToMessage,
+  appendToolCallToMessage,
+  appendToolResultToMessage,
+  makeMessage,
+} from './streaming-state.js';
 
 export function useAgent(config: AgentConfig) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -40,9 +37,14 @@ export function useAgent(config: AgentConfig) {
   // the latest in-progress message without stale-closure issues.
   const streamingIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const messagesRef = useRef<Message[]>([]);
   const turnStartRef = useRef(Date.now());
   // Countdown timer ref for retry countdown.
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // Clean up countdown timer on unmount.
   useEffect(() => {
@@ -61,15 +63,6 @@ export function useAgent(config: AgentConfig) {
     }
   }, []);
 
-  const patchStreaming = useCallback(
-    (patch: (m: Message) => Message) => {
-      const id = streamingIdRef.current;
-      if (!id) return;
-      setMessages((prev) => prev.map((m) => (m.id === id ? patch(m) : m)));
-    },
-    [],
-  );
-
   const send = useCallback(
     async (userMessage: string) => {
       if (isThinking) return;
@@ -78,6 +71,7 @@ export function useAgent(config: AgentConfig) {
       // Render the user's message IMMEDIATELY, and seed a fresh, empty
       // assistant message that we will stream into. Prior messages are never
       // touched, so they stay visible (scrolled above) while the reply streams.
+      const history = messagesRef.current;
       const userMsg = makeMessage('user', userMessage);
       const placeholder = makeMessage('assistant', '');
       streamingIdRef.current = placeholder.id;
@@ -90,31 +84,47 @@ export function useAgent(config: AgentConfig) {
       setRetryAttempt(0);
       setRetryMax(0);
       setRetryCountdownMs(0);
-      setMessages((prev) => [...prev, userMsg, placeholder]);
+      setMessages((prev) => {
+        const next = [...prev, userMsg, placeholder];
+        messagesRef.current = next;
+        return next;
+      });
 
       const registry = createDefaultRegistry();
       const controller = new AbortController();
       abortRef.current = controller;
 
       try {
-        // `messages` (pre-user state) is passed as history; the loop pushes its
+        // `history` (pre-user state) is passed as context; the loop pushes its
         // own copy of the user message for API context. We ignore the loop's
         // returned history — the hook's state is authoritative and updated live.
-        await runAgentLoop(config, registry, userMessage, messages, {
+        await runAgentLoop(config, registry, userMessage, history, {
           onText: (text) => {
-            patchStreaming((m) => ({ ...m, content: m.content + text }));
+            const id = streamingIdRef.current;
+            if (!id) return;
+            setMessages((prev) => {
+              const next = appendContentToMessage(prev, id, text);
+              messagesRef.current = next;
+              return next;
+            });
           },
           onToolCall: (call: ToolCall) => {
-            patchStreaming((m) => ({
-              ...m,
-              toolCalls: [...(m.toolCalls ?? []), call],
-            }));
+            const id = streamingIdRef.current;
+            if (!id) return;
+            setMessages((prev) => {
+              const next = appendToolCallToMessage(prev, id, call);
+              messagesRef.current = next;
+              return next;
+            });
           },
           onToolResult: (result: ToolResult) => {
-            patchStreaming((m) => ({
-              ...m,
-              toolResults: [...(m.toolResults ?? []), result],
-            }));
+            const id = streamingIdRef.current;
+            if (!id) return;
+            setMessages((prev) => {
+              const next = appendToolResultToMessage(prev, id, result);
+              messagesRef.current = next;
+              return next;
+            });
           },
           onTodos: (todos) => {
             setAgentTodos(todos as Todo[]);
@@ -132,7 +142,11 @@ export function useAgent(config: AgentConfig) {
               const next = makeMessage('assistant', '');
               streamingIdRef.current = next.id;
               setStreamingMessageId(next.id);
-              setMessages((prev) => [...prev, next]);
+              setMessages((prev) => {
+                const updated = [...prev, next];
+                messagesRef.current = updated;
+                return updated;
+              });
             }
           },
           onDone: () => {
@@ -199,7 +213,7 @@ export function useAgent(config: AgentConfig) {
         setRetryCountdownMs(0);
       }
     },
-    [config, isThinking, messages, mode, patchStreaming, clearCountdown],
+    [config, isThinking, mode, clearCountdown],
   );
 
   const resolvePermission = useCallback(
@@ -260,10 +274,13 @@ export function useAgent(config: AgentConfig) {
       content: `[Compacted summary of earlier conversation]\n${summary}`,
       timestamp: Date.now(),
     };
-    setMessages([summaryMsg, ...kept]);
+    const compactedMessages = [summaryMsg, ...kept];
+    messagesRef.current = compactedMessages;
+    setMessages(compactedMessages);
   }, [config, messages]);
 
   const clear = useCallback(() => {
+    messagesRef.current = [];
     setMessages([]);
     setError(null);
     setCurrentTurn(0);

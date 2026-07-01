@@ -120,7 +120,7 @@ export async function runAgentLoop(
     const stream = chatCompletionStream(config, messages, registry.getDefinitions(), {
       signal,
       onRetry: (attempt, max, delayMs) => {
-        callbacks.onRetry?.('transport', attempt, max, delayMs);
+        callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
       },
       onStreamStall: (countdownMs) => {
         callbacks.onStreamStall?.(countdownMs);
@@ -135,7 +135,6 @@ export async function runAgentLoop(
 
     try {
       for await (const event of stream) {
-        if (signal?.aborted) break;
         if (event.type === 'text' && event.content) {
           textBuffer += event.content;
           // Still stream to the UI so the user sees tokens arriving.
@@ -154,6 +153,7 @@ export async function runAgentLoop(
             lastUsage = turnUsage;
           }
         }
+        if (signal?.aborted) break;
       }
     } catch (e) {
       // Abort looks like an AbortError; keep whatever content we have and stop.
@@ -163,8 +163,21 @@ export async function runAgentLoop(
       streamError = e instanceof Error ? e.message : String(e);
     }
 
-    // If the stream ended with an error, surface it and stop the loop.
+    assistantContent = textBuffer;
+
+    // If the stream ended with an error, surface it and stop the loop. Keep
+    // any partial assistant text/tool call metadata in returned history so
+    // callers that persist sessions do not lose what was already rendered.
     if (streamError) {
+      if (assistantContent.length > 0 || toolCalls.length > 0) {
+        newHistory.push({
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: assistantContent,
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          timestamp: Date.now(),
+        });
+      }
       callbacks.onError(streamError);
       return newHistory;
     }
@@ -172,10 +185,17 @@ export async function runAgentLoop(
     // If we got no done event and no error, the stream was aborted or
     // ended unexpectedly — keep what we have and finish.
     if (!streamDone && signal?.aborted) {
+      if (assistantContent.length > 0 || toolCalls.length > 0) {
+        newHistory.push({
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: assistantContent,
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          timestamp: Date.now(),
+        });
+      }
       break;
     }
-
-    assistantContent = textBuffer;
 
     if (turnUsage) {
       callbacks.onUsage?.(turnUsage);
@@ -234,12 +254,14 @@ export async function runAgentLoop(
           }
 
           if (permission === 'deny') {
-            toolResults.push({
+            const deniedResult: ToolResult = {
               toolCallId: call.id,
               success: false,
               output: '',
               error: 'SKIPPED: Permission denied',
-            });
+            };
+            toolResults.push(deniedResult);
+            callbacks.onToolResult(deniedResult);
             continue;
           }
           if (permission === 'always') {
