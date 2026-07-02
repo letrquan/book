@@ -1,5 +1,5 @@
 {
-  "model": "sf/glm-5",
+  "model": "mmf/mimo-auto",
   "baseUrl": "http://localhost:20128/v1",
   "maxTurns": 25,
   "animation": {
