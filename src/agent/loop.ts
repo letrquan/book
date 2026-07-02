@@ -37,7 +37,7 @@ export async function runAgentLoop(
     runHooks(config.settings.hooks.SessionStart, 'SessionStart', {
       workspace: config.workspace,
       event: 'SessionStart',
-    }).catch((err) => console.warn('SessionStart hook failed:', err));
+    }, { onHookEvent: callbacks.onHookEvent }).catch((err) => console.warn('SessionStart hook failed:', err));
   }
 
   // UserPromptSubmit hook — can modify or block the user prompt.
@@ -46,6 +46,7 @@ export async function runAgentLoop(
     config.settings.hooks.UserPromptSubmit,
     'UserPromptSubmit',
     { workspace: config.workspace, event: 'UserPromptSubmit', userPrompt: userMessage },
+    { onHookEvent: callbacks.onHookEvent },
   );
   for (const r of userHookResults) {
     if (r.action === 'block') {
@@ -94,7 +95,7 @@ export async function runAgentLoop(
       runHooks(config.settings.hooks.PreCompact, 'PreCompact', {
         workspace: config.workspace,
         event: 'PreCompact',
-      }).catch((err) => console.warn('PreCompact hook failed:', err));
+      }, { onHookEvent: callbacks.onHookEvent }).catch((err) => console.warn('PreCompact hook failed:', err));
 
       try {
         const compacted = await callbacks.onCompact(newHistory, lastUsage);
@@ -217,6 +218,7 @@ export async function runAgentLoop(
           toolName: canonName,
           toolArgs: call.arguments,
         },
+        { onHookEvent: callbacks.onHookEvent },
       );
       const blocked = preHookResults.find((r) => r.action === 'block');
       if (blocked) {
@@ -286,6 +288,7 @@ export async function runAgentLoop(
           toolArgs: call.arguments,
           toolOutput: result.success ? result.output : result.error ?? '',
         },
+        { onHookEvent: callbacks.onHookEvent },
       );
       for (const r of postHookResults) {
         if (r.action === 'modify' && r.modifiedOutput !== undefined) {
@@ -306,7 +309,7 @@ export async function runAgentLoop(
     runHooks(config.settings.hooks.Stop, 'Stop', {
       workspace: config.workspace,
       event: 'Stop',
-    }).catch((err) => console.warn('Stop hook failed:', err));
+    }, { onHookEvent: callbacks.onHookEvent }).catch((err) => console.warn('Stop hook failed:', err));
 
     newHistory.push({
       id: crypto.randomUUID(),
@@ -330,7 +333,7 @@ export async function runAgentLoop(
   runHooks(config.settings.hooks.SessionEnd, 'SessionEnd', {
     workspace: config.workspace,
     event: 'SessionEnd',
-  }).catch((err) => console.warn('SessionEnd hook failed:', err));
+  }, { onHookEvent: callbacks.onHookEvent }).catch((err) => console.warn('SessionEnd hook failed:', err));
 
   callbacks.onDone();
   return newHistory;

@@ -111,6 +111,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         sessionName,
         forkSession: options.forkSession as boolean | undefined,
         persistSession: options.sessionPersistence as boolean | undefined,
+        includeHookEvents: options.includeHookEvents as boolean | undefined,
+        includePartialMessages: options.includePartialMessages as boolean | undefined,
+        promptSuggestions: options.promptSuggestions as boolean | undefined,
       });
       return;
     }

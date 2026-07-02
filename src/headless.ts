@@ -87,7 +87,7 @@ export async function runHeadless(
           if (store && sessionId) {
             store.append(sessionId, { type: 'assistant', timestamp: Date.now(), data: { content: text } } satisfies SessionRecord);
           }
-          if (opts.outputFormat === 'stream-json') {
+          if (opts.outputFormat === 'stream-json' && opts.includePartialMessages !== false) {
             emit({ type: 'assistant', text });
           }
         },
@@ -111,6 +111,13 @@ export async function runHeadless(
         onTurnStart: () => {},
         onDone: () => {},
         onPermissionRequired: permissionRequired,
+        onHookEvent: opts.includeHookEvents
+          ? (event, payload) => {
+              if (opts.outputFormat === 'stream-json') {
+                emit({ type: 'hook_event', event, ...payload });
+              }
+            }
+          : undefined,
         onUsage: (u) => {
           lastUsage = u;
         },
@@ -138,6 +145,18 @@ export async function runHeadless(
     }
   }
 
+  // Prompt suggestions: ask model for follow-up prompts.
+  if (opts.promptSuggestions && opts.outputFormat === 'stream-json') {
+    try {
+      const suggestions = await generatePromptSuggestions(config, registry, newHistory);
+      if (suggestions.length > 0) {
+        emit({ type: 'prompt_suggestions', suggestions });
+      }
+    } catch {
+      // Non-fatal: suggestions are best-effort.
+    }
+  }
+
   if (opts.outputFormat === 'text') {
     const last = lastAssistantText(newHistory);
     if (last) stdout.write(last + '\n');
@@ -156,4 +175,50 @@ function lastAssistantText(history: Message[]): string {
     if (m.role === 'assistant' && m.content) return m.content;
   }
   return '';
+}
+
+async function generatePromptSuggestions(
+  config: AgentConfig,
+  registry: ToolRegistry,
+  history: Message[],
+): Promise<string[]> {
+  const { chatCompletionStream } = await import('./provider/openai-compatible.js');
+  const { buildMessages } = await import('./agent/context.js');
+
+  const suggestionMessages = buildMessages(
+    config,
+    [...history, {
+      id: crypto.randomUUID(),
+      role: 'user' as const,
+      content: 'Based on the conversation above, suggest 1-3 follow-up prompts the user might want to ask next. Keep each suggestion under 80 characters. Return ONLY a JSON array of strings, no other text.',
+      timestamp: Date.now(),
+    }],
+    [],
+  );
+
+  const stream = chatCompletionStream(config, suggestionMessages, [], {});
+  let content = '';
+  for await (const event of stream) {
+    if (event.type === 'text' && event.content) {
+      content += event.content;
+    }
+  }
+
+  // Parse JSON array from the response.
+  try {
+    const jsonMatch = content.match(/\[[\s\S]*?\]/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((s) => typeof s === 'string' && s.length > 0).slice(0, 3);
+      }
+    }
+  } catch {
+    // Fallback: try to extract quoted strings.
+    const quoted = content.match(/"([^"]+)"/g);
+    if (quoted) {
+      return quoted.map((s) => s.replace(/^"|"$/g, '')).slice(0, 3);
+    }
+  }
+  return [];
 }

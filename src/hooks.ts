@@ -40,8 +40,16 @@ export async function runHooks(
   hooks: HookEntry[],
   event: HookEvent,
   ctx: HookContext,
+  opts?: { onHookEvent?: (event: string, payload: Record<string, unknown>) => void },
 ): Promise<HookResult[]> {
   if (hooks.length === 0) return [];
+
+  opts?.onHookEvent?.(event, {
+    event,
+    toolName: ctx.toolName ?? null,
+    toolArgs: ctx.toolArgs ?? null,
+    userPrompt: ctx.userPrompt ?? null,
+  });
 
   const results: HookResult[] = [];
   const blockingEvents: HookEvent[] = ['PreToolUse', 'UserPromptSubmit'];

@@ -264,6 +264,8 @@ export interface AgentLoopCallbacks {
   onStreamStall?: (countdownMs: number) => void;
   /** Called when data resumes after a stream stall. */
   onStreamResume?: () => void;
+  /** Called when a hook lifecycle event fires (for --include-hook-events in stream-json mode). */
+  onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
 }
 
 export type OutputFormat = 'text' | 'json' | 'stream-json';
@@ -304,6 +306,12 @@ export interface HeadlessOptions {
   sessionName?: string;
   forkSession?: boolean;
   persistSession?: boolean;
+  /** Emit hook lifecycle events as stream-json lines. */
+  includeHookEvents?: boolean;
+  /** Emit partial assistant text deltas as stream-json lines (default: true for stream-json). */
+  includePartialMessages?: boolean;
+  /** After completion, ask the model for follow-up prompt suggestions. */
+  promptSuggestions?: boolean;
 }
 
 export interface HeadlessResult {
