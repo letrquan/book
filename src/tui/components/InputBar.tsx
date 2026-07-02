@@ -120,6 +120,9 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
   const [menuFilter, setMenuFilter] = useState('');
   const [menuSelected, setMenuSelected] = useState(0);
 
+  // Ref to suppress TextInput's onSubmit when the menu already handled Enter.
+  const menuHandledSubmit = useRef(false);
+
   const filteredCmds = useMemo(
     () => getFilteredCommands(commands, menuFilter),
     [commands, menuFilter],
@@ -169,14 +172,14 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
         });
         return;
       }
-      // Enter: submit the selected command directly
+      // Enter: submit the selected command directly.
+      // Use a ref guard to prevent TextInput from also firing onSubmit.
       if (key.return) {
         if (filteredCmds.length > 0) {
           const sel = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
           const cmd = filteredCmds[sel];
           const fullCmd = '/' + cmd.name + ' ';
-          // Submit directly — bypass history navigation since we're
-          // auto-filling a command.
+          menuHandledSubmit.current = true;
           setMenuVisible(false);
           setMenuSelected(0);
           setValue('');
@@ -191,8 +194,6 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
         return;
       }
       // Any other key while menu is visible: dismiss menu (user is typing args).
-      // But we need to let the character through — handled by checking value
-      // changes below.
       return;
     }
 
@@ -242,6 +243,12 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
 
   const handleSubmit = useCallback(
     (val: string) => {
+      // If the menu already handled this Enter, skip TextInput's onSubmit.
+      if (menuHandledSubmit.current) {
+        menuHandledSubmit.current = false;
+        return;
+      }
+
       // Dismiss menu on submit.
       setMenuVisible(false);
       setMenuSelected(0);
