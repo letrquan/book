@@ -22,22 +22,41 @@ export interface RetryConfig {
 }
 
 /**
- * Theme token system matching Claude Code's color token architecture.
+ * A slash command loaded from .book/commands/*.md or ~/.book/commands/*.md.
+ * Matches Claude Code's command loading model.
+ */
+export interface SlashCommand {
+  /** File basename without extension — the command name invoked via /name */
+  name: string;
+  /** Human-readable description (from frontmatter `description`) */
+  description: string;
+  /** Argument hint shown in help and autocomplete (from frontmatter `argument-hint`) */
+  argumentHint?: string;
+  /** Named positional arguments for $name substitution (from frontmatter `arguments`) */
+  arguments?: string[];
+  /** Restrict which tools this command can use (from frontmatter `allowed-tools`) */
+  allowedTools?: string[];
+  /** Override model for this command (from frontmatter `model`) */
+  model?: string;
+  /** The raw Markdown body — injected as the prompt when invoked. */
+  body: string;
+  /** Source directory for priority/debugging (user vs project). */
+  source: 'user' | 'project';
+}
 
 /**
- * Retry configuration — all tunables live here.
- * Mirrors Claude Code's env vars: CLAUDE_CODE_MAX_RETRIES, API_TIMEOUT_MS,
- * CLAUDE_CODE_RETRY_WATCHDOG, plus the stream-stall threshold.
+ * Runtime context for an active command invocation.
+ * Carries enforcement data through the agent loop.
  */
-export interface RetryConfig {
-  maxAttempts: number;         // default 10 (Claude Code default)
-  baseDelayMs: number;         // default 1000
-  maxDelayMs: number;          // default 30000
-  totalBudgetMs: number;       // default 0 = no budget
-  requestTimeoutMs: number;    // default 600000 (10 min)
-  streamStallTimeoutMs: number;// default 20000 (20s, matches Claude Code)
-  toolRetries: number;         // default 1
-  watchdog: boolean;           // default false — CI mode: retry 429/529 indefinitely
+export interface CommandContext {
+  /** The command that was invoked */
+  command: SlashCommand;
+  /** The resolved body after argument/shell/env substitution */
+  resolvedBody: string;
+  /** Model override from command frontmatter */
+  modelOverride?: string;
+  /** Tool allowlist from command frontmatter */
+  allowedTools?: string[];
 }
 
 /**

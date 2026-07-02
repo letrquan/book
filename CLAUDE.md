@@ -30,7 +30,8 @@ src/
     context.ts      System prompt builder, message formatter
     compact.ts      Context compaction logic
   commands/
-    loader.ts       Slash command discovery from .book/commands/
+    loader.ts       Slash command discovery from .book/commands/*.md
+    resolve.ts      Argument parsing, variable/shell substitution, env var resolution
   provider/
     openai-compatible.ts  OpenAI-compatible streaming client (SSE, retry, abort)
   session/
@@ -59,6 +60,7 @@ src/
       useGitStatus.ts  Git status polling
       useTasks.ts   User task list hook
     components/
+      CommandMenu.tsx    / command autocomplete menu
       ChatPanel.tsx       Message list renderer
       InputBar.tsx        Text input with mode indicator
       StatusLine.tsx      Status bar

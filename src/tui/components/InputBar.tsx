@@ -3,7 +3,7 @@ import TextInput from 'ink-text-input';
 import { useState, useCallback, useRef, useMemo } from 'react';
 import { useInput } from 'ink';
 import { useTheme } from '../theme.js';
-import type { PermissionMode } from '../../types.js';
+import type { PermissionMode, SlashCommand } from '../../types.js';
 import { expandAtMentions, expandShellCommands } from '../input-expansion.js';
 
 const MODE_BORDER_TOKENS: Record<PermissionMode, 'brand' | 'success' | 'planMode' | 'autoAccept' | 'error'> = {
@@ -22,17 +22,12 @@ interface InputBarProps {
   onCycleMode: () => void;
   /** Forward unrecognized global keyboard shortcuts to the parent App. */
   onGlobalShortcut?: (input: string, key: { ctrl?: boolean; meta?: boolean; shift?: boolean; tab?: boolean }) => boolean;
+  /** Commands for the autocomplete menu (from discoverCommands). */
+  commands?: SlashCommand[];
 }
 
 /**
  * Normalize a string to NFC (Canonical Composition) for consistent Unicode handling.
- *
- * Vietnamese and other languages with diacritics can be represented in two forms:
- *   NFC (precomposed):  ắ = U+1EAF (single codepoint)
- *   NFD (decomposed):   ắ = a + U+031B (horn) + U+0301 (acute) (3 codepoints)
- *
- * Different terminals/IMEs emit different forms. Normalizing to NFC ensures
- * text renders, stores, and transmits consistently regardless of input method.
  */
 function normalizeInput(value: string): string {
   return value.normalize('NFC');
@@ -40,54 +35,168 @@ function normalizeInput(value: string): string {
 
 /**
  * Strip SGR mouse escape sequences that leak through from ink-text-input.
- *
- * ink-text-input v6.0.0 has its own internal useInput listener that runs
- * independently of ours — it receives SGR mouse events and injects them as
- * literal text. We can't stop it at the event level (Node EventEmitter calls
- * all listeners), so we filter at the value level instead.
- *
- * Ink's useInput/parseKeypress strips the leading ESC byte, so SGR sequences
- * arrive as "[<64;col;rowM" (press) or "[<0;col;rowm" (release).
  */
 function stripMouseSequences(val: string): string {
-  // After Ink's parseKeypress strips the leading ESC byte, SGR mouse
-  // sequences arrive as "[<64;col;rowM" or "[<0;col;rowm".
-  // The regex matches: literal "[<" + digits/semicolons + "M" or "m".
   return val.replace(/\[<[0-9;]*[Mm]/g, '');
 }
 
+// Built-in command metadata (mirrors CommandMenu for auto-fill).
+const BUILTIN_NAMES = new Set([
+  'clear', 'compact', 'exit', 'help', 'task', 'theme',
+  'model', 'config', 'diff', 'status', 'memory',
+  'permissions', 'cost', 'skills', 'init', 'reload-skills', 'export',
+]);
+
+const BUILTIN_DESCS: Record<string, string> = {
+  clear: 'Clear conversation',
+  compact: 'Summarize older turns',
+  exit: 'Exit book',
+  help: 'Toggle help',
+  task: 'Add a task',
+  theme: 'Switch theme',
+  model: 'Switch AI model',
+  config: 'Show current configuration',
+  diff: 'Show git diff',
+  status: 'Show session status',
+  memory: 'Edit CLAUDE.md / manage auto-memory',
+  permissions: 'Manage permission rules',
+  cost: 'Show token usage and cost',
+  skills: 'List available skills',
+  init: 'Initialize project with CLAUDE.md',
+  'reload-skills': 'Re-scan command and skill directories',
+  export: 'Export conversation to file',
+};
+
+interface CommandItem {
+  name: string;
+  hint: string;
+  desc: string;
+}
+
+function getFilteredCommands(commands: SlashCommand[], filter: string): CommandItem[] {
+  const allItems: CommandItem[] = [];
+
+  for (const name of BUILTIN_NAMES) {
+    allItems.push({ name, hint: '', desc: BUILTIN_DESCS[name] || '' });
+  }
+
+  for (const cmd of commands) {
+    if (BUILTIN_NAMES.has(cmd.name)) continue;
+    allItems.push({ name: cmd.name, hint: cmd.argumentHint || '', desc: cmd.description });
+  }
+
+  const f = filter.toLowerCase();
+  const filtered = allItems.filter((item) => {
+    if (!f) return true;
+    return item.name.toLowerCase().startsWith(f) || item.name.toLowerCase().includes(f);
+  });
+
+  // Sort: prefix matches first, then substring
+  filtered.sort((a, b) => {
+    const aPrefix = a.name.toLowerCase().startsWith(f) ? 0 : 1;
+    const bPrefix = b.name.toLowerCase().startsWith(f) ? 0 : 1;
+    return aPrefix - bPrefix;
+  });
+
+  return filtered;
+}
+
 /**
- * Claude Code-style input bar.
+ * Claude Code-style input bar with command autocomplete menu.
  *
- * The prompt stays visible and interactive at all times — even while the
- * agent is streaming. Users can type their next message ahead; only
- * submission is gated when disabled.
- *
- * Supports:
- *   @path     — expand to file contents (up to 2000 chars)
- *   !cmd      — run shell command and insert output
- *   Shift+Enter — insert newline (multiline input)
- *   Tab       — accept suggestion when input is empty
- *   Shift+Tab — cycle permission mode
- *   Vietnamese — full Unicode NFC normalization for diacritics (ắ, ễ, ệ, ạ, ớ, ứ, ổ, …)
+ * When the user types `/` at the start of input, a command menu appears above
+ * the input showing matching commands. Arrow keys navigate, Tab auto-fills,
+ * and Enter on a selected item submits the command.
  */
-export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortcut }: InputBarProps) {
+export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortcut, commands = [] }: InputBarProps) {
   const theme = useTheme();
   const [value, setValue] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const suggestion = 'Ask me anything...';
-  const inputRef = useRef<any>(null);
+
+  // Command menu state
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [menuFilter, setMenuFilter] = useState('');
+  const [menuSelected, setMenuSelected] = useState(0);
+
+  const filteredCmds = useMemo(
+    () => getFilteredCommands(commands, menuFilter),
+    [commands, menuFilter],
+  );
 
   useInput((_input, key) => {
     // Filter out Alt/Meta-modified keys — they're shortcuts, not text input.
-    // e.g. Alt+M cycles mode but shouldn't write "m" into the input.
     if (key.meta) return;
 
     if (key.shift && key.tab) {
       onCycleMode();
       return;
     }
+
+    // ---- Command menu keyboard handling ----
+    if (menuVisible) {
+      // Escape: dismiss menu
+      if (key.escape) {
+        setMenuVisible(false);
+        setMenuSelected(0);
+        return;
+      }
+      // Tab: auto-fill selected command
+      if (key.tab) {
+        if (filteredCmds.length > 0) {
+          const sel = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
+          const cmd = filteredCmds[sel];
+          setValue('/' + cmd.name + ' ');
+          setMenuVisible(false);
+          setMenuSelected(0);
+        }
+        return;
+      }
+      // Down arrow: next item
+      if (key.downArrow) {
+        setMenuSelected((prev) => {
+          const next = prev + 1;
+          return next >= filteredCmds.length ? 0 : next;
+        });
+        return;
+      }
+      // Up arrow: previous item
+      if (key.upArrow) {
+        setMenuSelected((prev) => {
+          const next = prev - 1;
+          return next < 0 ? Math.max(0, filteredCmds.length - 1) : next;
+        });
+        return;
+      }
+      // Enter: submit the selected command directly
+      if (key.return) {
+        if (filteredCmds.length > 0) {
+          const sel = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
+          const cmd = filteredCmds[sel];
+          const fullCmd = '/' + cmd.name + ' ';
+          // Submit directly — bypass history navigation since we're
+          // auto-filling a command.
+          setMenuVisible(false);
+          setMenuSelected(0);
+          setValue('');
+          const normalized = normalizeInput(fullCmd);
+          setHistory((h) => [normalized, ...h].slice(0, 100));
+          setHistoryIndex(-1);
+          const workspace = process.env.BOOK_WORKSPACE || process.cwd();
+          let processed = expandAtMentions(normalized, workspace);
+          processed = expandShellCommands(processed, workspace);
+          onSubmit(processed);
+        }
+        return;
+      }
+      // Any other key while menu is visible: dismiss menu (user is typing args).
+      // But we need to let the character through — handled by checking value
+      // changes below.
+      return;
+    }
+
+    // ---- Normal mode (no menu) ----
     // Tab to accept suggestion when input is empty
     if (key.tab && !value) {
       setValue(normalizeInput(suggestion));
@@ -111,27 +220,32 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
       setValue(newIdx >= 0 ? history[newIdx] : '');
       return;
     }
-    // Note: SGR/X10 mouse sequences are NOT filtered here because
-    // ink-text-input has its own internal useInput listener that we
-    // cannot prevent from firing. Filtering happens at the value level
-    // via safeOnChange instead — it strips any leaked sequences.
   });
 
-  /**
-   * Value-level filter for mouse sequences that leak through ink-text-input.
-   *
-   * ink-text-input's internal useInput injects unrecognized escape sequences
-   * as literal text. We strip them here so the user never sees garbage.
-   */
   const safeOnChange = useCallback((val: string) => {
     const clean = stripMouseSequences(val);
     setValue(clean);
+
+    // Detect / at start for command menu.
+    // Show menu when: starts with /, no space (still typing command name).
+    if (clean.startsWith('/') && !clean.includes(' ')) {
+      setMenuVisible(true);
+      setMenuFilter(clean.slice(1));
+      setMenuSelected(0);
+    } else if (clean.startsWith('/') && clean.includes(' ')) {
+      // User typed a space after command name — dismiss menu, they're typing args.
+      setMenuVisible(false);
+    } else {
+      setMenuVisible(false);
+    }
   }, []);
 
   const handleSubmit = useCallback(
     (val: string) => {
-      // Normalize to NFC so Vietnamese diacritics (ắ, ễ, ệ, ạ, ớ, ứ, ổ, …)
-      // are represented consistently regardless of terminal/IME decomposition.
+      // Dismiss menu on submit.
+      setMenuVisible(false);
+      setMenuSelected(0);
+
       const normalized = normalizeInput(val);
       if (!normalized.trim() || disabled) return;
       setHistory((h) => [normalized, ...h].slice(0, 100));
@@ -151,16 +265,50 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
   const tokenKey = MODE_BORDER_TOKENS[mode];
   const borderColor = theme[tokenKey];
 
-  // Build a full-width divider line matching the terminal width.
   const { stdout } = useStdout();
   const divider = useMemo(() => {
     const width = stdout?.columns ?? 80;
     return '─'.repeat(Math.max(5, width - 2));
   }, [stdout?.columns]);
 
+  // Clamp selection
+  const selIdx = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
+
   return (
     <Box flexDirection="column">
       <Text color={theme.subtle}>{divider}</Text>
+
+      {/* Command autocomplete menu — renders above the input */}
+      {menuVisible && (
+        <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1}>
+          <Text bold color={theme.brand}>
+            Commands
+          </Text>
+          {filteredCmds.length === 0 ? (
+            <Text color={theme.subtle} dimColor>
+              No matching commands
+            </Text>
+          ) : (
+            filteredCmds.map((item, i) => {
+              const isSelected = i === selIdx;
+              const color = isSelected ? theme.brand : theme.text;
+              const prefix = isSelected ? '› ' : '  ';
+              const hint = item.hint ? ` ${item.hint}` : '';
+              return (
+                <Box key={item.name} flexDirection="row">
+                  <Text color={color} bold={isSelected}>
+                    {prefix}/{item.name}{hint}
+                  </Text>
+                  {item.desc && (
+                    <Text color={theme.subtle}> — {item.desc}</Text>
+                  )}
+                </Box>
+              );
+            })
+          )}
+        </Box>
+      )}
+
       <Box>
         <Text color={borderColor}>{'> '}</Text>
         <Box flexGrow={1}>

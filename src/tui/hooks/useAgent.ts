@@ -7,6 +7,7 @@ import type {
   PermissionMode,
   Usage,
   RetryPhase,
+  CommandContext,
 } from '../../types.js';
 import { runAgentLoop } from '../../agent/loop.js';
 import { createDefaultRegistry } from '../../tools/registry.js';
@@ -74,10 +75,10 @@ export function useAgent(config: AgentConfig) {
   }, []);
 
   const send = useCallback(
-    async (userMessage: string) => {
+    async (userMessage: string, commandContext?: CommandContext) => {
       if (isThinking) return;
 
-      log.info('send message', { len: userMessage.length, mode });
+      log.info('send message', { len: userMessage.length, mode, hasCommandContext: !!commandContext });
 
       // --- Optimistic, Claude-Code-style update ---
       // Render the user's message IMMEDIATELY, and seed a fresh, empty
@@ -146,11 +147,7 @@ export function useAgent(config: AgentConfig) {
               log.debug('TUI turn start', { turn });
               setCurrentTurn(turn);
               turnStartRef.current = Date.now();
-              // Each new agentic turn is its own assistant message, so the
-              // previous turn's content stays intact above while we stream a
-              // new one below — no overwriting.
               if (turn > 1) {
-                // Stop the old accumulator (flushes remaining ops, syncs messagesRef).
                 accumulatorRef.current?.stop();
                 const next = makeMessage('assistant', '');
                 streamingIdRef.current = next.id;
@@ -160,7 +157,6 @@ export function useAgent(config: AgentConfig) {
                   messagesRef.current = updated;
                   return updated;
                 });
-                // Start a new accumulator for the new message.
                 accumulatorRef.current = createMessageAccumulator(
                   next.id,
                   setMessages,
@@ -224,7 +220,12 @@ export function useAgent(config: AgentConfig) {
             },
           },
           mode,
-          { signal: controller.signal },
+          {
+            signal: controller.signal,
+            allowedTools: commandContext?.allowedTools,
+            modelOverride: commandContext?.modelOverride,
+            commands: commandContext ? [commandContext.command] : undefined,
+          },
         );
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));

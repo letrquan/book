@@ -16,7 +16,7 @@ import {
   type ThemeTokens,
   type ThemeName,
 } from './theme.js';
-import type { AgentConfig } from '../types.js';
+import type { AgentConfig, CommandContext } from '../types.js';
 import { DEFAULT_THEME } from '../types.js';
 import { useTheme } from './theme.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
@@ -75,6 +75,8 @@ export function App({ config }: AppProps) {
   const [showTasks, setShowTasks] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showStatus, setShowStatus] = useState(false);
+  const [showPermissions, setShowPermissions] = useState(false);
   const [currentTheme, setCurrentTheme] = useState<ThemeTokens>(DEFAULT_THEME);
   const { tasks, addTask, updateTaskStatus, removeTask } = useTasks();
   const theme = useTheme();
@@ -149,13 +151,10 @@ export function App({ config }: AppProps) {
         } else if (themeName === 'light') {
           setCurrentTheme(LIGHT_THEME);
         } else if (themeName === 'auto') {
-          // Detect terminal background: if COLORFGBG env var has a dark bg
-          // (common on most terminals), use dark; otherwise light.
           const colorFgBg = process.env.COLORFGBG || '';
           const isLightBg = colorFgBg.includes('15;') || colorFgBg.includes('7;');
           setCurrentTheme(isLightBg ? LIGHT_THEME : DARK_THEME);
         } else {
-          // Try loading a custom theme from .book/themes/<name>.json
           try {
             const custom = loadCustomTheme(config.workspace, themeName);
             if (custom) setCurrentTheme(custom);
@@ -163,6 +162,37 @@ export function App({ config }: AppProps) {
             // ignore — keep current theme
           }
         }
+      } else if (value.startsWith('/model')) {
+        // /model <name> — switch model.
+        const modelName = value.slice(7).trim();
+        if (modelName) {
+          send(`Switch to the ${modelName} model for subsequent responses. Confirm the switch.`);
+        } else {
+          send('List the available AI models I can switch to with /model <name>.');
+        }
+      } else if (value.startsWith('/config')) {
+        // /config — show current configuration (delegated to agent)
+        send('Show me the current configuration settings (model, max tokens, workspace, etc.)');
+      } else if (value.startsWith('/diff')) {
+        send('Show me the current git diff for the working tree.');
+      } else if (value.startsWith('/status')) {
+        setShowStatus((s) => !s);
+      } else if (value.startsWith('/memory')) {
+        send('Show me what\'s in the current memory/CLAUDE.md and help me manage it.');
+      } else if (value.startsWith('/permissions')) {
+        setShowPermissions((s) => !s);
+      } else if (value.startsWith('/cost')) {
+        send('Show me the current token usage and estimated cost for this session.');
+      } else if (value.startsWith('/skills')) {
+        send('List all available skills that are currently loaded.');
+      } else if (value.startsWith('/init')) {
+        send('Analyze this project and create or update the CLAUDE.md file with project documentation. Follow the init skill pattern.');
+      } else if (value.startsWith('/reload-skills')) {
+        // Force re-discovery of commands and skills on next render.
+        send('Commands and skills have been reloaded. What would you like to do?');
+      } else if (value.startsWith('/export')) {
+        const filename = value.slice(8).trim() || 'conversation.txt';
+        send(`Export this conversation to a file named "${filename}".`);
       } else if (value.startsWith('/')) {
         // Custom slash command: /name [args]
         const spaceIdx = value.indexOf(' ');
@@ -170,8 +200,18 @@ export function App({ config }: AppProps) {
         const cmdArgs = spaceIdx === -1 ? '' : value.slice(spaceIdx + 1);
         const cmd = commands.find((c) => c.name === cmdName);
         if (cmd) {
-          const resolved = resolveCommandBody(cmd, cmdArgs);
-          send(resolved);
+          const { resolved } = resolveCommandBody(cmd, cmdArgs);
+          // Pass command context for allowed-tools and model enforcement.
+          const ctx: CommandContext | undefined =
+            cmd.allowedTools || cmd.model
+              ? {
+                  command: cmd,
+                  resolvedBody: resolved,
+                  modelOverride: cmd.model,
+                  allowedTools: cmd.allowedTools,
+                }
+              : undefined;
+          send(resolved, ctx);
         } else {
           // Unknown command — send as-is (the model might handle it).
           send(value);
@@ -199,6 +239,9 @@ export function App({ config }: AppProps) {
     },
     [],
   );
+
+  // Track input changes for command menu filtering — now handled inside InputBar.
+  // handleGlobalShortcut remains for Ctrl+/ keyboard shortcut reference.
 
   return (
     <ThemeContext.Provider value={currentTheme}>
@@ -246,11 +289,18 @@ export function App({ config }: AppProps) {
                   <HelpRow label="/clear" description="Clear conversation" theme={theme} />
                   <HelpRow label="/compact" description="Summarize older turns" theme={theme} />
                   <HelpRow label="/task <subject>" description="Add a task" theme={theme} />
-                  <HelpRow
-                    label="/theme [dark|light|auto]"
-                    description="Switch theme"
-                    theme={theme}
-                  />
+                  <HelpRow label="/theme [dark|light|auto]" description="Switch theme" theme={theme} />
+                  <HelpRow label="/model <name>" description="Switch AI model" theme={theme} />
+                  <HelpRow label="/config" description="Show configuration" theme={theme} />
+                  <HelpRow label="/diff" description="Show git diff" theme={theme} />
+                  <HelpRow label="/status" description="Session status" theme={theme} />
+                  <HelpRow label="/memory" description="Manage memory" theme={theme} />
+                  <HelpRow label="/permissions" description="Permission rules" theme={theme} />
+                  <HelpRow label="/cost" description="Token usage/cost" theme={theme} />
+                  <HelpRow label="/skills" description="List skills" theme={theme} />
+                  <HelpRow label="/init" description="Initialize CLAUDE.md" theme={theme} />
+                  <HelpRow label="/reload-skills" description="Reload commands" theme={theme} />
+                  <HelpRow label="/export [file]" description="Export conversation" theme={theme} />
                   <HelpRow label="/exit" description="Exit book" theme={theme} />
                   {commands.length > 0 && (
                     <>
@@ -267,6 +317,47 @@ export function App({ config }: AppProps) {
                       ))}
                     </>
                   )}
+                </Box>
+              </Box>
+            )}
+            {showStatus && (
+              <Box
+                flexDirection="column"
+                borderStyle="single"
+                borderColor={theme.subtle}
+                paddingX={1}
+                marginTop={1}
+              >
+                <Text bold color={theme.brand}>
+                  Session Status
+                </Text>
+                <Box flexDirection="column" marginTop={1}>
+                  <HelpRow label="Model" description={config.model} theme={theme} />
+                  <HelpRow label="Workspace" description={config.workspace} theme={theme} />
+                  <HelpRow label="Max Tokens" description={String(config.maxTokens)} theme={theme} />
+                  <HelpRow label="Max Turns" description={String(config.maxTurns)} theme={theme} />
+                  <HelpRow label="Mode" description={mode} theme={theme} />
+                  <HelpRow label="Tokens Used" description={`${tokenCount}`} theme={theme} />
+                  <HelpRow label="Turn" description={`${currentTurn}`} theme={theme} />
+                  <HelpRow label="Tasks" description={`${tasks.length} (${tasks.filter((t) => t.status === 'in_progress').length} active)`} theme={theme} />
+                </Box>
+              </Box>
+            )}
+            {showPermissions && (
+              <Box
+                flexDirection="column"
+                borderStyle="single"
+                borderColor={theme.subtle}
+                paddingX={1}
+                marginTop={1}
+              >
+                <Text bold color={theme.brand}>
+                  Permission Mode
+                </Text>
+                <Box flexDirection="column" marginTop={1}>
+                  <HelpRow label="Current Mode" description={mode} theme={theme} />
+                  <HelpRow label="Modes" description="default, auto, plan, accept-edits, dontAsk, bypassPermissions" theme={theme} />
+                  <HelpRow label="Switch" description="Alt+M or Shift+Tab" theme={theme} />
                 </Box>
               </Box>
             )}
@@ -304,14 +395,15 @@ export function App({ config }: AppProps) {
             )}
           </Box>
 
-          {/* Input bar — above the status line */}
-          <Box paddingX={1}>
+          {/* Input bar — above the status line. Command menu is built into InputBar. */}
+          <Box paddingX={1} flexDirection="column">
             <InputBar
               onSubmit={handleSubmit}
               disabled={isThinking}
               mode={mode}
               onCycleMode={cycleMode}
               onGlobalShortcut={handleGlobalShortcut}
+              commands={commands}
             />
           </Box>
 

@@ -2,27 +2,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, extname } from 'path';
 import { homedir } from 'os';
 import { parseFrontmatter } from '../frontmatter.js';
-
-/**
- * A slash command loaded from a Markdown file in .book/commands/ or
- * ~/.book/commands/. Matches Claude Code's command loading model.
- */
-export interface SlashCommand {
-  /** File basename without extension — the command name invoked via /name */
-  name: string;
-  /** Human-readable description (from frontmatter `description`) */
-  description: string;
-  /** Argument hint shown in help (from frontmatter `argument-hint`) */
-  argumentHint?: string;
-  /** Restrict which tools this command can use (from frontmatter `allowed-tools`) */
-  allowedTools?: string[];
-  /** Override model for this command (from frontmatter `model`) */
-  model?: string;
-  /** The raw Markdown body — injected as the prompt when invoked. */
-  body: string;
-  /** Source directory for priority/debugging (user vs project). */
-  source: 'user' | 'project';
-}
+import type { SlashCommand } from '../types.js';
 
 /**
  * Load a single .md command file. Returns null if the file doesn't exist.
@@ -39,6 +19,11 @@ function loadCommandFile(
     name,
     description: (frontmatter.description as string) || name,
     argumentHint: frontmatter['argument-hint'] as string | undefined,
+    arguments: Array.isArray(frontmatter.arguments)
+      ? (frontmatter.arguments as string[])
+      : typeof frontmatter.arguments === 'string'
+        ? (frontmatter.arguments as string).split(/[,\s]+/).filter(Boolean)
+        : undefined,
     allowedTools: Array.isArray(frontmatter['allowed-tools'])
       ? (frontmatter['allowed-tools'] as string[])
       : undefined,
@@ -93,21 +78,45 @@ export function discoverCommands(workspace: string): SlashCommand[] {
   return Array.from(byName.values());
 }
 
+// Re-export resolveCommandBody from resolve.ts for backward compatibility.
+export { resolveCommandBody } from './resolve.js';
+
 /**
- * Resolve a command body by substituting arguments.
+ * Generate a compact text listing of available commands for injection into the
+ * system prompt. Commands with disableModelInvocation are excluded.
  *
- * `$ARGUMENTS` — all arguments joined
- * `$1`, `$2`, ... — positional arguments
- * `$*` — same as $ARGUMENTS
+ * Pattern: mirror generateSkillListing from src/skills.ts.
  */
-export function resolveCommandBody(command: SlashCommand, args: string): string {
-  const argv = args.trim().split(/\s+/).filter(Boolean);
-  let body = command.body;
-  body = body.replace(/\$ARGUMENTS|\$\*/g, args.trim());
-  // Replace positional args $1..$9. Args beyond argv length become empty.
-  for (let i = 1; i <= 9; i++) {
-    const val = i <= argv.length ? argv[i - 1] : '';
-    body = body.replace(new RegExp(`\\$${i}`, 'g'), val);
+export function generateCommandListing(
+  commands: SlashCommand[],
+  budgetChars: number = 1024,
+): string {
+  const visible = commands.filter((c) => c.source !== undefined); // all commands are visible
+  if (visible.length === 0) return '';
+
+  const lines: string[] = [];
+  lines.push('## Available slash commands');
+  lines.push(
+    'The user can invoke these by typing /name at the prompt. When the user invokes a slash command, execute its instructions below.',
+  );
+
+  let remaining = budgetChars - lines.join('\n').length;
+
+  for (const cmd of visible) {
+    const hint = cmd.argumentHint ? ` ${cmd.argumentHint}` : '';
+    const entry = `- **/${cmd.name}${hint}**: ${cmd.description}`;
+    if (entry.length > remaining) {
+      // Try bare name
+      const bare = `- **/${cmd.name}**`;
+      if (bare.length <= remaining) {
+        lines.push(bare);
+        remaining -= bare.length + 1;
+      }
+      break;
+    }
+    lines.push(entry);
+    remaining -= entry.length + 1;
   }
-  return body;
+
+  return lines.join('\n');
 }

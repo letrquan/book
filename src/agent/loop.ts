@@ -1,4 +1,4 @@
-import type { AgentConfig, Message, ToolCall, ToolResult, ToolContext, AgentLoopCallbacks, Usage, RetryPhase } from '../types.js';
+import type { AgentConfig, Message, SlashCommand, ToolCall, ToolResult, ToolContext, AgentLoopCallbacks, Usage, RetryPhase } from '../types.js';
 import { chatCompletionStream } from '../provider/openai-compatible.js';
 import { buildMessages } from './context.js';
 import type { ToolRegistry } from '../tools/registry.js';
@@ -29,11 +29,27 @@ export async function runAgentLoop(
   history: Message[],
   callbacks: AgentLoopCallbacks,
   mode: string = 'default',
-  options?: { signal?: AbortSignal; isNewSession?: boolean },
+  options?: {
+    signal?: AbortSignal;
+    isNewSession?: boolean;
+    commands?: SlashCommand[];
+    allowedTools?: string[];
+    modelOverride?: string;
+  },
 ): Promise<Message[]> {
   const signal = options?.signal;
   const newHistory = [...history];
   const retry = config.retry;
+
+  // Apply model override from command frontmatter.
+  const effectiveConfig = options?.modelOverride
+    ? { ...config, model: options.modelOverride }
+    : config;
+
+  // Apply tool filtering from command frontmatter (allowed-tools).
+  const effectiveDefinitions = options?.allowedTools
+    ? registry.getDefinitions().filter((t) => options.allowedTools!.includes(t.name))
+    : undefined;
 
   // SessionStart hook — fires once at session begin.
   if (options?.isNewSession !== false && history.length === 0) {
@@ -114,7 +130,13 @@ export async function runAgentLoop(
     callbacks.onTurnStart(turn);
     log.debug('turn start', { turn, maxTurns: config.maxTurns, mode });
 
-    const messages = buildMessages(config, newHistory, registry.getDefinitions(), toolContext.todos);
+    const messages = buildMessages(
+      effectiveConfig,
+      newHistory,
+      effectiveDefinitions ?? registry.getDefinitions(),
+      toolContext.todos,
+      options?.commands,
+    );
     let assistantContent = '';
     const toolCalls: ToolCall[] = [];
     let turnUsage: Usage | null = null;
@@ -122,8 +144,11 @@ export async function runAgentLoop(
     // Buffer text during streaming so we can discard on retry.
     let textBuffer = '';
 
-    const stream = chatCompletionStream(config, messages, registry.getDefinitions(), {
-      signal,
+    const stream = chatCompletionStream(
+      effectiveConfig,
+      messages,
+      effectiveDefinitions ?? registry.getDefinitions(),
+      {
       onRetry: (attempt, max, delayMs) => {
         callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
       },

@@ -71,26 +71,65 @@ describe('resolveCommandBody', () => {
   };
 
   it('substitutes $ARGUMENTS', () => {
-    const result = resolveCommandBody(cmd, 'hello world');
-    expect(result).toContain('echo hello world');
-    expect(result).toContain('first is hello');
-    expect(result).toContain('second is world');
+    const { resolved } = resolveCommandBody(cmd, 'hello world');
+    expect(resolved).toContain('echo hello world');
+    expect(resolved).toContain('first is hello');
+    expect(resolved).toContain('second is world');
   });
 
   it('substitutes $* as alias for $ARGUMENTS', () => {
     const cmd2 = { ...cmd, body: 'run $*' };
-    expect(resolveCommandBody(cmd2, 'a b c')).toBe('run a b c');
+    const { resolved } = resolveCommandBody(cmd2, 'a b c');
+    expect(resolved).toBe('run a b c');
   });
 
   it('substitutes positional args', () => {
-    const result = resolveCommandBody(cmd, 'alpha beta');
-    expect(result).toContain('first is alpha');
-    expect(result).toContain('second is beta');
+    const { resolved } = resolveCommandBody(cmd, 'alpha beta');
+    expect(resolved).toContain('first is alpha');
+    expect(resolved).toContain('second is beta');
   });
 
   it('handles empty args', () => {
-    const result = resolveCommandBody(cmd, '');
-    expect(result).toBe('echo  and first is  and second is ');
+    const { resolved } = resolveCommandBody(cmd, '');
+    expect(resolved).toBe('echo  and first is  and second is ');
+  });
+
+  it('resolves named arguments from $name', () => {
+    const cmdNamed = {
+      ...cmd,
+      body: 'File: $file, Focus: $focus',
+      arguments: ['file', 'focus'] as string[],
+    };
+    const { resolved } = resolveCommandBody(cmdNamed, 'src/app.ts performance');
+    expect(resolved).toContain('File: src/app.ts');
+    expect(resolved).toContain('Focus: performance');
+  });
+
+  it('resolves ${BOOK_DATE} env var', () => {
+    const cmdEnv = { ...cmd, body: 'Today is ${BOOK_DATE}' };
+    const { resolved } = resolveCommandBody(cmdEnv, '');
+    const today = new Date().toISOString().split('T')[0];
+    expect(resolved).toContain(today);
+  });
+
+  it('resolves ${BOOK_WORKSPACE} from context', () => {
+    const cmdEnv = { ...cmd, body: 'Workspace: ${BOOK_WORKSPACE}' };
+    const { resolved } = resolveCommandBody(cmdEnv, '', { workspace: '/test/path' });
+    expect(resolved).toContain('Workspace: /test/path');
+  });
+
+  it('resolves shell injection from !`cmd`', () => {
+    const cmdShell = { ...cmd, body: 'Output: !`echo hello_from_shell`' };
+    const { resolved, shellErrors } = resolveCommandBody(cmdShell, '');
+    expect(resolved).toContain('hello_from_shell');
+    expect(shellErrors).toHaveLength(0);
+  });
+
+  it('respects shell-style quoting', () => {
+    const cmdQuoted = { ...cmd, body: 'First: $1, Second: $2' };
+    const { resolved } = resolveCommandBody(cmdQuoted, '"hello world" arg2');
+    expect(resolved).toContain('First: hello world');
+    expect(resolved).toContain('Second: arg2');
   });
 });
 

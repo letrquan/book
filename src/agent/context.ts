@@ -1,10 +1,12 @@
 import { platform, release, hostname } from 'os';
-import type { AgentConfig, Message, ToolDefinition } from '../types.js';
+import type { AgentConfig, Message, SlashCommand, ToolDefinition } from '../types.js';
 import { discoverSkills, generateSkillListing } from '../skills.js';
+import { discoverCommands, generateCommandListing } from '../commands/loader.js';
 
 function buildSystemPrompt(
   config: AgentConfig,
   todos: Array<{ content: string; status: string; activeForm?: string }>,
+  commands?: SlashCommand[],
 ): string {
   const todoSection =
     todos.length > 0
@@ -32,6 +34,13 @@ function buildSystemPrompt(
     ? `\n\n${skillListing}\n`
     : '';
 
+  // Command listing — loaded from conventional directories, injected compactly.
+  const cmdList = commands ?? discoverCommands(config.workspace);
+  const commandListing = generateCommandListing(cmdList, 1024);
+  const commandSection = commandListing
+    ? `\n\n${commandListing}\n`
+    : '';
+
   return `You are Book, an AI coding agent. You help users write, fix, and understand code.
 
 You are running on: ${platform()} ${release()} (${hostname()})
@@ -41,7 +50,7 @@ Current date: ${new Date().toISOString().split('T')[0]}
 You have access to tools for reading/writing files, running shell commands,
 searching code, and interacting with git. Use them to help the user.
 
-Be concise and direct. Write code when asked. Explain only when asked.${todoSection}${skillSection}`;
+Be concise and direct. Write code when asked. Explain only when asked.${todoSection}${skillSection}${commandSection}`;
 }
 
 type ProviderMessage = {
@@ -60,10 +69,11 @@ export function buildMessages(
   history: Message[],
   tools: ToolDefinition[],
   todos?: Array<{ content: string; status: string; activeForm?: string }>,
+  commands?: SlashCommand[],
 ): ProviderMessage[] {
   const messages: ProviderMessage[] = [];
 
-  messages.push({ role: 'system', content: buildSystemPrompt(config, todos ?? []) });
+  messages.push({ role: 'system', content: buildSystemPrompt(config, todos ?? [], commands) });
 
   for (const msg of history) {
     if (msg.role === 'user') {

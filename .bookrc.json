@@ -1,5 +1,5 @@
 {
-  "model": "mmf/mimo-auto",
+  "model": "qc/qwen3.7-max",
   "baseUrl": "http://localhost:20128/v1",
   "maxTurns": 25,
   "animation": {
