@@ -8,7 +8,7 @@
 
 import Fuse from 'fuse.js';
 import type { SlashCommand } from '../types.js';
-import { BUILTIN_COMMANDS, type BuiltinCommand } from './builtins.js';
+import { BUILTIN_COMMANDS } from './builtins.js';
 import { getRecentCommands } from './recent.js';
 
 export interface CommandItem {
@@ -138,7 +138,6 @@ export function getCommandsForQuery(
   const fuse = getFuse(commands);
   const q = query.toLowerCase().trim();
   const builtinNames = new Set(BUILTIN_COMMANDS.map((c) => c.name));
-  const builtinByName = new Map(BUILTIN_COMMANDS.map((c) => [c.name, c]));
 
   const searchResults = fuse.search(q);
 
@@ -155,11 +154,17 @@ export function getCommandsForQuery(
     }
 
     const isBuiltin = builtinNames.has(r.item.name);
+    const cmd = isBuiltin ? undefined : commands.find((c) => c.name === r.item.name);
+    const category: CommandItem['category'] = isBuiltin
+      ? 'builtin'
+      : cmd?.source === 'project'
+        ? 'project'
+        : 'user';
     return {
       name: r.item.name,
       hint: r.item.hint,
       desc: r.item.desc,
-      category: (isBuiltin ? 'builtin' : r.item.desc) as CommandItem['category'], // ponytail: crude — real source tracking needs command.source, but fuse items don't carry it
+      category,
       priority,
     };
   });
@@ -170,19 +175,5 @@ export function getCommandsForQuery(
     return a.name.localeCompare(b.name);
   });
 
-  // Fix category: resolve builtin vs user/project properly
-  return scored.map((item) => {
-    const isB = builtinNames.has(item.name);
-    let cat: CommandItem['category'] = 'builtin';
-    if (!isB) {
-      const cmd = commands.find((c) => c.name === item.name);
-      cat = cmd?.source === 'project' ? 'project' : 'user';
-    }
-    return {
-      name: item.name,
-      hint: item.hint,
-      desc: item.desc,
-      category: cat,
-    };
-  });
+  return scored.map(({ priority, ...item }) => item);
 }

@@ -3,9 +3,9 @@ import TextInput from 'ink-text-input';
 import { useState, useCallback, useRef, useMemo } from 'react';
 import { useInput } from 'ink';
 import { useTheme } from '../theme.js';
+import { CommandMenu } from './CommandMenu.js';
 import type { PermissionMode, SlashCommand } from '../../types.js';
 import { expandAtMentions, expandShellCommands } from '../input-expansion.js';
-import { BUILTIN_COMMANDS, BUILTIN_BY_NAME } from '../../commands/builtins.js';
 import { recordCommandUse } from '../../commands/recent.js';
 import {
   getCommandsForEmptyQuery,
@@ -259,90 +259,18 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
     return '─'.repeat(Math.max(5, width - 2));
   }, [stdout?.columns]);
 
-  // Clamp selection
   const selIdx = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
-
-  // Category header colors
-  const categoryColor: Record<string, string> = {
-    recent: theme.brand,
-    builtin: theme.subtle,
-    user: theme.subtle,
-    project: theme.subtle,
-  };
-
-  // Group filtered commands by category for sectioned display
-  const sections = useMemo(() => {
-    const groups = new Map<string, CommandItem[]>();
-    for (const cmd of filteredCmds) {
-      const cat = cmd.category;
-      if (!groups.has(cat)) groups.set(cat, []);
-      groups.get(cat)!.push(cmd);
-    }
-    return groups;
-  }, [filteredCmds]);
-
-  // Flatten sections into indexed list for selection
-  const flatItems = useMemo(
-    () => filteredCmds,
-    [filteredCmds],
-  );
-
-  const categoryLabels: Record<string, string> = {
-    recent: 'Recently Used',
-    builtin: 'Built-in',
-    user: 'User',
-    project: 'Project',
-  };
 
   return (
     <Box flexDirection="column">
       <Text color={theme.subtle}>{divider}</Text>
 
-      {/* Command autocomplete menu — renders above the input */}
-      {menuVisible && (
-        <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1}>
-          <Text bold color={theme.brand}>
-            Commands
-          </Text>
-          {flatItems.length === 0 ? (
-            <Text color={theme.subtle} dimColor>
-              No matching commands
-            </Text>
-          ) : (
-            // Render sections with category headers
-            Array.from(sections.entries()).map(([category, items]) => {
-              const label = categoryLabels[category];
-              const firstIdx = flatItems.indexOf(items[0]);
-              return (
-                <Box key={category} flexDirection="column">
-                  {menuFilter === '' && label && (
-                    <Text color={theme.subtle} dimColor>
-                      {label}
-                    </Text>
-                  )}
-                  {items.map((item) => {
-                    const globalIdx = flatItems.indexOf(item);
-                    const isSelected = globalIdx === selIdx;
-                    const color = isSelected ? theme.brand : theme.text;
-                    const prefix = isSelected ? '› ' : '  ';
-                    const hint = item.hint ? ` ${item.hint}` : '';
-                    return (
-                      <Box key={item.name} flexDirection="row">
-                        <Text color={color} bold={isSelected}>
-                          {prefix}/{item.name}{hint}
-                        </Text>
-                        {item.desc && (
-                          <Text color={theme.subtle}> — {item.desc}</Text>
-                        )}
-                      </Box>
-                    );
-                  })}
-                </Box>
-              );
-            })
-          )}
-        </Box>
-      )}
+      <CommandMenu
+        items={filteredCmds}
+        filterText={menuFilter}
+        selectedIndex={selIdx}
+        visible={menuVisible}
+      />
 
       <Box>
         <Text color={borderColor}>{'> '}</Text>
