@@ -33,20 +33,20 @@ Book starts every session with Claude-Code-style project instructions loaded.
 - [x] `.claude/rules/*.md` (modular rules; currently injected as standing prompt guidance)
 - [x] Merge order: user → project → local → rules (later wins)
 
-### 1c. Rich system prompt [MISSING]
-Current system prompt is ~30 lines. Claude Code assembles 15K+ tokens from 20+ sources.
+### 1c. Rich system prompt [PARTIAL ✅ 2026-07-04]
+Book now builds a structured Claude-Code-style prompt from local project context. Remaining work is the cache split.
 
-- Inject CLAUDE.md content
-- Inject auto memory (MEMORY.md index)
-- Inject git branch/status
-- Inject platform info (OS, hostname, date)
-- Inject skill listing with descriptions
-- Inject slash command listing
-- Inject subagent listing
-- Inject agent todo list (when non-empty)
-- Inject MCP tool descriptions
-- Two-zone: cached static prefix + dynamic per-turn suffix
-- Structure: persona → CLAUDE.md/rules → context → tools → memory → guardrails
+- [x] Inject CLAUDE.md content
+- [x] Inject auto memory (MEMORY.md index)
+- [x] Inject git branch/status
+- [x] Inject platform info (OS, hostname, date)
+- [x] Inject skill listing with descriptions
+- [x] Inject slash command listing
+- [x] Inject subagent listing
+- [x] Inject agent todo list (when non-empty)
+- [x] Inject MCP tool descriptions (via active ToolDefinition descriptions)
+- [ ] Two-zone: cached static prefix + dynamic per-turn suffix
+- [x] Structure: persona → CLAUDE.md/rules → context → tools → memory → guardrails
 
 ### 1d. Auto memory system [MISSING]
 Without persistence, every session is amnesia. Memory makes the agent compound across sessions.

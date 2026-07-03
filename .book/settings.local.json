@@ -1,0 +1,20 @@
+{
+  "model": "local/tb/glm-5.2",
+  "provider": {
+    "local": {
+      "type": "openai",
+      "baseURL": "http://localhost:20128/v1",
+      "apiKey": "sk-56855dfc403c6e9b-ch933b-c5915496",
+      "models": {
+        "tb/glm-5.2": {
+          "label": "GLM 5.2 (local)",
+          "contextWindow": 1000000,
+          "effort": {
+            "default": "high",
+            "levels": ["low", "medium", "high", "xhigh", "max"]
+          }
+        }
+      }
+    }
+  }
+}

@@ -10,6 +10,7 @@ import type {
   CommandContext,
 } from '../../types.js';
 import { runAgentLoop } from '../../agent/loop.js';
+import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
 import { createDefaultRegistry } from '../../tools/registry.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types.js';
@@ -371,15 +372,14 @@ export function useAgent(config: AgentConfig) {
   // local settings layer. (BOOK_MODEL env, if set, overrides settings on the
   // next startup — app.tsx surfaces that warning, not here.)
   const setModel = useCallback((name: string) => {
-    setLiveConfig((c) => ({ ...c, model: name }));
+    setLiveConfig((c) => applyModelDefaults(resolveModelProviderConfig(c, name)));
     persistSettingLocal(config.workspace, 'model', name);
   }, [config.workspace]);
 
-  // Session-only effort switch. ponytail: ceiling = persist effort; needs a
-  // settings.ts schema key (effort is not currently a settings.json field).
   const setEffort = useCallback((level: AgentConfig['effort']) => {
-    setLiveConfig((c) => ({ ...c, effort: level }));
-  }, []);
+    setLiveConfig((c) => ({ ...c, effort: level, effortExplicit: true }));
+    persistSettingLocal(config.workspace, 'effort', level);
+  }, [config.workspace]);
 
   // Add an allow rule from the "Always allow" approval flow (CC-aligned) and
   // surface it live in settings so the next call is auto-allowed.

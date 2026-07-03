@@ -45,6 +45,35 @@ describe('loadSettingsFile', () => {
     expect(result?.model).toBe('gpt-4o');
     expect(result?.maxTurns).toBe(10);
   });
+
+  it('keeps compact provider registry metadata', () => {
+    writeFileSync(
+      join(dir, 'provider.json'),
+      JSON.stringify({
+        model: 'openrouter/deepseek-chat',
+        provider: {
+          openrouter: {
+            type: 'openai',
+            baseURL: 'https://openrouter.ai/api/v1',
+            apiKey: '{env:OPENROUTER_API_KEY}',
+            models: {
+              'deepseek-chat': {
+                label: 'DeepSeek Chat',
+                contextWindow: 128000,
+                maxOutputTokens: 8192,
+                effort: false,
+              },
+            },
+          },
+        },
+      }),
+    );
+    const result = loadSettingsFile(join(dir, 'provider.json'));
+    const model = result?.provider.openrouter.models['deepseek-chat'];
+    expect(result?.provider.openrouter.baseURL).toBe('https://openrouter.ai/api/v1');
+    expect(model?.contextWindow).toBe(128000);
+    expect(model?.effort).toBe(false);
+  });
 });
 
 describe('mergeSettings', () => {

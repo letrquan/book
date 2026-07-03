@@ -1,4 +1,4 @@
-import type { ResolvedSettings } from './settings.js';
+import type { ProviderModelConfig, ResolvedSettings } from './settings.js';
 
 export type PermissionMode = 'default' | 'auto' | 'plan' | 'accept-edits' | 'dontAsk' | 'bypassPermissions';
 
@@ -242,6 +242,18 @@ export interface AgentConfig {
   model: string;
   maxTurns: number;
   maxTokens: number;
+  /** True when maxTokens came from user config/env, not a default or model metadata. */
+  maxTokensExplicit?: boolean;
+  /** Default output-token limit to restore when selected model has no metadata. */
+  defaultMaxTokens?: number;
+  /** True when effort came from user config/env or an explicit runtime choice. */
+  effortExplicit?: boolean;
+  /** Default effort to restore when selected model has no metadata. */
+  defaultEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** Plain-model fallback values used after provider/model switches. */
+  defaultApiKey?: string;
+  defaultBaseUrl?: string;
+  defaultProvider?: 'anthropic' | 'openai' | 'auto';
   autoCompactEnabled: boolean;
   workspace: string;
   animation: {
@@ -260,6 +272,8 @@ export interface AgentConfig {
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /** Explicit provider override: 'anthropic' | 'openai' | 'auto' (default: auto-detect). */
   provider?: 'anthropic' | 'openai' | 'auto';
+  /** Metadata from settings.provider.<id>.models.<model>, if selected. */
+  modelInfo?: ProviderModelConfig;
 }
 
 export interface ProviderStreamEvent {

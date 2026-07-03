@@ -1,11 +1,22 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, it, expect } from 'vitest';
 import { buildMessages } from './context.js';
+import { getMemoryIndex } from '../memory-display.js';
+import type { ToolDefinition } from '../types.js';
 import { userMsg, assistantMsg, toolCall, toolResult, defaultConfig } from '../test/fixtures.js';
 
 const config = defaultConfig();
+
+function tool(name: string, description: string): ToolDefinition {
+  return {
+    name,
+    description,
+    parameters: { type: 'object', properties: {}, required: [] },
+    execute: async () => ({ toolCallId: '', success: true, output: '' }),
+  };
+}
 
 describe('buildMessages', () => {
   it('emits tool_calls on assistant messages and a tool role message per result', () => {
@@ -54,6 +65,70 @@ describe('buildMessages', () => {
       const out = buildMessages(defaultConfig({ workspace: dir }), [userMsg('hi')], []);
       expect(out[0].content).toContain('## CLAUDE.md instructions');
       expect(out[0].content).toContain('Use the repo rules.');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('injects active tool descriptions into the system prompt', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-context-'));
+    try {
+      const out = buildMessages(defaultConfig({ workspace: dir }), [userMsg('hi')], [
+        tool('Read', 'Read files from disk'),
+      ]);
+
+      expect(out[0].content).toContain('## Available tools');
+      expect(out[0].content).toContain('**Read**: Read files from disk');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('injects project subagent descriptions into the system prompt', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-context-'));
+    try {
+      const agentsDir = join(dir, '.book', 'agents');
+      mkdirSync(agentsDir, { recursive: true });
+      writeFileSync(
+        join(agentsDir, 'reviewer.md'),
+        '---\nname: reviewer\ndescription: Finds likely bugs\n---\nReview code.',
+        'utf-8',
+      );
+
+      const out = buildMessages(defaultConfig({ workspace: dir }), [userMsg('hi')], []);
+
+      expect(out[0].content).toContain('## Available subagents');
+      expect(out[0].content).toContain('**reviewer**: Finds likely bugs');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('injects the MEMORY.md index and limits it to the first 200 lines', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-context-'));
+    const index = getMemoryIndex(dir);
+    try {
+      mkdirSync(index.dir, { recursive: true });
+      const lines = Array.from({ length: 205 }, (_, i) => `memory line ${i + 1}`);
+      writeFileSync(join(index.dir, 'MEMORY.md'), lines.join('\n'), 'utf-8');
+
+      const out = buildMessages(defaultConfig({ workspace: dir }), [userMsg('hi')], []);
+
+      expect(out[0].content).toContain('## Memory');
+      expect(out[0].content).toContain('memory line 200');
+      expect(out[0].content).not.toContain('memory line 201');
+    } finally {
+      rmSync(index.dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not crash when optional context sources are absent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-context-'));
+    try {
+      const out = buildMessages(defaultConfig({ workspace: dir }), [userMsg('hi')], []);
+      expect(out[0].content).toContain('## Workspace context');
+      expect(out[0].content).toContain(`- Workspace: ${dir}`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

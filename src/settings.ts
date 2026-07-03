@@ -94,6 +94,34 @@ export const retrySettingsSchema = z.object({
 
 export type RetrySettings = z.infer<typeof retrySettingsSchema>;
 
+export const effortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
+
+export const providerModelSchema = z.object({
+  label: z.string().optional(),
+  contextWindow: z.number().int().positive().optional(),
+  maxOutputTokens: z.number().int().positive().optional(),
+  effort: z
+    .union([
+      z.literal(false),
+      z.object({
+        default: effortLevelSchema.optional(),
+        levels: z.array(effortLevelSchema).optional(),
+      }),
+    ])
+    .optional(),
+});
+
+export const providerConfigSchema = z.object({
+  type: z.enum(['openai', 'anthropic']).default('openai'),
+  baseURL: z.string().min(1).optional(),
+  baseUrl: z.string().min(1).optional(),
+  apiKey: z.string().min(1).optional(),
+  models: z.record(providerModelSchema).default({}),
+});
+
+export type ProviderModelConfig = z.infer<typeof providerModelSchema>;
+export type ProviderConfig = z.infer<typeof providerConfigSchema>;
+
 /**
  * Full settings.json schema — all keys that book supports.
  * New keys added in later milestones extend this schema.
@@ -102,6 +130,7 @@ export const bookSettingsSchema = z.object({
   model: z.string().optional(),
   maxTurns: z.number().int().min(1).max(100).optional(),
   maxTokens: z.number().int().min(1000).optional(),
+  effort: effortLevelSchema.optional(),
   autoCompactEnabled: z.boolean().optional(),
   defaultMode: z
     .enum(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'])
@@ -109,6 +138,7 @@ export const bookSettingsSchema = z.object({
   disableBypassPermissionsMode: z.boolean().optional(),
   additionalDirectories: z.array(z.string()).default([]),
   env: z.record(z.string()).default({}),
+  provider: z.record(providerConfigSchema).default({}),
   permissions: permissionsSchema.default({}),
   sandbox: sandboxSchema.default({}),
   hooks: hooksSchema.default({}),
@@ -121,8 +151,8 @@ export type BookSettings = z.infer<typeof bookSettingsSchema>;
  * Resolved settings after layering (all defaults filled).
  */
 export type ResolvedSettings = Required<
-  Omit<BookSettings, 'model' | 'maxTurns' | 'maxTokens' | 'autoCompactEnabled' | 'defaultMode' | 'disableBypassPermissionsMode'>
-> & Pick<BookSettings, 'model' | 'maxTurns' | 'maxTokens' | 'autoCompactEnabled' | 'defaultMode' | 'disableBypassPermissionsMode'>;
+  Omit<BookSettings, 'model' | 'maxTurns' | 'maxTokens' | 'effort' | 'autoCompactEnabled' | 'defaultMode' | 'disableBypassPermissionsMode'>
+> & Pick<BookSettings, 'model' | 'maxTurns' | 'maxTokens' | 'effort' | 'autoCompactEnabled' | 'defaultMode' | 'disableBypassPermissionsMode'>;
 
 /**
  * Default settings used as the base layer before user/project/local override.
@@ -149,6 +179,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   },
   additionalDirectories: [],
   env: {},
+  provider: {},
   retry: {
     maxAttempts: 10,
     baseDelayMs: 1000,

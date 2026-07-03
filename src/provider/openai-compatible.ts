@@ -89,6 +89,7 @@ async function fetchWithRetry(
   let lastStatus: number | null = null;
 
   for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+    if (attempt > 0 && signal?.aborted) throw new Error('Aborted');
     // Apply per-fetch timeout if configured.
     const fetchInit = { ...init };
     if (retry.requestTimeoutMs > 0) {
@@ -266,6 +267,9 @@ export async function* chatCompletionStream(
     // Request token usage in the final SSE chunk so we can track cost.
     stream_options: { include_usage: true },
   };
+  if (config.maxTokensExplicit || config.modelInfo?.maxOutputTokens) {
+    body.max_tokens = config.maxTokens;
+  }
 
   if (tools.length > 0) {
     body.tools = tools.map((t) => ({

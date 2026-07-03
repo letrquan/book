@@ -33,9 +33,10 @@ import {
   REVIEW_TOOLS,
   SECURITY_REVIEW_TOOLS,
 } from '../commands/builtins-prompts.js';
-import { buildMemoryReport } from '../memory-display.js';
+import { buildMemoryReport, getMemoryIndex } from '../memory-display.js';
 import { buildContextReport } from '../context-report.js';
 import { discoverClaudeMd } from '../claude-md.js';
+import { discoverAgents } from '../subagent-discovery.js';
 import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
 import { persistSettingLocal } from './persist.js';
 
@@ -46,6 +47,8 @@ const SETTABLE_KEYS = [
   'maxTokens',
   'autoCompactEnabled',
   'defaultMode',
+  'effort',
+  'provider',
   'permissions',
   'sandbox',
   'hooks',
@@ -176,6 +179,7 @@ export function App({ config }: AppProps) {
       // Slash commands: built-in first, then custom.
       if (value.startsWith('/clear')) {
         clear();
+        stdout?.write('\x1b[2J\x1b[3J\x1b[H');
       } else if (value.startsWith('/compact')) {
         compact();
       } else if (value.startsWith('/exit')) {
@@ -216,14 +220,15 @@ export function App({ config }: AppProps) {
           addLocalMessage(
             JSON.stringify(
               {
+                ...liveConfig.settings,
                 model: liveConfig.model,
                 baseUrl: liveConfig.baseUrl,
                 workspace: liveConfig.workspace,
                 maxTurns: liveConfig.maxTurns,
                 maxTokens: liveConfig.maxTokens,
                 effort: liveConfig.effort,
-                provider: liveConfig.provider,
-                ...liveConfig.settings,
+                activeProvider: liveConfig.provider,
+                modelInfo: liveConfig.modelInfo,
               },
               null,
               2,
@@ -280,9 +285,11 @@ export function App({ config }: AppProps) {
         addLocalMessage(
           buildContextReport(messages, {
             model: liveConfig.model,
-            maxTokens: config.maxTokens,
+            maxTokens: liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens,
             skillCount: skills.length,
             commandCount: commands.length,
+            subagentCount: discoverAgents(config.workspace).length,
+            hasMemoryIndex: Boolean(getMemoryIndex(config.workspace).indexFile),
             hasClaudeMdLoader: discoverClaudeMd(config.workspace).length > 0,
           }),
         );
@@ -407,6 +414,7 @@ export function App({ config }: AppProps) {
       turnDurationMs,
       error,
       skills,
+      stdout,
     ],
   );
 
@@ -753,9 +761,9 @@ export function App({ config }: AppProps) {
           {/* Status line — absolute bottom */}
           <Box>
             <StatusLine
-              model={config.model}
+              model={liveConfig.model}
               tokenCount={tokenCount}
-              maxTokens={config.maxTokens}
+              maxTokens={liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens}
               mode={mode}
               taskCount={tasks.length}
               activeTaskCount={tasks.filter((t) => t.status === 'in_progress').length}

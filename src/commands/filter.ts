@@ -8,7 +8,7 @@
 
 import Fuse from 'fuse.js';
 import type { SlashCommand } from '../types.js';
-import { BUILTIN_COMMANDS, type BuiltinCommand } from './builtins.js';
+import { BUILTIN_COMMANDS } from './builtins.js';
 import { getRecentCommands } from './recent.js';
 
 export interface CommandItem {
@@ -138,9 +138,16 @@ export function getCommandsForQuery(
   const fuse = getFuse(commands);
   const q = query.toLowerCase().trim();
   const builtinNames = new Set(BUILTIN_COMMANDS.map((c) => c.name));
-  const builtinByName = new Map(BUILTIN_COMMANDS.map((c) => [c.name, c]));
 
   const searchResults = fuse.search(q);
+
+  // Build a lookup for custom command → source
+  const customSource = new Map<string, 'user' | 'project'>();
+  for (const cmd of commands) {
+    if (!builtinNames.has(cmd.name)) {
+      customSource.set(cmd.name, cmd.source);
+    }
+  }
 
   // Score each result: 0 = exact name, 1 = prefix name, 2 = fuzzy
   const scored = searchResults.map((r) => {
@@ -155,11 +162,17 @@ export function getCommandsForQuery(
     }
 
     const isBuiltin = builtinNames.has(r.item.name);
+    const cat: CommandItem['category'] = isBuiltin
+      ? 'builtin'
+      : customSource.get(r.item.name) === 'project'
+        ? 'project'
+        : 'user';
+
     return {
       name: r.item.name,
       hint: r.item.hint,
       desc: r.item.desc,
-      category: (isBuiltin ? 'builtin' : r.item.desc) as CommandItem['category'], // ponytail: crude — real source tracking needs command.source, but fuse items don't carry it
+      category: cat,
       priority,
     };
   });
@@ -170,19 +183,5 @@ export function getCommandsForQuery(
     return a.name.localeCompare(b.name);
   });
 
-  // Fix category: resolve builtin vs user/project properly
-  return scored.map((item) => {
-    const isB = builtinNames.has(item.name);
-    let cat: CommandItem['category'] = 'builtin';
-    if (!isB) {
-      const cmd = commands.find((c) => c.name === item.name);
-      cat = cmd?.source === 'project' ? 'project' : 'user';
-    }
-    return {
-      name: item.name,
-      hint: item.hint,
-      desc: item.desc,
-      category: cat,
-    };
-  });
+  return scored.map(({ priority, ...item }) => item);
 }
