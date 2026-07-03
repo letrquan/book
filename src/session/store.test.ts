@@ -39,13 +39,12 @@ describe('SessionStore', () => {
     expect(loaded.history[1].content).toBe('hello');
   });
 
-  it('append does NOT rewrite the whole file per event (no per-append bumpMeta)', () => {
+  it('append does NOT rewrite the whole file per event (append-only)', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj' });
     s.append(id, { type: 'user', timestamp: 5, data: { content: 'a' } });
     const afterFirstAppend = readFileSync(join(dir, `${id}.jsonl`), 'utf-8');
-    // Fast: many appends must not each read+rewrite the file.
-    // We assert the header (line 0) is unchanged by append — only flushMeta moves it.
+    // append() only appends — it never reads or rewrites the file.
     const headerBefore = afterFirstAppend.split('\n')[0];
     s.append(id, { type: 'assistant', timestamp: 6, data: { content: 'b' } });
     s.append(id, { type: 'assistant', timestamp: 7, data: { content: 'c' } });
@@ -53,18 +52,9 @@ describe('SessionStore', () => {
     expect(headerAfter).toBe(headerBefore);
     // Records still all present.
     expect(readFileSync(join(dir, `${id}.jsonl`), 'utf-8').split('\n').filter(Boolean).length).toBe(4);
-    // load() computes updatedAt from the last record even before any flushMeta.
+    // load() derives updatedAt from the last record's timestamp.
     const loaded = s.load(id);
     expect(loaded.meta.updatedAt).toBe(7);
-  });
-
-  it('flushMeta persists updatedAt to the header', () => {
-    const s = new SessionStore(dir);
-    const id = s.create({ cwd: '/proj' });
-    s.append(id, { type: 'user', timestamp: 9, data: { content: 'x' } });
-    s.flushMeta(id);
-    const header = JSON.parse(readFileSync(join(dir, `${id}.jsonl`), 'utf-8').split('\n')[0]);
-    expect((header.data as { updatedAt: number }).updatedAt).toBe(9);
   });
 
   it('lists sessions sorted by updatedAt desc', () => {

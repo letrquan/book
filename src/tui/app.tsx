@@ -402,7 +402,8 @@ export function App({ config }: AppProps) {
               disabled={isThinking}
               mode={mode}
               onCycleMode={cycleMode}
-              onInterrupt={isThinking ? cancel : undefined}
+              onInterrupt={cancel}
+              inputSuppressed={Boolean(pendingPermission)}
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
             />

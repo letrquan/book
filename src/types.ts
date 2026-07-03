@@ -306,7 +306,6 @@ export interface SessionRecord {
 export interface SessionStoreInterface {
   create(meta: { cwd: string; name?: string }): string;
   append(id: string, record: SessionRecord): void;
-  flushMeta(id: string): void;
   load(id: string): { history: Message[]; meta: { id: string; name?: string; cwd: string; createdAt: number; updatedAt: number; messageCount: number } };
   findByName(name: string): { id: string } | undefined;
   findById(id: string): { id: string } | undefined;

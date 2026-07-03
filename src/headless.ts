@@ -108,13 +108,11 @@ export async function runHeadless(
             process.stderr.write(`error: ${err}\n`);
           }
         },
-        onTurnStart: () => {
-          // Persist the header before a new turn's deltas start appending.
-          if (store && sessionId) store.flushMeta(sessionId);
-        },
-        onDone: () => {
-          if (store && sessionId) store.flushMeta(sessionId);
-        },
+        // No header rewrite at turn boundaries: load() derives updatedAt from
+        // the last appended record, so the on-disk header is never the source
+        // of truth for activity ordering.
+        onTurnStart: () => {},
+        onDone: () => {},
         onPermissionRequired: permissionRequired,
         onUsage: (u) => {
           lastUsage = u;

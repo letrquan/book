@@ -27,6 +27,14 @@ interface InputBarProps {
   disabled: boolean;
   mode: PermissionMode;
   onCycleMode: () => void;
+  /**
+   * True when a higher-priority modal (permission prompt) owns the keyboard.
+   * Ink's `useInput` fans every keypress to ALL registered handlers regardless
+   * of focus, so InputBar must silence BOTH its own `useInput` and TextInput's
+   * (via `focus`) while a modal is up — otherwise Enter/Tab/Esc double-fire and
+   * the user confirming a permission accidentally interrupts the stream.
+   */
+  inputSuppressed?: boolean;
   /** Called when the user presses Enter while `disabled` (agent running) — interrupts the stream. */
   onInterrupt?: () => void;
   /** Forward unrecognized global keyboard shortcuts to the parent App. */
@@ -74,7 +82,7 @@ function extractCommandName(value: string): string | null {
  * Empty "/" shows commands categorized: recently used → builtins → user → project.
  * Typing after "/" uses fuzzy search with exact > prefix > fuzzy ranking.
  */
-export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, onGlobalShortcut, commands = [] }: InputBarProps) {
+export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, onGlobalShortcut, inputSuppressed = false, commands = [] }: InputBarProps) {
   const theme = useTheme();
   const [value, setValue] = useState('');
   const [history, setHistory] = useState<string[]>([]);
@@ -99,6 +107,10 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
   );
 
   useInput((_input, key) => {
+    // While a modal (permission prompt) owns the keyboard, ignore all keys —
+    // PermissionButtons handles them. Without this, Ink fires every `useInput`
+    // handler on every keypress, so Enter/Tab/Esc would double-fire.
+    if (inputSuppressed) return;
     // Filter out Alt/Meta-modified keys — they're shortcuts, not text input.
     if (key.meta) return;
 
@@ -340,7 +352,10 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
             onChange={safeOnChange}
             onSubmit={handleSubmit}
             placeholder={disabled ? 'Press Enter to interrupt… (or keep typing)' : suggestion}
-            focus={true}
+            // Stay focused while disabled so Enter can route to the interrupt
+            // path; only yield to a modal (permission prompt). `focus` here maps
+            // to TextInput's internal `useInput` isActive — see inputSuppressed.
+            focus={!inputSuppressed}
           />
         </Box>
       </Box>

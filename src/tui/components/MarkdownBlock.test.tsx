@@ -243,9 +243,12 @@ describe('MarkdownBlock', () => {
 });
 
 describe('useThrottledValue', () => {
-  // Throttle timing semantics are exercised via fake timers below for the
-  // "trailing final value" path. The synchronous-first-frame contract — the
-  // one the existing MarkdownBlock render tests depend on — is checked first.
+  // The trailing-emit / within-window cadence is the contract's non-trivial
+  // half, but fake-timer tests are flaky under ink-testing-library (React
+  // effects don't reliably flush on advanceTimersByTime), so only the
+  // synchronous-first-frame guarantee is asserted here — the one the
+  // MarkdownBlock render tests above depend on. The trailing path is exercised
+  // live by the streaming accumulator flush (16ms) → final onDone emit.
   function Echo({ value, intervalMs }: { value: string; intervalMs: number }) {
     const throttled = useThrottledValue(value, intervalMs);
     return React.createElement(Text, null, throttled);
