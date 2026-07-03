@@ -2,6 +2,7 @@ import { platform, release, hostname } from 'os';
 import type { AgentConfig, Message, SlashCommand, ToolDefinition } from '../types.js';
 import { discoverSkills, generateSkillListing } from '../skills.js';
 import { discoverCommands, generateCommandListing } from '../commands/loader.js';
+import { discoverClaudeMd, renderClaudeMd } from '../claude-md.js';
 
 function buildSystemPrompt(
   config: AgentConfig,
@@ -41,12 +42,14 @@ function buildSystemPrompt(
     ? `\n\n${commandListing}\n`
     : '';
 
+  const claudeMd = renderClaudeMd(discoverClaudeMd(config.workspace));
+  const claudeSection = claudeMd ? `\n\n${claudeMd}\n` : '';
+
   return `You are Book, an AI coding agent. You help users write, fix, and understand code.
 
 You are running on: ${platform()} ${release()} (${hostname()})
 Workspace: ${config.workspace}
-Current date: ${new Date().toISOString().split('T')[0]}
-
+Current date: ${new Date().toISOString().split('T')[0]}${claudeSection}
 You have access to tools for reading/writing files, running shell commands,
 searching code, and interacting with git. Use them to help the user.
 

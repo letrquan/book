@@ -35,6 +35,7 @@ import {
 } from '../commands/builtins-prompts.js';
 import { buildMemoryReport } from '../memory-display.js';
 import { buildContextReport } from '../context-report.js';
+import { discoverClaudeMd } from '../claude-md.js';
 import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
 import { persistSettingLocal } from './persist.js';
 
@@ -282,8 +283,7 @@ export function App({ config }: AppProps) {
             maxTokens: config.maxTokens,
             skillCount: skills.length,
             commandCount: commands.length,
-            // 1b (CLAUDE.md loader) is not yet implemented — surfaced honestly.
-            hasClaudeMdLoader: false,
+            hasClaudeMdLoader: discoverClaudeMd(config.workspace).length > 0,
           }),
         );
       } else if (value.startsWith('/skills')) {

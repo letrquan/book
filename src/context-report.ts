@@ -71,7 +71,7 @@ export function buildContextReport(
     maxTokens: number;
     skillCount?: number;
     commandCount: number;
-    /** Whether CLAUDE.md loader is wired (Phase 1b) — surfaced honestly. */
+    /** Whether CLAUDE.md instructions were found for this workspace. */
     hasClaudeMdLoader: boolean;
   },
 ): string {
@@ -105,7 +105,7 @@ export function buildContextReport(
   if (ambient.hasClaudeMdLoader) {
     lines.push('  CLAUDE.md       : loaded (Phase 1b)');
   } else {
-    lines.push('  CLAUDE.md       : not loaded yet (Phase 1b — memory/rules are not injected)');
+    lines.push('  CLAUDE.md       : none found (Phase 1b loader active)');
   }
   lines.push('');
   lines.push(
