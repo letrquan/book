@@ -15,6 +15,7 @@ import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types.js';
 import { makeMessage } from './streaming-state.js';
 import { createDebugLogger } from '../../debug-log.js';
+import { persistSettingLocal, persistPermissionRuleLocal } from '../persist.js';
 
 const log = createDebugLogger('tui');
 import { createMessageAccumulator } from './message-accumulator.js';
@@ -29,6 +30,11 @@ export function useAgent(config: AgentConfig) {
   const [usage, setUsage] = useState<Usage | null>(null);
   const [mode, setMode] = useState<PermissionMode>('default');
   const [agentTodos, setAgentTodos] = useState<Todo[]>([]);
+  // R1: liveConfig is the mutable config the agent loop reads. `config` (the
+  // prop) is the startup snapshot; setModel/setEffort/persistPermissionRule
+  // mutate liveConfig so subsequent runAgentLoop calls pick up the change.
+  // Without this, /model would silently no-op (send closes over `config`).
+  const [liveConfig, setLiveConfig] = useState<AgentConfig>(config);
   const [pendingPermission, setPendingPermission] = useState<{
     toolCall: ToolCall;
     resolve: (value: PermissionResult) => void;
@@ -122,7 +128,7 @@ export function useAgent(config: AgentConfig) {
         // own copy of the user message for API context. We ignore the loop's
         // returned history — the hook's state is authoritative and updated live.
         await runAgentLoop(
-          config,
+          liveConfig,
           registry,
           userMessage,
           history,
@@ -218,6 +224,9 @@ export function useAgent(config: AgentConfig) {
               setRetryPhase('none');
               clearCountdown();
             },
+            onPersistPermissionRule: (rule: string) => {
+              persistPermissionRule(rule);
+            },
           },
           mode,
           {
@@ -241,7 +250,7 @@ export function useAgent(config: AgentConfig) {
         setRetryCountdownMs(0);
       }
     },
-    [config, isThinking, mode, clearCountdown],
+    [liveConfig, isThinking, mode, clearCountdown],
   );
 
   const resolvePermission = useCallback(
@@ -285,7 +294,7 @@ export function useAgent(config: AgentConfig) {
     let summary = '';
     try {
       const stream = chatCompletionStream(
-        config,
+        liveConfig,
         [
           {
             role: 'system',
@@ -310,7 +319,7 @@ export function useAgent(config: AgentConfig) {
     const compactedMessages = [summaryMsg, ...kept];
     messagesRef.current = compactedMessages;
     setMessages(compactedMessages);
-  }, [config, messages]);
+  }, [liveConfig, messages]);
 
   const clear = useCallback(() => {
     messagesRef.current = [];
@@ -341,6 +350,55 @@ export function useAgent(config: AgentConfig) {
     });
   }, []);
 
+  // Surface a local-only assistant message WITHOUT an agent round-trip.
+  // Precedent: compact() mutates messages directly via setMessages. Unlike
+  // send(), this never invokes runAgentLoop — used by /diff /config /cost
+  // /init-pre /memory-noop to show output instantly.
+  const addLocalMessage = useCallback(
+    (text: string) => {
+      if (isThinking) return; // don't clobber a streaming turn
+      const msg = makeMessage('assistant', text);
+      setMessages((prev) => {
+        const next = [...prev, msg];
+        messagesRef.current = next;
+        return next;
+      });
+    },
+    [isThinking],
+  );
+
+  // Switch the active model for the rest of the session and persist it to the
+  // local settings layer. (BOOK_MODEL env, if set, overrides settings on the
+  // next startup — app.tsx surfaces that warning, not here.)
+  const setModel = useCallback((name: string) => {
+    setLiveConfig((c) => ({ ...c, model: name }));
+    persistSettingLocal(config.workspace, 'model', name);
+  }, [config.workspace]);
+
+  // Session-only effort switch. ponytail: ceiling = persist effort; needs a
+  // settings.ts schema key (effort is not currently a settings.json field).
+  const setEffort = useCallback((level: AgentConfig['effort']) => {
+    setLiveConfig((c) => ({ ...c, effort: level }));
+  }, []);
+
+  // Add an allow rule from the "Always allow" approval flow (CC-aligned) and
+  // surface it live in settings so the next call is auto-allowed.
+  const persistPermissionRule = useCallback((rule: string) => {
+    setLiveConfig((c) => {
+      const allow = c.settings.permissions.allow.includes(rule)
+        ? c.settings.permissions.allow
+        : [...c.settings.permissions.allow, rule];
+      return {
+        ...c,
+        settings: {
+          ...c.settings,
+          permissions: { ...c.settings.permissions, allow },
+        },
+      };
+    });
+    persistPermissionRuleLocal(config.workspace, 'allow', rule);
+  }, [config.workspace]);
+
   return {
     messages,
     isThinking,
@@ -348,6 +406,7 @@ export function useAgent(config: AgentConfig) {
     error,
     currentTurn,
     tokenCount: usage?.totalTokens ?? 0,
+    usage,
     mode,
     pendingPermission,
     agentTodos,
@@ -356,6 +415,7 @@ export function useAgent(config: AgentConfig) {
     retryAttempt,
     retryMax,
     retryCountdownMs,
+    liveConfig,
     send,
     clear,
     resolvePermission,
@@ -363,5 +423,9 @@ export function useAgent(config: AgentConfig) {
     cancel,
     compact,
     cycleMode,
+    addLocalMessage,
+    setModel,
+    setEffort,
+    persistPermissionRule,
   };
 }

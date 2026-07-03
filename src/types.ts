@@ -291,6 +291,12 @@ export interface AgentLoopCallbacks {
   onStreamStall?: (countdownMs: number) => void;
   /** Called when data resumes after a stream stall. */
   onStreamResume?: () => void;
+  /**
+   * Called when the user picks "always allow" at a permission prompt — so the
+   * host can persist a Tool(specifier) rule (CC-aligned approval flow). The
+   * `rule` string is canonical (e.g. `Bash(npm install)` or `Read`).
+   */
+  onPersistPermissionRule?: (rule: string) => void;
 }
 
 export type OutputFormat = 'text' | 'json' | 'stream-json';

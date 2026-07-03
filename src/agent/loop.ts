@@ -8,6 +8,7 @@ import { evaluatePermission } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import type { HookContext } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
+import { getPrimaryArg } from '../tools/primary-arg.js';
 import { createDebugLogger } from '../debug-log.js';
 
 const log = createDebugLogger('agent');
@@ -300,6 +301,16 @@ export async function runAgentLoop(
           if (permission === 'always') {
             log.debug('permission always', { tool: canonName });
             approveAll.push(call.name);
+            // Persist a precise Tool(specifier) rule for future sessions
+            // (CC-aligned "don't ask again" flow). The in-session approveAll
+            // above stays keyed on the bare name; this only writes settings
+            // when the host supplies onPersistPermissionRule (TUI), so
+            // headless/SDK paths keep the old in-memory-only behavior.
+            if (callbacks.onPersistPermissionRule) {
+              const primary = getPrimaryArg(call.arguments);
+              const rule = primary ? `${canonName}(${primary})` : canonName;
+              callbacks.onPersistPermissionRule(rule);
+            }
           }
         }
       }
