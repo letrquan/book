@@ -5,6 +5,13 @@ import { useInput } from 'ink';
 import { useTheme } from '../theme.js';
 import type { PermissionMode, SlashCommand } from '../../types.js';
 import { expandAtMentions, expandShellCommands } from '../input-expansion.js';
+import { BUILTIN_COMMANDS, BUILTIN_BY_NAME } from '../../commands/builtins.js';
+import { recordCommandUse } from '../../commands/recent.js';
+import {
+  getCommandsForEmptyQuery,
+  getCommandsForQuery,
+  type CommandItem,
+} from '../../commands/filter.js';
 
 const MODE_BORDER_TOKENS: Record<PermissionMode, 'brand' | 'success' | 'planMode' | 'autoAccept' | 'error'> = {
   default: 'brand',
@@ -40,65 +47,19 @@ function stripMouseSequences(val: string): string {
   return val.replace(/\[<[0-9;]*[Mm]/g, '');
 }
 
-// Built-in command metadata (mirrors CommandMenu for auto-fill).
-const BUILTIN_NAMES = new Set([
-  'clear', 'compact', 'exit', 'help', 'task', 'theme',
-  'model', 'config', 'diff', 'status', 'memory',
-  'permissions', 'cost', 'skills', 'init', 'reload-skills', 'export',
-]);
-
-const BUILTIN_DESCS: Record<string, string> = {
-  clear: 'Clear conversation',
-  compact: 'Summarize older turns',
-  exit: 'Exit book',
-  help: 'Toggle help',
-  task: 'Add a task',
-  theme: 'Switch theme',
-  model: 'Switch AI model',
-  config: 'Show current configuration',
-  diff: 'Show git diff',
-  status: 'Show session status',
-  memory: 'Edit CLAUDE.md / manage auto-memory',
-  permissions: 'Manage permission rules',
-  cost: 'Show token usage and cost',
-  skills: 'List available skills',
-  init: 'Initialize project with CLAUDE.md',
-  'reload-skills': 'Re-scan command and skill directories',
-  export: 'Export conversation to file',
-};
-
-interface CommandItem {
-  name: string;
-  hint: string;
-  desc: string;
+function getFilteredCommands(commands: SlashCommand[], filter: string): CommandItem[] {
+  if (!filter) {
+    return getCommandsForEmptyQuery(commands);
+  }
+  return getCommandsForQuery(commands, filter);
 }
 
-function getFilteredCommands(commands: SlashCommand[], filter: string): CommandItem[] {
-  const allItems: CommandItem[] = [];
-
-  for (const name of BUILTIN_NAMES) {
-    allItems.push({ name, hint: '', desc: BUILTIN_DESCS[name] || '' });
-  }
-
-  for (const cmd of commands) {
-    if (BUILTIN_NAMES.has(cmd.name)) continue;
-    allItems.push({ name: cmd.name, hint: cmd.argumentHint || '', desc: cmd.description });
-  }
-
-  const f = filter.toLowerCase();
-  const filtered = allItems.filter((item) => {
-    if (!f) return true;
-    return item.name.toLowerCase().startsWith(f) || item.name.toLowerCase().includes(f);
-  });
-
-  // Sort: prefix matches first, then substring
-  filtered.sort((a, b) => {
-    const aPrefix = a.name.toLowerCase().startsWith(f) ? 0 : 1;
-    const bPrefix = b.name.toLowerCase().startsWith(f) ? 0 : 1;
-    return aPrefix - bPrefix;
-  });
-
-  return filtered;
+/**
+ * Extract the command name from a slash command submission for usage tracking.
+ */
+function extractCommandName(value: string): string | null {
+  const match = value.match(/^\/(\S+)/);
+  return match ? match[1] : null;
 }
 
 /**
@@ -107,6 +68,9 @@ function getFilteredCommands(commands: SlashCommand[], filter: string): CommandI
  * When the user types `/` at the start of input, a command menu appears above
  * the input showing matching commands. Arrow keys navigate, Tab auto-fills,
  * and Enter on a selected item submits the command.
+ *
+ * Empty "/" shows commands categorized: recently used → builtins → user → project.
+ * Typing after "/" uses fuzzy search with exact > prefix > fuzzy ranking.
  */
 export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortcut, commands = [] }: InputBarProps) {
   const theme = useTheme();
@@ -122,6 +86,10 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
 
   // Ref to suppress TextInput's onSubmit when the menu already handled Enter.
   const menuHandledSubmit = useRef(false);
+
+  // Ref for the current input value so useInput always has the latest text,
+  // even when React batches onChange before re-rendering.
+  const valueRef = useRef(value);
 
   const filteredCmds = useMemo(
     () => getFilteredCommands(commands, menuFilter),
@@ -172,29 +140,16 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
         });
         return;
       }
-      // Enter: submit the selected command directly.
-      // Use a ref guard to prevent TextInput from also firing onSubmit.
+      // Enter: dismiss the menu. TextInput's onSubmit will handle the
+      // typed text through the normal handleSubmit path.
       if (key.return) {
-        if (filteredCmds.length > 0) {
-          const sel = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
-          const cmd = filteredCmds[sel];
-          const fullCmd = '/' + cmd.name + ' ';
-          menuHandledSubmit.current = true;
-          setMenuVisible(false);
-          setMenuSelected(0);
-          setValue('');
-          const normalized = normalizeInput(fullCmd);
-          setHistory((h) => [normalized, ...h].slice(0, 100));
-          setHistoryIndex(-1);
-          const workspace = process.env.BOOK_WORKSPACE || process.cwd();
-          let processed = expandAtMentions(normalized, workspace);
-          processed = expandShellCommands(processed, workspace);
-          onSubmit(processed);
-        }
-        return;
+        setMenuVisible(false);
+        setMenuSelected(0);
+        // Don't return — let TextInput see the \r and fire onSubmit.
       }
-      // Any other key while menu is visible: dismiss menu (user is typing args).
-      return;
+      // Character keys update the filter via onChange — stay visible so the
+      // user can continue typing the command name. The menu is dismissed by
+      // onChange when a space is typed or the leading / is removed.
     }
 
     // ---- Normal mode (no menu) ----
@@ -226,6 +181,7 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
   const safeOnChange = useCallback((val: string) => {
     const clean = stripMouseSequences(val);
     setValue(clean);
+    valueRef.current = clean; // keep ref current before React re-renders
 
     // Detect / at start for command menu.
     // Show menu when: starts with /, no space (still typing command name).
@@ -258,6 +214,10 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
       setHistory((h) => [normalized, ...h].slice(0, 100));
       setHistoryIndex(-1);
 
+      // Track command usage for autocomplete ranking.
+      const cmdName = extractCommandName(normalized);
+      if (cmdName) recordCommandUse(cmdName);
+
       // Preprocess: expand @-mentions and !-shell commands before submitting.
       const workspace = process.env.BOOK_WORKSPACE || process.cwd();
       let processed = expandAtMentions(normalized, workspace);
@@ -281,6 +241,38 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
   // Clamp selection
   const selIdx = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
 
+  // Category header colors
+  const categoryColor: Record<string, string> = {
+    recent: theme.brand,
+    builtin: theme.subtle,
+    user: theme.subtle,
+    project: theme.subtle,
+  };
+
+  // Group filtered commands by category for sectioned display
+  const sections = useMemo(() => {
+    const groups = new Map<string, CommandItem[]>();
+    for (const cmd of filteredCmds) {
+      const cat = cmd.category;
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat)!.push(cmd);
+    }
+    return groups;
+  }, [filteredCmds]);
+
+  // Flatten sections into indexed list for selection
+  const flatItems = useMemo(
+    () => filteredCmds,
+    [filteredCmds],
+  );
+
+  const categoryLabels: Record<string, string> = {
+    recent: 'Recently Used',
+    builtin: 'Built-in',
+    user: 'User',
+    project: 'Project',
+  };
+
   return (
     <Box flexDirection="column">
       <Text color={theme.subtle}>{divider}</Text>
@@ -291,24 +283,39 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
           <Text bold color={theme.brand}>
             Commands
           </Text>
-          {filteredCmds.length === 0 ? (
+          {flatItems.length === 0 ? (
             <Text color={theme.subtle} dimColor>
               No matching commands
             </Text>
           ) : (
-            filteredCmds.map((item, i) => {
-              const isSelected = i === selIdx;
-              const color = isSelected ? theme.brand : theme.text;
-              const prefix = isSelected ? '› ' : '  ';
-              const hint = item.hint ? ` ${item.hint}` : '';
+            // Render sections with category headers
+            Array.from(sections.entries()).map(([category, items]) => {
+              const label = categoryLabels[category];
+              const firstIdx = flatItems.indexOf(items[0]);
               return (
-                <Box key={item.name} flexDirection="row">
-                  <Text color={color} bold={isSelected}>
-                    {prefix}/{item.name}{hint}
-                  </Text>
-                  {item.desc && (
-                    <Text color={theme.subtle}> — {item.desc}</Text>
+                <Box key={category} flexDirection="column">
+                  {menuFilter === '' && label && (
+                    <Text color={theme.subtle} dimColor>
+                      {label}
+                    </Text>
                   )}
+                  {items.map((item) => {
+                    const globalIdx = flatItems.indexOf(item);
+                    const isSelected = globalIdx === selIdx;
+                    const color = isSelected ? theme.brand : theme.text;
+                    const prefix = isSelected ? '› ' : '  ';
+                    const hint = item.hint ? ` ${item.hint}` : '';
+                    return (
+                      <Box key={item.name} flexDirection="row">
+                        <Text color={color} bold={isSelected}>
+                          {prefix}/{item.name}{hint}
+                        </Text>
+                        {item.desc && (
+                          <Text color={theme.subtle}> — {item.desc}</Text>
+                        )}
+                      </Box>
+                    );
+                  })}
                 </Box>
               );
             })

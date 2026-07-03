@@ -42,6 +42,10 @@ export interface SlashCommand {
   body: string;
   /** Source directory for priority/debugging (user vs project). */
   source: 'user' | 'project';
+  /** Hide from / autocomplete and /help listing (default false). */
+  isHidden?: boolean;
+  /** Whether users can type /name to invoke (default true). */
+  userInvocable?: boolean;
 }
 
 /**

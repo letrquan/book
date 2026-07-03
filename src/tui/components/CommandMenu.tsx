@@ -1,6 +1,8 @@
 import { Box, Text } from 'ink';
 import { useTheme } from '../theme.js';
 import type { SlashCommand } from '../../types.js';
+import { BUILTIN_BY_NAME } from '../../commands/builtins.js';
+import type { CommandItem } from '../../commands/filter.js';
 
 interface CommandMenuProps {
   commands: SlashCommand[];
@@ -9,15 +11,22 @@ interface CommandMenuProps {
   visible: boolean;
 }
 
+const categoryLabels: Record<string, string> = {
+  recent: 'Recently Used',
+  builtin: 'Built-in',
+  user: 'User',
+  project: 'Project',
+};
+
 /**
  * Filterable command autocomplete menu that appears when the user types `/`.
  *
  * Renders as an inline panel above the input bar showing matching commands.
  * The selected item is highlighted with the theme's brand color.
  *
- * Sections:
- *   - Built-in: hardcoded commands that don't come from .md files
- *   - Custom: commands discovered from .book/commands/
+ * When filterText is empty, commands are shown in categorized sections:
+ * recently used → built-ins → user → project.
+ * When filterText is non-empty, results are ranked: exact > prefix > fuzzy.
  */
 export function CommandMenu({ commands, filterText, selectedIndex, visible }: CommandMenuProps) {
   const theme = useTheme();
@@ -25,52 +34,32 @@ export function CommandMenu({ commands, filterText, selectedIndex, visible }: Co
   if (!visible) return null;
 
   // Build the full command list: built-in first, then custom.
-  const builtinNames = new Set([
-    'clear', 'compact', 'exit', 'help', 'task', 'theme',
-    'model', 'config', 'diff', 'status', 'memory',
-    'permissions', 'cost', 'skills', 'init', 'reload-skills', 'export',
-  ]);
-
-  const builtinDescs: Record<string, string> = {
-    clear: 'Clear conversation',
-    compact: 'Summarize older turns',
-    exit: 'Exit book',
-    help: 'Toggle help',
-    task: 'Add a task',
-    theme: 'Switch theme',
-    model: 'Switch AI model',
-    config: 'Show current configuration',
-    diff: 'Show git diff',
-    status: 'Show session status',
-    memory: 'Edit CLAUDE.md / manage auto-memory',
-    permissions: 'Manage permission rules',
-    cost: 'Show token usage and cost',
-    skills: 'List available skills',
-    init: 'Initialize project with CLAUDE.md',
-    'reload-skills': 'Re-scan command and skill directories',
-    export: 'Export conversation to file',
-  };
+  const builtinNames = new Set(Object.keys(BUILTIN_BY_NAME));
 
   // Build unified list: built-in descriptions + custom commands
-  const allItems: Array<{ name: string; hint: string; desc: string; isBuiltin: boolean }> = [];
+  const allItems: Array<{ name: string; hint: string; desc: string; isBuiltin: boolean; source: string }> = [];
 
-  for (const name of builtinNames) {
+  for (const [name, builtin] of Object.entries(BUILTIN_BY_NAME)) {
+    if (builtin.isHidden) continue;
     allItems.push({
       name,
-      hint: '',
-      desc: builtinDescs[name] || '',
+      hint: builtin.argumentHint ?? '',
+      desc: builtin.description,
       isBuiltin: true,
+      source: 'builtin',
     });
   }
 
   for (const cmd of commands) {
     // Skip commands whose names collide with built-in names
     if (builtinNames.has(cmd.name)) continue;
+    if (cmd.isHidden) continue;
     allItems.push({
       name: cmd.name,
       hint: cmd.argumentHint || '',
       desc: cmd.description,
       isBuiltin: false,
+      source: cmd.source,
     });
   }
 
@@ -102,28 +91,64 @@ export function CommandMenu({ commands, filterText, selectedIndex, visible }: Co
   // Clamp selection to valid range.
   const selIdx = Math.max(0, Math.min(selectedIndex, filtered.length - 1));
 
+  // Group by category when filter is empty
+  const showCategories = !filter;
+
+  // Build sections
+  const sections: Array<{ label: string; items: typeof filtered }> = [];
+  if (showCategories) {
+    const categoryOrder = ['recent', 'builtin', 'user', 'project'] as const;
+    const categoryItems: Record<string, typeof filtered> = {};
+    for (const item of filtered) {
+      // Determine category: builtin or from command source
+      const cat = item.isBuiltin ? 'builtin' : item.source;
+      if (!categoryItems[cat]) categoryItems[cat] = [];
+      categoryItems[cat].push(item);
+    }
+    for (const cat of categoryOrder) {
+      if (categoryItems[cat]?.length) {
+        categoryItems[cat].sort((a, b) => a.name.localeCompare(b.name));
+        sections.push({ label: categoryLabels[cat] || cat, items: categoryItems[cat] });
+      }
+    }
+  } else {
+    sections.push({ label: '', items: filtered });
+  }
+
+  // Flatten for index lookup
+  const flat = sections.flatMap((s) => s.items);
+
   return (
     <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1} marginTop={0}>
       <Text bold color={theme.brand}>
         Commands
       </Text>
-      {filtered.map((item, i) => {
-        const isSelected = i === selIdx;
-        const color = isSelected ? theme.brand : theme.text;
-        const bg = isSelected ? theme.userBg : undefined;
-        const prefix = isSelected ? '› ' : '  ';
-        const hint = item.hint ? ` ${item.hint}` : '';
-        return (
-          <Box key={item.name} flexDirection="row">
-            <Text color={color} bold={isSelected}>
-              {prefix}/{item.name}{hint}
+      {sections.map((section) => (
+        <Box key={section.label} flexDirection="column">
+          {section.label && (
+            <Text color={theme.subtle} dimColor>
+              {section.label}
             </Text>
-            {item.desc && (
-              <Text color={theme.subtle}> — {item.desc}</Text>
-            )}
-          </Box>
-        );
-      })}
+          )}
+          {section.items.map((item) => {
+            const i = flat.indexOf(item);
+            const isSelected = i === selIdx;
+            const color = isSelected ? theme.brand : theme.text;
+            const prefix = isSelected ? '› ' : '  ';
+            const hint = item.hint ? ` ${item.hint}` : '';
+            return (
+              <Box key={item.name} flexDirection="row">
+                <Text color={color} bold={isSelected}>
+                  {prefix}/{item.name}{hint}
+                </Text>
+                {item.desc && (
+                  <Text color={theme.subtle}> — {item.desc}</Text>
+                )}
+              </Box>
+            );
+          })}
+        </Box>
+      ))}
     </Box>
   );
 }
