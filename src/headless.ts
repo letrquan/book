@@ -108,8 +108,13 @@ export async function runHeadless(
             process.stderr.write(`error: ${err}\n`);
           }
         },
-        onTurnStart: () => {},
-        onDone: () => {},
+        onTurnStart: () => {
+          // Persist the header before a new turn's deltas start appending.
+          if (store && sessionId) store.flushMeta(sessionId);
+        },
+        onDone: () => {
+          if (store && sessionId) store.flushMeta(sessionId);
+        },
         onPermissionRequired: permissionRequired,
         onUsage: (u) => {
           lastUsage = u;

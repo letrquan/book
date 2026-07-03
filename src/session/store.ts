@@ -27,6 +27,15 @@ export interface SessionMeta {
  * records into a Message[] history the agent loop can resume from.
  */
 export class SessionStore {
+  /**
+   * In-memory updatedAt cache. bumpMeta() is too expensive to run per event
+   * (it reads and rewrites the whole growing file), so append() only tracks
+   * the latest timestamp here. flushMeta() writes it to the header once,
+   * at turn boundaries. load()/list() fall back to the last record's
+   * timestamp so a crash mid-turn still sorts correctly.
+   */
+  private updatedAt = new Map<string, number>();
+
   constructor(private root: string) {
     mkdirSync(root, { recursive: true });
   }
@@ -57,15 +66,26 @@ export class SessionStore {
 
   append(id: string, record: SessionRecord): void {
     appendFileSync(this.path(id), JSON.stringify(record) + '\n', 'utf-8');
-    // Update the meta header's updatedAt in place by rewriting the first line.
-    this.bumpMeta(id, record.timestamp);
+    // Track the latest timestamp in memory only; flushMeta() persists it
+    // to the header at turn boundaries (see onDone/onTurnStart callers).
+    const cur = this.updatedAt.get(id);
+    if (cur === undefined || record.timestamp > cur) {
+      this.updatedAt.set(id, record.timestamp);
+    }
   }
 
-  /** Rewrite the session_meta header with a new updatedAt. */
-  private bumpMeta(id: string, updatedAt: number): void {
+  /** Persist the tracked updatedAt to the session_meta header. Call at turn boundaries. */
+  flushMeta(id: string): void {
+    const updatedAt = this.updatedAt.get(id);
+    if (updatedAt === undefined) return;
     const p = this.path(id);
     if (!existsSync(p)) return;
-    const raw = readFileSync(p, 'utf-8');
+    let raw: string;
+    try {
+      raw = readFileSync(p, 'utf-8');
+    } catch {
+      return;
+    }
     const lines = raw.split('\n');
     if (lines.length === 0) return;
     try {
@@ -73,10 +93,8 @@ export class SessionStore {
       if ((meta.data as { kind?: string })?.kind === 'session_meta') {
         (meta.data as { updatedAt: number }).updatedAt = updatedAt;
         lines[0] = JSON.stringify(meta);
-        // Preserve the rest of the file (records), keep trailing newline state.
-        const trailing = raw.endsWith('\n') ? '\n' : '';
-        // Re-read original body after line 0 to avoid corrupting it.
         const body = lines.slice(1).join('\n');
+        const trailing = raw.endsWith('\n') ? '\n' : '';
         writeFileSync(p, lines[0] + '\n' + body + trailing, 'utf-8');
       }
     } catch {
@@ -97,6 +115,16 @@ export class SessionStore {
     const meta: SessionMeta = metaRec
       ? (metaRec.data as SessionMeta)
       : { id, cwd: '', createdAt: 0, updatedAt: 0, messageCount: 0 };
+
+    // Effective updatedAt = the last persisted record's timestamp (line 0 is
+    // always the meta header, so records[last] is the freshest write). This
+    // keeps list()/cleanup() correct even if flushMeta() never ran (e.g. a
+    // crash mid-turn) and preserves sort-by-activity for sessions whose record
+    // timestamps predate their createdAt (synthetic/test timestamps).
+    if (records.length) {
+      meta.updatedAt = records[records.length - 1].timestamp;
+      this.updatedAt.set(id, meta.updatedAt);
+    }
 
     const history: Message[] = [];
     let count = 0;

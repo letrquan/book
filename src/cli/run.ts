@@ -40,6 +40,13 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     }) as AgentConfig;
     if (options.model) config.model = options.model as string;
     if (options.maxTurns) config.maxTurns = parseInt(options.maxTurns as string, 10);
+    if (options.provider) {
+      const VALID_PROVIDERS = new Set(['anthropic', 'openai', 'auto']);
+      const raw = String(options.provider).trim().toLowerCase();
+      if (VALID_PROVIDERS.has(raw)) {
+        config.provider = raw as AgentConfig['provider'];
+      }
+    }
 
     // Headless / print mode.
     if (options.print !== undefined) {

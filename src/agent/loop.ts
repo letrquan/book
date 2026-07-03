@@ -1,5 +1,5 @@
 import type { AgentConfig, Message, SlashCommand, ToolCall, ToolResult, ToolContext, AgentLoopCallbacks, Usage, RetryPhase } from '../types.js';
-import { chatCompletionStream } from '../provider/openai-compatible.js';
+import { chatCompletionStream } from '../provider/index.js';
 import { buildMessages } from './context.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
@@ -149,6 +149,7 @@ export async function runAgentLoop(
       messages,
       effectiveDefinitions ?? registry.getDefinitions(),
       {
+      signal,
       onRetry: (attempt, max, delayMs) => {
         callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
       },

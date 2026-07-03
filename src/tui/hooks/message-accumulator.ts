@@ -96,6 +96,8 @@ export function createMessageAccumulator(
       }
     }
 
+    if (coalesced.length === 0) return;
+
     setMessages((prev: Message[]) => {
       let next = prev;
       for (const op of coalesced) {
@@ -139,7 +141,7 @@ export function createMessageAccumulator(
       clearTimeout(state.timerId);
       state.timerId = null;
     }
-    // Final flush of any remaining ops.
+    // Final flush of any remaining ops and pending text.
     flush();
   }
 

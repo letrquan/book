@@ -104,12 +104,12 @@ export function useAgent(config: AgentConfig) {
       });
 
       // Create and start the batched message accumulator.
-      // All streaming callbacks push to this queue; it flushes near 30fps.
+      // All streaming callbacks push to this queue; it flushes at ~60fps.
       accumulatorRef.current = createMessageAccumulator(
         placeholder.id,
         setMessages,
         messagesRef,
-        32,
+        16,
       );
       accumulatorRef.current.start();
 
@@ -281,7 +281,7 @@ export function useAgent(config: AgentConfig) {
     const { kept, summarized } = compactHistory(messages, 4);
     if (summarized.length === 0) return;
     // Summarize via a one-shot provider call.
-    const { chatCompletionStream } = await import('../../provider/openai-compatible.js');
+    const { chatCompletionStream } = await import('../../provider/index.js');
     let summary = '';
     try {
       const stream = chatCompletionStream(

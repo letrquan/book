@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
+import { Text } from 'ink';
 import React from 'react';
 import { ThemeContext } from '../theme.js';
 import { DEFAULT_THEME } from '../../types.js';
-import { MarkdownBlock } from './MarkdownBlock.js';
+import { MarkdownBlock, useThrottledValue } from './MarkdownBlock.js';
 
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
@@ -29,9 +30,7 @@ describe('MarkdownBlock', () => {
   });
 
   it('renders plain text paragraph', () => {
-    const view = render(
-      withTheme(React.createElement(MarkdownBlock, { content: 'Hello world' })),
-    );
+    const view = render(withTheme(React.createElement(MarkdownBlock, { content: 'Hello world' })));
     const output = frame(view.lastFrame);
     expect(output).toContain('Hello world');
   });
@@ -54,9 +53,7 @@ describe('MarkdownBlock', () => {
 
   it('renders inline code', () => {
     const view = render(
-      withTheme(
-        React.createElement(MarkdownBlock, { content: 'Use the `readFile` function' }),
-      ),
+      withTheme(React.createElement(MarkdownBlock, { content: 'Use the `readFile` function' })),
     );
     const output = frame(view.lastFrame);
     expect(output).toContain('readFile');
@@ -193,8 +190,7 @@ describe('MarkdownBlock', () => {
     const view = render(
       withTheme(
         React.createElement(MarkdownBlock, {
-          content:
-            '| Name | Value |\n|------|-------|\n| foo  | 42    |\n| bar  | 99    |',
+          content: '| Name | Value |\n|------|-------|\n| foo  | 42    |\n| bar  | 99    |',
         }),
       ),
     );
@@ -231,9 +227,7 @@ describe('MarkdownBlock', () => {
       'For more info, see [the docs](https://example.com).',
     ].join('\n');
 
-    const view = render(
-      withTheme(React.createElement(MarkdownBlock, { content })),
-    );
+    const view = render(withTheme(React.createElement(MarkdownBlock, { content })));
     const output = frame(view.lastFrame);
 
     expect(output).toContain('Getting Started');
@@ -245,5 +239,22 @@ describe('MarkdownBlock', () => {
     expect(output).toContain('Run the build');
     expect(output).toContain('Note');
     expect(output).toContain('the docs');
+  });
+});
+
+describe('useThrottledValue', () => {
+  // Throttle timing semantics are exercised via fake timers below for the
+  // "trailing final value" path. The synchronous-first-frame contract — the
+  // one the existing MarkdownBlock render tests depend on — is checked first.
+  function Echo({ value, intervalMs }: { value: string; intervalMs: number }) {
+    const throttled = useThrottledValue(value, intervalMs);
+    return React.createElement(Text, null, throttled);
+  }
+
+  afterEach(() => cleanup());
+
+  it('emits the first value synchronously (no delayed first frame)', () => {
+    const view = render(withTheme(React.createElement(Echo, { value: 'first', intervalMs: 1000 })));
+    expect(frame(view.lastFrame)).toBe('first');
   });
 });

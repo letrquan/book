@@ -26,7 +26,9 @@ program
   .option('--fork-session', 'On resume, create a new session id instead of reusing')
   .option('--scrollback', 'Use terminal-native scrollback instead of the full-screen TUI')
   .option('--settings <path>', 'Path to an ad-hoc settings file (overrides all scopes)')
-  .option('--no-settings', 'Skip all settings.json layers (use defaults + legacy .bookrc.json)');
+  .option('--no-settings', 'Skip all settings.json layers (use defaults + legacy .bookrc.json)')
+  .option('--effort <level>', 'Thinking effort: low, medium, high, xhigh, max (default: high)', 'high')
+  .option('--provider <type>', 'Provider: anthropic, openai, auto (default: auto-detect)');
 
 // ---- book doctor ----
 program

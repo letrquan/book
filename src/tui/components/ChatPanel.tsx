@@ -85,7 +85,7 @@ export function ChatPanel({
   activeToolCallId,
   reducedMotion = false,
   screenReader = false,
-  terminalWidth: _terminalWidth,
+  terminalWidth,
   retryPhase = 'none',
   retryAttempt = 0,
   retryMax = 0,
@@ -140,6 +140,7 @@ export function ChatPanel({
               activeToolCallId={activeToolCallId}
               reducedMotion={reducedMotion}
               screenReader={screenReader}
+              terminalWidth={terminalWidth}
             />
           );
         }}
@@ -156,6 +157,7 @@ export function ChatPanel({
           activeToolCallId={activeToolCallId}
           reducedMotion={reducedMotion}
           screenReader={screenReader}
+          terminalWidth={terminalWidth}
           retryPhase={retryPhase}
           retryAttempt={retryAttempt}
           retryMax={retryMax}

@@ -134,7 +134,25 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     accessibility: legacy?.accessibility || { screenReader: false, reducedMotion: false },
     settings,
     retry,
+    effort: validateEffort(process.env.BOOK_EFFORT) || 'high',
+    provider: validateProvider(process.env.BOOK_PROVIDER) || 'auto',
   };
+}
+
+const VALID_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+function validateEffort(raw: string | undefined): AgentConfig['effort'] {
+  if (!raw) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  return VALID_EFFORT_LEVELS.has(normalized) ? (normalized as AgentConfig['effort']) : undefined;
+}
+
+const VALID_PROVIDERS = new Set(['anthropic', 'openai', 'auto']);
+
+function validateProvider(raw: string | undefined): AgentConfig['provider'] {
+  if (!raw) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  return VALID_PROVIDERS.has(normalized) ? (normalized as AgentConfig['provider']) : undefined;
 }
 
 function clampInt(raw: string, min: number, max: number): number {

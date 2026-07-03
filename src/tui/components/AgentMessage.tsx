@@ -20,6 +20,8 @@ interface AgentMessageProps {
   activeToolCallId?: string | null;
   reducedMotion?: boolean;
   screenReader?: boolean;
+  /** Terminal width in columns — passed down to MarkdownBlock for word-wrap. */
+  terminalWidth?: number;
   /** Retry state — shown in the spinner line when active. */
   retryPhase?: RetryPhase;
   retryAttempt?: number;
@@ -52,6 +54,7 @@ export function AgentMessageInner({
   activeToolCallId,
   reducedMotion = false,
   screenReader = false,
+  terminalWidth,
   retryPhase = 'none',
   retryAttempt = 0,
   retryMax = 0,
@@ -96,6 +99,10 @@ export function AgentMessageInner({
 
   const isRetrying = retryPhase !== 'none';
 
+  // Compute effective width for MarkdownBlock content.
+  // Account for marginLeft (2), spinner (2), and a safety margin (1).
+  const mdWidth = terminalWidth ? Math.max(20, terminalWidth - 5) : undefined;
+
   return (
     <Box flexDirection="column">
 
@@ -126,7 +133,7 @@ export function AgentMessageInner({
                 <Text color={theme.error}>{spinnerLabel} </Text>
               </Box>
             )}
-            <MarkdownBlock content={displayContent} />
+            <MarkdownBlock content={displayContent} terminalWidth={mdWidth} />
           </Box>
         </Box>
       ) : null}
@@ -207,7 +214,8 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
     prev.retryMax === next.retryMax &&
     prev.retryCountdownMs === next.retryCountdownMs &&
     prev.reducedMotion === next.reducedMotion &&
-    prev.screenReader === next.screenReader
+    prev.screenReader === next.screenReader &&
+    prev.terminalWidth === next.terminalWidth
   ) {
     // Check message identity.
     const pm = prev.message;

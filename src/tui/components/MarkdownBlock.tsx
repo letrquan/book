@@ -1,11 +1,86 @@
 import { Text, Box } from 'ink';
-import React from 'react';
+import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { marked, Tokens, Token } from 'marked';
 import { useTheme } from '../theme.js';
+import { wordWrap, displayWidth } from './word-wrap.js';
 
 interface MarkdownBlockProps {
   /** Raw markdown string to render. */
   content: string;
+  /** Terminal width in columns for word-boundary wrapping. */
+  terminalWidth?: number;
+}
+
+/**
+ * Throttle a rapidly-changing value onto a fixed cadence, with an immediate
+ * first render and a guaranteed trailing emit.
+ *
+ * Why: during streaming, `content` grows ~every 16ms (the accumulator flush).
+ * `marked.lexer(content)` on every flush re-parses the whole string ~60×/sec
+ * — the main CPU sink while a large assistant reply streams in. Throttling the
+ * value React actually parses caps re-lex work to ~17×/sec regardless of how
+ * fast `content` changes, and the trailing emit guarantees the final, complete
+ * markdown always renders.
+ *
+ * Semantics:
+ *   - First value passed is emitted synchronously (no delayed first frame).
+ *   - A change while within `interval` of the last emit is held; it is flushed
+ *     on a trailing timer so the newest value always wins.
+ *   - A change after `interval` emits immediately.
+ *
+ * `ponytail:` no leading-edge coalesce on the very first call. If a future
+ * caller streams a value that changes mid-first-frame and needs the leading
+ * edge deferred too, pass an explicit `startPending` flag. Ceiling: none —
+ * this is the standard throttle shape.
+ */
+export function useThrottledValue<T>(next: T, intervalMs: number): T {
+  const [value, setValue] = useState<T>(next);
+  // Stamp the throttle window's origin at mount so the *first* change after
+  // render is subject to the interval (not a freebie from a 0 origin).
+  const lastEmitRef = useRef<number | null>(null);
+  const mountedRef = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nextRef = useRef<T>(next);
+
+  useEffect(() => {
+    nextRef.current = next;
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      lastEmitRef.current = Date.now();
+      return;
+    }
+    if (next === value) return;
+    const now = Date.now();
+    const elapsed = now - (lastEmitRef.current ?? now);
+    if (elapsed >= intervalMs) {
+      // Emit immediately and reset the cadence window.
+      lastEmitRef.current = now;
+      setValue(next);
+      return;
+    }
+    // Within the window — schedule a trailing emit at the window edge.
+    if (timerRef.current === null) {
+      const remaining = intervalMs - elapsed;
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        lastEmitRef.current = Date.now();
+        setValue(nextRef.current);
+      }, remaining);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [next, intervalMs]);
+
+  // Clear any pending trailing timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, []);
+
+  return value;
 }
 
 /**
@@ -57,11 +132,7 @@ function renderInlineTokens(
       case 'codespan': {
         const t = token as Tokens.Codespan;
         return (
-          <Text
-            key={key}
-            backgroundColor={theme.mdInlineCodeBg}
-            color={theme.mdInlineCodeText}
-          >
+          <Text key={key} backgroundColor={theme.mdInlineCodeBg} color={theme.mdInlineCodeText}>
             {t.text}
           </Text>
         );
@@ -84,9 +155,7 @@ function renderInlineTokens(
         );
       }
       case 'br': {
-        return (
-          <Box key={key} height={1} />
-        );
+        return <Box key={key} height={1} />;
       }
       case 'escape': {
         const t = token as Tokens.Escape;
@@ -121,6 +190,7 @@ function renderBlockToken(
   token: Token,
   theme: ReturnType<typeof useTheme>,
   index: number,
+  terminalWidth?: number,
 ): React.ReactNode {
   switch (token.type) {
     case 'heading': {
@@ -136,11 +206,33 @@ function renderBlockToken(
 
     case 'paragraph': {
       const t = token as Tokens.Paragraph;
+      // Apply word-boundary wrapping to paragraph text to prevent Ink's
+      // wrap-ansi (hard: true) from breaking words mid-character at line ends.
+      if (terminalWidth) {
+        // Collect raw text, wrap, then re-parse as inline tokens.
+        const rawText = t.tokens.map((tok) => ('text' in tok ? tok.text : '')).join('');
+        const wrapped = wordWrap(rawText, terminalWidth);
+        const wrappedTokens = marked.lexer(wrapped);
+        // The wrapped text may produce multiple paragraphs; flatten them.
+        return (
+          <Box key={`p-${index}`} flexDirection="column" flexGrow={1} marginBottom={1}>
+            {wrappedTokens.map((wt, wi) => {
+              if (wt.type === 'paragraph') {
+                const wp = wt as Tokens.Paragraph;
+                return (
+                  <Box key={`pw-${index}-${wi}`} flexDirection="row">
+                    <Text>{renderInlineTokens(wp.tokens, theme, `pw-${index}-${wi}`)}</Text>
+                  </Box>
+                );
+              }
+              return renderBlockToken(wt, theme, index * 100 + wi, terminalWidth);
+            })}
+          </Box>
+        );
+      }
       return (
-        <Box key={`p-${index}`} flexDirection="row" marginBottom={1}>
-          <Text wrap="wrap">
-            {renderInlineTokens(t.tokens, theme, `p-${index}`)}
-          </Text>
+        <Box key={`p-${index}`} flexDirection="row" flexGrow={1} marginBottom={1}>
+          <Text wrap="wrap">{renderInlineTokens(t.tokens, theme, `p-${index}`)}</Text>
         </Box>
       );
     }
@@ -150,9 +242,7 @@ function renderBlockToken(
       const lines = t.text.split('\n');
       // Skip trailing empty line if present from backtick fence.
       const displayLines =
-        lines.length > 0 && lines[lines.length - 1] === ''
-          ? lines.slice(0, -1)
-          : lines;
+        lines.length > 0 && lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines;
 
       return (
         <Box
@@ -190,7 +280,7 @@ function renderBlockToken(
           paddingLeft={1}
         >
           {t.tokens.map((childToken, ci) =>
-            renderBlockToken(childToken, theme, index * 1000 + ci),
+            renderBlockToken(childToken, theme, index * 1000 + ci, terminalWidth),
           )}
         </Box>
       );
@@ -201,9 +291,7 @@ function renderBlockToken(
       return (
         <Box key={`list-${index}`} flexDirection="column">
           {t.items.map((item, ii) => {
-            const marker = t.ordered
-              ? `${(typeof t.start === 'number' ? t.start : 1) + ii}.`
-              : '•';
+            const marker = t.ordered ? `${(typeof t.start === 'number' ? t.start : 1) + ii}.` : '•';
             return (
               <Box key={`li-${index}-${ii}`} flexDirection="row" marginLeft={2}>
                 <Box width={3} flexShrink={0}>
@@ -213,14 +301,25 @@ function renderBlockToken(
                   {/* List item's tokens: typically a text token or nested blocks */}
                   {item.tokens.map((childToken, ci) => {
                     if (childToken.type === 'text') {
+                      const textToken = childToken as Tokens.Text;
+                      // Apply word-boundary wrapping when terminalWidth is available.
+                      if (terminalWidth) {
+                        const wrapped = wordWrap(textToken.text, terminalWidth - 5); // account for marker + indent
+                        const wrappedLines = wrapped.split('\n');
+                        return (
+                          <Box key={`lit-${index}-${ii}-${ci}`} flexDirection="column">
+                            {wrappedLines.map((line, li) => (
+                              <Box key={`lit-${index}-${ii}-${ci}-l${li}`}>
+                                <Text>{line}</Text>
+                              </Box>
+                            ))}
+                          </Box>
+                        );
+                      }
                       return (
                         <Box key={`lit-${index}-${ii}-${ci}`}>
                           <Text wrap="wrap">
-                            {renderInlineTokens(
-                              [childToken],
-                              theme,
-                              `lit-${index}-${ii}-${ci}`,
-                            )}
+                            {renderInlineTokens([childToken], theme, `lit-${index}-${ii}-${ci}`)}
                           </Text>
                         </Box>
                       );
@@ -229,6 +328,7 @@ function renderBlockToken(
                       childToken,
                       theme,
                       index * 1000 + ii * 100 + ci,
+                      terminalWidth,
                     );
                   })}
                 </Box>
@@ -273,11 +373,7 @@ function renderBlockToken(
                   Math.max(0, (colWidths[ci] ?? 3) - cell.text.length + 2),
                 );
                 return (
-                  <Text
-                    key={`tc-${index}-${ri}-${ci}`}
-                    bold={cell.header}
-                    color={theme.text}
-                  >
+                  <Text key={`tc-${index}-${ri}-${ci}`} bold={cell.header} color={theme.text}>
                     {cell.text}
                     {padding}
                   </Text>
@@ -334,16 +430,25 @@ function renderBlockToken(
  * - Tables — basic aligned columns
  * - Images — alt-text placeholder (terminals can't render images)
  */
-export function MarkdownBlock({ content }: MarkdownBlockProps) {
+export function MarkdownBlock({ content, terminalWidth }: MarkdownBlockProps) {
   const theme = useTheme();
 
-  if (!content) return null;
+  // Throttle the value React parses: during streaming, `content` grows on
+  // every 16ms accumulator flush, but re-lexing the whole string 60×/sec is
+  // the main CPU sink on large replies. ~60ms cadence caps it to ~17×/sec;
+  // the trailing emit guarantees the final complete markdown always renders.
+  const parsedContent = useThrottledValue(content, 60);
+  const effectiveContent = parsedContent || content;
 
-  const tokens = marked.lexer(content);
+  if (!effectiveContent) return null;
+
+  // Memoize: re-parsing the same content is wasteful, especially during
+  // streaming where content only grows by a few characters each flush.
+  const tokens = useMemo(() => marked.lexer(effectiveContent), [effectiveContent]);
 
   return (
     <Box flexDirection="column">
-      {tokens.map((token, i) => renderBlockToken(token, theme, i))}
+      {tokens.map((token, i) => renderBlockToken(token, theme, i, terminalWidth))}
     </Box>
   );
 }

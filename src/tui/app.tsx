@@ -402,6 +402,7 @@ export function App({ config }: AppProps) {
               disabled={isThinking}
               mode={mode}
               onCycleMode={cycleMode}
+              onInterrupt={isThinking ? cancel : undefined}
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
             />

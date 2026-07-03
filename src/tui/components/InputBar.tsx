@@ -27,6 +27,8 @@ interface InputBarProps {
   disabled: boolean;
   mode: PermissionMode;
   onCycleMode: () => void;
+  /** Called when the user presses Enter while `disabled` (agent running) — interrupts the stream. */
+  onInterrupt?: () => void;
   /** Forward unrecognized global keyboard shortcuts to the parent App. */
   onGlobalShortcut?: (input: string, key: { ctrl?: boolean; meta?: boolean; shift?: boolean; tab?: boolean }) => boolean;
   /** Commands for the autocomplete menu (from discoverCommands). */
@@ -72,7 +74,7 @@ function extractCommandName(value: string): string | null {
  * Empty "/" shows commands categorized: recently used → builtins → user → project.
  * Typing after "/" uses fuzzy search with exact > prefix > fuzzy ranking.
  */
-export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortcut, commands = [] }: InputBarProps) {
+export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, onGlobalShortcut, commands = [] }: InputBarProps) {
   const theme = useTheme();
   const [value, setValue] = useState('');
   const [history, setHistory] = useState<string[]>([]);
@@ -210,7 +212,14 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
       setMenuSelected(0);
 
       const normalized = normalizeInput(val);
-      if (!normalized.trim() || disabled) return;
+      if (!normalized.trim()) return;
+      // While the agent is running, Enter interrupts the stream instead of
+      // submitting — input stays live and focusable so the user can act.
+      if (disabled) {
+        onInterrupt?.();
+        setValue('');
+        return;
+      }
       setHistory((h) => [normalized, ...h].slice(0, 100));
       setHistoryIndex(-1);
 
@@ -330,8 +339,8 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onGlobalShortc
             value={value}
             onChange={safeOnChange}
             onSubmit={handleSubmit}
-            placeholder={disabled ? 'Waiting for response...' : suggestion}
-            focus={!disabled}
+            placeholder={disabled ? 'Press Enter to interrupt… (or keep typing)' : suggestion}
+            focus={true}
           />
         </Box>
       </Box>

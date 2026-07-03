@@ -256,6 +256,10 @@ export interface AgentConfig {
   settings: ResolvedSettings;
   /** Retry configuration (from settings.json + env vars). */
   retry: RetryConfig;
+  /** Thinking effort level (Anthropic adaptive thinking / output_config.effort). */
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** Explicit provider override: 'anthropic' | 'openai' | 'auto' (default: auto-detect). */
+  provider?: 'anthropic' | 'openai' | 'auto';
 }
 
 export interface ProviderStreamEvent {
@@ -302,6 +306,7 @@ export interface SessionRecord {
 export interface SessionStoreInterface {
   create(meta: { cwd: string; name?: string }): string;
   append(id: string, record: SessionRecord): void;
+  flushMeta(id: string): void;
   load(id: string): { history: Message[]; meta: { id: string; name?: string; cwd: string; createdAt: number; updatedAt: number; messageCount: number } };
   findByName(name: string): { id: string } | undefined;
   findById(id: string): { id: string } | undefined;
