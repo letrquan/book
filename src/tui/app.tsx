@@ -1,11 +1,14 @@
 import { Box, Text, useInput, useStdout, useApp } from 'ink';
 import { useState, useCallback, useEffect, useMemo } from 'react';
+import { writeFileSync } from 'fs';
+import { join } from 'path';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { StatusLine } from './components/StatusLine.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
+import { ModelPicker } from './components/ModelPicker.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
 import {
@@ -20,6 +23,34 @@ import type { AgentConfig, CommandContext } from '../types.js';
 import { DEFAULT_THEME } from '../types.js';
 import { useTheme } from './theme.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
+import { discoverSkills } from '../skills.js';
+import { runGit } from '../tools/git.js';
+import { costReport, usageReport } from '../pricing.js';
+import { buildInitPrompt } from '../commands/init-prompt.js';
+import {
+  buildReviewPrompt,
+  buildSecurityReviewPrompt,
+  REVIEW_TOOLS,
+  SECURITY_REVIEW_TOOLS,
+} from '../commands/builtins-prompts.js';
+import { buildMemoryReport } from '../memory-display.js';
+import { buildContextReport } from '../context-report.js';
+import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
+import { persistSettingLocal } from './persist.js';
+
+/** Settable top-level settings keys (for /config --help). Mirrors cli/config-cmd.ts allowlist. */
+const SETTABLE_KEYS = [
+  'model',
+  'maxTurns',
+  'maxTokens',
+  'autoCompactEnabled',
+  'defaultMode',
+  'permissions',
+  'sandbox',
+  'hooks',
+  'additionalDirectories',
+  'env',
+];
 
 interface AppProps {
   config: AgentConfig;
@@ -55,15 +86,20 @@ export function App({ config }: AppProps) {
     error,
     currentTurn,
     tokenCount,
+    usage,
     mode,
     pendingPermission,
     agentTodos,
+    liveConfig,
     send,
     clear,
     resolvePermission,
     cancel,
     compact,
     cycleMode,
+    addLocalMessage,
+    setModel,
+    setEffort,
     turnDurationMs,
     retryPhase,
     retryAttempt,
@@ -77,6 +113,8 @@ export function App({ config }: AppProps) {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showStatus, setShowStatus] = useState(false);
   const [showPermissions, setShowPermissions] = useState(false);
+  const [showSkills, setShowSkills] = useState(false);
+  const [showModelPicker, setShowModelPicker] = useState(false);
   const [currentTheme, setCurrentTheme] = useState<ThemeTokens>(DEFAULT_THEME);
   const { tasks, addTask, updateTaskStatus, removeTask } = useTasks();
   const theme = useTheme();
@@ -84,6 +122,7 @@ export function App({ config }: AppProps) {
 
   // Discover slash commands on startup.
   const commands = useMemo(() => discoverCommands(config.workspace), [config.workspace]);
+  const skills = useMemo(() => discoverSkills(config.workspace), [config.workspace]);
 
   const { stdout } = useStdout();
   const termWidth = stdout?.columns ?? 80;
@@ -163,36 +202,168 @@ export function App({ config }: AppProps) {
           }
         }
       } else if (value.startsWith('/model')) {
-        // /model <name> — switch model.
-        const modelName = value.slice(7).trim();
-        if (modelName) {
-          send(`Switch to the ${modelName} model for subsequent responses. Confirm the switch.`);
+        const arg = value.slice('/model'.length).trim();
+        if (arg) {
+          setModel(arg);
+          addLocalMessage(`Switched to ${arg} (saved as default).`);
         } else {
-          send('List the available AI models I can switch to with /model <name>.');
+          setShowModelPicker(true);
         }
       } else if (value.startsWith('/config')) {
-        // /config — show current configuration (delegated to agent)
-        send('Show me the current configuration settings (model, max tokens, workspace, etc.)');
+        const arg = value.slice('/config'.length).trim();
+        if (!arg) {
+          addLocalMessage(
+            JSON.stringify(
+              {
+                model: liveConfig.model,
+                baseUrl: liveConfig.baseUrl,
+                workspace: liveConfig.workspace,
+                maxTurns: liveConfig.maxTurns,
+                maxTokens: liveConfig.maxTokens,
+                effort: liveConfig.effort,
+                provider: liveConfig.provider,
+                ...liveConfig.settings,
+              },
+              null,
+              2,
+            ),
+          );
+        } else if (arg === '--help') {
+          addLocalMessage(
+            'Settable keys (dot-separated):\n' +
+              SETTABLE_KEYS.map((k) => `  ${k}`).join('\n') +
+              '\n\nUsage: /config <key>=<value>',
+          );
+        } else if (arg.includes('=')) {
+          const eq = arg.indexOf('=');
+          const key = arg.slice(0, eq).trim();
+          const raw = arg.slice(eq + 1).trim();
+          let parsed: unknown = raw;
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            /* keep as string */
+          }
+          const r = persistSettingLocal(config.workspace, key, parsed);
+          addLocalMessage(
+            r.ok
+              ? `Set ${key} = ${JSON.stringify(parsed)} in .book/settings.local.json (next session).`
+              : `✕ ${r.error}`,
+          );
+        } else {
+          addLocalMessage('Usage: /config [key=value] or /config --help');
+        }
       } else if (value.startsWith('/diff')) {
-        send('Show me the current git diff for the working tree.');
+        const r = runGit(['diff'], {
+          workspaceRoot: config.workspace,
+          env: process.env as Record<string, string>,
+        });
+        addLocalMessage(r.error ? `✕ ${r.error}` : r.output.trim() || '(no changes)');
       } else if (value.startsWith('/status')) {
         setShowStatus((s) => !s);
       } else if (value.startsWith('/memory')) {
-        send('Show me what\'s in the current memory/CLAUDE.md and help me manage it.');
+        addLocalMessage(buildMemoryReport(config.workspace));
       } else if (value.startsWith('/permissions')) {
         setShowPermissions((s) => !s);
       } else if (value.startsWith('/cost')) {
-        send('Show me the current token usage and estimated cost for this session.');
+        addLocalMessage(costReport(liveConfig.model, usage));
+      } else if (value.startsWith('/usage') || value.startsWith('/stats')) {
+        addLocalMessage(
+          usageReport(liveConfig.model, usage, {
+            currentTurn,
+            messageCount: messages.length,
+            turnDurationMs,
+          }),
+        );
+      } else if (value.startsWith('/context')) {
+        addLocalMessage(
+          buildContextReport(messages, {
+            model: liveConfig.model,
+            maxTokens: config.maxTokens,
+            skillCount: skills.length,
+            commandCount: commands.length,
+            // 1b (CLAUDE.md loader) is not yet implemented — surfaced honestly.
+            hasClaudeMdLoader: false,
+          }),
+        );
       } else if (value.startsWith('/skills')) {
-        send('List all available skills that are currently loaded.');
+        setShowSkills((s) => !s);
       } else if (value.startsWith('/init')) {
-        send('Analyze this project and create or update the CLAUDE.md file with project documentation. Follow the init skill pattern.');
+        const promptBody = buildInitPrompt(config.workspace);
+        const initCmd = {
+          name: 'init',
+          description: 'Initialize CLAUDE.md',
+          body: promptBody,
+          source: 'project' as const,
+        };
+        const ctx: CommandContext = {
+          command: initCmd,
+          resolvedBody: promptBody,
+          allowedTools: ['Read', 'Glob', 'Grep', 'Write'],
+        };
+        send(promptBody, ctx);
       } else if (value.startsWith('/reload-skills')) {
         // Force re-discovery of commands and skills on next render.
         send('Commands and skills have been reloaded. What would you like to do?');
       } else if (value.startsWith('/export')) {
-        const filename = value.slice(8).trim() || 'conversation.txt';
-        send(`Export this conversation to a file named "${filename}".`);
+        const filename = value.slice('/export'.length).trim() || 'conversation.txt';
+        try {
+          const text = messages.map((m) => `${m.role}:\n${m.content}`).join('\n\n---\n\n');
+          writeFileSync(join(config.workspace, filename), text, 'utf-8');
+          addLocalMessage(
+            `Exported ${messages.length} messages to ${join(config.workspace, filename)}`,
+          );
+        } catch (e) {
+          addLocalMessage(`✕ export failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      } else if (value.startsWith('/review')) {
+        const arg = value.slice('/review'.length).trim();
+        const promptBody = buildReviewPrompt(arg);
+        const ctx: CommandContext = {
+          command: {
+            name: 'review',
+            description: 'Review current diff',
+            body: promptBody,
+            source: 'project',
+          },
+          resolvedBody: promptBody,
+          allowedTools: [...REVIEW_TOOLS],
+        };
+        send(promptBody, ctx);
+      } else if (value.startsWith('/security-review')) {
+        const arg = value.slice('/security-review'.length).trim();
+        const promptBody = buildSecurityReviewPrompt(arg);
+        const ctx: CommandContext = {
+          command: {
+            name: 'security-review',
+            description: 'Security audit of current diff',
+            body: promptBody,
+            source: 'project',
+          },
+          resolvedBody: promptBody,
+          allowedTools: [...SECURITY_REVIEW_TOOLS],
+        };
+        send(promptBody, ctx);
+      } else if (value.startsWith('/release-notes')) {
+        addLocalMessage(buildReleaseNotesReport(config.workspace));
+      } else if (value.startsWith('/feedback')) {
+        const note = value.slice('/feedback'.length).trim();
+        const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+        const r = writeFeedbackReport({
+          workspace: config.workspace,
+          model: liveConfig.model,
+          provider: liveConfig.provider,
+          turn: currentTurn,
+          messageCount: messages.length,
+          lastUserPromptPreview: lastUser?.content,
+          lastError: error,
+          note: note || undefined,
+        });
+        addLocalMessage(
+          r.ok
+            ? `Saved feedback report to ${r.path}. Review it before sharing.`
+            : `✕ feedback failed: ${r.error}`,
+        );
       } else if (value.startsWith('/')) {
         // Custom slash command: /name [args]
         const spaceIdx = value.indexOf(' ');
@@ -220,7 +391,23 @@ export function App({ config }: AppProps) {
         send(value);
       }
     },
-    [send, clear, compact, addTask, commands, exitApp],
+    [
+      send,
+      clear,
+      compact,
+      addTask,
+      commands,
+      exitApp,
+      usage,
+      liveConfig,
+      addLocalMessage,
+      setModel,
+      messages,
+      currentTurn,
+      turnDurationMs,
+      error,
+      skills,
+    ],
   );
 
   const handleGlobalShortcut = useCallback(
@@ -247,7 +434,6 @@ export function App({ config }: AppProps) {
     <ThemeContext.Provider value={currentTheme}>
       <ErrorBoundary>
         <Box flexDirection="column">
-
           {/* Message area — all messages rendered in order */}
           <Box flexDirection="column">
             {error && (
@@ -289,7 +475,11 @@ export function App({ config }: AppProps) {
                   <HelpRow label="/clear" description="Clear conversation" theme={theme} />
                   <HelpRow label="/compact" description="Summarize older turns" theme={theme} />
                   <HelpRow label="/task <subject>" description="Add a task" theme={theme} />
-                  <HelpRow label="/theme [dark|light|auto]" description="Switch theme" theme={theme} />
+                  <HelpRow
+                    label="/theme [dark|light|auto]"
+                    description="Switch theme"
+                    theme={theme}
+                  />
                   <HelpRow label="/model <name>" description="Switch AI model" theme={theme} />
                   <HelpRow label="/config" description="Show configuration" theme={theme} />
                   <HelpRow label="/diff" description="Show git diff" theme={theme} />
@@ -301,6 +491,32 @@ export function App({ config }: AppProps) {
                   <HelpRow label="/init" description="Initialize CLAUDE.md" theme={theme} />
                   <HelpRow label="/reload-skills" description="Reload commands" theme={theme} />
                   <HelpRow label="/export [file]" description="Export conversation" theme={theme} />
+                  <HelpRow
+                    label="/usage"
+                    description="Session cost & tokens (/stats)"
+                    theme={theme}
+                  />
+                  <HelpRow
+                    label="/context"
+                    description="What fills the context window"
+                    theme={theme}
+                  />
+                  <HelpRow
+                    label="/review [scope]"
+                    description="Review current git diff"
+                    theme={theme}
+                  />
+                  <HelpRow
+                    label="/security-review [scope]"
+                    description="Security audit of the diff"
+                    theme={theme}
+                  />
+                  <HelpRow label="/release-notes" description="Version + changelog" theme={theme} />
+                  <HelpRow
+                    label="/feedback [note]"
+                    description="Save a bug-report snapshot"
+                    theme={theme}
+                  />
                   <HelpRow label="/exit" description="Exit book" theme={theme} />
                   {commands.length > 0 && (
                     <>
@@ -332,14 +548,22 @@ export function App({ config }: AppProps) {
                   Session Status
                 </Text>
                 <Box flexDirection="column" marginTop={1}>
-                  <HelpRow label="Model" description={config.model} theme={theme} />
+                  <HelpRow label="Model" description={liveConfig.model} theme={theme} />
                   <HelpRow label="Workspace" description={config.workspace} theme={theme} />
-                  <HelpRow label="Max Tokens" description={String(config.maxTokens)} theme={theme} />
+                  <HelpRow
+                    label="Max Tokens"
+                    description={String(config.maxTokens)}
+                    theme={theme}
+                  />
                   <HelpRow label="Max Turns" description={String(config.maxTurns)} theme={theme} />
                   <HelpRow label="Mode" description={mode} theme={theme} />
                   <HelpRow label="Tokens Used" description={`${tokenCount}`} theme={theme} />
                   <HelpRow label="Turn" description={`${currentTurn}`} theme={theme} />
-                  <HelpRow label="Tasks" description={`${tasks.length} (${tasks.filter((t) => t.status === 'in_progress').length} active)`} theme={theme} />
+                  <HelpRow
+                    label="Tasks"
+                    description={`${tasks.length} (${tasks.filter((t) => t.status === 'in_progress').length} active)`}
+                    theme={theme}
+                  />
                 </Box>
               </Box>
             )}
@@ -356,10 +580,127 @@ export function App({ config }: AppProps) {
                 </Text>
                 <Box flexDirection="column" marginTop={1}>
                   <HelpRow label="Current Mode" description={mode} theme={theme} />
-                  <HelpRow label="Modes" description="default, auto, plan, accept-edits, dontAsk, bypassPermissions" theme={theme} />
+                  <HelpRow
+                    label="Modes"
+                    description="default, auto, plan, accept-edits, dontAsk, bypassPermissions"
+                    theme={theme}
+                  />
                   <HelpRow label="Switch" description="Alt+M or Shift+Tab" theme={theme} />
                 </Box>
+                <Box marginTop={1} flexDirection="column">
+                  <Text color={theme.subtle} dimColor>
+                    Permission rules (add via the "Always allow" option at tool prompts):
+                  </Text>
+                  <Text color={theme.subtle} dimColor>
+                    {' '}
+                    allow:
+                  </Text>
+                  {liveConfig.settings.permissions.allow.length === 0 ? (
+                    <Text color={theme.subtle} dimColor>
+                      {' '}
+                      (none)
+                    </Text>
+                  ) : (
+                    liveConfig.settings.permissions.allow.map((r) => (
+                      <Text key={r} color={theme.subtle} dimColor>
+                        {' '}
+                        {r}
+                      </Text>
+                    ))
+                  )}
+                  <Text color={theme.subtle} dimColor>
+                    {' '}
+                    ask:
+                  </Text>
+                  {liveConfig.settings.permissions.ask.length === 0 ? (
+                    <Text color={theme.subtle} dimColor>
+                      {' '}
+                      (none)
+                    </Text>
+                  ) : (
+                    liveConfig.settings.permissions.ask.map((r) => (
+                      <Text key={r} color={theme.subtle} dimColor>
+                        {' '}
+                        {r}
+                      </Text>
+                    ))
+                  )}
+                  <Text color={theme.subtle} dimColor>
+                    {' '}
+                    deny:
+                  </Text>
+                  {liveConfig.settings.permissions.deny.length === 0 ? (
+                    <Text color={theme.subtle} dimColor>
+                      {' '}
+                      (none)
+                    </Text>
+                  ) : (
+                    liveConfig.settings.permissions.deny.map((r) => (
+                      <Text key={r} color={theme.subtle} dimColor>
+                        {' '}
+                        {r}
+                      </Text>
+                    ))
+                  )}
+                </Box>
               </Box>
+            )}
+            {showSkills && (
+              <Box
+                flexDirection="column"
+                borderStyle="single"
+                borderColor={theme.subtle}
+                paddingX={1}
+                marginTop={1}
+              >
+                <Text bold color={theme.brand}>
+                  Skills ({skills.length})
+                </Text>
+                <Box flexDirection="column" marginTop={1}>
+                  {skills.length === 0 ? (
+                    <Text color={theme.subtle} dimColor>
+                      (none discovered in .book/skills/ or ~/.book/skills/)
+                    </Text>
+                  ) : (
+                    skills.map((s) => (
+                      <HelpRow
+                        key={s.name}
+                        label={s.name}
+                        description={s.description}
+                        theme={theme}
+                      />
+                    ))
+                  )}
+                </Box>
+              </Box>
+            )}
+            {showModelPicker && (
+              <ModelPicker
+                currentModel={liveConfig.model}
+                currentEffort={liveConfig.effort}
+                hasPriorOutput={messages.length > 0}
+                warnings={[
+                  process.env.BOOK_MODEL
+                    ? `BOOK_MODEL is set to "${process.env.BOOK_MODEL}" — it overrides settings.model on next startup.`
+                    : '',
+                  liveConfig.model.startsWith('claude-') &&
+                  config.model &&
+                  !config.model.startsWith('claude-')
+                    ? 'Switching to an Anthropic model may need a separate API key.'
+                    : '',
+                ].filter(Boolean)}
+                onPick={(model, saveDefault) => {
+                  setModel(model);
+                  if (!saveDefault) {
+                    addLocalMessage(`Switched to ${model} for this session only.`);
+                  } else {
+                    addLocalMessage(`Switched to ${model} (saved as default).`);
+                  }
+                  setShowModelPicker(false);
+                }}
+                onPickEffort={(level) => setEffort(level)}
+                onCancel={() => setShowModelPicker(false)}
+              />
             )}
             {showShortcuts && (
               <Box

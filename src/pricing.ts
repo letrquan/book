@@ -1,0 +1,98 @@
+/**
+ * Local per-model pricing table ($ per million tokens, input/output).
+ *
+ * Convention: Claude Code and Aider both estimate USD locally from a hardcoded
+ * table — no API, no live billing. Figures are illustrative and WILL go stale
+ * as prices change; the displayed USD is always labeled an estimate.
+ * ponytail: ceiling = user-overridable pricing via settings.json (PRICING or
+ * a pricing.<model> key); add when a model not in the table needs a custom rate.
+ */
+export const PRICING: Record<string, { in: number; out: number }> = {
+  // Anthropic
+  'claude-sonnet-5': { in: 3, out: 15 },
+  'claude-opus-4-8': { in: 15, out: 75 },
+  'claude-opus-4-7': { in: 15, out: 75 },
+  'claude-haiku-4-5-20251001': { in: 1, out: 5 },
+  'claude-fable-5': { in: 3, out: 15 },
+  // OpenAI
+  'gpt-4o': { in: 2.5, out: 10 },
+  'gpt-5': { in: 5, out: 15 },
+  // GLM / z-ai
+  'glm-4.6': { in: 0.6, out: 2.2 },
+  'z-ai/glm-5.2': { in: 0.6, out: 2.2 },
+};
+
+/**
+ * Build the /cost report string: token counts + a local USD estimate.
+ * Unknown models fall back to "(pricing unknown)" rather than guessing.
+ * Per-skill/subagent attribution breakdown is deferred (genuinely needs
+ * accounting plumbing); surfaced honestly instead of silently omitted.
+ */
+export function costReport(
+  model: string,
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null,
+): string {
+  if (!usage) {
+    return 'No token usage recorded for this session yet.\n\n(USD estimate available after the first model response.)';
+  }
+  const rate = PRICING[model];
+  const usd = rate
+    ? ((usage.promptTokens * rate.in + usage.completionTokens * rate.out) / 1e6).toFixed(4)
+    : null;
+  const modelLine = `Model: ${model}`;
+  const tokenLine = `Tokens — prompt: ${usage.promptTokens}  completion: ${usage.completionTokens}  total: ${usage.totalTokens}`;
+  const usdLine =
+    usd !== null
+      ? `Est. cost: $${usd}  (estimate computed locally; may differ from your actual bill)`
+      : `Est. cost: (pricing unknown for "${model}" — add it to PRICING in src/pricing.ts)`;
+  return [
+    modelLine,
+    tokenLine,
+    usdLine,
+    '',
+    '(Per-skill/subagent attribution breakdown — not yet implemented.)',
+  ].join('\n');
+}
+
+/**
+ * /usage (/stats) report — like costReport but oriented toward session activity:
+ * turns, last-turn duration, cumulative input/output split, and the running USD
+ * estimate. Alias /stats maps to the same report. Unknown models label clearly
+ * rather than guess a rate (same honesty rule as costReport).
+ */
+export function usageReport(
+  model: string,
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null,
+  session: { currentTurn: number; messageCount: number; turnDurationMs: number },
+): string {
+  const lines: string[] = ['Session usage', ''];
+  lines.push(`Model: ${model}`);
+  lines.push(`Turn: ${session.currentTurn}  •  Messages: ${session.messageCount}`);
+  if (session.turnDurationMs > 0) {
+    lines.push(`Last turn duration: ${(session.turnDurationMs / 1000).toFixed(1)}s`);
+  }
+  lines.push('');
+  if (!usage) {
+    lines.push('Tokens: (no model response yet this session)');
+    lines.push('');
+    lines.push('Cost estimate appears after the first response.');
+    return lines.join('\n');
+  }
+  lines.push(
+    `Tokens: prompt ${usage.promptTokens.toLocaleString()}  •  completion ${usage.completionTokens.toLocaleString()}  •  total ${usage.totalTokens.toLocaleString()}`,
+  );
+  const rate = PRICING[model];
+  if (rate) {
+    const usd = ((usage.promptTokens * rate.in + usage.completionTokens * rate.out) / 1e6).toFixed(
+      4,
+    );
+    lines.push(`Est. cost: $${usd}  (local estimate — $${rate.in}/M in, $${rate.out}/M out)`);
+  } else {
+    lines.push(`Est. cost: (pricing unknown for "${model}" — add it to PRICING in src/pricing.ts)`);
+  }
+  lines.push('');
+  lines.push(
+    '(Per-model breakdown across a multi-model session is not yet wired — tracks the active model only.)',
+  );
+  return lines.join('\n');
+}

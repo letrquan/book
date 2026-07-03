@@ -86,46 +86,48 @@ Without persistence, every session is amnesia. Memory makes the agent compound a
 - `Workflow` — multi-agent orchestration scripts (pipeline/parallel)
 - `Monitor` — run command in background, react to each output line
 
-### 1f. Built-in slash commands that actually work [many are STUB]
+### 1f. Built-in slash commands that actually work [PARTIAL ✅ 2026-07-03]
 
-Current Book built-in commands that just delegate to the agent: `/model`, `/config`, `/memory`, `/permissions`, `/cost`, `/skills`, `/init`, `/diff`, `/export`. These should do the real thing.
+The STUB commands now do the real thing locally (no longer delegate to the agent for local-side work). Several previously-missing commands were added; the rest are blocked on subsystems from later phases (1b/1d/1h/1i, Phase 2) and are annotated with their blocker.
 
 | Command | Book status | What CC actually does |
 |---------|-------------|----------------------|
-| `/init` | STUB (sends to agent) | Generates CLAUDE.md from codebase analysis |
-| `/model` | STUB (sends to agent) | Opens model picker UI with effort level |
-| `/config` | STUB (sends to agent) | Opens settings interface, supports key=value |
-| `/permissions` | STUB (shows text) | Interactive dialog: add/remove rules, view scopes |
-| `/cost` | STUB (sends to agent) | Shows real session cost with per-model breakdown |
-| `/doctor` | basic CLI command | Full diagnostic with fix-it button |
-| `/memory` | STUB (sends to agent) | Shows loaded files, toggle auto-save, browse |
+| `/init` | ✅ real (tool-restricted prompt → agent analyzes + writes CLAUDE.md) | Generates CLAUDE.md from codebase analysis |
+| `/model` | ✅ real (arrow-key picker + effort axis; `/model <name>` switches) | Opens model picker UI with effort level |
+| `/config` | ✅ real (no-arg dump, `key=value` persist to settings.local.json, `--help`) | Opens settings interface, supports key=value |
+| `/permissions` | ✅ real (toggle view of mode + allow/ask/deny rules) | Interactive dialog: add/remove rules, view scopes |
+| `/cost` | ✅ real (token counts + local USD estimate from PRICING table) | Shows real session cost with per-model breakdown |
+| `/memory` | ✅ real (reads `~/.book/projects/<slug>/memory/` + MEMORY.md index) | Shows loaded files, toggle auto-save, browse |
+| `/diff` | ✅ real (`git diff` output locally) | Shows git diff |
+| `/export` | ✅ real (writes messages to file) | Exports conversation to file |
+| `/skills` | ✅ real (toggle listing of discovered skills) | List available skills |
 | `/compact` | exists | OK |
 | `/clear` | exists | OK |
 | `/help` | exists | OK |
 | `/status` | exists | OK |
 | `/theme` | exists | OK |
-| `/diff` | STUB (sends to agent) | Shows git diff |
-| `/export` | STUB (sends to agent) | Exports conversation to file |
+| `/doctor` | basic CLI command | Full diagnostic with fix-it button |
+| `/usage` | ✅ real (NEW) — session cost & token usage (alias `/stats`) | — |
+| `/context` | ✅ real (NEW) — message/tool-call counts + char/4 token estimate, ambient context breakdown | — |
+| `/review` | ✅ real (NEW) — tool-restricted prompt drives an agent review of the current diff | — |
+| `/security-review` | ✅ real (NEW) — OWASP-shaped agent audit of the current diff | — |
+| `/release-notes` | ✅ real (NEW) — installed version + CHANGELOG.md tail | — |
+| `/feedback` | ✅ real (NEW) — writes a non-secret session snapshot to `.book/feedback/` | — |
 
-**Missing built-in commands** [MISSING]:
-- `/usage` — session cost, plan limits, activity stats (alias: `/stats`)
-- `/context` — show what's filling the context window
-- `/vim` — toggle vim editing mode
-- `/keybindings` — create/edit keyboard shortcuts config
-- `/terminal-setup` — configure Shift+Enter for terminal
-- `/agents` — manage subagents (create, edit, list)
-- `/subagents` — alias for subagent management
-- `/workflows` — list/manage workflows
-- `/plugin` — manage plugins
-- `/mcp` — manage MCP servers interactively
-- `/add-dir` — add additional working directories
-- `/ide` — connect to IDE extension
-- `/review` — code review current changes
-- `/security-review` — security audit
-- `/feedback` — report bug with session context
-- `/release-notes` — show version changelog
-- `/rewind` — roll back to checkpoint
-- `/resume` — resume a previous session (interactive picker)
+**Still-missing built-in commands** (blocked on later phases, not implemented here):
+- `/vim` — toggle vim editing mode **(blocked on 1h: vim input mode)**
+- `/keybindings` — create/edit keyboard shortcuts config **(blocked on 1i: keybindings)**
+- `/terminal-setup` — configure Shift+Enter for terminal **(blocked on 1h/1i)**
+- `/agents` / `/subagents` — manage subagents (create, edit, list) **(needs richer subagent infra)**
+- `/workflows` — list/manage workflows **(blocked on 1e: Workflow tool)**
+- `/plugin` — manage plugins **(Phase 3: plugin system)**
+- `/mcp` — manage MCP servers interactively **(needs interactive MCP manager)**
+- `/add-dir` — add additional working directories **(blocked on 1g: `--add-dir` flag)**
+- `/ide` — connect to IDE extension **(Phase 3)**
+- `/rewind` — roll back to checkpoint **(needs checkpoint/restore infra)**
+- `/resume` — resume a previous session (interactive picker) **(headless `--resume` exists; interactive TUI picker + hot-swap of history is new work)**
+
+> `/memory` is genuinely real (reads the memory store) but reports "no memories yet" until 1d's auto-write path lands — surfaced honestly in the output. `/usage` tracks the active model only; a per-model breakdown across a multi-model session is deferred (needs accounting plumbing in Phase 2/3).
 
 ### 1g. CLI flags [MISSING]
 
