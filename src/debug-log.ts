@@ -1,9 +1,10 @@
 /**
  * Lightweight debug logger controlled by environment variables.
  *
- * Writes timestamped messages to stderr so they don't interfere with
- * Ink's TUI rendering on stdout. Most functions are no-ops when the
- * relevant env var is not set to '1'.
+ * Writes timestamped messages to a log file when stderr is an interactive TTY,
+ * because Ink renders to the same terminal and raw stderr writes corrupt the UI.
+ * In non-TTY contexts (redirected stderr, CI), logs continue to use stderr.
+ * Most functions are no-ops when the relevant env var is not set to '1'.
  *
  * Gated by separate flags so output volume stays controllable:
  *   BOOK_DEBUG=1          — provider + agent + TUI lifecycle events
@@ -11,6 +12,8 @@
  *                           component mount/unmount, layout state changes
  *   BOOK_DEBUG_RENDER=1   — per-render details (noisy; can flood during streaming)
  *   BOOK_DEBUG_FLOW=1     — enter/exit timing around expensive flows
+ *   BOOK_DEBUG_FILE=path  — write logs to a specific file
+ *   BOOK_DEBUG_STDERR=1   — force stderr even when attached to a TTY
  *
  * `BOOK_DEBUG=1` covers the union of "core + UI" (lifecycle). UI hooks read
  * `isUiDebugEnabled()`, which returns true if either BOOK_DEBUG=1 or
@@ -22,6 +25,9 @@
  *   log.debug('Sending request', { model: 'gpt-4' });
  */
 
+import { appendFileSync, mkdirSync } from 'fs';
+import { dirname, join } from 'path';
+
 // Core flag — provider, agent loop, and TUI lifecycle.
 const DEBUG_ENABLED = process.env.BOOK_DEBUG === '1';
 // UI flag — input, modals, permissions, mount/unmount, layout changes.
@@ -31,6 +37,34 @@ const UI_DEBUG_ENABLED = process.env.BOOK_DEBUG_UI === '1' || DEBUG_ENABLED;
 const RENDER_DEBUG_ENABLED = process.env.BOOK_DEBUG_RENDER === '1';
 // Flow/tracing flag — enter/exit pairs with timing — opt-in only.
 const FLOW_DEBUG_ENABLED = process.env.BOOK_DEBUG_FLOW === '1';
+
+let debugLogPath: string | undefined;
+
+function defaultDebugLogPath(): string {
+  return join(process.env.BOOK_WORKSPACE || process.cwd(), '.book', 'debug.log');
+}
+
+export function getDebugLogPath(): string | undefined {
+  if (process.env.BOOK_DEBUG_STDERR === '1') return undefined;
+  if (process.env.BOOK_DEBUG_FILE) return process.env.BOOK_DEBUG_FILE;
+  if (process.stderr.isTTY) return defaultDebugLogPath();
+  return undefined;
+}
+
+function writeDebugLine(line: string): void {
+  const target = debugLogPath ?? (debugLogPath = getDebugLogPath());
+  if (!target) {
+    process.stderr.write(line);
+    return;
+  }
+
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    appendFileSync(target, line, 'utf8');
+  } catch {
+    process.stderr.write(line);
+  }
+}
 
 // Per-namespace monotonic event counter, used when a logger is created with
 // `createDebugLoggerWithCounter`. Useful for tracing event ordering across
@@ -141,17 +175,17 @@ function makePrefix(namespace: string, level: string): string {
 function buildLogger(namespace: string): DebugLogger {
   return {
     debug: (...args: unknown[]) => {
-      process.stderr.write(`${makePrefix(namespace, 'DEBUG')} ${formatMessage(...args)}\n`);
+      writeDebugLine(`${makePrefix(namespace, 'DEBUG')} ${formatMessage(...args)}\n`);
     },
     info: (...args: unknown[]) => {
-      process.stderr.write(`${makePrefix(namespace, 'INFO')} ${formatMessage(...args)}\n`);
+      writeDebugLine(`${makePrefix(namespace, 'INFO')} ${formatMessage(...args)}\n`);
     },
     warn: (...args: unknown[]) => {
-      process.stderr.write(`${makePrefix(namespace, 'WARN')} ${formatMessage(...args)}\n`);
+      writeDebugLine(`${makePrefix(namespace, 'WARN')} ${formatMessage(...args)}\n`);
     },
     event: (event, meta) => {
       const suffix = meta && Object.keys(meta).length > 0 ? ` ${formatMeta(meta)}` : '';
-      process.stderr.write(`${makePrefix(namespace, 'DEBUG')} ${event}${suffix}\n`);
+      writeDebugLine(`${makePrefix(namespace, 'DEBUG')} ${event}${suffix}\n`);
     },
   };
 }
@@ -178,7 +212,7 @@ export function createDebugLoggerWithCounter(namespace: string): DebugLogger {
   const wrap = (level: 'debug' | 'info' | 'warn') =>
     (...args: unknown[]) => {
       const id = nextEventId(namespace);
-      process.stderr.write(`[${timestamp()}] [${namespace}] [${level.toUpperCase()}#${id}] ${formatMessage(...args)}\n`);
+      writeDebugLine(`[${timestamp()}] [${namespace}] [${level.toUpperCase()}#${id}] ${formatMessage(...args)}\n`);
     };
   return {
     debug: wrap('debug'),
@@ -187,7 +221,7 @@ export function createDebugLoggerWithCounter(namespace: string): DebugLogger {
     event: (event, meta) => {
       const id = nextEventId(namespace);
       const suffix = meta && Object.keys(meta).length > 0 ? ` ${formatMeta(meta)}` : '';
-      process.stderr.write(`[${timestamp()}] [${namespace}] [DEBUG#${id}] ${event}${suffix}\n`);
+      writeDebugLine(`[${timestamp()}] [${namespace}] [DEBUG#${id}] ${event}${suffix}\n`);
     },
   };
 }
