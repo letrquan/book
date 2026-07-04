@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { persistSettingLocal, persistPermissionRuleLocal, readSettingsLocal } from './persist.js';
@@ -43,7 +43,10 @@ describe('persistSettingLocal', () => {
   });
 
   it('returns {ok:false, error} on a bad workspace rather than throwing', () => {
-    const r = persistSettingLocal('/dev/null', 'model', 'x');
+    const badWorkspace = join(dir, 'not-a-directory');
+    writeFileSync(badWorkspace, 'not a directory');
+
+    const r = persistSettingLocal(badWorkspace, 'model', 'x');
     expect(r.ok).toBe(false);
     expect(typeof r.error).toBe('string');
   });
