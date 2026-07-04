@@ -46,6 +46,10 @@ import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
 import { persistSettingLocal } from './persist.js';
+import { createUiDebugLogger } from '../debug-log.js';
+import { useDebugMount, useDebugValueChange } from './debug.js';
+
+const uiLog = createUiDebugLogger('tui:app');
 
 /** Settable top-level settings keys (for /config --help). Mirrors cli/config-cmd.ts allowlist. */
 const SETTABLE_KEYS = [
@@ -149,6 +153,24 @@ export function App({ config }: AppProps) {
   const reducedMotion = Boolean(config.accessibility?.reducedMotion);
   const screenReader = Boolean(config.accessibility?.screenReader);
 
+  useDebugMount(uiLog, {
+    workspace: config.workspace,
+    model: config.model,
+    provider: config.provider,
+    commandsLen: commands.length,
+    skillsLen: skills.length,
+  });
+  useDebugValueChange(uiLog, 'layout:width', termWidth);
+  useDebugValueChange(uiLog, 'layout:height', termHeight);
+  useDebugValueChange(uiLog, 'layout:compactStatus', compactStatus, (v) => String(v));
+  useDebugValueChange(uiLog, 'showTasks', showTasks, (v) => String(v));
+  useDebugValueChange(uiLog, 'showHelp', showHelp, (v) => String(v));
+  useDebugValueChange(uiLog, 'showShortcuts', showShortcuts, (v) => String(v));
+  useDebugValueChange(uiLog, 'showStatus', showStatus, (v) => String(v));
+  useDebugValueChange(uiLog, 'showPermissions', showPermissions, (v) => String(v));
+  useDebugValueChange(uiLog, 'showSkills', showSkills, (v) => String(v));
+  useDebugValueChange(uiLog, 'showModelPicker', showModelPicker, (v) => String(v));
+
   useInput((input, key) => {
     // Escape cancels a pending permission (handled by PermissionButtons),
     // or aborts an in-flight stream. Do NOT double-handle Esc when
@@ -156,28 +178,43 @@ export function App({ config }: AppProps) {
     if (key.escape) {
       if (pendingPermission) {
         // PermissionButtons handles Esc internally. Do nothing here.
+        uiLog.event('input:Escape', { action: 'noop-permission-active' });
         return;
       }
       if (isThinking) {
+        uiLog.event('input:Escape', { action: 'cancel-stream' });
         cancel();
         return;
       }
+      uiLog.event('input:Escape', { action: 'noop-idle' });
     }
     // Ctrl+T — toggle task list
     if (key.ctrl && input === 't') {
+      uiLog.event('input:Ctrl+T', { action: 'toggle-tasks' });
       setShowTasks((s) => !s);
       return;
     }
     // Alt+M — cycle mode
     if (key.meta && input === 'm') {
+      uiLog.event('input:Alt+M', { action: 'cycle-mode' });
       cycleMode();
       return;
     }
     // Ctrl+L — redraw (simulated by Ink re-render)
     if (key.ctrl && input === 'l') {
+      uiLog.event('input:Ctrl+L', { action: 'redraw' });
       return;
     }
   });
+
+  // Log slash-command dispatches at a coarse level (command name + arg).
+  // The detailed branching in handleSubmit stays unchanged; this only emits
+  // one event per submit to make the dispatch traceable.
+  useEffect(() => {
+    if (isThinking) {
+      uiLog.event('state:thinking', { messages: messages.length, currentTurn });
+    }
+  }, [isThinking, messages.length, currentTurn]);
 
   // Auto-expand the latest tool call while it's running; collapse when done.
   useEffect(() => {
@@ -194,6 +231,18 @@ export function App({ config }: AppProps) {
 
   const handleSubmit = useCallback(
     (value: string) => {
+      // Coarse slash-command dispatch trace (one event per submit).
+      if (value.startsWith('/')) {
+        const spaceIdx = value.indexOf(' ');
+        const cmdName = spaceIdx === -1 ? value.slice(1) : value.slice(1, spaceIdx);
+        uiLog.event('slash:dispatch', {
+          command: cmdName,
+          hasArg: spaceIdx !== -1,
+          disabled: isThinking,
+        });
+      } else {
+        uiLog.event('submit:text', { len: value.length, disabled: isThinking });
+      }
       // Slash commands: built-in first, then custom.
       if (value.startsWith('/clear')) {
         clear();
@@ -489,6 +538,7 @@ export function App({ config }: AppProps) {
       error,
       skills,
       stdout,
+      isThinking,
     ],
   );
 

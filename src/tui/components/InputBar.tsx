@@ -14,6 +14,10 @@ import {
   getCommandsForQuery,
   type CommandItem,
 } from '../../commands/filter.js';
+import { createUiDebugLogger } from '../../debug-log.js';
+import { useDebugMount } from '../debug.js';
+
+const uiLog = createUiDebugLogger('tui:inputbar');
 
 const MODE_BORDER_TOKENS: Record<PermissionMode, 'brand' | 'success' | 'planMode' | 'autoAccept' | 'error'> = {
   default: 'brand',
@@ -112,6 +116,7 @@ export function InputBar({
   screenReader = false,
 }: InputBarProps) {
   const theme = useTheme();
+  useDebugMount(uiLog, { compact, screenReader, commandsLen: commands.length });
   const [value, setValue] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -144,6 +149,7 @@ export function InputBar({
 
     if (key.shift && key.tab) {
       onCycleMode();
+      uiLog.event('input:Shift+Tab', { action: 'cycle-mode' });
       return;
     }
 
@@ -153,6 +159,7 @@ export function InputBar({
       if (key.escape) {
         setMenuVisible(false);
         setMenuSelected(0);
+        uiLog.event('input:Escape', { action: 'dismiss-menu' });
         return;
       }
       // Tab: auto-fill selected command
@@ -163,6 +170,7 @@ export function InputBar({
           setValue('/' + cmd.name + ' ');
           setMenuVisible(false);
           setMenuSelected(0);
+          uiLog.event('input:Tab', { action: 'autofill-command', command: cmd.name });
         }
         return;
       }
@@ -172,6 +180,7 @@ export function InputBar({
           const next = prev + 1;
           return next >= filteredCmds.length ? 0 : next;
         });
+        uiLog.event('input:Down', { action: 'menu-next-item' });
         return;
       }
       // Up arrow: previous item
@@ -180,6 +189,7 @@ export function InputBar({
           const next = prev - 1;
           return next < 0 ? Math.max(0, filteredCmds.length - 1) : next;
         });
+        uiLog.event('input:Up', { action: 'menu-prev-item' });
         return;
       }
       // Enter is resolved in handleSubmit, where TextInput passes the current value.
@@ -193,6 +203,7 @@ export function InputBar({
     // Tab to accept suggestion when input is empty
     if (key.tab && !value) {
       setValue(normalizeInput(suggestion));
+      uiLog.event('input:Tab', { action: 'accept-suggestion' });
       return;
     }
     // Forward Ctrl-based shortcuts to the parent App.
@@ -204,6 +215,7 @@ export function InputBar({
       const newIdx = historyIndex + 1;
       setHistoryIndex(newIdx);
       setValue(history[newIdx]);
+      uiLog.event('input:Up', { action: 'history-back', newIdx });
       return;
     }
     // Down arrow — navigate history forward
@@ -211,6 +223,7 @@ export function InputBar({
       const newIdx = historyIndex - 1;
       setHistoryIndex(newIdx);
       setValue(newIdx >= 0 ? history[newIdx] : '');
+      uiLog.event('input:Down', { action: 'history-forward', newIdx });
       return;
     }
   });
@@ -222,13 +235,22 @@ export function InputBar({
     // Detect / at start for command menu.
     // Show menu when: starts with /, no space (still typing command name).
     if (clean.startsWith('/') && !clean.includes(' ')) {
+      if (!menuVisibleRef.current) {
+        uiLog.event('menu:visible', { filter: clean.slice(1) });
+      }
       setMenuVisible(true);
       setMenuFilter(clean.slice(1));
       setMenuSelected(0);
     } else if (clean.startsWith('/') && clean.includes(' ')) {
       // User typed a space after command name — dismiss menu, they're typing args.
+      if (menuVisibleRef.current) {
+        uiLog.event('menu:hidden', { reason: 'space-after-command' });
+      }
       setMenuVisible(false);
     } else {
+      if (menuVisibleRef.current) {
+        uiLog.event('menu:hidden', { reason: 'leading-slash-removed' });
+      }
       setMenuVisible(false);
     }
   }, []);
@@ -240,11 +262,23 @@ export function InputBar({
         setMenuVisible(false);
         setMenuSelected(0);
         setValue('');
-        if (!commandValue) return;
+        if (!commandValue) {
+          uiLog.event('submit:menu', { result: 'no-command-value' });
+          return;
+        }
         if (disabled) {
+          uiLog.event('submit:menu', {
+            result: 'interrupt',
+            command: commandValue.slice(1),
+            disabled,
+          });
           setSubmitFlashKey((key) => key + 1);
           onInterrupt?.();
         } else {
+          uiLog.event('submit:menu', {
+            result: 'command',
+            command: commandValue.slice(1),
+          });
           setHistory((h) => [commandValue, ...h].slice(0, 100));
           setHistoryIndex(-1);
           recordCommandUse(commandValue.slice(1));
@@ -259,15 +293,20 @@ export function InputBar({
       setMenuSelected(0);
 
       const normalized = normalizeInput(val);
-      if (!normalized.trim()) return;
+      if (!normalized.trim()) {
+        uiLog.event('submit:text', { result: 'empty' });
+        return;
+      }
       // While the agent is running, Enter interrupts the stream instead of
       // submitting — input stays live and focusable so the user can act.
       if (disabled) {
+        uiLog.event('submit:text', { result: 'interrupt', len: normalized.length });
         setSubmitFlashKey((key) => key + 1);
         onInterrupt?.();
         setValue('');
         return;
       }
+      uiLog.event('submit:text', { result: 'submitted', len: normalized.length });
       setHistory((h) => [normalized, ...h].slice(0, 100));
       setHistoryIndex(-1);
 

@@ -4,6 +4,11 @@ import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../type
 import { AgentMessage } from './AgentMessage.js';
 import { UserMessage } from './UserMessage.js';
 import { WelcomeScreen } from './WelcomeScreen.js';
+import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
+import { useDebugMount } from '../debug.js';
+
+const renderLog = createRenderDebugLogger('tui:chatpanel');
+const uiLog = createUiDebugLogger('tui:chatpanel');
 
 interface PendingPermission {
   toolCall: ToolCall;
@@ -103,8 +108,20 @@ export function ChatPanel({
   retryMax = 0,
   retryCountdownMs = 0,
 }: ChatPanelProps) {
+  useDebugMount(uiLog, { model, mode, commandCount, skillCount });
+
   // Merge tool-call-only assistant messages into their preceding message.
-  const displayMessages = useMemo(() => mergeAssistantMessages(messages), [messages]);
+  const displayMessages = useMemo(() => {
+    const merged = mergeAssistantMessages(messages);
+    if (messages.length !== merged.length) {
+      renderLog.event('merge', {
+        before: messages.length,
+        after: merged.length,
+        merged: messages.length - merged.length,
+      });
+    }
+    return merged;
+  }, [messages]);
 
   // Split messages: completed ones go into <Static> so they persist in
   // terminal scrollback; the streaming message stays in the dynamic area.
@@ -135,6 +152,13 @@ export function ChatPanel({
         : undefined,
     [displayMessages, streamingMessageId],
   );
+
+  renderLog.event('render', {
+    total: displayMessages.length,
+    completed: completedMessages.length,
+    active: Boolean(activeMessage),
+    isEmpty,
+  });
 
   return (
     <Box flexDirection="column">
