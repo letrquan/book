@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseDiffLines } from './Diff.js';
+import { isUnifiedDiffLike, parseDiffLines } from './Diff.js';
 
 describe('parseDiffLines', () => {
   it('parses a unified diff into categorized segments', () => {
@@ -30,9 +30,6 @@ describe('parseDiffLines', () => {
     ].join('\n');
 
     const segments = parseDiffLines(output);
-    // The first add/remove lines should be simple.
-    const kinds = segments.map((s) => ({ kind: s.kind, text: s.text }));
-    // We should see diffRemoved, diffAdded with word-level splits.
     const removed = segments.filter((s) => s.kind === 'diffRemoved');
     const added = segments.filter((s) => s.kind === 'diffAdded');
     const addedWords = segments.filter((s) => s.kind === 'diffAddedWord');
@@ -61,10 +58,18 @@ describe('parseDiffLines', () => {
   });
 
   it('handles lines starting with special chars but not diff markers', () => {
-    const output = ['+genuine addition', '-genuine removal', ' context',].join('\n');
+    const output = ['+genuine addition', '-genuine removal', ' context'].join('\n');
     const segments = parseDiffLines(output);
     expect(segments[0].kind).toBe('diffAdded');
     expect(segments[1].kind).toBe('diffRemoved');
     expect(segments[2].kind).toBe('diffCtx');
+  });
+});
+
+describe('isUnifiedDiffLike', () => {
+  it('requires a hunk header and changed line', () => {
+    expect(isUnifiedDiffLike('@@ -1 +1 @@\n-old\n+new')).toBe(true);
+    expect(isUnifiedDiffLike('+not a diff\n-just grep output')).toBe(false);
+    expect(isUnifiedDiffLike('@@ -1 +1 @@\n unchanged')).toBe(false);
   });
 });

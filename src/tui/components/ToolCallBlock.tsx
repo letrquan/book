@@ -1,8 +1,10 @@
 import { Text, Box } from 'ink';
+import { useMemo } from 'react';
 import { Spinner } from './Spinner.js';
 import { useTheme } from '../theme.js';
-import { DiffBlock } from './Diff.js';
+import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { getPrimaryArg } from '../../tools/primary-arg.js';
+import { canonicalToolName } from '../../tools/aliases.js';
 import type { ToolResult } from '../../types.js';
 
 interface ToolCallBlockProps {
@@ -30,15 +32,32 @@ function getResultLabel(result?: ToolResult): { label: string; color: string } {
 }
 
 function isDiffOutput(toolName: string, result: ToolResult | undefined): boolean {
-  if (!result?.success) return false;
-  const diffTools = new Set(['Edit', 'Write', 'MultiEdit', 'edit_file', 'write_file', 'multi_edit']);
-  if (!diffTools.has(toolName)) return false;
-  const output = result.output;
-  if (!output) return false;
-  const hasHunkHeader = /^@@\s+-\d+.*@@/m.test(output);
-  const plusLines = output.split('\n').filter((l) => l.startsWith('+')).length;
-  const minusLines = output.split('\n').filter((l) => l.startsWith('-')).length;
-  return hasHunkHeader || plusLines > 0 || minusLines > 0;
+  if (!result?.success || !result.output) return false;
+  const diffTools = new Set(['Edit', 'Write', 'MultiEdit']);
+  return diffTools.has(canonicalToolName(toolName)) && isUnifiedDiffLike(result.output);
+}
+
+function toolLabel(name: string): string {
+  const labels: Record<string, string> = {
+    Read: 'Read file',
+    Write: 'Write file',
+    Edit: 'Edit file',
+    MultiEdit: 'Edit file',
+    Bash: 'Run command',
+    Glob: 'Find files',
+    Grep: 'Search files',
+    WebFetch: 'Fetch URL',
+    WebSearch: 'Search web',
+    GitStatus: 'Git status',
+    GitDiff: 'Git diff',
+    GitLog: 'Git log',
+    GitCommit: 'Git commit',
+    GitBranch: 'Git branch',
+    TodoWrite: 'Update todos',
+    Task: 'Run subagent',
+    InvokeSkill: 'Use skill',
+  };
+  return labels[name] ?? name.replace(/^mcp__([^_]+)__/, '$1:');
 }
 
 /**
@@ -53,6 +72,7 @@ function isDiffOutput(toolName: string, result: ToolResult | undefined): boolean
 export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPending, agentColor, reducedMotion = false, screenReader = false }: ToolCallBlockProps) {
   const theme = useTheme();
   const isRunning = !result && !isPending;
+  const canonical = canonicalToolName(name);
   const primaryArg = getPrimaryArg(args);
   const { label, color } = getResultLabel(result);
   const toolColor = agentColor || theme.brand;
@@ -62,7 +82,7 @@ export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPend
     return (
       <Box flexDirection="column" marginLeft={2}>
         <Text>
-          {isRunning ? '[Running] ' : `${label} `}{name}{primaryArg ? ` ${primaryArg.slice(0, 80)}` : ''}
+          {isRunning ? '[Running] ' : `${label} `}{toolLabel(canonical)}{primaryArg ? ` ${primaryArg.slice(0, 80)}` : ''}
         </Text>
         {isPending ? (
           <Text>[needs approval]</Text>
@@ -97,7 +117,7 @@ export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPend
         ) : (
           <Text color={color} bold>{label} </Text>
         )}
-        <Text color={toolColor} bold>{name}</Text>
+        <Text color={toolColor} bold>{toolLabel(canonical)}</Text>
         {primaryArg ? (
           <Text color={theme.subtle}> {primaryArg.slice(0, 80)}</Text>
         ) : null}
@@ -113,12 +133,6 @@ export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPend
           </Text>
         ) : null}
       </Box>
-      {/* Pending permission badge */}
-      {isPending ? (
-        <Box marginLeft={4}>
-          <Text color={theme.warning}>[needs approval]</Text>
-        </Box>
-      ) : null}
       {/* Expanded: show full args */}
       {isExpanded && !isRunning ? (
         <Box marginLeft={4} flexDirection="column">
@@ -137,19 +151,7 @@ export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPend
       {isExpanded && result && isDiffOutput(name, result) ? (
         <DiffBlock output={result.output} />
       ) : isExpanded && result?.output ? (
-        <Box marginLeft={4} flexDirection="column">
-          {result.output.split('\n').slice(0, 20).map((line, i) => (
-            <Box key={i}>
-              <Text color={theme.subtle} dimColor>{'│'} </Text>
-              <Text color={theme.text}>{line.slice(0, 120)}</Text>
-            </Box>
-          ))}
-          {result.output.split('\n').length > 20 ? (
-            <Box marginLeft={2}>
-              <Text color={theme.subtle} dimColor>... ({result.output.split('\n').length - 20} more lines)</Text>
-            </Box>
-          ) : null}
-        </Box>
+        <OutputBlock output={result.output} theme={theme} />
       ) : null}
       {/* Expanded: show error */}
       {isExpanded && result?.error && !result.error.startsWith('SKIPPED') ? (
@@ -161,4 +163,29 @@ export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPend
   );
 }
 
-export { isDiffOutput, getResultLabel };
+function OutputBlock({ output, theme }: { output: string; theme: ReturnType<typeof useTheme> }) {
+  const MAX_LINES = 200;
+  const lines = useMemo(() => output.split('\n'), [output]);
+  const displayLines = lines.slice(0, MAX_LINES);
+  const truncated = lines.length > MAX_LINES;
+
+  return (
+    <Box marginLeft={4} flexDirection="column">
+      {displayLines.map((line, i) => (
+        <Box key={i}>
+          <Text color={theme.subtle} dimColor>{'│'} </Text>
+          <Text color={theme.text}>{line.slice(0, 120)}</Text>
+        </Box>
+      ))}
+      {truncated ? (
+        <Box marginLeft={2}>
+          <Text color={theme.subtle} dimColor>
+            ... ({lines.length - MAX_LINES} more lines, truncated)
+          </Text>
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+export { isDiffOutput, getResultLabel, toolLabel };

@@ -3,6 +3,7 @@ import TextInput from 'ink-text-input';
 import { useState, useCallback, useRef, useMemo } from 'react';
 import { useInput } from 'ink';
 import { useTheme } from '../theme.js';
+import { CommandMenu } from './CommandMenu.js';
 import type { PermissionMode, SlashCommand } from '../../types.js';
 import { expandAtMentions, expandShellCommands } from '../input-expansion.js';
 import { recordCommandUse } from '../../commands/recent.js';
@@ -11,7 +12,6 @@ import {
   getCommandsForQuery,
   type CommandItem,
 } from '../../commands/filter.js';
-import { CommandMenu } from './CommandMenu.js';
 
 const MODE_BORDER_TOKENS: Record<PermissionMode, 'brand' | 'success' | 'planMode' | 'autoAccept' | 'error'> = {
   default: 'brand',
@@ -270,15 +270,16 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
     return '─'.repeat(Math.max(5, width - 2));
   }, [stdout?.columns]);
 
+  const selIdx = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
+
   return (
     <Box flexDirection="column">
       <Text color={theme.subtle}>{divider}</Text>
 
-      {/* Command autocomplete menu — rendered via CommandMenu component */}
       <CommandMenu
         items={filteredCmds}
         filterText={menuFilter}
-        selectedIndex={menuSelected}
+        selectedIndex={selIdx}
         visible={menuVisible}
       />
 

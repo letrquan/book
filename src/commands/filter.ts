@@ -162,7 +162,7 @@ export function getCommandsForQuery(
     }
 
     const isBuiltin = builtinNames.has(r.item.name);
-    const cat: CommandItem['category'] = isBuiltin
+    const category: CommandItem['category'] = isBuiltin
       ? 'builtin'
       : customSource.get(r.item.name) === 'project'
         ? 'project'
@@ -172,7 +172,7 @@ export function getCommandsForQuery(
       name: r.item.name,
       hint: r.item.hint,
       desc: r.item.desc,
-      category: cat,
+      category,
       priority,
     };
   });
