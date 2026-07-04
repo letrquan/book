@@ -1,23 +1,23 @@
-import { Box, Text, useStdout } from 'ink';
+import { Box, Text } from 'ink';
 import React from 'react';
 import { useTheme } from '../theme.js';
 
 interface UserMessageProps {
   content: string;
+  terminalWidth?: number;
 }
 
 /**
  * User message block — rendered with a subtle background that spans
- * the full terminal width to visually distinguish user messages.
+ * the available terminal width to visually distinguish user messages.
  */
-function UserMessageInner({ content }: UserMessageProps) {
+function UserMessageInner({ content, terminalWidth = 80 }: UserMessageProps) {
   const theme = useTheme();
-  const { stdout } = useStdout();
-  const termWidth = stdout?.columns ?? 80;
+  const width = Math.max(20, Math.floor(terminalWidth));
 
   return (
-    <Box width={termWidth} paddingX={2} paddingY={1} backgroundColor={theme.userBg}>
-      <Box flexGrow={1}>
+    <Box width={width} paddingX={2} paddingY={1} backgroundColor={theme.userBg}>
+      <Box width={Math.max(1, width - 4)}>
         <Text color={theme.text} wrap="wrap">
           {content}
         </Text>

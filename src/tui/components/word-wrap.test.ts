@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { wordWrap, displayWidth } from './word-wrap.js';
+import { wordWrap, displayWidth, fitsDisplayWidth, makeDivider, truncateDisplay } from './word-wrap.js';
 
 describe('displayWidth', () => {
   it('returns 0 for empty string', () => {
@@ -42,6 +42,33 @@ describe('displayWidth', () => {
   it('handles mixed CJK, emoji, and ASCII', () => {
     // "你好" (4) + " " (1) + "😀" (2) + " " (1) + "world" (5) = 13
     expect(displayWidth('你好 😀 world')).toBe(13);
+  });
+});
+
+describe('responsive width helpers', () => {
+  it('makes dividers with padding and tiny-width clamp', () => {
+    expect(makeDivider(80, 2)).toHaveLength(78);
+    expect(makeDivider(3, 2)).toHaveLength(5);
+    expect(makeDivider(10, 0, '═')).toBe('══════════');
+  });
+
+  it('detects display-width fits', () => {
+    expect(fitsDisplayWidth('hello', 5)).toBe(true);
+    expect(fitsDisplayWidth('hello', 4)).toBe(false);
+    expect(fitsDisplayWidth('你好', 4)).toBe(true);
+    expect(fitsDisplayWidth('你好', 3)).toBe(false);
+  });
+
+  it('truncates by display width with wide characters', () => {
+    expect(truncateDisplay('hello world', 8)).toBe('hello w…');
+    expect(displayWidth(truncateDisplay('hello 你好 world', 10))).toBeLessThanOrEqual(10);
+    expect(truncateDisplay('你好世界', 5)).toBe('你好…');
+  });
+
+  it('handles tiny truncation budgets', () => {
+    expect(truncateDisplay('hello', 0)).toBe('');
+    expect(truncateDisplay('hello', 1)).toBe('…');
+    expect(truncateDisplay('hello', 2)).toBe('h…');
   });
 });
 

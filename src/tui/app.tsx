@@ -139,7 +139,15 @@ export function App({ config }: AppProps) {
   const skills = useMemo(() => discoverSkills(config.workspace), [config.workspace]);
 
   const { stdout } = useStdout();
-  const termWidth = stdout?.columns ?? 80;
+  const termWidth = Math.max(20, stdout?.columns ?? 80);
+  const termHeight = Math.max(8, stdout?.rows ?? 24);
+  const isNarrow = termWidth < 64;
+  const isTiny = termWidth < 42 || termHeight < 12;
+  const footerWidth = Math.max(20, termWidth - 2);
+  const maxCommandMenuRows = Math.max(2, Math.min(isTiny ? 3 : 8, Math.floor(termHeight / 3)));
+  const compactStatus = isNarrow || isTiny;
+  const reducedMotion = Boolean(config.accessibility?.reducedMotion);
+  const screenReader = Boolean(config.accessibility?.screenReader);
 
   useInput((input, key) => {
     // Escape cancels a pending permission (handled by PermissionButtons),
@@ -507,9 +515,9 @@ export function App({ config }: AppProps) {
   return (
     <ThemeContext.Provider value={currentTheme}>
       <ErrorBoundary>
-        <Box flexDirection="column">
-          {/* Message area — all messages rendered in order */}
-          <Box flexDirection="column">
+        <Box flexDirection="column" width={termWidth}>
+          {/* Message area — all messages rendered in order. Keep normal flow so new output stays near the prompt in terminal scrollback. */}
+          <Box flexDirection="column" width={termWidth}>
             {error && (
               <Box paddingX={1} marginBottom={1}>
                 <Text color={theme.error}>✕ {error}</Text>
@@ -521,9 +529,15 @@ export function App({ config }: AppProps) {
               pendingPermission={pendingPermission}
               onResolvePermission={resolvePermission}
               activeToolCallId={expandedToolId}
-              reducedMotion={config.accessibility?.reducedMotion}
-              screenReader={config.accessibility?.screenReader}
+              reducedMotion={reducedMotion}
+              screenReader={screenReader}
               terminalWidth={termWidth}
+              terminalHeight={termHeight}
+              workspace={config.workspace}
+              model={liveConfig.model}
+              mode={mode}
+              commandCount={commands.length}
+              skillCount={skills.length}
               retryPhase={retryPhase}
               retryAttempt={retryAttempt}
               retryMax={retryMax}
@@ -811,7 +825,7 @@ export function App({ config }: AppProps) {
           </Box>
 
           {/* Input bar — above the status line. Command menu is built into InputBar. */}
-          <Box paddingX={1} flexDirection="column">
+          <Box paddingX={1} flexDirection="column" flexShrink={0} width={termWidth}>
             <InputBar
               onSubmit={handleSubmit}
               disabled={isThinking}
@@ -821,11 +835,16 @@ export function App({ config }: AppProps) {
               inputSuppressed={Boolean(pendingPermission)}
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
+              terminalWidth={footerWidth}
+              maxMenuRows={maxCommandMenuRows}
+              compact={isNarrow || isTiny}
+              reducedMotion={reducedMotion}
+              screenReader={screenReader}
             />
           </Box>
 
-          {/* Status line — absolute bottom */}
-          <Box>
+          {/* Status line — stable footer */}
+          <Box flexShrink={0} width={termWidth}>
             <StatusLine
               model={liveConfig.model}
               tokenCount={tokenCount}
@@ -833,6 +852,10 @@ export function App({ config }: AppProps) {
               mode={mode}
               taskCount={tasks.length}
               activeTaskCount={tasks.filter((t) => t.status === 'in_progress').length}
+              terminalWidth={termWidth}
+              compact={compactStatus}
+              reducedMotion={reducedMotion}
+              screenReader={screenReader}
             />
           </Box>
         </Box>

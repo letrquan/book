@@ -394,6 +394,56 @@ export function displayWidth(text: string): number {
   return width;
 }
 
+/** Build a terminal divider that never underflows on tiny widths. */
+export function makeDivider(width: number, padding = 0, char = '─'): string {
+  return char.repeat(Math.max(5, Math.floor(width) - padding));
+}
+
+/** True when `text` fits within `maxWidth` terminal display columns. */
+export function fitsDisplayWidth(text: string, maxWidth: number): boolean {
+  return displayWidth(text) <= Math.max(0, maxWidth);
+}
+
+/**
+ * Truncate a string by terminal display columns.
+ *
+ * ANSI SGR sequences are preserved without counting toward width. Wide and
+ * zero-width Unicode characters use the same width model as `displayWidth`.
+ */
+export function truncateDisplay(text: string, maxWidth: number, suffix = '…'): string {
+  const limit = Math.max(0, Math.floor(maxWidth));
+  if (limit === 0) return '';
+  if (fitsDisplayWidth(text, limit)) return text;
+
+  const suffixWidth = displayWidth(suffix);
+  const contentLimit = Math.max(0, limit - suffixWidth);
+  if (contentLimit === 0) return suffixWidth <= limit ? suffix : '';
+
+  let width = 0;
+  let out = '';
+  for (let i = 0; i < text.length;) {
+    if (text.charCodeAt(i) === 0x1b) {
+      const match = text.slice(i).match(/^\x1B\[[0-?]*[ -/]*[@-~]/);
+      if (match) {
+        out += match[0];
+        i += match[0].length;
+        continue;
+      }
+    }
+
+    const cp = text.codePointAt(i);
+    if (cp === undefined) break;
+    const ch = String.fromCodePoint(cp);
+    const chWidth = displayWidth(ch);
+    if (width + chWidth > contentLimit) break;
+    out += ch;
+    width += chWidth;
+    i += ch.length;
+  }
+
+  return out + suffix;
+}
+
 /**
  * Soft-wrap text at word boundaries to fit within `maxWidth` columns.
  *

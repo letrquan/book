@@ -1,9 +1,11 @@
-import { Box, Text, useStdout } from 'ink';
+import { Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
 import { useState, useCallback, useRef, useMemo } from 'react';
 import { useInput } from 'ink';
+import { useTimedFlash, usePulse } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { CommandMenu } from './CommandMenu.js';
+import { makeDivider } from './word-wrap.js';
 import type { PermissionMode, SlashCommand } from '../../types.js';
 import { expandAtMentions, expandShellCommands } from '../input-expansion.js';
 import { recordCommandUse } from '../../commands/recent.js';
@@ -27,6 +29,11 @@ interface InputBarProps {
   disabled: boolean;
   mode: PermissionMode;
   onCycleMode: () => void;
+  terminalWidth?: number;
+  maxMenuRows?: number;
+  compact?: boolean;
+  reducedMotion?: boolean;
+  screenReader?: boolean;
   /**
    * True when a higher-priority modal (permission prompt) owns the keyboard.
    * Ink's `useInput` fans every keypress to ALL registered handlers regardless
@@ -89,12 +96,27 @@ function extractCommandName(value: string): string | null {
  * Empty "/" shows commands categorized: recently used → builtins → user → project.
  * Typing after "/" uses fuzzy search with exact > prefix > fuzzy ranking.
  */
-export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, onGlobalShortcut, inputSuppressed = false, commands = [] }: InputBarProps) {
+export function InputBar({
+  onSubmit,
+  disabled,
+  mode,
+  onCycleMode,
+  onInterrupt,
+  onGlobalShortcut,
+  inputSuppressed = false,
+  commands = [],
+  terminalWidth = 80,
+  maxMenuRows = 8,
+  compact = false,
+  reducedMotion = false,
+  screenReader = false,
+}: InputBarProps) {
   const theme = useTheme();
   const [value, setValue] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
-  const suggestion = 'Ask me anything...';
+  const [submitFlashKey, setSubmitFlashKey] = useState(0);
+  const suggestion = compact ? 'Ask...' : 'Ask me anything...';
 
   // Command menu state
   const [menuVisible, setMenuVisible] = useState(false);
@@ -220,11 +242,13 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
         setValue('');
         if (!commandValue) return;
         if (disabled) {
+          setSubmitFlashKey((key) => key + 1);
           onInterrupt?.();
         } else {
           setHistory((h) => [commandValue, ...h].slice(0, 100));
           setHistoryIndex(-1);
           recordCommandUse(commandValue.slice(1));
+          setSubmitFlashKey((key) => key + 1);
           onSubmit(commandValue);
         }
         return;
@@ -239,6 +263,7 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
       // While the agent is running, Enter interrupts the stream instead of
       // submitting — input stays live and focusable so the user can act.
       if (disabled) {
+        setSubmitFlashKey((key) => key + 1);
         onInterrupt?.();
         setValue('');
         return;
@@ -255,6 +280,7 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
       let processed = expandAtMentions(normalized, workspace);
       processed = expandShellCommands(processed, workspace);
 
+      setSubmitFlashKey((key) => key + 1);
       onSubmit(processed);
       setValue('');
     },
@@ -262,13 +288,19 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
   );
 
   const tokenKey = MODE_BORDER_TOKENS[mode];
-  const borderColor = theme[tokenKey];
+  const baseBorderColor = theme[tokenKey];
+  const motionDisabled = reducedMotion || screenReader;
+  const promptPulse = usePulse(!disabled && !inputSuppressed && !motionDisabled, 700);
+  const submitFlash = useTimedFlash(submitFlashKey, 220, motionDisabled);
 
-  const { stdout } = useStdout();
-  const divider = useMemo(() => {
-    const width = stdout?.columns ?? 80;
-    return '─'.repeat(Math.max(5, width - 2));
-  }, [stdout?.columns]);
+  const width = Math.max(20, Math.floor(terminalWidth));
+  const divider = useMemo(() => makeDivider(width, 2), [width]);
+  const innerWidth = Math.max(1, width - 2);
+  const inputWidth = Math.max(1, innerWidth - 2);
+  const borderColor = submitFlash || (promptPulse && !compact) ? theme.brandShimmer : baseBorderColor;
+  const placeholder = disabled
+    ? compact ? 'Enter interrupts' : 'Press Enter to interrupt… (or keep typing)'
+    : suggestion;
 
   const selIdx = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
 
@@ -281,16 +313,21 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
         filterText={menuFilter}
         selectedIndex={selIdx}
         visible={menuVisible}
+        terminalWidth={width}
+        maxRows={maxMenuRows}
+        compact={compact}
+        reducedMotion={reducedMotion}
+        screenReader={screenReader}
       />
 
-      <Box>
+      <Box width={innerWidth}>
         <Text color={borderColor}>{'> '}</Text>
-        <Box flexGrow={1}>
+        <Box width={inputWidth} flexShrink={1}>
           <TextInput
             value={value}
             onChange={safeOnChange}
             onSubmit={handleSubmit}
-            placeholder={disabled ? 'Press Enter to interrupt… (or keep typing)' : suggestion}
+            placeholder={placeholder}
             // Stay focused while disabled so Enter can route to the interrupt
             // path; only yield to a modal (permission prompt). `focus` here maps
             // to TextInput's internal `useInput` isActive — see inputSuppressed.
