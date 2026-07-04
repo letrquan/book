@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { persistSettingLocal, persistPermissionRuleLocal, readSettingsLocal } from './persist.js';
@@ -32,8 +32,21 @@ describe('persistSettingLocal', () => {
     expect(readSettingsLocal(dir)).toEqual({ model: 'claude-sonnet-5', maxTurns: 50 });
   });
 
+  it('writes nested provider registry keys', () => {
+    persistSettingLocal(dir, 'provider.openrouter.type', 'openai');
+    persistSettingLocal(dir, 'provider.openrouter.baseURL', 'https://openrouter.ai/api/v1');
+    persistSettingLocal(dir, 'provider.openrouter.models.deepseek-chat.contextWindow', 128000);
+    const provider = readSettingsLocal(dir).provider as Record<string, any>;
+    expect(provider.openrouter.type).toBe('openai');
+    expect(provider.openrouter.baseURL).toBe('https://openrouter.ai/api/v1');
+    expect(provider.openrouter.models['deepseek-chat'].contextWindow).toBe(128000);
+  });
+
   it('returns {ok:false, error} on a bad workspace rather than throwing', () => {
-    const r = persistSettingLocal('/proc/this/cannot/exist', 'model', 'x');
+    const badWorkspace = join(dir, 'not-a-directory');
+    writeFileSync(badWorkspace, 'not a directory');
+
+    const r = persistSettingLocal(badWorkspace, 'model', 'x');
     expect(r.ok).toBe(false);
     expect(typeof r.error).toBe('string');
   });

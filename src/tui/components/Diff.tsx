@@ -8,6 +8,12 @@ interface DiffProps {
   maxLines?: number;
 }
 
+export function isUnifiedDiffLike(output: string): boolean {
+  const hasHunk = /^@@\s+-\d+.*\+\d+.*@@/m.test(output);
+  const hasChangedLine = /^(\+[^+]|-[^-])/m.test(output);
+  return hasHunk && hasChangedLine;
+}
+
 /**
  * Parse a unified diff string into structured segments for color rendering.
  * Handles:

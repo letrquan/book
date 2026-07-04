@@ -47,6 +47,8 @@ export async function runConfigCommand(
       'maxTokens',
       'autoCompactEnabled',
       'defaultMode',
+      'effort',
+      'provider',
       'permissions',
       'sandbox',
       'hooks',

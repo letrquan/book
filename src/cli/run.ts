@@ -37,8 +37,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     const config = loadConfig(options.workspace as string | undefined, {
       settingsOverridePath: options.settings as string | undefined,
       noSettings: options.settings === false,
+      modelOverride: options.model as string | undefined,
     }) as AgentConfig;
-    if (options.model) config.model = options.model as string;
+    if (options.effort) config.effort = options.effort as AgentConfig['effort'];
     if (options.maxTurns) config.maxTurns = parseInt(options.maxTurns as string, 10);
     if (options.provider) {
       const VALID_PROVIDERS = new Set(['anthropic', 'openai', 'auto']);

@@ -385,8 +385,8 @@ export async function* chatCompletionStream(
     }));
   }
 
-  // Thinking / effort — only for models that support adaptive thinking
-  if (supportsAdaptiveThinking(config.model)) {
+  // Thinking / effort — only for models that support adaptive thinking.
+  if (config.modelInfo?.effort !== false && supportsAdaptiveThinking(config.model)) {
     const effort = config.effort ?? 'high';
     body.thinking = { type: 'adaptive', display: 'omitted' };
     body.output_config = { effort };

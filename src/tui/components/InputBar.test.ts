@@ -1,9 +1,33 @@
-import { describe, it, expect } from 'vitest';
+import React from 'react';
+import { afterEach, describe, it, expect } from 'vitest';
+import { render, cleanup } from 'ink-testing-library';
+import { DEFAULT_THEME, ThemeContext } from '../theme.js';
+import { InputBar } from './InputBar.js';
 
 /**
  * Tests for InputBar: border line, bottom-pinning layout, Vietnamese
  * character support, and mode border colors.
  */
+
+afterEach(() => cleanup());
+
+function inputBar(onSubmit: (value: string) => void) {
+  return React.createElement(
+    ThemeContext.Provider,
+    { value: DEFAULT_THEME },
+    React.createElement(InputBar, {
+      onSubmit,
+      disabled: false,
+      mode: 'default',
+      onCycleMode: () => {},
+      commands: [],
+    }),
+  );
+}
+
+function tick(ms = 0): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 // ---------------------------------------------------------------------------
 // Constants matching the actual component
@@ -332,6 +356,23 @@ describe('Vietnamese character support', () => {
     expect(normalizeInput('Ô')).toBe('Ô'); // Ô
     expect(normalizeInput('Ơ')).toBe('Ơ'); // Ơ
     expect(normalizeInput('Ư')).toBe('Ư'); // Ư
+  });
+});
+
+describe('InputBar command menu', () => {
+  it('Enter on an open slash menu submits the selected command, not raw /', async () => {
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value)));
+    await tick();
+
+    view.stdin.write('/');
+    await tick(20);
+    expect(view.lastFrame()).toContain('/clear');
+
+    view.stdin.write('\r');
+    await tick(20);
+
+    expect(submitted).toEqual(['/clear']);
   });
 });
 

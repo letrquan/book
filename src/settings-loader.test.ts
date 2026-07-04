@@ -45,6 +45,35 @@ describe('loadSettingsFile', () => {
     expect(result?.model).toBe('gpt-4o');
     expect(result?.maxTurns).toBe(10);
   });
+
+  it('keeps compact provider registry metadata', () => {
+    writeFileSync(
+      join(dir, 'provider.json'),
+      JSON.stringify({
+        model: 'openrouter/deepseek-chat',
+        provider: {
+          openrouter: {
+            type: 'openai',
+            baseURL: 'https://openrouter.ai/api/v1',
+            apiKey: '{env:OPENROUTER_API_KEY}',
+            models: {
+              'deepseek-chat': {
+                label: 'DeepSeek Chat',
+                contextWindow: 128000,
+                maxOutputTokens: 8192,
+                effort: false,
+              },
+            },
+          },
+        },
+      }),
+    );
+    const result = loadSettingsFile(join(dir, 'provider.json'));
+    const model = result?.provider.openrouter.models['deepseek-chat'];
+    expect(result?.provider.openrouter.baseURL).toBe('https://openrouter.ai/api/v1');
+    expect(model?.contextWindow).toBe(128000);
+    expect(model?.effort).toBe(false);
+  });
 });
 
 describe('mergeSettings', () => {
@@ -88,6 +117,14 @@ describe('mergeSettings', () => {
     const result = mergeSettings(base, { model: undefined });
     expect(result.model).toBe('gpt-4o');
   });
+
+  it('merges nested memory settings without losing defaults', () => {
+    const base = structuredClone(DEFAULT_SETTINGS);
+    const result = mergeSettings(base, { memory: { autoSave: false } } as Partial<ResolvedSettings>);
+    expect(result.memory.enabled).toBe(true);
+    expect(result.memory.autoSave).toBe(false);
+    expect(result.memory.requireApproval).toBe(true);
+  });
 });
 
 describe('resolveSettings — layered merging', () => {
@@ -95,6 +132,7 @@ describe('resolveSettings — layered merging', () => {
     const result = resolveSettings(dir);
     expect(result.permissions.allow).toEqual([]);
     expect(result.sandbox.enabled).toBe(false);
+    expect(result.memory).toEqual({ enabled: true, autoSave: true, requireApproval: true });
   });
 
   it('project overrides user', () => {

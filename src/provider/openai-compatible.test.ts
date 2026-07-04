@@ -42,6 +42,26 @@ describe('chatCompletionStream request body', () => {
     }
     expect(capturedBody.stream_options).toEqual({ include_usage: true });
   });
+
+  it('omits max_tokens when only the generic default is present', async () => {
+    const stream = chatCompletionStream(config, [{ role: 'user', content: 'hi' }], []);
+    for await (const _ of stream) {
+      /* drain */
+    }
+    expect(capturedBody).not.toHaveProperty('max_tokens');
+  });
+
+  it('sends explicit max_tokens', async () => {
+    const stream = chatCompletionStream(
+      { ...config, maxTokens: 4096, maxTokensExplicit: true },
+      [{ role: 'user', content: 'hi' }],
+      [],
+    );
+    for await (const _ of stream) {
+      /* drain */
+    }
+    expect(capturedBody.max_tokens).toBe(4096);
+  });
 });
 
 // Helper: create a readable stream that yields text events then [DONE].
@@ -504,8 +524,7 @@ describe('chatCompletionStream retry — edge cases', () => {
     );
 
     const controller = new AbortController();
-    // Abort after a short delay (before retries complete).
-    setTimeout(() => controller.abort(), 10);
+    controller.abort();
 
     const events = [];
     for await (const e of chatCompletionStream(
@@ -516,8 +535,7 @@ describe('chatCompletionStream retry — edge cases', () => {
     )) {
       events.push(e);
     }
-    // Should stop early due to abort — fewer calls than maxAttempts.
-    expect(calls).toBeLessThan(4);
+    expect(calls).toBe(1);
   });
 
   it('does not retry when maxAttempts is 0', async () => {

@@ -1,4 +1,14 @@
-import type { AgentConfig, Message, SlashCommand, ToolCall, ToolResult, ToolContext, AgentLoopCallbacks, Usage, RetryPhase } from '../types.js';
+import type {
+  AgentConfig,
+  Message,
+  SlashCommand,
+  ToolCall,
+  ToolResult,
+  ToolContext,
+  AgentLoopCallbacks,
+  Usage,
+  RetryPhase,
+} from '../types.js';
 import { chatCompletionStream } from '../provider/index.js';
 import { buildMessages } from './context.js';
 import type { ToolRegistry } from '../tools/registry.js';
@@ -10,6 +20,7 @@ import type { HookContext } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { createDebugLogger } from '../debug-log.js';
+import { maybeCaptureMemoryCandidate } from '../memory-autosave.js';
 
 const log = createDebugLogger('agent');
 
@@ -36,6 +47,8 @@ export async function runAgentLoop(
     commands?: SlashCommand[];
     allowedTools?: string[];
     modelOverride?: string;
+    /** True when this loop is a subagent (Task tool) invocation — skips memory auto-capture. */
+    isSubagent?: boolean;
   },
 ): Promise<Message[]> {
   const signal = options?.signal;
@@ -89,6 +102,29 @@ export async function runAgentLoop(
     timestamp: Date.now(),
   });
 
+  if (!options?.isSubagent) {
+    try {
+      let previousAssistant: string | undefined;
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i].role === 'assistant') {
+          previousAssistant = history[i].content;
+          break;
+        }
+      }
+      const memoryCapture = maybeCaptureMemoryCandidate({
+        workspace: config.workspace,
+        settings: config.settings,
+        userMessage: effectivePrompt,
+        previousAssistant,
+      });
+      if (memoryCapture.saved) log.info('memory candidate captured', { path: memoryCapture.path });
+    } catch (e) {
+      log.warn('memory candidate capture failed', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
     env: process.env as Record<string, string>,
@@ -110,7 +146,10 @@ export async function runAgentLoop(
       callbacks.onCompact &&
       shouldCompact(lastUsage, config.maxTokens ?? 128000)
     ) {
-      log.info('auto-compact triggered', { tokens: lastUsage?.totalTokens ?? 0, maxTokens: config.maxTokens });
+      log.info('auto-compact triggered', {
+        tokens: lastUsage?.totalTokens ?? 0,
+        maxTokens: config.maxTokens,
+      });
       // PreCompact hook — fire-and-forget before compaction.
       runHooks(config.settings.hooks.PreCompact, 'PreCompact', {
         workspace: config.workspace,
@@ -150,17 +189,18 @@ export async function runAgentLoop(
       messages,
       effectiveDefinitions ?? registry.getDefinitions(),
       {
-      signal,
-      onRetry: (attempt, max, delayMs) => {
-        callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
+        signal,
+        onRetry: (attempt, max, delayMs) => {
+          callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
+        },
+        onStreamStall: (countdownMs) => {
+          callbacks.onStreamStall?.(countdownMs);
+        },
+        onStreamResume: () => {
+          callbacks.onStreamResume?.();
+        },
       },
-      onStreamStall: (countdownMs) => {
-        callbacks.onStreamStall?.(countdownMs);
-      },
-      onStreamResume: () => {
-        callbacks.onStreamResume?.();
-      },
-    });
+    );
 
     let streamError: string | null = null;
     let streamDone = false;
@@ -201,7 +241,11 @@ export async function runAgentLoop(
     // any partial assistant text/tool call metadata in returned history so
     // callers that persist sessions do not lose what was already rendered.
     if (streamError) {
-      log.warn('stream error', { error: streamError, contentLen: assistantContent.length, toolCallCount: toolCalls.length });
+      log.warn('stream error', {
+        error: streamError,
+        contentLen: assistantContent.length,
+        toolCallCount: toolCalls.length,
+      });
       if (assistantContent.length > 0 || toolCalls.length > 0) {
         newHistory.push({
           id: crypto.randomUUID(),
@@ -241,16 +285,12 @@ export async function runAgentLoop(
       const canonName = canonicalToolName(call.name);
 
       // PreToolUse hook — can block the tool before execution.
-      const preHookResults = await runHooks(
-        config.settings.hooks.PreToolUse,
-        'PreToolUse',
-        {
-          workspace: config.workspace,
-          event: 'PreToolUse',
-          toolName: canonName,
-          toolArgs: call.arguments,
-        },
-      );
+      const preHookResults = await runHooks(config.settings.hooks.PreToolUse, 'PreToolUse', {
+        workspace: config.workspace,
+        event: 'PreToolUse',
+        toolName: canonName,
+        toolArgs: call.arguments,
+      });
       const blocked = preHookResults.find((r) => r.action === 'block');
       if (blocked) {
         toolResults.push({
@@ -328,17 +368,13 @@ export async function runAgentLoop(
       });
 
       // PostToolUse hook — can modify the result output.
-      const postHookResults = await runHooks(
-        config.settings.hooks.PostToolUse,
-        'PostToolUse',
-        {
-          workspace: config.workspace,
-          event: 'PostToolUse',
-          toolName: canonName,
-          toolArgs: call.arguments,
-          toolOutput: result.success ? result.output : result.error ?? '',
-        },
-      );
+      const postHookResults = await runHooks(config.settings.hooks.PostToolUse, 'PostToolUse', {
+        workspace: config.workspace,
+        event: 'PostToolUse',
+        toolName: canonName,
+        toolArgs: call.arguments,
+        toolOutput: result.success ? result.output : (result.error ?? ''),
+      });
       for (const r of postHookResults) {
         if (r.action === 'modify' && r.modifiedOutput !== undefined) {
           result.output = r.modifiedOutput;
@@ -383,7 +419,9 @@ export async function runAgentLoop(
 
   if (turn >= config.maxTurns) {
     log.warn('max turns reached', { maxTurns: config.maxTurns });
-    callbacks.onError(`Reached max turns (${config.maxTurns}). Refine your prompt or increase BOOK_MAX_TURNS.`);
+    callbacks.onError(
+      `Reached max turns (${config.maxTurns}). Refine your prompt or increase BOOK_MAX_TURNS.`,
+    );
   }
 
   // SessionEnd hook — fire-and-forget at session end.

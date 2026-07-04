@@ -24,7 +24,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: 'config', description: 'Show current configuration' },
   { name: 'diff', description: 'Show git diff' },
   { name: 'status', description: 'Show session status' },
-  { name: 'memory', description: 'Manage auto-memory' },
+  { name: 'memory', description: 'Manage auto-memory', argumentHint: '[status|inbox|approve|discard|on|off|path]' },
   { name: 'permissions', description: 'Manage permission rules' },
   { name: 'cost', description: 'Show token usage and cost' },
   { name: 'skills', description: 'List available skills' },

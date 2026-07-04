@@ -71,7 +71,9 @@ export function buildContextReport(
     maxTokens: number;
     skillCount?: number;
     commandCount: number;
-    /** Whether CLAUDE.md loader is wired (Phase 1b) — surfaced honestly. */
+    subagentCount?: number;
+    hasMemoryIndex?: boolean;
+    /** Whether CLAUDE.md instructions were found for this workspace. */
     hasClaudeMdLoader: boolean;
   },
 ): string {
@@ -97,15 +99,22 @@ export function buildContextReport(
   lines.push(`Conversation fills ~${pct}% of the window (before system prompt / tools).`);
   lines.push('');
   lines.push('Ambient context (injected per turn, not counted above):');
-  lines.push(`  System prompt + tool definitions (static, cached)`);
+  lines.push(`  System prompt + tool definitions (static + dynamic sections)`);
   lines.push(`  Slash commands  : ${ambient.commandCount} discoverable`);
   if (ambient.skillCount !== undefined) {
     lines.push(`  Skills          : ${ambient.skillCount} discoverable`);
   }
+  if (ambient.subagentCount !== undefined) {
+    lines.push(`  Subagents       : ${ambient.subagentCount} discoverable`);
+  }
+  lines.push('  Git/workspace   : branch, status, OS, date');
+  if (ambient.hasMemoryIndex !== undefined) {
+    lines.push(`  Memory index    : ${ambient.hasMemoryIndex ? 'loaded (approved memory)' : 'none found'}`);
+  }
   if (ambient.hasClaudeMdLoader) {
     lines.push('  CLAUDE.md       : loaded (Phase 1b)');
   } else {
-    lines.push('  CLAUDE.md       : not loaded yet (Phase 1b — memory/rules are not injected)');
+    lines.push('  CLAUDE.md       : none found (Phase 1b loader active)');
   }
   lines.push('');
   lines.push(

@@ -1,8 +1,9 @@
 import { Text, Box } from 'ink';
 import React, { useMemo } from 'react';
 import { Spinner } from './Spinner.js';
-import { ToolCallBlock } from './ToolCallBlock.js';
+import { ToolCallBlock, toolLabel } from './ToolCallBlock.js';
 import { PermissionButtons } from './PermissionButtons.js';
+import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { useTheme } from '../theme.js';
 import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
@@ -133,7 +134,11 @@ export function AgentMessageInner({
                 <Text color={theme.error}>{spinnerLabel} </Text>
               </Box>
             )}
-            <MarkdownBlock content={displayContent} terminalWidth={mdWidth} />
+            {isUnifiedDiffLike(displayContent) ? (
+              <DiffBlock output={displayContent} />
+            ) : (
+              <MarkdownBlock content={displayContent} terminalWidth={mdWidth} />
+            )}
           </Box>
         </Box>
       ) : null}
@@ -155,8 +160,8 @@ export function AgentMessageInner({
               <Box>
                 <Text color={theme.subtle}>{'▶'} </Text>
                 <Text color={theme.success} bold>[OK] </Text>
-                <Text color={theme.brand} bold>Called {group[0].name}</Text>
-                <Text color={theme.subtle}> {group.length} times</Text>
+                <Text color={theme.brand} bold>{toolLabel(group[0].name)}</Text>
+                <Text color={theme.subtle}> ×{group.length}</Text>
               </Box>
             </Box>
           );

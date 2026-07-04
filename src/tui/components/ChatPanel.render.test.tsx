@@ -96,13 +96,13 @@ describe('ChatPanel Ink rendering', () => {
 
     const output = frame(view.lastFrame);
     expect(output).toContain('I will inspect it.');
-    expect(output).toContain('[OK] Read src/a.ts');
+    expect(output).toContain('[OK] Read file src/a.ts');
     expect(output).toContain('file contents');
     expect(output).toContain('The file looks good.');
-    expect(output.indexOf('[OK] Read src/a.ts')).toBeGreaterThan(
+    expect(output.indexOf('[OK] Read file src/a.ts')).toBeGreaterThan(
       output.indexOf('I will inspect it.'),
     );
-    expect(output.indexOf('[OK] Read src/a.ts')).toBeLessThan(
+    expect(output.indexOf('[OK] Read file src/a.ts')).toBeLessThan(
       output.indexOf('The file looks good.'),
     );
   });
@@ -138,7 +138,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('[needs approval]');
     expect(output).toContain('Permission required for: Bash');
     expect(output).toContain('Primary argument: npm test');
-    expect(output).toContain('Press: [R] Run [S] Skip [A] Always allow [Esc] Deny');
+    expect(output).toContain('Press: [R] Run once [S] Skip [A] Always allow [Esc] Deny');
   });
 
   it('renders retry and stall labels on the active streaming assistant message', () => {
@@ -215,15 +215,15 @@ describe('ChatPanel Ink rendering', () => {
     // All tool calls should appear under a single "I will explore the project" block.
     // No repeated empty "Book" headers between tools.
     expect(output).toContain('I will explore the project.');
-    expect(output).toContain('[OK] Glob *.ts');
-    expect(output).toContain('[OK] Read src/index.ts');
-    expect(output).toContain('[OK] Grep');
+    expect(output).toContain('[OK] Find files *.ts');
+    expect(output).toContain('[OK] Read file src/index.ts');
+    expect(output).toContain('[OK] Search files');
 
     // The tool calls should appear in order after the text.
     const textIdx = output.indexOf('I will explore the project.');
-    const globIdx = output.indexOf('[OK] Glob');
-    const readIdx = output.indexOf('[OK] Read');
-    const grepIdx = output.indexOf('[OK] Grep');
+    const globIdx = output.indexOf('[OK] Find files');
+    const readIdx = output.indexOf('[OK] Read file');
+    const grepIdx = output.indexOf('[OK] Search files');
     expect(textIdx).toBeLessThan(globIdx);
     expect(globIdx).toBeLessThan(readIdx);
     expect(readIdx).toBeLessThan(grepIdx);

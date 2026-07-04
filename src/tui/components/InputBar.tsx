@@ -3,9 +3,9 @@ import TextInput from 'ink-text-input';
 import { useState, useCallback, useRef, useMemo } from 'react';
 import { useInput } from 'ink';
 import { useTheme } from '../theme.js';
+import { CommandMenu } from './CommandMenu.js';
 import type { PermissionMode, SlashCommand } from '../../types.js';
 import { expandAtMentions, expandShellCommands } from '../input-expansion.js';
-import { BUILTIN_COMMANDS, BUILTIN_BY_NAME } from '../../commands/builtins.js';
 import { recordCommandUse } from '../../commands/recent.js';
 import {
   getCommandsForEmptyQuery,
@@ -64,6 +64,13 @@ function getFilteredCommands(commands: SlashCommand[], filter: string): CommandI
   return getCommandsForQuery(commands, filter);
 }
 
+function getSelectedCommandValue(commands: SlashCommand[], filter: string, selectedIndex: number): string | null {
+  const matches = getFilteredCommands(commands, filter);
+  if (matches.length === 0) return null;
+  const index = Math.max(0, Math.min(selectedIndex, matches.length - 1));
+  return '/' + matches[index].name;
+}
+
 /**
  * Extract the command name from a slash command submission for usage tracking.
  */
@@ -93,18 +100,17 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
   const [menuVisible, setMenuVisible] = useState(false);
   const [menuFilter, setMenuFilter] = useState('');
   const [menuSelected, setMenuSelected] = useState(0);
-
-  // Ref to suppress TextInput's onSubmit when the menu already handled Enter.
-  const menuHandledSubmit = useRef(false);
-
-  // Ref for the current input value so useInput always has the latest text,
-  // even when React batches onChange before re-rendering.
-  const valueRef = useRef(value);
+  const menuVisibleRef = useRef(false);
+  const menuFilterRef = useRef('');
+  const menuSelectedRef = useRef(0);
 
   const filteredCmds = useMemo(
     () => getFilteredCommands(commands, menuFilter),
     [commands, menuFilter],
   );
+  menuVisibleRef.current = menuVisible;
+  menuFilterRef.current = menuFilter;
+  menuSelectedRef.current = menuSelected;
 
   useInput((_input, key) => {
     // While a modal (permission prompt) owns the keyboard, ignore all keys —
@@ -154,13 +160,8 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
         });
         return;
       }
-      // Enter: dismiss the menu. TextInput's onSubmit will handle the
-      // typed text through the normal handleSubmit path.
-      if (key.return) {
-        setMenuVisible(false);
-        setMenuSelected(0);
-        // Don't return — let TextInput see the \r and fire onSubmit.
-      }
+      // Enter is resolved in handleSubmit, where TextInput passes the current value.
+      if (key.return) return;
       // Character keys update the filter via onChange — stay visible so the
       // user can continue typing the command name. The menu is dismissed by
       // onChange when a space is typed or the leading / is removed.
@@ -195,7 +196,6 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
   const safeOnChange = useCallback((val: string) => {
     const clean = stripMouseSequences(val);
     setValue(clean);
-    valueRef.current = clean; // keep ref current before React re-renders
 
     // Detect / at start for command menu.
     // Show menu when: starts with /, no space (still typing command name).
@@ -213,9 +213,20 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
 
   const handleSubmit = useCallback(
     (val: string) => {
-      // If the menu already handled this Enter, skip TextInput's onSubmit.
-      if (menuHandledSubmit.current) {
-        menuHandledSubmit.current = false;
+      if (menuVisibleRef.current) {
+        const commandValue = getSelectedCommandValue(commands, menuFilterRef.current, menuSelectedRef.current);
+        setMenuVisible(false);
+        setMenuSelected(0);
+        setValue('');
+        if (!commandValue) return;
+        if (disabled) {
+          onInterrupt?.();
+        } else {
+          setHistory((h) => [commandValue, ...h].slice(0, 100));
+          setHistoryIndex(-1);
+          recordCommandUse(commandValue.slice(1));
+          onSubmit(commandValue);
+        }
         return;
       }
 
@@ -247,7 +258,7 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
       onSubmit(processed);
       setValue('');
     },
-    [disabled, onSubmit],
+    [commands, disabled, onInterrupt, onSubmit],
   );
 
   const tokenKey = MODE_BORDER_TOKENS[mode];
@@ -259,90 +270,18 @@ export function InputBar({ onSubmit, disabled, mode, onCycleMode, onInterrupt, o
     return '─'.repeat(Math.max(5, width - 2));
   }, [stdout?.columns]);
 
-  // Clamp selection
   const selIdx = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
-
-  // Category header colors
-  const categoryColor: Record<string, string> = {
-    recent: theme.brand,
-    builtin: theme.subtle,
-    user: theme.subtle,
-    project: theme.subtle,
-  };
-
-  // Group filtered commands by category for sectioned display
-  const sections = useMemo(() => {
-    const groups = new Map<string, CommandItem[]>();
-    for (const cmd of filteredCmds) {
-      const cat = cmd.category;
-      if (!groups.has(cat)) groups.set(cat, []);
-      groups.get(cat)!.push(cmd);
-    }
-    return groups;
-  }, [filteredCmds]);
-
-  // Flatten sections into indexed list for selection
-  const flatItems = useMemo(
-    () => filteredCmds,
-    [filteredCmds],
-  );
-
-  const categoryLabels: Record<string, string> = {
-    recent: 'Recently Used',
-    builtin: 'Built-in',
-    user: 'User',
-    project: 'Project',
-  };
 
   return (
     <Box flexDirection="column">
       <Text color={theme.subtle}>{divider}</Text>
 
-      {/* Command autocomplete menu — renders above the input */}
-      {menuVisible && (
-        <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1}>
-          <Text bold color={theme.brand}>
-            Commands
-          </Text>
-          {flatItems.length === 0 ? (
-            <Text color={theme.subtle} dimColor>
-              No matching commands
-            </Text>
-          ) : (
-            // Render sections with category headers
-            Array.from(sections.entries()).map(([category, items]) => {
-              const label = categoryLabels[category];
-              const firstIdx = flatItems.indexOf(items[0]);
-              return (
-                <Box key={category} flexDirection="column">
-                  {menuFilter === '' && label && (
-                    <Text color={theme.subtle} dimColor>
-                      {label}
-                    </Text>
-                  )}
-                  {items.map((item) => {
-                    const globalIdx = flatItems.indexOf(item);
-                    const isSelected = globalIdx === selIdx;
-                    const color = isSelected ? theme.brand : theme.text;
-                    const prefix = isSelected ? '› ' : '  ';
-                    const hint = item.hint ? ` ${item.hint}` : '';
-                    return (
-                      <Box key={item.name} flexDirection="row">
-                        <Text color={color} bold={isSelected}>
-                          {prefix}/{item.name}{hint}
-                        </Text>
-                        {item.desc && (
-                          <Text color={theme.subtle}> — {item.desc}</Text>
-                        )}
-                      </Box>
-                    );
-                  })}
-                </Box>
-              );
-            })
-          )}
-        </Box>
-      )}
+      <CommandMenu
+        items={filteredCmds}
+        filterText={menuFilter}
+        selectedIndex={selIdx}
+        visible={menuVisible}
+      />
 
       <Box>
         <Text color={borderColor}>{'> '}</Text>

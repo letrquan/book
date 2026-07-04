@@ -1,12 +1,15 @@
 import { z } from 'zod';
 import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { isAbsolute, join, relative, resolve } from 'path';
 import { homedir } from 'os';
 import type { AgentConfig, RetryConfig } from './types.js';
 import { resolveSettings, migrateLegacyPermissions } from './settings-loader.js';
 import { DEFAULT_SETTINGS } from './settings.js';
+import { loadMemoryContext } from './memory-store.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
+const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
+
 const legacyConfigSchema = z.object({
   model: z.string().optional(),
   baseUrl: z.string().url().optional(),
@@ -59,21 +62,13 @@ export interface LoadConfigOptions {
   settingsOverridePath?: string;
   /** If true, skip all settings.json layers entirely (use defaults + legacy .bookrc.json). */
   noSettings?: boolean;
+  /** CLI -m/--model override, applied before provider registry resolution. */
+  modelOverride?: string;
 }
 
 export function loadConfig(workspace?: string, options?: LoadConfigOptions): AgentConfig {
   const settingsOverridePath = options?.settingsOverridePath;
   const noSettings = options?.noSettings ?? false;
-
-  const apiKey = process.env.BOOK_API_KEY;
-  if (!apiKey) {
-    throw new Error('BOOK_API_KEY not set. Set it via environment variable or .bookrc.json');
-  }
-
-  const baseUrl = process.env.BOOK_BASE_URL || 'https://api.openai.com/v1';
-  const model = process.env.BOOK_MODEL || 'gpt-4o';
-  const maxTurns = process.env.BOOK_MAX_TURNS ? parseInt(process.env.BOOK_MAX_TURNS, 10) : 25;
-  const maxTokens = process.env.BOOK_MAX_TOKENS ? parseInt(process.env.BOOK_MAX_TOKENS, 10) : 128000;
   const resolvedWorkspace = workspace || process.env.BOOK_WORKSPACE || process.cwd();
 
   // Load legacy .bookrc.json (deprecated) for backward compat.
@@ -117,16 +112,33 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
       || settings.retry?.watchdog === true,
   };
 
-  return {
-    apiKey,
-    baseUrl: process.env.BOOK_BASE_URL || legacy?.baseUrl || baseUrl,
-    model: process.env.BOOK_MODEL || settings.model || legacy?.model || model,
+  const memoryContext = settings.memory.enabled ? loadMemoryContext(resolvedWorkspace) : undefined;
+
+  const envMaxTokens = parsePositiveInt(process.env.BOOK_MAX_TOKENS, 'BOOK_MAX_TOKENS');
+  const maxTokensExplicit = envMaxTokens !== undefined || settings.maxTokens !== undefined || legacy?.maxTokens !== undefined;
+  const effortExplicit = Boolean(process.env.BOOK_EFFORT || settings.effort);
+  const rawModel = options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
+  const defaultApiKey = process.env.BOOK_API_KEY || '';
+  const defaultBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl || DEFAULT_OPENAI_BASE_URL;
+  const defaultMaxTokens = envMaxTokens ?? settings.maxTokens ?? legacy?.maxTokens ?? 128000;
+  const defaultEffort = validateEffort(process.env.BOOK_EFFORT) || settings.effort || 'high';
+  const defaultProvider = validateProvider(process.env.BOOK_PROVIDER) || 'auto';
+
+  let config: AgentConfig = {
+    apiKey: defaultApiKey,
+    baseUrl: defaultBaseUrl,
+    model: rawModel,
     maxTurns: process.env.BOOK_MAX_TURNS
       ? parseInt(process.env.BOOK_MAX_TURNS, 10)
-      : settings.maxTurns ?? legacy?.maxTurns ?? maxTurns,
-    maxTokens: process.env.BOOK_MAX_TOKENS
-      ? parseInt(process.env.BOOK_MAX_TOKENS, 10)
-      : settings.maxTokens ?? legacy?.maxTokens ?? maxTokens,
+      : settings.maxTurns ?? legacy?.maxTurns ?? 25,
+    maxTokens: defaultMaxTokens,
+    maxTokensExplicit,
+    defaultMaxTokens,
+    effortExplicit,
+    defaultEffort,
+    defaultApiKey,
+    defaultBaseUrl,
+    defaultProvider,
     autoCompactEnabled:
       settings.autoCompactEnabled ?? legacy?.autoCompactEnabled ?? true,
     workspace: resolvedWorkspace,
@@ -134,9 +146,101 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     accessibility: legacy?.accessibility || { screenReader: false, reducedMotion: false },
     settings,
     retry,
-    effort: validateEffort(process.env.BOOK_EFFORT) || 'high',
-    provider: validateProvider(process.env.BOOK_PROVIDER) || 'auto',
+    memoryContext,
+    effort: defaultEffort,
+    provider: defaultProvider,
   };
+
+  config = applyModelDefaults(resolveModelProviderConfig(config, rawModel));
+
+  if (!config.apiKey) {
+    throw new Error('BOOK_API_KEY or provider.<id>.apiKey not set. Set BOOK_API_KEY or use {env:VAR} in settings.');
+  }
+
+  return config;
+}
+
+function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
+  return {
+    ...config,
+    apiKey: config.defaultApiKey ?? config.apiKey,
+    baseUrl: config.defaultBaseUrl ?? config.baseUrl,
+    model,
+    modelInfo: undefined,
+    provider: config.defaultProvider ?? config.provider,
+  };
+}
+
+export function applyModelDefaults(config: AgentConfig): AgentConfig {
+  const maxTokens = config.maxTokensExplicit
+    ? config.maxTokens
+    : config.modelInfo?.maxOutputTokens ?? config.defaultMaxTokens ?? config.maxTokens;
+
+  let effort = config.effort;
+  if (!config.effortExplicit) {
+    if (config.modelInfo?.effort === false) {
+      effort = undefined;
+    } else if (typeof config.modelInfo?.effort === 'object' && config.modelInfo.effort.default) {
+      effort = config.modelInfo.effort.default;
+    } else {
+      effort = config.defaultEffort ?? effort;
+    }
+  }
+
+  return { ...config, maxTokens, effort };
+}
+
+/** Resolve "provider/model" strings through settings.provider, OpenCode-style. */
+export function resolveModelProviderConfig(config: AgentConfig, rawModel = config.model): AgentConfig {
+  const slash = rawModel.indexOf('/');
+  if (slash <= 0) return plainModelConfig(config, rawModel);
+  if (slash === rawModel.length - 1) {
+    throw new Error(`Invalid model "${rawModel}". Expected "provider/model".`);
+  }
+
+  const providerId = rawModel.slice(0, slash);
+  const model = rawModel.slice(slash + 1);
+  const provider = config.settings.provider[providerId];
+  if (!provider) return plainModelConfig(config, rawModel);
+
+  const fallbackApiKey = config.defaultApiKey !== undefined ? config.defaultApiKey : config.apiKey;
+  const apiKey = resolveSecret(provider.apiKey, config.workspace) ?? fallbackApiKey;
+  return {
+    ...config,
+    apiKey,
+    baseUrl: provider.baseURL ?? provider.baseUrl ?? config.defaultBaseUrl ?? config.baseUrl,
+    model,
+    modelInfo: provider.models[model],
+    provider: provider.type,
+  };
+}
+
+function resolveSecret(raw: string | undefined, workspace: string): string | undefined {
+  if (!raw) return undefined;
+  const envMatch = raw.match(/^\{env:([^}]+)\}$/);
+  if (envMatch) return process.env[envMatch[1]];
+
+  const fileMatch = raw.match(/^\{file:([^}]+)\}$/);
+  if (!fileMatch) return raw;
+
+  const p = fileMatch[1];
+  let path: string;
+  if (p.startsWith('~/')) {
+    path = join(homedir(), p.slice(2));
+  } else if (isAbsolute(p)) {
+    path = p;
+  } else {
+    const root = resolve(workspace);
+    path = resolve(root, p);
+    const rel = relative(root, path);
+    if (rel.startsWith('..') || isAbsolute(rel)) return undefined;
+  }
+
+  try {
+    return readFileSync(path, 'utf-8').trim();
+  } catch {
+    return undefined;
+  }
 }
 
 const VALID_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -159,4 +263,13 @@ function clampInt(raw: string, min: number, max: number): number {
   const n = parseInt(raw, 10);
   if (Number.isNaN(n)) return min;
   return Math.max(min, Math.min(max, n));
+}
+
+function parsePositiveInt(raw: string | undefined, name: string): number | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return n;
 }
