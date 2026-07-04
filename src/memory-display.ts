@@ -1,101 +1,107 @@
-/**
- * /memory display helper.
- *
- * The Book auto-memory layout (mirroring the MEMORY.md convention) is:
- *   ~/.book/projects/<slug>/memory/MEMORY.md   (index)
- *   ~/.book/projects/<slug>/memory/<file>.md  (per-fact memory files)
- *
- * 1d (the auto-write path) is not yet implemented, so this command is read-only:
- * it surfaces which memory files exist for THIS workspace so the user can see
- * whether anything has been loaded. When 1d lands this command already does
- * the right thing and needs no change to display existing memories.
- */
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
+import type { ResolvedSettings } from './settings.js';
+import {
+  getMemoryInboxDir,
+  getProjectMemoryDir,
+  listMemoryCandidates,
+  loadMemoryContext,
+  type LoadedMemoryContext,
+  type MemoryStoreOptions,
+} from './memory-store.js';
 
-/** Slugify a workspace path the same way the memory store would. */
-function slugifyWorkspace(workspace: string): string {
-  // Mirror the ~/.claude/projects convention used at the top of the repo:
-  // replace non-alphanumeric with '-', strip leading separators.
-  return workspace
-    .replace(/[/\\:]+/g, '-')
-    .replace(/[^a-zA-Z0-9._-]/g, '-')
-    .replace(/^-+|-+$/g, '');
+interface MemoryReportInput extends MemoryStoreOptions {
+  workspace: string;
+  settings?: ResolvedSettings;
+  loaded?: LoadedMemoryContext;
 }
 
-interface MemoryIndex {
+export interface MemoryIndex {
   dir: string;
   indexFile: string | null;
   indexLineCount: number;
   files: Array<{ name: string; size: number }>;
 }
 
-export function getMemoryIndex(workspace: string): MemoryIndex {
-  const dir = join(homedir(), '.book', 'projects', slugifyWorkspace(workspace), 'memory');
-  const result: MemoryIndex = { dir, indexFile: null, indexLineCount: 0, files: [] };
-  if (!existsSync(dir)) return result;
-
-  const indexFile = join(dir, 'MEMORY.md');
-  if (existsSync(indexFile) && statSync(indexFile).isFile()) {
-    result.indexFile = indexFile;
-    try {
-      result.indexLineCount = readFileSync(indexFile, 'utf-8')
-        .split('\n')
-        .filter((l) => l.trim().length > 0).length;
-    } catch {
-      result.indexLineCount = 0;
-    }
-  }
-
-  try {
-    for (const entry of readdirSync(dir)) {
-      const full = join(dir, entry);
-      if (!entry.endsWith('.md')) continue;
-      try {
-        if (!statSync(full).isFile()) continue;
-      } catch {
-        continue;
-      }
-      result.files.push({ name: entry, size: result.files.length + 1 });
-    }
-  } catch {
-    // ignore unreadable dir
-  }
-
-  return result;
+/** Compatibility helper for older callers/tests. Prefer loadMemoryContext(). */
+export function getMemoryIndex(workspace: string, opts?: MemoryStoreOptions): MemoryIndex {
+  const ctx = loadMemoryContext(workspace, opts);
+  return {
+    dir: ctx.dir,
+    indexFile: ctx.indexFile,
+    indexLineCount: ctx.indexLineCount,
+    files: ctx.files.map((file) => ({ name: file.name, size: file.size })),
+  };
 }
 
-/**
- * Render the /memory report string shown in the TUI.
- * Honestly surfaces "no memories yet" when the dir is absent — this is the
- * right call before 1d's auto-write lands.
- */
-export function buildMemoryReport(workspace: string): string {
-  const idx = getMemoryIndex(workspace);
-  if (!idx.indexFile && idx.files.length === 0) {
+export function buildMemoryInboxReport(input: MemoryReportInput): string {
+  const candidates = listMemoryCandidates(input.workspace, input);
+  if (candidates.length === 0) {
     return [
-      'Auto-memory: no memory files found for this workspace yet.',
+      'Memory inbox: no pending candidates.',
       '',
-      `Expected location: ${idx.dir}`,
+      `Inbox: ${getMemoryInboxDir(input.workspace, input)}`,
       '',
-      'Auto-write is not yet wired (MILESTONES 1d). Memories will appear here once the',
-      'agent starts saving user corrections/feedback across sessions.',
+      'New auto-memory candidates appear here for review before they are loaded.',
     ].join('\n');
   }
 
+  const lines = ['Memory inbox candidates:', ''];
+  candidates.forEach((candidate, i) => {
+    lines.push(
+      `${i + 1}. ${candidate.title ?? candidate.name} (${candidate.type ?? 'unknown'}) — ${candidate.name}`,
+    );
+  });
+  lines.push('');
+  lines.push('Use /memory approve <number-or-file> or /memory discard <number-or-file>.');
+  return lines.join('\n');
+}
+
+export function buildMemoryReport(inputOrWorkspace: MemoryReportInput | string): string {
+  const input: MemoryReportInput =
+    typeof inputOrWorkspace === 'string' ? { workspace: inputOrWorkspace } : inputOrWorkspace;
+  // Prefer the caller-supplied snapshot (already current after /memory approve
+  // refreshes liveConfig.memoryContext). Only walk the disk when no snapshot
+  // is available — avoids a redundant full re-read on every /memory status.
+  const ctx = input.loaded ?? loadMemoryContext(input.workspace, input);
+  const settings = input.settings;
+  const enabled = settings?.memory.enabled ?? true;
+  const autoSave = settings?.memory.autoSave ?? true;
+  const requireApproval = settings?.memory.requireApproval ?? true;
+
   const lines: string[] = ['Auto-memory for this workspace:', ''];
-  lines.push(`Location: ${idx.dir}`);
-  lines.push(
-    `Index: ${idx.indexFile ?? '(MEMORY.md missing)'} (${idx.indexLineCount} non-empty lines)`,
-  );
+  lines.push(`Location: ${ctx.dir}`);
+  lines.push(`Loading: ${enabled ? 'enabled' : 'disabled'}`);
+  lines.push(`Auto-capture: ${autoSave ? 'enabled' : 'disabled'} (writes review candidates only)`);
+  lines.push(`Approval required: ${requireApproval ? 'yes' : 'no'}`);
+  lines.push(`Inbox: ${getMemoryInboxDir(input.workspace, input)}`);
   lines.push('');
-  lines.push('Memory files:');
-  for (const f of idx.files) {
-    const tag = f.name === 'MEMORY.md' ? ' (index)' : '';
-    lines.push(`  - ${f.name}${tag}`);
+
+  if (ctx.indexFile) {
+    const cap =
+      ctx.loadedLineCount < ctx.indexLineCount
+        ? `first ${ctx.loadedLineCount} of ${ctx.indexLineCount} non-empty lines`
+        : `${ctx.loadedLineCount} non-empty lines`;
+    lines.push(`Loaded index: ${ctx.indexFile} (${cap})`);
+  } else {
+    lines.push('Loaded index: none found');
   }
+
+  lines.push(`Pending candidates: ${ctx.candidates.length}`);
   lines.push('');
-  lines.push('(Read-only view. Auto-save is not yet implemented — MILESTONES 1d.)');
+
+  const approvedFiles = ctx.files.filter((file) => file.name !== 'MEMORY.md');
+  if (approvedFiles.length === 0) {
+    lines.push('Approved memory files: none yet');
+  } else {
+    lines.push('Approved memory files:');
+    for (const file of approvedFiles) {
+      lines.push(`  - ${file.title ?? file.name} (${file.type ?? 'unknown'}) — ${file.name}`);
+    }
+  }
+
+  lines.push('');
+  lines.push(
+    'Commands: /memory inbox, /memory approve <n|file>, /memory discard <n|file>, /memory on, /memory off, /memory path',
+  );
+  lines.push(`Path: ${getProjectMemoryDir(input.workspace, input)}`);
   return lines.join('\n');
 }

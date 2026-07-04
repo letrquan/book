@@ -16,6 +16,7 @@ import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types.js';
 import { makeMessage } from './streaming-state.js';
 import { createDebugLogger } from '../../debug-log.js';
+import { loadMemoryContext } from '../../memory-store.js';
 import { persistSettingLocal, persistPermissionRuleLocal } from '../persist.js';
 
 const log = createDebugLogger('tui');
@@ -85,7 +86,11 @@ export function useAgent(config: AgentConfig) {
     async (userMessage: string, commandContext?: CommandContext) => {
       if (isThinking) return;
 
-      log.info('send message', { len: userMessage.length, mode, hasCommandContext: !!commandContext });
+      log.info('send message', {
+        len: userMessage.length,
+        mode,
+        hasCommandContext: !!commandContext,
+      });
 
       // --- Optimistic, Claude-Code-style update ---
       // Render the user's message IMMEDIATELY, and seed a fresh, empty
@@ -371,33 +376,56 @@ export function useAgent(config: AgentConfig) {
   // Switch the active model for the rest of the session and persist it to the
   // local settings layer. (BOOK_MODEL env, if set, overrides settings on the
   // next startup — app.tsx surfaces that warning, not here.)
-  const setModel = useCallback((name: string) => {
-    setLiveConfig((c) => applyModelDefaults(resolveModelProviderConfig(c, name)));
-    persistSettingLocal(config.workspace, 'model', name);
-  }, [config.workspace]);
+  const setModel = useCallback(
+    (name: string) => {
+      setLiveConfig((c) => applyModelDefaults(resolveModelProviderConfig(c, name)));
+      persistSettingLocal(config.workspace, 'model', name);
+    },
+    [config.workspace],
+  );
 
-  const setEffort = useCallback((level: AgentConfig['effort']) => {
-    setLiveConfig((c) => ({ ...c, effort: level, effortExplicit: true }));
-    persistSettingLocal(config.workspace, 'effort', level);
-  }, [config.workspace]);
+  const setEffort = useCallback(
+    (level: AgentConfig['effort']) => {
+      setLiveConfig((c) => ({ ...c, effort: level, effortExplicit: true }));
+      persistSettingLocal(config.workspace, 'effort', level);
+    },
+    [config.workspace],
+  );
 
-  // Add an allow rule from the "Always allow" approval flow (CC-aligned) and
-  // surface it live in settings so the next call is auto-allowed.
-  const persistPermissionRule = useCallback((rule: string) => {
-    setLiveConfig((c) => {
-      const allow = c.settings.permissions.allow.includes(rule)
-        ? c.settings.permissions.allow
-        : [...c.settings.permissions.allow, rule];
-      return {
+  const setMemoryAutoSave = useCallback(
+    (enabled: boolean) => {
+      setLiveConfig((c) => ({
         ...c,
         settings: {
           ...c.settings,
-          permissions: { ...c.settings.permissions, allow },
+          memory: { ...c.settings.memory, autoSave: enabled },
         },
-      };
-    });
-    persistPermissionRuleLocal(config.workspace, 'allow', rule);
-  }, [config.workspace]);
+      }));
+      persistSettingLocal(config.workspace, 'memory.autoSave', enabled);
+    },
+    [config.workspace],
+  );
+
+  // Add an allow rule from the "Always allow" approval flow (CC-aligned) and
+  // surface it live in settings so the next call is auto-allowed.
+  const persistPermissionRule = useCallback(
+    (rule: string) => {
+      setLiveConfig((c) => {
+        const allow = c.settings.permissions.allow.includes(rule)
+          ? c.settings.permissions.allow
+          : [...c.settings.permissions.allow, rule];
+        return {
+          ...c,
+          settings: {
+            ...c.settings,
+            permissions: { ...c.settings.permissions, allow },
+          },
+        };
+      });
+      persistPermissionRuleLocal(config.workspace, 'allow', rule);
+    },
+    [config.workspace],
+  );
 
   return {
     messages,
@@ -426,6 +454,16 @@ export function useAgent(config: AgentConfig) {
     addLocalMessage,
     setModel,
     setEffort,
+    setMemoryAutoSave,
+
+    /** Reload the memory snapshot after approve/discard so the next agent turn picks up changes. */
+    refreshMemoryContext: () => {
+      setLiveConfig((c) => ({
+        ...c,
+        memoryContext: loadMemoryContext(config.workspace),
+      }));
+    },
+
     persistPermissionRule,
   };
 }

@@ -1,4 +1,5 @@
 import type { ProviderModelConfig, ResolvedSettings } from './settings.js';
+import type { LoadedMemoryContext } from './memory-store.js';
 
 export type PermissionMode = 'default' | 'auto' | 'plan' | 'accept-edits' | 'dontAsk' | 'bypassPermissions';
 
@@ -274,6 +275,8 @@ export interface AgentConfig {
   provider?: 'anthropic' | 'openai' | 'auto';
   /** Metadata from settings.provider.<id>.models.<model>, if selected. */
   modelInfo?: ProviderModelConfig;
+  /** Approved memory snapshot loaded once at session start. */
+  memoryContext?: LoadedMemoryContext;
 }
 
 export interface ProviderStreamEvent {

@@ -5,6 +5,7 @@ import { homedir } from 'os';
 import type { AgentConfig, RetryConfig } from './types.js';
 import { resolveSettings, migrateLegacyPermissions } from './settings-loader.js';
 import { DEFAULT_SETTINGS } from './settings.js';
+import { loadMemoryContext } from './memory-store.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
@@ -111,6 +112,8 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
       || settings.retry?.watchdog === true,
   };
 
+  const memoryContext = settings.memory.enabled ? loadMemoryContext(resolvedWorkspace) : undefined;
+
   const envMaxTokens = parsePositiveInt(process.env.BOOK_MAX_TOKENS, 'BOOK_MAX_TOKENS');
   const maxTokensExplicit = envMaxTokens !== undefined || settings.maxTokens !== undefined || legacy?.maxTokens !== undefined;
   const effortExplicit = Boolean(process.env.BOOK_EFFORT || settings.effort);
@@ -143,6 +146,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     accessibility: legacy?.accessibility || { screenReader: false, reducedMotion: false },
     settings,
     retry,
+    memoryContext,
     effort: defaultEffort,
     provider: defaultProvider,
   };

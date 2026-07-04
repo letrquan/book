@@ -39,9 +39,9 @@ export async function runSubagent(
     maxTurns: def.maxTurns,
     autoCompactEnabled: false, // subagents are short-lived, no compaction needed
   };
-  const subConfig = applyModelDefaults(def.model
-    ? resolveModelProviderConfig(baseConfig, def.model)
-    : baseConfig);
+  const subConfig = applyModelDefaults(
+    def.model ? resolveModelProviderConfig(baseConfig, def.model) : baseConfig,
+  );
 
   // The agent body becomes the system prompt; the Task prompt is the first user message.
   const history: Message[] = [];
@@ -70,7 +70,7 @@ export async function runSubagent(
         onUsage: () => {},
       },
       'bypassPermissions', // subagents run with bypass to avoid interactive prompts
-      { isNewSession: true },
+      { isNewSession: true, isSubagent: true },
     );
 
     // Extract the last assistant message content from the history.

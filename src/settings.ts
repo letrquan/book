@@ -119,6 +119,12 @@ export const providerConfigSchema = z.object({
   models: z.record(providerModelSchema).default({}),
 });
 
+export const memorySettingsSchema = z.object({
+  enabled: z.boolean().default(true),
+  autoSave: z.boolean().default(true),
+  requireApproval: z.boolean().default(true),
+});
+
 export type ProviderModelConfig = z.infer<typeof providerModelSchema>;
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;
 
@@ -143,6 +149,7 @@ export const bookSettingsSchema = z.object({
   sandbox: sandboxSchema.default({}),
   hooks: hooksSchema.default({}),
   retry: retrySettingsSchema.default({}),
+  memory: memorySettingsSchema.default({}),
 });
 
 export type BookSettings = z.infer<typeof bookSettingsSchema>;
@@ -189,5 +196,10 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     streamStallTimeoutMs: 20000,
     toolRetries: 1,
     watchdog: false,
+  },
+  memory: {
+    enabled: true,
+    autoSave: true,
+    requireApproval: true,
   },
 };

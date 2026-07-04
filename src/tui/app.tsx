@@ -33,7 +33,14 @@ import {
   REVIEW_TOOLS,
   SECURITY_REVIEW_TOOLS,
 } from '../commands/builtins-prompts.js';
-import { buildMemoryReport, getMemoryIndex } from '../memory-display.js';
+import { buildMemoryInboxReport, buildMemoryReport, getMemoryIndex } from '../memory-display.js';
+import {
+  approveMemoryCandidate,
+  discardMemoryCandidate,
+  getProjectMemoryDir,
+  listMemoryCandidates,
+  loadMemoryContext,
+} from '../memory-store.js';
 import { buildContextReport } from '../context-report.js';
 import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
@@ -52,6 +59,7 @@ const SETTABLE_KEYS = [
   'permissions',
   'sandbox',
   'hooks',
+  'memory',
   'additionalDirectories',
   'env',
 ];
@@ -104,6 +112,8 @@ export function App({ config }: AppProps) {
     addLocalMessage,
     setModel,
     setEffort,
+    setMemoryAutoSave,
+    refreshMemoryContext,
     turnDurationMs,
     retryPhase,
     retryAttempt,
@@ -267,8 +277,62 @@ export function App({ config }: AppProps) {
         addLocalMessage(r.error ? `✕ ${r.error}` : r.output.trim() || '(no changes)');
       } else if (value.startsWith('/status')) {
         setShowStatus((s) => !s);
-      } else if (value.startsWith('/memory')) {
-        addLocalMessage(buildMemoryReport(config.workspace));
+      } else if (value === '/memory' || value.startsWith('/memory ')) {
+        const arg = value.slice('/memory'.length).trim();
+
+        if (!arg || arg === 'status') {
+          // Respect the enabled gate: when memory loading is disabled, don't
+          // walk the disk just to render a status line.
+          const loaded = liveConfig.settings.memory.enabled
+            ? (liveConfig.memoryContext ?? loadMemoryContext(config.workspace))
+            : undefined;
+          addLocalMessage(
+            buildMemoryReport({
+              workspace: config.workspace,
+              settings: liveConfig.settings,
+              loaded,
+            }),
+          );
+        } else if (arg === 'inbox') {
+          addLocalMessage(buildMemoryInboxReport({ workspace: config.workspace }));
+        } else if (arg === 'path') {
+          addLocalMessage(getProjectMemoryDir(config.workspace));
+        } else if (arg === 'on' || arg === 'auto-save on') {
+          setMemoryAutoSave(true);
+          addLocalMessage(
+            'Memory auto-capture enabled. New candidates will still require approval.',
+          );
+        } else if (arg === 'off' || arg === 'auto-save off') {
+          setMemoryAutoSave(false);
+          addLocalMessage('Memory auto-capture disabled. Existing approved memory can still load.');
+        } else if (arg.startsWith('approve ') || arg.startsWith('discard ')) {
+          const action = arg.startsWith('approve ') ? 'approve ' : 'discard ';
+          const rest = arg.slice(action.length).trim();
+          const candidates = listMemoryCandidates(config.workspace);
+          const resolveCandidate = (raw: string): string | undefined => {
+            if (!raw) return undefined;
+            const idx = Number(raw);
+            if (Number.isInteger(idx) && idx >= 1 && idx <= candidates.length)
+              return candidates[idx - 1].name;
+            return raw;
+          };
+          const target = resolveCandidate(rest);
+          const r = target
+            ? action === 'approve '
+              ? approveMemoryCandidate(config.workspace, target)
+              : discardMemoryCandidate(config.workspace, target)
+            : { ok: false, error: 'Missing candidate id or filename.' };
+          addLocalMessage(
+            r.ok
+              ? `${action === 'approve ' ? 'Approved' : 'Discarded'} memory candidate → ${r.path}`
+              : `✕ ${r.error}`,
+          );
+          if (r.ok && action === 'approve ') refreshMemoryContext();
+        } else {
+          addLocalMessage(
+            'Usage: /memory [status|inbox|approve <n|file>|discard <n|file>|on|off|path]',
+          );
+        }
       } else if (value.startsWith('/permissions')) {
         setShowPermissions((s) => !s);
       } else if (value.startsWith('/cost')) {
@@ -289,7 +353,9 @@ export function App({ config }: AppProps) {
             skillCount: skills.length,
             commandCount: commands.length,
             subagentCount: discoverAgents(config.workspace).length,
-            hasMemoryIndex: Boolean(getMemoryIndex(config.workspace).indexFile),
+            hasMemoryIndex: Boolean(
+              liveConfig.memoryContext?.indexLoaded ?? getMemoryIndex(config.workspace).indexFile,
+            ),
             hasClaudeMdLoader: discoverClaudeMd(config.workspace).length > 0,
           }),
         );

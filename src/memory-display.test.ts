@@ -1,36 +1,64 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
-import { tmpdir, homedir } from 'os';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
-import { buildMemoryReport, getMemoryIndex } from './memory-display.js';
+import { buildMemoryInboxReport, buildMemoryReport, getMemoryIndex } from './memory-display.js';
+import { getMemoryInboxDir, getProjectMemoryDir, writeMemoryCandidate } from './memory-store.js';
+import { DEFAULT_SETTINGS } from './settings.js';
 
-// We cannot easily stub homedir(), so we test the report against a workspace
-// and assert the "no memory yet" branch — the realistic state today, since
-// 1d's auto-write isn't wired and no ~/.book/projects/... dir exists on CI.
+let bookRoot: string;
+const workspace = 'C:\\fake\\book-test-ws';
+
+beforeEach(() => {
+  bookRoot = mkdtempSync(join(tmpdir(), 'book-memory-display-'));
+});
+
+afterEach(() => {
+  rmSync(bookRoot, { recursive: true, force: true });
+});
 
 describe('buildMemoryReport', () => {
-  it('reports no memory when the memory dir is absent', () => {
-    const report = buildMemoryReport(join(tmpdir(), 'book-test-no-such-ws-' + crypto.randomUUID()));
-    expect(report).toContain('no memory files found');
-    expect(report).toContain('Auto-write is not yet wired');
+  it('reports no approved memory when the memory dir is absent', () => {
+    const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
+    expect(report).toContain('Loaded index: none found');
+    expect(report).toContain('Pending candidates: 0');
+    expect(report).toContain('Auto-capture: enabled');
   });
 
-  it('lists existing memory files when present', () => {
-    // Use a workspace slug we control by writing into the resolved dir.
-    const fakeWs = 'C:\\fake\\book-test-ws';
-    const idx = getMemoryIndex(fakeWs);
-    mkdirSync(idx.dir, { recursive: true });
-    writeFileSync(join(idx.dir, 'MEMORY.md'), '- [A](a.md) — hook\n- [B](b.md) — hook2\n', 'utf-8');
-    writeFileSync(join(idx.dir, 'a.md'), 'body', 'utf-8');
+  it('lists approved memory and reports the line cap', () => {
+    const dir = getProjectMemoryDir(workspace, { bookRoot });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'MEMORY.md'), Array.from({ length: 205 }, (_, i) => `line ${i + 1}`).join('\n'), 'utf-8');
+    writeFileSync(join(dir, 'a.md'), '---\ntype: project\nstatus: approved\n---\n# Project rule\nBody', 'utf-8');
 
-    try {
-      const report = buildMemoryReport(fakeWs);
-      expect(report).toContain('Auto-memory for this workspace');
-      expect(report).toContain('MEMORY.md (index)');
-      expect(report).toContain('a.md');
-      expect(report).toContain('2 non-empty lines');
-    } finally {
-      rmSync(idx.dir, { recursive: true, force: true });
-    }
+    const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
+    expect(report).toContain('first 200 of 205');
+    expect(report).toContain('Project rule (project)');
+  });
+
+  it('shows disabled auto-capture and pending inbox candidates', () => {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.memory.autoSave = false;
+    writeMemoryCandidate(workspace, {
+      type: 'user',
+      title: 'User likes short answers',
+      body: 'User likes short answers.',
+      source: 'auto',
+    }, { bookRoot });
+
+    const report = buildMemoryReport({ workspace, bookRoot, settings });
+    expect(report).toContain('Auto-capture: disabled');
+    expect(report).toContain('Pending candidates: 1');
+    expect(buildMemoryInboxReport({ workspace, bookRoot })).toContain('User likes short answers');
+  });
+
+  it('keeps getMemoryIndex compatibility', () => {
+    const dir = getProjectMemoryDir(workspace, { bookRoot });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'MEMORY.md'), '- [A](a.md) — hook\n', 'utf-8');
+    const idx = getMemoryIndex(workspace, { bookRoot });
+    expect(idx.indexFile).toBe(join(dir, 'MEMORY.md'));
+    expect(idx.indexLineCount).toBe(1);
+    expect(getMemoryInboxDir(workspace, { bookRoot })).toContain('.inbox');
   });
 });

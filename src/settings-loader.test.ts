@@ -117,6 +117,14 @@ describe('mergeSettings', () => {
     const result = mergeSettings(base, { model: undefined });
     expect(result.model).toBe('gpt-4o');
   });
+
+  it('merges nested memory settings without losing defaults', () => {
+    const base = structuredClone(DEFAULT_SETTINGS);
+    const result = mergeSettings(base, { memory: { autoSave: false } } as Partial<ResolvedSettings>);
+    expect(result.memory.enabled).toBe(true);
+    expect(result.memory.autoSave).toBe(false);
+    expect(result.memory.requireApproval).toBe(true);
+  });
 });
 
 describe('resolveSettings — layered merging', () => {
@@ -124,6 +132,7 @@ describe('resolveSettings — layered merging', () => {
     const result = resolveSettings(dir);
     expect(result.permissions.allow).toEqual([]);
     expect(result.sandbox.enabled).toBe(false);
+    expect(result.memory).toEqual({ enabled: true, autoSave: true, requireApproval: true });
   });
 
   it('project overrides user', () => {
