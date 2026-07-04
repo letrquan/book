@@ -26,6 +26,29 @@ afterEach(() => {
 });
 
 describe('ChatPanel Ink rendering', () => {
+  it('renders the animated welcome when the conversation is empty', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[]}
+          terminalWidth={80}
+          terminalHeight={24}
+          workspace="/tmp/book"
+          model="model-x"
+          mode="default"
+          commandCount={10}
+          skillCount={2}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('BOOK');
+    expect(output).toContain('Your coding workspace, indexed.');
+    expect(output).toContain('/init');
+  });
+
   it('renders a submitted user message, assistant placeholder, then streamed text without overwriting older messages', () => {
     const baseMessages = [
       msg('u0', 'user', 'older question'),

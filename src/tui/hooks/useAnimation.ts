@@ -60,12 +60,13 @@ export function useTypewriter(
   text: string,
   speed: number,
   active: boolean,
+  reducedMotion = false,
 ): string {
   const [displayed, setDisplayed] = useState('');
   const prevTextRef = useRef(text);
 
   useEffect(() => {
-    if (!active || !text) {
+    if (!active || !text || reducedMotion) {
       setDisplayed(text);
       prevTextRef.current = text;
       return;
@@ -83,9 +84,59 @@ export function useTypewriter(
       }
     }, speed);
     return () => clearInterval(interval);
-  }, [text, active, speed]);
+  }, [text, active, speed, reducedMotion]);
 
-  return active ? displayed : text;
+  return active && !reducedMotion ? displayed : text;
+}
+
+export function useStaggeredReveal(
+  count: number,
+  active: boolean,
+  intervalMs = 120,
+  reducedMotion = false,
+): number {
+  const [visibleCount, setVisibleCount] = useState(reducedMotion ? count : 0);
+
+  useEffect(() => {
+    if (!active || reducedMotion) {
+      setVisibleCount(count);
+      return;
+    }
+    setVisibleCount(0);
+    let current = 0;
+    const interval = setInterval(() => {
+      current++;
+      setVisibleCount(Math.min(count, current));
+      if (current >= count) {
+        clearInterval(interval);
+      }
+    }, intervalMs);
+    return () => clearInterval(interval);
+  }, [active, count, intervalMs, reducedMotion]);
+
+  return visibleCount;
+}
+
+export function useTimedFlash(triggerValue: unknown, durationMs = 220, disabled = false): boolean {
+  const [on, setOn] = useState(false);
+  const firstRun = useRef(true);
+
+  useEffect(() => {
+    if (disabled) {
+      setOn(false);
+      firstRun.current = false;
+      return;
+    }
+    if (firstRun.current) {
+      firstRun.current = false;
+      return;
+    }
+    setOn(true);
+    const timer = setTimeout(() => setOn(false), durationMs);
+    return () => clearTimeout(timer);
+  }, [triggerValue, durationMs, disabled]);
+
+  return on;
 }
 
 export function usePulse(active: boolean, interval = 500): boolean {

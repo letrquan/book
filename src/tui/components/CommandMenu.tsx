@@ -1,6 +1,9 @@
 import { Box, Text } from 'ink';
+import { useMemo } from 'react';
+import { usePulse } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import type { CommandItem } from '../../commands/filter.js';
+import { truncateDisplay } from './word-wrap.js';
 
 interface CommandMenuProps {
   /** Pre-filtered and categorized command items to display. */
@@ -11,6 +14,16 @@ interface CommandMenuProps {
   selectedIndex: number;
   /** Whether the menu is visible. */
   visible: boolean;
+  /** Available width, excluding any parent padding. */
+  terminalWidth?: number;
+  /** Maximum command rows to render. */
+  maxRows?: number;
+  /** Compact rendering for narrow or short terminals. */
+  compact?: boolean;
+  /** Disable motion for accessibility. */
+  reducedMotion?: boolean;
+  /** Render plain, non-decorative output for screen readers. */
+  screenReader?: boolean;
 }
 
 const CATEGORY_LABELS: Record<CommandItem['category'], string> = {
@@ -20,54 +33,108 @@ const CATEGORY_LABELS: Record<CommandItem['category'], string> = {
   project: 'Project',
 };
 
-const CATEGORY_ORDER: CommandItem['category'][] = ['recent', 'builtin', 'user', 'project'];
+const COMPACT_CATEGORY_LABELS: Record<CommandItem['category'], string> = {
+  recent: 'R',
+  builtin: 'B',
+  user: 'U',
+  project: 'P',
+};
+
+export function getCommandMenuWindow(
+  itemCount: number,
+  selectedIndex: number,
+  maxRows: number,
+): { start: number; end: number } {
+  const safeCount = Math.max(0, itemCount);
+  const safeRows = Math.max(1, Math.floor(maxRows));
+  if (safeCount <= safeRows) return { start: 0, end: safeCount };
+
+  const selected = Math.max(0, Math.min(selectedIndex, safeCount - 1));
+  const half = Math.floor(safeRows / 2);
+  let start = Math.max(0, selected - half);
+  start = Math.min(start, safeCount - safeRows);
+  return { start, end: start + safeRows };
+}
+
+function formatCommandRow(
+  item: CommandItem,
+  selected: boolean,
+  width: number,
+  compact: boolean,
+  shimmer: boolean,
+  screenReader: boolean,
+): string {
+  const marker = screenReader ? (selected ? 'selected ' : '') : selected ? (shimmer ? '▸ ' : '› ') : '  ';
+  const hint = item.hint ? ` ${item.hint}` : '';
+  const category = compact
+    ? COMPACT_CATEGORY_LABELS[item.category]
+    : CATEGORY_LABELS[item.category];
+  const badge = compact ? ` [${category}]` : ` [${category}]`;
+  const desc = item.desc && !compact ? ` — ${item.desc}` : '';
+  return truncateDisplay(`${marker}/${item.name}${hint}${badge}${desc}`, width);
+}
 
 /** Slash-command palette. Filtering/ranking lives in commands/filter.ts. */
-export function CommandMenu({ items, filterText, selectedIndex, visible }: CommandMenuProps) {
+export function CommandMenu({
+  items,
+  filterText,
+  selectedIndex,
+  visible,
+  terminalWidth = 80,
+  maxRows = 8,
+  compact = false,
+  reducedMotion = false,
+  screenReader = false,
+}: CommandMenuProps) {
   const theme = useTheme();
+  const shimmer = usePulse(visible && !reducedMotion && !screenReader, 360);
+
+  const width = Math.max(20, Math.floor(terminalWidth));
+  const contentWidth = Math.max(8, width - 4);
+  const safeMaxRows = Math.max(1, Math.floor(maxRows));
+  const selIdx = Math.max(0, Math.min(selectedIndex, items.length - 1));
+  const window = useMemo(
+    () => getCommandMenuWindow(items.length, selIdx, safeMaxRows),
+    [items.length, selIdx, safeMaxRows],
+  );
+  const visibleItems = items.slice(window.start, window.end);
+  const hiddenBefore = window.start;
+  const hiddenAfter = Math.max(0, items.length - window.end);
+  const hiddenTotal = hiddenBefore + hiddenAfter;
 
   if (!visible) return null;
 
-  const selIdx = Math.max(0, Math.min(selectedIndex, items.length - 1));
-  const showSections = filterText.trim() === '';
-  const sections = showSections
-    ? CATEGORY_ORDER.map((category) => ({
-        category,
-        items: items.filter((item) => item.category === category),
-      })).filter((section) => section.items.length > 0)
-    : [{ category: undefined, items }];
+  const title = filterText
+    ? truncateDisplay(`Commands matching “${filterText}”`, contentWidth)
+    : 'Commands';
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1}>
-      <Box>
-        <Text bold color={theme.brand}>Commands</Text>
-        {filterText ? <Text color={theme.subtle}> matching “{filterText}”</Text> : null}
-      </Box>
+    <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1} width={width}>
+      <Text bold color={theme.brand}>{title}</Text>
 
       {items.length === 0 ? (
         <Text color={theme.subtle} dimColor>No matching commands</Text>
       ) : (
-        sections.map((section) => (
-          <Box key={section.category ?? 'matches'} flexDirection="column">
-            {section.category ? (
-              <Text color={theme.subtle} dimColor>{CATEGORY_LABELS[section.category]}</Text>
-            ) : null}
-            {section.items.map((item) => {
-              const globalIndex = items.indexOf(item);
-              const isSelected = globalIndex === selIdx;
-              const color = isSelected ? theme.brand : theme.text;
-              const hint = item.hint ? ` ${item.hint}` : '';
-              return (
-                <Box key={`${item.category}-${item.name}`}>
-                  <Text color={color} bold={isSelected}>{isSelected ? '› ' : '  '}/{item.name}{hint}</Text>
-                  <Text color={theme.subtle}> [{CATEGORY_LABELS[item.category]}]</Text>
-                  {item.desc ? <Text color={theme.subtle}> — {item.desc}</Text> : null}
-                </Box>
-              );
-            })}
-          </Box>
-        ))
+        visibleItems.map((item, index) => {
+          const globalIndex = window.start + index;
+          const isSelected = globalIndex === selIdx;
+          return (
+            <Text
+              key={`${item.category}-${item.name}-${globalIndex}`}
+              color={isSelected ? theme.brand : theme.text}
+              bold={isSelected}
+            >
+              {formatCommandRow(item, isSelected, contentWidth, compact, shimmer, screenReader)}
+            </Text>
+          );
+        })
       )}
+
+      {hiddenTotal > 0 ? (
+        <Text color={theme.subtle} dimColor>
+          {truncateDisplay(`… ${hiddenTotal} more, type to filter`, contentWidth)}
+        </Text>
+      ) : null}
     </Box>
   );
 }
