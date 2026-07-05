@@ -31,6 +31,69 @@ interface AgentMessageProps {
 }
 
 /**
+ * Strip trailing partial markdown code-fence closings from streaming text.
+ *
+ * While streaming, the LLM may emit incomplete closing fences (e.g. `` after a
+ * ```rust block). These partial markers cause rendered code blocks to visually
+ * jitter as the fence opens/closes. This function detects when the last line is
+ * a non-empty prefix of a closing fence marker and strips it.
+ */
+export function trimPartialClosingFences(text: string): string {
+  const lines = text.split('\n');
+  let lastOpenIdx = -1;
+  for (let i = lines.length - 2; i >= 0; i--) {
+    if (/^```/.test(lines[i])) {
+      lastOpenIdx = i;
+      break;
+    }
+  }
+
+  if (lastOpenIdx === -1) return text;
+
+  let hasClose = false;
+  for (let i = lastOpenIdx + 1; i < lines.length; i++) {
+    if (/^```\s*$/.test(lines[i])) {
+      hasClose = true;
+      break;
+    }
+  }
+
+  if (hasClose) return text;
+
+  const lastLine = lines[lines.length - 1];
+  if (lastLine === '') return text;
+
+  const closeMarker = '```';
+  if (lastLine !== closeMarker && closeMarker.startsWith(lastLine)) {
+    return lines.slice(0, -1).join('\n') + (lines.length > 1 ? '\n' : '');
+  }
+
+  return text;
+}
+
+/** Build the spinner label based on retry state. Exported for testing. */
+export function getRetryLabel(
+  retryPhase: RetryPhase,
+  retryAttempt: number,
+  retryMax: number,
+  retryCountdownMs: number,
+): string | undefined {
+  if (retryPhase === 'transport') {
+    const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
+    const attemptStr = retryMax > 0 ? `attempt ${retryAttempt}/${retryMax}` : `attempt ${retryAttempt}`;
+    return `Retrying in ${countdown}s · ${attemptStr}`;
+  }
+  if (retryPhase === 'stalled') {
+    const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
+    return `Waiting for API response · will retry in ${countdown}s · check your network`;
+  }
+  if (retryPhase === 'watchdog') {
+    return `Retrying (watchdog) · attempt ${retryAttempt}`;
+  }
+  return undefined;
+}
+
+/**
  * Claude Code-style agent message block.
  *
  * Each assistant turn renders as:
@@ -62,7 +125,7 @@ export function AgentMessageInner({
   retryCountdownMs = 0,
 }: AgentMessageProps) {
   const theme = useTheme();
-  const displayContent = message.content;
+  const displayContent = isStreaming ? trimPartialClosingFences(message.content) : message.content;
 
   // Group consecutive tool calls of the same name into runs (for MCP-style summary).
   const toolCalls = message.toolCalls ?? [];
@@ -79,24 +142,10 @@ export function AgentMessageInner({
     return groups;
   }, [toolCalls]);
 
-  // Build the spinner label based on retry state.
-  const spinnerLabel = useMemo((): string | undefined => {
-    if (retryPhase === 'transport') {
-      const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
-      const attemptStr = retryMax > 0
-        ? `attempt ${retryAttempt}/${retryMax}`
-        : `attempt ${retryAttempt}`;
-      return `Retrying in ${countdown}s · ${attemptStr}`;
-    }
-    if (retryPhase === 'stalled') {
-      const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
-      return `Waiting for API response · will retry in ${countdown}s · check your network`;
-    }
-    if (retryPhase === 'watchdog') {
-      return `Retrying (watchdog) · attempt ${retryAttempt}`;
-    }
-    return undefined;
-  }, [retryPhase, retryAttempt, retryMax, retryCountdownMs]);
+  const spinnerLabel = useMemo(
+    () => getRetryLabel(retryPhase, retryAttempt, retryMax, retryCountdownMs),
+    [retryPhase, retryAttempt, retryMax, retryCountdownMs],
+  );
 
   const isRetrying = retryPhase !== 'none';
 
