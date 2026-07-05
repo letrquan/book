@@ -3,7 +3,7 @@ import { useMemo } from 'react';
 import { usePulse, useTimedFlash } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import type { PermissionMode } from '../../types.js';
-import { displayWidth, makeDivider, truncateDisplay } from './word-wrap.js';
+import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
 
 const renderLog = createRenderDebugLogger('tui:statusline');
@@ -119,8 +119,17 @@ export function StatusLine({
       : theme.text;
 
   return (
-    <Box flexDirection="column" paddingX={1} width={width}>
-      <Text color={theme.subtle}>{makeDivider(width, 2)}</Text>
+    <Box
+      flexDirection="column"
+      paddingX={1}
+      width={width}
+      borderStyle="single"
+      borderTop
+      borderBottom={false}
+      borderLeft={false}
+      borderRight={false}
+      borderColor={theme.subtle}
+    >
       <Text color={rowColor}>{row}</Text>
       {warning ? (
         <Text color={usageCritical ? theme.error : theme.warning}>{warning}</Text>

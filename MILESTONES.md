@@ -48,15 +48,18 @@ Book now builds a structured Claude-Code-style prompt from local project context
 - [ ] Two-zone: cached static prefix + dynamic per-turn suffix
 - [x] Structure: persona → CLAUDE.md/rules → context → tools → memory → guardrails
 
-### 1d. Auto memory system [MISSING]
+### 1d. Auto memory system [has] ✅ (2026-07-04)
 Without persistence, every session is amnesia. Memory makes the agent compound across sessions.
 
-- File-based store in `~/.book/projects/<project>/memory/`
-- `MEMORY.md` index (first 200 lines loaded at session start)
-- 4 memory types: user, feedback, project, reference
-- YAML frontmatter on each memory file
-- Write memories on user corrections/confirmations
-- `/memory` command showing loaded files, toggle auto-save
+- [x] File-based store in `~/.book/projects/<project>/memory/` — `memory-store.ts` `getProjectMemoryDir()`
+- [x] `MEMORY.md` index (first 200 lines loaded at session start) — `loadMemoryContext()`, `DEFAULT_MAX_INDEX_LINES = 200`
+- [x] 4 memory types: user, feedback, project, reference — `MEMORY_TYPES`
+- [x] YAML frontmatter on each memory file — `renderMemoryMarkdown()` writes `type/status/source/created/updated/confidence/tags`
+- [x] Write memories on user corrections/confirmations — `memory-autosave.ts` `detectMemoryCandidate()` + `maybeCaptureMemoryCandidate()`, called from `agent/loop.ts` on every user turn
+- [x] `/memory` command showing loaded files, toggle auto-save — handler in `tui/app.tsx`, subcommands `status|inbox|approve|discard|on|off|path`
+- [x] Settings: `enabled`, `autoSave`, `requireApproval` — `memorySettingsSchema` in `settings.ts`
+
+**Beyond spec (approval flow):** auto-captured candidates land in `.inbox/` as `pending`; `/memory approve` or `/memory discard` commits them, with symlink + path-escape guards (`approveMemoryCandidate`/`discardMemoryCandidate`). `secret-detect.ts` rejects secrets/unfit text before writing. `agent/context.ts` injects the loaded `MEMORY.md` index into the system prompt (feeds 1c's "Inject auto memory" item).
 
 ### 1e. Missing tools (basic coverage)
 
@@ -127,7 +130,7 @@ The STUB commands now do the real thing locally (no longer delegate to the agent
 - `/rewind` — roll back to checkpoint **(needs checkpoint/restore infra)**
 - `/resume` — resume a previous session (interactive picker) **(headless `--resume` exists; interactive TUI picker + hot-swap of history is new work)**
 
-> `/memory` is genuinely real (reads the memory store) but reports "no memories yet" until 1d's auto-write path lands — surfaced honestly in the output. `/usage` tracks the active model only; a per-model breakdown across a multi-model session is deferred (needs accounting plumbing in Phase 2/3).
+> `/memory` is fully wired now that 1d's auto-write + approval flow have landed — candidates are captured to `.inbox/` and surface in `/memory inbox` for review, `/memory approve|discard` commits them. `/usage` tracks the active model only; a per-model breakdown across a multi-model session is deferred (needs accounting plumbing in Phase 2/3).
 
 ### 1g. CLI flags [MISSING]
 

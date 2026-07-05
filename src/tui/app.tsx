@@ -5,6 +5,7 @@ import { join } from 'path';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { StatusLine } from './components/StatusLine.js';
+import { WorkingIndicator } from './components/WorkingIndicator.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
@@ -130,6 +131,7 @@ export function App({ config }: AppProps) {
   const [showHelp, setShowHelp] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showStatus, setShowStatus] = useState(false);
+  const [showAllToolOutput, setShowAllToolOutput] = useState(false);
   const [showPermissions, setShowPermissions] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -143,8 +145,28 @@ export function App({ config }: AppProps) {
   const skills = useMemo(() => discoverSkills(config.workspace), [config.workspace]);
 
   const { stdout } = useStdout();
-  const termWidth = Math.max(20, stdout?.columns ?? 80);
-  const termHeight = Math.max(8, stdout?.rows ?? 24);
+  const [terminalSize, setTerminalSize] = useState(() => ({
+    columns: Math.max(20, stdout?.columns ?? 80),
+    rows: Math.max(8, stdout?.rows ?? 24),
+  }));
+
+  useEffect(() => {
+    const updateSize = () => {
+      setTerminalSize({
+        columns: Math.max(20, stdout?.columns ?? 80),
+        rows: Math.max(8, stdout?.rows ?? 24),
+      });
+    };
+
+    updateSize();
+    stdout?.on?.('resize', updateSize);
+    return () => {
+      stdout?.off?.('resize', updateSize);
+    };
+  }, [stdout]);
+
+  const termWidth = terminalSize.columns;
+  const termHeight = terminalSize.rows;
   const isNarrow = termWidth < 64;
   const isTiny = termWidth < 42 || termHeight < 12;
   const footerWidth = Math.max(20, termWidth - 2);
@@ -167,6 +189,7 @@ export function App({ config }: AppProps) {
   useDebugValueChange(uiLog, 'showHelp', showHelp, (v) => String(v));
   useDebugValueChange(uiLog, 'showShortcuts', showShortcuts, (v) => String(v));
   useDebugValueChange(uiLog, 'showStatus', showStatus, (v) => String(v));
+  useDebugValueChange(uiLog, 'showAllToolOutput', showAllToolOutput, (v) => String(v));
   useDebugValueChange(uiLog, 'showPermissions', showPermissions, (v) => String(v));
   useDebugValueChange(uiLog, 'showSkills', showSkills, (v) => String(v));
   useDebugValueChange(uiLog, 'showModelPicker', showModelPicker, (v) => String(v));
@@ -187,6 +210,12 @@ export function App({ config }: AppProps) {
         return;
       }
       uiLog.event('input:Escape', { action: 'noop-idle' });
+    }
+    // Ctrl+E — toggle full tool output
+    if (key.ctrl && input === 'e') {
+      uiLog.event('input:Ctrl+E', { action: 'toggle-tool-output' });
+      setShowAllToolOutput((s) => !s);
+      return;
     }
     // Ctrl+T — toggle task list
     if (key.ctrl && input === 't') {
@@ -547,11 +576,16 @@ export function App({ config }: AppProps) {
       input: string,
       key: { ctrl?: boolean; meta?: boolean; shift?: boolean; tab?: boolean },
     ): boolean => {
-      // Ctrl+/ — toggle keyboard shortcuts reference.
-      // Must be handled here (not in the parent useInput) because ink-text-input
-      // consumes Ctrl key events before they reach the parent handler.
+      // Ctrl+/ and Ctrl+E must be handled here (not only in the parent useInput)
+      // because ink-text-input consumes some Ctrl key events before they reach
+      // the parent handler.
       if (key.ctrl && input === '/') {
         setShowShortcuts((s) => !s);
+        return true; // consumed
+      }
+      if (key.ctrl && input === 'e') {
+        uiLog.event('input:Ctrl+E', { action: 'toggle-tool-output' });
+        setShowAllToolOutput((s) => !s);
         return true; // consumed
       }
       return false; // not consumed — let text input handle it
@@ -589,6 +623,7 @@ export function App({ config }: AppProps) {
               commandCount={commands.length}
               skillCount={skills.length}
               retryPhase={retryPhase}
+              showAllToolOutput={showAllToolOutput}
               retryAttempt={retryAttempt}
               retryMax={retryMax}
               retryCountdownMs={retryCountdownMs}
@@ -858,6 +893,7 @@ export function App({ config }: AppProps) {
                     theme={theme}
                   />
                   <HelpRow label="Ctrl+T" description="Toggle task list" theme={theme} />
+                  <HelpRow label="Ctrl+E" description="Toggle full tool output" theme={theme} />
                   <HelpRow label="Ctrl+L" description="Redraw screen" theme={theme} />
                   <HelpRow label="Alt+M" description="Cycle permission mode" theme={theme} />
                   <HelpRow label="Up/Down" description="Navigate input history" theme={theme} />
@@ -873,6 +909,20 @@ export function App({ config }: AppProps) {
               </Box>
             )}
           </Box>
+
+          <WorkingIndicator
+            isThinking={isThinking}
+            messages={messages}
+            streamingMessageId={streamingMessageId}
+            pendingPermission={pendingPermission}
+            retryPhase={retryPhase}
+            retryAttempt={retryAttempt}
+            retryMax={retryMax}
+            retryCountdownMs={retryCountdownMs}
+            terminalWidth={termWidth}
+            reducedMotion={reducedMotion}
+            screenReader={screenReader}
+          />
 
           {/* Input bar — above the status line. Command menu is built into InputBar. */}
           <Box paddingX={1} flexDirection="column" flexShrink={0} width={termWidth}>

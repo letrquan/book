@@ -31,6 +31,10 @@ interface AgentMessageProps {
   retryAttempt?: number;
   retryMax?: number;
   retryCountdownMs?: number;
+  /** Hide the inline streaming spinner when an external working indicator owns activity state. */
+  hideStreamingSpinner?: boolean;
+  /** When true, expanded tool results show the larger output cap instead of a short preview. */
+  showAllToolOutput?: boolean;
 }
 
 /**
@@ -126,6 +130,8 @@ export function AgentMessageInner({
   retryAttempt = 0,
   retryMax = 0,
   retryCountdownMs = 0,
+  hideStreamingSpinner = false,
+  showAllToolOutput = false,
 }: AgentMessageProps) {
   const theme = useTheme();
   const displayContent = isStreaming ? trimPartialClosingFences(message.content) : message.content;
@@ -169,7 +175,7 @@ export function AgentMessageInner({
     <Box flexDirection="column">
 
       {/* Spinner line: shows thinking tips, or retry countdown during retries */}
-      {isStreaming && !displayContent && !message.toolCalls?.length ? (
+      {isStreaming && !hideStreamingSpinner && !displayContent && !message.toolCalls?.length ? (
         <Box marginLeft={screenReader ? 0 : 2}>
           {isRetrying && spinnerLabel ? (
             <Box>
@@ -186,10 +192,10 @@ export function AgentMessageInner({
       {displayContent ? (
         <Box marginLeft={screenReader ? 0 : 2} flexDirection="column">
           <Box>
-            {isStreaming && !isRetrying && (
+            {isStreaming && !hideStreamingSpinner && !isRetrying && (
               <Spinner active style="braille" reducedMotion={reducedMotion} />
             )}
-            {isRetrying && spinnerLabel && (
+            {isRetrying && !hideStreamingSpinner && spinnerLabel && (
               <Box>
                 <Text color={theme.error}>Retrying: </Text>
                 <Text color={theme.error}>{spinnerLabel} </Text>
@@ -241,6 +247,7 @@ export function AgentMessageInner({
                 isPending={isPending}
                 reducedMotion={reducedMotion}
                 screenReader={screenReader}
+                showAllToolOutput={showAllToolOutput}
               />
               {isPending && onResolvePermission ? (
                 <PermissionButtons
@@ -279,6 +286,8 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
     prev.retryAttempt === next.retryAttempt &&
     prev.retryMax === next.retryMax &&
     prev.retryCountdownMs === next.retryCountdownMs &&
+    prev.hideStreamingSpinner === next.hideStreamingSpinner &&
+    prev.showAllToolOutput === next.showAllToolOutput &&
     prev.reducedMotion === next.reducedMotion &&
     prev.screenReader === next.screenReader &&
     prev.terminalWidth === next.terminalWidth

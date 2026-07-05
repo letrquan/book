@@ -4,7 +4,7 @@ import type React from 'react';
 import { useGradientSpinner, useStaggeredReveal, useTypewriter } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { AsciiBanner } from './AsciiBanner.js';
-import { makeDivider, truncateDisplay } from './word-wrap.js';
+import { truncateDisplay } from './word-wrap.js';
 
 interface WelcomeScreenProps {
   terminalWidth: number;
@@ -86,7 +86,6 @@ export function WelcomeScreen({
     return (
       <Box flexDirection="column" paddingX={1} width={width}>
         <Text color={theme.brand} bold>BOOK</Text>
-        <Text color={theme.subtle}>{makeDivider(width, 2, '─')}</Text>
         <WelcomeLine visible={reveal >= 1}>
           <Text color={theme.text}>{truncateDisplay(tagline || ' ', contentWidth)}</Text>
         </WelcomeLine>
@@ -116,7 +115,6 @@ export function WelcomeScreen({
     <Box flexDirection="column" paddingX={1} width={width}>
       <AsciiBanner />
       <Text color={theme.brand} bold>BOOK</Text>
-      <Text color={theme.subtle}>{makeDivider(width, 2, '─')}</Text>
       <WelcomeLine visible={reveal >= 1}>
         <Text color={spinner.color}>{spinner.frame} </Text>
         <Text color={theme.text}>{truncateDisplay(tagline || ' ', contentWidth - 2)}</Text>
@@ -127,8 +125,7 @@ export function WelcomeScreen({
         </Text>
       </WelcomeLine>
       <WelcomeLine visible={reveal >= 3}>
-        <Text color={theme.brand}>┌ Open a page </Text>
-        <Text color={theme.subtle}>{makeDivider(Math.max(12, width - 16), 0, '─')}</Text>
+        <Text color={theme.brand}>Open a page</Text>
       </WelcomeLine>
       <WelcomeLine visible={reveal >= 4}>
         <Text color={theme.brand}>  /init</Text>
@@ -139,7 +136,6 @@ export function WelcomeScreen({
         <Text color={theme.subtle}> current diff</Text>
       </WelcomeLine>
       <WelcomeLine visible={reveal >= 5}>
-        <Text color={theme.brand}>└ Margins </Text>
         <Text color={theme.subtle}>Ctrl+/ shortcuts · Shift+Tab mode · @file context · !cmd shell</Text>
       </WelcomeLine>
       <WelcomeLine visible={reveal >= 6}>

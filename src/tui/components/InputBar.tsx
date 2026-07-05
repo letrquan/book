@@ -5,7 +5,6 @@ import { useInput } from 'ink';
 import { useTimedFlash, usePulse } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { CommandMenu } from './CommandMenu.js';
-import { makeDivider } from './word-wrap.js';
 import type { PermissionMode, SlashCommand } from '../../types.js';
 import { expandAtMentions, expandShellCommands } from '../input-expansion.js';
 import { recordCommandUse } from '../../commands/recent.js';
@@ -333,8 +332,7 @@ export function InputBar({
   const submitFlash = useTimedFlash(submitFlashKey, 220, motionDisabled);
 
   const width = Math.max(20, Math.floor(terminalWidth));
-  const divider = useMemo(() => makeDivider(width, 2), [width]);
-  const innerWidth = Math.max(1, width - 2);
+  const innerWidth = Math.max(1, width);
   const inputWidth = Math.max(1, innerWidth - 2);
   const borderColor = submitFlash || (promptPulse && !compact) ? theme.brandShimmer : baseBorderColor;
   const placeholder = disabled
@@ -344,9 +342,7 @@ export function InputBar({
   const selIdx = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
 
   return (
-    <Box flexDirection="column">
-      <Text color={theme.subtle}>{divider}</Text>
-
+    <Box flexDirection="column" borderStyle="single" borderBottom={false} borderLeft={false} borderRight={false} borderColor={theme.subtle}>
       <CommandMenu
         items={filteredCmds}
         filterText={menuFilter}

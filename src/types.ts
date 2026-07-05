@@ -204,6 +204,8 @@ export interface ToolResult {
   durationMs?: number;
   /** Which attempt succeeded (1 = first try, 2+ = retried). Only set on success after a retry. */
   retryAttempt?: number;
+  /** Extra metadata: whether a file creation occurred. */
+  isCreate?: boolean;
 }
 
 export interface Message {

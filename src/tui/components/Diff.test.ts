@@ -1,5 +1,25 @@
-import { describe, it, expect } from 'vitest';
-import { isUnifiedDiffLike, parseDiffLines } from './Diff.js';
+import React from 'react';
+import { afterEach, describe, it, expect } from 'vitest';
+import { cleanup, render } from 'ink-testing-library';
+import { ThemeContext, DEFAULT_THEME } from '../theme.js';
+import { DiffBlock, isUnifiedDiffLike, parseDiffLines } from './Diff.js';
+import { displayWidth } from './word-wrap.js';
+
+function stripAnsi(value: string | undefined): string {
+  return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+function frame(lastFrame: () => string | undefined): string {
+  return stripAnsi(lastFrame());
+}
+
+function withTheme(children: React.ReactElement): React.ReactElement {
+  return React.createElement(ThemeContext.Provider, { value: DEFAULT_THEME }, children);
+}
+
+afterEach(() => {
+  cleanup();
+});
 
 describe('parseDiffLines', () => {
   it('parses a unified diff into categorized segments', () => {
@@ -51,7 +71,6 @@ describe('parseDiffLines', () => {
   });
 
   it('truncates at maxLines via DiffBlock (logic check)', () => {
-    // This test verifies the parse logic; actual truncation is in DiffBlock component.
     const manyLines = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n');
     const segments = parseDiffLines(manyLines);
     expect(segments).toHaveLength(300);
@@ -71,5 +90,36 @@ describe('isUnifiedDiffLike', () => {
     expect(isUnifiedDiffLike('@@ -1 +1 @@\n-old\n+new')).toBe(true);
     expect(isUnifiedDiffLike('+not a diff\n-just grep output')).toBe(false);
     expect(isUnifiedDiffLike('@@ -1 +1 @@\n unchanged')).toBe(false);
+  });
+});
+
+describe('DiffBlock', () => {
+  it('renders a collapsed diff preview with a hidden-lines footer', () => {
+    const output = [
+      '@@ -1,8 +1,8 @@',
+      '-old 1',
+      '+new 1',
+      '-old 2',
+      '+new 2',
+      '-old 3',
+      '+new 3',
+    ].join('\n');
+
+    const view = render(withTheme(React.createElement(DiffBlock, { output, collapsed: true })));
+    const rendered = frame(view.lastFrame);
+
+    expect(rendered).toContain('@@ -1,8 +1,8 @@');
+    expect(rendered).toContain('+new 2');
+    expect(rendered).not.toContain('-old 3');
+    expect(rendered).toContain('2 more lines hidden');
+  });
+
+  it('uses display-width truncation for long diff lines', () => {
+    const longLine = '+' + 'x'.repeat(160);
+    const view = render(withTheme(React.createElement(DiffBlock, { output: `@@ -1 +1 @@\n-old\n${longLine}` })));
+    const rendered = frame(view.lastFrame);
+
+    expect(rendered).toContain('…');
+    expect(displayWidth(rendered.split('\n').find((part) => part.includes('…')) ?? '')).toBeLessThanOrEqual(130);
   });
 });
