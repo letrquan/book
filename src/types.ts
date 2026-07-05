@@ -314,6 +314,8 @@ export interface AgentLoopCallbacks {
    * `rule` string is canonical (e.g. `Bash(npm install)` or `Read`).
    */
   onPersistPermissionRule?: (rule: string) => void;
+  /** Called when a hook lifecycle event fires (for --include-hook-events in stream-json mode). */
+  onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
 }
 
 export type OutputFormat = 'text' | 'json' | 'stream-json';
@@ -354,6 +356,12 @@ export interface HeadlessOptions {
   sessionName?: string;
   forkSession?: boolean;
   persistSession?: boolean;
+  /** Emit hook lifecycle events as stream-json lines. */
+  includeHookEvents?: boolean;
+  /** Emit partial assistant text deltas as stream-json lines (default: true for stream-json). */
+  includePartialMessages?: boolean;
+  /** After completion, ask the model for follow-up prompt suggestions. */
+  promptSuggestions?: boolean;
 }
 
 export interface HeadlessResult {
