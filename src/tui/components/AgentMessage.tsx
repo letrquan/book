@@ -7,6 +7,9 @@ import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { useTheme } from '../theme.js';
 import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
+import { createRenderDebugLogger } from '../../debug-log.js';
+
+const renderLog = createRenderDebugLogger('tui:agentmsg');
 
 interface PendingPermission {
   toolCall: ToolCall;
@@ -126,6 +129,15 @@ export function AgentMessageInner({
 }: AgentMessageProps) {
   const theme = useTheme();
   const displayContent = isStreaming ? trimPartialClosingFences(message.content) : message.content;
+
+  renderLog.event('render', {
+    id: message.id.slice(-8),
+    streaming: isStreaming,
+    contentLen: displayContent.length,
+    toolCalls: (message.toolCalls ?? []).length,
+    toolResults: (message.toolResults ?? []).length,
+    retry: retryPhase,
+  });
 
   // Group consecutive tool calls of the same name into runs (for MCP-style summary).
   const toolCalls = message.toolCalls ?? [];

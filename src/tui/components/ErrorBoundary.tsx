@@ -1,5 +1,8 @@
 import { Component } from 'react';
 import { Box, Text } from 'ink';
+import { createUiDebugLogger } from '../../debug-log.js';
+
+const uiLog = createUiDebugLogger('tui:errorboundary');
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -25,8 +28,19 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error): void {
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
     console.warn('TUI render error caught by ErrorBoundary:', error.message);
+    uiLog.warn('caught', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack?.split('\n').slice(0, 3).join(' | '),
+      componentStack: errorInfo.componentStack
+        ?.split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 6)
+        .join(' > '),
+    });
   }
 
   render() {

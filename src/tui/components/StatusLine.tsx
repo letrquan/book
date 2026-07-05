@@ -4,6 +4,9 @@ import { usePulse, useTimedFlash } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import type { PermissionMode } from '../../types.js';
 import { displayWidth, makeDivider, truncateDisplay } from './word-wrap.js';
+import { createRenderDebugLogger } from '../../debug-log.js';
+
+const renderLog = createRenderDebugLogger('tui:statusline');
 
 interface StatusLineProps {
   model: string;
@@ -68,6 +71,18 @@ export function StatusLine({
 
   const costEstimate = tokenCount > 0 ? (tokenCount / 1_000_000) * 5 : 0;
   const meterWidth = compact || width < 54 ? 0 : width < 78 ? 5 : 8;
+
+  renderLog.event('render', {
+    width,
+    contentWidth,
+    compact,
+    meterWidth,
+    usagePercent,
+    tokenCount,
+    mode,
+    taskCount,
+    activeTaskCount,
+  });
 
   const row = useMemo(() => {
     const modelBudget = width < 44 ? 10 : width < 72 ? 18 : 30;

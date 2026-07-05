@@ -15,11 +15,12 @@ import { createDefaultRegistry } from '../../tools/registry.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types.js';
 import { makeMessage } from './streaming-state.js';
-import { createDebugLogger } from '../../debug-log.js';
+import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-log.js';
 import { loadMemoryContext } from '../../memory-store.js';
 import { persistSettingLocal, persistPermissionRuleLocal } from '../persist.js';
 
-const log = createDebugLogger('tui');
+const log = createDebugLoggerWithCounter('tui:agent');
+const uiLog = createUiDebugLogger('tui:agent');
 import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
 
@@ -84,9 +85,17 @@ export function useAgent(config: AgentConfig) {
 
   const send = useCallback(
     async (userMessage: string, commandContext?: CommandContext) => {
-      if (isThinking) return;
+      if (isThinking) {
+        uiLog.event('send:rejected', { reason: 'already-thinking', len: userMessage.length });
+        return;
+      }
 
       log.info('send message', {
+        len: userMessage.length,
+        mode,
+        hasCommandContext: !!commandContext,
+      });
+      uiLog.event('send:start', {
         len: userMessage.length,
         mode,
         hasCommandContext: !!commandContext,
@@ -124,6 +133,7 @@ export function useAgent(config: AgentConfig) {
         16,
       );
       accumulatorRef.current.start();
+      uiLog.event('accumulator:started', { flushIntervalMs: 16 });
 
       const registry = createDefaultRegistry();
       const controller = new AbortController();
@@ -161,6 +171,7 @@ export function useAgent(config: AgentConfig) {
               turnStartRef.current = Date.now();
               if (turn > 1) {
                 accumulatorRef.current?.stop();
+                uiLog.event('accumulator:stopped', { reason: 'new-turn', turn });
                 const next = makeMessage('assistant', '');
                 streamingIdRef.current = next.id;
                 setStreamingMessageId(next.id);
@@ -176,16 +187,22 @@ export function useAgent(config: AgentConfig) {
                   32,
                 );
                 accumulatorRef.current.start();
+                uiLog.event('accumulator:started', { flushIntervalMs: 32, turn });
               }
             },
             onDone: () => {
               log.info('agent done', { durationMs: Date.now() - turnStartRef.current });
+              uiLog.event('send:done', { durationMs: Date.now() - turnStartRef.current });
               setTurnDurationMs(Date.now() - turnStartRef.current);
               setIsThinking(false);
               clearCountdown();
             },
             onPermissionRequired: (toolCall: ToolCall): Promise<PermissionResult> => {
               return new Promise((resolve) => {
+                uiLog.event('permission:pending', {
+                  tool: toolCall.name,
+                  id: toolCall.id,
+                });
                 setPendingPermission({ toolCall, resolve });
               });
             },
@@ -246,6 +263,7 @@ export function useAgent(config: AgentConfig) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         accumulatorRef.current?.stop();
+        uiLog.event('accumulator:stopped', { reason: 'done' });
         accumulatorRef.current = null;
         setIsThinking(false);
         streamingIdRef.current = null;
@@ -262,8 +280,14 @@ export function useAgent(config: AgentConfig) {
   const resolvePermission = useCallback(
     (result: PermissionResult) => {
       if (pendingPermission) {
+        uiLog.event('permission:resolved', {
+          tool: pendingPermission.toolCall.name,
+          result,
+        });
         pendingPermission.resolve(result);
         setPendingPermission(null);
+      } else {
+        uiLog.event('permission:resolved:noop', { reason: 'no-pending', result });
       }
     },
     [pendingPermission],
@@ -271,13 +295,19 @@ export function useAgent(config: AgentConfig) {
 
   const cancelPermission = useCallback(() => {
     if (pendingPermission) {
+      uiLog.event('permission:cancelled', { tool: pendingPermission.toolCall.name });
       pendingPermission.resolve('deny');
       setPendingPermission(null);
+    } else {
+      uiLog.event('permission:cancelled:noop', { reason: 'no-pending' });
     }
   }, [pendingPermission]);
 
   // Abort the in-flight agent stream (Esc while thinking).
   const cancel = useCallback(() => {
+    const hadAbort = abortRef.current !== null;
+    const hadAccumulator = accumulatorRef.current !== null;
+    uiLog.event('cancel', { hadAbort, hadAccumulator });
     accumulatorRef.current?.stop();
     accumulatorRef.current = null;
     abortRef.current?.abort();
@@ -362,7 +392,11 @@ export function useAgent(config: AgentConfig) {
   // /init-pre /memory-noop to show output instantly.
   const addLocalMessage = useCallback(
     (text: string) => {
-      if (isThinking) return; // don't clobber a streaming turn
+      if (isThinking) {
+        uiLog.event('local-message:blocked', { reason: 'is-thinking', preview: text.slice(0, 40) });
+        return; // don't clobber a streaming turn
+      }
+      uiLog.event('local-message:added', { preview: text.slice(0, 40) });
       const msg = makeMessage('assistant', text);
       setMessages((prev) => {
         const next = [...prev, msg];
