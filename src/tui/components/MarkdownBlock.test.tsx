@@ -4,7 +4,7 @@ import { Text } from 'ink';
 import React from 'react';
 import { ThemeContext } from '../theme.js';
 import { DEFAULT_THEME } from '../../types.js';
-import { MarkdownBlock, useThrottledValue } from './MarkdownBlock.js';
+import { MarkdownBlock, useThrottledValue, wrapParagraphLines } from './MarkdownBlock.js';
 
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
@@ -239,6 +239,22 @@ describe('MarkdownBlock', () => {
     expect(output).toContain('Run the build');
     expect(output).toContain('Note');
     expect(output).toContain('the docs');
+  });
+
+  it('soft-wraps paragraphs when terminalWidth is provided', () => {
+    const content = 'Alpha beta gamma delta epsilon zeta eta theta';
+    const view = render(
+      withTheme(React.createElement(MarkdownBlock, { content, terminalWidth: 18 })),
+    );
+    const output = frame(view.lastFrame);
+
+    expect(output).toContain('Alpha beta gamma');
+    expect(output).toContain('delta epsilon zeta');
+    expect(output).toContain('eta theta');
+  });
+
+  it('wrapParagraphLines exposes the optimized paragraph wrapping path', () => {
+    expect(wrapParagraphLines('Alpha beta gamma delta', 12)).toEqual(['Alpha beta', 'gamma delta']);
   });
 });
 
