@@ -166,6 +166,88 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('Press: [R] Run once [S] Skip [A] Always allow [Esc] Deny');
   });
 
+  it('keeps a streaming tool-call-only message dynamic so permission prompts can appear', () => {
+    const toolCall: ToolCall = {
+      id: 'call-streaming-pending',
+      name: 'Glob',
+      arguments: { pattern: '*.ts' },
+    };
+    const onResolve = vi.fn();
+    const messages: Message[] = [
+      msg('u1', 'user', 'inspect files'),
+      { ...msg('a1', 'assistant', 'I will inspect the project first.') },
+      { ...msg('a2', 'assistant', ''), toolCalls: [toolCall] },
+    ];
+
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          streamingMessageId="a2"
+          activeToolCallId="call-streaming-pending"
+          terminalWidth={100}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    expect(frame(view.lastFrame)).not.toContain('Permission required for: Glob');
+
+    view.rerender(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          streamingMessageId="a2"
+          pendingPermission={{ toolCall, resolve: onResolve }}
+          onResolvePermission={onResolve}
+          activeToolCallId="call-streaming-pending"
+          terminalWidth={100}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('I will inspect the project first.');
+    expect(output).toContain('[needs approval]');
+    expect(output).toContain('Permission required for: Glob');
+    expect(output).toContain('Primary argument: *.ts');
+    expect(output).toContain('Press: [R] Run once [S] Skip [A] Always allow [Esc] Deny');
+  });
+
+  it('merges a tool-call-only assistant message after streaming completes', () => {
+    const messages: Message[] = [
+      msg('u1', 'user', 'inspect files'),
+      { ...msg('a1', 'assistant', 'I will inspect the project first.') },
+      {
+        ...msg('a2', 'assistant', ''),
+        toolCalls: [{ id: 'call-merged', name: 'Glob', arguments: { pattern: '*.ts' } }],
+        toolResults: [{ toolCallId: 'call-merged', success: true, output: 'src/index.ts' }],
+      },
+    ];
+
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          activeToolCallId="call-merged"
+          terminalWidth={100}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('I will inspect the project first.');
+    expect(output).toContain('[OK] Find files *.ts');
+    expect(output.indexOf('I will inspect the project first.')).toBeLessThan(
+      output.indexOf('[OK] Find files *.ts'),
+    );
+  });
+
   it('renders retry and stall labels on AgentMessage when inline activity is enabled', () => {
     const stalled = render(
       withTheme(
