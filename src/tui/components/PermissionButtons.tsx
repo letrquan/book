@@ -32,7 +32,8 @@ const BUTTONS: ButtonDef[] = [
 export function toolRiskLevel(toolCall: ToolCall): 'safe' | 'write' | 'shell' {
   const name = canonicalToolName(toolCall.name);
   const lower = toolCall.name.toLowerCase();
-  if (name === 'Bash' || lower.includes('bash') || lower === 'shell') return 'shell';
+  if (name === 'Bash' || name === 'KillShell' || lower.includes('bash') || lower === 'shell')
+    return 'shell';
   if (name === 'Write' || name === 'Edit' || name === 'MultiEdit') return 'write';
   if (lower === 'write' || lower === 'edit' || lower === 'multiedit') return 'write';
   return 'safe';
@@ -57,7 +58,11 @@ function permissionPattern(toolCall: ToolCall, primaryArg: string): string {
  *   Enter or R/S/A keys — activate selected button
  *   Esc — deny
  */
-export function PermissionButtons({ toolCall, onResolve, screenReader = false }: PermissionButtonsProps) {
+export function PermissionButtons({
+  toolCall,
+  onResolve,
+  screenReader = false,
+}: PermissionButtonsProps) {
   const theme = useTheme();
   const [selected, setSelected] = useState(0);
   const resolvedRef = useRef(false);
@@ -112,7 +117,9 @@ export function PermissionButtons({ toolCall, onResolve, screenReader = false }:
       }
       if (key.tab) {
         const prev = selected;
-        setSelected((s) => (key.shift ? (s - 1 + BUTTONS.length) % BUTTONS.length : (s + 1) % BUTTONS.length));
+        setSelected((s) =>
+          key.shift ? (s - 1 + BUTTONS.length) % BUTTONS.length : (s + 1) % BUTTONS.length,
+        );
         uiLog.event('input:Tab', { tool: canonical, shift: key.shift, selected: `${prev}->?` });
         return;
       }
@@ -174,14 +181,20 @@ export function PermissionButtons({ toolCall, onResolve, screenReader = false }:
       marginY={1}
       flexDirection="column"
       borderStyle="single"
-      borderColor={risk === 'shell' ? theme.error : risk === 'write' ? theme.warning : theme.permission}
+      borderColor={
+        risk === 'shell' ? theme.error : risk === 'write' ? theme.warning : theme.permission
+      }
       paddingX={1}
     >
       <Box>
-        <Text bold color={theme.permission}>Permission required</Text>
+        <Text bold color={theme.permission}>
+          Permission required
+        </Text>
       </Box>
       <Box>
-        <Text bold color={theme.brand}>{canonical}</Text>
+        <Text bold color={theme.brand}>
+          {canonical}
+        </Text>
         {primaryArg ? <Text color={theme.text}> {primaryArg.slice(0, 80)}</Text> : null}
       </Box>
       {hint ? (
@@ -209,7 +222,7 @@ export function PermissionButtons({ toolCall, onResolve, screenReader = false }:
       </Box>
       <Box>
         <Text color={theme.subtle} dimColor>
-          ← → to select  •  Enter to confirm  •  R/S/A shortcuts  •  Esc to deny
+          ← → to select • Enter to confirm • R/S/A shortcuts • Esc to deny
         </Text>
       </Box>
     </Box>

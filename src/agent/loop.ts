@@ -136,12 +136,17 @@ export async function runAgentLoop(
     }
   }
 
+  config.tasks ??= [];
+  config.backgroundShells ??= { nextId: 1, shells: new Map() };
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
     env: process.env as Record<string, string>,
     gitignorePatterns: loadGitignore(config.workspace).patterns,
     sandbox: config.settings.sandbox,
     agentConfig: config,
+    todos: [],
+    tasks: config.tasks,
+    backgroundShells: config.backgroundShells,
   };
 
   let turn = 0;

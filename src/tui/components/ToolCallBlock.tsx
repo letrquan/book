@@ -48,6 +48,8 @@ function toolLabel(name: string): string {
     Edit: 'Edit file',
     MultiEdit: 'Edit file',
     Bash: 'Run command',
+    BashOutput: 'Read shell output',
+    KillShell: 'Kill shell',
     Glob: 'Find files',
     Grep: 'Search files',
     WebFetch: 'Fetch URL',

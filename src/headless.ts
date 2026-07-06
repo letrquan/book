@@ -51,6 +51,8 @@ export async function runHeadless(
 
   let lastUsage: Usage | null = null;
   const newHistory: Message[] = [...opts.history];
+  config.tasks ??= [];
+  config.backgroundShells ??= { nextId: 1, shells: new Map() };
 
   // Collect prompts: text input -> single prompt; stream-json -> read stdin.
   const prompts: string[] = [];
@@ -88,7 +90,12 @@ export async function runHeadless(
       } satisfies SessionRecord);
     }
     const updated = await runAgentLoop(
-      { ...config, maxTurns: opts.maxTurns ?? config.maxTurns },
+      {
+        ...config,
+        maxTurns: opts.maxTurns ?? config.maxTurns,
+        tasks: config.tasks,
+        backgroundShells: config.backgroundShells,
+      },
       registry,
       expandedPrompt,
       newHistory,

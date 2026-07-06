@@ -63,17 +63,21 @@ Without persistence, every session is amnesia. Memory makes the agent compound a
 
 ### 1e. Missing tools (basic coverage)
 
-**Task tools** [MISSING] — CC deprecated TodoWrite for these:
-- `TaskCreate` — create a task with status/dependencies/metadata
-- `TaskList` — list all tasks
-- `TaskGet` — get task details
-- `TaskUpdate` — update status, dependencies, delete tasks
-- `TaskStop` — stop a running background task
+**Task tools** [has] ✅ (2026-07-06) — CC deprecated TodoWrite for these:
+- [x] `TaskCreate` — create a task with status/dependencies/metadata
+- [x] `TaskList` — list all tasks
+- [x] `TaskGet` — get task details
+- [x] `TaskUpdate` — update status, dependencies, delete tasks
+- [x] `TaskStop` — stop an in-progress tool-managed task (background process/subagent stopping deferred until shell/background infra exists)
 
-**Shell tools** [MISSING]:
-- `BashOutput` — read output from a backgrounded shell by ID
-- `KillShell` — terminate a backgrounded shell by ID
-- `run_in_background` param on Bash
+Task state is shared via `AgentConfig` across agent-loop invocations in a session; blocked tasks cannot be moved to `in_progress`, and completed/deleted dependencies unblock dependents.
+
+**Shell tools** [has] ✅ (2026-07-06):
+- [x] `BashOutput` — read output from a backgrounded shell by ID
+- [x] `KillShell` — terminate a backgrounded shell by ID
+- [x] `run_in_background` param on Bash
+
+Background shell state is shared via `AgentConfig` for TUI/headless session continuity. Background stdout/stderr pipes are unrefed, spawn failures are surfaced before returning a shell ID, explicit background timeouts terminate shells, and `KillShell` waits for process exit before reporting terminal status. Session-exit cleanup and TaskStop ownership integration are deferred until shell ownership semantics are defined.
 
 **Plan mode tools** [MISSING]:
 - `EnterPlanMode` — agent enters plan mode (read-only tools auto-approved)

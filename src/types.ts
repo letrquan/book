@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'child_process';
 import type { ProviderModelConfig, ResolvedSettings } from './settings.js';
 import type { LoadedMemoryContext } from './memory-store.js';
 
@@ -190,6 +191,22 @@ export interface Usage {
 
 export type PermissionResult = 'allow' | 'deny' | 'always';
 
+export type AgentTaskStatus = 'pending' | 'in_progress' | 'completed' | 'deleted';
+
+export interface AgentTask {
+  id: string;
+  subject: string;
+  description?: string;
+  status: AgentTaskStatus;
+  activeForm?: string;
+  owner?: string;
+  metadata?: Record<string, unknown>;
+  blockedBy: string[];
+  blocks: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface ToolCall {
   id: string;
   name: string;
@@ -201,6 +218,33 @@ export interface FileMutationSummary {
   filePath: string;
   addedLines: number;
   removedLines: number;
+}
+
+export type BackgroundShellStatus =
+  'running' | 'stopping' | 'exited' | 'failed' | 'killed' | 'timed_out';
+
+export interface BackgroundShellRecord {
+  id: string;
+  command: string;
+  effectiveCommand: string;
+  workdir: string;
+  pid?: number;
+  process?: ChildProcess;
+  status: BackgroundShellStatus;
+  output: string;
+  readOffset: number;
+  truncatedBytes: number;
+  exitCode?: number | null;
+  signal?: NodeJS.Signals | string | null;
+  startedAt: number;
+  finishedAt?: number;
+  timer?: NodeJS.Timeout;
+  sandboxed?: boolean;
+}
+
+export interface BackgroundShellStore {
+  nextId: number;
+  shells: Map<string, BackgroundShellRecord>;
 }
 
 export interface ToolResult {
@@ -250,6 +294,10 @@ export interface ToolContext {
   agentConfig?: AgentConfig;
   /** Agent todo list — written by TodoWrite, read by the loop for context injection. */
   todos?: Array<{ content: string; status: string; activeForm?: string }>;
+  /** Agent task list — written by TaskCreate/TaskUpdate and shared across tool calls. */
+  tasks?: AgentTask[];
+  /** Background shells started by Bash(run_in_background), shared across tool calls. */
+  backgroundShells?: BackgroundShellStore;
 }
 
 export interface AgentConfig {
@@ -292,6 +340,10 @@ export interface AgentConfig {
   modelInfo?: ProviderModelConfig;
   /** Approved memory snapshot loaded once at session start. */
   memoryContext?: LoadedMemoryContext;
+  /** Runtime-only agent tasks shared across agent-loop invocations in a session. */
+  tasks?: AgentTask[];
+  /** Runtime-only background shells shared across agent-loop invocations in a session. */
+  backgroundShells?: BackgroundShellStore;
 }
 
 export interface ProviderStreamEvent {

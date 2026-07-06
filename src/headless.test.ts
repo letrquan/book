@@ -6,6 +6,7 @@ import { runHeadless } from './headless.js';
 import { SessionStore } from './session/store.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
+import type { AgentConfig } from './types.js';
 
 const config = defaultConfig({ baseUrl: 'http://localhost/v1' });
 let tempDirs: string[] = [];
@@ -22,26 +23,48 @@ function makeWorkspace(): string {
   return dir;
 }
 
+function sse(chunks: string[]): Response {
+  const body = new ReadableStream({
+    start(c) {
+      const enc = new TextEncoder();
+      for (const chunk of chunks) c.enqueue(enc.encode(chunk));
+      c.enqueue(enc.encode('data: [DONE]\n\n'));
+      c.close();
+    },
+  });
+  return new Response(body, { status: 200 });
+}
+
+function textDelta(content: string): string {
+  return `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
+}
+
+function toolDelta(id: string, name: string, args: Record<string, unknown>): string {
+  return `data: ${JSON.stringify({
+    choices: [
+      {
+        delta: {
+          tool_calls: [{ index: 0, id, function: { name, arguments: JSON.stringify(args) } }],
+        },
+      },
+    ],
+  })}\n\n`;
+}
+
+function freshConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
+  return defaultConfig({ baseUrl: 'http://localhost/v1', ...overrides });
+}
+
 beforeEach(() => {
   // Fake provider: yields one text chunk then [DONE] with usage.
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => {
-      const body = new ReadableStream({
-        start(c) {
-          const enc = new TextEncoder();
-          c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"Hello!"}}]}\n\n'));
-          c.enqueue(
-            enc.encode(
-              'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
-            ),
-          );
-          c.enqueue(enc.encode('data: [DONE]\n\n'));
-          c.close();
-        },
-      });
-      return new Response(body, { status: 200 });
-    }),
+    vi.fn(async () =>
+      sse([
+        textDelta('Hello!'),
+        'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
+      ]),
+    ),
   );
 });
 
@@ -231,19 +254,7 @@ describe('runHeadless — json-schema', () => {
     // Provider yields JSON content.
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => {
-        const body = new ReadableStream({
-          start(c) {
-            const enc = new TextEncoder();
-            c.enqueue(
-              enc.encode('data: {"choices":[{"delta":{"content":"{\\"name\\":\\"book\\"}"}}]}\n\n'),
-            );
-            c.enqueue(enc.encode('data: [DONE]\n\n'));
-            c.close();
-          },
-        });
-        return new Response(body, { status: 200 });
-      }),
+      vi.fn(async () => sse([textDelta('{"name":"book"}')])),
     );
 
     const writes: string[] = [];
@@ -268,5 +279,60 @@ describe('runHeadless — json-schema', () => {
     });
     const parsed = JSON.parse(writes.join('').trim());
     expect(parsed.result.structured).toEqual({ name: 'book' });
+  });
+});
+
+describe('runHeadless — runtime stores', () => {
+  it('shares task state across stream-json prompts', async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) {
+          return sse([toolDelta('task_create', 'TaskCreate', { subject: 'Across prompts' })]);
+        }
+        if (fetchCalls === 2) {
+          return sse([textDelta('created')]);
+        }
+        if (fetchCalls === 3) {
+          return sse([toolDelta('task_list', 'TaskList', {})]);
+        }
+        return sse([textDelta('listed')]);
+      }),
+    );
+
+    const { Readable } = await import('stream');
+    const writes: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        writes.push(s);
+        return true;
+      },
+    };
+    const runtimeConfig = freshConfig({ maxTurns: 2 });
+    const stdin = Readable.from([
+      JSON.stringify({ type: 'user', content: 'create task' }) + '\n',
+      JSON.stringify({ type: 'user', content: 'list tasks' }) + '\n',
+    ]);
+
+    await runHeadless(runtimeConfig, createDefaultRegistry(), {
+      inputFormat: 'stream-json',
+      outputFormat: 'stream-json',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+      stdin,
+    });
+
+    const toolResults = writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.type === 'tool_result');
+
+    expect(toolResults.at(-1).tool_result.output).toContain('#1 Across prompts');
+    expect(runtimeConfig.tasks).toHaveLength(1);
   });
 });

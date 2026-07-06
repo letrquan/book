@@ -15,10 +15,24 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('createDefaultRegistry — canonical CC tool names', () => {
-  it('exposes Read, Write, Edit, MultiEdit, Glob, Grep, Bash', () => {
+  it('exposes canonical Claude Code tool names', () => {
     const r = createDefaultRegistry();
     const names = new Set(r.getDefinitions().map((t) => t.name));
-    for (const n of ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash']) {
+    for (const n of [
+      'Read',
+      'Write',
+      'Edit',
+      'Glob',
+      'Grep',
+      'Bash',
+      'BashOutput',
+      'KillShell',
+      'TaskCreate',
+      'TaskList',
+      'TaskGet',
+      'TaskUpdate',
+      'TaskStop',
+    ]) {
       expect(names.has(n), `expected ${n} in registry`).toBe(true);
     }
   });
@@ -232,6 +246,19 @@ describe('tool retry', () => {
         expect(result.success).toBe(false);
         expect(attempts).toBe(1);
       });
+  });
+
+  it('clears tool timeout timers when tools finish before timeout', async () => {
+    const r = createDefaultRegistry();
+    r.getTool('Read')!.execute = async () => ({ toolCallId: '', success: true, output: 'ok' });
+
+    const result = await r.execute(
+      { id: 'c1', name: 'Read', arguments: { filePath: 'a.txt', timeout: 10_000 } },
+      ctx,
+      0,
+    );
+
+    expect(result.success).toBe(true);
   });
 
   it('sets retryAttempt on first success after retry', async () => {

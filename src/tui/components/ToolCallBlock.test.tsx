@@ -190,4 +190,32 @@ describe('ToolCallBlock', () => {
     expect(rendered).toContain('Update(src/broken.ts)');
     expect(rendered).toContain('Failed to write file');
   });
+
+  it('renders friendly labels for background shell tools', () => {
+    const outputView = render(
+      withTheme(
+        <ToolCallBlock
+          name="BashOutput"
+          args={{ shell_id: 'shell_1' }}
+          result={{ toolCallId: 'call-4', success: true, output: 'ready' }}
+          isExpanded={false}
+          reducedMotion
+        />,
+      ),
+    );
+    const killView = render(
+      withTheme(
+        <ToolCallBlock
+          name="KillShell"
+          args={{ shell_id: 'shell_1' }}
+          result={{ toolCallId: 'call-5', success: true, output: 'Killed shell shell_1.' }}
+          isExpanded={false}
+          reducedMotion
+        />,
+      ),
+    );
+
+    expect(frame(outputView.lastFrame)).toContain('Read shell output shell_1');
+    expect(frame(killView.lastFrame)).toContain('Kill shell shell_1');
+  });
 });

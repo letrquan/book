@@ -1,0 +1,213 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { shellTools } from './shell.js';
+import { getPrimaryArg } from './primary-arg.js';
+import type { BackgroundShellStore, ToolContext, ToolDefinition, ToolResult } from '../types.js';
+
+let dir: string;
+let contexts: ToolContext[] = [];
+
+function ctx(): ToolContext {
+  const c: ToolContext = { workspaceRoot: dir, env: {} };
+  contexts.push(c);
+  return c;
+}
+
+function tool(name: string): ToolDefinition {
+  const found = shellTools.find((t) => t.name === name);
+  if (!found) throw new Error(`Missing tool ${name}`);
+  return found;
+}
+
+const bash = tool('Bash');
+const bashOutput = tool('BashOutput');
+const killShell = tool('KillShell');
+
+function shellQuote(value: string): string {
+  if (process.platform === 'win32') return `"${value.replace(/"/g, '\\"')}"`;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function nodeCommand(name: string, source: string): string {
+  const scriptPath = join(dir, name);
+  writeFileSync(scriptPath, source);
+  return `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
+}
+
+function shellIdFrom(result: ToolResult): string {
+  const match = result.output.match(/shell_\d+/);
+  if (!match) throw new Error(`No shell ID in output: ${result.output}`);
+  return match[0];
+}
+
+async function waitForOutput(
+  c: ToolContext,
+  shellId: string,
+  pattern: RegExp,
+  timeoutMs = 5_000,
+): Promise<ToolResult> {
+  const start = Date.now();
+  let last: ToolResult | undefined;
+  while (Date.now() - start < timeoutMs) {
+    last = await bashOutput.execute({ shell_id: shellId }, c);
+    if (last.output.match(pattern)) return last;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${pattern}; last output: ${last?.output}`);
+}
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'book-shell-'));
+  contexts = [];
+});
+
+afterEach(async () => {
+  for (const c of contexts) {
+    for (const shell of c.backgroundShells?.shells.values() ?? []) {
+      if (shell.status === 'running') {
+        await killShell.execute({ shell_id: shell.id }, c);
+      }
+    }
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+describe('Bash shell tools', () => {
+  it('keeps foreground Bash behavior', async () => {
+    const c = ctx();
+    const command = nodeCommand('foreground.cjs', `console.log('foreground-ok');\n`);
+
+    const result = await bash.execute({ command }, c);
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('foreground-ok');
+    expect(c.backgroundShells).toBeUndefined();
+  });
+
+  it('starts a background shell and returns a shell ID quickly', async () => {
+    const c = ctx();
+    const command = nodeCommand(
+      'background.cjs',
+      `console.log('ready');\nsetInterval(() => {}, 1000);\n`,
+    );
+
+    const startedAt = Date.now();
+    const result = await bash.execute({ command, run_in_background: true }, c);
+
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(result.success).toBe(true);
+    expect(result.output).toMatch(/Started background shell shell_\d+/);
+    expect(result.output).toMatch(/BashOutput/);
+    expect(c.backgroundShells?.shells.get(shellIdFrom(result))?.status).toBe('running');
+  });
+
+  it('reads background shell output incrementally and reports terminal status', async () => {
+    const c = ctx();
+    const command = nodeCommand(
+      'output.cjs',
+      `console.log('once');\nsetTimeout(() => process.exit(0), 50);\n`,
+    );
+    const start = await bash.execute({ command, run_in_background: true }, c);
+    const shellId = shellIdFrom(start);
+
+    const first = await waitForOutput(c, shellId, /once/);
+    expect(first.success).toBe(true);
+    expect(first.output).toContain('once');
+
+    const terminal = await waitForOutput(
+      c,
+      shellId,
+      /Shell shell_\d+: exited|Shell shell_\d+: failed/,
+    );
+    expect(terminal.success).toBe(true);
+    expect(terminal.output).toMatch(/Shell shell_\d+: exited pid=\d+ exit=0/);
+
+    const empty = await bashOutput.execute({ shell_id: shellId }, c);
+    expect(empty.success).toBe(true);
+    expect(empty.output).toContain('(no new output)');
+  });
+
+  it('kills a running background shell after the process exits', async () => {
+    const c = ctx();
+    const command = nodeCommand(
+      'long-running.cjs',
+      `console.log('ready-to-kill');\nsetInterval(() => {}, 1000);\n`,
+    );
+    const start = await bash.execute({ command, run_in_background: true }, c);
+    const shellId = shellIdFrom(start);
+    await waitForOutput(c, shellId, /ready-to-kill/);
+
+    const killed = await killShell.execute({ shell_id: shellId }, c);
+    const output = await bashOutput.execute({ shell_id: shellId }, c);
+
+    expect(killed.success).toBe(true);
+    expect(killed.output).toContain(`Killed shell ${shellId}`);
+    expect(c.backgroundShells?.shells.get(shellId)?.status).toBe('killed');
+    expect(c.backgroundShells?.shells.get(shellId)?.finishedAt).toBeDefined();
+    expect(output.output).toMatch(/Shell shell_\d+: killed/);
+  });
+
+  it('fails clearly for unknown shell IDs', async () => {
+    const c = ctx();
+
+    const output = await bashOutput.execute({ shell_id: 'shell_missing' }, c);
+    const killed = await killShell.execute({ shell_id: 'shell_missing' }, c);
+
+    expect(output.success).toBe(false);
+    expect(output.error).toMatch(/not found/i);
+    expect(killed.success).toBe(false);
+    expect(killed.error).toMatch(/not found/i);
+  });
+
+  it('shares configured background shell state across contexts', async () => {
+    const store: BackgroundShellStore = { nextId: 1, shells: new Map() };
+    const first: ToolContext = { workspaceRoot: dir, env: {}, backgroundShells: store };
+    const second: ToolContext = { workspaceRoot: dir, env: {}, backgroundShells: store };
+    contexts.push(first, second);
+    const command = nodeCommand('shared.cjs', `console.log('shared-ready');\n`);
+
+    const start = await bash.execute({ command, run_in_background: true }, first);
+    const shellId = shellIdFrom(start);
+    const output = await waitForOutput(second, shellId, /shared-ready/);
+
+    expect(output.success).toBe(true);
+    expect(output.output).toContain('shared-ready');
+  });
+
+  it('times out background shells only when timeout is explicitly supplied', async () => {
+    const c = ctx();
+    const command = nodeCommand(
+      'timeout.cjs',
+      `console.log('timeout-ready');\nsetInterval(() => {}, 1000);\n`,
+    );
+    const start = await bash.execute({ command, run_in_background: true, timeout: 50 }, c);
+    const shellId = shellIdFrom(start);
+    await waitForOutput(c, shellId, /timeout-ready/);
+
+    const terminal = await waitForOutput(c, shellId, /Shell shell_\d+: timed_out/);
+
+    expect(terminal.success).toBe(true);
+    expect(c.backgroundShells?.shells.get(shellId)?.status).toBe('timed_out');
+  });
+
+  it('returns spawn failures instead of a usable shell ID', async () => {
+    const c: ToolContext = { workspaceRoot: join(dir, 'missing'), env: {} };
+    contexts.push(c);
+
+    const result = await bash.execute(
+      { command: 'node -e "console.log(1)"', run_in_background: true },
+      c,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/ENOENT|no such file|directory/i);
+    expect(c.backgroundShells?.shells.size ?? 0).toBe(0);
+  });
+
+  it('uses shell IDs as primary args', () => {
+    expect(getPrimaryArg({ shell_id: 'shell_7' })).toBe('shell_7');
+    expect(getPrimaryArg({ shellId: 'shell_8' })).toBe('shell_8');
+  });
+});
