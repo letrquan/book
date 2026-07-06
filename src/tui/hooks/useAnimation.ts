@@ -1,4 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
+import { createRenderDebugLogger } from '../../debug-log.js';
+
+const animLog = createRenderDebugLogger('tui:animation');
 
 const BRAILLE_FRAMES = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
 const DOT_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -15,11 +18,15 @@ export function useSpinner(
       setFrame(0);
       return;
     }
+    animLog.event('spinner:start', { style });
     const interval = setInterval(() => {
       setFrame((f) => (f + 1) % frames.length);
     }, 80);
-    return () => clearInterval(interval);
-  }, [active, frames.length]);
+    return () => {
+      clearInterval(interval);
+      animLog.event('spinner:stop', { style });
+    };
+  }, [active, frames.length, style]);
 
   const colorIndex = frame;
   return { frame: frames[frame], colorIndex };
@@ -147,10 +154,14 @@ export function usePulse(active: boolean, interval = 500): boolean {
       setOn(false);
       return;
     }
+    animLog.event('pulse:start', { interval });
     const timer = setInterval(() => {
       setOn((o) => !o);
     }, interval);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      animLog.event('pulse:stop', { interval });
+    };
   }, [active, interval]);
 
   return on;

@@ -1,14 +1,37 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { isAbsolute, relative, resolve } from 'path';
 import fg from 'fast-glob';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
-import { renderDiff } from './diff.js';
+import { renderDiffWithStats } from './diff.js';
 
-async function readFile(
-  args: Record<string, unknown>,
-  ctx: ToolContext,
-): Promise<ToolResult> {
-  const filePath = join(ctx.workspaceRoot, args.filePath as string);
+const GLOB_OUTPUT_LIMIT = 1000;
+
+function resolveWorkspacePath(
+  workspaceRoot: string,
+  inputPath: string,
+): { filePath: string; relativePath: string } | null {
+  const root = resolve(workspaceRoot);
+  const candidate = isAbsolute(inputPath) ? inputPath : resolve(root, inputPath);
+  const filePath = resolve(candidate);
+  const rel = relative(root, filePath);
+
+  if (rel.startsWith('..') || isAbsolute(rel)) return null;
+  return { filePath, relativePath: rel.replace(/\\/g, '/') };
+}
+
+function pathOutsideWorkspaceResult(inputPath: unknown): ToolResult {
+  return {
+    toolCallId: '',
+    success: false,
+    output: '',
+    error: `Path outside workspace: ${inputPath}`,
+  };
+}
+
+async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
+  if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
+  const { filePath } = resolved;
   if (!existsSync(filePath)) {
     return {
       toolCallId: '',
@@ -25,27 +48,33 @@ async function readFile(
   return { toolCallId: '', success: true, output: result };
 }
 
-async function writeFile(
-  args: Record<string, unknown>,
-  ctx: ToolContext,
-): Promise<ToolResult> {
-  const filePath = join(ctx.workspaceRoot, args.filePath as string);
+async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
+  if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
+  const { filePath, relativePath } = resolved;
   const existed = existsSync(filePath);
   const oldContent = existed ? readFileSync(filePath, 'utf-8') : '';
-  writeFileSync(filePath, args.content as string, 'utf-8');
-  const diff = existed ? renderDiff(oldContent, args.content as string) : '';
+  const newContent = args.content as string;
+  writeFileSync(filePath, newContent, 'utf-8');
+  const { diff, stats } = renderDiffWithStats(oldContent, newContent);
   return {
     toolCallId: '',
     success: true,
     output: diff || 'File written successfully',
+    fileMutation: {
+      kind: existed ? 'update' : 'create',
+      filePath: relativePath,
+      addedLines: stats.addedLines,
+      removedLines: stats.removedLines,
+    },
+    isCreate: !existed,
   };
 }
 
-async function editFile(
-  args: Record<string, unknown>,
-  ctx: ToolContext,
-): Promise<ToolResult> {
-  const filePath = join(ctx.workspaceRoot, args.filePath as string);
+async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
+  if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
+  const { filePath, relativePath } = resolved;
   if (!existsSync(filePath)) {
     return {
       toolCallId: '',
@@ -94,19 +123,24 @@ async function editFile(
     ? content.split(oldStr).join(newStr)
     : content.replace(oldStr, newStr);
   writeFileSync(filePath, newContent, 'utf-8');
-  const diff = renderDiff(content, newContent);
+  const { diff, stats } = renderDiffWithStats(content, newContent);
   return {
     toolCallId: '',
     success: true,
     output: diff || 'File edited successfully (no textual change)',
+    fileMutation: {
+      kind: 'update',
+      filePath: relativePath,
+      addedLines: stats.addedLines,
+      removedLines: stats.removedLines,
+    },
   };
 }
 
-async function multiEdit(
-  args: Record<string, unknown>,
-  ctx: ToolContext,
-): Promise<ToolResult> {
-  const filePath = join(ctx.workspaceRoot, args.filePath as string);
+async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
+  if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
+  const { filePath, relativePath } = resolved;
   if (!existsSync(filePath)) {
     return {
       toolCallId: '',
@@ -115,11 +149,12 @@ async function multiEdit(
       error: `File not found: ${args.filePath}`,
     };
   }
-  const edits = (args.edits as Array<{
-    oldString: string;
-    newString: string;
-    replaceAll?: boolean;
-  }>) ?? [];
+  const edits =
+    (args.edits as Array<{
+      oldString: string;
+      newString: string;
+      replaceAll?: boolean;
+    }>) ?? [];
   if (edits.length === 0) {
     return {
       toolCallId: '',
@@ -146,10 +181,7 @@ async function multiEdit(
       content = content.split(e.oldString).join(e.newString);
     } else {
       // Reject ambiguous single edits within MultiEdit too.
-      const occ =
-        e.oldString.length === 0
-          ? 0
-          : content.split(e.oldString).length - 1;
+      const occ = e.oldString.length === 0 ? 0 : content.split(e.oldString).length - 1;
       if (occ > 1) {
         return {
           toolCallId: '',
@@ -163,35 +195,56 @@ async function multiEdit(
   }
 
   writeFileSync(filePath, content, 'utf-8');
-  const diff = renderDiff(original, content);
+  const { diff, stats } = renderDiffWithStats(original, content);
   return {
     toolCallId: '',
     success: true,
     output: diff || 'File edited successfully (no textual change)',
+    fileMutation: {
+      kind: 'update',
+      filePath: relativePath,
+      addedLines: stats.addedLines,
+      removedLines: stats.removedLines,
+    },
   };
 }
 
-async function globSearch(
-  args: Record<string, unknown>,
-  ctx: ToolContext,
-): Promise<ToolResult> {
+async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const pattern = args.pattern as string;
   const files = await fg(pattern, {
     cwd: ctx.workspaceRoot,
     dot: true,
     ignore: ctx.gitignorePatterns ?? [],
   });
-  return { toolCallId: '', success: true, output: files.join('\n') };
+
+  const seen = new Set<string>();
+  const output: string[] = [];
+  let truncated = false;
+
+  for (const file of files) {
+    const resolved = resolveWorkspacePath(ctx.workspaceRoot, file);
+    if (!resolved || seen.has(resolved.relativePath)) continue;
+
+    seen.add(resolved.relativePath);
+    if (output.length >= GLOB_OUTPUT_LIMIT) {
+      truncated = true;
+      break;
+    }
+    output.push(resolved.relativePath);
+  }
+
+  if (output.length === 0) {
+    return { toolCallId: '', success: true, output: 'No files found' };
+  }
+
+  const suffix = truncated ? `\n... (truncated at ${GLOB_OUTPUT_LIMIT} files; refine pattern)` : '';
+  return { toolCallId: '', success: true, output: output.join('\n') + suffix };
 }
 
-async function grepSearch(
-  args: Record<string, unknown>,
-  ctx: ToolContext,
-): Promise<ToolResult> {
+async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const pattern = args.pattern as string;
   const includePattern = (args.include as string | undefined) ?? '**/*';
-  const outputMode =
-    (args.output_mode as 'content' | 'files_with_matches' | 'count') ?? 'content';
+  const outputMode = (args.output_mode as 'content' | 'files_with_matches' | 'count') ?? 'content';
   const contextBefore = (args.B as number) ?? 0;
   const contextAfter = (args.A as number) ?? 0;
   const multiline = (args.multiline as boolean) ?? false;
@@ -202,6 +255,15 @@ async function grepSearch(
     dot: true,
     ignore: ctx.gitignorePatterns ?? [],
   });
+  const inWorkspaceFiles: Array<{ file: string; filePath: string }> = [];
+  const seenFiles = new Set<string>();
+
+  for (const file of files) {
+    const resolved = resolveWorkspacePath(ctx.workspaceRoot, file);
+    if (!resolved || seenFiles.has(resolved.relativePath)) continue;
+    seenFiles.add(resolved.relativePath);
+    inWorkspaceFiles.push({ file: resolved.relativePath, filePath: resolved.filePath });
+  }
 
   const flags = multiline ? 'gm' : 'g';
   let regex: RegExp;
@@ -219,11 +281,11 @@ async function grepSearch(
   const matchesByFile = new Map<string, Array<{ line: number; text: string }>>();
   let totalMatches = 0;
 
-  for (const file of files) {
+  for (const { file, filePath } of inWorkspaceFiles) {
     if (totalMatches >= headLimit) break;
     let content: string;
     try {
-      content = readFileSync(join(ctx.workspaceRoot, file), 'utf-8');
+      content = readFileSync(filePath, 'utf-8');
     } catch {
       continue;
     }
@@ -255,9 +317,7 @@ async function grepSearch(
   }
 
   if (outputMode === 'count') {
-    const lines = Array.from(matchesByFile.entries()).map(
-      ([f, ms]) => `${f}:${ms.length}`,
-    );
+    const lines = Array.from(matchesByFile.entries()).map(([f, ms]) => `${f}:${ms.length}`);
     return {
       toolCallId: '',
       success: true,
@@ -280,8 +340,10 @@ async function grepSearch(
     for (const match of ms) {
       // Read context lines lazily; cheap for small context values.
       const lines = (() => {
+        const resolved = resolveWorkspacePath(ctx.workspaceRoot, file);
+        if (!resolved) return [];
         try {
-          return readFileSync(join(ctx.workspaceRoot, file), 'utf-8').split('\n');
+          return readFileSync(resolved.filePath, 'utf-8').split('\n');
         } catch {
           return [];
         }
@@ -313,7 +375,8 @@ export const fileTools: ToolDefinition[] = [
       properties: {
         filePath: {
           type: 'string',
-          description: 'Path to the file relative to workspace root',
+          description:
+            'Path to the file relative to workspace root; absolute paths inside the workspace are also accepted',
         },
         offset: {
           type: 'number',
@@ -338,7 +401,8 @@ export const fileTools: ToolDefinition[] = [
       properties: {
         filePath: {
           type: 'string',
-          description: 'Path to the file relative to workspace root',
+          description:
+            'Path to the file relative to workspace root; absolute paths inside the workspace are also accepted',
         },
         content: {
           type: 'string',
@@ -358,7 +422,8 @@ export const fileTools: ToolDefinition[] = [
       properties: {
         filePath: {
           type: 'string',
-          description: 'Path to the file relative to workspace root',
+          description:
+            'Path to the file relative to workspace root; absolute paths inside the workspace are also accepted',
         },
         oldString: {
           type: 'string',
@@ -387,7 +452,8 @@ export const fileTools: ToolDefinition[] = [
       properties: {
         filePath: {
           type: 'string',
-          description: 'Path to the file relative to workspace root',
+          description:
+            'Path to the file relative to workspace root; absolute paths inside the workspace are also accepted',
         },
         edits: {
           type: 'array',

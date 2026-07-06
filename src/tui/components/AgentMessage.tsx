@@ -7,6 +7,9 @@ import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { useTheme } from '../theme.js';
 import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
+import { createRenderDebugLogger } from '../../debug-log.js';
+
+const renderLog = createRenderDebugLogger('tui:agentmsg');
 
 interface PendingPermission {
   toolCall: ToolCall;
@@ -28,6 +31,73 @@ interface AgentMessageProps {
   retryAttempt?: number;
   retryMax?: number;
   retryCountdownMs?: number;
+  /** Hide the inline streaming spinner when an external working indicator owns activity state. */
+  hideStreamingSpinner?: boolean;
+  /** When true, expanded tool results show the larger output cap instead of a short preview. */
+  showAllToolOutput?: boolean;
+}
+
+/**
+ * Strip trailing partial markdown code-fence closings from streaming text.
+ *
+ * While streaming, the LLM may emit incomplete closing fences (e.g. `` after a
+ * ```rust block). These partial markers cause rendered code blocks to visually
+ * jitter as the fence opens/closes. This function detects when the last line is
+ * a non-empty prefix of a closing fence marker and strips it.
+ */
+export function trimPartialClosingFences(text: string): string {
+  const lines = text.split('\n');
+  let lastOpenIdx = -1;
+  for (let i = lines.length - 2; i >= 0; i--) {
+    if (/^```/.test(lines[i])) {
+      lastOpenIdx = i;
+      break;
+    }
+  }
+
+  if (lastOpenIdx === -1) return text;
+
+  let hasClose = false;
+  for (let i = lastOpenIdx + 1; i < lines.length; i++) {
+    if (/^```\s*$/.test(lines[i])) {
+      hasClose = true;
+      break;
+    }
+  }
+
+  if (hasClose) return text;
+
+  const lastLine = lines[lines.length - 1];
+  if (lastLine === '') return text;
+
+  const closeMarker = '```';
+  if (lastLine !== closeMarker && closeMarker.startsWith(lastLine)) {
+    return lines.slice(0, -1).join('\n') + (lines.length > 1 ? '\n' : '');
+  }
+
+  return text;
+}
+
+/** Build the spinner label based on retry state. Exported for testing. */
+export function getRetryLabel(
+  retryPhase: RetryPhase,
+  retryAttempt: number,
+  retryMax: number,
+  retryCountdownMs: number,
+): string | undefined {
+  if (retryPhase === 'transport') {
+    const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
+    const attemptStr = retryMax > 0 ? `attempt ${retryAttempt}/${retryMax}` : `attempt ${retryAttempt}`;
+    return `Retrying in ${countdown}s · ${attemptStr}`;
+  }
+  if (retryPhase === 'stalled') {
+    const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
+    return `Waiting for API response · will retry in ${countdown}s · check your network`;
+  }
+  if (retryPhase === 'watchdog') {
+    return `Retrying (watchdog) · attempt ${retryAttempt}`;
+  }
+  return undefined;
 }
 
 /**
@@ -60,9 +130,20 @@ export function AgentMessageInner({
   retryAttempt = 0,
   retryMax = 0,
   retryCountdownMs = 0,
+  hideStreamingSpinner = false,
+  showAllToolOutput = false,
 }: AgentMessageProps) {
   const theme = useTheme();
-  const displayContent = message.content;
+  const displayContent = isStreaming ? trimPartialClosingFences(message.content) : message.content;
+
+  renderLog.event('render', {
+    id: message.id.slice(-8),
+    streaming: isStreaming,
+    contentLen: displayContent.length,
+    toolCalls: (message.toolCalls ?? []).length,
+    toolResults: (message.toolResults ?? []).length,
+    retry: retryPhase,
+  });
 
   // Group consecutive tool calls of the same name into runs (for MCP-style summary).
   const toolCalls = message.toolCalls ?? [];
@@ -79,24 +160,10 @@ export function AgentMessageInner({
     return groups;
   }, [toolCalls]);
 
-  // Build the spinner label based on retry state.
-  const spinnerLabel = useMemo((): string | undefined => {
-    if (retryPhase === 'transport') {
-      const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
-      const attemptStr = retryMax > 0
-        ? `attempt ${retryAttempt}/${retryMax}`
-        : `attempt ${retryAttempt}`;
-      return `Retrying in ${countdown}s · ${attemptStr}`;
-    }
-    if (retryPhase === 'stalled') {
-      const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
-      return `Waiting for API response · will retry in ${countdown}s · check your network`;
-    }
-    if (retryPhase === 'watchdog') {
-      return `Retrying (watchdog) · attempt ${retryAttempt}`;
-    }
-    return undefined;
-  }, [retryPhase, retryAttempt, retryMax, retryCountdownMs]);
+  const spinnerLabel = useMemo(
+    () => getRetryLabel(retryPhase, retryAttempt, retryMax, retryCountdownMs),
+    [retryPhase, retryAttempt, retryMax, retryCountdownMs],
+  );
 
   const isRetrying = retryPhase !== 'none';
 
@@ -108,7 +175,7 @@ export function AgentMessageInner({
     <Box flexDirection="column">
 
       {/* Spinner line: shows thinking tips, or retry countdown during retries */}
-      {isStreaming && !displayContent && !message.toolCalls?.length ? (
+      {isStreaming && !hideStreamingSpinner && !displayContent && !message.toolCalls?.length ? (
         <Box marginLeft={screenReader ? 0 : 2}>
           {isRetrying && spinnerLabel ? (
             <Box>
@@ -125,10 +192,10 @@ export function AgentMessageInner({
       {displayContent ? (
         <Box marginLeft={screenReader ? 0 : 2} flexDirection="column">
           <Box>
-            {isStreaming && !isRetrying && (
+            {isStreaming && !hideStreamingSpinner && !isRetrying && (
               <Spinner active style="braille" reducedMotion={reducedMotion} />
             )}
-            {isRetrying && spinnerLabel && (
+            {isRetrying && !hideStreamingSpinner && spinnerLabel && (
               <Box>
                 <Text color={theme.error}>Retrying: </Text>
                 <Text color={theme.error}>{spinnerLabel} </Text>
@@ -180,6 +247,7 @@ export function AgentMessageInner({
                 isPending={isPending}
                 reducedMotion={reducedMotion}
                 screenReader={screenReader}
+                showAllToolOutput={showAllToolOutput}
               />
               {isPending && onResolvePermission ? (
                 <PermissionButtons
@@ -218,6 +286,8 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
     prev.retryAttempt === next.retryAttempt &&
     prev.retryMax === next.retryMax &&
     prev.retryCountdownMs === next.retryCountdownMs &&
+    prev.hideStreamingSpinner === next.hideStreamingSpinner &&
+    prev.showAllToolOutput === next.showAllToolOutput &&
     prev.reducedMotion === next.reducedMotion &&
     prev.screenReader === next.screenReader &&
     prev.terminalWidth === next.terminalWidth

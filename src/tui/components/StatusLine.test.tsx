@@ -82,4 +82,25 @@ describe('StatusLine', () => {
     expect(output).toContain('ctx 97%');
     expect(output).not.toContain('Context nearly full');
   });
+
+  it('does not render activity text in the model/token row', () => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="model"
+          tokenCount={1_000}
+          maxTokens={128_000}
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = stripAnsi(view.lastFrame());
+    expect(output).not.toContain('Thinking');
+    expect(output).not.toContain('Retrying');
+  });
 });

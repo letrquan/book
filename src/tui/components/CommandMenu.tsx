@@ -4,6 +4,9 @@ import { usePulse } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import type { CommandItem } from '../../commands/filter.js';
 import { truncateDisplay } from './word-wrap.js';
+import { createRenderDebugLogger } from '../../debug-log.js';
+
+const renderLog = createRenderDebugLogger('tui:cmdmenu');
 
 interface CommandMenuProps {
   /** Pre-filtered and categorized command items to display. */
@@ -103,6 +106,15 @@ export function CommandMenu({
   const hiddenTotal = hiddenBefore + hiddenAfter;
 
   if (!visible) return null;
+
+  renderLog.event('render', {
+    items: items.length,
+    visible: visibleItems.length,
+    selected: selIdx,
+    window: `[${window.start}..${window.end})`,
+    hidden: hiddenTotal,
+    filter: filterText || '(empty)',
+  });
 
   const title = filterText
     ? truncateDisplay(`Commands matching “${filterText}”`, contentWidth)

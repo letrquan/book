@@ -35,9 +35,9 @@ function tick(ms = 0): Promise<void> {
 
 /** Layout row counts used by App for bottom pinning. */
 const BANNER_ROWS = 6; // ASCII art banner
-const STATUS_DIVIDER = 1; // divider in StatusLine
+const STATUS_DIVIDER = 1; // structural top border above the StatusLine footer
 const STATUS_DATA_ROWS = 1; // single-row: model, tokens, mode, tasks
-const INPUT_DIVIDER_ROWS = 1; // InputBar divider line
+const INPUT_DIVIDER_ROWS = 1; // structural editor top border above the InputBar prompt
 const INPUT_PROMPT_ROWS = 1; // InputBar prompt line
 
 const HEADER_ROWS = BANNER_ROWS;
@@ -49,39 +49,23 @@ const FIXED_ROWS = HEADER_ROWS + STATUS_ROWS + INPUT_ROWS;
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('InputBar border line', () => {
-  it('uses Unicode box-drawing horizontal (U+2500), not ASCII hyphens', () => {
-    // The divider is "─" repeated to fill the terminal width.
-    // It must use the Unicode box-drawing character, not ASCII hyphens.
-    const ch = '─';
-    expect(ch).not.toBe('-');
-    expect(ch.charCodeAt(0)).toBe(0x2500);
-  });
+describe('InputBar editor border', () => {
+  it('uses a structural top border instead of a manual full-width divider string', () => {
+    // The input separator is rendered by Ink's border props, not by repeating
+    // a long "─" string that can wrap during terminal resize.
+    const structure = {
+      borderStyle: 'single',
+      borderTop: true,
+      borderBottom: false,
+      borderLeft: false,
+      borderRight: false,
+    };
 
-  it('divider is at least 5 characters wide (minimum for tiny terminals)', () => {
-    // Even on a very narrow terminal, the divider has a 5-char minimum.
-    const minWidth = 5;
-    const divider = '─'.repeat(minWidth);
-    expect(divider.length).toBe(minWidth);
-  });
-
-  it('divider spans full terminal width minus padding', () => {
-    // On an 80-column terminal with paddingX={1} (2 chars), the divider is 78 chars.
-    const termColumns = 80;
-    const padding = 2; // paddingX={1} = 2 chars (left + right)
-    const divider = '─'.repeat(Math.max(5, termColumns - padding));
-    expect(divider.length).toBe(78);
-  });
-
-  it('divider adapts to any terminal width', () => {
-    for (const columns of [40, 60, 80, 100, 120, 200]) {
-      const divider = '─'.repeat(Math.max(5, columns - 2));
-      expect(divider.length).toBe(Math.max(5, columns - 2));
-      // All characters must be the box-drawing horizontal.
-      for (const ch of divider) {
-        expect(ch).toBe('─');
-      }
-    }
+    expect(structure.borderStyle).toBe('single');
+    expect(structure.borderTop).toBe(true);
+    expect(structure.borderBottom).toBe(false);
+    expect(structure.borderLeft).toBe(false);
+    expect(structure.borderRight).toBe(false);
   });
 });
 

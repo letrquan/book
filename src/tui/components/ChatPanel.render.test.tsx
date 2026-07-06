@@ -69,6 +69,8 @@ describe('ChatPanel Ink rendering', () => {
       ),
     );
 
+    expect(frame(view.lastFrame)).toContain('██████');
+    expect(frame(view.lastFrame)).not.toContain('Your coding workspace, indexed.');
     expect(frame(view.lastFrame)).toContain('older question');
     expect(frame(view.lastFrame)).toContain('older answer');
     expect(frame(view.lastFrame)).toContain('new question');
@@ -164,7 +166,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('Press: [R] Run once [S] Skip [A] Always allow [Esc] Deny');
   });
 
-  it('renders retry and stall labels on the active streaming assistant message', () => {
+  it('renders retry and stall labels on AgentMessage when inline activity is enabled', () => {
     const stalled = render(
       withTheme(
         <AgentMessage
@@ -198,6 +200,124 @@ describe('ChatPanel Ink rendering', () => {
 
     expect(frame(retrying.lastFrame)).toContain('Retrying: Retrying in 4s · attempt 2/10');
     expect(frame(retrying.lastFrame)).toContain('partial text');
+  });
+
+  it('hides active message spinner when external working indicator owns activity state', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[msg('a1', 'assistant', 'partial text')]}
+          streamingMessageId="a1"
+          terminalWidth={100}
+          reducedMotion
+          retryPhase="transport"
+          retryAttempt={2}
+          retryMax={10}
+          retryCountdownMs={4_000}
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('partial text');
+    expect(output).not.toContain('Retrying:');
+    expect(output).not.toContain('Retrying in 4s');
+  });
+
+  it('collapses long tool output under the assistant turn by default', () => {
+    const longOutput = Array.from({ length: 8 }, (_, i) => `line ${i + 1}`).join('\n');
+    const messages: Message[] = [
+      {
+        ...msg('a1', 'assistant', 'I will run it.'),
+        toolCalls: [{ id: 'call-1', name: 'Bash', arguments: { command: 'seq 8' } }],
+        toolResults: [{ toolCallId: 'call-1', success: true, output: longOutput }],
+      },
+    ];
+
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          activeToolCallId="call-1"
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('line 1');
+    expect(output).toContain('line 5');
+    expect(output).not.toContain('line 6');
+    expect(output).toContain('3 more lines hidden');
+  });
+
+  it('renders long tool output when show-all mode is enabled', () => {
+    const longOutput = Array.from({ length: 8 }, (_, i) => `line ${i + 1}`).join('\n');
+    const messages: Message[] = [
+      {
+        ...msg('a1', 'assistant', 'I will run it.'),
+        toolCalls: [{ id: 'call-1', name: 'Bash', arguments: { command: 'seq 8' } }],
+        toolResults: [{ toolCallId: 'call-1', success: true, output: longOutput }],
+      },
+    ];
+
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          activeToolCallId="call-1"
+          terminalWidth={100}
+          reducedMotion
+          showAllToolOutput
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('line 8');
+    expect(output).not.toContain('more lines hidden');
+  });
+
+  it('renders Claude-style file mutation metadata under the assistant turn', () => {
+    const diffOutput = ['@@ -1 +1 @@', '-old line', '+new line'].join('\n');
+    const messages: Message[] = [
+      {
+        ...msg('a1', 'assistant', 'I will update it.'),
+        toolCalls: [{ id: 'call-1', name: 'Edit', arguments: { filePath: 'src/a.ts' } }],
+        toolResults: [
+          {
+            toolCallId: 'call-1',
+            success: true,
+            output: diffOutput,
+            fileMutation: {
+              kind: 'update',
+              filePath: 'src/a.ts',
+              addedLines: 1,
+              removedLines: 1,
+            },
+          },
+        ],
+      },
+    ];
+
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          activeToolCallId="call-1"
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('I will update it.');
+    expect(output).toContain('Update(src/a.ts)');
+    expect(output).toContain('Added 1 line, removed 1 line');
+    expect(output).toContain('-old line');
+    expect(output).toContain('+new line');
   });
 
   it('merges adjacent assistant messages where later has no content (tool-call-only turn)', () => {

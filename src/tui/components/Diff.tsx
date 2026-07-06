@@ -1,11 +1,15 @@
 import { Text, Box } from 'ink';
 import { useTheme } from '../theme.js';
+import { prepareToolOutputDisplay } from './tool-output.js';
+import { truncateDisplay } from './word-wrap.js';
 
 interface DiffProps {
   /** Raw unified diff output string (lines starting with @@, +, -, or space). */
   output: string;
-  /** Max lines to render (truncate with "..."). */
+  /** Max lines to render when fully expanded. */
   maxLines?: number;
+  /** When true, render a short preview with a hidden-output summary. */
+  collapsed?: boolean;
 }
 
 export function isUnifiedDiffLike(output: string): boolean {
@@ -133,11 +137,16 @@ const DIFF_COLOR_MAP: Record<string, keyof ReturnType<typeof useTheme>> = {
   diffRemovedDimmed: 'diffRemovedDimmed',
 };
 
-export function DiffBlock({ output, maxLines = 200 }: DiffProps) {
+export function DiffBlock({ output, maxLines = 200, collapsed = false }: DiffProps) {
   const theme = useTheme();
   const parsed = parseDiffLines(output);
-  const display = maxLines > 0 ? parsed.slice(0, maxLines) : parsed;
-  const truncated = display.length < parsed.length;
+  const displayLimit = collapsed ? 5 : maxLines;
+  const display = displayLimit > 0 ? parsed.slice(0, displayLimit) : parsed;
+  const outputDisplay = prepareToolOutputDisplay(output, {
+    maxLines: displayLimit,
+    maxLineWidth: 120,
+    hint: collapsed ? 'Ctrl+E shows all' : undefined,
+  });
 
   return (
     <Box flexDirection="column">
@@ -154,15 +163,15 @@ export function DiffBlock({ output, maxLines = 200 }: DiffProps) {
               dimColor={isDimmed}
               bold={segment.kind === 'diffAddedWord' || segment.kind === 'diffRemovedWord'}
             >
-              {'│'} {segment.text.slice(0, 120)}
+              {'│'} {truncateDisplay(segment.text, 120)}
             </Text>
           </Box>
         );
       })}
-      {truncated && (
+      {outputDisplay.footer && (
         <Box marginLeft={2}>
           <Text color={theme.subtle} dimColor>
-            {'│'} ... {parsed.length - display.length} more lines (truncated)
+            {'│'} {outputDisplay.footer}
           </Text>
         </Box>
       )}

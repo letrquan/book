@@ -40,6 +40,17 @@ describe('buildMessages', () => {
     expect(out[3].content).toBe('1: hi');
   });
 
+  it('preserves full tool output for provider messages', () => {
+    const output = Array.from({ length: 300 }, (_, i) => `line ${i + 1}`).join('\n');
+    const tc = toolCall('call_full', 'bash', { command: 'seq 300' });
+    const tr = toolResult('call_full', output);
+    const history = [userMsg('run it'), assistantMsg('', [tc], [tr])];
+
+    const out = buildMessages(config, history, []);
+
+    expect(out.find((m) => m.role === 'tool')?.content).toBe(output);
+  });
+
   it('keeps tool messages in call order when a turn has multiple tool calls', () => {
     const t1 = toolCall('c1', 'bash', { command: 'ls' });
     const t2 = toolCall('c2', 'bash', { command: 'pwd' });

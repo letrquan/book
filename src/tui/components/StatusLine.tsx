@@ -3,7 +3,10 @@ import { useMemo } from 'react';
 import { usePulse, useTimedFlash } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import type { PermissionMode } from '../../types.js';
-import { displayWidth, makeDivider, truncateDisplay } from './word-wrap.js';
+import { displayWidth, truncateDisplay } from './word-wrap.js';
+import { createRenderDebugLogger } from '../../debug-log.js';
+
+const renderLog = createRenderDebugLogger('tui:statusline');
 
 interface StatusLineProps {
   model: string;
@@ -69,6 +72,18 @@ export function StatusLine({
   const costEstimate = tokenCount > 0 ? (tokenCount / 1_000_000) * 5 : 0;
   const meterWidth = compact || width < 54 ? 0 : width < 78 ? 5 : 8;
 
+  renderLog.event('render', {
+    width,
+    contentWidth,
+    compact,
+    meterWidth,
+    usagePercent,
+    tokenCount,
+    mode,
+    taskCount,
+    activeTaskCount,
+  });
+
   const row = useMemo(() => {
     const modelBudget = width < 44 ? 10 : width < 72 ? 18 : 30;
     const tokenText = maxTokens > 0
@@ -104,8 +119,17 @@ export function StatusLine({
       : theme.text;
 
   return (
-    <Box flexDirection="column" paddingX={1} width={width}>
-      <Text color={theme.subtle}>{makeDivider(width, 2)}</Text>
+    <Box
+      flexDirection="column"
+      paddingX={1}
+      width={width}
+      borderStyle="single"
+      borderTop
+      borderBottom={false}
+      borderLeft={false}
+      borderRight={false}
+      borderColor={theme.subtle}
+    >
       <Text color={rowColor}>{row}</Text>
       {warning ? (
         <Text color={usageCritical ? theme.error : theme.warning}>{warning}</Text>

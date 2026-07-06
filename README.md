@@ -2,6 +2,20 @@
 
 AI coding agent CLI with rich terminal UI. An open-source, provider-agnostic alternative to Claude Code.
 
+## Features
+
+- **Interactive TUI** (Ink/React) plus **print mode** (`-p`) with `text` / `json` / `stream-json` output for CI.
+- **Providers**: Anthropic Messages API (prompt caching, extended thinking, `--effort`) and any OpenAI-compatible endpoint, auto-detected from `baseUrl`.
+- **Project context**: walks the tree to load `CLAUDE.md` (user-global → project → local → `.claude/rules/*.md`), injects git status, platform info, and the discovered skills, slash commands, and subagents into the system prompt.
+- **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
+- **Slash commands**: built-ins including `/init`, `/model`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, plus custom commands from `.book/commands/*.md`.
+- **Permissions**: allow/ask/deny rule matching with six permission modes (default, acceptEdits, plan, bypassPermissions, and more) — see `/permissions`.
+- **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio contract) for `PreToolUse` / `PostToolUse` / etc.
+- **Skills & subagents**: discover skills from `.book/skills/` and subagents from `.book/agents/`; delegate via the `Task` tool.
+- **MCP**: stdio-transport MCP client for tool servers.
+
+See [`MILESTONES.md`](./MILESTONES.md) for the full progress roadmap (Phase 1 Claude-Code-parity work, Phase 2 harness extension points, Phase 3 polish).
+
 ## Installation
 
 ```bash

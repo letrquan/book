@@ -129,6 +129,12 @@ describe('Edit/Write return a diff', () => {
     expect(result.success).toBe(true);
     expect(result.output).toMatch(/^-line2$/m);
     expect(result.output).toMatch(/^\+LINE TWO$/m);
+    expect(result.fileMutation).toEqual({
+      kind: 'update',
+      filePath: 'a.txt',
+      addedLines: 1,
+      removedLines: 1,
+    });
   });
 });
 
@@ -165,15 +171,17 @@ describe('tool retry', () => {
       return { toolCallId: '', success: false, output: '', error: 'disk full' };
     };
 
-    return r.execute(
-      { id: 'c1', name: 'Write', arguments: { filePath: 'a.txt', content: 'x' } },
-      ctx,
-      5, // would retry up to 5 times, but Write is not idempotent
-    ).then((result) => {
-      expect(result.success).toBe(false);
-      expect(attempts).toBe(1);
-      expect(result.retryAttempt).toBeUndefined();
-    });
+    return r
+      .execute(
+        { id: 'c1', name: 'Write', arguments: { filePath: 'a.txt', content: 'x' } },
+        ctx,
+        5, // would retry up to 5 times, but Write is not idempotent
+      )
+      .then((result) => {
+        expect(result.success).toBe(false);
+        expect(attempts).toBe(1);
+        expect(result.retryAttempt).toBeUndefined();
+      });
   });
 
   it('does NOT retry on SKIPPED errors (permission/hook)', () => {
@@ -184,14 +192,12 @@ describe('tool retry', () => {
       return { toolCallId: '', success: false, output: '', error: 'SKIPPED: Permission denied' };
     };
 
-    return r.execute(
-      { id: 'c1', name: 'Read', arguments: { filePath: 'a.txt' } },
-      ctx,
-      3,
-    ).then((result) => {
-      expect(result.error).toMatch(/SKIPPED/);
-      expect(attempts).toBe(1);
-    });
+    return r
+      .execute({ id: 'c1', name: 'Read', arguments: { filePath: 'a.txt' } }, ctx, 3)
+      .then((result) => {
+        expect(result.error).toMatch(/SKIPPED/);
+        expect(attempts).toBe(1);
+      });
   });
 
   it('stops retrying after maxRetries exhausted', async () => {
@@ -220,14 +226,12 @@ describe('tool retry', () => {
       return { toolCallId: '', success: false, output: '', error: 'error' };
     };
 
-    return r.execute(
-      { id: 'c1', name: 'Read', arguments: { filePath: 'a.txt' } },
-      ctx,
-      0,
-    ).then((result) => {
-      expect(result.success).toBe(false);
-      expect(attempts).toBe(1);
-    });
+    return r
+      .execute({ id: 'c1', name: 'Read', arguments: { filePath: 'a.txt' } }, ctx, 0)
+      .then((result) => {
+        expect(result.success).toBe(false);
+        expect(attempts).toBe(1);
+      });
   });
 
   it('sets retryAttempt on first success after retry', async () => {

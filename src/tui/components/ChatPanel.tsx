@@ -4,6 +4,17 @@ import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../type
 import { AgentMessage } from './AgentMessage.js';
 import { UserMessage } from './UserMessage.js';
 import { WelcomeScreen } from './WelcomeScreen.js';
+import { AsciiBanner } from './AsciiBanner.js';
+import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
+import { useDebugMount } from '../debug.js';
+
+const renderLog = createRenderDebugLogger('tui:chatpanel');
+const uiLog = createUiDebugLogger('tui:chatpanel');
+
+type StaticChatItem =
+  | Message
+  | { id: string; role: 'logo'; content: string; timestamp: number }
+  | { id: string; role: 'welcome'; content: string; timestamp: number };
 
 interface PendingPermission {
   toolCall: ToolCall;
@@ -30,6 +41,8 @@ interface ChatPanelProps {
   skillCount?: number;
   /** Retry state for the spinner line. */
   retryPhase?: RetryPhase;
+  /** When true, expanded tool results show the larger output cap instead of a short preview. */
+  showAllToolOutput?: boolean;
   retryAttempt?: number;
   retryMax?: number;
   retryCountdownMs?: number;
@@ -99,35 +112,43 @@ export function ChatPanel({
   commandCount = 0,
   skillCount = 0,
   retryPhase = 'none',
+  showAllToolOutput = false,
   retryAttempt = 0,
   retryMax = 0,
   retryCountdownMs = 0,
 }: ChatPanelProps) {
+  useDebugMount(uiLog, { model, mode, commandCount, skillCount });
+
   // Merge tool-call-only assistant messages into their preceding message.
-  const displayMessages = useMemo(() => mergeAssistantMessages(messages), [messages]);
+  const displayMessages = useMemo(() => {
+    const merged = mergeAssistantMessages(messages);
+    if (messages.length !== merged.length) {
+      renderLog.event('merge', {
+        before: messages.length,
+        after: merged.length,
+        merged: messages.length - merged.length,
+      });
+    }
+    return merged;
+  }, [messages]);
 
   // Split messages: completed ones go into <Static> so they persist in
   // terminal scrollback; the streaming message stays in the dynamic area.
   // When not streaming, all messages are completed.
-  //
-  // We prepend a frozen welcome banner to the static items so it appears
-  // once at the top of the output and then scrolls away naturally as the
-  // conversation grows — it doesn't vanish when the first message arrives.
   const isEmpty = displayMessages.length === 0;
-  const rawCompleted = useMemo(
+  const rawCompletedMessages = useMemo(
     () => streamingMessageId
       ? displayMessages.filter((msg) => msg.id !== streamingMessageId)
       : displayMessages,
     [displayMessages, streamingMessageId],
   );
   const completedMessages = useMemo(() => {
-    if (rawCompleted.length === 0) return rawCompleted;
-    // Only prepend the frozen banner once — Ink <Static> deduplicates by key.
+    if (rawCompletedMessages.length === 0) return rawCompletedMessages;
     return [
-      { id: '__welcome_banner__', role: 'banner' as const, content: '', timestamp: 0 },
-      ...rawCompleted,
-    ] as (Message & { role: string })[];
-  }, [rawCompleted]);
+      { id: '__book_logo__', role: 'logo' as const, content: '', timestamp: 0 },
+      ...rawCompletedMessages,
+    ] as StaticChatItem[];
+  }, [rawCompletedMessages]);
   const activeMessage = useMemo(
     () =>
       streamingMessageId
@@ -136,28 +157,48 @@ export function ChatPanel({
     [displayMessages, streamingMessageId],
   );
 
+  const staticItems = useMemo(() => {
+    if (isEmpty) {
+      return [
+        { id: '__welcome_landing__', role: 'welcome' as const, content: '', timestamp: 0 },
+      ] as StaticChatItem[];
+    }
+    return completedMessages;
+  }, [completedMessages, isEmpty]);
+
+  renderLog.event('render', {
+    total: displayMessages.length,
+    completed: completedMessages.length,
+    active: Boolean(activeMessage),
+    isEmpty,
+  });
+
   return (
     <Box flexDirection="column">
-      {/* Completed messages rendered via <Static> — preserved in scrollback. */}
-      <Static items={completedMessages}>
+      {/* Static content is emitted once to terminal scrollback; keep large banners out of dynamic repaint paths. */}
+      <Static items={staticItems}>
         {(msg, index) => {
-          // Frozen welcome banner — emitted once to scrollback at the top of
-          // the conversation, then scrolls away naturally.
-          if ((msg as any).role === 'banner') {
+          if (msg.role === 'welcome') {
             return (
-              <Box key={(msg as any).id as string} marginBottom={1}>
-                <WelcomeScreen
-                  terminalWidth={terminalWidth ?? 80}
-                  terminalHeight={terminalHeight ?? 24}
-                  workspace={workspace}
-                  model={model}
-                  mode={mode}
-                  commandCount={commandCount}
-                  skillCount={skillCount}
-                  reducedMotion={reducedMotion}
-                  screenReader={screenReader}
-                  animate={false}
-                />
+              <WelcomeScreen
+                key={msg.id}
+                terminalWidth={terminalWidth ?? 80}
+                terminalHeight={terminalHeight ?? 24}
+                workspace={workspace}
+                model={model}
+                mode={mode}
+                commandCount={commandCount}
+                skillCount={skillCount}
+                reducedMotion={reducedMotion}
+                screenReader={screenReader}
+                animate={false}
+              />
+            );
+          }
+          if (msg.role === 'logo') {
+            return (
+              <Box key={msg.id} marginBottom={1}>
+                <AsciiBanner />
               </Box>
             );
           }
@@ -166,7 +207,8 @@ export function ChatPanel({
           }
           // Add a little breathing room when an assistant reply follows a
           // user message, so the AI response isn't flush against the bubble.
-          const followsUser = index > 0 && completedMessages[index - 1].role === 'user';
+          const previous = completedMessages[index - 1];
+          const followsUser = index > 0 && previous?.role === 'user';
           return (
             <Box key={msg.id} flexDirection="column" marginTop={followsUser ? 1 : 0}>
               <AgentMessage
@@ -178,32 +220,12 @@ export function ChatPanel({
                 reducedMotion={reducedMotion}
                 screenReader={screenReader}
                 terminalWidth={terminalWidth}
+                showAllToolOutput={showAllToolOutput}
               />
             </Box>
           );
         }}
       </Static>
-
-      {/*
-        Animated welcome: plays the intro animation while the conversation is
-        empty. Once the first message arrives, this is replaced by a frozen
-        copy emitted into <Static> below, where it sits at the top of the
-        scrollback and scrolls away naturally as the conversation grows.
-      */}
-      {isEmpty && (
-        <WelcomeScreen
-          terminalWidth={terminalWidth ?? 80}
-          terminalHeight={terminalHeight ?? 24}
-          workspace={workspace}
-          model={model}
-          mode={mode}
-          commandCount={commandCount}
-          skillCount={skillCount}
-          reducedMotion={reducedMotion}
-          screenReader={screenReader}
-          animate
-        />
-      )}
 
       {/* Active streaming message rendered in the dynamic area. */}
       {activeMessage && (
@@ -225,6 +247,8 @@ export function ChatPanel({
             retryAttempt={retryAttempt}
             retryMax={retryMax}
             retryCountdownMs={retryCountdownMs}
+            hideStreamingSpinner
+            showAllToolOutput={showAllToolOutput}
           />
         </Box>
       )}
