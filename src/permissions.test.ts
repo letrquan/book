@@ -51,6 +51,11 @@ describe('primaryArgForRule', () => {
     expect(primaryArgForRule('Grep', { pattern: 'TODO' })).toBe('TODO');
   });
 
+  it('prefers taskId before mutable fields', () => {
+    expect(primaryArgForRule('TaskUpdate', { status: 'completed', taskId: '1' })).toBe('1');
+    expect(primaryArgForRule('TaskUpdate', { task_id: '2', subject: 'Rename' })).toBe('2');
+  });
+
   it('extracts url from WebFetch', () => {
     expect(primaryArgForRule('WebFetch', { url: 'https://example.com' })).toBe(
       'https://example.com',
@@ -120,9 +125,7 @@ describe('evaluatePermission', () => {
 
   it('globstar matches across path separators', () => {
     const s = settings({ deny: ['Read(./secrets/**)'] });
-    expect(evaluatePermission('Read', { filePath: './secrets/db/passwords.txt' }, s)).toBe(
-      'deny',
-    );
+    expect(evaluatePermission('Read', { filePath: './secrets/db/passwords.txt' }, s)).toBe('deny');
     expect(evaluatePermission('Read', { filePath: './src/main.ts' }, s)).toBe('ask');
   });
 

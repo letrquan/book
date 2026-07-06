@@ -6,7 +6,32 @@ import { todoTools } from './todo.js';
 import { webTools } from './web.js';
 import { skillsTool } from './skills-tool.js';
 import { taskTool } from './task-tool.js';
+import { taskTools } from './tasks.js';
 import { TOOL_ALIASES } from './aliases.js';
+
+async function executeWithTimeout(
+  tool: ToolDefinition,
+  call: ToolCall,
+  context: ToolContext,
+  timeoutMs: number,
+): Promise<ToolResult> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const timeout = new Promise<ToolResult>((resolve) => {
+      timer = setTimeout(() => {
+        resolve({
+          toolCallId: call.id,
+          success: false,
+          output: '',
+          error: `Tool timeout: ${tool.name} exceeded ${timeoutMs}ms`,
+        });
+      }, timeoutMs);
+    });
+    return await Promise.race([tool.execute(call.arguments, context), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export function createRegistry() {
   const tools = new Map<string, ToolDefinition>();
@@ -30,7 +55,11 @@ export function createRegistry() {
       return Array.from(tools.values());
     },
 
-    async execute(call: ToolCall, context: ToolContext, maxRetries: number = 0): Promise<ToolResult> {
+    async execute(
+      call: ToolCall,
+      context: ToolContext,
+      maxRetries: number = 0,
+    ): Promise<ToolResult> {
       const tool = tools.get(TOOL_ALIASES[call.name] ?? call.name);
       if (!tool) {
         return {
@@ -42,8 +71,9 @@ export function createRegistry() {
       }
 
       // Default tool timeout: 120s, falling back to per-tool or explicit timeout.
-      const toolTimeoutMs = (call.arguments.timeout as number)
-        ?? (context.env?.BOOK_TOOL_TIMEOUT_MS ? Number(context.env.BOOK_TOOL_TIMEOUT_MS) : 120_000);
+      const toolTimeoutMs =
+        (call.arguments.timeout as number) ??
+        (context.env?.BOOK_TOOL_TIMEOUT_MS ? Number(context.env.BOOK_TOOL_TIMEOUT_MS) : 120_000);
 
       // Only retry idempotent tools.
       const retries = tool.idempotent ? maxRetries : 0;
@@ -52,19 +82,7 @@ export function createRegistry() {
 
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-          const result = await Promise.race([
-            tool.execute(call.arguments, context),
-            new Promise<ToolResult>((resolve) => {
-              setTimeout(() => {
-                resolve({
-                  toolCallId: call.id,
-                  success: false,
-                  output: '',
-                  error: `Tool timeout: ${tool.name} exceeded ${toolTimeoutMs}ms`,
-                });
-              }, toolTimeoutMs);
-            }),
-          ]);
+          const result = await executeWithTimeout(tool, call, context, toolTimeoutMs);
 
           if (result.success) {
             if (attempt > 0) {
@@ -103,7 +121,16 @@ export function createRegistry() {
 
 export function createDefaultRegistry(): ReturnType<typeof createRegistry> {
   const registry = createRegistry();
-  registry.registerAll([...fileTools, ...shellTools, ...gitTools, ...todoTools, ...webTools, ...skillsTool, ...taskTool]);
+  registry.registerAll([
+    ...fileTools,
+    ...shellTools,
+    ...gitTools,
+    ...todoTools,
+    ...webTools,
+    ...skillsTool,
+    ...taskTool,
+    ...taskTools,
+  ]);
   return registry;
 }
 

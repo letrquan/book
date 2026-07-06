@@ -67,10 +67,15 @@ export async function runAgentLoop(
 
   // SessionStart hook — fires once at session begin.
   if (options?.isNewSession !== false && history.length === 0) {
-    runHooks(config.settings.hooks.SessionStart, 'SessionStart', {
-      workspace: config.workspace,
-      event: 'SessionStart',
-    }, { onHookEvent: callbacks.onHookEvent }).catch((err) => console.warn('SessionStart hook failed:', err));
+    runHooks(
+      config.settings.hooks.SessionStart,
+      'SessionStart',
+      {
+        workspace: config.workspace,
+        event: 'SessionStart',
+      },
+      { onHookEvent: callbacks.onHookEvent },
+    ).catch((err) => console.warn('SessionStart hook failed:', err));
   }
 
   // UserPromptSubmit hook — can modify or block the user prompt.
@@ -126,12 +131,17 @@ export async function runAgentLoop(
     }
   }
 
+  config.tasks ??= [];
+  config.backgroundShells ??= { nextId: 1, shells: new Map() };
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
     env: process.env as Record<string, string>,
     gitignorePatterns: loadGitignore(config.workspace).patterns,
     sandbox: config.settings.sandbox,
     agentConfig: config,
+    todos: [],
+    tasks: config.tasks,
+    backgroundShells: config.backgroundShells,
   };
 
   let turn = 0;
@@ -152,10 +162,15 @@ export async function runAgentLoop(
         maxTokens: config.maxTokens,
       });
       // PreCompact hook — fire-and-forget before compaction.
-      runHooks(config.settings.hooks.PreCompact, 'PreCompact', {
-        workspace: config.workspace,
-        event: 'PreCompact',
-      }, { onHookEvent: callbacks.onHookEvent }).catch((err) => console.warn('PreCompact hook failed:', err));
+      runHooks(
+        config.settings.hooks.PreCompact,
+        'PreCompact',
+        {
+          workspace: config.workspace,
+          event: 'PreCompact',
+        },
+        { onHookEvent: callbacks.onHookEvent },
+      ).catch((err) => console.warn('PreCompact hook failed:', err));
 
       try {
         const compacted = await callbacks.onCompact(newHistory, lastUsage);
@@ -382,7 +397,7 @@ export async function runAgentLoop(
           event: 'PostToolUse',
           toolName: canonName,
           toolArgs: call.arguments,
-          toolOutput: result.success ? result.output : result.error ?? '',
+          toolOutput: result.success ? result.output : (result.error ?? ''),
         },
         { onHookEvent: callbacks.onHookEvent },
       );
@@ -402,10 +417,15 @@ export async function runAgentLoop(
     }
 
     // Stop hook — fire-and-forget after each turn.
-    runHooks(config.settings.hooks.Stop, 'Stop', {
-      workspace: config.workspace,
-      event: 'Stop',
-    }, { onHookEvent: callbacks.onHookEvent }).catch((err) => console.warn('Stop hook failed:', err));
+    runHooks(
+      config.settings.hooks.Stop,
+      'Stop',
+      {
+        workspace: config.workspace,
+        event: 'Stop',
+      },
+      { onHookEvent: callbacks.onHookEvent },
+    ).catch((err) => console.warn('Stop hook failed:', err));
 
     newHistory.push({
       id: crypto.randomUUID(),
@@ -436,10 +456,15 @@ export async function runAgentLoop(
   }
 
   // SessionEnd hook — fire-and-forget at session end.
-  runHooks(config.settings.hooks.SessionEnd, 'SessionEnd', {
-    workspace: config.workspace,
-    event: 'SessionEnd',
-  }, { onHookEvent: callbacks.onHookEvent }).catch((err) => console.warn('SessionEnd hook failed:', err));
+  runHooks(
+    config.settings.hooks.SessionEnd,
+    'SessionEnd',
+    {
+      workspace: config.workspace,
+      event: 'SessionEnd',
+    },
+    { onHookEvent: callbacks.onHookEvent },
+  ).catch((err) => console.warn('SessionEnd hook failed:', err));
 
   callbacks.onDone();
   return newHistory;
