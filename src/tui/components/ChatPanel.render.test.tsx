@@ -279,6 +279,47 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).not.toContain('more lines hidden');
   });
 
+  it('renders Claude-style file mutation metadata under the assistant turn', () => {
+    const diffOutput = ['@@ -1 +1 @@', '-old line', '+new line'].join('\n');
+    const messages: Message[] = [
+      {
+        ...msg('a1', 'assistant', 'I will update it.'),
+        toolCalls: [{ id: 'call-1', name: 'Edit', arguments: { filePath: 'src/a.ts' } }],
+        toolResults: [
+          {
+            toolCallId: 'call-1',
+            success: true,
+            output: diffOutput,
+            fileMutation: {
+              kind: 'update',
+              filePath: 'src/a.ts',
+              addedLines: 1,
+              removedLines: 1,
+            },
+          },
+        ],
+      },
+    ];
+
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          activeToolCallId="call-1"
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('I will update it.');
+    expect(output).toContain('Update(src/a.ts)');
+    expect(output).toContain('Added 1 line, removed 1 line');
+    expect(output).toContain('-old line');
+    expect(output).toContain('+new line');
+  });
+
   it('merges adjacent assistant messages where later has no content (tool-call-only turn)', () => {
     const messages: Message[] = [
       msg('u1', 'user', 'run tests'),

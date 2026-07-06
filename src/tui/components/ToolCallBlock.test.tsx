@@ -118,7 +118,17 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="Edit"
           args={{ filePath: 'src/tui/components/Diff.tsx' }}
-          result={{ toolCallId: 'call-1', success: true, output: diffOutput }}
+          result={{
+            toolCallId: 'call-1',
+            success: true,
+            output: diffOutput,
+            fileMutation: {
+              kind: 'update',
+              filePath: 'src/tui/components/Diff.tsx',
+              addedLines: 2,
+              removedLines: 1,
+            },
+          }}
           isExpanded={false}
           reducedMotion
         />,
@@ -136,7 +146,17 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="Write"
           args={{ filePath: 'src/new-file.txt' }}
-          result={{ toolCallId: 'call-2', success: true, output: '+first line\n+second line', isCreate: true }}
+          result={{
+            toolCallId: 'call-2',
+            success: true,
+            output: '+first line\n+second line',
+            fileMutation: {
+              kind: 'create',
+              filePath: 'src/new-file.txt',
+              addedLines: 2,
+              removedLines: 0,
+            },
+          }}
           isExpanded={false}
           reducedMotion
         />,
@@ -154,7 +174,12 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="Edit"
           args={{ filePath: 'src/broken.ts' }}
-          result={{ toolCallId: 'call-3', success: false, output: '', error: 'Failed to write file' }}
+          result={{
+            toolCallId: 'call-3',
+            success: false,
+            output: '',
+            error: 'Failed to write file',
+          }}
           isExpanded={false}
           reducedMotion
         />,

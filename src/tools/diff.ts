@@ -17,6 +17,11 @@ export interface DiffHunk {
   lines: Array<{ kind: 'ctx' | 'add' | 'del'; text: string }>;
 }
 
+export interface DiffStats {
+  addedLines: number;
+  removedLines: number;
+}
+
 /** Compute a line-level diff between two strings. Returns hunks with context. */
 export function lineDiff(oldText: string, newText: string, context = 3): DiffHunk[] {
   const a = splitLines(oldText);
@@ -96,10 +101,25 @@ export function lineDiff(oldText: string, newText: string, context = 3): DiffHun
   return hunks;
 }
 
-/** Render a unified diff string. */
-export function renderDiff(oldText: string, newText: string, context = 3): string {
+export function diffStatsFromHunks(hunks: DiffHunk[]): DiffStats {
+  let addedLines = 0;
+  let removedLines = 0;
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line.kind === 'add') addedLines++;
+      if (line.kind === 'del') removedLines++;
+    }
+  }
+  return { addedLines, removedLines };
+}
+
+export function renderDiffWithStats(
+  oldText: string,
+  newText: string,
+  context = 3,
+): { diff: string; stats: DiffStats } {
   const hunks = lineDiff(oldText, newText, context);
-  if (hunks.length === 0) return '';
+  if (hunks.length === 0) return { diff: '', stats: { addedLines: 0, removedLines: 0 } };
   const out: string[] = [];
   for (const h of hunks) {
     out.push(`@@ -${h.oldStart} +${h.newStart} @@`);
@@ -108,5 +128,10 @@ export function renderDiff(oldText: string, newText: string, context = 3): strin
       out.push(prefix + l.text);
     }
   }
-  return out.join('\n');
+  return { diff: out.join('\n'), stats: diffStatsFromHunks(hunks) };
+}
+
+/** Render a unified diff string. */
+export function renderDiff(oldText: string, newText: string, context = 3): string {
+  return renderDiffWithStats(oldText, newText, context).diff;
 }

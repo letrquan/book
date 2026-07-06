@@ -1,7 +1,8 @@
 import type { ProviderModelConfig, ResolvedSettings } from './settings.js';
 import type { LoadedMemoryContext } from './memory-store.js';
 
-export type PermissionMode = 'default' | 'auto' | 'plan' | 'accept-edits' | 'dontAsk' | 'bypassPermissions';
+export type PermissionMode =
+  'default' | 'auto' | 'plan' | 'accept-edits' | 'dontAsk' | 'bypassPermissions';
 
 /** What phase of retry is currently active (drives the TUI spinner label). */
 export type RetryPhase = 'none' | 'transport' | 'stalled' | 'tool' | 'watchdog';
@@ -12,14 +13,14 @@ export type RetryPhase = 'none' | 'transport' | 'stalled' | 'tool' | 'watchdog';
  * CLAUDE_CODE_RETRY_WATCHDOG, plus the stream-stall threshold.
  */
 export interface RetryConfig {
-  maxAttempts: number;         // default 10 (Claude Code default)
-  baseDelayMs: number;         // default 1000
-  maxDelayMs: number;          // default 30000
-  totalBudgetMs: number;       // default 0 = no budget
-  requestTimeoutMs: number;    // default 600000 (10 min)
-  streamStallTimeoutMs: number;// default 20000 (20s, matches Claude Code)
-  toolRetries: number;         // default 1
-  watchdog: boolean;           // default false — CI mode: retry 429/529 indefinitely
+  maxAttempts: number; // default 10 (Claude Code default)
+  baseDelayMs: number; // default 1000
+  maxDelayMs: number; // default 30000
+  totalBudgetMs: number; // default 0 = no budget
+  requestTimeoutMs: number; // default 600000 (10 min)
+  streamStallTimeoutMs: number; // default 20000 (20s, matches Claude Code)
+  toolRetries: number; // default 1
+  watchdog: boolean; // default false — CI mode: retry 429/529 indefinitely
 }
 
 /**
@@ -195,6 +196,13 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
+export interface FileMutationSummary {
+  kind: 'create' | 'update';
+  filePath: string;
+  addedLines: number;
+  removedLines: number;
+}
+
 export interface ToolResult {
   toolCallId: string;
   success: boolean;
@@ -204,7 +212,9 @@ export interface ToolResult {
   durationMs?: number;
   /** Which attempt succeeded (1 = first try, 2+ = retried). Only set on success after a retry. */
   retryAttempt?: number;
-  /** Extra metadata: whether a file creation occurred. */
+  /** Structured metadata for Write/Edit/MultiEdit file changes. */
+  fileMutation?: FileMutationSummary;
+  /** Legacy metadata: whether a file creation occurred. Prefer fileMutation.kind. */
   isCreate?: boolean;
 }
 
@@ -333,7 +343,17 @@ export interface SessionRecord {
 export interface SessionStoreInterface {
   create(meta: { cwd: string; name?: string }): string;
   append(id: string, record: SessionRecord): void;
-  load(id: string): { history: Message[]; meta: { id: string; name?: string; cwd: string; createdAt: number; updatedAt: number; messageCount: number } };
+  load(id: string): {
+    history: Message[];
+    meta: {
+      id: string;
+      name?: string;
+      cwd: string;
+      createdAt: number;
+      updatedAt: number;
+      messageCount: number;
+    };
+  };
   findByName(name: string): { id: string } | undefined;
   findById(id: string): { id: string } | undefined;
   mostRecentInCwd(cwd: string): { id: string } | undefined;

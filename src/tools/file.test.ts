@@ -17,6 +17,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 const read = fileTools.find((t) => t.name === 'Read')!;
 const write = fileTools.find((t) => t.name === 'Write')!;
 const edit = fileTools.find((t) => t.name === 'Edit')!;
+const multiEditTool = fileTools.find((t) => t.name === 'MultiEdit')!;
 const glob = fileTools.find((t) => t.name === 'Glob')!;
 const grep = fileTools.find((t) => t.name === 'Grep')!;
 
@@ -64,12 +65,38 @@ describe('read_file', () => {
 });
 
 describe('write_file', () => {
+  it('returns create metadata for new files', async () => {
+    const r = await write.execute({ filePath: 'new.txt', content: 'one\ntwo' }, ctx);
+
+    expect(r.success).toBe(true);
+    expect(r.fileMutation).toEqual({
+      kind: 'create',
+      filePath: 'new.txt',
+      addedLines: 2,
+      removedLines: 0,
+    });
+  });
+
+  it('returns update metadata for existing files', async () => {
+    writeFileSync(join(dir, 'a.txt'), 'old\nkeep');
+    const r = await write.execute({ filePath: 'a.txt', content: 'new\nkeep\nextra' }, ctx);
+
+    expect(r.success).toBe(true);
+    expect(r.fileMutation).toEqual({
+      kind: 'update',
+      filePath: 'a.txt',
+      addedLines: 2,
+      removedLines: 1,
+    });
+  });
+
   it('rejects writes outside the workspace', async () => {
     const outsidePath = resolve(dir, '..', 'escape.txt');
     const r = await write.execute({ filePath: '../escape.txt', content: 'escaped' }, ctx);
 
     expect(r.success).toBe(false);
     expect(r.error).toMatch(/outside workspace/);
+    expect(r.fileMutation).toBeUndefined();
     expect(existsSync(outsidePath)).toBe(false);
   });
 });
@@ -79,6 +106,12 @@ describe('edit_file', () => {
     writeFileSync(join(dir, 'a.txt'), 'foo bar baz');
     const r = await edit.execute({ filePath: 'a.txt', oldString: 'bar', newString: 'qux' }, ctx);
     expect(r.success).toBe(true);
+    expect(r.fileMutation).toEqual({
+      kind: 'update',
+      filePath: 'a.txt',
+      addedLines: 1,
+      removedLines: 1,
+    });
     const after = await read.execute({ filePath: 'a.txt' }, ctx);
     expect(after.output).toContain('foo qux baz');
   });
@@ -88,6 +121,29 @@ describe('edit_file', () => {
     const r = await edit.execute({ filePath: 'a.txt', oldString: 'nope', newString: 'x' }, ctx);
     expect(r.success).toBe(false);
     expect(r.error).toMatch(/not found/);
+    expect(r.fileMutation).toBeUndefined();
+  });
+
+  it('returns aggregate update metadata for MultiEdit', async () => {
+    writeFileSync(join(dir, 'a.txt'), 'first\nsecond\nthird');
+    const r = await multiEditTool.execute(
+      {
+        filePath: 'a.txt',
+        edits: [
+          { oldString: 'first', newString: 'FIRST' },
+          { oldString: 'third', newString: 'third\nfourth' },
+        ],
+      },
+      ctx,
+    );
+
+    expect(r.success).toBe(true);
+    expect(r.fileMutation).toEqual({
+      kind: 'update',
+      filePath: 'a.txt',
+      addedLines: 2,
+      removedLines: 1,
+    });
   });
 });
 

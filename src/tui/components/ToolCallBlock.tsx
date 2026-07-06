@@ -1,7 +1,5 @@
 import { Text, Box } from 'ink';
 import { useMemo } from 'react';
-import { existsSync } from 'fs';
-import { resolve } from 'path';
 import { Spinner } from './Spinner.js';
 import { useTheme } from '../theme.js';
 import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
@@ -66,19 +64,31 @@ function toolLabel(name: string): string {
   return labels[name] ?? name.replace(/^mcp__([^_]+)__/, '$1:');
 }
 
-function getDiffStats(output?: string): { added: number; removed: number } {
-  if (!output) return { added: 0, removed: 0 };
-  let added = 0;
-  let removed = 0;
+function getDiffStats(output?: string): { addedLines: number; removedLines: number } {
+  if (!output) return { addedLines: 0, removedLines: 0 };
+  let addedLines = 0;
+  let removedLines = 0;
   const lines = output.split('\n');
   for (const line of lines) {
     if (line.startsWith('+') && !line.startsWith('+++')) {
-      added++;
+      addedLines++;
     } else if (line.startsWith('-') && !line.startsWith('---')) {
-      removed++;
+      removedLines++;
     }
   }
-  return { added, removed };
+  return { addedLines, removedLines };
+}
+
+function formatFileMutationStats(addedLines: number, removedLines: number): string | undefined {
+  const parts: string[] = [];
+  if (addedLines > 0) {
+    parts.push(`Added ${addedLines} ${addedLines === 1 ? 'line' : 'lines'}`);
+  }
+  if (removedLines > 0) {
+    const label = `removed ${removedLines} ${removedLines === 1 ? 'line' : 'lines'}`;
+    parts.push(parts.length === 0 ? label[0].toUpperCase() + label.slice(1) : label);
+  }
+  return parts.length > 0 ? parts.join(', ') : undefined;
 }
 
 /**
@@ -90,7 +100,18 @@ function getDiffStats(output?: string): { added: number; removed: number } {
  * While running, shows a spinner instead of [OK]/[ERR].
  * Pending permission shows [needs approval] in yellow.
  */
-export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPending, agentColor, reducedMotion = false, screenReader = false, showAllToolOutput = false }: ToolCallBlockProps) {
+export function ToolCallBlock({
+  name,
+  args,
+  result,
+  isExpanded,
+  onToggle,
+  isPending,
+  agentColor,
+  reducedMotion = false,
+  screenReader = false,
+  showAllToolOutput = false,
+}: ToolCallBlockProps) {
   const theme = useTheme();
   const isRunning = !result && !isPending;
   const canonical = canonicalToolName(name);
@@ -98,21 +119,11 @@ export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPend
   const { label, color } = getResultLabel(result);
   const toolColor = agentColor || theme.brand;
 
-  const isFileModifying = canonical === 'Write' || canonical === 'Edit' || canonical === 'MultiEdit';
-  const filePathStr = (args.filePath as string) || '';
-
-  const checkIsCreate = () => {
-    if (canonical === 'Edit' || canonical === 'MultiEdit') return false;
-    if (result && result.isCreate !== undefined) return result.isCreate;
-    if (!filePathStr) return false;
-    try {
-      return !existsSync(resolve(filePathStr));
-    } catch {
-      return false;
-    }
-  };
-  const isCreate = checkIsCreate();
-  const actionName = isCreate ? 'Create' : 'Update';
+  const isFileModifying =
+    canonical === 'Write' || canonical === 'Edit' || canonical === 'MultiEdit';
+  const fileMutation = result?.fileMutation;
+  const filePathStr = fileMutation?.filePath || (args.filePath as string) || '';
+  const actionName = fileMutation?.kind === 'create' || result?.isCreate ? 'Create' : 'Update';
 
   // Screen reader mode: flat text without any decorations, spinners, or box art.
   if (screenReader) {
@@ -120,31 +131,29 @@ export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPend
       const statusText = isRunning
         ? 'running'
         : isPending
-        ? 'needs approval'
-        : result?.success
-        ? 'succeeded'
-        : 'failed';
-      const stats = result?.success ? getDiffStats(result.output) : { added: 0, removed: 0 };
-      const statsText = result?.success
-        ? stats.added > 0 && stats.removed > 0
-          ? `, Added ${stats.added} line${stats.added > 1 ? 's' : ''}, removed ${stats.removed} line${stats.removed > 1 ? 's' : ''}`
-          : stats.added > 0
-          ? `, Added ${stats.added} line${stats.added > 1 ? 's' : ''}`
-          : stats.removed > 0
-          ? `, Removed ${stats.removed} line${stats.removed > 1 ? 's' : ''}`
-          : ''
-        : '';
+          ? 'needs approval'
+          : result?.success
+            ? 'succeeded'
+            : 'failed';
+      const stats = result?.success
+        ? (fileMutation ?? getDiffStats(result.output))
+        : { addedLines: 0, removedLines: 0 };
+      const statsLabel = result?.success
+        ? formatFileMutationStats(stats.addedLines, stats.removedLines)
+        : undefined;
+      const statsText = statsLabel ? `, ${statsLabel}` : '';
       return (
         <Box flexDirection="column" marginLeft={2}>
           <Text>
-            {actionName}({filePathStr}) {statusText}{statsText}
+            {actionName}({filePathStr}) {statusText}
+            {statsText}
           </Text>
-          {result?.error ? <Text>  Error: {result.error}</Text> : null}
+          {result?.error ? <Text> Error: {result.error}</Text> : null}
           {isExpanded && result?.success && result.output ? (
             <Box flexDirection="column">
               {result.output.split('\n').map((line, i) => (
                 <Box key={i}>
-                  <Text>  {line}</Text>
+                  <Text> {line}</Text>
                 </Box>
               ))}
             </Box>
@@ -164,23 +173,23 @@ export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPend
     return (
       <Box flexDirection="column" marginLeft={2}>
         <Text>
-          {isRunning ? '[Running] ' : `${label} `}{toolLabel(canonical)}{primaryArg ? ` ${truncateDisplay(primaryArg, 80)}` : ''}
+          {isRunning ? '[Running] ' : `${label} `}
+          {toolLabel(canonical)}
+          {primaryArg ? ` ${truncateDisplay(primaryArg, 80)}` : ''}
         </Text>
-        {isPending ? (
-          <Text>[needs approval]</Text>
-        ) : null}
+        {isPending ? <Text>[needs approval]</Text> : null}
         {isExpanded && srOutput ? (
           <Box flexDirection="column">
             {srOutput.lines.map((line, i) => (
               <Box key={i}>
-                <Text>  {line}</Text>
+                <Text> {line}</Text>
               </Box>
             ))}
-            {srOutput.footer ? <Text>  {srOutput.footer}</Text> : null}
+            {srOutput.footer ? <Text> {srOutput.footer}</Text> : null}
           </Box>
         ) : null}
         {isExpanded && result?.error && !result.error.startsWith('SKIPPED') ? (
-          <Text color="red">  Error: {truncateDisplay(result.error, 120)}</Text>
+          <Text color="red"> Error: {truncateDisplay(result.error, 120)}</Text>
         ) : null}
       </Box>
     );
@@ -197,20 +206,28 @@ export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPend
     }
     const bulletSymbol = isRunning || isPending ? '○' : '●';
 
-    const stats = result?.success ? getDiffStats(result.output) : { added: 0, removed: 0 };
-    const showStats = result?.success && (stats.added > 0 || stats.removed > 0);
+    const stats = result?.success
+      ? (fileMutation ?? getDiffStats(result.output))
+      : { addedLines: 0, removedLines: 0 };
+    const statsLabel = formatFileMutationStats(stats.addedLines, stats.removedLines);
+    const showStats = result?.success && Boolean(statsLabel);
 
     return (
       <Box flexDirection="column" marginLeft={2}>
         {/* Summary line: toggle + status + action name + filePath */}
         <Box>
-          <Text color={theme.subtle}>
-            {isExpanded ? '▼' : '▶'}{' '}
+          <Text color={theme.subtle}>{isExpanded ? '▼' : '▶'} </Text>
+          <Text color={bulletColor} bold>
+            {bulletSymbol}{' '}
           </Text>
-          <Text color={bulletColor} bold>{bulletSymbol} </Text>
-          <Text color={theme.text} bold>{actionName}({filePathStr})</Text>
+          <Text color={theme.text} bold>
+            {actionName}({filePathStr})
+          </Text>
           {result?.retryAttempt && result.retryAttempt > 1 ? (
-            <Text color={theme.subtle} dimColor> (retried, succeeded on attempt {result.retryAttempt})</Text>
+            <Text color={theme.subtle} dimColor>
+              {' '}
+              (retried, succeeded on attempt {result.retryAttempt})
+            </Text>
           ) : null}
           {result?.durationMs !== undefined && result.durationMs > 0 ? (
             <Text color={theme.subtle} dimColor>
@@ -230,13 +247,7 @@ export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPend
             </Box>
           ) : showStats ? (
             <Box marginLeft={4}>
-              <Text color={theme.subtle}>
-                {stats.added > 0 && stats.removed > 0
-                  ? `Added ${stats.added} line${stats.added > 1 ? 's' : ''}, removed ${stats.removed} line${stats.removed > 1 ? 's' : ''}`
-                  : stats.added > 0
-                  ? `Added ${stats.added} line${stats.added > 1 ? 's' : ''}`
-                  : `Removed ${stats.removed} line${stats.removed > 1 ? 's' : ''}`}
-              </Text>
+              <Text color={theme.subtle}>{statsLabel}</Text>
             </Box>
           ) : null
         ) : isPending ? (
@@ -257,20 +268,23 @@ export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPend
     <Box flexDirection="column" marginLeft={2}>
       {/* Summary line: toggle + status + tool name + primary arg + duration */}
       <Box>
-        <Text color={theme.subtle}>
-          {isExpanded ? '▼' : '▶'}{' '}
-        </Text>
+        <Text color={theme.subtle}>{isExpanded ? '▼' : '▶'} </Text>
         {isRunning ? (
           <Spinner active style="dots" reducedMotion={reducedMotion} />
         ) : (
-          <Text color={color} bold>{label} </Text>
+          <Text color={color} bold>
+            {label}{' '}
+          </Text>
         )}
-        <Text color={toolColor} bold>{toolLabel(canonical)}</Text>
-        {primaryArg ? (
-          <Text color={theme.subtle}> {truncateDisplay(primaryArg, 80)}</Text>
-        ) : null}
+        <Text color={toolColor} bold>
+          {toolLabel(canonical)}
+        </Text>
+        {primaryArg ? <Text color={theme.subtle}> {truncateDisplay(primaryArg, 80)}</Text> : null}
         {result?.retryAttempt && result.retryAttempt > 1 ? (
-          <Text color={theme.subtle} dimColor> (retried, succeeded on attempt {result.retryAttempt})</Text>
+          <Text color={theme.subtle} dimColor>
+            {' '}
+            (retried, succeeded on attempt {result.retryAttempt})
+          </Text>
         ) : null}
         {result?.durationMs !== undefined && result.durationMs > 0 ? (
           <Text color={theme.subtle} dimColor>
@@ -288,7 +302,9 @@ export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPend
             const valStr = typeof val === 'string' ? val : JSON.stringify(val);
             return (
               <Box key={key}>
-                <Text color={theme.subtle} dimColor>{key}: </Text>
+                <Text color={theme.subtle} dimColor>
+                  {key}:{' '}
+                </Text>
                 <Text color={theme.text}>{truncateDisplay(valStr, 120)}</Text>
               </Box>
             );
@@ -304,7 +320,9 @@ export function ToolCallBlock({ name, args, result, isExpanded, onToggle, isPend
       {/* Expanded: show error */}
       {isExpanded && result?.error && !result.error.startsWith('SKIPPED') ? (
         <Box marginLeft={4}>
-          <Text color={theme.error}>{'│'} {truncateDisplay(result.error, 120)}</Text>
+          <Text color={theme.error}>
+            {'│'} {truncateDisplay(result.error, 120)}
+          </Text>
         </Box>
       ) : null}
     </Box>
@@ -321,11 +339,12 @@ function OutputBlock({
   showAllToolOutput: boolean;
 }) {
   const display = useMemo(
-    () => prepareToolOutputDisplay(output, {
-      maxLines: showAllToolOutput ? 200 : 5,
-      maxLineWidth: 120,
-      hint: showAllToolOutput ? undefined : 'Ctrl+E shows all',
-    }),
+    () =>
+      prepareToolOutputDisplay(output, {
+        maxLines: showAllToolOutput ? 200 : 5,
+        maxLineWidth: 120,
+        hint: showAllToolOutput ? undefined : 'Ctrl+E shows all',
+      }),
     [output, showAllToolOutput],
   );
 
@@ -333,13 +352,17 @@ function OutputBlock({
     <Box marginLeft={4} flexDirection="column">
       {display.lines.map((line, i) => (
         <Box key={i}>
-          <Text color={theme.subtle} dimColor>{'│'} </Text>
+          <Text color={theme.subtle} dimColor>
+            {'│'}{' '}
+          </Text>
           <Text color={theme.text}>{line}</Text>
         </Box>
       ))}
       {display.footer ? (
         <Box>
-          <Text color={theme.subtle} dimColor>{'│'} {display.footer}</Text>
+          <Text color={theme.subtle} dimColor>
+            {'│'} {display.footer}
+          </Text>
         </Box>
       ) : null}
     </Box>

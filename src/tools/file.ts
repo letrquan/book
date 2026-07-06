@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { isAbsolute, relative, resolve } from 'path';
 import fg from 'fast-glob';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
-import { renderDiff } from './diff.js';
+import { renderDiffWithStats } from './diff.js';
 
 const GLOB_OUTPUT_LIMIT = 1000;
 
@@ -51,15 +51,22 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
 async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
-  const { filePath } = resolved;
+  const { filePath, relativePath } = resolved;
   const existed = existsSync(filePath);
   const oldContent = existed ? readFileSync(filePath, 'utf-8') : '';
-  writeFileSync(filePath, args.content as string, 'utf-8');
-  const diff = renderDiff(oldContent, args.content as string);
+  const newContent = args.content as string;
+  writeFileSync(filePath, newContent, 'utf-8');
+  const { diff, stats } = renderDiffWithStats(oldContent, newContent);
   return {
     toolCallId: '',
     success: true,
     output: diff || 'File written successfully',
+    fileMutation: {
+      kind: existed ? 'update' : 'create',
+      filePath: relativePath,
+      addedLines: stats.addedLines,
+      removedLines: stats.removedLines,
+    },
     isCreate: !existed,
   };
 }
@@ -67,7 +74,7 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
 async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
-  const { filePath } = resolved;
+  const { filePath, relativePath } = resolved;
   if (!existsSync(filePath)) {
     return {
       toolCallId: '',
@@ -116,18 +123,24 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
     ? content.split(oldStr).join(newStr)
     : content.replace(oldStr, newStr);
   writeFileSync(filePath, newContent, 'utf-8');
-  const diff = renderDiff(content, newContent);
+  const { diff, stats } = renderDiffWithStats(content, newContent);
   return {
     toolCallId: '',
     success: true,
     output: diff || 'File edited successfully (no textual change)',
+    fileMutation: {
+      kind: 'update',
+      filePath: relativePath,
+      addedLines: stats.addedLines,
+      removedLines: stats.removedLines,
+    },
   };
 }
 
 async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
-  const { filePath } = resolved;
+  const { filePath, relativePath } = resolved;
   if (!existsSync(filePath)) {
     return {
       toolCallId: '',
@@ -182,11 +195,17 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
   }
 
   writeFileSync(filePath, content, 'utf-8');
-  const diff = renderDiff(original, content);
+  const { diff, stats } = renderDiffWithStats(original, content);
   return {
     toolCallId: '',
     success: true,
     output: diff || 'File edited successfully (no textual change)',
+    fileMutation: {
+      kind: 'update',
+      filePath: relativePath,
+      addedLines: stats.addedLines,
+      removedLines: stats.removedLines,
+    },
   };
 }
 
