@@ -163,6 +163,7 @@ export function InputBar({
   const fileMenuVisibleRef = useRef(false);
   const fileMentionRef = useRef<ActiveFileMention | null>(null);
   const fileSelectedRef = useRef(0);
+  const fileCandidatesRef = useRef<FileMentionCandidate[]>([]);
 
   const filteredCmds = useMemo(
     () => getFilteredCommands(commands, menuFilter),
@@ -180,6 +181,7 @@ export function InputBar({
   fileMenuVisibleRef.current = fileMenuVisible;
   fileMentionRef.current = fileMention;
   fileSelectedRef.current = fileSelected;
+  fileCandidatesRef.current = fileCandidates;
 
   useInput((_input, key) => {
     // While a modal (permission prompt) owns the keyboard, ignore all keys —
@@ -394,7 +396,7 @@ export function InputBar({
 
       if (fileMenuVisibleRef.current) {
         const mention = fileMentionRef.current;
-        const selected = getSelectedFileMention(fileCandidates, fileSelectedRef.current);
+        const selected = getSelectedFileMention(fileCandidatesRef.current, fileSelectedRef.current);
         if (mention && selected) {
           const completed = replaceActiveFileMention(val, mention, selected.path);
           val = completed;
