@@ -1,9 +1,26 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { runHeadless } from './headless.js';
+import { SessionStore } from './session/store.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
 
 const config = defaultConfig({ baseUrl: 'http://localhost/v1' });
+let tempDirs: string[] = [];
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+  tempDirs = [];
+});
+
+function makeWorkspace(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'book-headless-'));
+  tempDirs.push(dir);
+  return dir;
+}
 
 beforeEach(() => {
   // Fake provider: yields one text chunk then [DONE] with usage.
@@ -13,9 +30,7 @@ beforeEach(() => {
       const body = new ReadableStream({
         start(c) {
           const enc = new TextEncoder();
-          c.enqueue(
-            enc.encode('data: {"choices":[{"delta":{"content":"Hello!"}}]}\n\n'),
-          );
+          c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"Hello!"}}]}\n\n'));
           c.enqueue(
             enc.encode(
               'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
@@ -48,6 +63,85 @@ describe('runHeadless — text output', () => {
       stdout,
     });
     expect(writes.join('')).toContain('Hello!');
+  });
+
+  it('expands @ file mentions before sending prompts to the provider', async () => {
+    const ws = makeWorkspace();
+    mkdirSync(join(ws, 'src'));
+    writeFileSync(join(ws, 'src', 'app.ts'), 'export const value = 1;');
+    let requestBody = '';
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url, init) => {
+        requestBody = String((init as RequestInit).body);
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'));
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    await runHeadless(
+      defaultConfig({ baseUrl: 'http://localhost/v1', workspace: ws }),
+      createDefaultRegistry(),
+      {
+        prompt: 'Explain @src/app.ts',
+        inputFormat: 'text',
+        outputFormat: 'text',
+        history: [],
+        mode: 'bypassPermissions',
+        stdout: { write: () => true },
+      },
+    );
+
+    expect(requestBody).toContain('Contents of src/app.ts:');
+    expect(requestBody).toContain('export const value = 1;');
+  });
+
+  it('keeps original @ mentions in returned and persisted history', async () => {
+    const ws = makeWorkspace();
+    mkdirSync(join(ws, 'src'));
+    writeFileSync(join(ws, 'src', 'app.ts'), 'export const value = 1;');
+    const sessions = new SessionStore(makeWorkspace());
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'));
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const result = await runHeadless(
+      defaultConfig({ baseUrl: 'http://localhost/v1', workspace: ws }),
+      createDefaultRegistry(),
+      {
+        prompt: 'Explain @src/app.ts',
+        inputFormat: 'text',
+        outputFormat: 'text',
+        history: [],
+        mode: 'bypassPermissions',
+        stdout: { write: () => true },
+        sessionStore: sessions,
+      },
+    );
+
+    expect(result.messages[0].content).toBe('Explain @src/app.ts');
+    expect(result.messages[0].contextContent).toContain('Contents of src/app.ts:');
+    expect(sessions.load(result.sessionId!).history[0].content).toBe('Explain @src/app.ts');
   });
 });
 
@@ -142,9 +236,7 @@ describe('runHeadless — json-schema', () => {
           start(c) {
             const enc = new TextEncoder();
             c.enqueue(
-              enc.encode(
-                'data: {"choices":[{"delta":{"content":"{\\"name\\":\\"book\\"}"}}]}\n\n',
-              ),
+              enc.encode('data: {"choices":[{"delta":{"content":"{\\"name\\":\\"book\\"}"}}]}\n\n'),
             );
             c.enqueue(enc.encode('data: [DONE]\n\n'));
             c.close();

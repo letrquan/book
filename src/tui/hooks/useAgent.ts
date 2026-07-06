@@ -18,6 +18,7 @@ import { makeMessage } from './streaming-state.js';
 import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-log.js';
 import { loadMemoryContext } from '../../memory-store.js';
 import { persistSettingLocal, persistPermissionRuleLocal } from '../persist.js';
+import { expandAtMentions, expandShellCommands } from '../input-expansion.js';
 
 const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
@@ -101,12 +102,21 @@ export function useAgent(config: AgentConfig) {
         hasCommandContext: !!commandContext,
       });
 
+      const contextMessage = expandShellCommands(
+        expandAtMentions(userMessage, liveConfig.workspace),
+        liveConfig.workspace,
+      );
+
       // --- Optimistic, Claude-Code-style update ---
       // Render the user's message IMMEDIATELY, and seed a fresh, empty
       // assistant message that we will stream into. Prior messages are never
       // touched, so they stay visible (scrolled above) while the reply streams.
       const history = messagesRef.current;
-      const userMsg = makeMessage('user', userMessage);
+      const userMsg = makeMessage(
+        'user',
+        userMessage,
+        contextMessage === userMessage ? undefined : contextMessage,
+      );
       const placeholder = makeMessage('assistant', '');
       streamingIdRef.current = placeholder.id;
       setStreamingMessageId(placeholder.id);
@@ -146,7 +156,7 @@ export function useAgent(config: AgentConfig) {
         await runAgentLoop(
           liveConfig,
           registry,
-          userMessage,
+          contextMessage,
           history,
           {
             onText: (text) => {
@@ -254,6 +264,7 @@ export function useAgent(config: AgentConfig) {
           mode,
           {
             signal: controller.signal,
+            displayMessage: userMessage,
             allowedTools: commandContext?.allowedTools,
             modelOverride: commandContext?.modelOverride,
             commands: commandContext ? [commandContext.command] : undefined,

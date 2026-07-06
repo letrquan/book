@@ -47,6 +47,8 @@ export async function runAgentLoop(
     commands?: SlashCommand[];
     allowedTools?: string[];
     modelOverride?: string;
+    /** User-facing text to retain in history when userMessage is expanded context. */
+    displayMessage?: string;
     /** True when this loop is a subagent (Task tool) invocation — skips memory auto-capture. */
     isSubagent?: boolean;
   },
@@ -67,14 +69,20 @@ export async function runAgentLoop(
 
   // SessionStart hook — fires once at session begin.
   if (options?.isNewSession !== false && history.length === 0) {
-    runHooks(config.settings.hooks.SessionStart, 'SessionStart', {
-      workspace: config.workspace,
-      event: 'SessionStart',
-    }, { onHookEvent: callbacks.onHookEvent }).catch((err) => console.warn('SessionStart hook failed:', err));
+    runHooks(
+      config.settings.hooks.SessionStart,
+      'SessionStart',
+      {
+        workspace: config.workspace,
+        event: 'SessionStart',
+      },
+      { onHookEvent: callbacks.onHookEvent },
+    ).catch((err) => console.warn('SessionStart hook failed:', err));
   }
 
   // UserPromptSubmit hook — can modify or block the user prompt.
   let effectivePrompt = userMessage;
+  let displayPrompt = options?.displayMessage ?? userMessage;
   const userHookResults = await runHooks(
     config.settings.hooks.UserPromptSubmit,
     'UserPromptSubmit',
@@ -93,13 +101,15 @@ export async function runAgentLoop(
     }
     if (r.action === 'modify' && r.modifiedPrompt) {
       effectivePrompt = r.modifiedPrompt;
+      displayPrompt = r.modifiedPrompt;
     }
   }
 
   newHistory.push({
     id: crypto.randomUUID(),
     role: 'user',
-    content: effectivePrompt,
+    content: displayPrompt,
+    contextContent: effectivePrompt === displayPrompt ? undefined : effectivePrompt,
     timestamp: Date.now(),
   });
 
@@ -152,10 +162,15 @@ export async function runAgentLoop(
         maxTokens: config.maxTokens,
       });
       // PreCompact hook — fire-and-forget before compaction.
-      runHooks(config.settings.hooks.PreCompact, 'PreCompact', {
-        workspace: config.workspace,
-        event: 'PreCompact',
-      }, { onHookEvent: callbacks.onHookEvent }).catch((err) => console.warn('PreCompact hook failed:', err));
+      runHooks(
+        config.settings.hooks.PreCompact,
+        'PreCompact',
+        {
+          workspace: config.workspace,
+          event: 'PreCompact',
+        },
+        { onHookEvent: callbacks.onHookEvent },
+      ).catch((err) => console.warn('PreCompact hook failed:', err));
 
       try {
         const compacted = await callbacks.onCompact(newHistory, lastUsage);
@@ -382,7 +397,7 @@ export async function runAgentLoop(
           event: 'PostToolUse',
           toolName: canonName,
           toolArgs: call.arguments,
-          toolOutput: result.success ? result.output : result.error ?? '',
+          toolOutput: result.success ? result.output : (result.error ?? ''),
         },
         { onHookEvent: callbacks.onHookEvent },
       );
@@ -402,10 +417,15 @@ export async function runAgentLoop(
     }
 
     // Stop hook — fire-and-forget after each turn.
-    runHooks(config.settings.hooks.Stop, 'Stop', {
-      workspace: config.workspace,
-      event: 'Stop',
-    }, { onHookEvent: callbacks.onHookEvent }).catch((err) => console.warn('Stop hook failed:', err));
+    runHooks(
+      config.settings.hooks.Stop,
+      'Stop',
+      {
+        workspace: config.workspace,
+        event: 'Stop',
+      },
+      { onHookEvent: callbacks.onHookEvent },
+    ).catch((err) => console.warn('Stop hook failed:', err));
 
     newHistory.push({
       id: crypto.randomUUID(),
@@ -436,10 +456,15 @@ export async function runAgentLoop(
   }
 
   // SessionEnd hook — fire-and-forget at session end.
-  runHooks(config.settings.hooks.SessionEnd, 'SessionEnd', {
-    workspace: config.workspace,
-    event: 'SessionEnd',
-  }, { onHookEvent: callbacks.onHookEvent }).catch((err) => console.warn('SessionEnd hook failed:', err));
+  runHooks(
+    config.settings.hooks.SessionEnd,
+    'SessionEnd',
+    {
+      workspace: config.workspace,
+      event: 'SessionEnd',
+    },
+    { onHookEvent: callbacks.onHookEvent },
+  ).catch((err) => console.warn('SessionEnd hook failed:', err));
 
   callbacks.onDone();
   return newHistory;

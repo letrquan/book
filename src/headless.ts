@@ -11,6 +11,7 @@ import type {
 } from './types.js';
 import { runAgentLoop } from './agent/loop.js';
 import type { ToolRegistry } from './tools/registry.js';
+import { expandAtMentions } from './tui/input-expansion.js';
 
 export async function runHeadless(
   config: AgentConfig,
@@ -45,7 +46,8 @@ export async function runHeadless(
   // Headless permission policy: if a prompt would be shown and no rule resolves
   // it, deny the tool — headless can't interactively prompt. Callers who want
   // full autonomy should pass mode: 'bypassPermissions'.
-  const permissionRequired = async (_call: ToolCall): Promise<'allow' | 'deny' | 'always'> => 'deny';
+  const permissionRequired = async (_call: ToolCall): Promise<'allow' | 'deny' | 'always'> =>
+    'deny';
 
   let lastUsage: Usage | null = null;
   const newHistory: Message[] = [...opts.history];
@@ -74,18 +76,30 @@ export async function runHeadless(
   }
 
   for (const prompt of prompts) {
+    const expandedPrompt = expandAtMentions(prompt, config.workspace);
     if (store && sessionId) {
-      store.append(sessionId, { type: 'user', timestamp: Date.now(), data: { content: prompt } } satisfies SessionRecord);
+      store.append(sessionId, {
+        type: 'user',
+        timestamp: Date.now(),
+        data: {
+          content: prompt,
+          contextContent: expandedPrompt === prompt ? undefined : expandedPrompt,
+        },
+      } satisfies SessionRecord);
     }
     const updated = await runAgentLoop(
       { ...config, maxTurns: opts.maxTurns ?? config.maxTurns },
       registry,
-      prompt,
+      expandedPrompt,
       newHistory,
       {
         onText: (text) => {
           if (store && sessionId) {
-            store.append(sessionId, { type: 'assistant', timestamp: Date.now(), data: { content: text } } satisfies SessionRecord);
+            store.append(sessionId, {
+              type: 'assistant',
+              timestamp: Date.now(),
+              data: { content: text },
+            } satisfies SessionRecord);
           }
           if (opts.outputFormat === 'stream-json' && opts.includePartialMessages !== false) {
             emit({ type: 'assistant', text });
@@ -126,7 +140,7 @@ export async function runHeadless(
         },
       },
       opts.mode,
-      { signal: opts.signal },
+      { signal: opts.signal, displayMessage: prompt },
     );
     // Replace newHistory with the loop's authoritative return.
     newHistory.length = 0;
@@ -164,9 +178,24 @@ export async function runHeadless(
     const last = lastAssistantText(newHistory);
     if (last) stdout.write(last + '\n');
   } else if (opts.outputFormat === 'json') {
-    emit({ result: { messages: newHistory, usage: lastUsage, structured: result.structured, structuredError: result.structuredError } });
+    emit({
+      result: {
+        messages: newHistory,
+        usage: lastUsage,
+        structured: result.structured,
+        structuredError: result.structuredError,
+      },
+    });
   } else if (opts.outputFormat === 'stream-json') {
-    emit({ type: 'result', result: { messages: newHistory, usage: lastUsage, structured: result.structured, structuredError: result.structuredError } });
+    emit({
+      type: 'result',
+      result: {
+        messages: newHistory,
+        usage: lastUsage,
+        structured: result.structured,
+        structuredError: result.structuredError,
+      },
+    });
   }
 
   return result;
@@ -190,12 +219,16 @@ async function generatePromptSuggestions(
 
   const suggestionMessages = buildMessages(
     config,
-    [...history, {
-      id: crypto.randomUUID(),
-      role: 'user' as const,
-      content: 'Based on the conversation above, suggest 1-3 follow-up prompts the user might want to ask next. Keep each suggestion under 80 characters. Return ONLY a JSON array of strings, no other text.',
-      timestamp: Date.now(),
-    }],
+    [
+      ...history,
+      {
+        id: crypto.randomUUID(),
+        role: 'user' as const,
+        content:
+          'Based on the conversation above, suggest 1-3 follow-up prompts the user might want to ask next. Keep each suggestion under 80 characters. Return ONLY a JSON array of strings, no other text.',
+        timestamp: Date.now(),
+      },
+    ],
     [],
   );
 

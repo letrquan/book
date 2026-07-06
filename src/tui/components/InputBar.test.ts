@@ -1,5 +1,8 @@
 import React from 'react';
-import { afterEach, describe, it, expect } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { InputBar } from './InputBar.js';
@@ -9,7 +12,20 @@ import { InputBar } from './InputBar.js';
  * character support, and mode border colors.
  */
 
-afterEach(() => cleanup());
+let tempDirs: string[] = [];
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllEnvs();
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+  tempDirs = [];
+});
+
+function makeWorkspace(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'book-inputbar-'));
+  tempDirs.push(dir);
+  return dir;
+}
 
 function inputBar(onSubmit: (value: string) => void) {
   return React.createElement(
@@ -154,14 +170,7 @@ describe('InputBar mode border colors', () => {
     };
 
     // All modes are covered
-    const modes = [
-      'default',
-      'auto',
-      'plan',
-      'accept-edits',
-      'dontAsk',
-      'bypassPermissions',
-    ];
+    const modes = ['default', 'auto', 'plan', 'accept-edits', 'dontAsk', 'bypassPermissions'];
     for (const mode of modes) {
       expect(MODE_BORDER_TOKENS[mode]).toBeDefined();
       expect(typeof MODE_BORDER_TOKENS[mode]).toBe('string');
@@ -234,22 +243,36 @@ describe('Vietnamese character support', () => {
 
   it('normalizes simple NFD diacritics to NFC precomposed form', () => {
     expect(normalizeInput(VIETNAMESE_CHARS.aBreveDecomposed)).toBe(VIETNAMESE_CHARS.aBreve);
-    expect(normalizeInput(VIETNAMESE_CHARS.aCircumflexDecomposed)).toBe(VIETNAMESE_CHARS.aCircumflex);
-    expect(normalizeInput(VIETNAMESE_CHARS.eCircumflexDecomposed)).toBe(VIETNAMESE_CHARS.eCircumflex);
-    expect(normalizeInput(VIETNAMESE_CHARS.oCircumflexDecomposed)).toBe(VIETNAMESE_CHARS.oCircumflex);
+    expect(normalizeInput(VIETNAMESE_CHARS.aCircumflexDecomposed)).toBe(
+      VIETNAMESE_CHARS.aCircumflex,
+    );
+    expect(normalizeInput(VIETNAMESE_CHARS.eCircumflexDecomposed)).toBe(
+      VIETNAMESE_CHARS.eCircumflex,
+    );
+    expect(normalizeInput(VIETNAMESE_CHARS.oCircumflexDecomposed)).toBe(
+      VIETNAMESE_CHARS.oCircumflex,
+    );
     expect(normalizeInput(VIETNAMESE_CHARS.oHornDecomposed)).toBe(VIETNAMESE_CHARS.oHorn);
     expect(normalizeInput(VIETNAMESE_CHARS.uHornDecomposed)).toBe(VIETNAMESE_CHARS.uHorn);
   });
 
   it('normalizes multi-tone NFD diacritics to NFC precomposed form', () => {
     // Multi-level diacritics: base + tone mark
-    expect(normalizeInput(VIETNAMESE_CHARS.aBreveAcuteDecomposed)).toBe(VIETNAMESE_CHARS.aBreveAcute);
-    expect(normalizeInput(VIETNAMESE_CHARS.eCircumflexTildeDecomposed)).toBe(VIETNAMESE_CHARS.eCircumflexTilde);
-    expect(normalizeInput(VIETNAMESE_CHARS.eCircumflexDotBelowDecomposed)).toBe(VIETNAMESE_CHARS.eCircumflexDotBelow);
+    expect(normalizeInput(VIETNAMESE_CHARS.aBreveAcuteDecomposed)).toBe(
+      VIETNAMESE_CHARS.aBreveAcute,
+    );
+    expect(normalizeInput(VIETNAMESE_CHARS.eCircumflexTildeDecomposed)).toBe(
+      VIETNAMESE_CHARS.eCircumflexTilde,
+    );
+    expect(normalizeInput(VIETNAMESE_CHARS.eCircumflexDotBelowDecomposed)).toBe(
+      VIETNAMESE_CHARS.eCircumflexDotBelow,
+    );
     expect(normalizeInput(VIETNAMESE_CHARS.aDotBelowDecomposed)).toBe(VIETNAMESE_CHARS.aDotBelow);
     expect(normalizeInput(VIETNAMESE_CHARS.oHornAcuteDecomposed)).toBe(VIETNAMESE_CHARS.oHornAcute);
     expect(normalizeInput(VIETNAMESE_CHARS.uHornAcuteDecomposed)).toBe(VIETNAMESE_CHARS.uHornAcute);
-    expect(normalizeInput(VIETNAMESE_CHARS.oCircumflexHookDecomposed)).toBe(VIETNAMESE_CHARS.oCircumflexHook);
+    expect(normalizeInput(VIETNAMESE_CHARS.oCircumflexHookDecomposed)).toBe(
+      VIETNAMESE_CHARS.oCircumflexHook,
+    );
   });
 
   it('NFC strings pass through unchanged', () => {
@@ -301,8 +324,7 @@ describe('Vietnamese character support', () => {
   });
 
   it('handles mixed ASCII and Vietnamese characters', () => {
-    const mixed =
-      'Fix lỗi trong hàm xử lý chuỗi — thêm hỗ trợ tiếng Việt (ắ, ễ, ệ, ạ, ớ, ứ, ổ)';
+    const mixed = 'Fix lỗi trong hàm xử lý chuỗi — thêm hỗ trợ tiếng Việt (ắ, ễ, ệ, ạ, ớ, ứ, ổ)';
     // normalizeInput on NFC should be idempotent
     expect(normalizeInput(mixed)).toBe(mixed);
     expect(normalizeInput(normalizeInput(mixed))).toBe(mixed);
@@ -360,6 +382,44 @@ describe('InputBar command menu', () => {
   });
 });
 
+describe('InputBar @ file mention menu', () => {
+  it('shows file suggestions when typing an @ path', async () => {
+    const ws = makeWorkspace();
+    mkdirSync(join(ws, 'src'));
+    writeFileSync(join(ws, 'src', 'app.ts'), 'export {};');
+    vi.stubEnv('BOOK_WORKSPACE', ws);
+
+    const view = render(inputBar(() => {}));
+    await tick();
+
+    view.stdin.write('@src/');
+    await tick(40);
+
+    expect(view.lastFrame()).toContain('@src/app.ts');
+  });
+
+  it('Tab accepts the selected file suggestion', async () => {
+    const ws = makeWorkspace();
+    mkdirSync(join(ws, 'src'));
+    writeFileSync(join(ws, 'src', 'app.ts'), 'export {};');
+    vi.stubEnv('BOOK_WORKSPACE', ws);
+
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value)));
+    await tick();
+
+    view.stdin.write('@src/');
+    await tick(40);
+    view.stdin.write('\t');
+    await tick(20);
+    view.stdin.write('\r');
+    await tick(40);
+
+    expect(submitted[0]).toBe('@src/app.ts ');
+    expect(submitted[0]).not.toContain('Contents of src/app.ts:');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Keyboard shortcut handling
 // ---------------------------------------------------------------------------
@@ -372,7 +432,18 @@ describe('InputBar command menu', () => {
  */
 function simulateInputHandler(
   input: string,
-  key: { meta?: boolean; ctrl?: boolean; shift?: boolean; tab?: boolean; upArrow?: boolean; downArrow?: boolean; pageUp?: boolean; pageDown?: boolean; home?: boolean; end?: boolean },
+  key: {
+    meta?: boolean;
+    ctrl?: boolean;
+    shift?: boolean;
+    tab?: boolean;
+    upArrow?: boolean;
+    downArrow?: boolean;
+    pageUp?: boolean;
+    pageDown?: boolean;
+    home?: boolean;
+    end?: boolean;
+  },
   hasHistory: boolean,
 ): 'consumed' | 'forwarded' | 'passed-through' {
   // Meta (Alt) keys are shortcuts, never text input.
@@ -472,10 +543,7 @@ describe('keyboard shortcut filtering', () => {
 
   it('onGlobalShortcut returns true when shortcut is consumed', () => {
     // Simulate the App's handleGlobalShortcut callback.
-    function handleGlobalShortcut(
-      input: string,
-      key: { ctrl?: boolean },
-    ): boolean {
+    function handleGlobalShortcut(input: string, key: { ctrl?: boolean }): boolean {
       if (key.ctrl && input === '/') return true; // consumed
       return false; // not consumed
     }

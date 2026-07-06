@@ -39,6 +39,24 @@ describe('SessionStore', () => {
     expect(loaded.history[1].content).toBe('hello');
   });
 
+  it('preserves hidden context content for resumed user messages', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, {
+      type: 'user',
+      timestamp: 1,
+      data: {
+        content: 'Explain @src/app.ts',
+        contextContent: 'Explain\nContents of src/app.ts:\n```\nexport {};\n```',
+      },
+    });
+
+    const loaded = s.load(id);
+
+    expect(loaded.history[0].content).toBe('Explain @src/app.ts');
+    expect(loaded.history[0].contextContent).toContain('Contents of src/app.ts:');
+  });
+
   it('append does NOT rewrite the whole file per event (append-only)', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj' });
@@ -51,7 +69,11 @@ describe('SessionStore', () => {
     const headerAfter = readFileSync(join(dir, `${id}.jsonl`), 'utf-8').split('\n')[0];
     expect(headerAfter).toBe(headerBefore);
     // Records still all present.
-    expect(readFileSync(join(dir, `${id}.jsonl`), 'utf-8').split('\n').filter(Boolean).length).toBe(4);
+    expect(
+      readFileSync(join(dir, `${id}.jsonl`), 'utf-8')
+        .split('\n')
+        .filter(Boolean).length,
+    ).toBe(4);
     // load() derives updatedAt from the last record's timestamp.
     const loaded = s.load(id);
     expect(loaded.meta.updatedAt).toBe(7);

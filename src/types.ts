@@ -221,7 +221,10 @@ export interface ToolResult {
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
+  /** User-facing text shown in the TUI/history. */
   content: string;
+  /** Provider-facing text when it differs from the displayed content. */
+  contextContent?: string;
   toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
   timestamp: number;

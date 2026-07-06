@@ -1,10 +1,15 @@
 import type { Message, ToolCall, ToolResult } from '../../types.js';
 
-export function makeMessage(role: 'user' | 'assistant', content: string): Message {
+export function makeMessage(
+  role: 'user' | 'assistant',
+  content: string,
+  contextContent?: string,
+): Message {
   return {
     id: crypto.randomUUID(),
     role,
     content,
+    contextContent,
     timestamp: Date.now(),
   };
 }

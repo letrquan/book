@@ -1,24 +1,138 @@
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { execSync } from 'child_process';
+import { resolveWorkspaceMentionPath } from './file-mentions.js';
+
+const AT_MENTION_CHAR_LIMIT = 20_000;
+
+interface MentionToken {
+  start: number;
+  end: number;
+  path: string;
+  raw: string;
+  trailing: string;
+}
+
+function isMentionBoundary(input: string, index: number): boolean {
+  if (index === 0) return true;
+  return /[\s([{<"']/.test(input[index - 1]);
+}
+
+function splitTrailingPunctuation(token: string): { path: string; trailing: string } {
+  let end = token.length;
+  while (end > 0 && /[.,;:!?)]/.test(token[end - 1])) end--;
+  return { path: token.slice(0, end), trailing: token.slice(end) };
+}
+
+function findMentionTokens(input: string): MentionToken[] {
+  const tokens: MentionToken[] = [];
+  let i = 0;
+
+  while (i < input.length) {
+    if (input[i] !== '@' || !isMentionBoundary(input, i)) {
+      i++;
+      continue;
+    }
+
+    const start = i;
+    const afterAt = i + 1;
+    if (afterAt >= input.length || /\s/.test(input[afterAt])) {
+      i++;
+      continue;
+    }
+
+    if (input[afterAt] === '"') {
+      const close = input.indexOf('"', afterAt + 1);
+      if (close === -1) {
+        i++;
+        continue;
+      }
+      const filePath = input.slice(afterAt + 1, close);
+      if (!filePath) {
+        i = close + 1;
+        continue;
+      }
+      tokens.push({
+        start,
+        end: close + 1,
+        path: filePath,
+        raw: input.slice(start, close + 1),
+        trailing: '',
+      });
+      i = close + 1;
+      continue;
+    }
+
+    let end = afterAt;
+    while (end < input.length && !/\s/.test(input[end])) end++;
+    const rawPath = input.slice(afterAt, end);
+    const { path, trailing } = splitTrailingPunctuation(rawPath);
+    if (path) {
+      tokens.push({
+        start,
+        end: end - trailing.length,
+        path,
+        raw: input.slice(start, end - trailing.length),
+        trailing,
+      });
+    }
+    i = end;
+  }
+
+  return tokens;
+}
+
+function formatMentionError(filePath: string, reason: string): string {
+  return `\n[Could not include @${filePath}: ${reason}]\n`;
+}
+
+function looksBinary(content: string): boolean {
+  return content.includes('\0');
+}
+
+function expandMention(filePath: string, workspace: string): string {
+  const resolved = resolveWorkspaceMentionPath(workspace, filePath);
+  if (!resolved) return formatMentionError(filePath, 'path is outside the workspace');
+  if (!existsSync(resolved.filePath)) return formatMentionError(filePath, 'file not found');
+
+  try {
+    const stat = statSync(resolved.filePath);
+    if (stat.isDirectory()) return formatMentionError(resolved.relativePath, 'path is a directory');
+    if (!stat.isFile())
+      return formatMentionError(resolved.relativePath, 'path is not a regular file');
+
+    const content = readFileSync(resolved.filePath, 'utf-8');
+    if (looksBinary(content))
+      return formatMentionError(resolved.relativePath, 'file appears to be binary');
+
+    const truncated = content.length > AT_MENTION_CHAR_LIMIT;
+    const body = truncated ? content.slice(0, AT_MENTION_CHAR_LIMIT) : content;
+    const suffix = truncated
+      ? `\n\n[File truncated at ${AT_MENTION_CHAR_LIMIT} characters; use the Read tool for more.]`
+      : '';
+
+    return `\nContents of ${resolved.relativePath}:\n\n\`\`\`\n${body}${suffix}\n\`\`\`\n`;
+  } catch (e: any) {
+    return formatMentionError(filePath, e?.message?.slice(0, 200) || 'unable to read file');
+  }
+}
 
 /**
  * Expand @path references to file contents in user input.
- * Replaces @<path> with the file content (up to 2000 chars).
  */
 export function expandAtMentions(input: string, workspace: string): string {
-  return input.replace(/@([^\s]+)/g, (_match, filePath: string) => {
-    const resolved = join(workspace, filePath);
-    if (existsSync(resolved)) {
-      try {
-        const content = readFileSync(resolved, 'utf-8').slice(0, 2000);
-        return `\n--- ${filePath} ---\n${content}\n--- end ${filePath} ---\n`;
-      } catch {
-        return `@${filePath}`;
-      }
-    }
-    return `@${filePath}`;
-  });
+  const tokens = findMentionTokens(input);
+  if (tokens.length === 0) return input;
+
+  let output = '';
+  let cursor = 0;
+  for (const token of tokens) {
+    output += input.slice(cursor, token.start);
+    output += expandMention(token.path, workspace);
+    output += token.trailing;
+    cursor = token.end + token.trailing.length;
+  }
+  output += input.slice(cursor);
+  return output;
 }
 
 /**

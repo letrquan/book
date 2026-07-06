@@ -5,8 +5,15 @@ import { useInput } from 'ink';
 import { useTimedFlash, usePulse } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { CommandMenu } from './CommandMenu.js';
+import { FileMentionMenu } from './FileMentionMenu.js';
 import type { PermissionMode, SlashCommand } from '../../types.js';
-import { expandAtMentions, expandShellCommands } from '../input-expansion.js';
+import {
+  findActiveFileMention,
+  getFileMentionCandidates,
+  replaceActiveFileMention,
+  type ActiveFileMention,
+  type FileMentionCandidate,
+} from '../file-mentions.js';
 import { recordCommandUse } from '../../commands/recent.js';
 import {
   getCommandsForEmptyQuery,
@@ -18,7 +25,10 @@ import { useDebugMount } from '../debug.js';
 
 const uiLog = createUiDebugLogger('tui:inputbar');
 
-const MODE_BORDER_TOKENS: Record<PermissionMode, 'brand' | 'success' | 'planMode' | 'autoAccept' | 'error'> = {
+const MODE_BORDER_TOKENS: Record<
+  PermissionMode,
+  'brand' | 'success' | 'planMode' | 'autoAccept' | 'error'
+> = {
   default: 'brand',
   auto: 'success',
   plan: 'planMode',
@@ -48,7 +58,10 @@ interface InputBarProps {
   /** Called when the user presses Enter while `disabled` (agent running) — interrupts the stream. */
   onInterrupt?: () => void;
   /** Forward unrecognized global keyboard shortcuts to the parent App. */
-  onGlobalShortcut?: (input: string, key: { ctrl?: boolean; meta?: boolean; shift?: boolean; tab?: boolean }) => boolean;
+  onGlobalShortcut?: (
+    input: string,
+    key: { ctrl?: boolean; meta?: boolean; shift?: boolean; tab?: boolean },
+  ) => boolean;
   /** Commands for the autocomplete menu (from discoverCommands). */
   commands?: SlashCommand[];
 }
@@ -74,11 +87,24 @@ function getFilteredCommands(commands: SlashCommand[], filter: string): CommandI
   return getCommandsForQuery(commands, filter);
 }
 
-function getSelectedCommandValue(commands: SlashCommand[], filter: string, selectedIndex: number): string | null {
+function getSelectedCommandValue(
+  commands: SlashCommand[],
+  filter: string,
+  selectedIndex: number,
+): string | null {
   const matches = getFilteredCommands(commands, filter);
   if (matches.length === 0) return null;
   const index = Math.max(0, Math.min(selectedIndex, matches.length - 1));
   return '/' + matches[index].name;
+}
+
+function getSelectedFileMention(
+  candidates: FileMentionCandidate[],
+  selectedIndex: number,
+): FileMentionCandidate | null {
+  if (candidates.length === 0) return null;
+  const index = Math.max(0, Math.min(selectedIndex, candidates.length - 1));
+  return candidates[index];
 }
 
 /**
@@ -130,13 +156,30 @@ export function InputBar({
   const menuFilterRef = useRef('');
   const menuSelectedRef = useRef(0);
 
+  // File mention menu state
+  const [fileMenuVisible, setFileMenuVisible] = useState(false);
+  const [fileMention, setFileMention] = useState<ActiveFileMention | null>(null);
+  const [fileSelected, setFileSelected] = useState(0);
+  const fileMenuVisibleRef = useRef(false);
+  const fileMentionRef = useRef<ActiveFileMention | null>(null);
+  const fileSelectedRef = useRef(0);
+
   const filteredCmds = useMemo(
     () => getFilteredCommands(commands, menuFilter),
     [commands, menuFilter],
   );
+  const workspace = process.env.BOOK_WORKSPACE || process.cwd();
+  const fileCandidates = useMemo(
+    () => (fileMention ? getFileMentionCandidates(workspace, fileMention.query) : []),
+    [workspace, fileMention],
+  );
+
   menuVisibleRef.current = menuVisible;
   menuFilterRef.current = menuFilter;
   menuSelectedRef.current = menuSelected;
+  fileMenuVisibleRef.current = fileMenuVisible;
+  fileMentionRef.current = fileMention;
+  fileSelectedRef.current = fileSelected;
 
   useInput((_input, key) => {
     // While a modal (permission prompt) owns the keyboard, ignore all keys —
@@ -198,6 +241,47 @@ export function InputBar({
       // onChange when a space is typed or the leading / is removed.
     }
 
+    // ---- File mention menu keyboard handling ----
+    if (fileMenuVisible) {
+      if (key.escape) {
+        setFileMenuVisible(false);
+        setFileSelected(0);
+        uiLog.event('input:Escape', { action: 'dismiss-file-menu' });
+        return;
+      }
+      if (key.tab) {
+        const mention = fileMentionRef.current;
+        const selected = getSelectedFileMention(fileCandidates, fileSelectedRef.current);
+        if (mention && selected) {
+          const nextValue = replaceActiveFileMention(value, mention, selected.path);
+          setValue(nextValue);
+          const nextMention = findActiveFileMention(nextValue);
+          setFileMention(nextMention);
+          setFileMenuVisible(!!nextMention);
+          setFileSelected(0);
+          uiLog.event('input:Tab', { action: 'autofill-file-mention', path: selected.path });
+        }
+        return;
+      }
+      if (key.downArrow) {
+        setFileSelected((prev) => {
+          const next = prev + 1;
+          return next >= fileCandidates.length ? 0 : next;
+        });
+        uiLog.event('input:Down', { action: 'file-menu-next-item' });
+        return;
+      }
+      if (key.upArrow) {
+        setFileSelected((prev) => {
+          const next = prev - 1;
+          return next < 0 ? Math.max(0, fileCandidates.length - 1) : next;
+        });
+        uiLog.event('input:Up', { action: 'file-menu-prev-item' });
+        return;
+      }
+      if (key.return) return;
+    }
+
     // ---- Normal mode (no menu) ----
     // Tab to accept suggestion when input is empty
     if (key.tab && !value) {
@@ -240,6 +324,9 @@ export function InputBar({
       setMenuVisible(true);
       setMenuFilter(clean.slice(1));
       setMenuSelected(0);
+      setFileMenuVisible(false);
+      setFileMention(null);
+      return;
     } else if (clean.startsWith('/') && clean.includes(' ')) {
       // User typed a space after command name — dismiss menu, they're typing args.
       if (menuVisibleRef.current) {
@@ -252,14 +339,32 @@ export function InputBar({
       }
       setMenuVisible(false);
     }
+
+    const activeMention = findActiveFileMention(clean);
+    setFileMention(activeMention);
+    setFileSelected(0);
+    const showFileMenu = !!activeMention;
+    if (showFileMenu && !fileMenuVisibleRef.current) {
+      uiLog.event('file-menu:visible', { filter: activeMention.query });
+    }
+    if (!showFileMenu && fileMenuVisibleRef.current) {
+      uiLog.event('file-menu:hidden', { reason: 'no-active-mention' });
+    }
+    setFileMenuVisible(showFileMenu);
   }, []);
 
   const handleSubmit = useCallback(
     (val: string) => {
       if (menuVisibleRef.current) {
-        const commandValue = getSelectedCommandValue(commands, menuFilterRef.current, menuSelectedRef.current);
+        const commandValue = getSelectedCommandValue(
+          commands,
+          menuFilterRef.current,
+          menuSelectedRef.current,
+        );
         setMenuVisible(false);
         setMenuSelected(0);
+        setFileMenuVisible(false);
+        setFileMention(null);
         setValue('');
         if (!commandValue) {
           uiLog.event('submit:menu', { result: 'no-command-value' });
@@ -287,9 +392,12 @@ export function InputBar({
         return;
       }
 
-      // Dismiss menu on submit.
+      // Dismiss menus on submit.
       setMenuVisible(false);
       setMenuSelected(0);
+      setFileMenuVisible(false);
+      setFileMention(null);
+      setFileSelected(0);
 
       const normalized = normalizeInput(val);
       if (!normalized.trim()) {
@@ -313,13 +421,8 @@ export function InputBar({
       const cmdName = extractCommandName(normalized);
       if (cmdName) recordCommandUse(cmdName);
 
-      // Preprocess: expand @-mentions and !-shell commands before submitting.
-      const workspace = process.env.BOOK_WORKSPACE || process.cwd();
-      let processed = expandAtMentions(normalized, workspace);
-      processed = expandShellCommands(processed, workspace);
-
       setSubmitFlashKey((key) => key + 1);
-      onSubmit(processed);
+      onSubmit(normalized);
       setValue('');
     },
     [commands, disabled, onInterrupt, onSubmit],
@@ -334,20 +437,42 @@ export function InputBar({
   const width = Math.max(20, Math.floor(terminalWidth));
   const innerWidth = Math.max(1, width);
   const inputWidth = Math.max(1, innerWidth - 2);
-  const borderColor = submitFlash || (promptPulse && !compact) ? theme.brandShimmer : baseBorderColor;
+  const borderColor =
+    submitFlash || (promptPulse && !compact) ? theme.brandShimmer : baseBorderColor;
   const placeholder = disabled
-    ? compact ? 'Enter interrupts' : 'Press Enter to interrupt… (or keep typing)'
+    ? compact
+      ? 'Enter interrupts'
+      : 'Press Enter to interrupt… (or keep typing)'
     : suggestion;
 
   const selIdx = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
+  const fileSelIdx = Math.max(0, Math.min(fileSelected, fileCandidates.length - 1));
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderBottom={false} borderLeft={false} borderRight={false} borderColor={theme.subtle}>
+    <Box
+      flexDirection="column"
+      borderStyle="single"
+      borderBottom={false}
+      borderLeft={false}
+      borderRight={false}
+      borderColor={theme.subtle}
+    >
       <CommandMenu
         items={filteredCmds}
         filterText={menuFilter}
         selectedIndex={selIdx}
         visible={menuVisible}
+        terminalWidth={width}
+        maxRows={maxMenuRows}
+        compact={compact}
+        reducedMotion={reducedMotion}
+        screenReader={screenReader}
+      />
+      <FileMentionMenu
+        items={fileCandidates}
+        filterText={fileMention?.query ?? ''}
+        selectedIndex={fileSelIdx}
+        visible={fileMenuVisible && !menuVisible}
         terminalWidth={width}
         maxRows={maxMenuRows}
         compact={compact}

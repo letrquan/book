@@ -86,12 +86,13 @@ export class SessionStore {
     for (const r of records) {
       if ((r.data as { kind?: string })?.kind === 'session_meta') continue;
       count++;
-      const data = r.data as { content?: string };
+      const data = r.data as { content?: string; contextContent?: string };
       if (r.type === 'user') {
         history.push({
           id: crypto.randomUUID(),
           role: 'user',
           content: data.content ?? '',
+          contextContent: data.contextContent,
           timestamp: r.timestamp,
         });
       } else if (r.type === 'assistant') {
