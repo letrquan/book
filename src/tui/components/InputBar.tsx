@@ -392,6 +392,15 @@ export function InputBar({
         return;
       }
 
+      if (fileMenuVisibleRef.current) {
+        const mention = fileMentionRef.current;
+        const selected = getSelectedFileMention(fileCandidates, fileSelectedRef.current);
+        if (mention && selected) {
+          const completed = replaceActiveFileMention(val, mention, selected.path);
+          val = completed;
+        }
+      }
+
       // Dismiss menus on submit.
       setMenuVisible(false);
       setMenuSelected(0);
