@@ -1,5 +1,5 @@
 import { Text, Box } from 'ink';
-import { useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { Spinner } from './Spinner.js';
 import { useTheme } from '../theme.js';
 import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
@@ -102,7 +102,7 @@ function formatFileMutationStats(addedLines: number, removedLines: number): stri
  * While running, shows a spinner instead of [OK]/[ERR].
  * Pending permission shows [needs approval] in yellow.
  */
-export function ToolCallBlock({
+function ToolCallBlockInner({
   name,
   args,
   result,
@@ -330,6 +330,8 @@ export function ToolCallBlock({
     </Box>
   );
 }
+
+export const ToolCallBlock = React.memo(ToolCallBlockInner);
 
 function OutputBlock({
   output,

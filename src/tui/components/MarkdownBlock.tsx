@@ -2,13 +2,17 @@ import { Text, Box } from 'ink';
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { marked, Tokens, Token } from 'marked';
 import { useTheme } from '../theme.js';
-import { wordWrap, displayWidth } from './word-wrap.js';
+import { wordWrap } from './word-wrap.js';
 
 interface MarkdownBlockProps {
   /** Raw markdown string to render. */
   content: string;
   /** Terminal width in columns for word-boundary wrapping. */
   terminalWidth?: number;
+}
+
+export function wrapParagraphLines(rawText: string, terminalWidth: number): string[] {
+  return wordWrap(rawText, terminalWidth).split('\n');
 }
 
 /**
@@ -209,24 +213,17 @@ function renderBlockToken(
       // Apply word-boundary wrapping to paragraph text to prevent Ink's
       // wrap-ansi (hard: true) from breaking words mid-character at line ends.
       if (terminalWidth) {
-        // Collect raw text, wrap, then re-parse as inline tokens.
+        // The wrapped path already flattens inline tokens to raw text; avoid a
+        // second markdown parse in the hot streaming render path.
         const rawText = t.tokens.map((tok) => ('text' in tok ? tok.text : '')).join('');
-        const wrapped = wordWrap(rawText, terminalWidth);
-        const wrappedTokens = marked.lexer(wrapped);
-        // The wrapped text may produce multiple paragraphs; flatten them.
+        const wrappedLines = wrapParagraphLines(rawText, terminalWidth);
         return (
           <Box key={`p-${index}`} flexDirection="column" flexGrow={1} marginBottom={1}>
-            {wrappedTokens.map((wt, wi) => {
-              if (wt.type === 'paragraph') {
-                const wp = wt as Tokens.Paragraph;
-                return (
-                  <Box key={`pw-${index}-${wi}`} flexDirection="row">
-                    <Text>{renderInlineTokens(wp.tokens, theme, `pw-${index}-${wi}`)}</Text>
-                  </Box>
-                );
-              }
-              return renderBlockToken(wt, theme, index * 100 + wi, terminalWidth);
-            })}
+            {wrappedLines.map((line, li) => (
+              <Box key={`pw-${index}-${li}`} flexDirection="row">
+                <Text color={theme.text}>{line}</Text>
+              </Box>
+            ))}
           </Box>
         );
       }

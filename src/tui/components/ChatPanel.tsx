@@ -53,7 +53,10 @@ interface ChatPanelProps {
  * but has tool calls/results. This avoids showing a separate "Book" label
  * for tool-call-only turns — they visually merge into the prior message.
  */
-function mergeAssistantMessages(messages: Message[]): Message[] {
+function mergeAssistantMessages(
+  messages: Message[],
+  streamingMessageId?: string | null,
+): Message[] {
   if (messages.length <= 1) return messages;
   const merged: Message[] = [];
   let i = 0;
@@ -65,13 +68,16 @@ function mergeAssistantMessages(messages: Message[]): Message[] {
       continue;
     }
     // Look ahead: merge any following assistant messages that have no content
-    // but have tool calls/results.
+    // but have tool calls/results. Never merge the active streaming message:
+    // it must keep its identity so it stays in the dynamic render area and can
+    // show permission prompts outside Ink's <Static> scrollback.
     let mergedMsg: Message = { ...current };
     let j = i + 1;
     while (j < messages.length) {
       const next = messages[j];
       if (next.role !== 'assistant') break;
       if (next.content) break; // has its own text content, don't merge
+      if (next.id === streamingMessageId) break;
       // Merge tool calls and tool results.
       mergedMsg = {
         ...mergedMsg,
@@ -121,7 +127,7 @@ export function ChatPanel({
 
   // Merge tool-call-only assistant messages into their preceding message.
   const displayMessages = useMemo(() => {
-    const merged = mergeAssistantMessages(messages);
+    const merged = mergeAssistantMessages(messages, streamingMessageId);
     if (messages.length !== merged.length) {
       renderLog.event('merge', {
         before: messages.length,
@@ -130,7 +136,7 @@ export function ChatPanel({
       });
     }
     return merged;
-  }, [messages]);
+  }, [messages, streamingMessageId]);
 
   // Split messages: completed ones go into <Static> so they persist in
   // terminal scrollback; the streaming message stays in the dynamic area.

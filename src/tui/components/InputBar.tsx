@@ -183,6 +183,24 @@ export function InputBar({
   fileSelectedRef.current = fileSelected;
   fileCandidatesRef.current = fileCandidates;
 
+  const acceptSelectedFileMention = useCallback(
+    (currentValue: string, trigger: 'Tab' | 'Enter'): boolean => {
+      const mention = fileMentionRef.current;
+      const selected = getSelectedFileMention(fileCandidatesRef.current, fileSelectedRef.current);
+      if (!mention || !selected) return false;
+
+      const nextValue = replaceActiveFileMention(currentValue, mention, selected.path);
+      setValue(nextValue);
+      const nextMention = findActiveFileMention(nextValue);
+      setFileMention(nextMention);
+      setFileMenuVisible(!!nextMention);
+      setFileSelected(0);
+      uiLog.event(`input:${trigger}`, { action: 'autofill-file-mention', path: selected.path });
+      return true;
+    },
+    [],
+  );
+
   useInput((_input, key) => {
     // While a modal (permission prompt) owns the keyboard, ignore all keys —
     // PermissionButtons handles them. Without this, Ink fires every `useInput`
@@ -252,17 +270,7 @@ export function InputBar({
         return;
       }
       if (key.tab) {
-        const mention = fileMentionRef.current;
-        const selected = getSelectedFileMention(fileCandidates, fileSelectedRef.current);
-        if (mention && selected) {
-          const nextValue = replaceActiveFileMention(value, mention, selected.path);
-          setValue(nextValue);
-          const nextMention = findActiveFileMention(nextValue);
-          setFileMention(nextMention);
-          setFileMenuVisible(!!nextMention);
-          setFileSelected(0);
-          uiLog.event('input:Tab', { action: 'autofill-file-mention', path: selected.path });
-        }
+        acceptSelectedFileMention(value, 'Tab');
         return;
       }
       if (key.downArrow) {
@@ -394,13 +402,8 @@ export function InputBar({
         return;
       }
 
-      if (fileMenuVisibleRef.current) {
-        const mention = fileMentionRef.current;
-        const selected = getSelectedFileMention(fileCandidatesRef.current, fileSelectedRef.current);
-        if (mention && selected) {
-          const completed = replaceActiveFileMention(val, mention, selected.path);
-          val = completed;
-        }
+      if (fileMenuVisibleRef.current && acceptSelectedFileMention(val, 'Enter')) {
+        return;
       }
 
       // Dismiss menus on submit.
@@ -436,7 +439,7 @@ export function InputBar({
       onSubmit(normalized);
       setValue('');
     },
-    [commands, disabled, onInterrupt, onSubmit],
+    [acceptSelectedFileMention, commands, disabled, onInterrupt, onSubmit],
   );
 
   const tokenKey = MODE_BORDER_TOKENS[mode];

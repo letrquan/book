@@ -22,14 +22,14 @@ function stripAnsi(text: string): string {
  * Characters in these ranges contribute 0 to terminal display width.
  */
 const ZERO_WIDTH_RANGES: [number, number][] = [
-  [0x0300, 0x036f],   // Combining Diacritical Marks
-  [0x0483, 0x0489],   // Cyrillic combining marks
-  [0x0591, 0x05bd],   // Hebrew combining marks
+  [0x0300, 0x036f], // Combining Diacritical Marks
+  [0x0483, 0x0489], // Cyrillic combining marks
+  [0x0591, 0x05bd], // Hebrew combining marks
   [0x05bf, 0x05bf],
   [0x05c1, 0x05c2],
   [0x05c4, 0x05c5],
   [0x05c7, 0x05c7],
-  [0x0610, 0x061a],   // Arabic combining marks
+  [0x0610, 0x061a], // Arabic combining marks
   [0x064b, 0x065f],
   [0x0670, 0x0670],
   [0x06d6, 0x06dc],
@@ -39,7 +39,7 @@ const ZERO_WIDTH_RANGES: [number, number][] = [
   [0x0711, 0x0711],
   [0x0730, 0x074a],
   [0x07a6, 0x07b0],
-  [0x0900, 0x0902],   // Devanagari combining
+  [0x0900, 0x0902], // Devanagari combining
   [0x093a, 0x093c],
   [0x0941, 0x0948],
   [0x094d, 0x094d],
@@ -89,14 +89,14 @@ const ZERO_WIDTH_RANGES: [number, number][] = [
   [0x0dca, 0x0dca],
   [0x0dd2, 0x0dd4],
   [0x0dd6, 0x0dd6],
-  [0x0e31, 0x0e31],   // Thai
+  [0x0e31, 0x0e31], // Thai
   [0x0e34, 0x0e3a],
   [0x0e47, 0x0e4e],
-  [0x0eb1, 0x0eb1],   // Lao
+  [0x0eb1, 0x0eb1], // Lao
   [0x0eb4, 0x0eb9],
   [0x0ebb, 0x0ebc],
   [0x0ec8, 0x0ecd],
-  [0x0f18, 0x0f19],   // Tibetan
+  [0x0f18, 0x0f19], // Tibetan
   [0x0f35, 0x0f35],
   [0x0f37, 0x0f37],
   [0x0f39, 0x0f39],
@@ -106,7 +106,7 @@ const ZERO_WIDTH_RANGES: [number, number][] = [
   [0x0f90, 0x0f97],
   [0x0f99, 0x0fbc],
   [0x0fc6, 0x0fc6],
-  [0x1031, 0x1031],   // Myanmar
+  [0x1031, 0x1031], // Myanmar
   [0x103b, 0x103c],
   [0x103d, 0x103e],
   [0x1056, 0x1057],
@@ -119,38 +119,38 @@ const ZERO_WIDTH_RANGES: [number, number][] = [
   [0x1085, 0x1086],
   [0x108d, 0x108d],
   [0x109d, 0x109d],
-  [0x135d, 0x135f],   // Ethiopic
-  [0x1712, 0x1714],   // Tagalog
-  [0x1732, 0x1734],   // Hanunoo
-  [0x1752, 0x1753],   // Buhid
-  [0x1772, 0x1773],   // Tagbanwa
-  [0x17b4, 0x17b5],   // Khmer
+  [0x135d, 0x135f], // Ethiopic
+  [0x1712, 0x1714], // Tagalog
+  [0x1732, 0x1734], // Hanunoo
+  [0x1752, 0x1753], // Buhid
+  [0x1772, 0x1773], // Tagbanwa
+  [0x17b4, 0x17b5], // Khmer
   [0x17b7, 0x17bd],
   [0x17c6, 0x17c6],
   [0x17c9, 0x17d3],
   [0x17dd, 0x17dd],
-  [0x180b, 0x180d],   // Mongolian
+  [0x180b, 0x180d], // Mongolian
   [0x18a9, 0x18a9],
-  [0x1920, 0x1922],   // Limbu
+  [0x1920, 0x1922], // Limbu
   [0x1927, 0x1928],
   [0x1932, 0x1932],
   [0x1939, 0x193b],
-  [0x1a17, 0x1a18],   // Buginese
-  [0x1a56, 0x1a56],   // Tai Tham
+  [0x1a17, 0x1a18], // Buginese
+  [0x1a56, 0x1a56], // Tai Tham
   [0x1a58, 0x1a5e],
   [0x1a60, 0x1a60],
   [0x1a62, 0x1a62],
   [0x1a65, 0x1a6c],
   [0x1a73, 0x1a7c],
   [0x1a7f, 0x1a7f],
-  [0x1ab0, 0x1abe],   // Combining Diacritical Marks Extended
-  [0x1b00, 0x1b03],   // Balinese
+  [0x1ab0, 0x1abe], // Combining Diacritical Marks Extended
+  [0x1b00, 0x1b03], // Balinese
   [0x1b34, 0x1b34],
   [0x1b36, 0x1b3a],
   [0x1b3c, 0x1b3c],
   [0x1b42, 0x1b42],
   [0x1b6b, 0x1b73],
-  [0x1b80, 0x1b81],   // Sundanese
+  [0x1b80, 0x1b81], // Sundanese
   [0x1ba2, 0x1ba5],
   [0x1ba8, 0x1ba9],
   [0x1bab, 0x1bad],
@@ -158,63 +158,63 @@ const ZERO_WIDTH_RANGES: [number, number][] = [
   [0x1be8, 0x1be9],
   [0x1bed, 0x1bed],
   [0x1bef, 0x1bf1],
-  [0x1c2c, 0x1c33],   // Lepcha
+  [0x1c2c, 0x1c33], // Lepcha
   [0x1c36, 0x1c37],
-  [0x1cd0, 0x1cd2],   // Vedic Extensions
+  [0x1cd0, 0x1cd2], // Vedic Extensions
   [0x1cd4, 0x1ce0],
   [0x1ce2, 0x1ce8],
   [0x1ced, 0x1ced],
   [0x1cf4, 0x1cf4],
   [0x1cf8, 0x1cf9],
-  [0x1dc0, 0x1df5],   // Combining Diacritical Marks Supplement
+  [0x1dc0, 0x1df5], // Combining Diacritical Marks Supplement
   [0x1dfc, 0x1dff],
-  [0x200b, 0x200f],   // ZWSP, ZWNJ, ZWJ, LRM, RLM
-  [0x2028, 0x2029],   // Line/Paragraph separator
-  [0x202a, 0x202e],   // Bidi control chars
-  [0x2060, 0x2064],   // Word joiner, invisible operators
-  [0x2066, 0x206f],   // Bidi override chars
-  [0x20d0, 0x20f0],   // Combining Diacritical Marks for Symbols
-  [0x2cef, 0x2cf1],   // Coptic combining
-  [0x2d7f, 0x2d7f],   // Tifinagh combining
-  [0x2de0, 0x2dff],   // Cyrillic Extended-A combining
+  [0x200b, 0x200f], // ZWSP, ZWNJ, ZWJ, LRM, RLM
+  [0x2028, 0x2029], // Line/Paragraph separator
+  [0x202a, 0x202e], // Bidi control chars
+  [0x2060, 0x2064], // Word joiner, invisible operators
+  [0x2066, 0x206f], // Bidi override chars
+  [0x20d0, 0x20f0], // Combining Diacritical Marks for Symbols
+  [0x2cef, 0x2cf1], // Coptic combining
+  [0x2d7f, 0x2d7f], // Tifinagh combining
+  [0x2de0, 0x2dff], // Cyrillic Extended-A combining
   [0xa66f, 0xa672],
   [0xa674, 0xa67d],
   [0xa69e, 0xa69f],
-  [0xa6f0, 0xa6f1],   // Bamum
-  [0xa802, 0xa802],   // Syloti Nagri
+  [0xa6f0, 0xa6f1], // Bamum
+  [0xa802, 0xa802], // Syloti Nagri
   [0xa806, 0xa806],
   [0xa80b, 0xa80b],
   [0xa825, 0xa826],
-  [0xa8c4, 0xa8c4],   // Saurashtra
-  [0xa8e0, 0xa8f1],   // Devanagari Extended combining
-  [0xa926, 0xa92d],   // Kayah Li
-  [0xa947, 0xa951],   // Rejang
-  [0xa980, 0xa982],   // Javanese
+  [0xa8c4, 0xa8c4], // Saurashtra
+  [0xa8e0, 0xa8f1], // Devanagari Extended combining
+  [0xa926, 0xa92d], // Kayah Li
+  [0xa947, 0xa951], // Rejang
+  [0xa980, 0xa982], // Javanese
   [0xa9b3, 0xa9b3],
   [0xa9b6, 0xa9b9],
   [0xa9bc, 0xa9bc],
   [0xa9e5, 0xa9e5],
-  [0xaa29, 0xaa2e],   // Cham
+  [0xaa29, 0xaa2e], // Cham
   [0xaa31, 0xaa32],
   [0xaa35, 0xaa36],
   [0xaa43, 0xaa43],
   [0xaa4c, 0xaa4c],
   [0xaa7c, 0xaa7c],
-  [0xaab0, 0xaab0],   // Tai Viet
+  [0xaab0, 0xaab0], // Tai Viet
   [0xaab2, 0xaab4],
   [0xaab7, 0xaab8],
   [0xaabe, 0xaabf],
   [0xaac1, 0xaac1],
-  [0xaaec, 0xaaed],   // Meetei Mayek
+  [0xaaec, 0xaaed], // Meetei Mayek
   [0xaaf6, 0xaaf6],
-  [0xabe5, 0xabe5],   // Meetei Mayek Ext
+  [0xabe5, 0xabe5], // Meetei Mayek Ext
   [0xabe8, 0xabe8],
   [0xabed, 0xabed],
-  [0xfb1e, 0xfb1e],   // Hebrew presentation forms
-  [0xfe00, 0xfe0f],   // Variation selectors
-  [0xfe20, 0xfe2f],   // Combining Half Marks
-  [0xfeff, 0xfeff],   // BOM / ZWNBSP
-  [0xfff9, 0xfffb],   // Interlinear annotation anchors
+  [0xfb1e, 0xfb1e], // Hebrew presentation forms
+  [0xfe00, 0xfe0f], // Variation selectors
+  [0xfe20, 0xfe2f], // Combining Half Marks
+  [0xfeff, 0xfeff], // BOM / ZWNBSP
+  [0xfff9, 0xfffb], // Interlinear annotation anchors
   [0x101fd, 0x101fd], // Phaistos Disc
   [0x102e0, 0x102e0], // Coptic Epact Numbers
   [0x10376, 0x1037a], // Combining Old Permic
@@ -319,13 +319,13 @@ const ZERO_WIDTH_RANGES: [number, number][] = [
  */
 const WIDE_RANGES: [number, number][] = [
   // CJK / Hangul / fullwidth forms
-  [0x1100, 0x115f],   // Hangul Jamo
-  [0x2e80, 0xa4cf],   // CJK Radicals, Yi, Kangxi, etc.
-  [0xac00, 0xd7a3],   // Hangul Syllables
-  [0xf900, 0xfaff],   // CJK Compatibility Ideographs
-  [0xfe30, 0xfe6f],   // CJK Compatibility Forms
-  [0xff01, 0xff60],   // Fullwidth Forms
-  [0xffe0, 0xffe6],   // Fullwidth Signs
+  [0x1100, 0x115f], // Hangul Jamo
+  [0x2e80, 0xa4cf], // CJK Radicals, Yi, Kangxi, etc.
+  [0xac00, 0xd7a3], // Hangul Syllables
+  [0xf900, 0xfaff], // CJK Compatibility Ideographs
+  [0xfe30, 0xfe6f], // CJK Compatibility Forms
+  [0xff01, 0xff60], // Fullwidth Forms
+  [0xffe0, 0xffe6], // Fullwidth Signs
   [0x20000, 0x2fffd], // CJK Extension B+
   [0x30000, 0x3fffd], // CJK Extension G+
   // Emoji and pictographs (many terminals render these as 2-wide)
@@ -338,26 +338,26 @@ const WIDE_RANGES: [number, number][] = [
   [0x1f900, 0x1f9ff], // Supplemental Symbols and Pictographs
   [0x1fa00, 0x1fa6f], // Chess Symbols
   [0x1fa70, 0x1faff], // Symbols and Pictographs Extended-A
-  [0x2600, 0x26ff],   // Misc symbols
-  [0x2700, 0x27bf],   // Dingbats
-  [0x2300, 0x23ff],   // Misc Technical (many 2-wide symbols)
-  [0x2b50, 0x2b55],   // Star, circle
-  [0x2b05, 0x2b07],   // Direction arrows
-  [0x2b1b, 0x2b1c],   // Large squares
-  [0x2934, 0x2935],   // Curved arrows
-  [0x25aa, 0x25ab],   // Small squares
-  [0x25fb, 0x25fe],   // Medium squares
-  [0x231a, 0x231b],   // Watch, hourglass
-  [0x2328, 0x2328],   // Keyboard
-  [0x23e9, 0x23f3],   // Double triangles, hourglass
-  [0x23f8, 0x23fa],   // Power symbols
-  [0x24c2, 0x24c2],   // Circled M
-  [0x25b6, 0x25b6],   // Play
-  [0x25c0, 0x25c0],   // Reverse
-  [0x3030, 0x3030],   // Wavy dash
-  [0x303d, 0x303d],   // Part alternation mark
-  [0x3297, 0x3297],   // Circled ideograph
-  [0x3299, 0x3299],   // Circled ideograph secret
+  [0x2600, 0x26ff], // Misc symbols
+  [0x2700, 0x27bf], // Dingbats
+  [0x2300, 0x23ff], // Misc Technical (many 2-wide symbols)
+  [0x2b50, 0x2b55], // Star, circle
+  [0x2b05, 0x2b07], // Direction arrows
+  [0x2b1b, 0x2b1c], // Large squares
+  [0x2934, 0x2935], // Curved arrows
+  [0x25aa, 0x25ab], // Small squares
+  [0x25fb, 0x25fe], // Medium squares
+  [0x231a, 0x231b], // Watch, hourglass
+  [0x2328, 0x2328], // Keyboard
+  [0x23e9, 0x23f3], // Double triangles, hourglass
+  [0x23f8, 0x23fa], // Power symbols
+  [0x24c2, 0x24c2], // Circled M
+  [0x25b6, 0x25b6], // Play
+  [0x25c0, 0x25c0], // Reverse
+  [0x3030, 0x3030], // Wavy dash
+  [0x303d, 0x303d], // Part alternation mark
+  [0x3297, 0x3297], // Circled ideograph
+  [0x3299, 0x3299], // Circled ideograph secret
 ];
 
 /**
@@ -471,29 +471,37 @@ export function wordWrap(text: string, maxWidth: number): string {
     const words = paragraph.split(' ');
     const lines: string[] = [];
     let current = '';
+    let currentWidth = 0;
 
     for (const word of words) {
       if (word === '') {
         // Consecutive spaces — add one space to current line if not empty.
-        if (current) current += ' ';
+        if (current) {
+          current += ' ';
+          currentWidth += 1;
+        }
         continue;
       }
 
-      const candidate = current ? `${current} ${word}` : word;
+      const wordWidth = displayWidth(word);
+      const candidateWidth = current ? currentWidth + 1 + wordWidth : wordWidth;
 
-      if (displayWidth(candidate) > maxWidth) {
+      if (candidateWidth > maxWidth) {
         // This word would overflow — start a new line.
         if (current) {
           lines.push(current);
           current = word;
+          currentWidth = wordWidth;
         } else {
           // Single word longer than maxWidth — keep it intact.
           // Ink's hard wrap will handle character-level breaking.
           lines.push(word);
           current = '';
+          currentWidth = 0;
         }
       } else {
-        current = candidate;
+        current = current ? `${current} ${word}` : word;
+        currentWidth = candidateWidth;
       }
     }
 
