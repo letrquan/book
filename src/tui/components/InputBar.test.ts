@@ -418,6 +418,30 @@ describe('InputBar @ file mention menu', () => {
     expect(submitted[0]).toBe('@src/app.ts ');
     expect(submitted[0]).not.toContain('Contents of src/app.ts:');
   });
+
+  it('Enter accepts the selected file suggestion without submitting immediately', async () => {
+    const ws = makeWorkspace();
+    mkdirSync(join(ws, 'src'));
+    writeFileSync(join(ws, 'src', 'app.ts'), 'export {};');
+    vi.stubEnv('BOOK_WORKSPACE', ws);
+
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value)));
+    await tick();
+
+    view.stdin.write('@src/');
+    await tick(40);
+    view.stdin.write('\r');
+    await tick(40);
+
+    expect(submitted).toEqual([]);
+    expect(view.lastFrame()).toContain('@src/app.ts');
+
+    view.stdin.write('\r');
+    await tick(40);
+
+    expect(submitted).toEqual(['@src/app.ts ']);
+  });
 });
 
 // ---------------------------------------------------------------------------
