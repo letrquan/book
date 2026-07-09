@@ -89,11 +89,14 @@ interface AppProps {
  *
  * Keyboard shortcuts:
  *   Esc      — cancel permission / abort stream
+ *   Ctrl+C   — abort stream
  *   Ctrl+T   — toggle task list
  *   Ctrl+L   — redraw
+ *   Ctrl+J   — insert newline
  *   Alt+M    — cycle permission mode
+ *   Alt+P    — open model picker
  *   Shift+Tab — cycle permission mode
- *   ?        — toggle keyboard shortcuts reference
+ *   Ctrl+/   — toggle keyboard shortcuts reference
  */
 export function App({ config }: AppProps) {
   const {
@@ -211,6 +214,21 @@ export function App({ config }: AppProps) {
       }
       uiLog.event('input:Escape', { action: 'noop-idle' });
     }
+    // Ctrl+C — cancel an in-flight stream; otherwise preserve normal terminal exit.
+    if (key.ctrl && input === 'c') {
+      if (pendingPermission) {
+        uiLog.event('input:Ctrl+C', { action: 'noop-permission-active' });
+        return;
+      }
+      if (isThinking) {
+        uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
+        cancel();
+        return;
+      }
+      uiLog.event('input:Ctrl+C', { action: 'exit' });
+      exitApp();
+      return;
+    }
     // Ctrl+E — toggle full tool output
     if (key.ctrl && input === 'e') {
       uiLog.event('input:Ctrl+E', { action: 'toggle-tool-output' });
@@ -227,6 +245,12 @@ export function App({ config }: AppProps) {
     if (key.meta && input === 'm') {
       uiLog.event('input:Alt+M', { action: 'cycle-mode' });
       cycleMode();
+      return;
+    }
+    // Alt+P — open model picker
+    if (key.meta && input === 'p') {
+      uiLog.event('input:Alt+P', { action: 'open-model-picker' });
+      setShowModelPicker(true);
       return;
     }
     // Ctrl+L — redraw (simulated by Ink re-render)
@@ -579,6 +603,20 @@ export function App({ config }: AppProps) {
       // Ctrl+/ and Ctrl+E must be handled here (not only in the parent useInput)
       // because ink-text-input consumes some Ctrl key events before they reach
       // the parent handler.
+      if (key.ctrl && input === 'c') {
+        if (pendingPermission) {
+          uiLog.event('input:Ctrl+C', { action: 'noop-permission-active' });
+          return true;
+        }
+        if (isThinking) {
+          uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
+          cancel();
+          return true;
+        }
+        uiLog.event('input:Ctrl+C', { action: 'exit' });
+        exitApp();
+        return true;
+      }
       if (key.ctrl && input === '/') {
         setShowShortcuts((s) => !s);
         return true; // consumed
@@ -590,7 +628,7 @@ export function App({ config }: AppProps) {
       }
       return false; // not consumed — let text input handle it
     },
-    [],
+    [cancel, exitApp, isThinking, pendingPermission],
   );
 
   // Track input changes for command menu filtering — now handled inside InputBar.
@@ -892,13 +930,15 @@ export function App({ config }: AppProps) {
                     description="Cancel permission / abort stream"
                     theme={theme}
                   />
+                  <HelpRow label="Ctrl+C" description="Cancel current turn" theme={theme} />
                   <HelpRow label="Ctrl+T" description="Toggle task list" theme={theme} />
                   <HelpRow label="Ctrl+E" description="Toggle full tool output" theme={theme} />
                   <HelpRow label="Ctrl+L" description="Redraw screen" theme={theme} />
                   <HelpRow label="Alt+M" description="Cycle permission mode" theme={theme} />
+                  <HelpRow label="Alt+P" description="Open model picker" theme={theme} />
                   <HelpRow label="Up/Down" description="Navigate input history" theme={theme} />
                   <HelpRow
-                    label="Shift+Enter"
+                    label="Ctrl+J / Shift+Enter"
                     description="Insert newline (multiline)"
                     theme={theme}
                   />

@@ -467,6 +467,7 @@ function simulateInputHandler(
     pageDown?: boolean;
     home?: boolean;
     end?: boolean;
+    return?: boolean;
   },
   hasHistory: boolean,
 ): 'consumed' | 'forwarded' | 'passed-through' {
@@ -477,6 +478,9 @@ function simulateInputHandler(
 
   // Tab to accept suggestion
   if (key.tab) return 'consumed';
+
+  // Ctrl+J / Shift+Enter insert a newline locally.
+  if ((key.ctrl && (input === 'j' || input === '\n')) || (key.shift && key.return)) return 'consumed';
 
   // Forward Ctrl-based shortcuts to parent
   if (key.ctrl) return 'forwarded';
@@ -510,11 +514,17 @@ describe('keyboard shortcut filtering', () => {
     }
   });
 
-  it('all Ctrl-modified keys are forwarded to parent', () => {
+  it('all Ctrl-modified shortcuts except Ctrl+J are forwarded to parent', () => {
     // Ctrl shortcuts go to onGlobalShortcut, not the text input.
     for (const ch of ['c', 'l', 's', 'h', 't', 'd', 'r', '/']) {
       expect(simulateInputHandler(ch, { ctrl: true }, false)).toBe('forwarded');
     }
+  });
+
+  it('Ctrl+J and Shift+Enter are consumed for local newline insertion', () => {
+    expect(simulateInputHandler('j', { ctrl: true }, false)).toBe('consumed');
+    expect(simulateInputHandler('\n', { ctrl: true }, false)).toBe('consumed');
+    expect(simulateInputHandler('', { shift: true, return: true }, false)).toBe('consumed');
   });
 
   it('plain letters without modifiers pass through to text input', () => {

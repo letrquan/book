@@ -33,8 +33,8 @@ Book starts every session with Claude-Code-style project instructions loaded.
 - [x] `.claude/rules/*.md` (modular rules; currently injected as standing prompt guidance)
 - [x] Merge order: user → project → local → rules (later wins)
 
-### 1c. Rich system prompt [PARTIAL ✅ 2026-07-04]
-Book now builds a structured Claude-Code-style prompt from local project context. Remaining work is the cache split.
+### 1c. Rich system prompt [has] ✅ (2026-07-09)
+Book now builds a structured Claude-Code-style prompt from local project context, split into a cacheable static prefix and dynamic per-turn suffix.
 
 - [x] Inject CLAUDE.md content
 - [x] Inject auto memory (MEMORY.md index)
@@ -45,7 +45,7 @@ Book now builds a structured Claude-Code-style prompt from local project context
 - [x] Inject subagent listing
 - [x] Inject agent todo list (when non-empty)
 - [x] Inject MCP tool descriptions (via active ToolDefinition descriptions)
-- [ ] Two-zone: cached static prefix + dynamic per-turn suffix
+- [x] Two-zone: cached static prefix + dynamic per-turn suffix — `buildSystemPromptZones()` emits cached prefix + dynamic suffix; Anthropic caches only the static system block.
 - [x] Structure: persona → CLAUDE.md/rules → context → tools → memory → guardrails
 
 ### 1d. Auto memory system [has] ✅ (2026-07-04)
@@ -140,6 +140,8 @@ The STUB commands now do the real thing locally (no longer delegate to the agent
 
 Book has: `--workspace`, `--model`, `--print`, `--output-format`, `--input-format`, `--max-turns`, `--max-budget-usd`, `--permission-mode`, `--verbose`, `--json-schema`, `--resume`, `--continue`, `--session-id`, `--name`, `--no-session-persistence`, `--fork-session`, `--scrollback`, `--settings`, `--no-settings`, `--effort`
 
+> Deferred in the 2026-07-09 milestone pass: this slice focused on 1c prompt caching and 1h/1i TUI keybindings. CLI flag plumbing touches CLI/headless/TUI/SDK paths and should be handled in a dedicated follow-up.
+
 Missing:
 - `--system-prompt <text>` — inject one-off system prompt
 - `--context <text>` — add extra context text
@@ -155,33 +157,29 @@ Missing:
 - `--dangerously-skip-permissions` — skip all permission prompts
 - `--debug <filter>` — debug logging with filter
 
-### 1h. Input/editing features [MISSING]
+### 1h. Input/editing features [PARTIAL ✅ 2026-07-09]
 
-- **Vim mode** — vim keybindings in the input area (hjkl, visual mode, operators)
-- **Ctrl+R history search** — reverse search through command history
-- **External editor** — Ctrl+G to open prompt in $EDITOR
-- **Image paste** — Ctrl+V to paste image from clipboard
-- **Stash prompt** — Ctrl+S to stash current input
-- **Fullscreen rendering** — alt-screen mode (Book uses pi-style scrollback, CC has fullscreen mode with mouse support)
-- **Terminal bell** — notification when Claude finishes a response
+- [x] **Multiline input quick win** — Ctrl+J and terminal-supported Shift+Enter append a newline without submitting
+- [ ] **Vim mode** — vim keybindings in the input area (hjkl, visual mode, operators)
+- [ ] **Ctrl+R history search** — reverse search through command history
+- [ ] **External editor** — Ctrl+G to open prompt in $EDITOR
+- [ ] **Image paste** — Ctrl+V to paste image from clipboard
+- [ ] **Stash prompt** — Ctrl+S to stash current input
+- [ ] **Fullscreen rendering** — alt-screen mode (Book uses pi-style scrollback, CC has fullscreen mode with mouse support)
+- [ ] **Terminal bell** — notification when Claude finishes a response
 
-### 1i. Keyboard shortcuts [MISSING]
+### 1i. Keyboard shortcuts [PARTIAL ✅ 2026-07-09]
 
-Book has: Esc (cancel), Ctrl+T (tasks), Ctrl+L (redraw), Alt+M (cycle mode), Up/Down (history)
+Book has: Esc (cancel), Ctrl+C (cancel current turn), Ctrl+T (tasks), Ctrl+L (redraw), Ctrl+J / Shift+Enter (newline, terminal support permitting), Alt+M (cycle mode), Meta+P (model picker), Up/Down (history), Ctrl+/ (keyboard shortcuts reference)
 
 Missing:
-- Ctrl+C — cancel current turn
 - Ctrl+R — reverse history search
-- Ctrl+J — insert newline without submitting
 - Ctrl+G — open external editor
 - Ctrl+S — stash current prompt
 - Ctrl+V — paste image
-- Meta+P — model picker
 - Meta+O — toggle fast mode
 - Meta+T — toggle extended thinking
 - Ctrl+X Ctrl+K — kill all background agents
-- Shift+Enter — insert newline (currently requires `\` + Enter)
-- `?` — keyboard shortcuts reference (Book uses Ctrl+/ instead)
 
 ---
 

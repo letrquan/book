@@ -1,7 +1,15 @@
 import { existsSync } from 'fs';
 import { platform, release, hostname } from 'os';
 import { dirname, join, parse, resolve } from 'path';
-import type { AgentConfig, Message, SlashCommand, ToolContext, ToolDefinition } from '../types.js';
+import type {
+  AgentConfig,
+  Message,
+  ProviderMessage,
+  SlashCommand,
+  SystemPromptZones,
+  ToolContext,
+  ToolDefinition,
+} from '../types.js';
 import { discoverSkills, generateSkillListing } from '../skills.js';
 import { discoverCommands, generateCommandListing } from '../commands/loader.js';
 import { BUILTIN_COMMANDS } from '../commands/builtins.js';
@@ -127,18 +135,18 @@ function todoSection(
   ].join('\n');
 }
 
-function buildSystemPrompt(
+export function buildSystemPromptZones(
   config: AgentConfig,
   todos: Array<{ content: string; status: string; activeForm?: string }>,
   commands?: SlashCommand[],
   tools: ToolDefinition[] = [],
-): string {
+): SystemPromptZones {
   const skills = discoverSkills(config.workspace);
   const cmdList = mergeCommands(commands ?? discoverCommands(config.workspace));
   const claudeMd = renderClaudeMd(discoverClaudeMd(config.workspace));
   const git = gitContext(config.workspace);
 
-  const sections = [
+  const staticSections = [
     `You are Book, an AI coding agent. You help users write, fix, and understand code.`,
     claudeMd,
     [
@@ -158,22 +166,23 @@ function buildSystemPrompt(
       'Be concise and direct. Write code when asked. Explain only when asked.',
       'Use tools for reading/writing files, running shell commands, searching code, and interacting with git.',
     ].join('\n'),
-    todoSection(todos),
   ].filter(Boolean);
 
-  return sections.join('\n\n');
+  return {
+    cachedPrefix: staticSections.join('\n\n'),
+    dynamicSuffix: todoSection(todos),
+  };
 }
 
-type ProviderMessage = {
-  role: string;
-  content: string | null;
-  tool_calls?: Array<{
-    id: string;
-    type: 'function';
-    function: { name: string; arguments: string };
-  }>;
-  tool_call_id?: string;
-};
+export function buildSystemPrompt(
+  config: AgentConfig,
+  todos: Array<{ content: string; status: string; activeForm?: string }>,
+  commands?: SlashCommand[],
+  tools: ToolDefinition[] = [],
+): string {
+  const zones = buildSystemPromptZones(config, todos, commands, tools);
+  return [zones.cachedPrefix, zones.dynamicSuffix].filter(Boolean).join('\n\n');
+}
 
 export function buildMessages(
   config: AgentConfig,
@@ -186,7 +195,7 @@ export function buildMessages(
 
   messages.push({
     role: 'system',
-    content: buildSystemPrompt(config, todos ?? [], commands, tools),
+    content: buildSystemPromptZones(config, todos ?? [], commands, tools),
   });
 
   for (const msg of history) {

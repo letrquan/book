@@ -300,6 +300,24 @@ export interface ToolContext {
   backgroundShells?: BackgroundShellStore;
 }
 
+export interface SystemPromptZones {
+  /** Cacheable session-stable system prompt prefix. */
+  cachedPrefix: string;
+  /** Dynamic per-turn system prompt suffix, such as the active todo list. */
+  dynamicSuffix: string;
+}
+
+export interface ProviderMessage {
+  role: string;
+  content: string | SystemPromptZones | null;
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: string };
+  }>;
+  tool_call_id?: string;
+}
+
 export interface AgentConfig {
   apiKey: string;
   baseUrl: string;

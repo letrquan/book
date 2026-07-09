@@ -1,4 +1,12 @@
-import type { AgentConfig, ProviderStreamEvent, ToolDefinition, Usage, RetryConfig } from '../types.js';
+import type {
+  AgentConfig,
+  ProviderMessage,
+  ProviderStreamEvent,
+  RetryConfig,
+  SystemPromptZones,
+  ToolDefinition,
+  Usage,
+} from '../types.js';
 import { createDebugLogger } from '../debug-log.js';
 
 const log = createDebugLogger('provider');
@@ -250,9 +258,32 @@ async function readStreamChunk(
   }
 }
 
+function isSystemPromptZones(content: ProviderMessage['content']): content is SystemPromptZones {
+  return (
+    !!content &&
+    typeof content === 'object' &&
+    'cachedPrefix' in content &&
+    'dynamicSuffix' in content
+  );
+}
+
+function flattenMessages(messages: ProviderMessage[]): Array<{
+  role: string;
+  content: string | null;
+  tool_calls?: ProviderMessage['tool_calls'];
+  tool_call_id?: string;
+}> {
+  return messages.map((msg) => ({
+    ...msg,
+    content: isSystemPromptZones(msg.content)
+      ? [msg.content.cachedPrefix, msg.content.dynamicSuffix].filter(Boolean).join('\n\n')
+      : msg.content,
+  }));
+}
+
 export async function* chatCompletionStream(
   config: AgentConfig,
-  messages: { role: string; content: string | null; tool_calls?: unknown[] }[],
+  messages: ProviderMessage[],
   tools: ToolDefinition[],
   options?: { signal?: AbortSignal; onRetry?: (attempt: number, max: number, delayMs: number) => void; onStreamStall?: (countdownMs: number) => void; onStreamResume?: () => void },
 ): AsyncGenerator<ProviderStreamEvent> {
@@ -262,7 +293,7 @@ export async function* chatCompletionStream(
 
   const body: Record<string, unknown> = {
     model: config.model,
-    messages,
+    messages: flattenMessages(messages),
     stream: true,
     // Request token usage in the final SSE chunk so we can track cost.
     stream_options: { include_usage: true },

@@ -1,4 +1,12 @@
-import type { AgentConfig, ProviderStreamEvent, RetryConfig, ToolDefinition, Usage } from '../types.js';
+import type {
+  AgentConfig,
+  ProviderMessage,
+  ProviderStreamEvent,
+  RetryConfig,
+  SystemPromptZones,
+  ToolDefinition,
+  Usage,
+} from '../types.js';
 import { createDebugLogger } from '../debug-log.js';
 
 const log = createDebugLogger('provider:anthropic');
@@ -172,6 +180,49 @@ interface AnthropicTool {
   input_schema: Record<string, unknown>;
 }
 
+function isSystemPromptZones(content: ProviderMessage['content']): content is SystemPromptZones {
+  return (
+    !!content &&
+    typeof content === 'object' &&
+    'cachedPrefix' in content &&
+    'dynamicSuffix' in content
+  );
+}
+
+function flattenSystemPrompt(zones: SystemPromptZones): string {
+  return [zones.cachedPrefix, zones.dynamicSuffix].filter(Boolean).join('\n\n');
+}
+
+function messageText(content: ProviderMessage['content'], fallback = ''): string {
+  return typeof content === 'string' ? content : fallback;
+}
+
+export function buildSystemBlocks(system: string, systemZones?: SystemPromptZones): Array<{
+  type: 'text';
+  text: string;
+  cache_control?: { type: 'ephemeral' };
+}> {
+  if (!systemZones) {
+    return [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
+  }
+
+  return [
+    {
+      type: 'text',
+      text: systemZones.cachedPrefix,
+      cache_control: { type: 'ephemeral' },
+    },
+    ...(systemZones.dynamicSuffix
+      ? [
+          {
+            type: 'text' as const,
+            text: systemZones.dynamicSuffix,
+          },
+        ]
+      : []),
+  ];
+}
+
 /** Models that support adaptive thinking. All others get no thinking field. */
 const ADAPTIVE_THINKING_MODELS = new Set([
   'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-opus-4-5',
@@ -194,15 +245,22 @@ function supportsAdaptiveThinking(model: string): boolean {
  * Anthropic's strict alternating user/assistant requirement.
  */
 export function convertMessages(
-  messages: { role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string }[],
-): { system: string; messages: AnthropicMessage[] } {
+  messages: ProviderMessage[],
+): { system: string; systemZones?: SystemPromptZones; messages: AnthropicMessage[] } {
   let system = 'You are a helpful AI coding assistant.';
+  let systemZones: SystemPromptZones | undefined;
 
   const anthropicMessages: AnthropicMessage[] = [];
 
   for (const msg of messages) {
     if (msg.role === 'system') {
-      system = msg.content ?? system;
+      if (isSystemPromptZones(msg.content)) {
+        systemZones = msg.content;
+        system = flattenSystemPrompt(msg.content);
+      } else {
+        system = messageText(msg.content, system);
+        systemZones = undefined;
+      }
       continue;
     }
 
@@ -212,7 +270,7 @@ export function convertMessages(
         const block: AnthropicContentBlock = {
           type: 'tool_result',
           tool_use_id: msg.tool_call_id,
-          content: msg.content ?? '',
+          content: messageText(msg.content),
         };
         const last = anthropicMessages[anthropicMessages.length - 1];
         if (last?.role === 'user' && Array.isArray(last.content) && last.content.length > 0 && last.content[0].type === 'tool_result') {
@@ -224,9 +282,9 @@ export function convertMessages(
         // Regular user message — merge with previous if it's also a plain user message
         const last = anthropicMessages[anthropicMessages.length - 1];
         if (last?.role === 'user' && typeof last.content === 'string') {
-          last.content = last.content + '\n\n' + (msg.content ?? '');
+          last.content = last.content + '\n\n' + messageText(msg.content);
         } else {
-          anthropicMessages.push({ role: 'user', content: msg.content ?? '' });
+          anthropicMessages.push({ role: 'user', content: messageText(msg.content) });
         }
       }
       continue;
@@ -237,7 +295,7 @@ export function convertMessages(
 
       // Always include a text block — Anthropic requires at least one content block.
       // Use empty string if content is null/empty (assistant with tool_calls only).
-      content.push({ type: 'text', text: msg.content || '' });
+      content.push({ type: 'text', text: messageText(msg.content) });
 
       if (msg.tool_calls && msg.tool_calls.length > 0) {
         for (const tc of msg.tool_calls as Array<{ id: string; function?: { name: string; arguments: string } }>) {
@@ -263,7 +321,7 @@ export function convertMessages(
       const block: AnthropicContentBlock = {
         type: 'tool_result',
         tool_use_id: msg.tool_call_id ?? '',
-        content: msg.content ?? '',
+        content: messageText(msg.content),
       };
       const last = anthropicMessages[anthropicMessages.length - 1];
       if (last?.role === 'user' && Array.isArray(last.content) && last.content.length > 0 && last.content[0].type === 'tool_result') {
@@ -274,7 +332,7 @@ export function convertMessages(
     }
   }
 
-  return { system, messages: anthropicMessages };
+  return { system, systemZones, messages: anthropicMessages };
 }
 
 /**
@@ -343,7 +401,7 @@ async function readStreamChunk(
 
 export async function* chatCompletionStream(
   config: AgentConfig,
-  messages: { role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string }[],
+  messages: ProviderMessage[],
   tools: ToolDefinition[],
   options?: {
     signal?: AbortSignal;
@@ -357,7 +415,7 @@ export async function* chatCompletionStream(
   const url = `${config.baseUrl}/v1/messages`;
 
   // Convert messages and tools to Anthropic format
-  const { system, messages: anthropicMessages } = convertMessages(messages);
+  const { system, systemZones, messages: anthropicMessages } = convertMessages(messages);
   const anthropicTools = convertTools(tools);
 
   const body: Record<string, unknown> = {
@@ -368,14 +426,9 @@ export async function* chatCompletionStream(
     stream_options: { include_usage: true },
   };
 
-  // System prompt as top-level field with cache_control marker
-  body.system = [
-    {
-      type: 'text',
-      text: system,
-      cache_control: { type: 'ephemeral' },
-    },
-  ];
+  // System prompt as top-level field. Book emits a cacheable static prefix
+  // and a dynamic per-turn suffix (for example, the active todo list).
+  body.system = buildSystemBlocks(system, systemZones);
 
   // Tools with cache_control markers on each
   if (anthropicTools.length > 0) {

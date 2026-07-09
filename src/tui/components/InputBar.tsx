@@ -299,6 +299,18 @@ export function InputBar({
       uiLog.event('input:Tab', { action: 'accept-suggestion' });
       return;
     }
+    // Ctrl+J / Shift+Enter insert a newline without submitting. ink-text-input
+    // does not expose cursor position, so append at the end of the prompt.
+    if ((key.ctrl && (_input === 'j' || _input === '\n')) || (key.shift && key.return)) {
+      setValue(value + '\n');
+      setMenuVisible(false);
+      setMenuSelected(0);
+      setFileMenuVisible(false);
+      setFileMention(null);
+      setFileSelected(0);
+      uiLog.event(key.ctrl ? 'input:Ctrl+J' : 'input:Shift+Enter', { action: 'insert-newline' });
+      return;
+    }
     // Forward Ctrl-based shortcuts to the parent App.
     if (key.ctrl && onGlobalShortcut) {
       if (onGlobalShortcut(_input, key)) return;

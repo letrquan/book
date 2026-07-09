@@ -4,18 +4,18 @@ import { useGradientSpinner } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 
 const SPINNER_TIPS = [
-  'Press ? for keyboard shortcuts',
+  'Press Ctrl+/ for keyboard shortcuts',
   'Use @filename to include file contents',
   'Start with ! to run a shell command',
-  'Press Esc to cancel the current operation',
+  'Press Esc or Ctrl+C to cancel the current operation',
   'Type /help for available commands',
   'Alt+M to cycle permission modes',
+  'Alt+P to open the model picker',
   'Use /compact when context is getting long',
   '/theme dark|light|auto to switch themes',
   'Ctrl+T to toggle the task list',
   'Sessions auto-save — use -c to resume',
-  'Shift+Enter for multiline input',
-  'Ctrl+S to toggle auto-scroll',
+  'Ctrl+J or Shift+Enter for multiline input',
   'Type /task <subject> to add a task',
   'The model can use multiple tools per turn',
   'Use /clear to start a fresh conversation',

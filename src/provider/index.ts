@@ -8,7 +8,7 @@
  * 4. Default → OpenAI-compatible
  */
 
-import type { AgentConfig, ProviderStreamEvent, ToolDefinition } from '../types.js';
+import type { AgentConfig, ProviderMessage, ProviderStreamEvent, ToolDefinition } from '../types.js';
 import { chatCompletionStream as openaiStream } from './openai-compatible.js';
 import { chatCompletionStream as anthropicStream, isAnthropicUrl } from './anthropic.js';
 
@@ -30,7 +30,7 @@ function isAnthropicProvider(config: AgentConfig): boolean {
 
 export async function* chatCompletionStream(
   config: AgentConfig,
-  messages: { role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string }[],
+  messages: ProviderMessage[],
   tools: ToolDefinition[],
   options?: {
     signal?: AbortSignal;
