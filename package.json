@@ -31,7 +31,6 @@
     "format:check": "prettier --check \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {
-    "@types/marked": "^5.0.2",
     "chalk": "^5.4.0",
     "commander": "^14.0.0",
     "fast-glob": "^3.3.0",
