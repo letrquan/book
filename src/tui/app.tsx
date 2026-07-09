@@ -10,6 +10,7 @@ import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
 import { ModelPicker } from './components/ModelPicker.js';
+import { PlanApprovalButtons } from './components/PlanApprovalButtons.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
 import {
@@ -109,11 +110,13 @@ export function App({ config }: AppProps) {
     usage,
     mode,
     pendingPermission,
+    pendingPlanApproval,
     agentTodos,
     liveConfig,
     send,
     clear,
     resolvePermission,
+    resolvePlanApproval,
     cancel,
     compact,
     cycleMode,
@@ -198,13 +201,12 @@ export function App({ config }: AppProps) {
   useDebugValueChange(uiLog, 'showModelPicker', showModelPicker, (v) => String(v));
 
   useInput((input, key) => {
-    // Escape cancels a pending permission (handled by PermissionButtons),
+    // Escape cancels an active approval prompt (handled by its component),
     // or aborts an in-flight stream. Do NOT double-handle Esc when
-    // a permission prompt is active — PermissionButtons has its own handler.
+    // an approval prompt is active — the prompt component has its own handler.
     if (key.escape) {
-      if (pendingPermission) {
-        // PermissionButtons handles Esc internally. Do nothing here.
-        uiLog.event('input:Escape', { action: 'noop-permission-active' });
+      if (pendingPermission || pendingPlanApproval) {
+        uiLog.event('input:Escape', { action: 'noop-approval-active' });
         return;
       }
       if (isThinking) {
@@ -216,8 +218,8 @@ export function App({ config }: AppProps) {
     }
     // Ctrl+C — cancel an in-flight stream; otherwise preserve normal terminal exit.
     if (key.ctrl && input === 'c') {
-      if (pendingPermission) {
-        uiLog.event('input:Ctrl+C', { action: 'noop-permission-active' });
+      if (pendingPermission || pendingPlanApproval) {
+        uiLog.event('input:Ctrl+C', { action: 'noop-approval-active' });
         return;
       }
       if (isThinking) {
@@ -604,8 +606,8 @@ export function App({ config }: AppProps) {
       // because ink-text-input consumes some Ctrl key events before they reach
       // the parent handler.
       if (key.ctrl && input === 'c') {
-        if (pendingPermission) {
-          uiLog.event('input:Ctrl+C', { action: 'noop-permission-active' });
+        if (pendingPermission || pendingPlanApproval) {
+          uiLog.event('input:Ctrl+C', { action: 'noop-approval-active' });
           return true;
         }
         if (isThinking) {
@@ -628,7 +630,7 @@ export function App({ config }: AppProps) {
       }
       return false; // not consumed — let text input handle it
     },
-    [cancel, exitApp, isThinking, pendingPermission],
+    [cancel, exitApp, isThinking, pendingPermission, pendingPlanApproval],
   );
 
   // Track input changes for command menu filtering — now handled inside InputBar.
@@ -667,6 +669,13 @@ export function App({ config }: AppProps) {
               retryCountdownMs={retryCountdownMs}
             />
             {agentTodos.length > 0 && <AgentTodoList todos={agentTodos} />}
+            {pendingPlanApproval && (
+              <PlanApprovalButtons
+                plan={pendingPlanApproval.plan}
+                onResolve={resolvePlanApproval}
+                screenReader={screenReader}
+              />
+            )}
             {showTasks && (
               <TaskList tasks={tasks} onUpdateStatus={updateTaskStatus} onRemove={removeTask} />
             )}
@@ -955,6 +964,7 @@ export function App({ config }: AppProps) {
             messages={messages}
             streamingMessageId={streamingMessageId}
             pendingPermission={pendingPermission}
+            pendingPlanApproval={pendingPlanApproval}
             retryPhase={retryPhase}
             retryAttempt={retryAttempt}
             retryMax={retryMax}
@@ -972,7 +982,7 @@ export function App({ config }: AppProps) {
               mode={mode}
               onCycleMode={cycleMode}
               onInterrupt={cancel}
-              inputSuppressed={Boolean(pendingPermission)}
+              inputSuppressed={Boolean(pendingPermission || pendingPlanApproval)}
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
               terminalWidth={footerWidth}

@@ -220,6 +220,7 @@ export interface Usage {
 }
 
 export type PermissionResult = 'allow' | 'deny' | 'always';
+export type PlanApprovalResult = 'approve' | 'reject';
 
 export type AgentTaskStatus = 'pending' | 'in_progress' | 'completed' | 'deleted';
 
@@ -328,6 +329,12 @@ export interface ToolContext {
   tasks?: AgentTask[];
   /** Background shells started by Bash(run_in_background), shared across tool calls. */
   backgroundShells?: BackgroundShellStore;
+  /** Live permission mode for the active agent loop; tools may update this. */
+  currentMode?: PermissionMode;
+  /** Mode to restore after a tool-initiated plan-mode session exits. */
+  previousMode?: PermissionMode;
+  /** Plan text submitted by ExitPlanMode and awaiting host approval. */
+  pendingPlanApproval?: { plan: string };
 }
 
 export interface SystemPromptZones {
@@ -413,6 +420,10 @@ export interface AgentLoopCallbacks {
   /** @deprecated use onUsage for real token counts from the API. */
   onTokenCount?: (count: number) => void;
   onUsage?: (usage: Usage) => void;
+  /** Called when a tool changes the live permission mode. */
+  onModeChange?: (mode: PermissionMode) => void;
+  /** Called when ExitPlanMode submits a plan for host approval. */
+  onPlanApprovalRequired?: (plan: string) => Promise<PlanApprovalResult>;
   /** Called when the context approaches its limit; returns a compacted history. */
   onCompact?: (history: Message[], usage: Usage | null) => Promise<Message[]>;
   /** Called after each tool execution with the current agent todo list. */

@@ -135,6 +135,18 @@ export async function runHeadless(
         onTurnStart: () => {},
         onDone: () => {},
         onPermissionRequired: permissionRequired,
+        onModeChange: (newMode) => {
+          if (opts.outputFormat === 'stream-json') {
+            emit({ type: 'mode_change', mode: newMode });
+          }
+        },
+        onPlanApprovalRequired: async () => {
+          const approved = opts.mode === 'bypassPermissions';
+          if (opts.outputFormat === 'stream-json') {
+            emit({ type: 'plan_approval', status: approved ? 'approve' : 'reject' });
+          }
+          return approved ? 'approve' : 'reject';
+        },
         onHookEvent: opts.includeHookEvents
           ? (event, payload) => {
               if (opts.outputFormat === 'stream-json') {

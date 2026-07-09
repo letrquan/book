@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { runAgentLoop } from './loop.js';
 import { createRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
+import type { ToolResult } from '../types.js';
 
 const config = defaultConfig();
 
@@ -491,5 +492,253 @@ describe('runAgentLoop retry config passthrough', () => {
 
     // At least one tool call should have received toolRetries=2.
     expect(executeCalls.some((c) => c === 2)).toBe(true);
+  });
+});
+
+function toolCallStream(calls: Array<{ id: string; name: string; arguments: string }>): ReadableStream {
+  return new ReadableStream({
+    start(c) {
+      const enc = new TextEncoder();
+      const toolCalls = calls
+        .map(
+          (call, index) =>
+            `{"index":${index},"id":"${call.id}","function":{"name":"${call.name}","arguments":"${call.arguments.replace(/"/g, '\\\"')}"}}`,
+        )
+        .join(',');
+      c.enqueue(enc.encode(`data: {"choices":[{"delta":{"tool_calls":[${toolCalls}]}}]}\n\n`));
+      c.enqueue(enc.encode('data: [DONE]\n\n'));
+      c.close();
+    },
+  });
+}
+
+describe('runAgentLoop plan mode', () => {
+  it('auto-allows read-only tools without prompting in plan mode', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(toolCallStream([{ id: 'read_1', name: 'Read', arguments: '{"filePath":"x"}' }]), {
+          status: 200,
+        }),
+      ),
+    );
+
+    const registry = createRegistry();
+    let executed = false;
+    registry.register({
+      name: 'Read',
+      description: 'Read',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        executed = true;
+        return { toolCallId: '', success: true, output: 'read ok' };
+      },
+    });
+
+    let prompted = false;
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'plan',
+      [],
+      noopCallbacks({
+        onPermissionRequired: async () => {
+          prompted = true;
+          return 'deny';
+        },
+        onToolResult: (result: ToolResult) => results.push(result),
+      }),
+      'plan',
+    );
+
+    expect(prompted).toBe(false);
+    expect(executed).toBe(true);
+    expect(results[0]).toMatchObject({ success: true, output: 'read ok' });
+  });
+
+  it('blocks mutating tools before execution in plan mode', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          toolCallStream([{ id: 'write_1', name: 'Write', arguments: '{"filePath":"x","content":"y"}' }]),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const registry = createRegistry();
+    let executed = false;
+    registry.register({
+      name: 'Write',
+      description: 'Write',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        executed = true;
+        return { toolCallId: '', success: true, output: 'wrote' };
+      },
+    });
+
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'plan',
+      [],
+      noopCallbacks({ onToolResult: (result: ToolResult) => results.push(result) }),
+      'plan',
+    );
+
+    expect(executed).toBe(false);
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toMatch(/not allowed in plan mode/);
+  });
+
+  it('EnterPlanMode changes mode and blocks later mutating calls in the same turn', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          toolCallStream([
+            { id: 'enter_1', name: 'EnterPlanMode', arguments: '{}' },
+            { id: 'write_1', name: 'Write', arguments: '{"filePath":"x","content":"y"}' },
+          ]),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const registry = createRegistry();
+    registry.register({
+      name: 'EnterPlanMode',
+      description: 'Enter plan mode',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, ctx) => {
+        ctx.previousMode = ctx.currentMode;
+        ctx.currentMode = 'plan';
+        return { toolCallId: '', success: true, output: 'entered' };
+      },
+    });
+    let writeExecuted = false;
+    registry.register({
+      name: 'Write',
+      description: 'Write',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        writeExecuted = true;
+        return { toolCallId: '', success: true, output: 'wrote' };
+      },
+    });
+
+    const modes: string[] = [];
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'plan',
+      [],
+      noopCallbacks({
+        onModeChange: (newMode: string) => modes.push(newMode),
+        onToolResult: (result: ToolResult) => results.push(result),
+      }),
+      'default',
+    );
+
+    expect(modes).toEqual(['plan']);
+    expect(writeExecuted).toBe(false);
+    expect(results.map((r) => r.success)).toEqual([true, false]);
+    expect(results[1].error).toMatch(/not allowed in plan mode/);
+  });
+
+  it('ExitPlanMode requests approval and restores the previous mode when approved', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          toolCallStream([{ id: 'exit_1', name: 'ExitPlanMode', arguments: '{"plan":"Do it."}' }]),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const registry = createRegistry();
+    registry.register({
+      name: 'ExitPlanMode',
+      description: 'Exit plan mode',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, ctx) => {
+        ctx.previousMode = 'default';
+        ctx.pendingPlanApproval = { plan: 'Do it.' };
+        return { toolCallId: '', success: true, output: 'submitted' };
+      },
+    });
+
+    const modes: string[] = [];
+    const plans: string[] = [];
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'plan',
+      [],
+      noopCallbacks({
+        onModeChange: (newMode: string) => modes.push(newMode),
+        onPlanApprovalRequired: async (plan: string) => {
+          plans.push(plan);
+          return 'approve';
+        },
+        onToolResult: (result: ToolResult) => results.push(result),
+      }),
+      'plan',
+    );
+
+    expect(plans).toEqual(['Do it.']);
+    expect(modes).toEqual(['default']);
+    expect(results[0]).toMatchObject({ success: true });
+    expect(results[0].output).toMatch(/Plan approved/);
+  });
+
+  it('ExitPlanMode keeps plan mode when approval is rejected', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          toolCallStream([{ id: 'exit_1', name: 'ExitPlanMode', arguments: '{"plan":"Do it."}' }]),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const registry = createRegistry();
+    registry.register({
+      name: 'ExitPlanMode',
+      description: 'Exit plan mode',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, ctx) => {
+        ctx.previousMode = 'default';
+        ctx.pendingPlanApproval = { plan: 'Do it.' };
+        return { toolCallId: '', success: true, output: 'submitted' };
+      },
+    });
+
+    const modes: string[] = [];
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'plan',
+      [],
+      noopCallbacks({
+        onModeChange: (newMode: string) => modes.push(newMode),
+        onPlanApprovalRequired: async () => 'reject',
+        onToolResult: (result: ToolResult) => results.push(result),
+      }),
+      'plan',
+    );
+
+    expect(modes).toEqual([]);
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toMatch(/Plan was not approved/);
   });
 });

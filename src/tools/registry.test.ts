@@ -32,6 +32,8 @@ describe('createDefaultRegistry — canonical CC tool names', () => {
       'TaskGet',
       'TaskUpdate',
       'TaskStop',
+      'EnterPlanMode',
+      'ExitPlanMode',
     ]) {
       expect(names.has(n), `expected ${n} in registry`).toBe(true);
     }
