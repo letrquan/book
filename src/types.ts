@@ -119,14 +119,29 @@ export interface ThemeTokens {
   mdCodeBackground: string;
   mdCodeBorder: string;
   mdCodeText: string;
+  mdCodeKeyword: string;
+  mdCodeString: string;
+  mdCodeComment: string;
+  mdCodeNumber: string;
+  mdCodeFunction: string;
+  mdCodeLineNumber: string;
   mdInlineCodeBg: string;
   mdInlineCodeText: string;
   mdHeading: string;
+  mdHeadingH1: string;
+  mdHeadingH2: string;
   mdBlockquoteBorder: string;
   mdBlockquoteText: string;
   mdLink: string;
   mdListMarker: string;
   mdHr: string;
+  mdTableBorder: string;
+  mdThinkBg: string;
+  mdThinkBorder: string;
+  mdThinkText: string;
+  mdTurnSeparator: string;
+  mdCheckboxChecked: string;
+  mdCheckboxUnchecked: string;
 
   /** User message background */
   userBg: string;
@@ -171,14 +186,29 @@ export const DEFAULT_THEME: ThemeTokens = {
   mdCodeBackground: '#1a1a2e',
   mdCodeBorder: '#333',
   mdCodeText: '#e0e0e0',
+  mdCodeKeyword: '#c678dd',
+  mdCodeString: '#98c379',
+  mdCodeComment: '#7f848e',
+  mdCodeNumber: '#d19a66',
+  mdCodeFunction: '#61afef',
+  mdCodeLineNumber: '#666',
   mdInlineCodeBg: '#2a2a3e',
   mdInlineCodeText: '#f0c040',
   mdHeading: 'white',
+  mdHeadingH1: 'cyan',
+  mdHeadingH2: '#8fdfff',
   mdBlockquoteBorder: '#555',
   mdBlockquoteText: '#aaa',
   mdLink: 'cyan',
   mdListMarker: 'gray',
   mdHr: 'gray',
+  mdTableBorder: '#555',
+  mdThinkBg: '#15151f',
+  mdThinkBorder: '#555',
+  mdThinkText: '#aaa',
+  mdTurnSeparator: '#444',
+  mdCheckboxChecked: 'green',
+  mdCheckboxUnchecked: 'gray',
 
   userBg: '#1a1a2e',
 };

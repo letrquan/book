@@ -85,13 +85,16 @@ describe('MarkdownBlock', () => {
     expect(output).toContain('echo hello');
   });
 
-  it('renders headings', () => {
+  it('renders differentiated heading levels', () => {
     const view = render(
-      withTheme(React.createElement(MarkdownBlock, { content: '# Heading One\n\n## Heading Two' })),
+      withTheme(
+        React.createElement(MarkdownBlock, { content: '# Heading One\n\n## Heading Two\n\n### Heading Three' }),
+      ),
     );
     const output = frame(view.lastFrame);
-    expect(output).toContain('Heading One');
-    expect(output).toContain('Heading Two');
+    expect(output).toContain('HEADING ONE');
+    expect(output).toContain('── Heading Two ──');
+    expect(output).toContain('### Heading Three');
   });
 
   it('renders blockquotes', () => {
@@ -107,17 +110,19 @@ describe('MarkdownBlock', () => {
     expect(output).toContain('paragraph');
   });
 
-  it('renders unordered lists', () => {
+  it('renders unordered and task lists', () => {
     const view = render(
       withTheme(
         React.createElement(MarkdownBlock, {
-          content: '- Item one\n- Item two\n- Item three',
+          content: '- Item one\n- [x] Item two\n- [ ] Item three',
         }),
       ),
     );
     const output = frame(view.lastFrame);
     expect(output).toContain('Item one');
+    expect(output).toContain('[x]');
     expect(output).toContain('Item two');
+    expect(output).toContain('[ ]');
     expect(output).toContain('Item three');
   });
 
@@ -135,7 +140,7 @@ describe('MarkdownBlock', () => {
     expect(output).toContain('Third');
   });
 
-  it('renders links', () => {
+  it('renders links with URL hints', () => {
     const view = render(
       withTheme(
         React.createElement(MarkdownBlock, {
@@ -145,6 +150,7 @@ describe('MarkdownBlock', () => {
     );
     const output = frame(view.lastFrame);
     expect(output).toContain('the docs');
+    expect(output).toContain('(https://example.com)');
   });
 
   it('renders images as alt-text placeholders', () => {
@@ -186,15 +192,18 @@ describe('MarkdownBlock', () => {
     expect(output).toContain('removed');
   });
 
-  it('renders tables', () => {
+  it('renders tables with borders and separators', () => {
     const view = render(
       withTheme(
         React.createElement(MarkdownBlock, {
-          content: '| Name | Value |\n|------|-------|\n| foo  | 42    |\n| bar  | 99    |',
+          content: '| Name | Value |\n|------|------:|\n| foo  | 42    |\n| bar  | 99    |',
         }),
       ),
     );
     const output = frame(view.lastFrame);
+    expect(output).toContain('┌');
+    expect(output).toContain('├');
+    expect(output).toContain('└');
     expect(output).toContain('Name');
     expect(output).toContain('Value');
     expect(output).toContain('foo');
@@ -230,7 +239,7 @@ describe('MarkdownBlock', () => {
     const view = render(withTheme(React.createElement(MarkdownBlock, { content })));
     const output = frame(view.lastFrame);
 
-    expect(output).toContain('Getting Started');
+    expect(output).toContain('GETTING STARTED');
     expect(output).toContain('guide');
     expect(output).toContain('npm install');
     expect(output).toContain('npm run build');
@@ -251,6 +260,19 @@ describe('MarkdownBlock', () => {
     expect(output).toContain('Alpha beta gamma');
     expect(output).toContain('delta epsilon zeta');
     expect(output).toContain('eta theta');
+  });
+
+  it('preserves inline content while soft-wrapping formatted paragraphs', () => {
+    const content = 'Alpha **beta** gamma `delta` epsilon';
+    const view = render(
+      withTheme(React.createElement(MarkdownBlock, { content, terminalWidth: 16 })),
+    );
+    const output = frame(view.lastFrame);
+
+    expect(output).toContain('Alpha beta');
+    expect(output).toContain('gamma');
+    expect(output).toContain('delta');
+    expect(output).toContain('epsilon');
   });
 
   it('wrapParagraphLines exposes the optimized paragraph wrapping path', () => {

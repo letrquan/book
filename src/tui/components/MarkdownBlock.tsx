@@ -3,12 +3,33 @@ import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { marked, Tokens, Token } from 'marked';
 import { useTheme } from '../theme.js';
 import { wordWrap } from './word-wrap.js';
+import { highlightCode, type StyledLine } from './syntax-highlight.js';
 
 interface MarkdownBlockProps {
   /** Raw markdown string to render. */
   content: string;
   /** Terminal width in columns for word-boundary wrapping. */
   terminalWidth?: number;
+  /** While streaming, keep expensive final-pass decoration such as syntax highlighting disabled. */
+  isStreaming?: boolean;
+}
+
+type InlineStyle = {
+  color?: string;
+  bold?: boolean;
+  italic?: boolean;
+  strikethrough?: boolean;
+  underline?: boolean;
+  dimColor?: boolean;
+  backgroundColor?: string;
+};
+
+type InlineRun = InlineStyle & { text: string };
+
+interface RenderContext {
+  textColor?: string;
+  depth: number;
+  isStreaming: boolean;
 }
 
 export function wrapParagraphLines(rawText: string, terminalWidth: number): string[] {
@@ -39,8 +60,6 @@ export function wrapParagraphLines(rawText: string, terminalWidth: number): stri
  */
 export function useThrottledValue<T>(next: T, intervalMs: number): T {
   const [value, setValue] = useState<T>(next);
-  // Stamp the throttle window's origin at mount so the *first* change after
-  // render is subject to the interval (not a freebie from a 0 origin).
   const lastEmitRef = useRef<number | null>(null);
   const mountedRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -57,12 +76,10 @@ export function useThrottledValue<T>(next: T, intervalMs: number): T {
     const now = Date.now();
     const elapsed = now - (lastEmitRef.current ?? now);
     if (elapsed >= intervalMs) {
-      // Emit immediately and reset the cadence window.
       lastEmitRef.current = now;
       setValue(next);
       return;
     }
-    // Within the window — schedule a trailing emit at the window edge.
     if (timerRef.current === null) {
       const remaining = intervalMs - elapsed;
       timerRef.current = setTimeout(() => {
@@ -74,7 +91,6 @@ export function useThrottledValue<T>(next: T, intervalMs: number): T {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [next, intervalMs]);
 
-  // Clear any pending trailing timer on unmount.
   useEffect(() => {
     return () => {
       if (timerRef.current !== null) {
@@ -87,6 +103,186 @@ export function useThrottledValue<T>(next: T, intervalMs: number): T {
   return value;
 }
 
+function mergeStyle(base: InlineStyle, next: InlineStyle): InlineStyle {
+  return { ...base, ...next };
+}
+
+function appendRun(runs: InlineRun[], text: string, style: InlineStyle) {
+  if (!text) return;
+  const previous = runs[runs.length - 1];
+  if (
+    previous &&
+    previous.color === style.color &&
+    previous.bold === style.bold &&
+    previous.italic === style.italic &&
+    previous.strikethrough === style.strikethrough &&
+    previous.underline === style.underline &&
+    previous.dimColor === style.dimColor &&
+    previous.backgroundColor === style.backgroundColor
+  ) {
+    previous.text += text;
+    return;
+  }
+  runs.push({ text, ...style });
+}
+
+function plainTextFromTokens(tokens: Token[]): string {
+  const runs = inlineRunsFromTokens(tokens, { color: undefined }, undefined);
+  return runs.map((run) => run.text).join('');
+}
+
+function inlineRunsFromTokens(
+  tokens: Token[],
+  style: InlineStyle,
+  theme: ReturnType<typeof useTheme> | undefined,
+): InlineRun[] {
+  const runs: InlineRun[] = [];
+  for (const token of tokens) {
+    switch (token.type) {
+      case 'text': {
+        const t = token as Tokens.Text & { tokens?: Token[] };
+        if (t.tokens?.length) {
+          runs.push(...inlineRunsFromTokens(t.tokens, style, theme));
+        } else {
+          appendRun(runs, t.text, style);
+        }
+        break;
+      }
+      case 'strong': {
+        const t = token as Tokens.Strong;
+        runs.push(...inlineRunsFromTokens(t.tokens, mergeStyle(style, { bold: true }), theme));
+        break;
+      }
+      case 'em': {
+        const t = token as Tokens.Em;
+        runs.push(...inlineRunsFromTokens(t.tokens, mergeStyle(style, { italic: true }), theme));
+        break;
+      }
+      case 'del': {
+        const t = token as Tokens.Del;
+        runs.push(
+          ...inlineRunsFromTokens(
+            t.tokens,
+            mergeStyle(style, {
+              strikethrough: true,
+              color: theme?.subtle ?? style.color,
+            }),
+            theme,
+          ),
+        );
+        break;
+      }
+      case 'codespan': {
+        const t = token as Tokens.Codespan;
+        appendRun(
+          runs,
+          t.text,
+          mergeStyle(style, {
+            color: theme?.mdInlineCodeText ?? style.color,
+            backgroundColor: theme?.mdInlineCodeBg,
+          }),
+        );
+        break;
+      }
+      case 'link': {
+        const t = token as Tokens.Link;
+        const linkRuns = inlineRunsFromTokens(
+          t.tokens,
+          mergeStyle(style, { color: theme?.mdLink ?? style.color, underline: true }),
+          theme,
+        );
+        runs.push(...linkRuns);
+        const label = linkRuns.map((run) => run.text).join('');
+        if (t.href && t.href !== label) {
+          appendRun(runs, ` (${t.href})`, mergeStyle(style, { color: theme?.mdLink ?? style.color }));
+        }
+        break;
+      }
+      case 'image': {
+        const t = token as Tokens.Image;
+        appendRun(
+          runs,
+          `[Image: ${t.text || t.href}]`,
+          mergeStyle(style, { color: theme?.mdLink ?? style.color, dimColor: true }),
+        );
+        break;
+      }
+      case 'br':
+        appendRun(runs, '\n', style);
+        break;
+      case 'escape': {
+        const t = token as Tokens.Escape;
+        appendRun(runs, t.text, style);
+        break;
+      }
+      case 'html': {
+        const t = token as Tokens.HTML;
+        if (t.text && !t.block) appendRun(runs, t.text, mergeStyle(style, { dimColor: true }));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return runs;
+}
+
+function sliceRunsForLine(runs: InlineRun[], line: string, offset: number): InlineRun[] {
+  const lineRuns: InlineRun[] = [];
+  let remaining = line.length;
+  let cursor = 0;
+
+  for (const run of runs) {
+    const runStart = cursor;
+    const runEnd = cursor + run.text.length;
+    const lineStart = offset;
+    const lineEnd = offset + line.length;
+    const overlapStart = Math.max(runStart, lineStart);
+    const overlapEnd = Math.min(runEnd, lineEnd);
+    if (overlapStart < overlapEnd) {
+      appendRun(lineRuns, run.text.slice(overlapStart - runStart, overlapEnd - runStart), run);
+      remaining -= overlapEnd - overlapStart;
+      if (remaining <= 0) break;
+    }
+    cursor = runEnd;
+  }
+
+  return lineRuns;
+}
+
+function wrappedInlineRuns(runs: InlineRun[], terminalWidth: number): InlineRun[][] {
+  const rawText = runs.map((run) => run.text).join('');
+  const lines = wrapParagraphLines(rawText, terminalWidth);
+  let offset = 0;
+  return lines.map((line) => {
+    const lineRuns = sliceRunsForLine(runs, line, offset);
+    offset += line.length;
+    if (rawText[offset] === ' ') offset += 1;
+    return lineRuns;
+  });
+}
+
+function InlineRuns({ runs }: { runs: InlineRun[] }) {
+  return (
+    <Text wrap="wrap">
+      {runs.map((run, i) => (
+        <Text
+          key={i}
+          color={run.color}
+          bold={run.bold}
+          italic={run.italic}
+          strikethrough={run.strikethrough}
+          underline={run.underline}
+          dimColor={run.dimColor}
+          backgroundColor={run.backgroundColor}
+        >
+          {run.text}
+        </Text>
+      ))}
+    </Text>
+  );
+}
+
 /**
  * Render a single inline token (or array of inline tokens) into Text elements.
  * These are tokens that appear within paragraphs, headings, list items, etc.
@@ -96,95 +292,74 @@ function renderInlineTokens(
   tokens: Token[],
   theme: ReturnType<typeof useTheme>,
   keyPrefix: string,
+  textColor?: string,
 ): React.ReactNode[] {
-  return tokens.map((token, i) => {
-    const key = `${keyPrefix}-${i}`;
+  const runs = inlineRunsFromTokens(tokens, { color: textColor ?? theme.text }, theme);
+  return runs.map((run, i) => (
+    <Text
+      key={`${keyPrefix}-${i}`}
+      color={run.color}
+      bold={run.bold}
+      italic={run.italic}
+      strikethrough={run.strikethrough}
+      underline={run.underline}
+      dimColor={run.dimColor}
+      backgroundColor={run.backgroundColor}
+    >
+      {run.text}
+    </Text>
+  ));
+}
 
-    switch (token.type) {
-      case 'text': {
-        const t = token as Tokens.Text;
-        return (
-          <Text key={key} color={theme.text}>
-            {t.text}
+function renderStyledLine(line: StyledLine, keyPrefix: string) {
+  return (
+    <Text>
+      {line.map((segment, i) => (
+        <Text
+          key={`${keyPrefix}-${i}`}
+          color={segment.color}
+          bold={segment.bold}
+          italic={segment.italic}
+          dimColor={segment.dimColor}
+        >
+          {segment.text}
+        </Text>
+      ))}
+    </Text>
+  );
+}
+
+function alignCell(text: string, width: number, align?: string | null): string {
+  const padding = Math.max(0, width - text.length);
+  if (align === 'right') return `${' '.repeat(padding)}${text}`;
+  if (align === 'center') {
+    const left = Math.floor(padding / 2);
+    return `${' '.repeat(left)}${text}${' '.repeat(padding - left)}`;
+  }
+  return `${text}${' '.repeat(padding)}`;
+}
+
+function renderTableRow(
+  cells: Tokens.TableCell[],
+  widths: number[],
+  align: Array<string | null>,
+  key: string,
+  theme: ReturnType<typeof useTheme>,
+  bold = false,
+) {
+  return (
+    <Box key={key} flexDirection="row">
+      <Text color={theme.mdTableBorder}>│ </Text>
+      {cells.map((cell, ci) => (
+        <React.Fragment key={`${key}-${ci}`}>
+          <Text bold={bold || cell.header} color={theme.text}>
+            {alignCell(cell.text, widths[ci] ?? 3, align[ci])}
           </Text>
-        );
-      }
-      case 'strong': {
-        const t = token as Tokens.Strong;
-        return (
-          <Text key={key} bold color={theme.text}>
-            {renderInlineTokens(t.tokens, theme, key)}
-          </Text>
-        );
-      }
-      case 'em': {
-        const t = token as Tokens.Em;
-        return (
-          <Text key={key} italic color={theme.text}>
-            {renderInlineTokens(t.tokens, theme, key)}
-          </Text>
-        );
-      }
-      case 'del': {
-        const t = token as Tokens.Del;
-        return (
-          <Text key={key} strikethrough color={theme.subtle}>
-            {renderInlineTokens(t.tokens, theme, key)}
-          </Text>
-        );
-      }
-      case 'codespan': {
-        const t = token as Tokens.Codespan;
-        return (
-          <Text key={key} backgroundColor={theme.mdInlineCodeBg} color={theme.mdInlineCodeText}>
-            {t.text}
-          </Text>
-        );
-      }
-      case 'link': {
-        const t = token as Tokens.Link;
-        return (
-          <Text key={key} color={theme.mdLink} underline>
-            {renderInlineTokens(t.tokens, theme, key)}
-          </Text>
-        );
-      }
-      case 'image': {
-        const t = token as Tokens.Image;
-        // Terminals can't display images; render alt text instead.
-        return (
-          <Text key={key} color={theme.mdLink} dimColor>
-            [Image: {t.text || t.href}]
-          </Text>
-        );
-      }
-      case 'br': {
-        return <Box key={key} height={1} />;
-      }
-      case 'escape': {
-        const t = token as Tokens.Escape;
-        return (
-          <Text key={key} color={theme.text}>
-            {t.text}
-          </Text>
-        );
-      }
-      case 'html': {
-        // Strip inline HTML tags — render plain text content if available.
-        const t = token as Tokens.HTML;
-        if (t.text && !t.block) {
-          return (
-            <Text key={key} color={theme.subtle} dimColor>
-              {t.text}
-            </Text>
-          );
-        }
-        return null;
-      }
-      default:
-        return null;
-    }
-  });
+          <Text color={theme.mdTableBorder}> │ </Text>
+        </React.Fragment>
+      ))}
+    </Box>
+  );
 }
 
 /**
@@ -194,15 +369,36 @@ function renderBlockToken(
   token: Token,
   theme: ReturnType<typeof useTheme>,
   index: number,
-  terminalWidth?: number,
+  terminalWidth: number | undefined,
+  context: RenderContext,
 ): React.ReactNode {
   switch (token.type) {
     case 'heading': {
       const t = token as Tokens.Heading;
+      const text = plainTextFromTokens(t.tokens);
+      const prefix = '#'.repeat(t.depth);
+      if (t.depth === 1) {
+        return (
+          <Box key={`h-${index}`} flexDirection="column" marginTop={1} marginBottom={1}>
+            <Text bold color={theme.mdHeadingH1}>
+              ═══ {text.toUpperCase()} ═══
+            </Text>
+          </Box>
+        );
+      }
+      if (t.depth === 2) {
+        return (
+          <Box key={`h-${index}`} flexDirection="column" marginTop={1} marginBottom={1}>
+            <Text bold color={theme.mdHeadingH2}>
+              ── {text} ──
+            </Text>
+          </Box>
+        );
+      }
       return (
         <Box key={`h-${index}`} flexDirection="column" marginTop={1} marginBottom={1}>
-          <Text bold color={theme.mdHeading}>
-            {renderInlineTokens(t.tokens, theme, `h-${index}`)}
+          <Text bold={t.depth <= 4} color={theme.mdHeading} dimColor={t.depth >= 5}>
+            {prefix} {renderInlineTokens(t.tokens, theme, `h-${index}`, theme.mdHeading)}
           </Text>
         </Box>
       );
@@ -210,18 +406,14 @@ function renderBlockToken(
 
     case 'paragraph': {
       const t = token as Tokens.Paragraph;
-      // Apply word-boundary wrapping to paragraph text to prevent Ink's
-      // wrap-ansi (hard: true) from breaking words mid-character at line ends.
+      const runs = inlineRunsFromTokens(t.tokens, { color: context.textColor ?? theme.text }, theme);
       if (terminalWidth) {
-        // The wrapped path already flattens inline tokens to raw text; avoid a
-        // second markdown parse in the hot streaming render path.
-        const rawText = t.tokens.map((tok) => ('text' in tok ? tok.text : '')).join('');
-        const wrappedLines = wrapParagraphLines(rawText, terminalWidth);
+        const wrappedLines = wrappedInlineRuns(runs, terminalWidth);
         return (
           <Box key={`p-${index}`} flexDirection="column" flexGrow={1} marginBottom={1}>
-            {wrappedLines.map((line, li) => (
+            {wrappedLines.map((lineRuns, li) => (
               <Box key={`pw-${index}-${li}`} flexDirection="row">
-                <Text color={theme.text}>{line}</Text>
+                <InlineRuns runs={lineRuns} />
               </Box>
             ))}
           </Box>
@@ -229,7 +421,7 @@ function renderBlockToken(
       }
       return (
         <Box key={`p-${index}`} flexDirection="row" flexGrow={1} marginBottom={1}>
-          <Text wrap="wrap">{renderInlineTokens(t.tokens, theme, `p-${index}`)}</Text>
+          <InlineRuns runs={runs} />
         </Box>
       );
     }
@@ -237,9 +429,13 @@ function renderBlockToken(
     case 'code': {
       const t = token as Tokens.Code;
       const lines = t.text.split('\n');
-      // Skip trailing empty line if present from backtick fence.
       const displayLines =
         lines.length > 0 && lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines;
+      const showLineNumbers = displayLines.length > 5;
+      const gutterWidth = String(displayLines.length).length;
+      const highlighted = context.isStreaming
+        ? undefined
+        : highlightCode(displayLines.join('\n'), t.lang, theme);
 
       return (
         <Box
@@ -259,7 +455,16 @@ function renderBlockToken(
           ) : null}
           {displayLines.map((line, li) => (
             <Box key={`code-${index}-l${li}`}>
-              <Text color={theme.mdCodeText}>{line}</Text>
+              {showLineNumbers ? (
+                <Text color={theme.mdCodeLineNumber} dimColor>
+                  {String(li + 1).padStart(gutterWidth, ' ')} │{' '}
+                </Text>
+              ) : null}
+              {highlighted ? (
+                renderStyledLine(highlighted[li] ?? [{ text: line, color: theme.mdCodeText }], `code-${index}-${li}`)
+              ) : (
+                <Text color={theme.mdCodeText}>{line}</Text>
+              )}
             </Box>
           ))}
         </Box>
@@ -277,7 +482,10 @@ function renderBlockToken(
           paddingLeft={1}
         >
           {t.tokens.map((childToken, ci) =>
-            renderBlockToken(childToken, theme, index * 1000 + ci, terminalWidth),
+            renderBlockToken(childToken, theme, index * 1000 + ci, terminalWidth, {
+              ...context,
+              textColor: theme.mdBlockquoteText,
+            }),
           )}
         </Box>
       );
@@ -286,28 +494,40 @@ function renderBlockToken(
     case 'list': {
       const t = token as Tokens.List;
       return (
-        <Box key={`list-${index}`} flexDirection="column">
+        <Box key={`list-${index}`} flexDirection="column" marginLeft={context.depth > 0 ? 2 : 0}>
           {t.items.map((item, ii) => {
-            const marker = t.ordered ? `${(typeof t.start === 'number' ? t.start : 1) + ii}.` : '•';
+            const marker = item.task
+              ? item.checked
+                ? '[x]'
+                : '[ ]'
+              : t.ordered
+                ? `${(typeof t.start === 'number' ? t.start : 1) + ii}.`
+                : '•';
+            const markerColor = item.task
+              ? item.checked
+                ? theme.mdCheckboxChecked
+                : theme.mdCheckboxUnchecked
+              : theme.mdListMarker;
+            const itemWidth = terminalWidth ? Math.max(10, terminalWidth - 5 - context.depth * 2) : undefined;
             return (
               <Box key={`li-${index}-${ii}`} flexDirection="row" marginLeft={2}>
                 <Box width={3} flexShrink={0}>
-                  <Text color={theme.mdListMarker}>{marker}</Text>
+                  <Text color={markerColor}>{marker}</Text>
                 </Box>
                 <Box flexDirection="column" flexGrow={1}>
-                  {/* List item's tokens: typically a text token or nested blocks */}
                   {item.tokens.map((childToken, ci) => {
                     if (childToken.type === 'text') {
-                      const textToken = childToken as Tokens.Text;
-                      // Apply word-boundary wrapping when terminalWidth is available.
-                      if (terminalWidth) {
-                        const wrapped = wordWrap(textToken.text, terminalWidth - 5); // account for marker + indent
-                        const wrappedLines = wrapped.split('\n');
+                      const textToken = childToken as Tokens.Text & { tokens?: Token[] };
+                      const childRuns = textToken.tokens?.length
+                        ? inlineRunsFromTokens(textToken.tokens, { color: context.textColor ?? theme.text }, theme)
+                        : [{ text: textToken.text, color: context.textColor ?? theme.text }];
+                      if (itemWidth) {
+                        const wrapped = wrappedInlineRuns(childRuns, itemWidth);
                         return (
                           <Box key={`lit-${index}-${ii}-${ci}`} flexDirection="column">
-                            {wrappedLines.map((line, li) => (
+                            {wrapped.map((lineRuns, li) => (
                               <Box key={`lit-${index}-${ii}-${ci}-l${li}`}>
-                                <Text>{line}</Text>
+                                <InlineRuns runs={lineRuns} />
                               </Box>
                             ))}
                           </Box>
@@ -315,9 +535,7 @@ function renderBlockToken(
                       }
                       return (
                         <Box key={`lit-${index}-${ii}-${ci}`}>
-                          <Text wrap="wrap">
-                            {renderInlineTokens([childToken], theme, `lit-${index}-${ii}-${ci}`)}
-                          </Text>
+                          <InlineRuns runs={childRuns} />
                         </Box>
                       );
                     }
@@ -325,7 +543,8 @@ function renderBlockToken(
                       childToken,
                       theme,
                       index * 1000 + ii * 100 + ci,
-                      terminalWidth,
+                      itemWidth,
+                      { ...context, depth: context.depth + 1 },
                     );
                   })}
                 </Box>
@@ -337,10 +556,11 @@ function renderBlockToken(
     }
 
     case 'hr': {
+      const width = Math.min(terminalWidth ?? 40, 60);
       return (
         <Box key={`hr-${index}`}>
           <Text color={theme.mdHr} dimColor>
-            {'─'.repeat(40)}
+            {'─'.repeat(Math.max(5, width))}
           </Text>
         </Box>
       );
@@ -348,8 +568,6 @@ function renderBlockToken(
 
     case 'table': {
       const t = token as Tokens.Table;
-      // Basic table rendering with column padding. Terminal lacks grid drawing.
-      // Build a simple aligned text table.
       const allRows = [t.header, ...t.rows];
       if (allRows.length === 0) return null;
 
@@ -360,36 +578,28 @@ function renderBlockToken(
           colWidths[ci] = Math.max(colWidths[ci] ?? 3, len);
         }
       }
+      const separator = colWidths.map((width) => '─'.repeat(width + 2));
+      const top = `┌${separator.join('┬')}┐`;
+      const middle = `├${separator.join('┼')}┤`;
+      const bottom = `└${separator.join('┴')}┘`;
+      const align = t.align ?? [];
 
       return (
-        <Box key={`table-${index}`} flexDirection="column">
-          {allRows.map((row, ri) => (
-            <Box key={`tr-${index}-${ri}`} flexDirection="row">
-              {row.map((cell, ci) => {
-                const padding = ' '.repeat(
-                  Math.max(0, (colWidths[ci] ?? 3) - cell.text.length + 2),
-                );
-                return (
-                  <Text key={`tc-${index}-${ri}-${ci}`} bold={cell.header} color={theme.text}>
-                    {cell.text}
-                    {padding}
-                  </Text>
-                );
-              })}
-            </Box>
-          ))}
+        <Box key={`table-${index}`} flexDirection="column" marginBottom={1}>
+          <Text color={theme.mdTableBorder}>{top}</Text>
+          {renderTableRow(t.header, colWidths, align, `tr-${index}-h`, theme, true)}
+          <Text color={theme.mdTableBorder}>{middle}</Text>
+          {t.rows.map((row, ri) => renderTableRow(row, colWidths, align, `tr-${index}-${ri}`, theme))}
+          <Text color={theme.mdTableBorder}>{bottom}</Text>
         </Box>
       );
     }
 
-    case 'space': {
-      // Skip space tokens — blocks handle their own spacing.
+    case 'space':
       return null;
-    }
 
     case 'html': {
       const t = token as Tokens.HTML;
-      // HTML blocks: render the text content if available.
       if (t.block && t.text) {
         return (
           <Box key={`html-${index}`}>
@@ -413,39 +623,22 @@ function renderBlockToken(
  * Uses marked.lexer() to tokenize the markdown string, then maps each
  * block-level token to Ink Box/Text components with appropriate styling
  * from the current theme (mdCodeBackground, mdHeading, mdLink, etc.).
- *
- * Supported markdown features:
- * - Headings (h1-h6) — rendered as bold text
- * - Paragraphs — wrapped text
- * - Fenced/indented code blocks — bordered box with background
- * - Inline code — background-highlighted text
- * - Bold, italic, strikethrough text
- * - Blockquotes — left-border box
- * - Ordered and unordered lists
- * - Horizontal rules
- * - Links — underlined colored text
- * - Tables — basic aligned columns
- * - Images — alt-text placeholder (terminals can't render images)
  */
-export function MarkdownBlock({ content, terminalWidth }: MarkdownBlockProps) {
+export function MarkdownBlock({ content, terminalWidth, isStreaming = false }: MarkdownBlockProps) {
   const theme = useTheme();
 
-  // Throttle the value React parses: during streaming, `content` grows on
-  // every 16ms accumulator flush, but re-lexing the whole string 60×/sec is
-  // the main CPU sink on large replies. ~60ms cadence caps it to ~17×/sec;
-  // the trailing emit guarantees the final complete markdown always renders.
   const parsedContent = useThrottledValue(content, 60);
   const effectiveContent = parsedContent || content;
 
   if (!effectiveContent) return null;
 
-  // Memoize: re-parsing the same content is wasteful, especially during
-  // streaming where content only grows by a few characters each flush.
   const tokens = useMemo(() => marked.lexer(effectiveContent), [effectiveContent]);
 
   return (
     <Box flexDirection="column">
-      {tokens.map((token, i) => renderBlockToken(token, theme, i, terminalWidth))}
+      {tokens.map((token, i) =>
+        renderBlockToken(token, theme, i, terminalWidth, { depth: 0, isStreaming }),
+      )}
     </Box>
   );
 }

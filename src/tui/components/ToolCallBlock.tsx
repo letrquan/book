@@ -3,6 +3,8 @@ import React, { useMemo } from 'react';
 import { Spinner } from './Spinner.js';
 import { useTheme } from '../theme.js';
 import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
+import { MarkdownBlock } from './MarkdownBlock.js';
+import { highlightCode } from './syntax-highlight.js';
 import { prepareToolOutputDisplay } from './tool-output.js';
 import { truncateDisplay } from './word-wrap.js';
 import { getPrimaryArg } from '../../tools/primary-arg.js';
@@ -317,7 +319,12 @@ function ToolCallBlockInner({
       {isExpanded && result && isDiffOutput(name, result) ? (
         <DiffBlock output={result.output} collapsed={!showAllToolOutput} />
       ) : isExpanded && result?.output ? (
-        <OutputBlock output={result.output} theme={theme} showAllToolOutput={showAllToolOutput} />
+        <OutputBlock
+          output={result.output}
+          theme={theme}
+          showAllToolOutput={showAllToolOutput}
+          toolName={canonical}
+        />
       ) : null}
       {/* Expanded: show error */}
       {isExpanded && result?.error && !result.error.startsWith('SKIPPED') ? (
@@ -333,14 +340,28 @@ function ToolCallBlockInner({
 
 export const ToolCallBlock = React.memo(ToolCallBlockInner);
 
+function looksLikeMarkdown(output: string, toolName: string): boolean {
+  if (toolName === 'WebFetch' || toolName === 'WebSearch') return true;
+  return /(^|\n)\s{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```|\|.+\|)/.test(output);
+}
+
+function inferLanguage(output: string, toolName: string): string | undefined {
+  if (toolName !== 'Read') return undefined;
+  const firstLine = output.split('\n', 1)[0] ?? '';
+  const match = firstLine.match(/\.(ts|tsx|js|jsx|json|py|rs|go|sh|bash|yml|yaml|css|html|sql)\b/i);
+  return match?.[1]?.toLowerCase();
+}
+
 function OutputBlock({
   output,
   theme,
   showAllToolOutput,
+  toolName,
 }: {
   output: string;
   theme: ReturnType<typeof useTheme>;
   showAllToolOutput: boolean;
+  toolName: string;
 }) {
   const display = useMemo(
     () =>
@@ -351,6 +372,28 @@ function OutputBlock({
       }),
     [output, showAllToolOutput],
   );
+  const language = inferLanguage(output, toolName);
+  const displayText = display.lines.join('\n');
+  const highlighted = useMemo(
+    () => (language ? highlightCode(displayText, language, theme) : undefined),
+    [displayText, language, theme],
+  );
+
+  if (looksLikeMarkdown(output, toolName) && !language) {
+    return (
+      <Box marginLeft={4} flexDirection="column">
+        <Text color={theme.subtle} dimColor>
+          │
+        </Text>
+        <MarkdownBlock content={display.lines.join('\n')} terminalWidth={120} />
+        {display.footer ? (
+          <Text color={theme.subtle} dimColor>
+            │ {display.footer}
+          </Text>
+        ) : null}
+      </Box>
+    );
+  }
 
   return (
     <Box marginLeft={4} flexDirection="column">
@@ -359,7 +402,23 @@ function OutputBlock({
           <Text color={theme.subtle} dimColor>
             {'│'}{' '}
           </Text>
-          <Text color={theme.text}>{line}</Text>
+          {highlighted ? (
+            <Text>
+              {highlighted[i]?.map((segment, si) => (
+                <Text
+                  key={si}
+                  color={segment.color}
+                  bold={segment.bold}
+                  italic={segment.italic}
+                  dimColor={segment.dimColor}
+                >
+                  {segment.text}
+                </Text>
+              ))}
+            </Text>
+          ) : (
+            <Text color={theme.text}>{line}</Text>
+          )}
         </Box>
       ))}
       {display.footer ? (

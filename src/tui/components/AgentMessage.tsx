@@ -100,6 +100,69 @@ export function getRetryLabel(
   return undefined;
 }
 
+interface ThinkBlockPart {
+  kind: 'think';
+  text: string;
+}
+
+interface MarkdownPart {
+  kind: 'markdown';
+  text: string;
+}
+
+type MessagePart = ThinkBlockPart | MarkdownPart;
+
+export function splitThinkBlocks(content: string): MessagePart[] {
+  const parts: MessagePart[] = [];
+  const pattern = /<think>([\s\S]*?)(?:<\/think>|$)/gi;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(content)) !== null) {
+    const before = content.slice(lastIndex, match.index);
+    if (before) parts.push({ kind: 'markdown', text: before });
+    parts.push({ kind: 'think', text: match[1].trim() });
+    lastIndex = pattern.lastIndex;
+  }
+
+  const after = content.slice(lastIndex);
+  if (after) parts.push({ kind: 'markdown', text: after });
+  return parts.length > 0 ? parts : [{ kind: 'markdown', text: content }];
+}
+
+function ThinkBlock({
+  text,
+  terminalWidth,
+  reducedMotion,
+}: {
+  text: string;
+  terminalWidth?: number;
+  reducedMotion?: boolean;
+}) {
+  const theme = useTheme();
+
+  return (
+    <Box
+      flexDirection="column"
+      borderLeft
+      borderLeftColor={theme.mdThinkBorder}
+      backgroundColor={theme.mdThinkBg}
+      paddingLeft={1}
+      marginBottom={1}
+    >
+      <Box>
+        <Spinner active style="dots" color={theme.mdThinkText} reducedMotion={reducedMotion} />
+        <Text color={theme.mdThinkText} dimColor>
+          Thinking
+        </Text>
+      </Box>
+      <Box marginLeft={2}>
+        <MarkdownBlock content={text} terminalWidth={terminalWidth} />
+      </Box>
+    </Box>
+  );
+}
+
 /**
  * Claude Code-style agent message block.
  *
@@ -170,6 +233,7 @@ export function AgentMessageInner({
   // Compute effective width for MarkdownBlock content.
   // Account for marginLeft (2), spinner (2), and a safety margin (1).
   const mdWidth = terminalWidth ? Math.max(20, terminalWidth - 5) : undefined;
+  const contentParts = useMemo(() => splitThinkBlocks(displayContent), [displayContent]);
 
   return (
     <Box flexDirection="column">
@@ -204,7 +268,25 @@ export function AgentMessageInner({
             {isUnifiedDiffLike(displayContent) ? (
               <DiffBlock output={displayContent} />
             ) : (
-              <MarkdownBlock content={displayContent} terminalWidth={mdWidth} />
+              <Box flexDirection="column">
+                {contentParts.map((part, i) =>
+                  part.kind === 'think' ? (
+                    <ThinkBlock
+                      key={`think-${i}`}
+                      text={part.text}
+                      terminalWidth={mdWidth}
+                      reducedMotion={reducedMotion}
+                    />
+                  ) : (
+                    <MarkdownBlock
+                      key={`md-${i}`}
+                      content={part.text}
+                      terminalWidth={mdWidth}
+                      isStreaming={isStreaming}
+                    />
+                  ),
+                )}
+              </Box>
             )}
           </Box>
         </Box>

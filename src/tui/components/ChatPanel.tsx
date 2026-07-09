@@ -1,5 +1,6 @@
 import { Box, Text, Static } from 'ink';
 import React, { useMemo } from 'react';
+import { useTheme } from '../theme.js';
 import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
 import { AgentMessage } from './AgentMessage.js';
 import { UserMessage } from './UserMessage.js';
@@ -10,6 +11,25 @@ import { useDebugMount } from '../debug.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
+
+function formatTurnTime(timestamp: number): string {
+  if (!timestamp) return '';
+  return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function TurnSeparator({ timestamp, terminalWidth }: { timestamp: number; terminalWidth?: number }) {
+  const theme = useTheme();
+  const label = formatTurnTime(timestamp);
+  const width = Math.max(20, Math.min(terminalWidth ?? 60, 80));
+  const suffix = '─'.repeat(Math.max(5, width - label.length - 4));
+  return (
+    <Box marginTop={1} marginBottom={1}>
+      <Text color={theme.mdTurnSeparator} dimColor>
+        ── {label} {suffix}
+      </Text>
+    </Box>
+  );
+}
 
 type StaticChatItem =
   | Message
@@ -209,7 +229,16 @@ export function ChatPanel({
             );
           }
           if (msg.role === 'user') {
-            return <UserMessage key={msg.id} content={msg.content} terminalWidth={terminalWidth} />;
+            const previous = completedMessages[index - 1];
+            const showSeparator = index > 0 && previous?.role !== 'logo';
+            return (
+              <Box key={msg.id} flexDirection="column">
+                {showSeparator ? (
+                  <TurnSeparator timestamp={msg.timestamp} terminalWidth={terminalWidth} />
+                ) : null}
+                <UserMessage content={msg.content} terminalWidth={terminalWidth} />
+              </Box>
+            );
           }
           // Add a little breathing room when an assistant reply follows a
           // user message, so the AI response isn't flush against the bubble.
