@@ -7,6 +7,7 @@ import { webTools } from './web.js';
 import { skillsTool } from './skills-tool.js';
 import { taskTool } from './task-tool.js';
 import { taskTools } from './tasks.js';
+import { planModeTools } from './plan-mode.js';
 import { TOOL_ALIASES } from './aliases.js';
 
 async function executeWithTimeout(
@@ -130,6 +131,7 @@ export function createDefaultRegistry(): ReturnType<typeof createRegistry> {
     ...skillsTool,
     ...taskTool,
     ...taskTools,
+    ...planModeTools,
   ]);
   return registry;
 }

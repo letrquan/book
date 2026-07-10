@@ -8,6 +8,7 @@ import type {
   AgentLoopCallbacks,
   Usage,
   RetryPhase,
+  PermissionMode,
 } from '../types.js';
 import { chatCompletionStream } from '../provider/index.js';
 import { buildMessages } from './context.js';
@@ -21,6 +22,7 @@ import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { createDebugLogger } from '../debug-log.js';
 import { maybeCaptureMemoryCandidate } from '../memory-autosave.js';
+import { READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 
 const log = createDebugLogger('agent');
 
@@ -138,6 +140,7 @@ export async function runAgentLoop(
 
   config.tasks ??= [];
   config.backgroundShells ??= { nextId: 1, shells: new Map() };
+  const initialMode = mode as PermissionMode;
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
     env: process.env as Record<string, string>,
@@ -147,11 +150,13 @@ export async function runAgentLoop(
     todos: [],
     tasks: config.tasks,
     backgroundShells: config.backgroundShells,
+    currentMode: initialMode,
   };
 
   let turn = 0;
   let approveAll: string[] = [];
   let lastUsage: Usage | null = null;
+  let effectiveMode = initialMode;
 
   while (turn < config.maxTurns) {
     if (signal?.aborted) break;
@@ -189,7 +194,7 @@ export async function runAgentLoop(
 
     turn++;
     callbacks.onTurnStart(turn);
-    log.debug('turn start', { turn, maxTurns: config.maxTurns, mode });
+    log.debug('turn start', { turn, maxTurns: config.maxTurns, mode: effectiveMode });
 
     const messages = buildMessages(
       effectiveConfig,
@@ -329,16 +334,24 @@ export async function runAgentLoop(
         continue;
       }
 
-      if (needsPermissionCheck(mode) && !approveAll.includes(call.name)) {
-        const canonName = canonicalToolName(call.name);
+      effectiveMode = toolContext.currentMode ?? effectiveMode;
+      const planReadOnly = effectiveMode === 'plan' && READ_ONLY_PLAN_TOOLS.has(canonName);
+      const autoSafeTool = canonName === 'EnterPlanMode' || planReadOnly;
+
+      if (
+        needsPermissionCheck(effectiveMode) &&
+        !approveAll.includes(call.name) &&
+        !autoSafeTool &&
+        effectiveMode !== 'plan'
+      ) {
         // When in accept-edits mode, Edit and Write are automatically allowed.
         const autoApproved =
-          mode === 'accept-edits' && (canonName === 'Edit' || canonName === 'Write');
+          effectiveMode === 'accept-edits' && (canonName === 'Edit' || canonName === 'Write');
 
         if (!autoApproved) {
           // Consult the resolved permission rules from settings (deny → ask → allow).
           let permission: 'allow' | 'deny' | 'always' | undefined;
-          if (mode !== 'plan' && mode !== 'dontAsk') {
+          if (effectiveMode !== 'dontAsk') {
             const verdict = evaluatePermission(canonName, call.arguments, config.settings);
             if (verdict === 'allow') {
               permission = 'allow';
@@ -381,6 +394,19 @@ export async function runAgentLoop(
         }
       }
 
+      if (effectiveMode === 'plan' && !READ_ONLY_PLAN_TOOLS.has(canonName)) {
+        log.debug('plan mode blocked mutating tool', { tool: canonName });
+        const blockedResult: ToolResult = {
+          toolCallId: call.id,
+          success: false,
+          output: '',
+          error: `SKIPPED: Tool "${canonName}" is not allowed in plan mode. Call ExitPlanMode with your plan and wait for approval before making changes.`,
+        };
+        toolResults.push(blockedResult);
+        callbacks.onToolResult(blockedResult);
+        continue;
+      }
+
       const toolStartMs = Date.now();
       log.debug('tool start', { name: canonName, id: call.id, args: Object.keys(call.arguments) });
       const result = await registry.execute(call, toolContext, retry.toolRetries);
@@ -392,6 +418,41 @@ export async function runAgentLoop(
         durationMs: result.durationMs,
         outputLen: result.output?.length ?? 0,
       });
+
+      const modeAfterTool = toolContext.currentMode ?? effectiveMode;
+      if (modeAfterTool !== effectiveMode) {
+        effectiveMode = modeAfterTool;
+        callbacks.onModeChange?.(effectiveMode);
+      }
+
+      if (result.success && toolContext.pendingPlanApproval) {
+        const plan = toolContext.pendingPlanApproval.plan;
+        const approval = callbacks.onPlanApprovalRequired
+          ? await callbacks.onPlanApprovalRequired(plan)
+          : toolContext.previousMode === 'bypassPermissions'
+            ? 'approve'
+            : 'reject';
+
+        if (approval === 'approve') {
+          const restoredMode = toolContext.previousMode ?? 'default';
+          toolContext.currentMode = restoredMode;
+          toolContext.previousMode = undefined;
+          toolContext.pendingPlanApproval = undefined;
+          result.output = `${result.output}\n\nPlan approved. Exited plan mode; mode restored to ${restoredMode}.`;
+        } else {
+          toolContext.currentMode = 'plan';
+          toolContext.pendingPlanApproval = undefined;
+          result.success = false;
+          result.output = '';
+          result.error = 'SKIPPED: Plan was not approved. Revise the plan and call ExitPlanMode again.';
+        }
+
+        const modeAfterApproval = toolContext.currentMode ?? effectiveMode;
+        if (modeAfterApproval !== effectiveMode) {
+          effectiveMode = modeAfterApproval;
+          callbacks.onModeChange?.(effectiveMode);
+        }
+      }
 
       // PostToolUse hook — can modify the result output.
       const postHookResults = await runHooks(

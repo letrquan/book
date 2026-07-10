@@ -5,6 +5,7 @@ import type {
   ToolResult,
   PermissionResult,
   PermissionMode,
+  PlanApprovalResult,
   Usage,
   RetryPhase,
   CommandContext,
@@ -42,6 +43,10 @@ export function useAgent(config: AgentConfig) {
   const [pendingPermission, setPendingPermission] = useState<{
     toolCall: ToolCall;
     resolve: (value: PermissionResult) => void;
+  } | null>(null);
+  const [pendingPlanApproval, setPendingPlanApproval] = useState<{
+    plan: string;
+    resolve: (value: PlanApprovalResult) => void;
   } | null>(null);
   const [turnDurationMs, setTurnDurationMs] = useState<number>(0);
 
@@ -219,6 +224,15 @@ export function useAgent(config: AgentConfig) {
             onUsage: (u: Usage) => {
               setUsage(u);
             },
+            onModeChange: (newMode: PermissionMode) => {
+              setMode(newMode);
+            },
+            onPlanApprovalRequired: (plan: string): Promise<PlanApprovalResult> => {
+              return new Promise((resolve) => {
+                uiLog.event('plan-approval:pending', { len: plan.length });
+                setPendingPlanApproval({ plan, resolve });
+              });
+            },
             onRetry: (phase, attempt, max, delayMs) => {
               setRetryPhase(phase);
               setRetryAttempt(attempt);
@@ -314,6 +328,19 @@ export function useAgent(config: AgentConfig) {
     }
   }, [pendingPermission]);
 
+  const resolvePlanApproval = useCallback(
+    (result: PlanApprovalResult) => {
+      if (pendingPlanApproval) {
+        uiLog.event('plan-approval:resolved', { result });
+        pendingPlanApproval.resolve(result);
+        setPendingPlanApproval(null);
+      } else {
+        uiLog.event('plan-approval:resolved:noop', { reason: 'no-pending', result });
+      }
+    },
+    [pendingPlanApproval],
+  );
+
   // Abort the in-flight agent stream (Esc while thinking).
   const cancel = useCallback(() => {
     const hadAbort = abortRef.current !== null;
@@ -376,6 +403,7 @@ export function useAgent(config: AgentConfig) {
     setUsage(null);
     setAgentTodos([]);
     setPendingPermission(null);
+    setPendingPlanApproval(null);
     streamingIdRef.current = null;
     setStreamingMessageId(null);
     clearCountdown();
@@ -482,6 +510,7 @@ export function useAgent(config: AgentConfig) {
     usage,
     mode,
     pendingPermission,
+    pendingPlanApproval,
     agentTodos,
     turnDurationMs,
     retryPhase,
@@ -493,6 +522,7 @@ export function useAgent(config: AgentConfig) {
     clear,
     resolvePermission,
     cancelPermission,
+    resolvePlanApproval,
     cancel,
     compact,
     cycleMode,

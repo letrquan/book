@@ -79,9 +79,11 @@ Task state is shared via `AgentConfig` across agent-loop invocations in a sessio
 
 Background shell state is shared via `AgentConfig` for TUI/headless session continuity. Background stdout/stderr pipes are unrefed, spawn failures are surfaced before returning a shell ID, explicit background timeouts terminate shells, and `KillShell` waits for process exit before reporting terminal status. Session-exit cleanup and TaskStop ownership integration are deferred until shell ownership semantics are defined.
 
-**Plan mode tools** [MISSING]:
-- `EnterPlanMode` — agent enters plan mode (read-only tools auto-approved)
-- `ExitPlanMode` — agent presents plan for user approval
+**Plan mode tools** [has] ✅ (2026-07-09):
+- [x] `EnterPlanMode` — agent enters plan mode (read-only tools auto-approved)
+- [x] `ExitPlanMode` — agent presents plan for user approval
+
+Plan mode is enforced in the agent loop: read-only exploration/status tools auto-run, mutating tools are blocked with `SKIPPED`, and `ExitPlanMode` gates leaving plan mode on host approval (TUI prompt; headless rejects by default unless bypassing permissions).
 
 **Code intelligence** [MISSING]:
 - `LSP` — go-to-definition, find-references, diagnostics, hover

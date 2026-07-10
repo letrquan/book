@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import type { Message, PermissionResult, RetryPhase, ToolCall } from '../../types.js';
+import type { Message, PermissionResult, PlanApprovalResult, RetryPhase, ToolCall } from '../../types.js';
 import { useGradientSpinner } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { truncateDisplay } from './word-wrap.js';
@@ -9,11 +9,17 @@ interface PendingPermission {
   resolve: (value: PermissionResult) => void;
 }
 
+interface PendingPlanApproval {
+  plan: string;
+  resolve: (value: PlanApprovalResult) => void;
+}
+
 interface WorkingIndicatorProps {
   isThinking: boolean;
   messages: Message[];
   streamingMessageId?: string | null;
   pendingPermission?: PendingPermission | null;
+  pendingPlanApproval?: PendingPlanApproval | null;
   retryPhase?: RetryPhase;
   retryAttempt?: number;
   retryMax?: number;
@@ -57,6 +63,7 @@ function workingText({
   messages,
   streamingMessageId,
   pendingPermission,
+  pendingPlanApproval,
   retryPhase = 'none',
   retryAttempt = 0,
   retryMax = 0,
@@ -65,6 +72,7 @@ function workingText({
   const retry = retryText(retryPhase, retryAttempt, retryMax, retryCountdownMs);
   if (retry) return retry;
   if (!isThinking) return null;
+  if (pendingPlanApproval) return 'Waiting for plan approval';
   if (pendingPermission) return 'Waiting for permission';
 
   const activeMessage = streamingMessageId
@@ -82,6 +90,7 @@ export function WorkingIndicator({
   messages,
   streamingMessageId,
   pendingPermission,
+  pendingPlanApproval,
   retryPhase = 'none',
   retryAttempt = 0,
   retryMax = 0,
@@ -96,6 +105,7 @@ export function WorkingIndicator({
     messages,
     streamingMessageId,
     pendingPermission,
+    pendingPlanApproval,
     retryPhase,
     retryAttempt,
     retryMax,
