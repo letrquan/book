@@ -1,3 +1,4 @@
+import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
@@ -23,6 +24,7 @@ function msg(id: string, role: 'user' | 'assistant', content: string): Message {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 describe('ChatPanel Ink rendering', () => {
@@ -215,6 +217,96 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('Permission required for: Glob');
     expect(output).toContain('Primary argument: *.ts');
     expect(output).toContain('Press: [R] Run once [S] Skip [A] Always allow [Esc] Deny');
+  });
+
+  it('mounts a quiescent plan approval alongside the active message', () => {
+    vi.useFakeTimers();
+    const toolCall: ToolCall = {
+      id: 'call-exit-plan-mode',
+      name: 'ExitPlanMode',
+      arguments: { plan: 'Step 1: update rendering\nStep 2: run tests' },
+    };
+    const messages: Message[] = [
+      msg('u1', 'user', 'fix plan mode scrolling'),
+      { ...msg('a1', 'assistant', 'I found the likely cause.') },
+      { ...msg('a2', 'assistant', ''), toolCalls: [toolCall] },
+    ];
+    const resolve = vi.fn();
+    const pendingPlanApproval = {
+      plan: 'Step 1: update rendering\nStep 2: run tests',
+      resolve,
+    };
+
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          streamingMessageId="a2"
+          activeToolCallId="call-exit-plan-mode"
+          terminalWidth={100}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    const outputBeforeApproval = frame(view.lastFrame);
+    expect(outputBeforeApproval).toContain('fix plan mode scrolling');
+    expect(outputBeforeApproval).toContain('I found the likely cause.');
+    expect(outputBeforeApproval).toContain('ExitPlanMode');
+    expect(outputBeforeApproval).not.toContain('Plan approval required.');
+
+    view.rerender(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          streamingMessageId="a2"
+          pendingPlanApproval={pendingPlanApproval}
+          onResolvePlanApproval={resolve}
+          activeToolCallId="call-exit-plan-mode"
+          terminalWidth={100}
+        />,
+      ),
+    );
+
+    const outputDuringApproval = frame(view.lastFrame);
+    const writesDuringApproval = view.frames.length;
+    expect(outputDuringApproval).toContain('fix plan mode scrolling');
+    expect(outputDuringApproval).toContain('I found the likely cause.');
+    expect(outputDuringApproval).toContain('ExitPlanMode');
+    expect(outputDuringApproval).toContain('Plan approval required');
+    expect(outputDuringApproval).toContain('Step 1: update rendering');
+    expect(outputDuringApproval).toContain('Step 2: run tests');
+    expect(outputDuringApproval).toContain('[Approve plan]');
+    expect(outputDuringApproval).toContain('[Reject / revise]');
+
+    act(() => {
+      vi.advanceTimersByTime(800);
+    });
+    expect(view.frames).toHaveLength(writesDuringApproval);
+
+    view.stdin.write('a');
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledWith('approve');
+
+    view.rerender(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          streamingMessageId="a2"
+          activeToolCallId="call-exit-plan-mode"
+          terminalWidth={100}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    const outputAfterApproval = frame(view.lastFrame);
+    expect(outputAfterApproval).toContain('fix plan mode scrolling');
+    expect(outputAfterApproval).toContain('I found the likely cause.');
+    expect(outputAfterApproval).toContain('ExitPlanMode');
+    expect(outputAfterApproval).not.toContain('Plan approval required');
   });
 
   it('merges a tool-call-only assistant message after streaming completes', () => {

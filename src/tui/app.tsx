@@ -10,7 +10,6 @@ import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
 import { ModelPicker } from './components/ModelPicker.js';
-import { PlanApprovalButtons } from './components/PlanApprovalButtons.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
 import {
@@ -179,6 +178,9 @@ export function App({ config }: AppProps) {
   const maxCommandMenuRows = Math.max(2, Math.min(isTiny ? 3 : 8, Math.floor(termHeight / 3)));
   const compactStatus = isNarrow || isTiny;
   const reducedMotion = Boolean(config.accessibility?.reducedMotion);
+  // Keep the whole live region quiescent while the terminal viewport belongs
+  // to the user reviewing a plan. Any animation repaint can snap scrollback.
+  const motionDisabled = reducedMotion || Boolean(pendingPlanApproval);
   const screenReader = Boolean(config.accessibility?.screenReader);
 
   useDebugMount(uiLog, {
@@ -201,14 +203,20 @@ export function App({ config }: AppProps) {
   useDebugValueChange(uiLog, 'showModelPicker', showModelPicker, (v) => String(v));
 
   useInput((input, key) => {
-    // Escape cancels an active approval prompt (handled by its component),
-    // or aborts an in-flight stream. Do NOT double-handle Esc when
-    // an approval prompt is active — the prompt component has its own handler.
-    if (key.escape) {
-      if (pendingPermission || pendingPlanApproval) {
+    // Approval prompts own the keyboard until they resolve. Let their own
+    // useInput handlers receive the event, but do not open another modal or
+    // mutate surrounding UI state from this global handler.
+    if (pendingPermission || pendingPlanApproval) {
+      if (key.escape) {
         uiLog.event('input:Escape', { action: 'noop-approval-active' });
-        return;
+      } else if (key.ctrl && input === 'c') {
+        uiLog.event('input:Ctrl+C', { action: 'noop-approval-active' });
       }
+      return;
+    }
+
+    // Escape aborts an in-flight stream when no prompt owns the keyboard.
+    if (key.escape) {
       if (isThinking) {
         uiLog.event('input:Escape', { action: 'cancel-stream' });
         cancel();
@@ -218,10 +226,6 @@ export function App({ config }: AppProps) {
     }
     // Ctrl+C — cancel an in-flight stream; otherwise preserve normal terminal exit.
     if (key.ctrl && input === 'c') {
-      if (pendingPermission || pendingPlanApproval) {
-        uiLog.event('input:Ctrl+C', { action: 'noop-approval-active' });
-        return;
-      }
       if (isThinking) {
         uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
         cancel();
@@ -652,8 +656,10 @@ export function App({ config }: AppProps) {
               streamingMessageId={streamingMessageId}
               pendingPermission={pendingPermission}
               onResolvePermission={resolvePermission}
+              pendingPlanApproval={pendingPlanApproval}
+              onResolvePlanApproval={resolvePlanApproval}
               activeToolCallId={expandedToolId}
-              reducedMotion={reducedMotion}
+              reducedMotion={motionDisabled}
               screenReader={screenReader}
               terminalWidth={termWidth}
               terminalHeight={termHeight}
@@ -669,13 +675,6 @@ export function App({ config }: AppProps) {
               retryCountdownMs={retryCountdownMs}
             />
             {agentTodos.length > 0 && <AgentTodoList todos={agentTodos} />}
-            {pendingPlanApproval && (
-              <PlanApprovalButtons
-                plan={pendingPlanApproval.plan}
-                onResolve={resolvePlanApproval}
-                screenReader={screenReader}
-              />
-            )}
             {showTasks && (
               <TaskList tasks={tasks} onUpdateStatus={updateTaskStatus} onRemove={removeTask} />
             )}
@@ -970,7 +969,7 @@ export function App({ config }: AppProps) {
             retryMax={retryMax}
             retryCountdownMs={retryCountdownMs}
             terminalWidth={termWidth}
-            reducedMotion={reducedMotion}
+            reducedMotion={motionDisabled}
             screenReader={screenReader}
           />
 
@@ -988,7 +987,7 @@ export function App({ config }: AppProps) {
               terminalWidth={footerWidth}
               maxMenuRows={maxCommandMenuRows}
               compact={isNarrow || isTiny}
-              reducedMotion={reducedMotion}
+              reducedMotion={motionDisabled}
               screenReader={screenReader}
             />
           </Box>
@@ -1004,7 +1003,7 @@ export function App({ config }: AppProps) {
               activeTaskCount={tasks.filter((t) => t.status === 'in_progress').length}
               terminalWidth={termWidth}
               compact={compactStatus}
-              reducedMotion={reducedMotion}
+              reducedMotion={motionDisabled}
               screenReader={screenReader}
             />
           </Box>

@@ -1,11 +1,18 @@
 import { Box, Text, Static } from 'ink';
 import React, { useMemo } from 'react';
 import { useTheme } from '../theme.js';
-import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
+import type {
+  Message,
+  ToolCall,
+  PermissionResult,
+  PlanApprovalResult,
+  RetryPhase,
+} from '../../types.js';
 import { AgentMessage } from './AgentMessage.js';
 import { UserMessage } from './UserMessage.js';
 import { WelcomeScreen } from './WelcomeScreen.js';
 import { AsciiBanner } from './AsciiBanner.js';
+import { PlanApprovalButtons } from './PlanApprovalButtons.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 
@@ -17,7 +24,13 @@ function formatTurnTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function TurnSeparator({ timestamp, terminalWidth }: { timestamp: number; terminalWidth?: number }) {
+function TurnSeparator({
+  timestamp,
+  terminalWidth,
+}: {
+  timestamp: number;
+  terminalWidth?: number;
+}) {
   const theme = useTheme();
   const label = formatTurnTime(timestamp);
   const width = Math.max(20, Math.min(terminalWidth ?? 60, 80));
@@ -41,12 +54,19 @@ interface PendingPermission {
   resolve: (value: PermissionResult) => void;
 }
 
+interface PendingPlanApproval {
+  plan: string;
+  resolve: (value: PlanApprovalResult) => void;
+}
+
 interface ChatPanelProps {
   messages: Message[];
   /** id of the assistant message currently being streamed into, or null. */
   streamingMessageId?: string | null;
   pendingPermission?: PendingPermission | null;
   onResolvePermission?: (result: PermissionResult) => void;
+  pendingPlanApproval?: PendingPlanApproval | null;
+  onResolvePlanApproval?: (result: PlanApprovalResult) => void;
   activeToolCallId?: string | null;
   reducedMotion?: boolean;
   screenReader?: boolean;
@@ -127,6 +147,8 @@ export function ChatPanel({
   streamingMessageId,
   pendingPermission,
   onResolvePermission,
+  pendingPlanApproval,
+  onResolvePlanApproval,
   activeToolCallId,
   reducedMotion = false,
   screenReader = false,
@@ -144,6 +166,7 @@ export function ChatPanel({
   retryCountdownMs = 0,
 }: ChatPanelProps) {
   useDebugMount(uiLog, { model, mode, commandCount, skillCount });
+  const motionDisabled = reducedMotion || Boolean(pendingPlanApproval);
 
   // Merge tool-call-only assistant messages into their preceding message.
   const displayMessages = useMemo(() => {
@@ -163,9 +186,10 @@ export function ChatPanel({
   // When not streaming, all messages are completed.
   const isEmpty = displayMessages.length === 0;
   const rawCompletedMessages = useMemo(
-    () => streamingMessageId
-      ? displayMessages.filter((msg) => msg.id !== streamingMessageId)
-      : displayMessages,
+    () =>
+      streamingMessageId
+        ? displayMessages.filter((msg) => msg.id !== streamingMessageId)
+        : displayMessages,
     [displayMessages, streamingMessageId],
   );
   const completedMessages = useMemo(() => {
@@ -177,9 +201,7 @@ export function ChatPanel({
   }, [rawCompletedMessages]);
   const activeMessage = useMemo(
     () =>
-      streamingMessageId
-        ? displayMessages.find((msg) => msg.id === streamingMessageId)
-        : undefined,
+      streamingMessageId ? displayMessages.find((msg) => msg.id === streamingMessageId) : undefined,
     [displayMessages, streamingMessageId],
   );
 
@@ -215,7 +237,7 @@ export function ChatPanel({
                 mode={mode}
                 commandCount={commandCount}
                 skillCount={skillCount}
-                reducedMotion={reducedMotion}
+                reducedMotion={motionDisabled}
                 screenReader={screenReader}
                 animate={false}
               />
@@ -252,7 +274,7 @@ export function ChatPanel({
                 pendingPermission={pendingPermission}
                 onResolvePermission={onResolvePermission}
                 activeToolCallId={activeToolCallId}
-                reducedMotion={reducedMotion}
+                reducedMotion={motionDisabled}
                 screenReader={screenReader}
                 terminalWidth={terminalWidth}
                 showAllToolOutput={showAllToolOutput}
@@ -267,7 +289,12 @@ export function ChatPanel({
         <Box
           key={activeMessage.id}
           flexDirection="column"
-          marginTop={completedMessages.length > 0 && completedMessages[completedMessages.length - 1].role === 'user' ? 1 : 0}
+          marginTop={
+            completedMessages.length > 0 &&
+            completedMessages[completedMessages.length - 1].role === 'user'
+              ? 1
+              : 0
+          }
         >
           <AgentMessage
             message={activeMessage}
@@ -275,7 +302,7 @@ export function ChatPanel({
             pendingPermission={pendingPermission}
             onResolvePermission={onResolvePermission}
             activeToolCallId={activeToolCallId}
-            reducedMotion={reducedMotion}
+            reducedMotion={motionDisabled}
             screenReader={screenReader}
             terminalWidth={terminalWidth}
             retryPhase={retryPhase}
@@ -286,6 +313,14 @@ export function ChatPanel({
             showAllToolOutput={showAllToolOutput}
           />
         </Box>
+      )}
+
+      {pendingPlanApproval && onResolvePlanApproval && (
+        <PlanApprovalButtons
+          plan={pendingPlanApproval.plan}
+          onResolve={onResolvePlanApproval}
+          screenReader={screenReader}
+        />
       )}
     </Box>
   );

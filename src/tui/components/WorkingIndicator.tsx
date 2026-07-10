@@ -1,5 +1,11 @@
 import { Box, Text } from 'ink';
-import type { Message, PermissionResult, PlanApprovalResult, RetryPhase, ToolCall } from '../../types.js';
+import type {
+  Message,
+  PermissionResult,
+  PlanApprovalResult,
+  RetryPhase,
+  ToolCall,
+} from '../../types.js';
 import { useGradientSpinner } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { truncateDisplay } from './word-wrap.js';
@@ -115,10 +121,20 @@ export function WorkingIndicator({
   const width = Math.max(20, Math.floor(terminalWidth));
   const contentWidth = Math.max(8, width - 2);
   const motionDisabled = reducedMotion || screenReader;
-  const spinner = useGradientSpinner(Boolean(label) && !motionDisabled, 'dots', motionDisabled);
+  const spinner = useGradientSpinner(
+    Boolean(label) && !motionDisabled && !pendingPlanApproval,
+    'dots',
+    motionDisabled,
+  );
 
   if (!label) return null;
-  const hint = isThinking ? ' · Esc to cancel' : '';
+  const hint = pendingPlanApproval
+    ? ' · Esc to reject'
+    : pendingPermission
+      ? ' · Esc to deny'
+      : isThinking
+        ? ' · Esc to cancel'
+        : '';
   const text = truncateDisplay(`${label}${hint}`, Math.max(1, contentWidth - 2));
 
   return (

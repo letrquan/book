@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { act } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { WorkingIndicator } from './WorkingIndicator.js';
@@ -16,18 +17,20 @@ function msg(id: string, role: 'user' | 'assistant', content: string): Message {
   return { id, role, content, timestamp: 1 };
 }
 
-afterEach(() => cleanup());
+beforeEach(() => {
+  vi.useRealTimers();
+});
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe('WorkingIndicator', () => {
   it('renders nothing while idle', () => {
     const view = render(
       withTheme(
-        <WorkingIndicator
-          isThinking={false}
-          messages={[]}
-          terminalWidth={80}
-          reducedMotion
-        />,
+        <WorkingIndicator isThinking={false} messages={[]} terminalWidth={80} reducedMotion />,
       ),
     );
 
@@ -36,14 +39,7 @@ describe('WorkingIndicator', () => {
 
   it('shows an opencode-style thinking line while busy', () => {
     const view = render(
-      withTheme(
-        <WorkingIndicator
-          isThinking
-          messages={[]}
-          terminalWidth={80}
-          reducedMotion
-        />,
-      ),
+      withTheme(<WorkingIndicator isThinking messages={[]} terminalWidth={80} reducedMotion />),
     );
 
     const output = stripAnsi(view.lastFrame());
@@ -85,5 +81,49 @@ describe('WorkingIndicator', () => {
     );
 
     expect(stripAnsi(view.lastFrame())).toContain('Retrying in 4s · attempt 2/5');
+  });
+
+  it('keeps the plan approval wait static when motion is enabled', () => {
+    vi.useFakeTimers();
+    const view = render(
+      withTheme(
+        <WorkingIndicator
+          isThinking
+          messages={[]}
+          pendingPlanApproval={{ plan: 'Review the changes.', resolve: vi.fn() }}
+          terminalWidth={80}
+        />,
+      ),
+    );
+
+    const initialFrame = view.lastFrame();
+    const initialWriteCount = view.frames.length;
+    expect(stripAnsi(initialFrame)).toContain('Waiting for plan approval');
+    expect(stripAnsi(initialFrame)).toContain('Esc to reject');
+    expect(stripAnsi(initialFrame)).not.toContain('Esc to cancel');
+
+    act(() => {
+      vi.advanceTimersByTime(800);
+    });
+
+    expect(view.lastFrame()).toBe(initialFrame);
+    expect(view.frames).toHaveLength(initialWriteCount);
+  });
+
+  it('continues animating during ordinary thinking', () => {
+    vi.useFakeTimers();
+    const view = render(
+      withTheme(<WorkingIndicator isThinking messages={[]} terminalWidth={80} />),
+    );
+
+    const initialFrame = view.lastFrame();
+    const initialWriteCount = view.frames.length;
+
+    act(() => {
+      vi.advanceTimersByTime(80);
+    });
+
+    expect(view.lastFrame()).not.toBe(initialFrame);
+    expect(view.frames.length).toBeGreaterThan(initialWriteCount);
   });
 });
