@@ -3,6 +3,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useTheme } from '../theme.js';
 import { getPrimaryArg } from '../../tools/primary-arg.js';
 import { canonicalToolName } from '../../tools/aliases.js';
+import { isFileMutatingTool } from '../../tools/tool-capabilities.js';
 import type { PermissionResult, ToolCall } from '../../types.js';
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
@@ -34,8 +35,7 @@ export function toolRiskLevel(toolCall: ToolCall): 'safe' | 'write' | 'shell' {
   const lower = toolCall.name.toLowerCase();
   if (name === 'Bash' || name === 'KillShell' || lower.includes('bash') || lower === 'shell')
     return 'shell';
-  if (name === 'Write' || name === 'Edit' || name === 'MultiEdit') return 'write';
-  if (lower === 'write' || lower === 'edit' || lower === 'multiedit') return 'write';
+  if (isFileMutatingTool(name)) return 'write';
   return 'safe';
 }
 

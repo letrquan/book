@@ -98,6 +98,153 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('streamed reply');
   });
 
+  it('hands a wrapped response from dynamic output to Static without duplicating its suffix', async () => {
+    const marker = 'UNIQUE_FINAL_SUFFIX_42';
+    const messages = [
+      msg('u1', 'user', 'write a long answer'),
+      msg('a1', 'assistant', `${'wrapped response content '.repeat(16)}\n${marker}`),
+    ];
+
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          streamingMessageId="a1"
+          terminalWidth={48}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    const streamingFrame = frame(view.lastFrame);
+    expect(streamingFrame).toContain(marker);
+    const beforeCompletion = view.frames.length;
+
+    view.rerender(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          streamingMessageId={null}
+          terminalWidth={48}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    const transitionFrames = view.frames.slice(beforeCompletion).map(stripAnsi);
+    expect(transitionFrames.length).toBeGreaterThanOrEqual(2);
+    expect(transitionFrames.some((output) => !output.includes(marker))).toBe(true);
+    expect(frame(view.lastFrame)).toContain(marker);
+  });
+
+  it('queues rapid streaming handoffs and commits them in order', async () => {
+    vi.useFakeTimers();
+    const messagesA = [msg('a1', 'assistant', 'MARKER_A')];
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messagesA}
+          streamingMessageId="a1"
+          terminalWidth={50}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    const messagesB = [...messagesA, msg('a2', 'assistant', 'MARKER_B')];
+    view.rerender(
+      withTheme(
+        <ChatPanel
+          messages={messagesB}
+          streamingMessageId="a2"
+          terminalWidth={50}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+    const messagesC = [...messagesB, msg('a3', 'assistant', 'MARKER_C')];
+    view.rerender(
+      withTheme(
+        <ChatPanel
+          messages={messagesC}
+          streamingMessageId="a3"
+          terminalWidth={50}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    expect(frame(view.lastFrame)).not.toContain('MARKER_A');
+    expect(frame(view.lastFrame)).not.toContain('MARKER_B');
+    expect(frame(view.lastFrame)).toContain('MARKER_C');
+
+    await act(async () => vi.advanceTimersByTime(55));
+    expect(frame(view.lastFrame)).toContain('MARKER_A');
+    expect(frame(view.lastFrame)).not.toContain('MARKER_B');
+    expect(frame(view.lastFrame)).toContain('MARKER_C');
+
+    await act(async () => vi.advanceTimersByTime(55));
+    expect(frame(view.lastFrame)).toContain('MARKER_A');
+    expect(frame(view.lastFrame)).toContain('MARKER_B');
+    expect(frame(view.lastFrame)).toContain('MARKER_C');
+  });
+
+  it('keeps the previous turn completed while a new assistant turn starts streaming', async () => {
+    const previousMarker = 'PREVIOUS_TURN_SUFFIX';
+    const activeMarker = 'ACTIVE_TURN_TEXT';
+    const previousMessages = [
+      msg('u1', 'user', 'inspect the project'),
+      msg('a1', 'assistant', `${'completed wrapped text '.repeat(10)}${previousMarker}`),
+    ];
+
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={previousMessages}
+          streamingMessageId="a1"
+          terminalWidth={50}
+          reducedMotion
+          screenReader
+          retryPhase="transport"
+          retryAttempt={2}
+          retryMax={5}
+          retryCountdownMs={4_000}
+        />,
+      ),
+    );
+
+    view.rerender(
+      withTheme(
+        <ChatPanel
+          messages={[...previousMessages, msg('a2', 'assistant', activeMarker)]}
+          streamingMessageId="a2"
+          terminalWidth={50}
+          reducedMotion
+          screenReader
+          retryPhase="transport"
+          retryAttempt={2}
+          retryMax={5}
+          retryCountdownMs={4_000}
+        />,
+      ),
+    );
+
+    const handoffFrame = frame(view.lastFrame);
+    expect(handoffFrame).not.toContain(previousMarker);
+    expect(handoffFrame).toContain(activeMarker);
+
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    const committedFrame = frame(view.lastFrame);
+    expect(committedFrame).toContain(previousMarker);
+    expect(committedFrame).toContain(activeMarker);
+  });
+
   it('renders tool calls and results under the assistant turn that produced them', () => {
     const messages: Message[] = [
       msg('u1', 'user', 'inspect file'),
@@ -265,6 +412,7 @@ describe('ChatPanel Ink rendering', () => {
           onResolvePlanApproval={resolve}
           activeToolCallId="call-exit-plan-mode"
           terminalWidth={100}
+          screenReader
         />,
       ),
     );
@@ -277,8 +425,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(outputDuringApproval).toContain('Plan approval required');
     expect(outputDuringApproval).toContain('Step 1: update rendering');
     expect(outputDuringApproval).toContain('Step 2: run tests');
-    expect(outputDuringApproval).toContain('[Approve plan]');
-    expect(outputDuringApproval).toContain('[Reject / revise]');
+    expect(outputDuringApproval).toContain('Press: [A] Approve [R] Reject [Esc] Reject');
 
     act(() => {
       vi.advanceTimersByTime(800);

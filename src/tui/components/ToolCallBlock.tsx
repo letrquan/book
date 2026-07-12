@@ -9,6 +9,7 @@ import { prepareToolOutputDisplay } from './tool-output.js';
 import { truncateDisplay } from './word-wrap.js';
 import { getPrimaryArg } from '../../tools/primary-arg.js';
 import { canonicalToolName } from '../../tools/aliases.js';
+import { isFileMutatingTool } from '../../tools/tool-capabilities.js';
 import type { ToolResult } from '../../types.js';
 
 interface ToolCallBlockProps {
@@ -39,8 +40,7 @@ function getResultLabel(result?: ToolResult): { label: string; color: string } {
 
 function isDiffOutput(toolName: string, result: ToolResult | undefined): boolean {
   if (!result?.success || !result.output) return false;
-  const diffTools = new Set(['Edit', 'Write', 'MultiEdit']);
-  return diffTools.has(canonicalToolName(toolName)) && isUnifiedDiffLike(result.output);
+  return isFileMutatingTool(canonicalToolName(toolName)) && isUnifiedDiffLike(result.output);
 }
 
 function toolLabel(name: string): string {
@@ -49,6 +49,7 @@ function toolLabel(name: string): string {
     Write: 'Write file',
     Edit: 'Edit file',
     MultiEdit: 'Edit file',
+    NotebookEdit: 'Edit notebook',
     Bash: 'Run command',
     BashOutput: 'Read shell output',
     KillShell: 'Kill shell',
@@ -123,10 +124,9 @@ function ToolCallBlockInner({
   const { label, color } = getResultLabel(result);
   const toolColor = agentColor || theme.brand;
 
-  const isFileModifying =
-    canonical === 'Write' || canonical === 'Edit' || canonical === 'MultiEdit';
+  const isFileModifying = isFileMutatingTool(canonical);
   const fileMutation = result?.fileMutation;
-  const filePathStr = fileMutation?.filePath || (args.filePath as string) || '';
+  const filePathStr = fileMutation?.filePath || primaryArg;
   const actionName = fileMutation?.kind === 'create' || result?.isCreate ? 'Create' : 'Update';
 
   // Screen reader mode: flat text without any decorations, spinners, or box art.

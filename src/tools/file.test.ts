@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { fileTools } from './file.js';
 import type { ToolContext } from '../types.js';
-import { existsSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+  rmSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 
@@ -75,6 +83,47 @@ describe('write_file', () => {
       addedLines: 2,
       removedLines: 0,
     });
+  });
+
+  it('allows legitimate in-workspace directories beginning with two dots', async () => {
+    mkdirSync(join(dir, '..data'));
+    const r = await write.execute({ filePath: '..data/new.txt', content: 'inside' }, ctx);
+
+    expect(r.success).toBe(true);
+    expect(readFileSync(join(dir, '..data', 'new.txt'), 'utf-8')).toBe('inside');
+  });
+
+  it('rejects writes through an outside-pointing directory link', async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), 'book-file-outside-'));
+    try {
+      symlinkSync(
+        outsideDir,
+        join(dir, 'linked'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+      const r = await write.execute({ filePath: 'linked/new.txt', content: 'escaped' }, ctx);
+
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/outside workspace/);
+      expect(existsSync(join(outsideDir, 'new.txt'))).toBe(false);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it('allows links whose canonical target remains inside the workspace', async () => {
+    const target = join(dir, 'target');
+    mkdirSync(target);
+    symlinkSync(
+      target,
+      join(dir, 'linked-inside'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    const r = await write.execute({ filePath: 'linked-inside/new.txt', content: 'inside' }, ctx);
+
+    expect(r.success).toBe(true);
+    expect(readFileSync(join(target, 'new.txt'), 'utf-8')).toBe('inside');
   });
 
   it('returns update metadata for existing files', async () => {

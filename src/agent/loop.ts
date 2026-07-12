@@ -23,6 +23,7 @@ import { getPrimaryArg } from '../tools/primary-arg.js';
 import { createDebugLogger } from '../debug-log.js';
 import { maybeCaptureMemoryCandidate } from '../memory-autosave.js';
 import { READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
+import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 
 const log = createDebugLogger('agent');
 
@@ -344,9 +345,8 @@ export async function runAgentLoop(
         !autoSafeTool &&
         effectiveMode !== 'plan'
       ) {
-        // When in accept-edits mode, Edit and Write are automatically allowed.
-        const autoApproved =
-          effectiveMode === 'accept-edits' && (canonName === 'Edit' || canonName === 'Write');
+        // File-mutating tools are automatically allowed in accept-edits mode.
+        const autoApproved = effectiveMode === 'accept-edits' && isFileMutatingTool(canonName);
 
         if (!autoApproved) {
           // Consult the resolved permission rules from settings (deny → ask → allow).
@@ -444,7 +444,8 @@ export async function runAgentLoop(
           toolContext.pendingPlanApproval = undefined;
           result.success = false;
           result.output = '';
-          result.error = 'SKIPPED: Plan was not approved. Revise the plan and call ExitPlanMode again.';
+          result.error =
+            'SKIPPED: Plan was not approved. Revise the plan and call ExitPlanMode again.';
         }
 
         const modeAfterApproval = toolContext.currentMode ?? effectiveMode;

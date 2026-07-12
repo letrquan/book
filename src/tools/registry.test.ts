@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createDefaultRegistry } from './registry.js';
+import { isFileMutatingTool } from './tool-capabilities.js';
 import type { ToolContext } from '../types.js';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -34,6 +35,7 @@ describe('createDefaultRegistry — canonical CC tool names', () => {
       'TaskStop',
       'EnterPlanMode',
       'ExitPlanMode',
+      'NotebookEdit',
     ]) {
       expect(names.has(n), `expected ${n} in registry`).toBe(true);
     }
@@ -57,6 +59,17 @@ describe('createDefaultRegistry — canonical CC tool names', () => {
       ctx,
     );
     return expect(result).resolves.toMatchObject({ success: true });
+  });
+});
+
+describe('tool capabilities', () => {
+  it('classifies all file-mutating tools from one source of truth', () => {
+    for (const name of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+      expect(isFileMutatingTool(name), `expected ${name} file-mutating`).toBe(true);
+    }
+    for (const name of ['Read', 'Bash', 'GitCommit']) {
+      expect(isFileMutatingTool(name), `expected ${name} not file-mutating`).toBe(false);
+    }
   });
 });
 

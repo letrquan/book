@@ -16,6 +16,13 @@ describe('toolRiskLevel', () => {
     expect(toolRiskLevel({ id: '4', name: 'Write', arguments: { filePath: 'a.txt' } })).toBe(
       'write',
     );
-    expect(toolRiskLevel({ id: '5', name: 'Read', arguments: { filePath: 'a.txt' } })).toBe('safe');
+    expect(
+      toolRiskLevel({
+        id: '5',
+        name: 'NotebookEdit',
+        arguments: { notebook_path: 'analysis.ipynb' },
+      }),
+    ).toBe('write');
+    expect(toolRiskLevel({ id: '6', name: 'Read', arguments: { filePath: 'a.txt' } })).toBe('safe');
   });
 });

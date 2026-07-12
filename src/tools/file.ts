@@ -1,32 +1,10 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { isAbsolute, relative, resolve } from 'path';
 import fg from 'fast-glob';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { renderDiffWithStats } from './diff.js';
+import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
 
 const GLOB_OUTPUT_LIMIT = 1000;
-
-function resolveWorkspacePath(
-  workspaceRoot: string,
-  inputPath: string,
-): { filePath: string; relativePath: string } | null {
-  const root = resolve(workspaceRoot);
-  const candidate = isAbsolute(inputPath) ? inputPath : resolve(root, inputPath);
-  const filePath = resolve(candidate);
-  const rel = relative(root, filePath);
-
-  if (rel.startsWith('..') || isAbsolute(rel)) return null;
-  return { filePath, relativePath: rel.replace(/\\/g, '/') };
-}
-
-function pathOutsideWorkspaceResult(inputPath: unknown): ToolResult {
-  return {
-    toolCallId: '',
-    success: false,
-    output: '',
-    error: `Path outside workspace: ${inputPath}`,
-  };
-}
 
 async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);

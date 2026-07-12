@@ -8,6 +8,10 @@ function withTheme(children: React.ReactElement): React.ReactElement {
   return <ThemeContext.Provider value={DEFAULT_THEME}>{children}</ThemeContext.Provider>;
 }
 
+function stripAnsi(value: string | undefined): string {
+  return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
 afterEach(() => cleanup());
 
 describe('PlanApprovalButtons', () => {
@@ -36,5 +40,22 @@ describe('PlanApprovalButtons', () => {
 
     expect(onResolve).toHaveBeenCalledOnce();
     expect(onResolve).toHaveBeenCalledWith('approve');
+  });
+
+  it('strips indented heading markers and counts only top-level steps', () => {
+    const view = render(
+      withTheme(
+        <PlanApprovalButtons
+          plan={'  ### Details\n1. First\n   1. Nested\n2) Second'}
+          onResolve={vi.fn()}
+        />,
+      ),
+    );
+
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain('  Details');
+    expect(output).not.toContain('### Details');
+    expect(output).toContain('· 2 steps');
+    expect(output).toContain('1. Nested');
   });
 });

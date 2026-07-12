@@ -11,9 +11,7 @@ function textStream(content: string): ReadableStream {
   return new ReadableStream({
     start(c) {
       const enc = new TextEncoder();
-      c.enqueue(
-        enc.encode(`data: {"choices":[{"delta":{"content":"${content}"}}]}\n\n`),
-      );
+      c.enqueue(enc.encode(`data: {"choices":[{"delta":{"content":"${content}"}}]}\n\n`));
       c.enqueue(enc.encode('data: [DONE]\n\n'));
       c.close();
     },
@@ -81,10 +79,18 @@ describe('runAgentLoop streaming render callbacks', () => {
           start(c) {
             const enc = new TextEncoder();
             if (fetchCalls === 1) {
-              c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"I will read it."}}]}\n\n'));
-              c.enqueue(enc.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tool_1","function":{"name":"Echo","arguments":"{\\"value\\":\\"abc\\"}"}}]}}]}\n\n'));
+              c.enqueue(
+                enc.encode('data: {"choices":[{"delta":{"content":"I will read it."}}]}\n\n'),
+              );
+              c.enqueue(
+                enc.encode(
+                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tool_1","function":{"name":"Echo","arguments":"{\\"value\\":\\"abc\\"}"}}]}}]}\n\n',
+                ),
+              );
             } else {
-              c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"Tool said abc."}}]}\n\n'));
+              c.enqueue(
+                enc.encode('data: {"choices":[{"delta":{"content":"Tool said abc."}}]}\n\n'),
+              );
             }
             c.enqueue(enc.encode('data: [DONE]\n\n'));
             c.close();
@@ -109,10 +115,13 @@ describe('runAgentLoop streaming render callbacks', () => {
       'read',
       [],
       noopCallbacks({
-        onTurnStart: (turn: number) => { turns[turn - 1] = { texts: [], calls: [], results: [] }; },
+        onTurnStart: (turn: number) => {
+          turns[turn - 1] = { texts: [], calls: [], results: [] };
+        },
         onText: (t: string) => turns[turns.length - 1].texts.push(t),
         onToolCall: (call: { id: string }) => turns[turns.length - 1].calls.push(call.id),
-        onToolResult: (toolResult: { toolCallId: string; output: string }) => turns[turns.length - 1].results.push(`${toolResult.toolCallId}:${toolResult.output}`),
+        onToolResult: (toolResult: { toolCallId: string; output: string }) =>
+          turns[turns.length - 1].results.push(`${toolResult.toolCallId}:${toolResult.output}`),
       }),
       'auto',
     );
@@ -139,9 +148,7 @@ describe('runAgentLoop abort', () => {
             const enc = new TextEncoder();
             const interval = setInterval(() => {
               chunks++;
-              c.enqueue(
-                enc.encode('data: {"choices":[{"delta":{"content":"x"}}]}\n\n'),
-              );
+              c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"x"}}]}\n\n'));
               if (chunks === 3) {
                 clearInterval(interval);
                 controller.abort();
@@ -224,7 +231,16 @@ describe('runAgentLoop error handling', () => {
     let doneCalled = false;
 
     const cfg = defaultConfig({
-      retry: { maxAttempts: 0, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 0,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 0,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
 
     await runAgentLoop(
@@ -233,8 +249,12 @@ describe('runAgentLoop error handling', () => {
       'hi',
       [],
       noopCallbacks({
-        onError: (err: string) => { errorMsg = err; },
-        onDone: () => { doneCalled = true; },
+        onError: (err: string) => {
+          errorMsg = err;
+        },
+        onDone: () => {
+          doneCalled = true;
+        },
       }),
     );
 
@@ -277,7 +297,9 @@ describe('runAgentLoop error handling', () => {
       'hi',
       [],
       noopCallbacks({
-        onError: (err: string) => { errorMsg = err; },
+        onError: (err: string) => {
+          errorMsg = err;
+        },
         onPermissionRequired: async () => 'deny', // deny tools so loop keeps turning without side effects
       }),
     );
@@ -315,7 +337,8 @@ describe('runAgentLoop error handling', () => {
       [],
       noopCallbacks({
         onPermissionRequired: async () => 'deny',
-        onToolResult: (r: { toolCallId: string; error?: string }) => results.push(`${r.toolCallId}:${r.error}`),
+        onToolResult: (r: { toolCallId: string; error?: string }) =>
+          results.push(`${r.toolCallId}:${r.error}`),
       }),
     );
 
@@ -337,7 +360,16 @@ describe('runAgentLoop error handling', () => {
 
     const retryCalls: Array<{ phase: string; attempt: number }> = [];
     const cfg = defaultConfig({
-      retry: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 3,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 0,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
 
     await runAgentLoop(
@@ -362,7 +394,11 @@ describe('runAgentLoop error handling', () => {
       vi.fn(async () => {
         // Hanging stream — will trigger stall timeout in chatCompletionStream.
         return new Response(
-          new ReadableStream({ start() { /* never resolves */ } }),
+          new ReadableStream({
+            start() {
+              /* never resolves */
+            },
+          }),
           { status: 200 },
         );
       }),
@@ -371,7 +407,16 @@ describe('runAgentLoop error handling', () => {
     let stallCalled = false;
     let errorMsg = '';
     const cfg = defaultConfig({
-      retry: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 50, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 3,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 50,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
 
     await runAgentLoop(
@@ -380,8 +425,12 @@ describe('runAgentLoop error handling', () => {
       'hi',
       [],
       noopCallbacks({
-        onStreamStall: () => { stallCalled = true; },
-        onError: (err: string) => { errorMsg = err; },
+        onStreamStall: () => {
+          stallCalled = true;
+        },
+        onError: (err: string) => {
+          errorMsg = err;
+        },
       }),
     );
 
@@ -400,7 +449,16 @@ describe('runAgentLoop error handling', () => {
     );
 
     const cfg = defaultConfig({
-      retry: { maxAttempts: 0, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 0,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 0,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
 
     const result = await runAgentLoop(
@@ -435,7 +493,9 @@ describe('runAgentLoop error handling', () => {
       [],
       noopCallbacks({
         onText: (t: string) => seen.push(t),
-        onDone: () => { doneCalled = true; },
+        onDone: () => {
+          doneCalled = true;
+        },
       }),
     );
 
@@ -479,23 +539,28 @@ describe('runAgentLoop retry config passthrough', () => {
     );
 
     const cfg = defaultConfig({
-      retry: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 2, watchdog: false },
+      retry: {
+        maxAttempts: 3,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 0,
+        toolRetries: 2,
+        watchdog: false,
+      },
     });
 
-    await runAgentLoop(
-      cfg,
-      registry,
-      'hi',
-      [],
-      noopCallbacks(),
-    );
+    await runAgentLoop(cfg, registry, 'hi', [], noopCallbacks());
 
     // At least one tool call should have received toolRetries=2.
     expect(executeCalls.some((c) => c === 2)).toBe(true);
   });
 });
 
-function toolCallStream(calls: Array<{ id: string; name: string; arguments: string }>): ReadableStream {
+function toolCallStream(
+  calls: Array<{ id: string; name: string; arguments: string }>,
+): ReadableStream {
   return new ReadableStream({
     start(c) {
       const enc = new TextEncoder();
@@ -512,14 +577,63 @@ function toolCallStream(calls: Array<{ id: string; name: string; arguments: stri
   });
 }
 
+describe('runAgentLoop accept-edits mode', () => {
+  for (const toolName of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+    it(`auto-allows ${toolName} without prompting`, async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(toolCallStream([{ id: 'edit_1', name: toolName, arguments: '{}' }]), {
+              status: 200,
+            }),
+        ),
+      );
+      const registry = createRegistry();
+      let executed = false;
+      registry.register({
+        name: toolName,
+        description: toolName,
+        parameters: { type: 'object', properties: {} },
+        execute: async () => {
+          executed = true;
+          return { toolCallId: '', success: true, output: 'ok' };
+        },
+      });
+      let prompted = false;
+
+      await runAgentLoop(
+        defaultConfig({ maxTurns: 1 }),
+        registry,
+        'edit',
+        [],
+        noopCallbacks({
+          onPermissionRequired: async () => {
+            prompted = true;
+            return 'deny';
+          },
+        }),
+        'accept-edits',
+      );
+
+      expect(prompted).toBe(false);
+      expect(executed).toBe(true);
+    });
+  }
+});
+
 describe('runAgentLoop plan mode', () => {
   it('auto-allows read-only tools without prompting in plan mode', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(toolCallStream([{ id: 'read_1', name: 'Read', arguments: '{"filePath":"x"}' }]), {
-          status: 200,
-        }),
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([{ id: 'read_1', name: 'Read', arguments: '{"filePath":"x"}' }]),
+            {
+              status: 200,
+            },
+          ),
       ),
     );
 
@@ -560,11 +674,14 @@ describe('runAgentLoop plan mode', () => {
   it('blocks mutating tools before execution in plan mode', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(
-          toolCallStream([{ id: 'write_1', name: 'Write', arguments: '{"filePath":"x","content":"y"}' }]),
-          { status: 200 },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              { id: 'write_1', name: 'Write', arguments: '{"filePath":"x","content":"y"}' },
+            ]),
+            { status: 200 },
+          ),
       ),
     );
 
@@ -598,14 +715,15 @@ describe('runAgentLoop plan mode', () => {
   it('EnterPlanMode changes mode and blocks later mutating calls in the same turn', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(
-          toolCallStream([
-            { id: 'enter_1', name: 'EnterPlanMode', arguments: '{}' },
-            { id: 'write_1', name: 'Write', arguments: '{"filePath":"x","content":"y"}' },
-          ]),
-          { status: 200 },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              { id: 'enter_1', name: 'EnterPlanMode', arguments: '{}' },
+              { id: 'write_1', name: 'Write', arguments: '{"filePath":"x","content":"y"}' },
+            ]),
+            { status: 200 },
+          ),
       ),
     );
 
@@ -654,11 +772,14 @@ describe('runAgentLoop plan mode', () => {
   it('ExitPlanMode requests approval and restores the previous mode when approved', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(
-          toolCallStream([{ id: 'exit_1', name: 'ExitPlanMode', arguments: '{"plan":"Do it."}' }]),
-          { status: 200 },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              { id: 'exit_1', name: 'ExitPlanMode', arguments: '{"plan":"Do it."}' },
+            ]),
+            { status: 200 },
+          ),
       ),
     );
 
@@ -702,11 +823,14 @@ describe('runAgentLoop plan mode', () => {
   it('ExitPlanMode keeps plan mode when approval is rejected', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(
-          toolCallStream([{ id: 'exit_1', name: 'ExitPlanMode', arguments: '{"plan":"Do it."}' }]),
-          { status: 200 },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              { id: 'exit_1', name: 'ExitPlanMode', arguments: '{"plan":"Do it."}' },
+            ]),
+            { status: 200 },
+          ),
       ),
     );
 

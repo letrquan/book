@@ -59,7 +59,16 @@ describe('plan mode tools', () => {
       expect(READ_ONLY_PLAN_TOOLS.has(name), `expected ${name} read-only`).toBe(true);
     }
 
-    for (const name of ['Write', 'Edit', 'MultiEdit', 'Bash', 'GitCommit', 'InvokeSkill', 'Task']) {
+    for (const name of [
+      'Write',
+      'Edit',
+      'MultiEdit',
+      'NotebookEdit',
+      'Bash',
+      'GitCommit',
+      'InvokeSkill',
+      'Task',
+    ]) {
       expect(READ_ONLY_PLAN_TOOLS.has(name), `expected ${name} blocked`).toBe(false);
     }
   });

@@ -88,12 +88,12 @@ Plan mode is enforced in the agent loop: read-only exploration/status tools auto
 **Code intelligence** [MISSING]:
 - `LSP` — go-to-definition, find-references, diagnostics, hover
 
-**Other tools** [MISSING]:
-- `NotebookEdit` — modify Jupyter notebook cells
-- `ReportFindings` — structured code-review findings output
-- `ToolSearch` — deferred tool loading to keep initial context lean
-- `Workflow` — multi-agent orchestration scripts (pipeline/parallel)
-- `Monitor` — run command in background, react to each output line
+**Other tools** [PARTIAL ✅ 2026-07-11]:
+- [x] `NotebookEdit` — replace/delete cells by ID, insert at the beginning or after a target, preserve unrelated notebook data, and return file mutation diffs
+- [ ] `ReportFindings` — structured code-review findings output
+- [ ] `ToolSearch` — deferred tool loading to keep initial context lean
+- [ ] `Workflow` — multi-agent orchestration scripts (pipeline/parallel)
+- [ ] `Monitor` — run command in background, react to each output line
 
 ### 1f. Built-in slash commands that actually work [PARTIAL ✅ 2026-07-03]
 

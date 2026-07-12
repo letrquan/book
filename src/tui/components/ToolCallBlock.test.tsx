@@ -140,6 +140,34 @@ describe('ToolCallBlock', () => {
     expect(rendered).toContain('Added 2 lines, removed 1 line');
   });
 
+  it('renders NotebookEdit as a file update with notebook path and stats', () => {
+    const view = render(
+      withTheme(
+        <ToolCallBlock
+          name="NotebookEdit"
+          args={{ notebook_path: 'analysis.ipynb', cell_id: 'cell-1', new_source: 'x = 2' }}
+          result={{
+            toolCallId: 'call-notebook',
+            success: true,
+            output: '@@ -1,1 +1,1 @@\n- x = 1\n+ x = 2',
+            fileMutation: {
+              kind: 'update',
+              filePath: 'analysis.ipynb',
+              addedLines: 1,
+              removedLines: 1,
+            },
+          }}
+          isExpanded={false}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const rendered = frame(view.lastFrame);
+    expect(rendered).toContain('Update(analysis.ipynb)');
+    expect(rendered).toContain('Added 1 line, removed 1 line');
+  });
+
   it('renders a custom Create(filePath) block when a file is created', () => {
     const view = render(
       withTheme(
