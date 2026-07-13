@@ -264,7 +264,9 @@ describe('TUI keyboard input', () => {
     await sleep(500);
 
     const resizeOutput = session.readRaw().slice(beforeResize);
-    expect(resizeOutput).toContain('\x1b[H\x1b[2J');
+    // Windows ConPTY may inject its own resize/cursor-position sequence between
+    // Ink's home and clear commands, so assert the destructive clear itself.
+    expect(resizeOutput).toContain('\x1b[2J');
     expect(stripAnsi(resizeOutput)).toContain('RESIZE_MARKER');
   }, 20_000);
 

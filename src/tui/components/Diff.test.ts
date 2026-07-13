@@ -33,21 +33,11 @@ describe('parseDiffLines', () => {
 
     const segments = parseDiffLines(output);
     const kinds = segments.map((s) => s.kind);
-    expect(kinds).toEqual([
-      'diffHunk',
-      'diffCtx',
-      'diffRemoved',
-      'diffAdded',
-      'diffCtx',
-    ]);
+    expect(kinds).toEqual(['diffHunk', 'diffCtx', 'diffRemoved', 'diffAdded', 'diffCtx']);
   });
 
   it('detects CC-style word-level diff markers {+...+} and {-...-}', () => {
-    const output = [
-      '@@ -1 +1 @@',
-      '-original text',
-      '+modified {-text-}{+content+}',
-    ].join('\n');
+    const output = ['@@ -1 +1 @@', '-original text', '+modified {-text-}{+content+}'].join('\n');
 
     const segments = parseDiffLines(output);
     const removed = segments.filter((s) => s.kind === 'diffRemoved');
@@ -116,10 +106,26 @@ describe('DiffBlock', () => {
 
   it('uses display-width truncation for long diff lines', () => {
     const longLine = '+' + 'x'.repeat(160);
-    const view = render(withTheme(React.createElement(DiffBlock, { output: `@@ -1 +1 @@\n-old\n${longLine}` })));
+    const view = render(
+      withTheme(React.createElement(DiffBlock, { output: `@@ -1 +1 @@\n-old\n${longLine}` })),
+    );
     const rendered = frame(view.lastFrame);
 
     expect(rendered).toContain('…');
-    expect(displayWidth(rendered.split('\n').find((part) => part.includes('…')) ?? '')).toBeLessThanOrEqual(130);
+    expect(
+      displayWidth(rendered.split('\n').find((part) => part.includes('…')) ?? ''),
+    ).toBeLessThanOrEqual(120);
+  });
+
+  it('honors a narrow terminal width including indentation and prefix', () => {
+    const width = 32;
+    const output = `@@ -1 +1 @@\n-${'old'.repeat(30)}\n+${'新🙂'.repeat(30)}`;
+    const view = render(
+      withTheme(React.createElement(DiffBlock, { output, terminalWidth: width })),
+    );
+
+    for (const line of frame(view.lastFrame).split('\n')) {
+      expect(displayWidth(line)).toBeLessThanOrEqual(width);
+    }
   });
 });

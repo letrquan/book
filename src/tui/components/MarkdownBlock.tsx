@@ -2,7 +2,7 @@ import { Text, Box } from 'ink';
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { marked, Tokens, Token } from 'marked';
 import { useTheme } from '../theme.js';
-import { hardWrapLine, wordWrap } from './word-wrap.js';
+import { wordWrap } from './word-wrap.js';
 import { highlightCode, type StyledLine } from './syntax-highlight.js';
 import {
   layoutCodeBlock,
@@ -44,12 +44,9 @@ interface RenderContext {
 
 export function wrapParagraphLines(rawText: string, terminalWidth: number): string[] {
   if (terminalWidth <= 0) return rawText.split('\n');
-  const soft = wordWrap(rawText, terminalWidth);
-  const out: string[] = [];
-  for (const line of soft.split('\n')) {
-    out.push(...hardWrapLine(line, terminalWidth));
-  }
-  return out;
+  // wordWrap already hard-wraps overlong tokens with displayWidth semantics;
+  // scanning every completed line a second time doubles paragraph render cost.
+  return wordWrap(rawText, terminalWidth).split('\n');
 }
 
 /**
@@ -212,7 +209,11 @@ function inlineRunsFromTokens(
         runs.push(...linkRuns);
         const label = linkRuns.map((run) => run.text).join('');
         if (t.href && t.href !== label) {
-          appendRun(runs, ` (${t.href})`, mergeStyle(style, { color: theme?.mdLink ?? style.color }));
+          appendRun(
+            runs,
+            ` (${t.href})`,
+            mergeStyle(style, { color: theme?.mdLink ?? style.color }),
+          );
         }
         break;
       }
@@ -271,11 +272,16 @@ function sliceRunsForLine(runs: InlineRun[], line: string, offset: number): Inli
 function wrappedInlineRuns(runs: InlineRun[], terminalWidth: number): InlineRun[][] {
   const rawText = runs.map((run) => run.text).join('');
   const lines = wrapParagraphLines(rawText, terminalWidth);
-  let offset = 0;
+  let searchOffset = 0;
   return lines.map((line) => {
-    const lineRuns = sliceRunsForLine(runs, line, offset);
-    offset += line.length;
-    if (rawText[offset] === ' ') offset += 1;
+    // wordWrap may collapse spaces or replace an original newline with a visual
+    // line break. Locate each rendered slice in the source instead of assuming
+    // every break consumed exactly one space; otherwise style offsets drift and
+    // later lines can lose their final character.
+    const locatedOffset = rawText.indexOf(line, searchOffset);
+    const lineOffset = locatedOffset === -1 ? searchOffset : locatedOffset;
+    const lineRuns = sliceRunsForLine(runs, line, lineOffset);
+    searchOffset = lineOffset + line.length;
     return lineRuns;
   });
 }
@@ -418,7 +424,11 @@ function renderBlockToken(
 
     case 'paragraph': {
       const t = token as Tokens.Paragraph;
-      const runs = inlineRunsFromTokens(t.tokens, { color: context.textColor ?? theme.text }, theme);
+      const runs = inlineRunsFromTokens(
+        t.tokens,
+        { color: context.textColor ?? theme.text },
+        theme,
+      );
       if (terminalWidth) {
         const wrappedLines = wrappedInlineRuns(runs, terminalWidth);
         return (
@@ -452,9 +462,7 @@ function renderBlockToken(
         : highlightCode(displayLines.join('\n'), t.lang, theme);
 
       const widthProp =
-        terminalWidth && terminalWidth > 0
-          ? { width: Math.max(1, Math.floor(terminalWidth)) }
-          : {};
+        terminalWidth && terminalWidth > 0 ? { width: Math.max(1, Math.floor(terminalWidth)) } : {};
 
       const boxProps = layout.showBorder
         ? {
@@ -562,7 +570,11 @@ function renderBlockToken(
                     if (childToken.type === 'text') {
                       const textToken = childToken as Tokens.Text & { tokens?: Token[] };
                       const childRuns = textToken.tokens?.length
-                        ? inlineRunsFromTokens(textToken.tokens, { color: context.textColor ?? theme.text }, theme)
+                        ? inlineRunsFromTokens(
+                            textToken.tokens,
+                            { color: context.textColor ?? theme.text },
+                            theme,
+                          )
                         : [{ text: textToken.text, color: context.textColor ?? theme.text }];
                       if (itemWidth) {
                         const wrapped = wrappedInlineRuns(childRuns, itemWidth);

@@ -453,6 +453,27 @@ function simulateInputHandler(
 }
 
 describe('keyboard shortcut filtering', () => {
+  it('restores the editor value after Alt and consumed Ctrl shortcuts', async () => {
+    const view = render(
+      inputBar(() => {}, {
+        onGlobalShortcut: (input, key) => Boolean(key.ctrl && input === 'l'),
+      }),
+    );
+    await tick();
+
+    view.stdin.write('draft');
+    await tick(20);
+    view.stdin.write('\x1bp');
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).toContain('draft');
+    expect(stripAnsi(view.lastFrame())).not.toContain('draftp');
+
+    view.stdin.write('\x0c');
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).toContain('draft');
+    expect(stripAnsi(view.lastFrame())).not.toContain('draftl');
+  });
+
   it('Alt+M (meta+m) is consumed and does not write "m" into input', () => {
     expect(simulateInputHandler('m', { meta: true }, false)).toBe('consumed');
   });

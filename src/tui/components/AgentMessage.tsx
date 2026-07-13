@@ -46,6 +46,7 @@ function NestedToolRows({
   reducedMotion,
   screenReader,
   showAllToolOutput,
+  terminalWidth,
 }: {
   childrenByParent: NestedToolChildren;
   parentTraceId: string;
@@ -54,6 +55,7 @@ function NestedToolRows({
   reducedMotion: boolean;
   screenReader: boolean;
   showAllToolOutput: boolean;
+  terminalWidth?: number;
 }) {
   const children = childrenByParent.get(parentTraceId) ?? [];
 
@@ -67,6 +69,7 @@ function NestedToolRows({
         reducedMotion={reducedMotion}
         screenReader={screenReader}
         showAllToolOutput={showAllToolOutput}
+        terminalWidth={terminalWidth ? Math.max(12, terminalWidth - depth * 2) : undefined}
       />
       <NestedToolRows
         childrenByParent={childrenByParent}
@@ -76,6 +79,7 @@ function NestedToolRows({
         reducedMotion={reducedMotion}
         screenReader={screenReader}
         showAllToolOutput={showAllToolOutput}
+        terminalWidth={terminalWidth}
       />
     </Box>
   ));
@@ -266,9 +270,10 @@ export function AgentMessageInner({
 
   const isRetrying = retryPhase !== 'none';
 
-  // Compute effective width for MarkdownBlock content.
-  // Account for marginLeft (2), spinner (2), and a safety margin (1).
-  const mdWidth = terminalWidth ? Math.max(20, terminalWidth - 5) : undefined;
+  // Message content is indented by two columns. Activity labels render on a
+  // separate row, so they never steal horizontal space from markdown/diffs.
+  const contentWidth = terminalWidth ? Math.max(12, Math.floor(terminalWidth) - 2) : undefined;
+  const mdWidth = contentWidth;
   const contentParts = useMemo(() => splitThinkBlocks(displayContent), [displayContent]);
 
   return (
@@ -287,43 +292,43 @@ export function AgentMessageInner({
         </Box>
       ) : null}
 
-      {/* Text content with streaming spinner */}
+      {/* Activity and content use separate rows so markdown keeps its full budget. */}
       {displayContent ? (
         <Box marginLeft={screenReader ? 0 : 2} flexDirection="column">
-          <Box>
-            {isStreaming && !hideStreamingSpinner && !isRetrying && (
+          {isStreaming && !hideStreamingSpinner && !isRetrying ? (
+            <Box>
               <Spinner active style="braille" reducedMotion={reducedMotion} />
-            )}
-            {isRetrying && !hideStreamingSpinner && spinnerLabel && (
-              <Box>
-                <Text color={theme.error}>Retrying: </Text>
-                <Text color={theme.error}>{spinnerLabel} </Text>
-              </Box>
-            )}
-            {isUnifiedDiffLike(displayContent) ? (
-              <DiffBlock output={displayContent} />
-            ) : (
-              <Box flexDirection="column">
-                {contentParts.map((part, i) =>
-                  part.kind === 'think' ? (
-                    <ThinkBlock
-                      key={`think-${i}`}
-                      text={part.text}
-                      terminalWidth={mdWidth}
-                      reducedMotion={reducedMotion}
-                    />
-                  ) : (
-                    <MarkdownBlock
-                      key={`md-${i}`}
-                      content={part.text}
-                      terminalWidth={mdWidth}
-                      isStreaming={isStreaming}
-                    />
-                  ),
-                )}
-              </Box>
-            )}
-          </Box>
+            </Box>
+          ) : null}
+          {isRetrying && !hideStreamingSpinner && spinnerLabel ? (
+            <Box>
+              <Text color={theme.error}>Retrying: </Text>
+              <Text color={theme.error}>{spinnerLabel}</Text>
+            </Box>
+          ) : null}
+          {isUnifiedDiffLike(displayContent) ? (
+            <DiffBlock output={displayContent} terminalWidth={contentWidth} />
+          ) : (
+            <Box flexDirection="column">
+              {contentParts.map((part, i) =>
+                part.kind === 'think' ? (
+                  <ThinkBlock
+                    key={`think-${i}`}
+                    text={part.text}
+                    terminalWidth={mdWidth}
+                    reducedMotion={reducedMotion}
+                  />
+                ) : (
+                  <MarkdownBlock
+                    key={`md-${i}`}
+                    content={part.text}
+                    terminalWidth={mdWidth}
+                    isStreaming={isStreaming}
+                  />
+                ),
+              )}
+            </Box>
+          )}
         </Box>
       ) : null}
 
@@ -342,6 +347,7 @@ export function AgentMessageInner({
               reducedMotion={reducedMotion}
               screenReader={screenReader}
               showAllToolOutput={showAllToolOutput}
+              terminalWidth={terminalWidth}
             />
             {isPending && onResolvePermission ? (
               <PermissionButtons
@@ -359,6 +365,7 @@ export function AgentMessageInner({
                 reducedMotion={reducedMotion}
                 screenReader={screenReader}
                 showAllToolOutput={showAllToolOutput}
+                terminalWidth={terminalWidth}
               />
             ) : null}
           </Box>

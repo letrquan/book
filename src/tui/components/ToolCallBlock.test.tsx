@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
+import { displayWidth } from './word-wrap.js';
 
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
@@ -245,5 +246,56 @@ describe('ToolCallBlock', () => {
 
     expect(frame(outputView.lastFrame)).toContain('Read shell output shell_1');
     expect(frame(killView.lastFrame)).toContain('Kill shell shell_1');
+  });
+
+  it('bounds expanded output, arguments, and errors to a narrow width', () => {
+    const width = 40;
+    const view = render(
+      withTheme(
+        <ToolCallBlock
+          name="Bash"
+          args={{ command: `run-${'🙂'.repeat(50)}` }}
+          result={{
+            toolCallId: 'call-narrow',
+            success: false,
+            output: `result-${'界'.repeat(80)}`,
+            error: `error-${'🙂'.repeat(80)}`,
+          }}
+          isExpanded
+          terminalWidth={width}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const rendered = frame(view.lastFrame);
+    for (const line of rendered.split('\n')) {
+      expect(displayWidth(line), JSON.stringify(line)).toBeLessThanOrEqual(width);
+    }
+  });
+
+  it('passes the narrow budget to markdown-looking tool output', () => {
+    const width = 40;
+    const view = render(
+      withTheme(
+        <ToolCallBlock
+          name="WebFetch"
+          args={{ url: 'https://example.com' }}
+          result={{
+            toolCallId: 'call-markdown',
+            success: true,
+            output: `| Header | Value |\n|---|---|\n| ${'wide'.repeat(20)} | ${'🙂'.repeat(20)} |`,
+          }}
+          isExpanded
+          terminalWidth={width}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const rendered = frame(view.lastFrame);
+    for (const line of rendered.split('\n')) {
+      expect(displayWidth(line), JSON.stringify(line)).toBeLessThanOrEqual(width);
+    }
   });
 });

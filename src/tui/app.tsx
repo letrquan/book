@@ -53,6 +53,14 @@ import { useDebugMount, useDebugValueChange } from './debug.js';
 
 const uiLog = createUiDebugLogger('tui:app');
 
+export function ownsModalInput(
+  pendingPermission: unknown,
+  pendingPlanApproval: unknown,
+  showModelPicker: boolean,
+): boolean {
+  return Boolean(pendingPermission || pendingPlanApproval || showModelPicker);
+}
+
 /** Settable top-level settings keys (for /config --help). Mirrors cli/config-cmd.ts allowlist. */
 const SETTABLE_KEYS = [
   'model',
@@ -230,14 +238,14 @@ export function App({ config, redrawViewport }: AppProps) {
   useDebugValueChange(uiLog, 'showModelPicker', showModelPicker, (v) => String(v));
 
   useInput((input, key) => {
-    // Approval prompts own the keyboard until they resolve. Let their own
+    // Modal prompts own the keyboard until they resolve. Let their own
     // useInput handlers receive the event, but do not open another modal or
     // mutate surrounding UI state from this global handler.
-    if (pendingPermission || pendingPlanApproval) {
+    if (ownsModalInput(pendingPermission, pendingPlanApproval, showModelPicker)) {
       if (key.escape) {
-        uiLog.event('input:Escape', { action: 'noop-approval-active' });
+        uiLog.event('input:Escape', { action: 'noop-modal-active' });
       } else if (key.ctrl && input === 'c') {
-        uiLog.event('input:Ctrl+C', { action: 'noop-approval-active' });
+        uiLog.event('input:Ctrl+C', { action: 'noop-modal-active' });
       }
       return;
     }
@@ -632,6 +640,7 @@ export function App({ config, redrawViewport }: AppProps) {
       // Ctrl+/ and Ctrl+E must be handled here (not only in the parent useInput)
       // because ink-text-input consumes some Ctrl key events before they reach
       // the parent handler.
+      if (showModelPicker) return true;
       if (key.ctrl && input === 'c') {
         if (pendingPermission || pendingPlanApproval) {
           uiLog.event('input:Ctrl+C', { action: 'noop-approval-active' });
@@ -663,7 +672,15 @@ export function App({ config, redrawViewport }: AppProps) {
       }
       return false; // not consumed — let text input handle it
     },
-    [cancel, exitApp, isThinking, pendingPermission, pendingPlanApproval],
+    [
+      cancel,
+      exitApp,
+      isThinking,
+      pendingPermission,
+      pendingPlanApproval,
+      redrawViewport,
+      showModelPicker,
+    ],
   );
 
   // Track input changes for command menu filtering — now handled inside InputBar.
@@ -1011,7 +1028,11 @@ export function App({ config, redrawViewport }: AppProps) {
               mode={mode}
               onCycleMode={cycleMode}
               onInterrupt={cancel}
-              inputSuppressed={Boolean(pendingPermission || pendingPlanApproval)}
+              inputSuppressed={ownsModalInput(
+                pendingPermission,
+                pendingPlanApproval,
+                showModelPicker,
+              )}
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
               terminalWidth={termWidth}
