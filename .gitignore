@@ -14,3 +14,7 @@ __pycache__/
 *.pyc
 .pi/
 .agents/
+
+# Local TUI/verify scratch captures (ConPTY dumps, fixture providers, etc.)
+.tmp-*/
+.tmp-*
