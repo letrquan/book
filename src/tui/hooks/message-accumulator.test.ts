@@ -85,13 +85,11 @@ describe('message-accumulator', () => {
     acc.addNestedToolCall({
       traceId: 'task/1:read',
       parentTraceId: 'task',
-      agentName: 'explorer',
       call: { id: 'read', name: 'Read', arguments: { filePath: 'a.ts' } },
     });
     acc.addNestedToolCall({
       traceId: 'task/2:grep',
       parentTraceId: 'task',
-      agentName: 'explorer',
       call: { id: 'grep', name: 'Grep', arguments: { pattern: 'x' } },
     });
     acc.addNestedToolResult('task/1:read', {

@@ -17,21 +17,108 @@ async function executeWithTimeout(
   context: ToolContext,
   timeoutMs: number,
 ): Promise<ToolResult> {
+  const parentSignal = context.signal;
+  const controller = new AbortController();
+  const pendingNestedCalls = new Map<string, string>();
+  let active = true;
   let timer: NodeJS.Timeout | undefined;
+  let removeParentAbort: (() => void) | undefined;
+  let outcome: 'tool' | 'timeout' | 'cancelled' = 'tool';
+
+  const parentObserver = context.nestedToolObserver;
+  const scopedObserver = parentObserver
+    ? {
+        onToolCall: (invocation: Parameters<typeof parentObserver.onToolCall>[0]) => {
+          if (!active) return;
+          pendingNestedCalls.set(invocation.traceId, invocation.call.id);
+          parentObserver.onToolCall(invocation);
+        },
+        onToolResult: (traceId: string, result: ToolResult) => {
+          if (!active) return;
+          pendingNestedCalls.delete(traceId);
+          parentObserver.onToolResult(traceId, result);
+        },
+      }
+    : undefined;
+
+  const attemptContext = new Proxy(context, {
+    get(target, property, receiver) {
+      if (property === 'signal') return controller.signal;
+      if (property === 'nestedToolObserver') return scopedObserver;
+      return Reflect.get(target, property, receiver);
+    },
+    set(target, property, value, receiver) {
+      if (property === 'signal' || property === 'nestedToolObserver') return false;
+      return Reflect.set(target, property, value, receiver);
+    },
+  });
+
+  const timeoutError = `Tool timeout: ${tool.name} exceeded ${timeoutMs}ms`;
+  const cancelledError = `CANCELLED: ${tool.name} was cancelled`;
+
   try {
-    const timeout = new Promise<ToolResult>((resolve) => {
+    const execution = Promise.resolve()
+      .then(() => tool.execute(call.arguments, attemptContext))
+      .then((result) => ({ kind: 'tool' as const, result }));
+
+    const timeout = new Promise<{ kind: 'timeout'; result: ToolResult }>((resolve) => {
       timer = setTimeout(() => {
+        controller.abort(new Error(timeoutError));
         resolve({
-          toolCallId: call.id,
-          success: false,
-          output: '',
-          error: `Tool timeout: ${tool.name} exceeded ${timeoutMs}ms`,
+          kind: 'timeout',
+          result: { toolCallId: call.id, success: false, output: '', error: timeoutError },
         });
       }, timeoutMs);
     });
-    return await Promise.race([tool.execute(call.arguments, context), timeout]);
+
+    const races: Array<Promise<{ kind: 'tool' | 'timeout' | 'cancelled'; result: ToolResult }>> = [
+      execution,
+      timeout,
+    ];
+    if (parentSignal) {
+      races.push(
+        new Promise<{ kind: 'cancelled'; result: ToolResult }>((resolve) => {
+          const onAbort = () => {
+            controller.abort(parentSignal.reason);
+            resolve({
+              kind: 'cancelled',
+              result: { toolCallId: call.id, success: false, output: '', error: cancelledError },
+            });
+          };
+          if (parentSignal.aborted) {
+            onAbort();
+          } else {
+            parentSignal.addEventListener('abort', onAbort, { once: true });
+            removeParentAbort = () => parentSignal.removeEventListener('abort', onAbort);
+          }
+        }),
+      );
+    }
+
+    const settled = await Promise.race(races);
+    outcome = settled.kind;
+    return settled.result;
   } finally {
     if (timer) clearTimeout(timer);
+    removeParentAbort?.();
+
+    active = false;
+    if (parentObserver && pendingNestedCalls.size > 0) {
+      const error =
+        outcome === 'timeout'
+          ? timeoutError
+          : outcome === 'cancelled'
+            ? cancelledError
+            : `${tool.name} finished before its nested tool completed`;
+      for (const [traceId, toolCallId] of pendingNestedCalls) {
+        parentObserver.onToolResult(traceId, {
+          toolCallId,
+          success: false,
+          output: '',
+          error,
+        });
+      }
+    }
   }
 }
 

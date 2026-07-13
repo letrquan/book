@@ -60,7 +60,6 @@ describe('buildMessages', () => {
       {
         traceId: 'task_1/1-1:read_1',
         parentTraceId: 'task_1',
-        agentName: 'explorer',
         call: toolCall('read_1', 'Read', { filePath: 'secret.ts' }),
         result: toolResult('read_1', 'contents'),
       },

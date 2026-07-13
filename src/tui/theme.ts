@@ -27,6 +27,14 @@ export const LIGHT_THEME: ThemeTokens = {
   planMode: '#a0a',
   autoAccept: 'green',
   bashBorder: '#c90',
+
+  modeDefault: 'blue',
+  modePlan: '#a0a',
+  modeAcceptEdits: '#090',
+  modeAuto: '#090',
+  modeDontAsk: '#c00',
+  modeBypass: '#c90',
+
   usageMeter: 'blue',
   usageMeterHigh: '#c90',
   usageMeterCritical: 'red',

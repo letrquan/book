@@ -5,6 +5,7 @@ import { useTheme } from '../theme.js';
 import type { PermissionMode } from '../../types.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
+import { modeColorToken, modeLabel } from '../mode-style.js';
 
 const renderLog = createRenderDebugLogger('tui:statusline');
 
@@ -28,15 +29,29 @@ function usageMeter(fraction: number, width: number): string {
   return '█'.repeat(filled) + '░'.repeat(safeWidth - filled);
 }
 
-function joinSegments(segments: string[], maxWidth: number): string {
-  const kept: string[] = [];
+/**
+ * Pack colored status segments from left to right, skipping an oversized
+ * segment so that later short, higher-value segments can still be shown.
+ */
+export function buildColoredSegments(
+  segments: Array<{ text: string; color?: string }>,
+  maxWidth: number,
+): Array<{ text: string; color: string }> {
+  const result: Array<{ text: string; color: string }> = [];
+  let totalWidth = 0;
+
   for (const segment of segments) {
-    const candidate = kept.length === 0 ? segment : `${kept.join(' │ ')} │ ${segment}`;
-    if (displayWidth(candidate) <= maxWidth) {
-      kept.push(segment);
-    }
+    const separator = result.length === 0 ? '' : ' │ ';
+    const candidateWidth = totalWidth + displayWidth(separator) + displayWidth(segment.text);
+    if (candidateWidth > maxWidth) continue;
+
+    const color = segment.color ?? 'text';
+    if (separator) result.push({ text: separator, color });
+    result.push({ text: segment.text, color });
+    totalWidth = candidateWidth;
   }
-  return truncateDisplay(kept.join(' │ '), maxWidth);
+
+  return result;
 }
 
 /**
@@ -84,39 +99,76 @@ export function StatusLine({
     activeTaskCount,
   });
 
-  const row = useMemo(() => {
-    const modelBudget = width < 44 ? 10 : width < 72 ? 18 : 30;
-    const tokenText = maxTokens > 0
-      ? `${(tokenCount / 1000).toFixed(1)}k/${(maxTokens / 1000).toFixed(0)}k`
-      : `${(tokenCount / 1000).toFixed(1)}k/?`;
-    const tokenSegment = meterWidth > 0
-      ? `tokens ${tokenText} ${usageMeter(usageFraction, meterWidth)} ${usagePercent}%`
-      : `tok ${usagePercent}%`;
+  const rowColor =
+    usageCritical && usageBlink
+      ? theme.usageMeterCritical
+      : modeFlash
+        ? theme.brandShimmer
+        : theme.text;
 
-    const segments = [
-      truncateDisplay(model, modelBudget),
-      tokenSegment,
-      ...(tokenCount > 0 && !compact && width >= 64 ? [`$${costEstimate.toFixed(3)}`] : []),
-      mode,
-      ...(taskCount > 0 ? [`tasks ${activeTaskCount > 0 ? `${activeTaskCount}/` : ''}${taskCount}`] : []),
-      ...(usageNearLimit && (compact || width < 58) ? [`ctx ${usagePercent}%`] : []),
+  const modeColor = theme[modeColorToken(mode)] as string;
+
+  const coloredRuns = useMemo(() => {
+    const modelBudget = width < 44 ? 10 : width < 72 ? 18 : 30;
+    const tokenText =
+      maxTokens > 0
+        ? `${(tokenCount / 1000).toFixed(1)}k/${(maxTokens / 1000).toFixed(0)}k`
+        : `${(tokenCount / 1000).toFixed(1)}k/?`;
+    const tokenSegment =
+      meterWidth > 0
+        ? `tokens ${tokenText} ${usageMeter(usageFraction, meterWidth)} ${usagePercent}%`
+        : `tok ${usagePercent}%`;
+
+    const segments: Array<{ text: string; color?: string }> = [
+      { text: truncateDisplay(model, modelBudget), color: rowColor },
+      { text: tokenSegment, color: rowColor },
     ];
 
-    return joinSegments(segments, contentWidth);
-  }, [activeTaskCount, compact, contentWidth, costEstimate, maxTokens, meterWidth, mode, model, taskCount, tokenCount, usageFraction, usageNearLimit, usagePercent, width]);
+    if (tokenCount > 0 && !compact && width >= 64) {
+      segments.push({ text: `$${costEstimate.toFixed(3)}`, color: rowColor });
+    }
 
-  const warning = usageNearLimit && !compact && width >= 58
-    ? truncateDisplay(
-        `⚠ ${usageCritical ? 'Context nearly full' : 'Approaching context limit'} — type /compact to summarize older turns`,
-        contentWidth,
-      )
-    : null;
+    // Mode segment gets its own dedicated color.
+    segments.push({ text: modeLabel(mode), color: modeColor });
 
-  const rowColor = usageCritical && usageBlink
-    ? theme.usageMeterCritical
-    : modeFlash
-      ? theme.brandShimmer
-      : theme.text;
+    if (taskCount > 0) {
+      segments.push({
+        text: `tasks ${activeTaskCount > 0 ? `${activeTaskCount}/` : ''}${taskCount}`,
+        color: rowColor,
+      });
+    }
+
+    if (usageNearLimit && (compact || width < 58)) {
+      segments.push({ text: `ctx ${usagePercent}%`, color: rowColor });
+    }
+
+    return buildColoredSegments(segments, contentWidth);
+  }, [
+    activeTaskCount,
+    compact,
+    contentWidth,
+    costEstimate,
+    maxTokens,
+    meterWidth,
+    mode,
+    modeColor,
+    model,
+    rowColor,
+    taskCount,
+    tokenCount,
+    usageFraction,
+    usageNearLimit,
+    usagePercent,
+    width,
+  ]);
+
+  const warning =
+    usageNearLimit && !compact && width >= 58
+      ? truncateDisplay(
+          `⚠ ${usageCritical ? 'Context nearly full' : 'Approaching context limit'} — type /compact to summarize older turns`,
+          contentWidth,
+        )
+      : null;
 
   return (
     <Box
@@ -130,10 +182,14 @@ export function StatusLine({
       borderRight={false}
       borderColor={theme.subtle}
     >
-      <Text color={rowColor}>{row}</Text>
-      {warning ? (
-        <Text color={usageCritical ? theme.error : theme.warning}>{warning}</Text>
-      ) : null}
+      <Box flexDirection="row" flexWrap="nowrap">
+        {coloredRuns.map((run, i) => (
+          <Text key={i} color={run.color}>
+            {run.text}
+          </Text>
+        ))}
+      </Box>
+      {warning ? <Text color={usageCritical ? theme.error : theme.warning}>{warning}</Text> : null}
     </Box>
   );
 }

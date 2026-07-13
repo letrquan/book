@@ -1,5 +1,5 @@
 import { Box, Text, useInput, useStdout, useApp } from 'ink';
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { ChatPanel } from './components/ChatPanel.js';
@@ -48,6 +48,7 @@ import { discoverAgents } from '../subagent-discovery.js';
 import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
 import { persistSettingLocal } from './persist.js';
 import { createUiDebugLogger } from '../debug-log.js';
+import { selectActiveToolId } from './tool-traces.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
 
 const uiLog = createUiDebugLogger('tui:app');
@@ -71,6 +72,7 @@ const SETTABLE_KEYS = [
 
 interface AppProps {
   config: AgentConfig;
+  redrawViewport?: () => void;
 }
 
 /**
@@ -98,7 +100,7 @@ interface AppProps {
  *   Shift+Tab — cycle permission mode
  *   Ctrl+/   — toggle keyboard shortcuts reference
  */
-export function App({ config }: AppProps) {
+export function App({ config, redrawViewport }: AppProps) {
   const {
     messages,
     isThinking,
@@ -150,31 +152,56 @@ export function App({ config }: AppProps) {
   const skills = useMemo(() => discoverSkills(config.workspace), [config.workspace]);
 
   const { stdout } = useStdout();
-  const [terminalSize, setTerminalSize] = useState(() => ({
-    columns: Math.max(20, stdout?.columns ?? 80),
-    rows: Math.max(8, stdout?.rows ?? 24),
-  }));
+  const readTerminalSize = useCallback(
+    () => ({
+      columns: Math.max(20, stdout?.columns ?? 80),
+      rows: Math.max(8, stdout?.rows ?? 24),
+    }),
+    [stdout],
+  );
+  const [terminalSize, setTerminalSize] = useState(readTerminalSize);
+  const [staticEpoch, setStaticEpoch] = useState(0);
+  const lastAppliedSizeRef = useRef(terminalSize);
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const applyTerminalSize = useCallback(
+    (nextSize: { columns: number; rows: number }, redraw: boolean) => {
+      const previousSize = lastAppliedSizeRef.current;
+      if (nextSize.columns === previousSize.columns && nextSize.rows === previousSize.rows) return;
+      if (redraw) {
+        redrawViewport?.();
+        setStaticEpoch((epoch) => epoch + 1);
+      }
+      lastAppliedSizeRef.current = nextSize;
+      setTerminalSize(nextSize);
+    },
+    [redrawViewport],
+  );
 
   useEffect(() => {
+    // Reconcile dimensions that changed between the initial render and effect
+    // registration without destructively clearing the first frame.
+    applyTerminalSize(readTerminalSize(), false);
+
     const updateSize = () => {
-      setTerminalSize({
-        columns: Math.max(20, stdout?.columns ?? 80),
-        rows: Math.max(8, stdout?.rows ?? 24),
-      });
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+      resizeTimerRef.current = setTimeout(() => {
+        resizeTimerRef.current = null;
+        applyTerminalSize(readTerminalSize(), true);
+      }, 50);
     };
 
-    updateSize();
     stdout?.on?.('resize', updateSize);
     return () => {
       stdout?.off?.('resize', updateSize);
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
     };
-  }, [stdout]);
+  }, [applyTerminalSize, readTerminalSize, stdout]);
 
   const termWidth = terminalSize.columns;
   const termHeight = terminalSize.rows;
   const isNarrow = termWidth < 64;
   const isTiny = termWidth < 42 || termHeight < 12;
-  const footerWidth = Math.max(20, termWidth - 2);
   const maxCommandMenuRows = Math.max(2, Math.min(isTiny ? 3 : 8, Math.floor(termHeight / 3)));
   const compactStatus = isNarrow || isTiny;
   const reducedMotion = Boolean(config.accessibility?.reducedMotion);
@@ -259,9 +286,11 @@ export function App({ config }: AppProps) {
       setShowModelPicker(true);
       return;
     }
-    // Ctrl+L — redraw (simulated by Ink re-render)
+    // Ctrl+L — clear the visible viewport and force a fresh Ink frame.
     if (key.ctrl && input === 'l') {
       uiLog.event('input:Ctrl+L', { action: 'redraw' });
+      redrawViewport?.();
+      setStaticEpoch((epoch) => epoch + 1);
       return;
     }
   });
@@ -275,17 +304,10 @@ export function App({ config }: AppProps) {
     }
   }, [isThinking, messages.length, currentTurn]);
 
-  // Auto-expand the latest tool call while it's running; collapse when done.
+  // Auto-expand the latest running nested tool, then fall back to the latest
+  // running top-level tool. Collapse once every invocation is terminal.
   useEffect(() => {
-    const lastMsg = messages[messages.length - 1];
-    if (lastMsg?.role === 'assistant' && lastMsg.toolCalls?.length) {
-      const latestTool = lastMsg.toolCalls[lastMsg.toolCalls.length - 1];
-      if (!lastMsg.toolResults?.find((r) => r.toolCallId === latestTool.id)) {
-        setExpandedToolId(latestTool.id);
-      }
-    } else {
-      setExpandedToolId(null);
-    }
+    setExpandedToolId(selectActiveToolId(messages[messages.length - 1]));
   }, [messages]);
 
   const handleSubmit = useCallback(
@@ -598,6 +620,7 @@ export function App({ config }: AppProps) {
       skills,
       stdout,
       isThinking,
+      redrawViewport,
     ],
   );
 
@@ -621,6 +644,12 @@ export function App({ config }: AppProps) {
         }
         uiLog.event('input:Ctrl+C', { action: 'exit' });
         exitApp();
+        return true;
+      }
+      if (key.ctrl && input === 'l') {
+        uiLog.event('input:Ctrl+L', { action: 'redraw' });
+        redrawViewport?.();
+        setStaticEpoch((epoch) => epoch + 1);
         return true;
       }
       if (key.ctrl && input === '/') {
@@ -663,6 +692,7 @@ export function App({ config }: AppProps) {
               screenReader={screenReader}
               terminalWidth={termWidth}
               terminalHeight={termHeight}
+              staticEpoch={staticEpoch}
               workspace={config.workspace}
               model={liveConfig.model}
               mode={mode}
@@ -974,7 +1004,7 @@ export function App({ config }: AppProps) {
           />
 
           {/* Input bar — above the status line. Command menu is built into InputBar. */}
-          <Box paddingX={1} flexDirection="column" flexShrink={0} width={termWidth}>
+          <Box flexDirection="column" flexShrink={0} width={termWidth}>
             <InputBar
               onSubmit={handleSubmit}
               disabled={isThinking}
@@ -984,7 +1014,7 @@ export function App({ config }: AppProps) {
               inputSuppressed={Boolean(pendingPermission || pendingPlanApproval)}
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
-              terminalWidth={footerWidth}
+              terminalWidth={termWidth}
               maxMenuRows={maxCommandMenuRows}
               compact={isNarrow || isTiny}
               reducedMotion={motionDisabled}

@@ -81,7 +81,6 @@ export async function runSubagent(
         isSubagent: true,
         nestedToolObserver: options?.nestedToolObserver,
         parentToolTraceId: options?.parentToolTraceId,
-        nestedAgentName: def.name,
       },
     );
 

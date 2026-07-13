@@ -6,14 +6,9 @@ import { PermissionButtons } from './PermissionButtons.js';
 import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { useTheme } from '../theme.js';
-import type {
-  Message,
-  NestedToolInvocation,
-  ToolCall,
-  PermissionResult,
-  RetryPhase,
-} from '../../types.js';
+import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
+import { indexNestedToolInvocations, type NestedToolChildren } from '../tool-traces.js';
 
 const renderLog = createRenderDebugLogger('tui:agentmsg');
 
@@ -44,7 +39,7 @@ interface AgentMessageProps {
 }
 
 function NestedToolRows({
-  invocations,
+  childrenByParent,
   parentTraceId,
   depth,
   activeToolCallId,
@@ -52,7 +47,7 @@ function NestedToolRows({
   screenReader,
   showAllToolOutput,
 }: {
-  invocations: NestedToolInvocation[];
+  childrenByParent: NestedToolChildren;
   parentTraceId: string;
   depth: number;
   activeToolCallId?: string | null;
@@ -60,7 +55,7 @@ function NestedToolRows({
   screenReader: boolean;
   showAllToolOutput: boolean;
 }) {
-  const children = invocations.filter((invocation) => invocation.parentTraceId === parentTraceId);
+  const children = childrenByParent.get(parentTraceId) ?? [];
 
   return children.map((invocation) => (
     <Box key={invocation.traceId} flexDirection="column" marginLeft={screenReader ? 2 : depth * 2}>
@@ -74,7 +69,7 @@ function NestedToolRows({
         showAllToolOutput={showAllToolOutput}
       />
       <NestedToolRows
-        invocations={invocations}
+        childrenByParent={childrenByParent}
         parentTraceId={invocation.traceId}
         depth={depth + 1}
         activeToolCallId={activeToolCallId}
@@ -259,6 +254,10 @@ export function AgentMessageInner({
   });
 
   const toolCalls = message.toolCalls ?? [];
+  const childrenByParent = useMemo(
+    () => indexNestedToolInvocations(message.nestedToolInvocations ?? []),
+    [message.nestedToolInvocations],
+  );
 
   const spinnerLabel = useMemo(
     () => getRetryLabel(retryPhase, retryAttempt, retryMax, retryCountdownMs),
@@ -351,9 +350,9 @@ export function AgentMessageInner({
                 screenReader={screenReader}
               />
             ) : null}
-            {tc.name === 'Task' ? (
+            {childrenByParent.has(tc.id) ? (
               <NestedToolRows
-                invocations={message.nestedToolInvocations ?? []}
+                childrenByParent={childrenByParent}
                 parentTraceId={tc.id}
                 depth={1}
                 activeToolCallId={activeToolCallId}

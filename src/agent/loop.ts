@@ -59,8 +59,6 @@ export async function runAgentLoop(
     nestedToolObserver?: NestedToolObserver;
     /** Trace id of the Task invocation that launched this subagent loop. */
     parentToolTraceId?: string;
-    /** Name of this subagent for nested tool labels. */
-    nestedAgentName?: string;
   },
 ): Promise<Message[]> {
   const signal = options?.signal;
@@ -157,7 +155,6 @@ export async function runAgentLoop(
     agentConfig: config,
     signal,
     nestedToolObserver: options?.nestedToolObserver,
-    nestedAgentName: options?.nestedAgentName,
     todos: [],
     tasks: config.tasks,
     backgroundShells: config.backgroundShells,
@@ -259,7 +256,6 @@ export async function runAgentLoop(
             options.nestedToolObserver.onToolCall({
               traceId,
               parentTraceId: options.parentToolTraceId,
-              agentName: options.nestedAgentName ?? 'subagent',
               call: event.toolCall,
             });
           }
@@ -310,12 +306,27 @@ export async function runAgentLoop(
     // If we got no done event and no error, the stream was aborted or
     // ended unexpectedly — keep what we have and finish.
     if (!streamDone && signal?.aborted) {
+      const cancelledResults = toolCalls.map<ToolResult>((call, callIndex) => {
+        const result: ToolResult = {
+          toolCallId: call.id,
+          success: false,
+          output: '',
+          error: 'CANCELLED: Agent execution was interrupted',
+        };
+        callbacks.onToolResult(result);
+        const nestedTraceId = nestedTraceIds[callIndex];
+        if (nestedTraceId && options?.nestedToolObserver) {
+          options.nestedToolObserver.onToolResult(nestedTraceId, result);
+        }
+        return result;
+      });
       if (assistantContent.length > 0 || toolCalls.length > 0) {
         newHistory.push({
           id: crypto.randomUUID(),
           role: 'assistant',
           content: assistantContent,
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          toolResults: cancelledResults.length > 0 ? cancelledResults : undefined,
           timestamp: Date.now(),
         });
       }
@@ -329,8 +340,6 @@ export async function runAgentLoop(
     const toolResults: ToolResult[] = [];
     for (let callIndex = 0; callIndex < toolCalls.length; callIndex++) {
       const call = toolCalls[callIndex];
-      if (signal?.aborted) break;
-
       const nestedTraceId = nestedTraceIds[callIndex];
       const publishResult = (result: ToolResult): void => {
         callbacks.onToolResult(result);
@@ -338,6 +347,17 @@ export async function runAgentLoop(
           options.nestedToolObserver.onToolResult(nestedTraceId, result);
         }
       };
+      if (signal?.aborted) {
+        const cancelledResult: ToolResult = {
+          toolCallId: call.id,
+          success: false,
+          output: '',
+          error: 'CANCELLED: Agent execution was interrupted',
+        };
+        toolResults.push(cancelledResult);
+        publishResult(cancelledResult);
+        continue;
+      }
       toolContext.currentToolTraceId = nestedTraceId ?? call.id;
       const canonName = canonicalToolName(call.name);
 

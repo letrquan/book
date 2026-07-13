@@ -7,6 +7,7 @@ import { useTheme } from '../theme.js';
 import { CommandMenu } from './CommandMenu.js';
 import { FileMentionMenu } from './FileMentionMenu.js';
 import type { PermissionMode, SlashCommand } from '../../types.js';
+import { modeColorToken } from '../mode-style.js';
 import {
   findActiveFileMention,
   getFileMentionCandidates,
@@ -24,18 +25,6 @@ import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 
 const uiLog = createUiDebugLogger('tui:inputbar');
-
-const MODE_BORDER_TOKENS: Record<
-  PermissionMode,
-  'brand' | 'success' | 'planMode' | 'autoAccept' | 'error'
-> = {
-  default: 'brand',
-  auto: 'success',
-  plan: 'planMode',
-  'accept-edits': 'autoAccept',
-  dontAsk: 'error',
-  bypassPermissions: 'success',
-};
 
 interface InputBarProps {
   onSubmit: (value: string) => void;
@@ -454,16 +443,16 @@ export function InputBar({
     [acceptSelectedFileMention, commands, disabled, onInterrupt, onSubmit],
   );
 
-  const tokenKey = MODE_BORDER_TOKENS[mode];
+  const tokenKey = modeColorToken(mode);
   const baseBorderColor = theme[tokenKey];
   const motionDisabled = reducedMotion || screenReader;
   const promptPulse = usePulse(!disabled && !inputSuppressed && !motionDisabled, 700);
   const submitFlash = useTimedFlash(submitFlashKey, 220, motionDisabled);
 
   const width = Math.max(20, Math.floor(terminalWidth));
-  const innerWidth = Math.max(1, width);
-  const inputWidth = Math.max(1, innerWidth - 2);
-  const borderColor =
+  const editorWidth = Math.max(8, width - 4);
+  const inputWidth = Math.max(1, editorWidth - 2);
+  const promptColor =
     submitFlash || (promptPulse && !compact) ? theme.brandShimmer : baseBorderColor;
   const placeholder = disabled
     ? compact
@@ -475,14 +464,7 @@ export function InputBar({
   const fileSelIdx = Math.max(0, Math.min(fileSelected, fileCandidates.length - 1));
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="single"
-      borderBottom={false}
-      borderLeft={false}
-      borderRight={false}
-      borderColor={theme.subtle}
-    >
+    <Box flexDirection="column" width={width}>
       <CommandMenu
         items={filteredCmds}
         filterText={menuFilter}
@@ -506,8 +488,8 @@ export function InputBar({
         screenReader={screenReader}
       />
 
-      <Box width={innerWidth}>
-        <Text color={borderColor}>{'> '}</Text>
+      <Box borderStyle="single" borderColor={theme.subtle} paddingX={1} width={width}>
+        <Text color={promptColor}>{'> '}</Text>
         <Box width={inputWidth} flexShrink={1}>
           <TextInput
             value={value}

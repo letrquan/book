@@ -79,13 +79,11 @@ describe('streaming TUI message state helpers', () => {
     messages = appendNestedToolInvocationToMessage(messages, 'assistant-1', {
       traceId: 'task-a/1:duplicate',
       parentTraceId: 'task-a',
-      agentName: 'a',
       call: { id: 'duplicate', name: 'Read', arguments: { filePath: 'a.ts' } },
     });
     messages = appendNestedToolInvocationToMessage(messages, 'assistant-1', {
       traceId: 'task-b/1:duplicate',
       parentTraceId: 'task-b',
-      agentName: 'b',
       call: { id: 'duplicate', name: 'Read', arguments: { filePath: 'b.ts' } },
     });
     const before = messages[0].nestedToolInvocations;

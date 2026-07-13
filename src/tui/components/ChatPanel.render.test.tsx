@@ -51,6 +51,37 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('/init');
   });
 
+  it('re-emits completed Static history when the viewport epoch changes', () => {
+    const messages = [msg('u1', 'user', 'history marker'), msg('a1', 'assistant', 'answer marker')];
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          terminalWidth={80}
+          reducedMotion
+          screenReader
+          staticEpoch={0}
+        />,
+      ),
+    );
+
+    view.rerender(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          terminalWidth={80}
+          reducedMotion
+          screenReader
+          staticEpoch={1}
+        />,
+      ),
+    );
+
+    const output = view.frames.map(stripAnsi).join('\n');
+    expect(output.match(/history marker/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(output.match(/answer marker/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('renders a submitted user message, assistant placeholder, then streamed text without overwriting older messages', () => {
     const baseMessages = [
       msg('u0', 'user', 'older question'),
@@ -315,14 +346,12 @@ describe('ChatPanel Ink rendering', () => {
         {
           traceId: 'task-root/1-1:duplicate',
           parentTraceId: 'task-root',
-          agentName: 'explorer',
           call: { id: 'duplicate', name: 'Read', arguments: { filePath: 'src/a.ts' } },
           result: { toolCallId: 'duplicate', success: true, output: 'a' },
         },
         {
           traceId: 'task-root/1-2:nested-task',
           parentTraceId: 'task-root',
-          agentName: 'explorer',
           call: {
             id: 'nested-task',
             name: 'Task',
@@ -332,7 +361,6 @@ describe('ChatPanel Ink rendering', () => {
         {
           traceId: 'task-root/1-2:nested-task/1-1:duplicate',
           parentTraceId: 'task-root/1-2:nested-task',
-          agentName: 'reviewer',
           call: { id: 'duplicate', name: 'Read', arguments: { filePath: 'src/b.ts' } },
           result: { toolCallId: 'duplicate', success: false, output: '', error: 'missing' },
         },
@@ -351,6 +379,27 @@ describe('ChatPanel Ink rendering', () => {
     expect(output.indexOf('explorer')).toBeLessThan(output.indexOf('src/a.ts'));
     expect(output.indexOf('src/a.ts')).toBeLessThan(output.indexOf('reviewer'));
     expect(output.indexOf('reviewer')).toBeLessThan(output.indexOf('src/b.ts'));
+  });
+
+  it('renders nested tools based on parent traces rather than the parent tool name', () => {
+    const message: Message = {
+      ...msg('a1', 'assistant', ''),
+      toolCalls: [{ id: 'host', name: 'Orchestrate', arguments: {} }],
+      nestedToolInvocations: [
+        {
+          traceId: 'host/child',
+          parentTraceId: 'host',
+          call: { id: 'child', name: 'Read', arguments: { filePath: 'src/child.ts' } },
+          result: { toolCallId: 'child', success: true, output: 'done' },
+        },
+      ],
+    };
+
+    const view = render(
+      withTheme(<AgentMessage message={message} isStreaming reducedMotion screenReader />),
+    );
+
+    expect(frame(view.lastFrame)).toContain('[OK] Read file src/child.ts');
   });
 
   it('renders tool calls and results under the assistant turn that produced them', () => {

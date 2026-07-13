@@ -355,13 +355,7 @@ export function useAgent(config: AgentConfig) {
     const hadAbort = abortRef.current !== null;
     const hadAccumulator = accumulatorRef.current !== null;
     uiLog.event('cancel', { hadAbort, hadAccumulator });
-    accumulatorRef.current?.stop();
-    accumulatorRef.current = null;
     abortRef.current?.abort();
-    abortRef.current = null;
-    setIsThinking(false);
-    streamingIdRef.current = null;
-    setStreamingMessageId(null);
     clearCountdown();
     setRetryPhase('none');
   }, [clearCountdown]);

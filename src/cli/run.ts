@@ -60,12 +60,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
 
       const rawMode = ((options.permissionMode as string) ?? 'default') as string;
       const mode = (rawMode === 'acceptEdits' ? 'accept-edits' : rawMode) as
-        | 'default'
-        | 'accept-edits'
-        | 'plan'
-        | 'auto'
-        | 'dontAsk'
-        | 'bypassPermissions';
+        'default' | 'accept-edits' | 'plan' | 'auto' | 'dontAsk' | 'bypassPermissions';
 
       const sessionStore = (options.sessionPersistence as boolean)
         ? new SessionStore(SESSION_ROOT)
@@ -107,13 +102,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         history,
         mode,
         maxTurns: options.maxTurns ? parseInt(options.maxTurns as string, 10) : undefined,
-        maxBudgetUsd: options.maxBudgetUsd
-          ? parseFloat(options.maxBudgetUsd as string)
-          : undefined,
+        maxBudgetUsd: options.maxBudgetUsd ? parseFloat(options.maxBudgetUsd as string) : undefined,
         verbose: options.verbose as boolean | undefined,
-        jsonSchema: options.jsonSchema
-          ? JSON.parse(options.jsonSchema as string)
-          : undefined,
+        jsonSchema: options.jsonSchema ? JSON.parse(options.jsonSchema as string) : undefined,
         sessionStore,
         sessionId,
         sessionName,
@@ -129,12 +120,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     // Interactive TUI mode.
     const rawMode = ((options.permissionMode as string) ?? 'default') as string;
     const mode = (rawMode === 'acceptEdits' ? 'accept-edits' : rawMode) as
-      | 'default'
-      | 'accept-edits'
-      | 'plan'
-      | 'auto'
-      | 'dontAsk'
-      | 'bypassPermissions';
+      'default' | 'accept-edits' | 'plan' | 'auto' | 'dontAsk' | 'bypassPermissions';
     if (options.scrollback) {
       const { runScrollbackSession } = await import('./scrollback.js');
       await runScrollbackSession(config, { mode });
@@ -143,8 +129,12 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
 
     const { App } = await import('../tui/app.js');
     let app: ReturnType<typeof render> | undefined;
+    const redrawViewport = () => {
+      app?.clear();
+      process.stdout.write('\x1b[H\x1b[2J');
+    };
     try {
-      app = render(createElement(App, { config }));
+      app = render(createElement(App, { config, redrawViewport }));
       await app.waitUntilExit();
     } finally {
       app?.cleanup();

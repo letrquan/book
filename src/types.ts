@@ -96,6 +96,14 @@ export interface ThemeTokens {
   autoAccept: string;
   bashBorder: string;
 
+  /** Permission mode colors (one per mode) */
+  modeDefault: string;
+  modePlan: string;
+  modeAcceptEdits: string;
+  modeAuto: string;
+  modeDontAsk: string;
+  modeBypass: string;
+
   /** Diff rendering */
   diffAdded: string;
   diffRemoved: string;
@@ -167,6 +175,13 @@ export const DEFAULT_THEME: ThemeTokens = {
   planMode: 'magenta',
   autoAccept: 'green',
   bashBorder: 'yellow',
+
+  modeDefault: 'cyan',
+  modePlan: 'magenta',
+  modeAcceptEdits: 'green',
+  modeAuto: 'green',
+  modeDontAsk: 'red',
+  modeBypass: 'yellow',
 
   diffAdded: 'green',
   diffRemoved: 'red',
@@ -250,8 +265,6 @@ export interface NestedToolInvocation {
   traceId: string;
   /** Trace id of the Task invocation that directly launched this tool. */
   parentTraceId: string;
-  /** Subagent definition currently running the tool. */
-  agentName: string;
   call: ToolCall;
   result?: ToolResult;
 }
@@ -349,8 +362,6 @@ export interface ToolContext {
   currentToolTraceId?: string;
   /** Observer for display-only tools invoked inside Task subagents. */
   nestedToolObserver?: NestedToolObserver;
-  /** Agent name associated with nested trace events from this loop. */
-  nestedAgentName?: string;
   /** Agent todo list — written by TodoWrite, read by the loop for context injection. */
   todos?: Array<{ content: string; status: string; activeForm?: string }>;
   /** Agent task list — written by TaskCreate/TaskUpdate and shared across tool calls. */
