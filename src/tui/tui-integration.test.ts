@@ -35,7 +35,7 @@ const HAS_API_KEY = !!process.env.BOOK_API_KEY;
 
 function stripAnsi(str: string): string {
   return str
-    .replace(/\x1B\][^\x07]*\x07/g, '')   // OSC sequences (terminal title)
+    .replace(/\x1B\][^\x07]*\x07/g, '') // OSC sequences (terminal title)
     .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, ''); // CSI sequences
 }
 
@@ -49,9 +49,11 @@ function sleep(ms: number): Promise<void> {
 
 interface TuiSession {
   read(): string;
+  readRaw(): string;
   waitFor(pattern: string | RegExp, timeoutMs?: number): Promise<string>;
   submit(text: string): void;
   sendKey(seq: string): void;
+  resize(columns: number, rows: number): void;
   kill(): void;
 }
 
@@ -84,6 +86,9 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
     read() {
       return stripAnsi(output);
     },
+    readRaw() {
+      return output;
+    },
     async waitFor(pattern: string | RegExp, timeoutMs = 15_000) {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
@@ -103,9 +108,20 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
     sendKey(seq: string) {
       pty.write(seq);
     },
+    resize(columns: number, rows: number) {
+      pty.resize(columns, rows);
+    },
     kill() {
-      try { disposable.dispose(); } catch { /* */ }
-      try { pty.kill(); } catch { /* */ }
+      try {
+        disposable.dispose();
+      } catch {
+        /* */
+      }
+      try {
+        pty.kill();
+      } catch {
+        /* */
+      }
     },
   };
 
@@ -178,10 +194,16 @@ describe('TUI slash commands', () => {
   it('/help toggle hides the help panel', async () => {
     session = await startAndWait();
     // Char-by-char to avoid ConPTY batch race with autocomplete menu.
-    for (const ch of '/help') { session.sendKey(ch); await sleep(50); }
+    for (const ch of '/help') {
+      session.sendKey(ch);
+      await sleep(50);
+    }
     session.sendKey('\r');
     await session.waitFor('Slash Commands', 5000);
-    for (const ch of '/help') { session.sendKey(ch); await sleep(50); }
+    for (const ch of '/help') {
+      session.sendKey(ch);
+      await sleep(50);
+    }
     session.sendKey('\r');
     await sleep(500);
     const output = session.read();
@@ -230,6 +252,20 @@ describe('TUI keyboard input', () => {
     const output = session.read();
     expect(output).toContain('Ask me anything');
     expect(output).toContain('tokens');
+  }, 20_000);
+
+  it('clears the visible viewport before redrawing after resize', async () => {
+    session = await startAndWait();
+    session.sendKey('RESIZE_MARKER');
+    await session.waitFor('RESIZE_MARKER');
+
+    const beforeResize = session.readRaw().length;
+    session.resize(40, 24);
+    await sleep(500);
+
+    const resizeOutput = session.readRaw().slice(beforeResize);
+    expect(resizeOutput).toContain('\x1b[H\x1b[2J');
+    expect(stripAnsi(resizeOutput)).toContain('RESIZE_MARKER');
   }, 20_000);
 
   it('Up arrow key does not crash', async () => {
@@ -297,15 +333,19 @@ describe('TUI keyboard input', () => {
 
   // Ctrl+/ on Windows ConPTY: the \x1f byte doesn't translate to Ctrl+/
   // correctly through node-pty. The shortcut works interactively.
-  it.skipIf(isWindows)('Ctrl+/ shows keyboard shortcuts reference', async () => {
-    session = await startAndWait();
-    session.sendKey(KEYS.ctrlSlash);
-    await sleep(500);
-    const output = session.read();
-    expect(output).toContain('Keyboard Shortcuts');
-    expect(output).toContain('Ctrl+T');
-    expect(output).toContain('Esc');
-  }, 20_000);
+  it.skipIf(isWindows)(
+    'Ctrl+/ shows keyboard shortcuts reference',
+    async () => {
+      session = await startAndWait();
+      session.sendKey(KEYS.ctrlSlash);
+      await sleep(500);
+      const output = session.read();
+      expect(output).toContain('Keyboard Shortcuts');
+      expect(output).toContain('Ctrl+T');
+      expect(output).toContain('Esc');
+    },
+    20_000,
+  );
 });
 
 // ---------------------------------------------------------------------------

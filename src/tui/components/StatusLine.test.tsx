@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
-import { StatusLine } from './StatusLine.js';
+import { buildColoredSegments, StatusLine } from './StatusLine.js';
 import { displayWidth } from './word-wrap.js';
 
 function stripAnsi(value: string | undefined): string {
@@ -13,6 +13,22 @@ function withTheme(children: React.ReactElement): React.ReactElement {
 }
 
 afterEach(() => cleanup());
+
+describe('buildColoredSegments', () => {
+  it('skips an oversized middle segment and keeps a later segment that fits', () => {
+    const runs = buildColoredSegments(
+      [
+        { text: 'xxxxxxxxxx', color: 'white' },
+        { text: 'tok 50%', color: 'white' },
+        { text: 'accept edits', color: 'green' },
+        { text: 'tasks 1/3', color: 'white' },
+      ],
+      34,
+    );
+
+    expect(runs.map((run) => run.text).join('')).toBe('xxxxxxxxxx │ tok 50% │ tasks 1/3');
+  });
+});
 
 describe('StatusLine', () => {
   it('renders full status on wide terminals', () => {
@@ -102,5 +118,38 @@ describe('StatusLine', () => {
     const output = stripAnsi(view.lastFrame());
     expect(output).not.toContain('Thinking');
     expect(output).not.toContain('Retrying');
+  });
+
+  describe('mode color labels', () => {
+    const modes: Array<{ mode: Parameters<typeof StatusLine>[0]['mode']; label: string }> = [
+      { mode: 'default', label: 'default' },
+      { mode: 'plan', label: 'plan' },
+      { mode: 'accept-edits', label: 'accept edits' },
+      { mode: 'auto', label: 'auto' },
+      { mode: 'dontAsk', label: "don't ask" },
+      { mode: 'bypassPermissions', label: 'bypass' },
+    ];
+
+    for (const { mode, label } of modes) {
+      it(`renders "${label}" for mode="${mode}"`, () => {
+        const view = render(
+          withTheme(
+            <StatusLine
+              model="model"
+              tokenCount={1_000}
+              maxTokens={128_000}
+              mode={mode}
+              taskCount={0}
+              activeTaskCount={0}
+              terminalWidth={80}
+              reducedMotion
+            />,
+          ),
+        );
+
+        const output = stripAnsi(view.lastFrame());
+        expect(output).toContain(label);
+      });
+    }
   });
 });

@@ -6,10 +6,12 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { InputBar } from './InputBar.js';
+import { MODE_COLOR_TOKENS } from '../mode-style.js';
+import { displayWidth } from './word-wrap.js';
 
 /**
- * Tests for InputBar: border line, bottom-pinning layout, Vietnamese
- * character support, and mode border colors.
+ * Tests for InputBar: responsive editor box, bottom-pinning layout,
+ * Vietnamese character support, and mode prompt colors.
  */
 
 let tempDirs: string[] = [];
@@ -27,7 +29,10 @@ function makeWorkspace(): string {
   return dir;
 }
 
-function inputBar(onSubmit: (value: string) => void) {
+function inputBar(
+  onSubmit: (value: string) => void,
+  props: Partial<React.ComponentProps<typeof InputBar>> = {},
+) {
   return React.createElement(
     ThemeContext.Provider,
     { value: DEFAULT_THEME },
@@ -37,144 +42,92 @@ function inputBar(onSubmit: (value: string) => void) {
       mode: 'default',
       onCycleMode: () => {},
       commands: [],
+      reducedMotion: true,
+      ...props,
     }),
   );
+}
+
+function stripAnsi(value: string | undefined): string {
+  return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+function expectFrameWithinWidth(frame: string | undefined, width: number): void {
+  for (const line of stripAnsi(frame).split('\n').filter(Boolean)) {
+    expect(displayWidth(line)).toBeLessThanOrEqual(width);
+  }
 }
 
 function tick(ms = 0): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ---------------------------------------------------------------------------
-// Constants matching the actual component
-// ---------------------------------------------------------------------------
+describe('InputBar editor box', () => {
+  it('renders a complete box around the prompt', () => {
+    const width = 36;
+    const view = render(inputBar(() => {}, { terminalWidth: width, compact: true }));
+    const lines = stripAnsi(view.lastFrame()).split('\n');
 
-/** Layout row counts used by App for bottom pinning. */
-const BANNER_ROWS = 6; // ASCII art banner
-const STATUS_DIVIDER = 1; // structural top border above the StatusLine footer
-const STATUS_DATA_ROWS = 1; // single-row: model, tokens, mode, tasks
-const INPUT_DIVIDER_ROWS = 1; // structural editor top border above the InputBar prompt
-const INPUT_PROMPT_ROWS = 1; // InputBar prompt line
-
-const HEADER_ROWS = BANNER_ROWS;
-const STATUS_ROWS = STATUS_DIVIDER + STATUS_DATA_ROWS;
-const INPUT_ROWS = INPUT_DIVIDER_ROWS + INPUT_PROMPT_ROWS;
-const FIXED_ROWS = HEADER_ROWS + STATUS_ROWS + INPUT_ROWS;
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-describe('InputBar editor border', () => {
-  it('uses a structural top border instead of a manual full-width divider string', () => {
-    // The input separator is rendered by Ink's border props, not by repeating
-    // a long "─" string that can wrap during terminal resize.
-    const structure = {
-      borderStyle: 'single',
-      borderTop: true,
-      borderBottom: false,
-      borderLeft: false,
-      borderRight: false,
-    };
-
-    expect(structure.borderStyle).toBe('single');
-    expect(structure.borderTop).toBe(true);
-    expect(structure.borderBottom).toBe(false);
-    expect(structure.borderLeft).toBe(false);
-    expect(structure.borderRight).toBe(false);
-  });
-});
-
-describe('InputBar bottom pinning', () => {
-  it('fixed rows are calculated correctly', () => {
-    // Banner (6) + Status (1+1) + Input (1+1) = 6 + 2 + 2 = 10
-    expect(HEADER_ROWS).toBe(6);
-    expect(STATUS_ROWS).toBe(2);
-    expect(INPUT_ROWS).toBe(2);
-    expect(FIXED_ROWS).toBe(10);
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatch(/^┌─+┐$/);
+    expect(lines[1]).toMatch(/^│ > /);
+    expect(lines[1]).toMatch(/│$/);
+    expect(lines[2]).toMatch(/^└─+┘$/);
+    expectFrameWithinWidth(view.lastFrame(), width);
   });
 
-  it('chat area height is terminal height minus fixed rows', () => {
-    const termHeight = 40;
-    const chatHeight = Math.max(5, termHeight - FIXED_ROWS);
-    expect(chatHeight).toBe(30); // 40 - 10 = 30
+  it.each([20, 24, 36, 48])('keeps every line within %i columns', (width) => {
+    const view = render(inputBar(() => {}, { terminalWidth: width, compact: true }));
+
+    expectFrameWithinWidth(view.lastFrame(), width);
   });
 
-  it('chat area height has a minimum of 5 rows even on small terminals', () => {
-    const tinyTerm = 10;
-    const chatHeight = Math.max(5, tinyTerm - FIXED_ROWS);
-    // 10 - 10 = 0, clamped to 5
-    expect(chatHeight).toBe(5);
+  it('reflows the complete editor box when the terminal shrinks', () => {
+    const view = render(inputBar(() => {}, { terminalWidth: 80 }));
+
+    view.rerender(inputBar(() => {}, { terminalWidth: 28, compact: true }));
+
+    const lines = stripAnsi(view.lastFrame()).split('\n');
+    expect(lines[0]).toMatch(/^┌─+┐$/);
+    expect(lines[1]).toMatch(/^│ > /);
+    expect(lines[1]).toMatch(/│$/);
+    expect(lines[2]).toMatch(/^└─+┘$/);
+    expectFrameWithinWidth(view.lastFrame(), 28);
   });
 
-  it('input bar stays at bottom regardless of terminal height', () => {
-    // Verify that for any reasonable terminal height, the chat area gets
-    // the remainder after fixed rows are accounted for.
-    for (const termHeight of [24, 30, 40, 50, 60, 80, 100]) {
-      const chatHeight = Math.max(5, termHeight - FIXED_ROWS);
-      const totalUsed = FIXED_ROWS + chatHeight;
-      // Total used should equal termHeight (when chat > min) or
-      // be FIXED_ROWS + 5 (when clamped to minimum).
-      if (chatHeight > 5) {
-        expect(totalUsed).toBe(termHeight);
-      } else {
-        expect(totalUsed).toBe(FIXED_ROWS + 5);
-      }
-    }
-  });
+  it('keeps the command menu and editor as separate boxes after shrinking', async () => {
+    const commands = [
+      {
+        name: 'clear',
+        description: 'Clear the conversation',
+        body: 'Clear',
+        source: 'project' as const,
+      },
+    ];
+    const view = render(inputBar(() => {}, { terminalWidth: 80, commands }));
+    await tick();
+    view.stdin.write('/');
+    await tick(20);
 
-  it('input bar layout structure wraps divider + prompt in a column', () => {
-    // The InputBar component wraps the divider line and input row
-    // in a flexDirection="column" Box so they stay together as a unit.
-    // This test validates the structural intent:
-    //   <Box flexDirection="column">
-    //     <Text>{divider}</Text>    ← full-width divider (dynamic)
-    //     <Box>                     ← input row
-    //       <Text>{'> '}</Text>
-    //       <Box flexGrow={1}>
-    //         <TextInput ... />
-    //       </Box>
-    //     </Box>
-    //   </Box>
-    const structure = {
-      wrapper: { flexDirection: 'column' },
-      children: [
-        { type: 'divider', content: '─'.repeat(78) }, // 80-col terminal - 2 padding
-        {
-          type: 'inputRow',
-          children: [
-            { type: 'prompt', content: '> ' },
-            { type: 'textInput', flexGrow: 1 },
-          ],
-        },
-      ],
-    };
+    view.rerender(inputBar(() => {}, { terminalWidth: 28, commands, compact: true }));
 
-    expect(structure.wrapper.flexDirection).toBe('column');
-    expect(structure.children).toHaveLength(2);
-    expect(structure.children[0].type).toBe('divider');
-    expect(structure.children[1].type).toBe('inputRow');
-    expect(structure.children[1].children?.[1]?.flexGrow).toBe(1);
+    const lines = stripAnsi(view.lastFrame()).split('\n').filter(Boolean);
+    expect(lines.filter((line) => /^┌─+┐$/.test(line))).toHaveLength(2);
+    expect(lines.filter((line) => /^└─+┘$/.test(line))).toHaveLength(2);
+    expectFrameWithinWidth(view.lastFrame(), 28);
   });
 });
 
 describe('InputBar mode border colors', () => {
-  it('maps each permission mode to a theme token', () => {
-    const MODE_BORDER_TOKENS: Record<string, string> = {
-      default: 'brand',
-      auto: 'success',
-      plan: 'planMode',
-      'accept-edits': 'autoAccept',
-      dontAsk: 'error',
-      bypassPermissions: 'success',
-    };
-
-    // All modes are covered
-    const modes = ['default', 'auto', 'plan', 'accept-edits', 'dontAsk', 'bypassPermissions'];
-    for (const mode of modes) {
-      expect(MODE_BORDER_TOKENS[mode]).toBeDefined();
-      expect(typeof MODE_BORDER_TOKENS[mode]).toBe('string');
-    }
+  it('maps each permission mode to its production theme token', () => {
+    expect(MODE_COLOR_TOKENS).toEqual({
+      default: 'modeDefault',
+      auto: 'modeAuto',
+      plan: 'modePlan',
+      'accept-edits': 'modeAcceptEdits',
+      dontAsk: 'modeDontAsk',
+      bypassPermissions: 'modeBypass',
+    });
   });
 
   it('prompt marker is always "> "', () => {
@@ -480,7 +433,8 @@ function simulateInputHandler(
   if (key.tab) return 'consumed';
 
   // Ctrl+J / Shift+Enter insert a newline locally.
-  if ((key.ctrl && (input === 'j' || input === '\n')) || (key.shift && key.return)) return 'consumed';
+  if ((key.ctrl && (input === 'j' || input === '\n')) || (key.shift && key.return))
+    return 'consumed';
 
   // Forward Ctrl-based shortcuts to parent
   if (key.ctrl) return 'forwarded';

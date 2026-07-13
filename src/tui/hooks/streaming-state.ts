@@ -1,4 +1,4 @@
-import type { Message, ToolCall, ToolResult } from '../../types.js';
+import type { Message, NestedToolInvocation, ToolCall, ToolResult } from '../../types.js';
 
 export function makeMessage(
   role: 'user' | 'assistant',
@@ -57,5 +57,44 @@ export function appendToolResultToMessage(
   const next = messages.slice();
   const message = messages[index];
   next[index] = { ...message, toolResults: [...(message.toolResults ?? []), result] };
+  return next;
+}
+
+export function appendNestedToolInvocationToMessage(
+  messages: Message[],
+  id: string,
+  invocation: NestedToolInvocation,
+): Message[] {
+  const index = findMessageIndex(messages, id);
+  if (index === -1) return messages;
+  const next = messages.slice();
+  const message = messages[index];
+  next[index] = {
+    ...message,
+    nestedToolInvocations: [...(message.nestedToolInvocations ?? []), invocation],
+  };
+  return next;
+}
+
+export function appendNestedToolResultToMessage(
+  messages: Message[],
+  id: string,
+  traceId: string,
+  result: ToolResult,
+): Message[] {
+  const index = findMessageIndex(messages, id);
+  if (index === -1) return messages;
+  const message = messages[index];
+  const invocations = message.nestedToolInvocations ?? [];
+  const invocationIndex = invocations.findIndex((invocation) => invocation.traceId === traceId);
+  if (invocationIndex === -1) return messages;
+
+  const nestedToolInvocations = invocations.slice();
+  nestedToolInvocations[invocationIndex] = {
+    ...nestedToolInvocations[invocationIndex],
+    result,
+  };
+  const next = messages.slice();
+  next[index] = { ...message, nestedToolInvocations };
   return next;
 }

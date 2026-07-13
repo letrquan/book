@@ -1,13 +1,14 @@
 import { Text, Box } from 'ink';
 import React, { useMemo } from 'react';
 import { Spinner } from './Spinner.js';
-import { ToolCallBlock, toolLabel } from './ToolCallBlock.js';
+import { ToolCallBlock } from './ToolCallBlock.js';
 import { PermissionButtons } from './PermissionButtons.js';
 import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { useTheme } from '../theme.js';
 import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
+import { indexNestedToolInvocations, type NestedToolChildren } from '../tool-traces.js';
 
 const renderLog = createRenderDebugLogger('tui:agentmsg');
 
@@ -35,6 +36,49 @@ interface AgentMessageProps {
   hideStreamingSpinner?: boolean;
   /** When true, expanded tool results show the larger output cap instead of a short preview. */
   showAllToolOutput?: boolean;
+}
+
+function NestedToolRows({
+  childrenByParent,
+  parentTraceId,
+  depth,
+  activeToolCallId,
+  reducedMotion,
+  screenReader,
+  showAllToolOutput,
+}: {
+  childrenByParent: NestedToolChildren;
+  parentTraceId: string;
+  depth: number;
+  activeToolCallId?: string | null;
+  reducedMotion: boolean;
+  screenReader: boolean;
+  showAllToolOutput: boolean;
+}) {
+  const children = childrenByParent.get(parentTraceId) ?? [];
+
+  return children.map((invocation) => (
+    <Box key={invocation.traceId} flexDirection="column" marginLeft={screenReader ? 2 : depth * 2}>
+      <ToolCallBlock
+        name={invocation.call.name}
+        args={invocation.call.arguments}
+        result={invocation.result}
+        isExpanded={activeToolCallId === invocation.traceId}
+        reducedMotion={reducedMotion}
+        screenReader={screenReader}
+        showAllToolOutput={showAllToolOutput}
+      />
+      <NestedToolRows
+        childrenByParent={childrenByParent}
+        parentTraceId={invocation.traceId}
+        depth={depth + 1}
+        activeToolCallId={activeToolCallId}
+        reducedMotion={reducedMotion}
+        screenReader={screenReader}
+        showAllToolOutput={showAllToolOutput}
+      />
+    </Box>
+  ));
 }
 
 /**
@@ -87,7 +131,8 @@ export function getRetryLabel(
 ): string | undefined {
   if (retryPhase === 'transport') {
     const countdown = Math.max(0, Math.ceil(retryCountdownMs / 1000));
-    const attemptStr = retryMax > 0 ? `attempt ${retryAttempt}/${retryMax}` : `attempt ${retryAttempt}`;
+    const attemptStr =
+      retryMax > 0 ? `attempt ${retryAttempt}/${retryMax}` : `attempt ${retryAttempt}`;
     return `Retrying in ${countdown}s · ${attemptStr}`;
   }
   if (retryPhase === 'stalled') {
@@ -169,7 +214,7 @@ function ThinkBlock({
  * Each assistant turn renders as:
  *   1. Spinner line — shows thinking tips, or retry countdown during retries
  *   2. Streaming text content
- *   3. Tool call blocks below the text, grouped by consecutive same-name calls
+ *   3. One tool row per invocation, with Task subagent tools nested below their parent
  *
  * During retries, the spinner line shows Claude Code-style messages:
  *   - Transport retry: "Retrying in 4s · attempt 3/10"
@@ -208,20 +253,11 @@ export function AgentMessageInner({
     retry: retryPhase,
   });
 
-  // Group consecutive tool calls of the same name into runs (for MCP-style summary).
   const toolCalls = message.toolCalls ?? [];
-  const toolCallGroups: ToolCall[][] = useMemo(() => {
-    const groups: ToolCall[][] = [];
-    for (const tc of toolCalls) {
-      const last = groups[groups.length - 1];
-      if (last && last[0].name === tc.name) {
-        last.push(tc);
-      } else {
-        groups.push([tc]);
-      }
-    }
-    return groups;
-  }, [toolCalls]);
+  const childrenByParent = useMemo(
+    () => indexNestedToolInvocations(message.nestedToolInvocations ?? []),
+    [message.nestedToolInvocations],
+  );
 
   const spinnerLabel = useMemo(
     () => getRetryLabel(retryPhase, retryAttempt, retryMax, retryCountdownMs),
@@ -237,7 +273,6 @@ export function AgentMessageInner({
 
   return (
     <Box flexDirection="column">
-
       {/* Spinner line: shows thinking tips, or retry countdown during retries */}
       {isStreaming && !hideStreamingSpinner && !displayContent && !message.toolCalls?.length ? (
         <Box marginLeft={screenReader ? 0 : 2}>
@@ -292,55 +327,42 @@ export function AgentMessageInner({
         </Box>
       ) : null}
 
-      {/* Tool call blocks */}
-      {toolCallGroups.map((group, gi) => {
-        // Run of consecutive same-name calls.
-        // If the run length > 1 and none of them is the active (expanded) tool,
-        // collapse to a summary line like "Called read_file 3 times".
-        const activeInGroup = group.some((tc) => tc.id === activeToolCallId);
-        const showSummary = group.length > 1 && !activeInGroup;
-        const everyoneDone = group.every(
-          (tc) => message.toolResults?.find((r) => r.toolCallId === tc.id),
-        );
-
-        if (showSummary && everyoneDone) {
-          return (
-            <Box key={`summary-${gi}`} flexDirection="column" marginLeft={2}>
-              <Box>
-                <Text color={theme.subtle}>{'▶'} </Text>
-                <Text color={theme.success} bold>[OK] </Text>
-                <Text color={theme.brand} bold>{toolLabel(group[0].name)}</Text>
-                <Text color={theme.subtle}> ×{group.length}</Text>
-              </Box>
-            </Box>
-          );
-        }
-
-        return group.map((tc, i) => {
-          const result = message.toolResults?.find((r) => r.toolCallId === tc.id);
-          const isPending = pendingPermission?.toolCall.id === tc.id;
-          return (
-            <Box key={tc.id || `${gi}-${i}`} flexDirection="column">
-              <ToolCallBlock
-                name={tc.name}
-                args={tc.arguments}
-                result={result}
-                isExpanded={activeToolCallId === tc.id}
-                isPending={isPending}
+      {/* Every invocation gets its own row. Task subagent tools stay display-only and nest below it. */}
+      {toolCalls.map((tc, index) => {
+        const result = message.toolResults?.find((r) => r.toolCallId === tc.id);
+        const isPending = pendingPermission?.toolCall.id === tc.id;
+        return (
+          <Box key={tc.id || `tool-${index}`} flexDirection="column">
+            <ToolCallBlock
+              name={tc.name}
+              args={tc.arguments}
+              result={result}
+              isExpanded={activeToolCallId === tc.id}
+              isPending={isPending}
+              reducedMotion={reducedMotion}
+              screenReader={screenReader}
+              showAllToolOutput={showAllToolOutput}
+            />
+            {isPending && onResolvePermission ? (
+              <PermissionButtons
+                toolCall={tc}
+                onResolve={onResolvePermission}
+                screenReader={screenReader}
+              />
+            ) : null}
+            {childrenByParent.has(tc.id) ? (
+              <NestedToolRows
+                childrenByParent={childrenByParent}
+                parentTraceId={tc.id}
+                depth={1}
+                activeToolCallId={activeToolCallId}
                 reducedMotion={reducedMotion}
                 screenReader={screenReader}
                 showAllToolOutput={showAllToolOutput}
               />
-              {isPending && onResolvePermission ? (
-                <PermissionButtons
-                  toolCall={tc}
-                  onResolve={onResolvePermission}
-                  screenReader={screenReader}
-                />
-              ) : null}
-            </Box>
-          );
-        });
+            ) : null}
+          </Box>
+        );
       })}
     </Box>
   );
@@ -349,9 +371,8 @@ export function AgentMessageInner({
 /**
  * Memoized agent message with a custom comparator.
  *
- * Scalar props are compared first (fast path). The `message` object is
- * compared by id, content, and array lengths — deep comparison is avoided
- * because arrays are replaced with new references on every append.
+ * Scalar props are compared first (fast path). Message arrays use reference
+ * equality because every streaming append/result update replaces its array.
  *
  * `onResolvePermission` is deliberately excluded from the comparison:
  * its identity changes every render (it captures `pendingPermission`), but
@@ -380,8 +401,9 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
     if (
       pm.id === nm.id &&
       pm.content === nm.content &&
-      (pm.toolCalls?.length ?? 0) === (nm.toolCalls?.length ?? 0) &&
-      (pm.toolResults?.length ?? 0) === (nm.toolResults?.length ?? 0)
+      pm.toolCalls === nm.toolCalls &&
+      pm.toolResults === nm.toolResults &&
+      pm.nestedToolInvocations === nm.nestedToolInvocations
     ) {
       return true; // skip re-render
     }

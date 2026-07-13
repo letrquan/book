@@ -74,6 +74,8 @@ interface ChatPanelProps {
   terminalWidth?: number;
   /** Terminal height in rows (used for responsive welcome/menu sizing). */
   terminalHeight?: number;
+  /** Remount key used after the terminal viewport has been explicitly cleared. */
+  staticEpoch?: number;
   workspace?: string;
   model?: string;
   mode?: string;
@@ -124,6 +126,10 @@ function mergeAssistantMessages(
         ...mergedMsg,
         toolCalls: [...(mergedMsg.toolCalls ?? []), ...(next.toolCalls ?? [])],
         toolResults: [...(mergedMsg.toolResults ?? []), ...(next.toolResults ?? [])],
+        nestedToolInvocations: [
+          ...(mergedMsg.nestedToolInvocations ?? []),
+          ...(next.nestedToolInvocations ?? []),
+        ],
       };
       j++;
     }
@@ -155,6 +161,7 @@ export function ChatPanel({
   screenReader = false,
   terminalWidth,
   terminalHeight,
+  staticEpoch = 0,
   workspace,
   model,
   mode,
@@ -261,7 +268,7 @@ export function ChatPanel({
   return (
     <Box flexDirection="column">
       {/* Static content is emitted once to terminal scrollback; keep large banners out of dynamic repaint paths. */}
-      <Static items={staticItems}>
+      <Static key={staticEpoch} items={staticItems}>
         {(msg, index) => {
           if (msg.role === 'welcome') {
             return (

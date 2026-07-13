@@ -78,6 +78,36 @@ describe('message-accumulator', () => {
     expect(msg.toolCalls![0].id).toBe('tc1');
   });
 
+  it('streams nested tool calls and results in FIFO order', () => {
+    const { acc, getMessages } = createTestAccumulator();
+    acc.start();
+
+    acc.addNestedToolCall({
+      traceId: 'task/1:read',
+      parentTraceId: 'task',
+      call: { id: 'read', name: 'Read', arguments: { filePath: 'a.ts' } },
+    });
+    acc.addNestedToolCall({
+      traceId: 'task/2:grep',
+      parentTraceId: 'task',
+      call: { id: 'grep', name: 'Grep', arguments: { pattern: 'x' } },
+    });
+    acc.addNestedToolResult('task/1:read', {
+      toolCallId: 'read',
+      success: true,
+      output: 'a',
+    });
+
+    vi.advanceTimersByTime(20);
+
+    expect(getMessages()[0].nestedToolInvocations?.map((item) => item.traceId)).toEqual([
+      'task/1:read',
+      'task/2:grep',
+    ]);
+    expect(getMessages()[0].nestedToolInvocations?.[0].result?.output).toBe('a');
+    expect(getMessages()[0].nestedToolInvocations?.[1].result).toBeUndefined();
+  });
+
   it('stop() flushes remaining ops', () => {
     const { acc, setMessages, getMessages } = createTestAccumulator();
     acc.start();

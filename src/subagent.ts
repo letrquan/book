@@ -1,4 +1,4 @@
-import type { AgentConfig, Message } from './types.js';
+import type { AgentConfig, Message, NestedToolObserver } from './types.js';
 import { runAgentLoop } from './agent/loop.js';
 import { applyModelDefaults, resolveModelProviderConfig } from './config.js';
 import { createRegistry } from './tools/registry.js';
@@ -20,6 +20,11 @@ export async function runSubagent(
   prompt: string,
   config: AgentConfig,
   fullRegistry = createRegistry(),
+  options?: {
+    signal?: AbortSignal;
+    parentToolTraceId?: string;
+    nestedToolObserver?: NestedToolObserver;
+  },
 ): Promise<{ content: string; error?: string }> {
   // Build the subagent's restricted registry if tools are specified.
   let registry = fullRegistry;
@@ -70,7 +75,13 @@ export async function runSubagent(
         onUsage: () => {},
       },
       'bypassPermissions', // subagents run with bypass to avoid interactive prompts
-      { isNewSession: true, isSubagent: true },
+      {
+        signal: options?.signal,
+        isNewSession: true,
+        isSubagent: true,
+        nestedToolObserver: options?.nestedToolObserver,
+        parentToolTraceId: options?.parentToolTraceId,
+      },
     );
 
     // Extract the last assistant message content from the history.

@@ -184,6 +184,57 @@ describe('runAgentLoop abort', () => {
     expect(seen.length).toBeLessThanOrEqual(3);
   });
 
+  it('publishes terminal results for streamed tool calls when aborted before execution', async () => {
+    const controller = new AbortController();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return new Response(
+          new ReadableStream({
+            start(c) {
+              const encoder = new TextEncoder();
+              c.enqueue(
+                encoder.encode(
+                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"cancelled-tool","function":{"name":"Read","arguments":"{}"}}]}}]}\n\n',
+                ),
+              );
+              c.enqueue(encoder.encode('data: [DONE]\n\n'));
+              c.close();
+            },
+          }),
+          { status: 200 },
+        );
+      }),
+    );
+
+    const results: ToolResult[] = [];
+    const nestedResults: ToolResult[] = [];
+    const history = await runAgentLoop(
+      config,
+      createRegistry(),
+      'hi',
+      [],
+      noopCallbacks({
+        onToolCall: () => controller.abort(),
+        onToolResult: (result: ToolResult) => results.push(result),
+      }),
+      'default',
+      {
+        signal: controller.signal,
+        parentToolTraceId: 'parent-task',
+        nestedToolObserver: {
+          onToolCall: () => {},
+          onToolResult: (_traceId, result) => nestedResults.push(result),
+        },
+      },
+    );
+
+    expect(results).toHaveLength(1);
+    expect(results[0].error).toMatch(/CANCELLED/);
+    expect(nestedResults).toHaveLength(1);
+    expect(history.at(-1)?.toolResults?.[0].error).toMatch(/CANCELLED/);
+  });
+
   it('keeps partial assistant content in returned history after abort', async () => {
     const controller = new AbortController();
     vi.stubGlobal(

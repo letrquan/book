@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type {
   Message,
+  NestedToolInvocation,
   ToolCall,
   ToolResult,
   PermissionResult,
@@ -278,6 +279,14 @@ export function useAgent(config: AgentConfig) {
           mode,
           {
             signal: controller.signal,
+            nestedToolObserver: {
+              onToolCall: (invocation: NestedToolInvocation) => {
+                accumulatorRef.current?.addNestedToolCall(invocation);
+              },
+              onToolResult: (traceId: string, result: ToolResult) => {
+                accumulatorRef.current?.addNestedToolResult(traceId, result);
+              },
+            },
             displayMessage: userMessage,
             allowedTools: commandContext?.allowedTools,
             modelOverride: commandContext?.modelOverride,
@@ -346,13 +355,7 @@ export function useAgent(config: AgentConfig) {
     const hadAbort = abortRef.current !== null;
     const hadAccumulator = accumulatorRef.current !== null;
     uiLog.event('cancel', { hadAbort, hadAccumulator });
-    accumulatorRef.current?.stop();
-    accumulatorRef.current = null;
     abortRef.current?.abort();
-    abortRef.current = null;
-    setIsThinking(false);
-    streamingIdRef.current = null;
-    setStreamingMessageId(null);
     clearCountdown();
     setRetryPhase('none');
   }, [clearCountdown]);

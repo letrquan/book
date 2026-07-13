@@ -6,6 +6,7 @@ import type {
   ToolResult,
   ToolContext,
   AgentLoopCallbacks,
+  NestedToolObserver,
   Usage,
   RetryPhase,
   PermissionMode,
@@ -54,6 +55,10 @@ export async function runAgentLoop(
     displayMessage?: string;
     /** True when this loop is a subagent (Task tool) invocation — skips memory auto-capture. */
     isSubagent?: boolean;
+    /** Display-only observer for tools invoked by this subagent. */
+    nestedToolObserver?: NestedToolObserver;
+    /** Trace id of the Task invocation that launched this subagent loop. */
+    parentToolTraceId?: string;
   },
 ): Promise<Message[]> {
   const signal = options?.signal;
@@ -148,6 +153,8 @@ export async function runAgentLoop(
     gitignorePatterns: loadGitignore(config.workspace).patterns,
     sandbox: config.settings.sandbox,
     agentConfig: config,
+    signal,
+    nestedToolObserver: options?.nestedToolObserver,
     todos: [],
     tasks: config.tasks,
     backgroundShells: config.backgroundShells,
@@ -206,6 +213,7 @@ export async function runAgentLoop(
     );
     let assistantContent = '';
     const toolCalls: ToolCall[] = [];
+    const nestedTraceIds: string[] = [];
     let turnUsage: Usage | null = null;
 
     // Buffer text during streaming so we can discard on retry.
@@ -242,6 +250,15 @@ export async function runAgentLoop(
         } else if (event.type === 'tool_call' && event.toolCall) {
           toolCalls.push(event.toolCall);
           callbacks.onToolCall(event.toolCall);
+          if (options?.nestedToolObserver && options.parentToolTraceId) {
+            const traceId = `${options.parentToolTraceId}/${turn}-${nestedTraceIds.length + 1}:${event.toolCall.id}`;
+            nestedTraceIds.push(traceId);
+            options.nestedToolObserver.onToolCall({
+              traceId,
+              parentTraceId: options.parentToolTraceId,
+              call: event.toolCall,
+            });
+          }
         } else if (event.type === 'error' && event.error) {
           streamError = event.error;
           break;
@@ -289,12 +306,27 @@ export async function runAgentLoop(
     // If we got no done event and no error, the stream was aborted or
     // ended unexpectedly — keep what we have and finish.
     if (!streamDone && signal?.aborted) {
+      const cancelledResults = toolCalls.map<ToolResult>((call, callIndex) => {
+        const result: ToolResult = {
+          toolCallId: call.id,
+          success: false,
+          output: '',
+          error: 'CANCELLED: Agent execution was interrupted',
+        };
+        callbacks.onToolResult(result);
+        const nestedTraceId = nestedTraceIds[callIndex];
+        if (nestedTraceId && options?.nestedToolObserver) {
+          options.nestedToolObserver.onToolResult(nestedTraceId, result);
+        }
+        return result;
+      });
       if (assistantContent.length > 0 || toolCalls.length > 0) {
         newHistory.push({
           id: crypto.randomUUID(),
           role: 'assistant',
           content: assistantContent,
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          toolResults: cancelledResults.length > 0 ? cancelledResults : undefined,
           timestamp: Date.now(),
         });
       }
@@ -306,9 +338,27 @@ export async function runAgentLoop(
     }
 
     const toolResults: ToolResult[] = [];
-    for (const call of toolCalls) {
-      if (signal?.aborted) break;
-
+    for (let callIndex = 0; callIndex < toolCalls.length; callIndex++) {
+      const call = toolCalls[callIndex];
+      const nestedTraceId = nestedTraceIds[callIndex];
+      const publishResult = (result: ToolResult): void => {
+        callbacks.onToolResult(result);
+        if (nestedTraceId && options?.nestedToolObserver) {
+          options.nestedToolObserver.onToolResult(nestedTraceId, result);
+        }
+      };
+      if (signal?.aborted) {
+        const cancelledResult: ToolResult = {
+          toolCallId: call.id,
+          success: false,
+          output: '',
+          error: 'CANCELLED: Agent execution was interrupted',
+        };
+        toolResults.push(cancelledResult);
+        publishResult(cancelledResult);
+        continue;
+      }
+      toolContext.currentToolTraceId = nestedTraceId ?? call.id;
       const canonName = canonicalToolName(call.name);
 
       // PreToolUse hook — can block the tool before execution.
@@ -331,7 +381,7 @@ export async function runAgentLoop(
           output: '',
           error: `SKIPPED: Blocked by hook${blocked.message ? `: ${blocked.message}` : ''}`,
         });
-        callbacks.onToolResult(toolResults[toolResults.length - 1]);
+        publishResult(toolResults[toolResults.length - 1]);
         continue;
       }
 
@@ -374,7 +424,7 @@ export async function runAgentLoop(
               error: 'SKIPPED: Permission denied',
             };
             toolResults.push(deniedResult);
-            callbacks.onToolResult(deniedResult);
+            publishResult(deniedResult);
             continue;
           }
           if (permission === 'always') {
@@ -403,7 +453,7 @@ export async function runAgentLoop(
           error: `SKIPPED: Tool "${canonName}" is not allowed in plan mode. Call ExitPlanMode with your plan and wait for approval before making changes.`,
         };
         toolResults.push(blockedResult);
-        callbacks.onToolResult(blockedResult);
+        publishResult(blockedResult);
         continue;
       }
 
@@ -475,7 +525,7 @@ export async function runAgentLoop(
       }
 
       toolResults.push(result);
-      callbacks.onToolResult(result);
+      publishResult(result);
 
       // Sync the agent todo list after each tool execution.
       if (callbacks.onTodos && toolContext.todos) {

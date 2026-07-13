@@ -131,9 +131,7 @@ describe('runSubagent', () => {
         const body = new ReadableStream({
           start(c) {
             const enc = new TextEncoder();
-            c.enqueue(
-              enc.encode('data: {"choices":[{"delta":{"content":"DONE."}}]}\n\n'),
-            );
+            c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"DONE."}}]}\n\n'));
             c.enqueue(enc.encode('data: [DONE]\n\n'));
             c.close();
           },
@@ -147,6 +145,53 @@ describe('runSubagent', () => {
     const result = await runSubagent(def, 'Say DONE.', config, registry);
     expect(result.content).toContain('DONE');
     expect(result.error).toBeUndefined();
+  });
+
+  it('forwards live tool calls and results with stable parent trace ids', async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            if (fetchCalls === 1) {
+              c.enqueue(
+                enc.encode(
+                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"duplicate","function":{"name":"Read","arguments":"{\\"filePath\\":\\"missing.ts\\"}"}}]}}]}\n\n',
+                ),
+              );
+            } else {
+              c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"DONE."}}]}\n\n'));
+            }
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const calls: Array<{ traceId: string; parentTraceId: string; name: string }> = [];
+    const results: Array<{ traceId: string; success: boolean }> = [];
+    await runSubagent(def, 'Inspect.', defaultConfig({ maxTurns: 5 }), createDefaultRegistry(), {
+      parentToolTraceId: 'task-root',
+      nestedToolObserver: {
+        onToolCall: (invocation) =>
+          calls.push({
+            traceId: invocation.traceId,
+            parentTraceId: invocation.parentTraceId,
+            name: invocation.call.name,
+          }),
+        onToolResult: (traceId, result) => results.push({ traceId, success: result.success }),
+      },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ parentTraceId: 'task-root', name: 'Read' });
+    expect(calls[0].traceId).toContain('task-root/1-1:duplicate');
+    expect(results).toEqual([{ traceId: calls[0].traceId, success: false }]);
   });
 
   it('restricts tools to allowedTools list', async () => {

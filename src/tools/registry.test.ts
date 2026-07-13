@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { createDefaultRegistry } from './registry.js';
+import { createDefaultRegistry, createRegistry } from './registry.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
 import type { ToolContext } from '../types.js';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'fs';
@@ -59,6 +59,104 @@ describe('createDefaultRegistry — canonical CC tool names', () => {
       ctx,
     );
     return expect(result).resolves.toMatchObject({ success: true });
+  });
+});
+
+describe('tool cancellation and timeout', () => {
+  it('aborts the attempt signal on timeout without aborting the parent signal', async () => {
+    const registry = createRegistry();
+    const parent = new AbortController();
+    let attemptSignal: AbortSignal | undefined;
+    registry.register({
+      name: 'Wait',
+      description: 'wait',
+      parameters: {},
+      execute: async (_args, context) => {
+        attemptSignal = context.signal;
+        await new Promise<void>((resolve) =>
+          context.signal?.addEventListener('abort', () => resolve()),
+        );
+        return { toolCallId: '', success: false, output: '', error: 'aborted' };
+      },
+    });
+
+    const result = await registry.execute(
+      { id: 'wait-1', name: 'Wait', arguments: { timeout: 5 } },
+      { workspaceRoot: dir, env: {}, signal: parent.signal },
+    );
+
+    expect(result.error).toMatch(/Tool timeout/);
+    expect(attemptSignal?.aborted).toBe(true);
+    expect(parent.signal.aborted).toBe(false);
+  });
+
+  it('aborts the attempt and returns cancellation when the parent aborts', async () => {
+    const registry = createRegistry();
+    const parent = new AbortController();
+    let attemptSignal: AbortSignal | undefined;
+    registry.register({
+      name: 'Wait',
+      description: 'wait',
+      parameters: {},
+      execute: async (_args, context) => {
+        attemptSignal = context.signal;
+        await new Promise<void>((resolve) =>
+          context.signal?.addEventListener('abort', () => resolve()),
+        );
+        return { toolCallId: '', success: false, output: '', error: 'aborted' };
+      },
+    });
+
+    const pending = registry.execute(
+      { id: 'wait-2', name: 'Wait', arguments: { timeout: 1_000 } },
+      { workspaceRoot: dir, env: {}, signal: parent.signal },
+    );
+    parent.abort();
+    const result = await pending;
+
+    expect(result.error).toMatch(/CANCELLED/);
+    expect(attemptSignal?.aborted).toBe(true);
+  });
+
+  it('finalizes pending nested calls and ignores late observer events after timeout', async () => {
+    const registry = createRegistry();
+    const events: string[] = [];
+    registry.register({
+      name: 'NestedWait',
+      description: 'wait',
+      parameters: {},
+      execute: async (_args, context) => {
+        context.nestedToolObserver?.onToolCall({
+          traceId: 'nested-1',
+          parentTraceId: 'parent',
+          call: { id: 'child-1', name: 'Read', arguments: {} },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        context.nestedToolObserver?.onToolCall({
+          traceId: 'late',
+          parentTraceId: 'parent',
+          call: { id: 'late-child', name: 'Read', arguments: {} },
+        });
+        return { toolCallId: '', success: true, output: 'late' };
+      },
+    });
+
+    const result = await registry.execute(
+      { id: 'parent', name: 'NestedWait', arguments: { timeout: 5 } },
+      {
+        workspaceRoot: dir,
+        env: {},
+        nestedToolObserver: {
+          onToolCall: (invocation) => events.push(`call:${invocation.traceId}`),
+          onToolResult: (traceId, nestedResult) =>
+            events.push(`result:${traceId}:${nestedResult.success}`),
+        },
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(result.error).toMatch(/Tool timeout/);
+    expect(events).toEqual(['call:nested-1', 'result:nested-1:false']);
   });
 });
 
