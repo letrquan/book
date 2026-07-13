@@ -183,6 +183,24 @@ Missing:
 - Meta+T — toggle extended thinking
 - Ctrl+X Ctrl+K — kill all background agents
 
+### 1j. TUI rendering and lifecycle stability [has] ✅ (2026-07-13)
+
+Book's Pi-style terminal scrollback and visible per-invocation tool UI are now stable across streaming completion, narrow layouts, and Windows ConPTY redraws.
+
+- [x] Synchronous single-flight send guard prevents duplicate agent runs from same-tick submissions
+- [x] Tool calls/results upsert by stable invocation id, including nested tool traces
+- [x] Permission and plan-approval promises settle on resolve, cancel, clear, and unmount
+- [x] Deterministic dynamic-to-Static ownership handoff replaces the timer-only transition and preserves FIFO ordering
+- [x] Responsive Markdown tables use display-width measurement, wrapped cells, and a stacked narrow-screen fallback
+- [x] Fenced code preserves all source text while wrapping highlighted segments within the available width
+- [x] Assistant messages, tool output, arguments, errors, and unified diffs receive real terminal-width budgets
+- [x] CJK, emoji, combining marks, headings, nested Markdown, and long unbroken content stay width-bounded
+- [x] Model-picker and consumed Ctrl/Alt shortcuts cannot leak printable characters into the prompt editor
+- [x] Ctrl+L and terminal resize clear and replay the viewport without duplicating completed messages
+- [x] Spinner help no longer advertises unsupported application-level scrolling keys
+
+**Verification:** 713 tests passed (4 skipped), typecheck and production build passed, targeted formatting and diff checks passed, and the UI benchmark showed no material regression. Real Windows ConPTY replay verified a 40-column CJK table, wrapped fenced code, unique completion output, Ctrl+L redraw, resize behavior, and model-picker input isolation. ESLint remains blocked repository-wide because ESLint 10 requires a flat `eslint.config.js` while Book still uses legacy configuration.
+
 ---
 
 ## Phase 2: Harness platform (what makes it YOUR platform)
