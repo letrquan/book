@@ -129,7 +129,15 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('streamed reply');
   });
 
-  it('hands a wrapped response from dynamic output to Static without duplicating its suffix', async () => {
+  /** Advance one post-gap release under fake timers (setTimeout(0) handoff tick). */
+  async function flushHandoffFrame(): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }
+
+  it('hands a wrapped response from dynamic output to Static without duplicating its unique suffix', async () => {
+    vi.useFakeTimers();
     const marker = 'UNIQUE_FINAL_SUFFIX_42';
     const messages = [
       msg('u1', 'user', 'write a long answer'),
@@ -163,15 +171,24 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    // Immediate withhold: marker leaves dynamic/static for the ownership gap.
+    const gapFrame = frame(view.lastFrame);
+    expect(gapFrame).not.toContain(marker);
+
+    // Passive effect releases into Static after the gap frame.
+    await flushHandoffFrame();
 
     const transitionFrames = view.frames.slice(beforeCompletion).map(stripAnsi);
     expect(transitionFrames.length).toBeGreaterThanOrEqual(2);
+    // Ownership gap: at least one committed frame must omit the unique suffix.
     expect(transitionFrames.some((output) => !output.includes(marker))).toBe(true);
+    expect(gapFrame).not.toContain(marker);
+    // After release, the unique suffix is present again in Static scrollback.
     expect(frame(view.lastFrame)).toContain(marker);
   });
 
-  it('queues rapid streaming handoffs and commits them in order', async () => {
+  it('queues rapid streaming handoffs and commits them FIFO via gap frames', async () => {
     vi.useFakeTimers();
     const messagesA = [msg('a1', 'assistant', 'MARKER_A')];
     const view = render(
@@ -211,22 +228,25 @@ describe('ChatPanel Ink rendering', () => {
       ),
     );
 
+    // Both previous ids withheld immediately; only active C is visible.
     expect(frame(view.lastFrame)).not.toContain('MARKER_A');
     expect(frame(view.lastFrame)).not.toContain('MARKER_B');
     expect(frame(view.lastFrame)).toContain('MARKER_C');
 
-    await act(async () => vi.advanceTimersByTime(55));
+    // One release per gap-frame tick (FIFO).
+    await flushHandoffFrame();
     expect(frame(view.lastFrame)).toContain('MARKER_A');
     expect(frame(view.lastFrame)).not.toContain('MARKER_B');
     expect(frame(view.lastFrame)).toContain('MARKER_C');
 
-    await act(async () => vi.advanceTimersByTime(55));
+    await flushHandoffFrame();
     expect(frame(view.lastFrame)).toContain('MARKER_A');
     expect(frame(view.lastFrame)).toContain('MARKER_B');
     expect(frame(view.lastFrame)).toContain('MARKER_C');
   });
 
   it('keeps the previous turn completed while a new assistant turn starts streaming', async () => {
+    vi.useFakeTimers();
     const previousMarker = 'PREVIOUS_TURN_SUFFIX';
     const activeMarker = 'ACTIVE_TURN_TEXT';
     const previousMessages = [
@@ -270,10 +290,107 @@ describe('ChatPanel Ink rendering', () => {
     expect(handoffFrame).not.toContain(previousMarker);
     expect(handoffFrame).toContain(activeMarker);
 
-    await new Promise((resolve) => setTimeout(resolve, 75));
+    await flushHandoffFrame();
     const committedFrame = frame(view.lastFrame);
     expect(committedFrame).toContain(previousMarker);
     expect(committedFrame).toContain(activeMarker);
+  });
+
+  it('merges whitespace-only tool-only assistant content into the prior turn', () => {
+    const messages: Message[] = [
+      msg('u1', 'user', 'inspect files'),
+      { ...msg('a1', 'assistant', 'I will inspect the project first.') },
+      {
+        ...msg('a2', 'assistant', '   \n\t'),
+        toolCalls: [{ id: 'call-ws', name: 'Glob', arguments: { pattern: '*.ts' } }],
+        toolResults: [{ toolCallId: 'call-ws', success: true, output: 'src/index.ts' }],
+      },
+    ];
+
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          activeToolCallId="call-ws"
+          terminalWidth={100}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('I will inspect the project first.');
+    expect(output).toContain('[OK] Find files *.ts');
+    expect(output.indexOf('I will inspect the project first.')).toBeLessThan(
+      output.indexOf('[OK] Find files *.ts'),
+    );
+  });
+
+  it('re-emits Static history after epoch bump while a handoff is in flight', async () => {
+    vi.useFakeTimers();
+    const historyMarker = 'EPOCH_HISTORY_MARKER';
+    const activeMarker = 'EPOCH_ACTIVE_MARKER';
+    const messages = [
+      msg('u1', 'user', historyMarker),
+      msg('a1', 'assistant', 'done'),
+      msg('a2', 'assistant', activeMarker),
+    ];
+
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages.slice(0, 2)}
+          streamingMessageId="a1"
+          terminalWidth={80}
+          reducedMotion
+          screenReader
+          staticEpoch={0}
+        />,
+      ),
+    );
+
+    view.rerender(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          streamingMessageId="a2"
+          terminalWidth={80}
+          reducedMotion
+          screenReader
+          staticEpoch={0}
+        />,
+      ),
+    );
+
+    // a1 withheld; bump epoch while handoff is pending.
+    expect(frame(view.lastFrame)).not.toContain('done');
+    expect(frame(view.lastFrame)).toContain(activeMarker);
+
+    view.rerender(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          streamingMessageId="a2"
+          terminalWidth={80}
+          reducedMotion
+          screenReader
+          staticEpoch={1}
+        />,
+      ),
+    );
+
+    // History user message is re-emitted via Static remount; withheld a1 still absent.
+    const mid = frame(view.lastFrame);
+    expect(mid).toContain(historyMarker);
+    expect(mid).toContain(activeMarker);
+    expect(mid).not.toContain('done');
+
+    await flushHandoffFrame();
+    const after = frame(view.lastFrame);
+    expect(after).toContain(historyMarker);
+    expect(after).toContain('done');
+    expect(after).toContain(activeMarker);
   });
 
   it('renders every consecutive same-name tool call as its own row', () => {

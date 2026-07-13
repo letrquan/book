@@ -1,5 +1,5 @@
 import { Box, Text, Static } from 'ink';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { useTheme } from '../theme.js';
 import type {
   Message,
@@ -15,6 +15,12 @@ import { AsciiBanner } from './AsciiBanner.js';
 import { PlanApprovalButtons } from './PlanApprovalButtons.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
+import {
+  assertDisjointZones,
+  mergeAssistantMessages,
+  partitionMessageZones,
+  useStaticHandoff,
+} from '../hooks/static-handoff.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
@@ -91,55 +97,6 @@ interface ChatPanelProps {
 }
 
 /**
- * Merge adjacent assistant messages where the later message has no content
- * but has tool calls/results. This avoids showing a separate "Book" label
- * for tool-call-only turns — they visually merge into the prior message.
- */
-function mergeAssistantMessages(
-  messages: Message[],
-  streamingMessageId?: string | null,
-  handoffMessageIds: ReadonlySet<string> = new Set(),
-): Message[] {
-  if (messages.length <= 1) return messages;
-  const merged: Message[] = [];
-  let i = 0;
-  while (i < messages.length) {
-    const current = messages[i];
-    if (current.role !== 'assistant') {
-      merged.push(current);
-      i++;
-      continue;
-    }
-    // Look ahead: merge any following assistant messages that have no content
-    // but have tool calls/results. Never merge the active streaming message:
-    // it must keep its identity so it stays in the dynamic render area and can
-    // show permission prompts outside Ink's <Static> scrollback.
-    let mergedMsg: Message = { ...current };
-    let j = i + 1;
-    while (j < messages.length) {
-      const next = messages[j];
-      if (next.role !== 'assistant') break;
-      if (next.content) break; // has its own text content, don't merge
-      if (next.id === streamingMessageId || handoffMessageIds.has(next.id)) break;
-      // Merge tool calls and tool results.
-      mergedMsg = {
-        ...mergedMsg,
-        toolCalls: [...(mergedMsg.toolCalls ?? []), ...(next.toolCalls ?? [])],
-        toolResults: [...(mergedMsg.toolResults ?? []), ...(next.toolResults ?? [])],
-        nestedToolInvocations: [
-          ...(mergedMsg.nestedToolInvocations ?? []),
-          ...(next.nestedToolInvocations ?? []),
-        ],
-      };
-      j++;
-    }
-    merged.push(mergedMsg);
-    i = j;
-  }
-  return merged;
-}
-
-/**
  * Chat panel — renders all messages as Ink components in order.
  *
  * Pi-style: no alt-screen, no virtual scrolling, no viewport culling.
@@ -176,43 +133,12 @@ export function ChatPanel({
   useDebugMount(uiLog, { model, mode, commandCount, skillCount });
   const motionDisabled = reducedMotion || Boolean(pendingPlanApproval);
 
-  // Ink's <Static> permanently writes newly appended items. Queue every
-  // completed streaming id so rapid A→B→C transitions cannot skip the empty
-  // ownership-gap commit required before each wrapped message enters Static.
-  const observedStreamingIdRef = React.useRef(streamingMessageId);
-  const handoffQueueRef = React.useRef<string[]>([]);
-  const handoffTimerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const [handoffRevision, releaseHandoff] = useState(0);
+  // Deterministic Static handoff: previous streaming id is withheld immediately;
+  // a passive effect releases one queued id after a gap frame (FIFO for A→B→C).
+  const { withheldQueue, withheldIds } = useStaticHandoff(streamingMessageId, messages);
+  const handoffMessageIds = withheldIds;
 
-  if (observedStreamingIdRef.current !== streamingMessageId) {
-    const previousId = observedStreamingIdRef.current;
-    if (previousId && !handoffQueueRef.current.includes(previousId)) {
-      handoffQueueRef.current.push(previousId);
-    }
-    observedStreamingIdRef.current = streamingMessageId;
-  }
-
-  const messageIds = new Set(messages.map((message) => message.id));
-  handoffQueueRef.current = handoffQueueRef.current.filter((id) => messageIds.has(id));
-  const handoffMessageIds = new Set(handoffQueueRef.current);
-
-  useEffect(() => {
-    if (handoffQueueRef.current.length === 0 || handoffTimerRef.current) return;
-    handoffTimerRef.current = setTimeout(() => {
-      handoffQueueRef.current.shift();
-      handoffTimerRef.current = undefined;
-      releaseHandoff((revision) => revision + 1);
-    }, 50);
-  }, [handoffRevision, streamingMessageId, messages]);
-
-  useEffect(
-    () => () => {
-      if (handoffTimerRef.current) clearTimeout(handoffTimerRef.current);
-    },
-    [],
-  );
-
-  // Merge tool-call-only assistant messages into their preceding message.
+  // Merge tool-call-only assistant messages into their preceding message (display-only).
   const displayMessages = useMemo(() => {
     const merged = mergeAssistantMessages(messages, streamingMessageId, handoffMessageIds);
     if (messages.length !== merged.length) {
@@ -223,7 +149,7 @@ export function ChatPanel({
       });
     }
     return merged;
-  }, [messages, streamingMessageId, handoffRevision]);
+  }, [messages, streamingMessageId, handoffMessageIds]);
 
   // Split messages: completed ones go into <Static> so they persist in
   // terminal scrollback; streaming and handoff messages stay dynamic.
@@ -233,7 +159,7 @@ export function ChatPanel({
       displayMessages.filter(
         (msg) => msg.id !== streamingMessageId && !handoffMessageIds.has(msg.id),
       ),
-    [displayMessages, streamingMessageId, handoffRevision],
+    [displayMessages, streamingMessageId, handoffMessageIds],
   );
   const completedMessages = useMemo(() => {
     if (rawCompletedMessages.length === 0) return rawCompletedMessages;
@@ -257,17 +183,27 @@ export function ChatPanel({
     return completedMessages;
   }, [completedMessages, isEmpty]);
 
+  const zones = partitionMessageZones(
+    messages.map((message) => message.id),
+    streamingMessageId,
+    withheldQueue,
+  );
+  const zonesDisjoint = assertDisjointZones(zones);
+
   renderLog.event('render', {
     total: displayMessages.length,
     completed: completedMessages.length,
-    handoff: handoffQueueRef.current.map((id) => id.slice(-8)),
+    handoff: withheldQueue.map((id) => id.slice(-8)),
     active: activeMessage?.id.slice(-8) ?? null,
+    staticEpoch,
+    zonesDisjoint,
     isEmpty,
   });
 
   return (
     <Box flexDirection="column">
-      {/* Static content is emitted once to terminal scrollback; keep large banners out of dynamic repaint paths. */}
+      {/* Static content is emitted once to terminal scrollback; keep large banners out of dynamic repaint paths.
+          key={staticEpoch} remounts Static after an explicit viewport clear so history is re-emitted. */}
       <Static key={staticEpoch} items={staticItems}>
         {(msg, index) => {
           if (msg.role === 'welcome') {
@@ -328,7 +264,7 @@ export function ChatPanel({
         }}
       </Static>
 
-      {/* The previous streaming message is withheld for one commit before it
+      {/* The previous streaming message is withheld for one gap frame before it
           enters <Static>. This empty ownership gap lets Ink erase the old
           dynamic frame before permanently writing the completed message. */}
 
