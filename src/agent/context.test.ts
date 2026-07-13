@@ -52,6 +52,30 @@ describe('buildMessages', () => {
     expect(out[3].content).toBe('1: hi');
   });
 
+  it('does not serialize display-only nested subagent tools to the provider', () => {
+    const outerCall = toolCall('task_1', 'Task', { agent: 'explorer', prompt: 'inspect' });
+    const outerResult = toolResult('task_1', 'done');
+    const message = assistantMsg('', [outerCall], [outerResult]);
+    message.nestedToolInvocations = [
+      {
+        traceId: 'task_1/1-1:read_1',
+        parentTraceId: 'task_1',
+        agentName: 'explorer',
+        call: toolCall('read_1', 'Read', { filePath: 'secret.ts' }),
+        result: toolResult('read_1', 'contents'),
+      },
+    ];
+
+    const out = buildMessages(config, [userMsg('delegate'), message], []);
+
+    expect(out.filter((item) => item.role === 'assistant')[0].tool_calls).toHaveLength(1);
+    expect(out.filter((item) => item.role === 'assistant')[0].tool_calls?.[0].id).toBe('task_1');
+    expect(out.filter((item) => item.role === 'tool').map((item) => item.tool_call_id)).toEqual([
+      'task_1',
+    ]);
+    expect(JSON.stringify(out)).not.toContain('secret.ts');
+  });
+
   it('preserves full tool output for provider messages', () => {
     const output = Array.from({ length: 300 }, (_, i) => `line ${i + 1}`).join('\n');
     const tc = toolCall('call_full', 'bash', { command: 'seq 300' });

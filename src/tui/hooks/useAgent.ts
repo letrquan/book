@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type {
   Message,
+  NestedToolInvocation,
   ToolCall,
   ToolResult,
   PermissionResult,
@@ -278,6 +279,14 @@ export function useAgent(config: AgentConfig) {
           mode,
           {
             signal: controller.signal,
+            nestedToolObserver: {
+              onToolCall: (invocation: NestedToolInvocation) => {
+                accumulatorRef.current?.addNestedToolCall(invocation);
+              },
+              onToolResult: (traceId: string, result: ToolResult) => {
+                accumulatorRef.current?.addNestedToolResult(traceId, result);
+              },
+            },
             displayMessage: userMessage,
             allowedTools: commandContext?.allowedTools,
             modelOverride: commandContext?.modelOverride,

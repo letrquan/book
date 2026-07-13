@@ -1,6 +1,8 @@
-import type { ToolCall, ToolResult } from '../../types.js';
+import type { NestedToolInvocation, ToolCall, ToolResult } from '../../types.js';
 import {
   appendContentToMessage,
+  appendNestedToolInvocationToMessage,
+  appendNestedToolResultToMessage,
   appendToolCallToMessage,
   appendToolResultToMessage,
 } from './streaming-state.js';
@@ -15,7 +17,9 @@ import type { Message } from '../../types.js';
 export type AccumulatorOp =
   | { type: 'text'; content: string }
   | { type: 'toolCall'; call: ToolCall }
-  | { type: 'toolResult'; result: ToolResult };
+  | { type: 'toolResult'; result: ToolResult }
+  | { type: 'nestedToolCall'; invocation: NestedToolInvocation }
+  | { type: 'nestedToolResult'; traceId: string; result: ToolResult };
 
 /**
  * Batched message accumulator for streaming events.
@@ -34,6 +38,10 @@ export interface MessageAccumulator {
   addToolCall: (call: ToolCall) => void;
   /** Queue a tool result. */
   addToolResult: (result: ToolResult) => void;
+  /** Queue a display-only tool call from a Task subagent. */
+  addNestedToolCall: (invocation: NestedToolInvocation) => void;
+  /** Queue a result for a display-only subagent tool call. */
+  addNestedToolResult: (traceId: string, result: ToolResult) => void;
   /** Flush all queued ops immediately (called by timer and stop). */
   flush: () => void;
   /** Start the periodic flush timer. */
@@ -105,8 +113,12 @@ export function createMessageAccumulator(
           next = appendContentToMessage(next, messageId, op.content);
         } else if (op.type === 'toolCall') {
           next = appendToolCallToMessage(next, messageId, op.call);
-        } else {
+        } else if (op.type === 'toolResult') {
           next = appendToolResultToMessage(next, messageId, op.result);
+        } else if (op.type === 'nestedToolCall') {
+          next = appendNestedToolInvocationToMessage(next, messageId, op.invocation);
+        } else {
+          next = appendNestedToolResultToMessage(next, messageId, op.traceId, op.result);
         }
       }
       messagesRef.current = next;
@@ -129,6 +141,16 @@ export function createMessageAccumulator(
     state.queue.push({ type: 'toolResult', result });
   }
 
+  function addNestedToolCall(invocation: NestedToolInvocation): void {
+    if (state.stopped) return;
+    state.queue.push({ type: 'nestedToolCall', invocation });
+  }
+
+  function addNestedToolResult(traceId: string, result: ToolResult): void {
+    if (state.stopped) return;
+    state.queue.push({ type: 'nestedToolResult', traceId, result });
+  }
+
   function start(): void {
     state.stopped = false;
     scheduleNext();
@@ -145,5 +167,14 @@ export function createMessageAccumulator(
     flush();
   }
 
-  return { addText, addToolCall, addToolResult, flush, start, stop };
+  return {
+    addText,
+    addToolCall,
+    addToolResult,
+    addNestedToolCall,
+    addNestedToolResult,
+    flush,
+    start,
+    stop,
+  };
 }

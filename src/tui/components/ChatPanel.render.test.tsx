@@ -245,6 +245,114 @@ describe('ChatPanel Ink rendering', () => {
     expect(committedFrame).toContain(activeMarker);
   });
 
+  it('renders every consecutive same-name tool call as its own row', () => {
+    const messages: Message[] = [
+      {
+        ...msg('a1', 'assistant', 'I will inspect each file.'),
+        toolCalls: [
+          { id: 'read-1', name: 'Read', arguments: { filePath: 'src/a.ts' } },
+          { id: 'read-2', name: 'Read', arguments: { filePath: 'src/b.ts' } },
+          { id: 'read-3', name: 'Read', arguments: { filePath: 'src/c.ts' } },
+        ],
+        toolResults: [
+          { toolCallId: 'read-1', success: true, output: 'a' },
+          { toolCallId: 'read-2', success: true, output: 'b' },
+          { toolCallId: 'read-3', success: true, output: 'c' },
+        ],
+      },
+    ];
+
+    const view = render(
+      withTheme(
+        <AgentMessage message={messages[0]} isStreaming={false} reducedMotion screenReader />,
+      ),
+    );
+    const output = frame(view.lastFrame);
+
+    expect(output).toContain('[OK] Read file src/a.ts');
+    expect(output).toContain('[OK] Read file src/b.ts');
+    expect(output).toContain('[OK] Read file src/c.ts');
+    expect(output).not.toContain('×3');
+    expect(output.indexOf('src/a.ts')).toBeLessThan(output.indexOf('src/b.ts'));
+    expect(output.indexOf('src/b.ts')).toBeLessThan(output.indexOf('src/c.ts'));
+  });
+
+  it('rerenders a tool result when array lengths stay unchanged', () => {
+    const toolCalls: ToolCall[] = [
+      { id: 'call-stable', name: 'Bash', arguments: { command: 'npm test' } },
+    ];
+    const initial = {
+      ...msg('a1', 'assistant', ''),
+      toolCalls,
+      toolResults: [
+        { toolCallId: 'call-stable', success: false, output: '', error: 'still running' },
+      ],
+    };
+    const view = render(
+      withTheme(<AgentMessage message={initial} isStreaming reducedMotion screenReader />),
+    );
+    expect(frame(view.lastFrame)).toContain('[ERR] Run command npm test');
+
+    const completed: Message = {
+      ...initial,
+      toolResults: [{ toolCallId: 'call-stable', success: true, output: 'passed' }],
+    };
+    view.rerender(
+      withTheme(<AgentMessage message={completed} isStreaming reducedMotion screenReader />),
+    );
+
+    expect(frame(view.lastFrame)).toContain('[OK] Run command npm test');
+    expect(frame(view.lastFrame)).not.toContain('[ERR] Run command npm test');
+  });
+
+  it('renders recursive Task subagent tools beneath their parent invocations', () => {
+    const message: Message = {
+      ...msg('a1', 'assistant', 'Delegating the investigation.'),
+      toolCalls: [
+        { id: 'task-root', name: 'Task', arguments: { agent: 'explorer', prompt: 'inspect' } },
+      ],
+      nestedToolInvocations: [
+        {
+          traceId: 'task-root/1-1:duplicate',
+          parentTraceId: 'task-root',
+          agentName: 'explorer',
+          call: { id: 'duplicate', name: 'Read', arguments: { filePath: 'src/a.ts' } },
+          result: { toolCallId: 'duplicate', success: true, output: 'a' },
+        },
+        {
+          traceId: 'task-root/1-2:nested-task',
+          parentTraceId: 'task-root',
+          agentName: 'explorer',
+          call: {
+            id: 'nested-task',
+            name: 'Task',
+            arguments: { agent: 'reviewer', prompt: 'review' },
+          },
+        },
+        {
+          traceId: 'task-root/1-2:nested-task/1-1:duplicate',
+          parentTraceId: 'task-root/1-2:nested-task',
+          agentName: 'reviewer',
+          call: { id: 'duplicate', name: 'Read', arguments: { filePath: 'src/b.ts' } },
+          result: { toolCallId: 'duplicate', success: false, output: '', error: 'missing' },
+        },
+      ],
+    };
+
+    const view = render(
+      withTheme(<AgentMessage message={message} isStreaming reducedMotion screenReader />),
+    );
+    const output = frame(view.lastFrame);
+
+    expect(output).toContain('[Running] Run subagent explorer');
+    expect(output).toContain('[OK] Read file src/a.ts');
+    expect(output).toContain('[Running] Run subagent reviewer');
+    expect(output).toContain('[ERR] Read file src/b.ts');
+    expect(output.indexOf('explorer')).toBeLessThan(output.indexOf('src/a.ts'));
+    expect(output.indexOf('src/a.ts')).toBeLessThan(output.indexOf('reviewer'));
+    expect(output.indexOf('reviewer')).toBeLessThan(output.indexOf('src/b.ts'));
+  });
+
   it('renders tool calls and results under the assistant turn that produced them', () => {
     const messages: Message[] = [
       msg('u1', 'user', 'inspect file'),

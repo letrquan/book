@@ -244,6 +244,24 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
+/** Display-only trace for a tool invoked inside a Task subagent. */
+export interface NestedToolInvocation {
+  /** Globally unique UI identity. Raw provider tool-call ids may repeat across subagents. */
+  traceId: string;
+  /** Trace id of the Task invocation that directly launched this tool. */
+  parentTraceId: string;
+  /** Subagent definition currently running the tool. */
+  agentName: string;
+  call: ToolCall;
+  result?: ToolResult;
+}
+
+/** Optional observer used by hosts that want live visibility into subagent tools. */
+export interface NestedToolObserver {
+  onToolCall: (invocation: NestedToolInvocation) => void;
+  onToolResult: (traceId: string, result: ToolResult) => void;
+}
+
 export interface FileMutationSummary {
   kind: 'create' | 'update';
   filePath: string;
@@ -302,6 +320,8 @@ export interface Message {
   contextContent?: string;
   toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
+  /** UI-only subagent activity. Never serialized as provider tool calls. */
+  nestedToolInvocations?: NestedToolInvocation[];
   timestamp: number;
 }
 
@@ -323,6 +343,14 @@ export interface ToolContext {
   sandbox?: ResolvedSettings['sandbox'];
   /** The active AgentConfig, set by the agent loop before tool execution. */
   agentConfig?: AgentConfig;
+  /** Abort signal shared with nested Task subagents. */
+  signal?: AbortSignal;
+  /** Stable trace identity of the tool currently executing. */
+  currentToolTraceId?: string;
+  /** Observer for display-only tools invoked inside Task subagents. */
+  nestedToolObserver?: NestedToolObserver;
+  /** Agent name associated with nested trace events from this loop. */
+  nestedAgentName?: string;
   /** Agent todo list — written by TodoWrite, read by the loop for context injection. */
   todos?: Array<{ content: string; status: string; activeForm?: string }>;
   /** Agent task list — written by TaskCreate/TaskUpdate and shared across tool calls. */

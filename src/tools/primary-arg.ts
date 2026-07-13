@@ -3,8 +3,8 @@
  *
  * Priority order follows Claude Code's convention:
  * command → shell_id → shellId → taskId → task_id → filePath → file_path
- * → notebook_path → path → pattern → message → url → query → subject → old_string
- * → first string key.
+ * → notebook_path → path → pattern → agent → skill → message → url → query → subject
+ * → old_string → first string key.
  *
  * For command-type args, only the first line is returned.
  */
@@ -19,6 +19,8 @@ export function getPrimaryArg(args: Record<string, unknown>): string {
   if (typeof args.notebook_path === 'string') return args.notebook_path;
   if (typeof args.path === 'string') return args.path;
   if (typeof args.pattern === 'string') return args.pattern;
+  if (typeof args.agent === 'string') return args.agent;
+  if (typeof args.skill === 'string') return args.skill;
   if (typeof args.message === 'string') return args.message;
   if (typeof args.url === 'string') return args.url;
   if (typeof args.query === 'string') return args.query;

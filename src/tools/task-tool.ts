@@ -2,10 +2,7 @@ import type { ToolDefinition, ToolContext, ToolResult, AgentConfig } from '../ty
 import { discoverAgents, runSubagent } from '../subagent.js';
 import { createDefaultRegistry } from './registry.js';
 
-async function task(
-  args: Record<string, unknown>,
-  ctx: ToolContext,
-): Promise<ToolResult> {
+async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const agentName = args.agent as string;
   const prompt = args.prompt as string;
 
@@ -30,9 +27,7 @@ async function task(
   const agent = agents.find((a) => a.name === agentName);
 
   if (!agent) {
-    const available = agents
-      .map((a) => `  - **${a.name}**: ${a.description}`)
-      .join('\n');
+    const available = agents.map((a) => `  - **${a.name}**: ${a.description}`).join('\n');
     return {
       toolCallId: '',
       success: false,
@@ -46,12 +41,17 @@ async function task(
       toolCallId: '',
       success: false,
       output: '',
-      error: 'Task tool requires an active agent session. Use from within a tool execution context.',
+      error:
+        'Task tool requires an active agent session. Use from within a tool execution context.',
     };
   }
 
   const registry = createDefaultRegistry();
-  const { content, error } = await runSubagent(agent, prompt, ctx.agentConfig, registry);
+  const { content, error } = await runSubagent(agent, prompt, ctx.agentConfig, registry, {
+    signal: ctx.signal,
+    parentToolTraceId: ctx.currentToolTraceId,
+    nestedToolObserver: ctx.nestedToolObserver,
+  });
 
   if (error) {
     return {
@@ -73,13 +73,14 @@ export const taskTool: ToolDefinition[] = [
   {
     name: 'Task',
     description:
-      'Launch a subagent to handle a bounded subtask with isolated context. The subagent has its own tool allowlist and turn budget. Returns only the final result — its internal tool calls are invisible to you. Use this for focused investigations, code review, or multi-step work that should not pollute the main conversation.',
+      'Launch a subagent to handle a bounded subtask with isolated context. The subagent has its own tool allowlist and turn budget. Returns only the final result to the model; hosts may display its internal tool activity without adding it to the main conversation. Use this for focused investigations, code review, or multi-step work that should not pollute the main conversation.',
     parameters: {
       type: 'object',
       properties: {
         agent: {
           type: 'string',
-          description: 'Name of the subagent definition to invoke (from .book/agents/ or ~/.book/agents/)',
+          description:
+            'Name of the subagent definition to invoke (from .book/agents/ or ~/.book/agents/)',
         },
         prompt: {
           type: 'string',

@@ -124,6 +124,10 @@ function mergeAssistantMessages(
         ...mergedMsg,
         toolCalls: [...(mergedMsg.toolCalls ?? []), ...(next.toolCalls ?? [])],
         toolResults: [...(mergedMsg.toolResults ?? []), ...(next.toolResults ?? [])],
+        nestedToolInvocations: [
+          ...(mergedMsg.nestedToolInvocations ?? []),
+          ...(next.nestedToolInvocations ?? []),
+        ],
       };
       j++;
     }
