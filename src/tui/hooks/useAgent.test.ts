@@ -1,8 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { defaultConfig } from '../../test/fixtures.js';
-import type { AgentConfig, RetryPhase, Message } from '../../types.js';
-
-const config = defaultConfig({ baseUrl: 'http://localhost/v1' });
+import { describe, it, expect, vi } from 'vitest';
+import type { RetryPhase, PermissionResult, PlanApprovalResult, ToolCall } from '../../types.js';
+import { settlePermissionRequest, settlePlanApprovalRequest } from './useAgent.js';
 
 // Simulate the retry state machine from useAgent.
 // This is a pure-function test of the state transitions without React rendering.
@@ -50,6 +48,39 @@ function applyClear(): RetryState {
 function applyTickCountdown(state: RetryState): RetryState {
   if (state.retryCountdownMs <= 0) return { ...state, retryCountdownMs: 0 };
   return { ...state, retryCountdownMs: Math.max(0, state.retryCountdownMs - 1000) };
+}
+
+/**
+ * Pure model of the send single-flight lock:
+ * - acquire is synchronous at send entry
+ * - cancel aborts but does NOT release the lock
+ * - only finally releases the lock
+ */
+function createSendFlightModel() {
+  let inFlight = false;
+  let aborted = false;
+  return {
+    tryAcquire(): boolean {
+      if (inFlight) return false;
+      inFlight = true;
+      aborted = false;
+      return true;
+    },
+    cancel(): void {
+      if (!inFlight) return;
+      aborted = true;
+      // lock stays held until finally
+    },
+    finallyRelease(): void {
+      inFlight = false;
+    },
+    get inFlight() {
+      return inFlight;
+    },
+    get aborted() {
+      return aborted;
+    },
+  };
 }
 
 describe('useAgent retry state machine', () => {
@@ -111,7 +142,12 @@ describe('useAgent retry state machine', () => {
   });
 
   it('countdown does not go below 0', () => {
-    let s: RetryState = { retryPhase: 'transport', retryAttempt: 1, retryMax: 10, retryCountdownMs: 500 };
+    let s: RetryState = {
+      retryPhase: 'transport',
+      retryAttempt: 1,
+      retryMax: 10,
+      retryCountdownMs: 500,
+    };
     s = applyTickCountdown(s);
     expect(s.retryCountdownMs).toBe(0);
     s = applyTickCountdown(s);
@@ -169,5 +205,103 @@ describe('useAgent error/isThinking state transitions', () => {
     isThinking = false;
 
     expect(isThinking).toBe(false);
+  });
+});
+
+describe('useAgent send single-flight lock', () => {
+  it('rejects a second acquire while in flight', () => {
+    const flight = createSendFlightModel();
+    expect(flight.tryAcquire()).toBe(true);
+    expect(flight.tryAcquire()).toBe(false);
+    expect(flight.inFlight).toBe(true);
+  });
+
+  it('cancel aborts but keeps the lock until finally', () => {
+    const flight = createSendFlightModel();
+    expect(flight.tryAcquire()).toBe(true);
+    flight.cancel();
+    expect(flight.aborted).toBe(true);
+    expect(flight.inFlight).toBe(true);
+    // Concurrent send still blocked.
+    expect(flight.tryAcquire()).toBe(false);
+    flight.finallyRelease();
+    expect(flight.inFlight).toBe(false);
+    expect(flight.tryAcquire()).toBe(true);
+  });
+});
+
+describe('permission / plan approval settlement', () => {
+  const toolCall: ToolCall = { id: 'tc-1', name: 'Bash', arguments: { command: 'ls' } };
+
+  it('resolves permission once and is idempotent on subsequent settles', () => {
+    const resolve = vi.fn();
+    const setPending = vi.fn();
+    const pendingRef = {
+      current: { toolCall, resolve } as {
+        toolCall: ToolCall;
+        resolve: (value: PermissionResult) => void;
+      } | null,
+    };
+
+    expect(settlePermissionRequest(pendingRef, setPending, 'allow', 'resolve')).toBe(true);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledWith('allow');
+    expect(pendingRef.current).toBeNull();
+    expect(setPending).toHaveBeenCalledWith(null);
+
+    // Second settle is a no-op (cancel/clear/unmount after resolve).
+    expect(settlePermissionRequest(pendingRef, setPending, 'deny', 'cancel')).toBe(false);
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('denies permission on cancel path without double-resolve', () => {
+    const resolve = vi.fn();
+    const setPending = vi.fn();
+    const pendingRef = {
+      current: { toolCall, resolve } as {
+        toolCall: ToolCall;
+        resolve: (value: PermissionResult) => void;
+      } | null,
+    };
+
+    expect(settlePermissionRequest(pendingRef, setPending, 'deny', 'cancel')).toBe(true);
+    expect(resolve).toHaveBeenCalledWith('deny');
+    expect(settlePermissionRequest(pendingRef, setPending, 'deny', 'clear')).toBe(false);
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves plan approval once and rejects idempotently afterward', () => {
+    const resolve = vi.fn();
+    const setPending = vi.fn();
+    const pendingRef = {
+      current: { plan: 'do the thing', resolve } as {
+        plan: string;
+        resolve: (value: PlanApprovalResult) => void;
+      } | null,
+    };
+
+    expect(settlePlanApprovalRequest(pendingRef, setPending, 'approve', 'resolve')).toBe(true);
+    expect(resolve).toHaveBeenCalledWith('approve');
+    expect(pendingRef.current).toBeNull();
+
+    expect(settlePlanApprovalRequest(pendingRef, setPending, 'reject', 'unmount')).toBe(false);
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects plan approval on cancel/clear/unmount paths', () => {
+    for (const via of ['cancel', 'clear', 'unmount'] as const) {
+      const resolve = vi.fn();
+      const setPending = vi.fn();
+      const pendingRef = {
+        current: { plan: 'p', resolve } as {
+          plan: string;
+          resolve: (value: PlanApprovalResult) => void;
+        } | null,
+      };
+      expect(settlePlanApprovalRequest(pendingRef, setPending, 'reject', via)).toBe(true);
+      expect(resolve).toHaveBeenCalledWith('reject');
+      expect(settlePlanApprovalRequest(pendingRef, setPending, 'reject', via)).toBe(false);
+      expect(resolve).toHaveBeenCalledTimes(1);
+    }
   });
 });

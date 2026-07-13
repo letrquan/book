@@ -209,4 +209,48 @@ describe('message-accumulator', () => {
     expect(setMessages).toHaveBeenCalledTimes(callCount);
     expect(getMessages()[0].content).toBe('');
   });
+
+  it('upserts repeated tool call/result ops by stable id on flush', () => {
+    const { acc, getMessages } = createTestAccumulator();
+    acc.start();
+
+    acc.addToolCall({ id: 'tc1', name: 'Read', arguments: { filePath: 'a.ts' } });
+    acc.addToolCall({ id: 'tc1', name: 'Read', arguments: { filePath: 'b.ts' } });
+    acc.addToolResult({ toolCallId: 'tc1', success: true, output: 'v1' });
+    acc.addToolResult({ toolCallId: 'tc1', success: true, output: 'v2' });
+    acc.addNestedToolCall({
+      traceId: 'task/1:read',
+      parentTraceId: 'task',
+      call: { id: 'read', name: 'Read', arguments: { filePath: 'a.ts' } },
+    });
+    acc.addNestedToolCall({
+      traceId: 'task/1:read',
+      parentTraceId: 'task',
+      call: { id: 'read', name: 'Read', arguments: { filePath: 'a.ts', offset: 2 } },
+    });
+    acc.addNestedToolResult('task/1:read', {
+      toolCallId: 'read',
+      success: true,
+      output: 'nested-v1',
+    });
+    acc.addNestedToolResult('task/1:read', {
+      toolCallId: 'read',
+      success: true,
+      output: 'nested-v2',
+    });
+
+    vi.advanceTimersByTime(20);
+
+    const msg = getMessages()[0];
+    expect(msg.toolCalls).toHaveLength(1);
+    expect(msg.toolCalls?.[0].arguments).toEqual({ filePath: 'b.ts' });
+    expect(msg.toolResults).toHaveLength(1);
+    expect(msg.toolResults?.[0].output).toBe('v2');
+    expect(msg.nestedToolInvocations).toHaveLength(1);
+    expect(msg.nestedToolInvocations?.[0].call.arguments).toEqual({
+      filePath: 'a.ts',
+      offset: 2,
+    });
+    expect(msg.nestedToolInvocations?.[0].result?.output).toBe('nested-v2');
+  });
 });
