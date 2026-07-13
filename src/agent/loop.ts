@@ -48,6 +48,8 @@ export async function runAgentLoop(
   options?: {
     signal?: AbortSignal;
     isNewSession?: boolean;
+    /** When false, the host owns SessionStart/SessionEnd boundaries. */
+    manageSessionHooks?: boolean;
     commands?: SlashCommand[];
     allowedTools?: string[];
     modelOverride?: string;
@@ -75,8 +77,13 @@ export async function runAgentLoop(
     ? registry.getDefinitions().filter((t) => options.allowedTools!.includes(t.name))
     : undefined;
 
-  // SessionStart hook — fires once at session begin.
-  if (options?.isNewSession !== false && history.length === 0) {
+  // SessionStart hook — hosts with a multi-turn lifecycle (the TUI/headless
+  // session wrapper) disable this and fire it at the actual session boundary.
+  if (
+    options?.manageSessionHooks !== false &&
+    options?.isNewSession !== false &&
+    history.length === 0
+  ) {
     runHooks(
       config.settings.hooks.SessionStart,
       'SessionStart',
@@ -572,16 +579,19 @@ export async function runAgentLoop(
     );
   }
 
-  // SessionEnd hook — fire-and-forget at session end.
-  runHooks(
-    config.settings.hooks.SessionEnd,
-    'SessionEnd',
-    {
-      workspace: config.workspace,
-      event: 'SessionEnd',
-    },
-    { onHookEvent: callbacks.onHookEvent },
-  ).catch((err) => console.warn('SessionEnd hook failed:', err));
+  // One-shot callers keep the legacy per-loop lifecycle. Multi-turn hosts
+  // disable this and fire SessionEnd when the conversation is actually left.
+  if (options?.manageSessionHooks !== false) {
+    runHooks(
+      config.settings.hooks.SessionEnd,
+      'SessionEnd',
+      {
+        workspace: config.workspace,
+        event: 'SessionEnd',
+      },
+      { onHookEvent: callbacks.onHookEvent },
+    ).catch((err) => console.warn('SessionEnd hook failed:', err));
+  }
 
   callbacks.onDone();
   return newHistory;

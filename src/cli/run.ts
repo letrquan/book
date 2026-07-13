@@ -9,6 +9,7 @@ import { exit } from './exit.js';
 import { join } from 'path';
 import { homedir } from 'os';
 import type { AgentConfig } from '../types.js';
+import { resolveSessionBootstrap } from '../session/resolve.js';
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
@@ -68,47 +69,30 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       // Purge old sessions at startup.
       sessionStore?.cleanup(30);
 
-      // Resolve history from a resumed session.
-      let history: import('../types.js').Message[] = [];
-      let sessionId = options.sessionId as string | undefined;
-      let sessionName = options.name as string | undefined;
-      if (sessionStore) {
-        if (options.resume) {
-          const meta =
-            sessionStore.findByName(options.resume as string) ??
-            sessionStore.findById(options.resume as string);
-          if (meta) {
-            const loaded = sessionStore.load(meta.id);
-            history = loaded.history;
-            if (!options.forkSession) sessionId = meta.id;
-          } else {
-            console.error(`Session not found: ${options.resume}`);
-            exit(1);
-          }
-        } else if ((options.continue as boolean) && !history.length) {
-          const meta = sessionStore.mostRecentInCwd(config.workspace);
-          if (meta) {
-            const loaded = sessionStore.load(meta.id);
-            history = loaded.history;
-            if (!options.forkSession) sessionId = meta.id;
-          }
-        }
-      }
+      const bootstrap = resolveSessionBootstrap(sessionStore, {
+        cwd: config.workspace,
+        resume: options.resume as string | undefined,
+        continue: options.continue as boolean | undefined,
+        sessionId: options.sessionId as string | undefined,
+        sessionName: options.name as string | undefined,
+        forkSession: options.forkSession as boolean | undefined,
+      });
 
       await runHeadless(config, registry, {
         prompt: typeof options.print === 'string' ? (options.print as string) : undefined,
         inputFormat: options.inputFormat as 'text' | 'stream-json',
         outputFormat: options.outputFormat as 'text' | 'json' | 'stream-json',
-        history,
+        history: bootstrap.history,
         mode,
         maxTurns: options.maxTurns ? parseInt(options.maxTurns as string, 10) : undefined,
         maxBudgetUsd: options.maxBudgetUsd ? parseFloat(options.maxBudgetUsd as string) : undefined,
         verbose: options.verbose as boolean | undefined,
         jsonSchema: options.jsonSchema ? JSON.parse(options.jsonSchema as string) : undefined,
         sessionStore,
-        sessionId,
-        sessionName,
-        forkSession: options.forkSession as boolean | undefined,
+        sessionId: bootstrap.sessionId,
+        sessionName: bootstrap.sessionName,
+        forkSession: false,
+        sessionCreated: bootstrap.created,
         persistSession: options.sessionPersistence as boolean | undefined,
         includeHookEvents: options.includeHookEvents as boolean | undefined,
         includePartialMessages: options.includePartialMessages as boolean | undefined,
@@ -127,6 +111,19 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       return;
     }
 
+    const sessionStore = (options.sessionPersistence as boolean)
+      ? new SessionStore(SESSION_ROOT)
+      : undefined;
+    sessionStore?.cleanup(30);
+    const bootstrap = resolveSessionBootstrap(sessionStore, {
+      cwd: config.workspace,
+      resume: options.resume as string | undefined,
+      continue: options.continue as boolean | undefined,
+      sessionId: options.sessionId as string | undefined,
+      sessionName: options.name as string | undefined,
+      forkSession: options.forkSession as boolean | undefined,
+    });
+
     const { App } = await import('../tui/app.js');
     let app: ReturnType<typeof render> | undefined;
     const redrawViewport = () => {
@@ -134,7 +131,13 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       process.stdout.write('\x1b[H\x1b[2J');
     };
     try {
-      app = render(createElement(App, { config, redrawViewport }));
+      app = render(
+        createElement(App, {
+          config,
+          redrawViewport,
+          session: { ...bootstrap, store: sessionStore },
+        }),
+      );
       await app.waitUntilExit();
     } finally {
       app?.cleanup();

@@ -216,6 +216,36 @@ describe('runHeadless — stream-json output', () => {
     expect(types).toContain('assistant');
     expect(types[types.length - 1]).toBe('result');
   });
+
+  it('emits a pre-created durable session id', async () => {
+    const sessions = new SessionStore(makeWorkspace());
+    const sessionId = sessions.create({ cwd: config.workspace });
+    const writes: string[] = [];
+
+    await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'say hi',
+      inputFormat: 'text',
+      outputFormat: 'stream-json',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout: {
+        write: (s: string) => {
+          writes.push(s);
+          return true;
+        },
+      },
+      sessionStore: sessions,
+      sessionId,
+      sessionCreated: true,
+    });
+
+    const events = writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    expect(events).toContainEqual({ type: 'session', session_id: sessionId });
+  });
 });
 
 describe('runHeadless — stream-json input', () => {

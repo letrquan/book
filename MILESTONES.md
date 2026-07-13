@@ -9,6 +9,7 @@ Each phase lists exactly what's missing and what to build. `[has]` = already exi
 ## Phase 1: Make it actually work as a Claude Code clone
 
 ### 1a. Anthropic provider [has] ✅ (2026-07-03)
+
 Without this, Book can't use Claude models at all. Currently only OpenAI-compatible.
 
 - [x] `src/provider/anthropic.ts` — Anthropic Messages API streaming (SSE)
@@ -24,6 +25,7 @@ Without this, Book can't use Claude models at all. Currently only OpenAI-compati
 - [x] Tool definition conversion: OpenAI format → Anthropic `{name, description, input_schema}`
 
 ### 1b. CLAUDE.md loader [has] ✅ (2026-07-04)
+
 Book starts every session with Claude-Code-style project instructions loaded.
 
 - [x] Walk tree from workspace to root, collecting CLAUDE.md files
@@ -34,6 +36,7 @@ Book starts every session with Claude-Code-style project instructions loaded.
 - [x] Merge order: user → project → local → rules (later wins)
 
 ### 1c. Rich system prompt [has] ✅ (2026-07-09)
+
 Book now builds a structured Claude-Code-style prompt from local project context, split into a cacheable static prefix and dynamic per-turn suffix.
 
 - [x] Inject CLAUDE.md content
@@ -49,6 +52,7 @@ Book now builds a structured Claude-Code-style prompt from local project context
 - [x] Structure: persona → CLAUDE.md/rules → context → tools → memory → guardrails
 
 ### 1d. Auto memory system [has] ✅ (2026-07-04)
+
 Without persistence, every session is amnesia. Memory makes the agent compound across sessions.
 
 - [x] File-based store in `~/.book/projects/<project>/memory/` — `memory-store.ts` `getProjectMemoryDir()`
@@ -64,6 +68,7 @@ Without persistence, every session is amnesia. Memory makes the agent compound a
 ### 1e. Missing tools (basic coverage)
 
 **Task tools** [has] ✅ (2026-07-06) — CC deprecated TodoWrite for these:
+
 - [x] `TaskCreate` — create a task with status/dependencies/metadata
 - [x] `TaskList` — list all tasks
 - [x] `TaskGet` — get task details
@@ -73,6 +78,7 @@ Without persistence, every session is amnesia. Memory makes the agent compound a
 Task state is shared via `AgentConfig` across agent-loop invocations in a session; blocked tasks cannot be moved to `in_progress`, and completed/deleted dependencies unblock dependents.
 
 **Shell tools** [has] ✅ (2026-07-06):
+
 - [x] `BashOutput` — read output from a backgrounded shell by ID
 - [x] `KillShell` — terminate a backgrounded shell by ID
 - [x] `run_in_background` param on Bash
@@ -80,50 +86,55 @@ Task state is shared via `AgentConfig` across agent-loop invocations in a sessio
 Background shell state is shared via `AgentConfig` for TUI/headless session continuity. Background stdout/stderr pipes are unrefed, spawn failures are surfaced before returning a shell ID, explicit background timeouts terminate shells, and `KillShell` waits for process exit before reporting terminal status. Session-exit cleanup and TaskStop ownership integration are deferred until shell ownership semantics are defined.
 
 **Plan mode tools** [has] ✅ (2026-07-09):
+
 - [x] `EnterPlanMode` — agent enters plan mode (read-only tools auto-approved)
 - [x] `ExitPlanMode` — agent presents plan for user approval
 
 Plan mode is enforced in the agent loop: read-only exploration/status tools auto-run, mutating tools are blocked with `SKIPPED`, and `ExitPlanMode` gates leaving plan mode on host approval (TUI prompt; headless rejects by default unless bypassing permissions).
 
 **Code intelligence** [MISSING]:
+
 - `LSP` — go-to-definition, find-references, diagnostics, hover
 
 **Other tools** [PARTIAL ✅ 2026-07-11]:
+
 - [x] `NotebookEdit` — replace/delete cells by ID, insert at the beginning or after a target, preserve unrelated notebook data, and return file mutation diffs
 - [ ] `ReportFindings` — structured code-review findings output
 - [ ] `ToolSearch` — deferred tool loading to keep initial context lean
 - [ ] `Workflow` — multi-agent orchestration scripts (pipeline/parallel)
 - [ ] `Monitor` — run command in background, react to each output line
 
-### 1f. Built-in slash commands that actually work [PARTIAL ✅ 2026-07-03]
+### 1f. Built-in slash commands that actually work [PARTIAL ✅ 2026-07-13]
 
 The STUB commands now do the real thing locally (no longer delegate to the agent for local-side work). Several previously-missing commands were added; the rest are blocked on subsystems from later phases (1b/1d/1h/1i, Phase 2) and are annotated with their blocker.
 
-| Command | Book status | What CC actually does |
-|---------|-------------|----------------------|
-| `/init` | ✅ real (tool-restricted prompt → agent analyzes + writes CLAUDE.md) | Generates CLAUDE.md from codebase analysis |
-| `/model` | ✅ real (arrow-key picker + effort axis; `/model <name>` switches) | Opens model picker UI with effort level |
-| `/config` | ✅ real (no-arg dump, `key=value` persist to settings.local.json, `--help`) | Opens settings interface, supports key=value |
-| `/permissions` | ✅ real (toggle view of mode + allow/ask/deny rules) | Interactive dialog: add/remove rules, view scopes |
-| `/cost` | ✅ real (token counts + local USD estimate from PRICING table) | Shows real session cost with per-model breakdown |
-| `/memory` | ✅ real (reads `~/.book/projects/<slug>/memory/` + MEMORY.md index) | Shows loaded files, toggle auto-save, browse |
-| `/diff` | ✅ real (`git diff` output locally) | Shows git diff |
-| `/export` | ✅ real (writes messages to file) | Exports conversation to file |
-| `/skills` | ✅ real (toggle listing of discovered skills) | List available skills |
-| `/compact` | exists | OK |
-| `/clear` | exists | OK |
-| `/help` | exists | OK |
-| `/status` | exists | OK |
-| `/theme` | exists | OK |
-| `/doctor` | basic CLI command | Full diagnostic with fix-it button |
-| `/usage` | ✅ real (NEW) — session cost & token usage (alias `/stats`) | — |
-| `/context` | ✅ real (NEW) — message/tool-call counts + char/4 token estimate, ambient context breakdown | — |
-| `/review` | ✅ real (NEW) — tool-restricted prompt drives an agent review of the current diff | — |
-| `/security-review` | ✅ real (NEW) — OWASP-shaped agent audit of the current diff | — |
-| `/release-notes` | ✅ real (NEW) — installed version + CHANGELOG.md tail | — |
-| `/feedback` | ✅ real (NEW) — writes a non-secret session snapshot to `.book/feedback/` | — |
+| Command            | Book status                                                                                                                        | What CC actually does                                       |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `/init`            | ✅ real (tool-restricted prompt → agent analyzes + writes CLAUDE.md)                                                               | Generates CLAUDE.md from codebase analysis                  |
+| `/model`           | ✅ real (arrow-key picker + effort axis; `/model <name>` switches)                                                                 | Opens model picker UI with effort level                     |
+| `/config`          | ✅ real (no-arg dump, `key=value` persist to settings.local.json, `--help`)                                                        | Opens settings interface, supports key=value                |
+| `/permissions`     | ✅ real (toggle view of mode + allow/ask/deny rules)                                                                               | Interactive dialog: add/remove rules, view scopes           |
+| `/cost`            | ✅ real (token counts + local USD estimate from PRICING table)                                                                     | Shows real session cost with per-model breakdown            |
+| `/memory`          | ✅ real (reads `~/.book/projects/<slug>/memory/` + MEMORY.md index)                                                                | Shows loaded files, toggle auto-save, browse                |
+| `/diff`            | ✅ real (`git diff` output locally)                                                                                                | Shows git diff                                              |
+| `/export`          | ✅ real (writes messages to file)                                                                                                  | Exports conversation to file                                |
+| `/skills`          | ✅ real (toggle listing of discovered skills)                                                                                      | List available skills                                       |
+| `/compact`         | ✅ real — summarizes within the active conversation; keeps the same session ID                                                     | Compacts the current conversation                           |
+| `/clear`           | ✅ real — saves the previous conversation, optionally names it, and starts a fresh persisted session (`/new` and `/reset` aliases) | Starts a new conversation without deleting the previous one |
+| `/resume`          | ✅ real — interactive current-workspace picker or direct id/name/unique-prefix selection; restores tool-bearing history            | Resumes a previous session                                  |
+| `/help`            | exists                                                                                                                             | OK                                                          |
+| `/status`          | exists                                                                                                                             | OK                                                          |
+| `/theme`           | exists                                                                                                                             | OK                                                          |
+| `/doctor`          | basic CLI command                                                                                                                  | Full diagnostic with fix-it button                          |
+| `/usage`           | ✅ real (NEW) — session cost & token usage (alias `/stats`)                                                                        | —                                                           |
+| `/context`         | ✅ real (NEW) — message/tool-call counts + char/4 token estimate, ambient context breakdown                                        | —                                                           |
+| `/review`          | ✅ real (NEW) — tool-restricted prompt drives an agent review of the current diff                                                  | —                                                           |
+| `/security-review` | ✅ real (NEW) — OWASP-shaped agent audit of the current diff                                                                       | —                                                           |
+| `/release-notes`   | ✅ real (NEW) — installed version + CHANGELOG.md tail                                                                              | —                                                           |
+| `/feedback`        | ✅ real (NEW) — writes a non-secret session snapshot to `.book/feedback/`                                                          | —                                                           |
 
 **Still-missing built-in commands** (blocked on later phases, not implemented here):
+
 - `/vim` — toggle vim editing mode **(blocked on 1h: vim input mode)**
 - `/keybindings` — create/edit keyboard shortcuts config **(blocked on 1i: keybindings)**
 - `/terminal-setup` — configure Shift+Enter for terminal **(blocked on 1h/1i)**
@@ -134,9 +145,10 @@ The STUB commands now do the real thing locally (no longer delegate to the agent
 - `/add-dir` — add additional working directories **(blocked on 1g: `--add-dir` flag)**
 - `/ide` — connect to IDE extension **(Phase 3)**
 - `/rewind` — roll back to checkpoint **(needs checkpoint/restore infra)**
-- `/resume` — resume a previous session (interactive picker) **(headless `--resume` exists; interactive TUI picker + hot-swap of history is new work)**
 
 > `/memory` is fully wired now that 1d's auto-write + approval flow have landed — candidates are captured to `.inbox/` and surface in `/memory inbox` for review, `/memory approve|discard` commits them. `/usage` tracks the active model only; a per-model breakdown across a multi-model session is deferred (needs accounting plumbing in Phase 2/3).
+>
+> **Session lifecycle completed 2026-07-13:** the TUI and headless modes share the append-only JSONL session store and launch-time resolution. `/clear`, `/new`, and `/reset` preserve the prior conversation and switch to a new isolated provider history; `/resume` and `/continue` restore complete assistant/tool turns. Session changes abort and generation-guard late streams, reset conversation-scoped task/todo/input state, reload approved memory, and emit ordered `SessionEnd`/`SessionStart` hooks with `BOOK_SESSION_ID`. Interactive launch now honors `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; stream-JSON keeps emitting newly created durable session IDs.
 
 ### 1g. CLI flags [MISSING]
 
@@ -145,6 +157,7 @@ Book has: `--workspace`, `--model`, `--print`, `--output-format`, `--input-forma
 > Deferred in the 2026-07-09 milestone pass: this slice focused on 1c prompt caching and 1h/1i TUI keybindings. CLI flag plumbing touches CLI/headless/TUI/SDK paths and should be handled in a dedicated follow-up.
 
 Missing:
+
 - `--system-prompt <text>` — inject one-off system prompt
 - `--context <text>` — add extra context text
 - `--allowed-tools <list>` — restrict tools (e.g. `Read,Grep`)
@@ -175,6 +188,7 @@ Missing:
 Book has: Esc (cancel), Ctrl+C (cancel current turn), Ctrl+T (tasks), Ctrl+L (redraw), Ctrl+J / Shift+Enter (newline, terminal support permitting), Alt+M (cycle mode), Meta+P (model picker), Up/Down (history), Ctrl+/ (keyboard shortcuts reference)
 
 Missing:
+
 - Ctrl+R — reverse history search
 - Ctrl+G — open external editor
 - Ctrl+S — stash current prompt
@@ -190,6 +204,7 @@ Missing:
 Once Phase 1 is done, Book is a working CC clone. Phase 2 is where it diverges — these are the extension points for your own experiments.
 
 ### 2a. Provider abstraction [MISSING]
+
 The agent loop hard-imports the provider. Make it pluggable.
 
 - `Provider` interface: `stream(messages, tools, opts) → AsyncGenerator<ProviderStreamEvent>`
@@ -197,6 +212,7 @@ The agent loop hard-imports the provider. Make it pluggable.
 - Mock provider for testing (no network needed)
 
 ### 2b. Agent loop hooks [MISSING]
+
 Intercept every stage of the loop without forking.
 
 - `onPreModelCall(messages, tools)` — modify messages/tools before API call
@@ -211,10 +227,11 @@ Intercept every stage of the loop without forking.
 - `--harness <path>` CLI flag to load a harness module
 
 ### 2c. Working SDK [MISSING]
+
 The `query()` SDK parses its own stdout JSON. Fix it to emit typed events directly.
 
 - Emit typed events: `system`, `text`, `tool_use`, `tool_result`, `error`, `result`, `done`
-- Session resume in headless mode (currently broken)
+- [x] Session resume in headless and interactive TUI modes (completed 2026-07-13)
 - CI-friendly exit codes (0=success, 1=error, 2=max turns/failed)
 - `--max-budget-usd` enforced (stop loop when cost exceeds budget)
 - `--json-schema` wired through provider for structured output

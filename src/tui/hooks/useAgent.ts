@@ -10,6 +10,9 @@ import type {
   Usage,
   RetryPhase,
   CommandContext,
+  SessionMeta,
+  SessionRecord,
+  SessionStoreInterface,
 } from '../../types.js';
 import { runAgentLoop } from '../../agent/loop.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
@@ -21,14 +24,21 @@ import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-l
 import { loadMemoryContext } from '../../memory-store.js';
 import { persistSettingLocal, persistPermissionRuleLocal } from '../persist.js';
 import { expandAtMentions, expandShellCommands } from '../input-expansion.js';
+import { selectSession, type SessionBootstrap } from '../../session/resolve.js';
+import { normalizeWorkspace } from '../../session/store.js';
+import { runSessionEnd, runSessionStart } from '../../session/lifecycle.js';
 
 const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
 import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
 
-export function useAgent(config: AgentConfig) {
-  const [messages, setMessages] = useState<Message[]>([]);
+export interface UseAgentSessionOptions extends SessionBootstrap {
+  store?: SessionStoreInterface;
+}
+
+export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
+  const [messages, setMessages] = useState<Message[]>(session.history);
   const [isThinking, setIsThinking] = useState(false);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -50,6 +60,8 @@ export function useAgent(config: AgentConfig) {
     resolve: (value: PlanApprovalResult) => void;
   } | null>(null);
   const [turnDurationMs, setTurnDurationMs] = useState<number>(0);
+  const [sessionId, setSessionId] = useState(session.sessionId);
+  const [sessionName, setSessionName] = useState(session.sessionName);
 
   // Retry state for the spinner label.
   const [retryPhase, setRetryPhase] = useState<RetryPhase>('none');
@@ -62,7 +74,14 @@ export function useAgent(config: AgentConfig) {
   // the latest in-progress message without stale-closure issues.
   const streamingIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const messagesRef = useRef<Message[]>([]);
+  const messagesRef = useRef<Message[]>(session.history);
+  const sessionIdRef = useRef(session.sessionId);
+  const sessionGenerationRef = useRef(0);
+  const lifecycleStartedRef = useRef(false);
+  const lifecycleEndedRef = useRef(false);
+  const liveConfigRef = useRef(liveConfig);
+  const pendingPermissionRef = useRef(pendingPermission);
+  const pendingPlanApprovalRef = useRef(pendingPlanApproval);
   const turnStartRef = useRef(Date.now());
   // Countdown timer ref for retry countdown.
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -72,6 +91,40 @@ export function useAgent(config: AgentConfig) {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    liveConfigRef.current = liveConfig;
+  }, [liveConfig]);
+
+  useEffect(() => {
+    pendingPermissionRef.current = pendingPermission;
+  }, [pendingPermission]);
+
+  useEffect(() => {
+    pendingPlanApprovalRef.current = pendingPlanApproval;
+  }, [pendingPlanApproval]);
+
+  useEffect(() => {
+    if (lifecycleStartedRef.current) return;
+    lifecycleStartedRef.current = true;
+    runSessionStart(liveConfigRef.current, session.sessionId, session.source).catch((err) => {
+      log.warn('SessionStart hook failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }, [session.sessionId, session.source]);
+
+  useEffect(() => {
+    return () => {
+      if (lifecycleEndedRef.current) return;
+      lifecycleEndedRef.current = true;
+      runSessionEnd(liveConfigRef.current, sessionIdRef.current, 'exit').catch((err) => {
+        log.warn('SessionEnd hook failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    };
+  }, []);
 
   // Clean up countdown timer on unmount.
   useEffect(() => {
@@ -90,6 +143,103 @@ export function useAgent(config: AgentConfig) {
     }
   }, []);
 
+  const resetConversationState = useCallback(
+    (nextId: string, nextName: string | undefined, history: Message[]) => {
+      sessionGenerationRef.current++;
+      pendingPermissionRef.current?.resolve('deny');
+      pendingPlanApprovalRef.current?.resolve('reject');
+      pendingPermissionRef.current = null;
+      pendingPlanApprovalRef.current = null;
+      accumulatorRef.current?.discard();
+      accumulatorRef.current = null;
+      abortRef.current?.abort();
+      abortRef.current = null;
+      clearCountdown();
+
+      sessionIdRef.current = nextId;
+      messagesRef.current = history;
+      streamingIdRef.current = null;
+      setSessionId(nextId);
+      setSessionName(nextName);
+      setMessages(history);
+      setIsThinking(false);
+      setStreamingMessageId(null);
+      setError(null);
+      setCurrentTurn(0);
+      setUsage(null);
+      setAgentTodos([]);
+      setPendingPermission(null);
+      setPendingPlanApproval(null);
+      setTurnDurationMs(0);
+      setRetryPhase('none');
+      setRetryAttempt(0);
+      setRetryMax(0);
+      setRetryCountdownMs(0);
+      setLiveConfig((current) => ({
+        ...current,
+        tasks: [],
+        memoryContext: current.settings.memory.enabled
+          ? loadMemoryContext(current.workspace)
+          : undefined,
+      }));
+    },
+    [clearCountdown],
+  );
+
+  const endCurrentSession = useCallback(
+    async (reason: 'clear' | 'resume' | 'exit' | 'completion') => {
+      if (lifecycleEndedRef.current) return;
+      lifecycleEndedRef.current = true;
+      await runSessionEnd(liveConfigRef.current, sessionIdRef.current, reason);
+    },
+    [],
+  );
+
+  const startNewConversation = useCallback(
+    async (previousName?: string) => {
+      const oldId = sessionIdRef.current;
+      sessionGenerationRef.current++;
+      accumulatorRef.current?.discard();
+      abortRef.current?.abort();
+      await endCurrentSession('clear');
+      if (previousName && session.store) session.store.patchMeta(oldId, { name: previousName });
+
+      const nextId = session.store
+        ? session.store.create({ cwd: liveConfig.workspace })
+        : crypto.randomUUID();
+      lifecycleEndedRef.current = false;
+      resetConversationState(nextId, undefined, []);
+      await runSessionStart(liveConfigRef.current, nextId, 'clear');
+    },
+    [endCurrentSession, liveConfig, resetConversationState, session.store],
+  );
+
+  const resumeConversation = useCallback(
+    async (selector: string) => {
+      if (!session.store)
+        throw new Error('Session persistence is disabled; /resume is unavailable.');
+      const selected = selectSession(session.store, selector, liveConfig.workspace);
+      if (selected.id === sessionIdRef.current) return;
+
+      const loaded = session.store.load(selected.id);
+      sessionGenerationRef.current++;
+      accumulatorRef.current?.discard();
+      abortRef.current?.abort();
+      await endCurrentSession('resume');
+      session.store.touch(selected.id);
+      lifecycleEndedRef.current = false;
+      resetConversationState(selected.id, loaded.meta.name, loaded.history);
+      await runSessionStart(liveConfigRef.current, selected.id, 'resume');
+    },
+    [endCurrentSession, liveConfig, resetConversationState, session.store],
+  );
+
+  const listSessions = useCallback((): SessionMeta[] => {
+    if (!session.store) return [];
+    const cwd = normalizeWorkspace(liveConfig.workspace);
+    return session.store.list().filter((meta) => meta.cwd === cwd);
+  }, [liveConfig.workspace, session.store]);
+
   const send = useCallback(
     async (userMessage: string, commandContext?: CommandContext) => {
       if (isThinking) {
@@ -97,10 +247,15 @@ export function useAgent(config: AgentConfig) {
         return;
       }
 
+      const generation = sessionGenerationRef.current;
+      const activeSessionId = sessionIdRef.current;
+      const stillCurrent = () => sessionGenerationRef.current === generation;
+
       log.info('send message', {
         len: userMessage.length,
         mode,
         hasCommandContext: !!commandContext,
+        sessionId: activeSessionId,
       });
       uiLog.event('send:start', {
         len: userMessage.length,
@@ -123,6 +278,13 @@ export function useAgent(config: AgentConfig) {
         userMessage,
         contextMessage === userMessage ? undefined : contextMessage,
       );
+      if (session.store) {
+        session.store.append(activeSessionId, {
+          type: 'user',
+          timestamp: userMsg.timestamp,
+          data: { content: userMessage, contextContent: userMsg.contextContent },
+        } satisfies SessionRecord);
+      }
       const placeholder = makeMessage('assistant', '');
       streamingIdRef.current = placeholder.id;
       setStreamingMessageId(placeholder.id);
@@ -159,29 +321,31 @@ export function useAgent(config: AgentConfig) {
         // `history` (pre-user state) is passed as context; the loop pushes its
         // own copy of the user message for API context. We ignore the loop's
         // returned history — the hook's state is authoritative and updated live.
-        await runAgentLoop(
+        const updatedHistory = await runAgentLoop(
           liveConfig,
           registry,
           contextMessage,
           history,
           {
             onText: (text) => {
-              accumulatorRef.current?.addText(text);
+              if (stillCurrent()) accumulatorRef.current?.addText(text);
             },
             onToolCall: (call: ToolCall) => {
-              accumulatorRef.current?.addToolCall(call);
+              if (stillCurrent()) accumulatorRef.current?.addToolCall(call);
             },
             onToolResult: (result: ToolResult) => {
-              accumulatorRef.current?.addToolResult(result);
+              if (stillCurrent()) accumulatorRef.current?.addToolResult(result);
             },
             onTodos: (todos) => {
-              setAgentTodos(todos as Todo[]);
+              if (stillCurrent()) setAgentTodos(todos as Todo[]);
             },
             onError: (err) => {
+              if (!stillCurrent()) return;
               log.warn('agent error', { error: err });
               setError(err);
             },
             onTurnStart: (turn) => {
+              if (!stillCurrent()) return;
               log.debug('TUI turn start', { turn });
               setCurrentTurn(turn);
               turnStartRef.current = Date.now();
@@ -207,6 +371,7 @@ export function useAgent(config: AgentConfig) {
               }
             },
             onDone: () => {
+              if (!stillCurrent()) return;
               log.info('agent done', { durationMs: Date.now() - turnStartRef.current });
               uiLog.event('send:done', { durationMs: Date.now() - turnStartRef.current });
               setTurnDurationMs(Date.now() - turnStartRef.current);
@@ -214,27 +379,34 @@ export function useAgent(config: AgentConfig) {
               clearCountdown();
             },
             onPermissionRequired: (toolCall: ToolCall): Promise<PermissionResult> => {
+              if (!stillCurrent()) return Promise.resolve('deny');
               return new Promise((resolve) => {
                 uiLog.event('permission:pending', {
                   tool: toolCall.name,
                   id: toolCall.id,
                 });
-                setPendingPermission({ toolCall, resolve });
+                const pending = { toolCall, resolve };
+                pendingPermissionRef.current = pending;
+                setPendingPermission(pending);
               });
             },
             onUsage: (u: Usage) => {
-              setUsage(u);
+              if (stillCurrent()) setUsage(u);
             },
             onModeChange: (newMode: PermissionMode) => {
-              setMode(newMode);
+              if (stillCurrent()) setMode(newMode);
             },
             onPlanApprovalRequired: (plan: string): Promise<PlanApprovalResult> => {
+              if (!stillCurrent()) return Promise.resolve('reject');
               return new Promise((resolve) => {
                 uiLog.event('plan-approval:pending', { len: plan.length });
-                setPendingPlanApproval({ plan, resolve });
+                const pending = { plan, resolve };
+                pendingPlanApprovalRef.current = pending;
+                setPendingPlanApproval(pending);
               });
             },
             onRetry: (phase, attempt, max, delayMs) => {
+              if (!stillCurrent()) return;
               setRetryPhase(phase);
               setRetryAttempt(attempt);
               setRetryMax(max);
@@ -254,6 +426,7 @@ export function useAgent(config: AgentConfig) {
               }, 1000);
             },
             onStreamStall: (countdownMs) => {
+              if (!stillCurrent()) return;
               setRetryPhase('stalled');
               setRetryCountdownMs(countdownMs);
               clearCountdown();
@@ -269,6 +442,7 @@ export function useAgent(config: AgentConfig) {
               }, 1000);
             },
             onStreamResume: () => {
+              if (!stillCurrent()) return;
               setRetryPhase('none');
               clearCountdown();
             },
@@ -281,34 +455,58 @@ export function useAgent(config: AgentConfig) {
             signal: controller.signal,
             nestedToolObserver: {
               onToolCall: (invocation: NestedToolInvocation) => {
-                accumulatorRef.current?.addNestedToolCall(invocation);
+                if (stillCurrent()) accumulatorRef.current?.addNestedToolCall(invocation);
               },
               onToolResult: (traceId: string, result: ToolResult) => {
-                accumulatorRef.current?.addNestedToolResult(traceId, result);
+                if (stillCurrent()) accumulatorRef.current?.addNestedToolResult(traceId, result);
               },
             },
+            manageSessionHooks: false,
             displayMessage: userMessage,
             allowedTools: commandContext?.allowedTools,
             modelOverride: commandContext?.modelOverride,
             commands: commandContext ? [commandContext.command] : undefined,
           },
         );
+        if (stillCurrent()) {
+          accumulatorRef.current?.stop();
+          messagesRef.current = updatedHistory;
+          setMessages(updatedHistory);
+
+          if (session.store) {
+            for (const assistant of updatedHistory.slice(history.length)) {
+              if (assistant.role !== 'assistant') continue;
+              session.store.append(activeSessionId, {
+                type: 'assistant',
+                timestamp: assistant.timestamp,
+                data: {
+                  complete: true,
+                  content: assistant.content,
+                  toolCalls: assistant.toolCalls,
+                  toolResults: assistant.toolResults,
+                },
+              } satisfies SessionRecord);
+            }
+          }
+        }
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        if (stillCurrent()) setError(e instanceof Error ? e.message : String(e));
       } finally {
-        accumulatorRef.current?.stop();
-        uiLog.event('accumulator:stopped', { reason: 'done' });
-        accumulatorRef.current = null;
-        setIsThinking(false);
-        streamingIdRef.current = null;
-        setStreamingMessageId(null);
-        abortRef.current = null;
-        clearCountdown();
-        setRetryPhase('none');
-        setRetryCountdownMs(0);
+        if (stillCurrent()) {
+          accumulatorRef.current?.stop();
+          uiLog.event('accumulator:stopped', { reason: 'done' });
+          accumulatorRef.current = null;
+          setIsThinking(false);
+          streamingIdRef.current = null;
+          setStreamingMessageId(null);
+          abortRef.current = null;
+          clearCountdown();
+          setRetryPhase('none');
+          setRetryCountdownMs(0);
+        }
       }
     },
-    [liveConfig, isThinking, mode, clearCountdown],
+    [liveConfig, isThinking, mode, clearCountdown, session.store],
   );
 
   const resolvePermission = useCallback(
@@ -521,8 +719,14 @@ export function useAgent(config: AgentConfig) {
     retryMax,
     retryCountdownMs,
     liveConfig,
+    sessionId,
+    sessionName,
     send,
     clear,
+    startNewConversation,
+    resumeConversation,
+    listSessions,
+    endCurrentSession,
     resolvePermission,
     cancelPermission,
     resolvePlanApproval,

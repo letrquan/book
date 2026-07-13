@@ -14,7 +14,16 @@ export interface BuiltinCommand {
 }
 
 export const BUILTIN_COMMANDS: BuiltinCommand[] = [
-  { name: 'clear', description: 'Clear conversation' },
+  { name: 'clear', description: 'Start a new conversation', argumentHint: '[previous-name]' },
+  { name: 'new', description: 'Start a new conversation', argumentHint: '[previous-name]' },
+  {
+    name: 'reset',
+    description: 'Alias for /clear',
+    argumentHint: '[previous-name]',
+    isHidden: true,
+  },
+  { name: 'resume', description: 'Resume a saved conversation', argumentHint: '[id|name]' },
+  { name: 'continue', description: 'Alias for /resume', argumentHint: '[id|name]', isHidden: true },
   { name: 'compact', description: 'Summarize older turns' },
   { name: 'exit', description: 'Exit book' },
   { name: 'help', description: 'Toggle help' },
@@ -24,7 +33,11 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: 'config', description: 'Show current configuration' },
   { name: 'diff', description: 'Show git diff' },
   { name: 'status', description: 'Show session status' },
-  { name: 'memory', description: 'Manage auto-memory', argumentHint: '[status|inbox|approve|discard|on|off|path]' },
+  {
+    name: 'memory',
+    description: 'Manage auto-memory',
+    argumentHint: '[status|inbox|approve|discard|on|off|path]',
+  },
   { name: 'permissions', description: 'Manage permission rules' },
   { name: 'cost', description: 'Show token usage and cost' },
   { name: 'skills', description: 'List available skills' },

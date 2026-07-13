@@ -7,16 +7,14 @@ import {
   unlinkSync,
   statSync,
 } from 'fs';
-import { join } from 'path';
-import type { Message, SessionRecord } from '../types.js';
+import { join, normalize, resolve } from 'path';
+import type { Message, SessionMeta, SessionRecord } from '../types.js';
 
-export interface SessionMeta {
-  id: string;
-  name?: string;
-  cwd: string;
-  createdAt: number;
-  updatedAt: number;
-  messageCount: number;
+export type { SessionMeta } from '../types.js';
+
+function normalizeWorkspace(cwd: string): string {
+  const normalized = normalize(resolve(cwd));
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 /**
@@ -34,8 +32,8 @@ export class SessionStore {
     return join(this.root, `${id}.jsonl`);
   }
 
-  create(meta: { cwd: string; name?: string }): string {
-    const id = crypto.randomUUID();
+  create(meta: { cwd: string; name?: string; id?: string }): string {
+    const id = meta.id ?? crypto.randomUUID();
     const now = Date.now();
     const header: SessionRecord = {
       type: 'session_meta',
@@ -43,7 +41,7 @@ export class SessionStore {
       data: {
         kind: 'session_meta',
         id,
-        cwd: meta.cwd,
+        cwd: normalizeWorkspace(meta.cwd),
         name: meta.name,
         createdAt: now,
         updatedAt: now,
@@ -58,6 +56,22 @@ export class SessionStore {
     appendFileSync(this.path(id), JSON.stringify(record) + '\n', 'utf-8');
   }
 
+  patchMeta(id: string, patch: { name?: string }): void {
+    this.append(id, {
+      type: 'session_meta',
+      timestamp: Date.now(),
+      data: { kind: 'session_meta_patch', ...patch },
+    });
+  }
+
+  touch(id: string): void {
+    this.append(id, {
+      type: 'session_meta',
+      timestamp: Date.now(),
+      data: { kind: 'session_touch' },
+    });
+  }
+
   load(id: string): { history: Message[]; meta: SessionMeta } {
     const p = this.path(id);
     if (!existsSync(p)) throw new Error(`Session not found: ${id}`);
@@ -65,87 +79,115 @@ export class SessionStore {
     const records = raw
       .split('\n')
       .filter(Boolean)
-      .map((l) => JSON.parse(l) as SessionRecord);
+      .map((line) => JSON.parse(line) as SessionRecord);
 
-    const metaRec = records.find((r) => (r.data as { kind?: string })?.kind === 'session_meta');
-    const meta: SessionMeta = metaRec
-      ? (metaRec.data as SessionMeta)
-      : { id, cwd: '', createdAt: 0, updatedAt: 0, messageCount: 0 };
-
-    // Effective updatedAt = the last persisted record's timestamp (line 0 is
-    // always the meta header, so records[last] is the freshest write). This
-    // keeps list()/cleanup() correct and survives mid-turn crashes regardless
-    // of the header's updatedAt, and preserves sort-by-activity for sessions
-    // whose record timestamps predate their createdAt (synthetic/test ts).
-    if (records.length) {
-      meta.updatedAt = records[records.length - 1].timestamp;
-    }
+    const metaRec = records.find(
+      (record) => (record.data as { kind?: string })?.kind === 'session_meta',
+    );
+    const storedMeta = metaRec?.data as Partial<SessionMeta> | undefined;
+    const meta: SessionMeta = {
+      id,
+      cwd: normalizeWorkspace(storedMeta?.cwd ?? ''),
+      createdAt: storedMeta?.createdAt ?? 0,
+      updatedAt: storedMeta?.updatedAt ?? 0,
+      messageCount: 0,
+      ...(storedMeta?.name === undefined ? {} : { name: storedMeta.name }),
+    };
 
     const history: Message[] = [];
     let count = 0;
-    for (const r of records) {
-      if ((r.data as { kind?: string })?.kind === 'session_meta') continue;
-      count++;
-      const data = r.data as { content?: string; contextContent?: string };
-      if (r.type === 'user') {
+    for (const record of records) {
+      const data = record.data as {
+        kind?: string;
+        name?: string;
+        content?: string;
+        contextContent?: string;
+        complete?: boolean;
+        toolCalls?: Message['toolCalls'];
+        toolResults?: Message['toolResults'];
+      };
+
+      if (data.kind === 'session_meta_patch') {
+        if (Object.prototype.hasOwnProperty.call(data, 'name')) meta.name = data.name;
+        continue;
+      }
+      if (data.kind === 'session_meta' || data.kind === 'session_touch') continue;
+
+      if (record.type === 'user') {
+        count++;
         history.push({
           id: crypto.randomUUID(),
           role: 'user',
           content: data.content ?? '',
           contextContent: data.contextContent,
-          timestamp: r.timestamp,
+          timestamp: record.timestamp,
         });
-      } else if (r.type === 'assistant') {
-        const last = history[history.length - 1];
-        if (last?.role === 'assistant') {
-          last.content += data.content ?? '';
-        } else {
+      } else if (record.type === 'assistant') {
+        if (data.complete) {
+          count++;
           history.push({
             id: crypto.randomUUID(),
             role: 'assistant',
             content: data.content ?? '',
-            timestamp: r.timestamp,
+            toolCalls: data.toolCalls,
+            toolResults: data.toolResults,
+            timestamp: record.timestamp,
           });
+        } else {
+          const last = history[history.length - 1];
+          if (last?.role === 'assistant') {
+            last.content += data.content ?? '';
+          } else {
+            count++;
+            history.push({
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content: data.content ?? '',
+              timestamp: record.timestamp,
+            });
+          }
         }
       }
     }
+
+    if (records.length) meta.updatedAt = records[records.length - 1].timestamp;
     meta.messageCount = count;
     return { history, meta };
   }
 
   list(): SessionMeta[] {
     const metas: SessionMeta[] = [];
-    for (const f of readdirSync(this.root)) {
-      if (!f.endsWith('.jsonl')) continue;
-      const id = f.replace(/\.jsonl$/, '');
+    for (const file of readdirSync(this.root)) {
+      if (!file.endsWith('.jsonl')) continue;
+      const id = file.replace(/\.jsonl$/, '');
       try {
-        const { meta } = this.load(id);
-        metas.push(meta);
+        metas.push(this.load(id).meta);
       } catch {
-        // skip corrupt files
+        // Skip corrupt files.
       }
     }
     return metas.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
   mostRecentInCwd(cwd: string): SessionMeta | undefined {
-    return this.list().find((m) => m.cwd === cwd);
+    const normalized = normalizeWorkspace(cwd);
+    return this.list().find((meta) => meta.cwd === normalized);
   }
 
   findByName(name: string): SessionMeta | undefined {
-    return this.list().find((m) => m.name === name);
+    return this.list().find((meta) => meta.name === name);
   }
 
   findById(id: string): SessionMeta | undefined {
-    return this.list().find((m) => m.id === id);
+    return this.list().find((meta) => meta.id === id);
   }
 
   cleanup(days: number): number {
     const cutoff = Date.now() - days * 86400_000;
     let removed = 0;
-    for (const f of readdirSync(this.root)) {
-      if (!f.endsWith('.jsonl')) continue;
-      const id = f.replace(/\.jsonl$/, '');
+    for (const file of readdirSync(this.root)) {
+      if (!file.endsWith('.jsonl')) continue;
+      const id = file.replace(/\.jsonl$/, '');
       try {
         const { meta } = this.load(id);
         if (meta.updatedAt < cutoff) {
@@ -153,7 +195,6 @@ export class SessionStore {
           removed++;
         }
       } catch {
-        // corrupt file — remove if its mtime is old
         if (statSync(this.path(id)).mtimeMs < cutoff) {
           unlinkSync(this.path(id));
           removed++;
@@ -163,3 +204,5 @@ export class SessionStore {
     return removed;
   }
 }
+
+export { normalizeWorkspace };

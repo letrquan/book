@@ -14,6 +14,12 @@ export interface HookContext {
   userPrompt?: string;
   /** For PostToolUse: the tool result output (truncated). */
   toolOutput?: string;
+  /** Active persisted conversation id for session lifecycle events. */
+  sessionId?: string;
+  /** How a session began (startup, resume, or clear). */
+  source?: string;
+  /** Why a session ended (clear, resume, exit, or completion). */
+  reason?: string;
 }
 
 /** Result of running a single hook. */
@@ -49,6 +55,9 @@ export async function runHooks(
     toolName: ctx.toolName ?? null,
     toolArgs: ctx.toolArgs ?? null,
     userPrompt: ctx.userPrompt ?? null,
+    sessionId: ctx.sessionId ?? null,
+    source: ctx.source ?? null,
+    reason: ctx.reason ?? null,
   });
 
   const results: HookResult[] = [];
@@ -135,6 +144,9 @@ async function runSingleHook(
     workspace: ctx.workspace,
     user_prompt: ctx.userPrompt,
     tool_output: ctx.toolOutput,
+    session_id: ctx.sessionId,
+    source: ctx.source,
+    reason: ctx.reason,
   });
 
   return new Promise<HookResult>((resolve) => {
@@ -146,7 +158,12 @@ async function runSingleHook(
     const child = exec(
       entry.command,
       {
-        env: { ...process.env, ...entry.env, BOOK_WORKSPACE: ctx.workspace },
+        env: {
+          ...process.env,
+          ...entry.env,
+          BOOK_WORKSPACE: ctx.workspace,
+          ...(ctx.sessionId ? { BOOK_SESSION_ID: ctx.sessionId } : {}),
+        },
         timeout: HOOK_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
       },

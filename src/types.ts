@@ -492,24 +492,26 @@ export interface SessionRecord {
   data: unknown;
 }
 
+export interface SessionMeta {
+  id: string;
+  name?: string;
+  cwd: string;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+}
+
 /** Minimal interface for SessionStore, defined here to avoid circular imports. */
 export interface SessionStoreInterface {
-  create(meta: { cwd: string; name?: string }): string;
+  create(meta: { cwd: string; name?: string; id?: string }): string;
   append(id: string, record: SessionRecord): void;
-  load(id: string): {
-    history: Message[];
-    meta: {
-      id: string;
-      name?: string;
-      cwd: string;
-      createdAt: number;
-      updatedAt: number;
-      messageCount: number;
-    };
-  };
-  findByName(name: string): { id: string } | undefined;
-  findById(id: string): { id: string } | undefined;
-  mostRecentInCwd(cwd: string): { id: string } | undefined;
+  patchMeta(id: string, patch: { name?: string }): void;
+  touch(id: string): void;
+  load(id: string): { history: Message[]; meta: SessionMeta };
+  list(): SessionMeta[];
+  findByName(name: string): SessionMeta | undefined;
+  findById(id: string): SessionMeta | undefined;
+  mostRecentInCwd(cwd: string): SessionMeta | undefined;
   cleanup(days: number): number;
 }
 
@@ -530,6 +532,8 @@ export interface HeadlessOptions {
   sessionId?: string;
   sessionName?: string;
   forkSession?: boolean;
+  /** True when the host created this session before invoking runHeadless. */
+  sessionCreated?: boolean;
   persistSession?: boolean;
   /** Emit hook lifecycle events as stream-json lines. */
   includeHookEvents?: boolean;
