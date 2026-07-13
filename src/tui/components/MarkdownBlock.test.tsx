@@ -278,6 +278,89 @@ describe('MarkdownBlock', () => {
   it('wrapParagraphLines exposes the optimized paragraph wrapping path', () => {
     expect(wrapParagraphLines('Alpha beta gamma delta', 12)).toEqual(['Alpha beta', 'gamma delta']);
   });
+
+  it('hard-wraps long unbroken tokens in paragraphs', () => {
+    const content = 'prefix supercalifragilisticexpialidocious suffix';
+    const view = render(
+      withTheme(React.createElement(MarkdownBlock, { content, terminalWidth: 12 })),
+    );
+    const output = frame(view.lastFrame);
+    expect(output).toContain('prefix');
+    expect(output).toContain('suffix');
+    expect(output).toContain('supercalif');
+    // Full token still present across wrapped lines
+    expect(output.replace(/\s+/g, '')).toContain('supercalifragilisticexpialidocious');
+  });
+
+  it('clamps table and code block output under narrow terminal widths', () => {
+    const content = [
+      '| Name | Value | Note |',
+      '|------|------:|------|',
+      '| foo  | 42    | hello world and more text |',
+      '| bar  | 99    | 你好 😀 |',
+      '',
+      '```typescript',
+      'const supercalifragilistic = "abcdefghijklmnopqrstuvwxyz0123456789";',
+      'function example() { return 1; }',
+      'function another() { return 2; }',
+      'function third() { return 3; }',
+      'function fourth() { return 4; }',
+      'function fifth() { return 5; }',
+      'function sixth() { return 6; }',
+      '```',
+      '',
+      '# A Very Long Heading That Should Clamp',
+      '',
+      '> quoted text that is also fairly long for the narrow width',
+      '',
+      '- list item with a long unbroken_token_that_should_hard_wrap_nicely',
+    ].join('\n');
+
+    for (const width of [16, 24, 32, 48]) {
+      const view = render(
+        withTheme(React.createElement(MarkdownBlock, { content, terminalWidth: width })),
+      );
+      const output = frame(view.lastFrame);
+      // Content tokens remain visible after responsive layout.
+      expect(output).toContain('foo');
+      expect(output).toContain('42');
+      // Language label may truncate (typescr…); code body is hard-wrapped.
+      expect(output).toMatch(/typescr|supercalif|abcdefgh|const su/);
+      const lines = output.split('\n').map((l) => l.replace(/\s+$/g, ''));
+      const longest = Math.max(0, ...lines.map((l) => l.length));
+      // Ink borders/padding can add a few columns; pure content is hard-wrapped to width.
+      expect(longest).toBeLessThanOrEqual(Math.max(width + 8, 24));
+      // Hard-wrapped paragraphs must not repeat the full source on every visual line.
+      const joined = output.replace(/\s+/g, ' ');
+      const occurrences = joined.split('unbroken_token_that_should_hard_wrap_nicely').length - 1;
+      expect(occurrences).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('does not syntax-highlight while streaming', () => {
+    const content = '```js\nconst x = 1;\n```';
+    const streaming = render(
+      withTheme(
+        React.createElement(MarkdownBlock, {
+          content,
+          terminalWidth: 40,
+          isStreaming: true,
+        }),
+      ),
+    );
+    const done = render(
+      withTheme(
+        React.createElement(MarkdownBlock, {
+          content,
+          terminalWidth: 40,
+          isStreaming: false,
+        }),
+      ),
+    );
+    // Both should show the source text; streaming path skips highlight only.
+    expect(frame(streaming.lastFrame)).toContain('const x = 1');
+    expect(frame(done.lastFrame)).toContain('const x = 1');
+  });
 });
 
 describe('useThrottledValue', () => {

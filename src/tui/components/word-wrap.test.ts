@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { wordWrap, displayWidth, fitsDisplayWidth, makeDivider, truncateDisplay } from './word-wrap.js';
+import {
+  wordWrap,
+  hardWrap,
+  hardWrapLine,
+  displayWidth,
+  fitsDisplayWidth,
+  makeDivider,
+  padDisplay,
+  truncateDisplay,
+} from './word-wrap.js';
 
 describe('displayWidth', () => {
   it('returns 0 for empty string', () => {
@@ -103,15 +112,21 @@ describe('wordWrap', () => {
     expect(result).toBe('short\n\nthis is a\nlong\nparagraph\nthat\nshould\nwrap');
   });
 
-  it('keeps long words intact (no mid-word break)', () => {
+  it('hard-wraps long words that exceed maxWidth', () => {
     const result = wordWrap('supercalifragilisticexpialidocious', 10);
-    // Should keep it as one line even though it exceeds maxWidth
-    expect(result).toBe('supercalifragilisticexpialidocious');
+    const lines = result.split('\n');
+    expect(lines.every((line) => displayWidth(line) <= 10)).toBe(true);
+    expect(lines.join('')).toBe('supercalifragilisticexpialidocious');
   });
 
-  it('wraps normally but keeps single long word on its own line', () => {
+  it('wraps normally and hard-wraps a single long word on its own lines', () => {
     const result = wordWrap('hello supercalifragilisticexpialidocious world', 10);
-    expect(result).toBe('hello\nsupercalifragilisticexpialidocious\nworld');
+    const lines = result.split('\n');
+    expect(lines[0]).toBe('hello');
+    expect(lines.every((line) => displayWidth(line) <= 10)).toBe(true);
+    // Long token is hard-broken; last fragment may share a line with "world".
+    expect(result.replace(/\s+/g, '')).toBe('hellosupercalifragilisticexpialidociousworld');
+    expect(result).toContain('world');
   });
 
   it('handles maxWidth of 0 by returning text unchanged', () => {
@@ -166,5 +181,47 @@ describe('wordWrap', () => {
     const result = wordWrap('café latte mocha', 8);
     // "café" (4) + " " + "latte" (5) = 10 > 8, so "café" stays, "latte mocha" on next
     expect(result).toBe('café\nlatte\nmocha');
+  });
+});
+
+describe('hardWrap', () => {
+  it('returns text unchanged when it fits', () => {
+    expect(hardWrap('hello', 10)).toBe('hello');
+  });
+
+  it('breaks mid-word by display width', () => {
+    expect(hardWrap('abcdefghij', 4)).toBe('abcd\nefgh\nij');
+  });
+
+  it('preserves existing newlines while wrapping each line', () => {
+    expect(hardWrap('abcdef\nghijkl', 3)).toBe('abc\ndef\nghi\njkl');
+  });
+
+  it('handles CJK without splitting code points incorrectly', () => {
+    // each CJK char is 2 wide → width 4 fits two chars; width 3 fits one
+    expect(hardWrap('你好世界', 4)).toBe('你好\n世界');
+    expect(hardWrapLine('你好世界', 3)).toEqual(['你', '好', '世', '界']);
+    expect(hardWrapLine('你好世界', 4)).toEqual(['你好', '世界']);
+  });
+
+  it('handles emoji as 2-wide units', () => {
+    expect(hardWrap('😀😀😀', 4)).toBe('😀😀\n😀');
+  });
+});
+
+describe('padDisplay', () => {
+  it('pads ASCII to width', () => {
+    expect(padDisplay('hi', 5)).toBe('hi   ');
+    expect(padDisplay('hi', 5, 'right')).toBe('   hi');
+    expect(padDisplay('hi', 5, 'center')).toBe(' hi  ');
+  });
+
+  it('pads CJK by display width', () => {
+    expect(displayWidth(padDisplay('你好', 6))).toBe(6);
+    expect(padDisplay('你好', 6)).toBe('你好  ');
+  });
+
+  it('truncates when text exceeds width', () => {
+    expect(displayWidth(padDisplay('hello world', 5))).toBe(5);
   });
 });
