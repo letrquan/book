@@ -12,6 +12,7 @@ import type {
 import { runAgentLoop } from './agent/loop.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { expandAtMentions } from './tui/input-expansion.js';
+import { runSessionEnd, runSessionStart } from './session/lifecycle.js';
 
 export async function runHeadless(
   config: AgentConfig,
@@ -36,11 +37,24 @@ export async function runHeadless(
   if (store && sessionId && opts.forkSession) {
     sessionId = undefined; // start a new session, copy history only
   }
+  let sessionCreated = opts.sessionCreated === true;
   if (store && !sessionId) {
     sessionId = store.create({ cwd: config.workspace, name: opts.sessionName });
-    if (opts.outputFormat === 'stream-json') {
-      emit({ type: 'session', session_id: sessionId });
-    }
+    sessionCreated = true;
+  }
+  if (sessionCreated && sessionId && opts.outputFormat === 'stream-json') {
+    emit({ type: 'session', session_id: sessionId });
+  }
+
+  if (sessionId) {
+    await runSessionStart(config, sessionId, opts.history.length > 0 ? 'resume' : 'startup', {
+      onHookEvent: opts.includeHookEvents
+        ? (event, payload) => {
+            if (opts.outputFormat === 'stream-json')
+              emit({ type: 'hook_event', event, ...payload });
+          }
+        : undefined,
+    });
   }
 
   // Headless permission policy: if a prompt would be shown and no rule resolves
@@ -159,7 +173,11 @@ export async function runHeadless(
         },
       },
       opts.mode,
-      { signal: opts.signal, displayMessage: prompt },
+      {
+        signal: opts.signal,
+        displayMessage: prompt,
+        manageSessionHooks: sessionId ? false : undefined,
+      },
     );
     // Replace newHistory with the loop's authoritative return.
     newHistory.length = 0;
@@ -214,6 +232,17 @@ export async function runHeadless(
         structured: result.structured,
         structuredError: result.structuredError,
       },
+    });
+  }
+
+  if (sessionId) {
+    await runSessionEnd(config, sessionId, 'completion', {
+      onHookEvent: opts.includeHookEvents
+        ? (event, payload) => {
+            if (opts.outputFormat === 'stream-json')
+              emit({ type: 'hook_event', event, ...payload });
+          }
+        : undefined,
     });
   }
 

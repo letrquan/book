@@ -131,6 +131,16 @@ describe('message-accumulator', () => {
     expect(setMessages).toHaveBeenCalledTimes(callCount);
   });
 
+  it('discard() drops queued ops without flushing', () => {
+    const { acc, setMessages, getMessages } = createTestAccumulator();
+    acc.start();
+    acc.addText('discard me');
+    acc.discard();
+    vi.advanceTimersByTime(20);
+    expect(setMessages).not.toHaveBeenCalled();
+    expect(getMessages()[0].content).toBe('');
+  });
+
   it('flush() clears queue so subsequent flush is a no-op', () => {
     const { acc, setMessages } = createTestAccumulator();
     acc.start();

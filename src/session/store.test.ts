@@ -108,6 +108,46 @@ describe('SessionStore', () => {
     expect(s.findByName('feature-x')?.id).toBe(id);
   });
 
+  it('applies append-only metadata patches without counting them as messages', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.patchMeta(id, { name: 'named-later' });
+    const loaded = s.load(id);
+    expect(loaded.meta.name).toBe('named-later');
+    expect(loaded.meta.messageCount).toBe(0);
+  });
+
+  it('replays complete assistant turns with tool metadata', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, {
+      type: 'assistant',
+      timestamp: 2,
+      data: {
+        complete: true,
+        content: 'done',
+        toolCalls: [{ id: 'tc1', name: 'Read', arguments: { filePath: 'a.ts' } }],
+        toolResults: [{ toolCallId: 'tc1', success: true, output: 'ok' }],
+      },
+    });
+    const assistant = s.load(id).history[0];
+    expect(assistant.toolCalls?.[0].name).toBe('Read');
+    expect(assistant.toolResults?.[0].output).toBe('ok');
+  });
+
+  it('touches a session without adding a message', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.touch(id);
+    expect(s.load(id).meta.messageCount).toBe(0);
+  });
+
+  it('normalizes workspace paths for continue lookup', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: join(dir, 'project', '..', 'project') });
+    expect(s.mostRecentInCwd(join(dir, 'project'))?.id).toBe(id);
+  });
+
   it('deletes sessions older than cleanupPeriodDays', () => {
     const s = new SessionStore(dir);
     const old = s.create({ cwd: '/proj' });

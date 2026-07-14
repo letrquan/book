@@ -48,6 +48,8 @@ export interface MessageAccumulator {
   start: () => void;
   /** Stop the timer, flush remaining ops. Idempotent. */
   stop: () => void;
+  /** Stop the timer and drop queued ops without flushing. Idempotent. */
+  discard: () => void;
 }
 
 interface AccumulatorState {
@@ -167,6 +169,15 @@ export function createMessageAccumulator(
     flush();
   }
 
+  function discard(): void {
+    state.stopped = true;
+    state.queue = [];
+    if (state.timerId !== null) {
+      clearTimeout(state.timerId);
+      state.timerId = null;
+    }
+  }
+
   return {
     addText,
     addToolCall,
@@ -176,5 +187,6 @@ export function createMessageAccumulator(
     flush,
     start,
     stop,
+    discard,
   };
 }

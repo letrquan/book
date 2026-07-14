@@ -67,6 +67,14 @@ function config(): AgentConfig {
   };
 }
 
+const testSession = {
+  sessionId: 'session-test',
+  history: [],
+  source: 'startup' as const,
+  persisted: false,
+  created: true,
+};
+
 function pendingAgentState() {
   const resolvePlanApproval = vi.fn();
   return {
@@ -82,8 +90,14 @@ function pendingAgentState() {
     pendingPlanApproval: { plan: 'Review this plan.', resolve: vi.fn() },
     agentTodos: [],
     liveConfig: config(),
+    sessionId: 'session-test',
+    sessionName: undefined,
     send: vi.fn(),
     clear: vi.fn(),
+    startNewConversation: vi.fn(async () => {}),
+    resumeConversation: vi.fn(async () => {}),
+    listSessions: vi.fn(() => []),
+    endCurrentSession: vi.fn(),
     resolvePermission: vi.fn(),
     resolvePlanApproval,
     cancel: vi.fn(),
@@ -111,6 +125,51 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+describe('App session commands', () => {
+  const submit = async (view: ReturnType<typeof render>, value: string) => {
+    view.stdin.write(value);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+  };
+
+  it('/new dispatches a new conversation', async () => {
+    const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    await submit(view, '/new previous');
+
+    expect(agentState.startNewConversation).toHaveBeenCalledWith('previous');
+    expect(agentState.clear).not.toHaveBeenCalled();
+  });
+
+  it('/newline is not treated as /new', async () => {
+    const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    await submit(view, '/newline value');
+
+    expect(agentState.startNewConversation).not.toHaveBeenCalled();
+    expect(agentState.send).toHaveBeenCalledWith('/newline value');
+  });
+});
+
 describe('App plan approval keyboard ownership', () => {
   it('does not open the model picker while plan approval owns input', () => {
     const agentState = pendingAgentState();
@@ -120,9 +179,10 @@ describe('App plan approval keyboard ownership', () => {
       addTask: vi.fn(),
       updateTaskStatus: vi.fn(),
       removeTask: vi.fn(),
+      clearTasks: vi.fn(),
     });
 
-    const view = render(<App config={config()} />);
+    const view = render(<App config={config()} session={testSession} />);
     expect(stripAnsi(view.lastFrame())).toContain('Plan approval required.');
 
     view.stdin.write('\x1bp');
@@ -140,9 +200,10 @@ describe('App plan approval keyboard ownership', () => {
       addTask: vi.fn(),
       updateTaskStatus: vi.fn(),
       removeTask: vi.fn(),
+      clearTasks: vi.fn(),
     });
 
-    const view = render(<App config={config()} />);
+    const view = render(<App config={config()} session={testSession} />);
     view.stdin.write('\x1bm');
 
     expect(agentState.cycleMode).not.toHaveBeenCalled();

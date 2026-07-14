@@ -21,14 +21,16 @@ export function useTasks() {
   }, []);
 
   const updateTaskStatus = useCallback((id: string, status: Task['status']) => {
-    setTasks((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, status } : t)),
-    );
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
   }, []);
 
   const removeTask = useCallback((id: string) => {
     setTasks((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  return { tasks, addTask, updateTaskStatus, removeTask };
+  const clearTasks = useCallback(() => {
+    setTasks([]);
+  }, []);
+
+  return { tasks, addTask, updateTaskStatus, removeTask, clearTasks };
 }

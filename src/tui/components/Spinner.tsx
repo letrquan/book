@@ -18,7 +18,7 @@ const SPINNER_TIPS = [
   'Ctrl+J or Shift+Enter for multiline input',
   'Type /task <subject> to add a task',
   'The model can use multiple tools per turn',
-  'Use /clear to start a fresh conversation',
+  'Use /new to start fresh; /resume returns to saved conversations',
   'PgUp/PgDn to scroll through message history',
   'End to jump to the latest messages',
   'Tab to accept suggestions in the input bar',
@@ -45,7 +45,15 @@ interface SpinnerProps {
  * seconds, shown inline next to the spinner frame. The tip list is
  * configurable via the `tips` and `excludeDefaultTips` props.
  */
-export function Spinner({ active = true, style = 'braille', color, reducedMotion = false, showTips = false, tips, excludeDefaultTips = false }: SpinnerProps) {
+export function Spinner({
+  active = true,
+  style = 'braille',
+  color,
+  reducedMotion = false,
+  showTips = false,
+  tips,
+  excludeDefaultTips = false,
+}: SpinnerProps) {
   const theme = useTheme();
   const { frame, color: gradientColor } = useGradientSpinner(active, style, reducedMotion);
   const spinnerColor = color || gradientColor;
@@ -85,7 +93,9 @@ export function Spinner({ active = true, style = 'braille', color, reducedMotion
     <Box>
       <Text color={spinnerColor}>{frame} </Text>
       {showTips && active && tip ? (
-        <Text color={theme.subtle} dimColor>{tip}</Text>
+        <Text color={theme.subtle} dimColor>
+          {tip}
+        </Text>
       ) : null}
     </Box>
   );

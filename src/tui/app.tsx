@@ -10,6 +10,7 @@ import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
 import { ModelPicker } from './components/ModelPicker.js';
+import { SessionPicker } from './components/SessionPicker.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
 import {
@@ -20,7 +21,8 @@ import {
   type ThemeTokens,
   type ThemeName,
 } from './theme.js';
-import type { AgentConfig, CommandContext } from '../types.js';
+import type { AgentConfig, CommandContext, SessionStoreInterface } from '../types.js';
+import type { SessionBootstrap } from '../session/resolve.js';
 import { DEFAULT_THEME } from '../types.js';
 import { useTheme } from './theme.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
@@ -72,6 +74,7 @@ const SETTABLE_KEYS = [
 
 interface AppProps {
   config: AgentConfig;
+  session: SessionBootstrap & { store?: SessionStoreInterface };
   redrawViewport?: () => void;
 }
 
@@ -100,7 +103,7 @@ interface AppProps {
  *   Shift+Tab — cycle permission mode
  *   Ctrl+/   — toggle keyboard shortcuts reference
  */
-export function App({ config, redrawViewport }: AppProps) {
+export function App({ config, session, redrawViewport }: AppProps) {
   const {
     messages,
     isThinking,
@@ -114,8 +117,14 @@ export function App({ config, redrawViewport }: AppProps) {
     pendingPlanApproval,
     agentTodos,
     liveConfig,
+    sessionId,
+    sessionName,
     send,
     clear,
+    startNewConversation,
+    resumeConversation,
+    listSessions,
+    endCurrentSession,
     resolvePermission,
     resolvePlanApproval,
     cancel,
@@ -131,7 +140,7 @@ export function App({ config, redrawViewport }: AppProps) {
     retryAttempt,
     retryMax,
     retryCountdownMs,
-  } = useAgent(config);
+  } = useAgent(config, session);
 
   const [expandedToolId, setExpandedToolId] = useState<string | null>(null);
   const [showTasks, setShowTasks] = useState(false);
@@ -142,8 +151,9 @@ export function App({ config, redrawViewport }: AppProps) {
   const [showPermissions, setShowPermissions] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [currentTheme, setCurrentTheme] = useState<ThemeTokens>(DEFAULT_THEME);
-  const { tasks, addTask, updateTaskStatus, removeTask } = useTasks();
+  const { tasks, addTask, updateTaskStatus, removeTask, clearTasks } = useTasks();
   const theme = useTheme();
   const { exit: exitApp } = useApp();
 
@@ -259,7 +269,7 @@ export function App({ config, redrawViewport }: AppProps) {
         return;
       }
       uiLog.event('input:Ctrl+C', { action: 'exit' });
-      exitApp();
+      void endCurrentSession('exit').finally(exitApp);
       return;
     }
     // Ctrl+E — toggle full tool output
@@ -325,13 +335,32 @@ export function App({ config, redrawViewport }: AppProps) {
         uiLog.event('submit:text', { len: value.length, disabled: isThinking });
       }
       // Slash commands: built-in first, then custom.
-      if (value.startsWith('/clear')) {
-        clear();
+      const firstSpace = value.indexOf(' ');
+      const commandName = firstSpace === -1 ? value.slice(1) : value.slice(1, firstSpace);
+      const commandArg = firstSpace === -1 ? '' : value.slice(firstSpace + 1).trim();
+      if (commandName === 'clear' || commandName === 'new' || commandName === 'reset') {
+        clearTasks();
+        setExpandedToolId(null);
+        setShowHelp(false);
+        setShowStatus(false);
+        setShowSessionPicker(false);
+        void startNewConversation(commandArg || undefined).catch((err) => {
+          addLocalMessage(`✕ ${err instanceof Error ? err.message : String(err)}`);
+        });
         stdout?.write('\x1b[2J\x1b[3J\x1b[H');
+      } else if (commandName === 'resume' || commandName === 'continue') {
+        if (!commandArg) {
+          setShowSessionPicker(true);
+        } else {
+          clearTasks();
+          void resumeConversation(commandArg).catch((err) => {
+            addLocalMessage(`✕ ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
       } else if (value.startsWith('/compact')) {
         compact();
       } else if (value.startsWith('/exit')) {
-        exitApp();
+        void endCurrentSession('exit').finally(exitApp);
       } else if (value.startsWith('/help')) {
         setShowHelp((s) => !s);
       } else if (value.startsWith('/task ')) {
@@ -582,7 +611,11 @@ export function App({ config, redrawViewport }: AppProps) {
         const cmdArgs = spaceIdx === -1 ? '' : value.slice(spaceIdx + 1);
         const cmd = commands.find((c) => c.name === cmdName);
         if (cmd) {
-          const { resolved } = resolveCommandBody(cmd, cmdArgs);
+          const { resolved } = resolveCommandBody(cmd, cmdArgs, {
+            sessionId,
+            workspace: config.workspace,
+            model: liveConfig.model,
+          });
           // Pass command context for allowed-tools and model enforcement.
           const ctx: CommandContext | undefined =
             cmd.allowedTools || cmd.model
@@ -605,10 +638,14 @@ export function App({ config, redrawViewport }: AppProps) {
     [
       send,
       clear,
+      startNewConversation,
+      resumeConversation,
+      clearTasks,
       compact,
       addTask,
       commands,
       exitApp,
+      endCurrentSession,
       usage,
       liveConfig,
       addLocalMessage,
@@ -618,6 +655,7 @@ export function App({ config, redrawViewport }: AppProps) {
       turnDurationMs,
       error,
       skills,
+      sessionId,
       stdout,
       isThinking,
       redrawViewport,
@@ -643,7 +681,7 @@ export function App({ config, redrawViewport }: AppProps) {
           return true;
         }
         uiLog.event('input:Ctrl+C', { action: 'exit' });
-        exitApp();
+        void endCurrentSession('exit').finally(exitApp);
         return true;
       }
       if (key.ctrl && input === 'l') {
@@ -663,7 +701,7 @@ export function App({ config, redrawViewport }: AppProps) {
       }
       return false; // not consumed — let text input handle it
     },
-    [cancel, exitApp, isThinking, pendingPermission, pendingPlanApproval],
+    [cancel, endCurrentSession, exitApp, isThinking, pendingPermission, pendingPlanApproval],
   );
 
   // Track input changes for command menu filtering — now handled inside InputBar.
@@ -721,8 +759,21 @@ export function App({ config, redrawViewport }: AppProps) {
                 </Text>
                 <Box flexDirection="column" marginTop={1}>
                   <HelpRow label="/help" description="Toggle this help" theme={theme} />
-                  <HelpRow label="/clear" description="Clear conversation" theme={theme} />
-                  <HelpRow label="/compact" description="Summarize older turns" theme={theme} />
+                  <HelpRow
+                    label="/clear [name]"
+                    description="Start new; save previous (/new, /reset)"
+                    theme={theme}
+                  />
+                  <HelpRow
+                    label="/resume [id|name]"
+                    description="Resume a saved conversation"
+                    theme={theme}
+                  />
+                  <HelpRow
+                    label="/compact"
+                    description="Summarize this conversation"
+                    theme={theme}
+                  />
                   <HelpRow label="/task <subject>" description="Add a task" theme={theme} />
                   <HelpRow
                     label="/theme [dark|light|auto]"
@@ -798,6 +849,11 @@ export function App({ config, redrawViewport }: AppProps) {
                 </Text>
                 <Box flexDirection="column" marginTop={1}>
                   <HelpRow label="Model" description={liveConfig.model} theme={theme} />
+                  <HelpRow
+                    label="Session"
+                    description={`${sessionName ? `${sessionName} · ` : ''}${sessionId}`}
+                    theme={theme}
+                  />
                   <HelpRow label="Workspace" description={config.workspace} theme={theme} />
                   <HelpRow
                     label="Max Tokens"
@@ -923,6 +979,20 @@ export function App({ config, redrawViewport }: AppProps) {
                 </Box>
               </Box>
             )}
+            {showSessionPicker && (
+              <SessionPicker
+                sessions={listSessions()}
+                currentSessionId={sessionId}
+                onPick={(selected) => {
+                  setShowSessionPicker(false);
+                  clearTasks();
+                  void resumeConversation(selected.id).catch((err) => {
+                    addLocalMessage(`✕ ${err instanceof Error ? err.message : String(err)}`);
+                  });
+                }}
+                onCancel={() => setShowSessionPicker(false)}
+              />
+            )}
             {showModelPicker && (
               <ModelPicker
                 currentModel={liveConfig.model}
@@ -1006,12 +1076,15 @@ export function App({ config, redrawViewport }: AppProps) {
           {/* Input bar — above the status line. Command menu is built into InputBar. */}
           <Box flexDirection="column" flexShrink={0} width={termWidth}>
             <InputBar
+              key={sessionId}
               onSubmit={handleSubmit}
               disabled={isThinking}
               mode={mode}
               onCycleMode={cycleMode}
               onInterrupt={cancel}
-              inputSuppressed={Boolean(pendingPermission || pendingPlanApproval)}
+              inputSuppressed={Boolean(
+                pendingPermission || pendingPlanApproval || showSessionPicker || showModelPicker,
+              )}
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
               terminalWidth={termWidth}
