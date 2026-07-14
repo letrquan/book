@@ -49,6 +49,8 @@ import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
 import { persistSettingLocal } from './persist.js';
+import { buildModelOptions } from './model-options.js';
+import { redactSettingValue, redactSettingsForDisplay } from '../settings-redaction.js';
 import { createUiDebugLogger } from '../debug-log.js';
 import { selectActiveToolId } from './tool-traces.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
@@ -141,6 +143,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
     cycleMode,
     addLocalMessage,
     setModel,
+    upsertProviderAndSelect,
     setEffort,
     setMemoryAutoSave,
     refreshMemoryContext,
@@ -169,6 +172,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
   // Discover slash commands on startup.
   const commands = useMemo(() => discoverCommands(config.workspace), [config.workspace]);
   const skills = useMemo(() => discoverSkills(config.workspace), [config.workspace]);
+  const modelOptions = useMemo(() => buildModelOptions(liveConfig.settings), [liveConfig.settings]);
 
   const { stdout } = useStdout();
   const readTerminalSize = useCallback(
@@ -397,8 +401,10 @@ export function App({ config, session, redrawViewport }: AppProps) {
       } else if (value.startsWith('/model')) {
         const arg = value.slice('/model'.length).trim();
         if (arg) {
-          setModel(arg);
-          addLocalMessage(`Switched to ${arg} (saved as default).`);
+          const result = setModel(arg);
+          addLocalMessage(
+            result.ok ? `Switched to ${arg} (saved as default).` : `✕ ${result.error}`,
+          );
         } else {
           setShowModelPicker(true);
         }
@@ -407,9 +413,9 @@ export function App({ config, session, redrawViewport }: AppProps) {
         if (!arg) {
           addLocalMessage(
             JSON.stringify(
-              {
+              redactSettingsForDisplay({
                 ...liveConfig.settings,
-                model: liveConfig.model,
+                model: liveConfig.modelSelection ?? liveConfig.model,
                 baseUrl: liveConfig.baseUrl,
                 workspace: liveConfig.workspace,
                 maxTurns: liveConfig.maxTurns,
@@ -417,7 +423,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 effort: liveConfig.effort,
                 activeProvider: liveConfig.provider,
                 modelInfo: liveConfig.modelInfo,
-              },
+              }),
               null,
               2,
             ),
@@ -441,7 +447,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
           const r = persistSettingLocal(config.workspace, key, parsed);
           addLocalMessage(
             r.ok
-              ? `Set ${key} = ${JSON.stringify(parsed)} in .book/settings.local.json (next session).`
+              ? `Set ${key} = ${JSON.stringify(redactSettingValue(key, parsed))} in .book/settings.local.json (next session).`
               : `✕ ${r.error}`,
           );
         } else {
@@ -753,7 +759,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
               terminalHeight={termHeight}
               staticEpoch={staticEpoch}
               workspace={config.workspace}
-              model={liveConfig.model}
+              model={liveConfig.modelSelection ?? liveConfig.model}
               mode={mode}
               commandCount={commands.length}
               skillCount={skills.length}
@@ -801,7 +807,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
                     description="Switch theme"
                     theme={theme}
                   />
-                  <HelpRow label="/model <name>" description="Switch AI model" theme={theme} />
+                  <HelpRow
+                    label="/model [name]"
+                    description="Switch model or add a BYOK provider"
+                    theme={theme}
+                  />
                   <HelpRow label="/config" description="Show configuration" theme={theme} />
                   <HelpRow label="/diff" description="Show git diff" theme={theme} />
                   <HelpRow label="/status" description="Session status" theme={theme} />
@@ -869,7 +879,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
                   Session Status
                 </Text>
                 <Box flexDirection="column" marginTop={1}>
-                  <HelpRow label="Model" description={liveConfig.model} theme={theme} />
+                  <HelpRow
+                    label="Model"
+                    description={liveConfig.modelSelection ?? liveConfig.model}
+                    theme={theme}
+                  />
                   <HelpRow
                     label="Session"
                     description={`${sessionName ? `${sessionName} · ` : ''}${sessionId}`}
@@ -1016,9 +1030,15 @@ export function App({ config, session, redrawViewport }: AppProps) {
             )}
             {showModelPicker && (
               <ModelPicker
-                currentModel={liveConfig.model}
+                options={modelOptions}
+                currentModel={liveConfig.modelSelection ?? liveConfig.model}
                 currentEffort={liveConfig.effort}
                 hasPriorOutput={messages.length > 0}
+                providers={liveConfig.settings.provider}
+                workspace={config.workspace}
+                retry={liveConfig.retry}
+                compact={isNarrow || isTiny}
+                maxVisibleModels={Math.max(3, Math.min(10, termHeight - 10))}
                 warnings={[
                   process.env.BOOK_MODEL
                     ? `BOOK_MODEL is set to "${process.env.BOOK_MODEL}" — it overrides settings.model on next startup.`
@@ -1030,15 +1050,24 @@ export function App({ config, session, redrawViewport }: AppProps) {
                     : '',
                 ].filter(Boolean)}
                 onPick={(model, saveDefault) => {
-                  setModel(model);
-                  if (!saveDefault) {
-                    addLocalMessage(`Switched to ${model} for this session only.`);
-                  } else {
-                    addLocalMessage(`Switched to ${model} (saved as default).`);
-                  }
+                  const result = setModel(model, { persist: saveDefault });
+                  if (!result.ok) return result;
+                  addLocalMessage(
+                    saveDefault
+                      ? `Switched to ${model} (saved as default).`
+                      : `Switched to ${model} for this session only.`,
+                  );
                   setShowModelPicker(false);
+                  return result;
                 }}
                 onPickEffort={(level) => setEffort(level)}
+                onSaveProvider={upsertProviderAndSelect}
+                onProviderSaved={(request) => {
+                  addLocalMessage(
+                    `Added ${request.providerId} with ${request.models.length} model${request.models.length === 1 ? '' : 's'}; using ${request.providerId}/${request.activeModelId}.`,
+                  );
+                  setShowModelPicker(false);
+                }}
                 onCancel={() => setShowModelPicker(false)}
               />
             )}
@@ -1122,7 +1151,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
           {/* Status line — stable footer */}
           <Box flexShrink={0} width={termWidth}>
             <StatusLine
-              model={liveConfig.model}
+              model={liveConfig.modelSelection ?? liveConfig.model}
               tokenCount={tokenCount}
               maxTokens={liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens}
               mode={mode}

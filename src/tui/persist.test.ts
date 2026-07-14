@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { persistSettingLocal, persistPermissionRuleLocal, readSettingsLocal } from './persist.js';
+import {
+  persistSettingLocal,
+  persistSettingsLocal,
+  persistPermissionRuleLocal,
+  readSettingsLocal,
+} from './persist.js';
 
 let dir: string;
 
@@ -40,6 +45,24 @@ describe('persistSettingLocal', () => {
     expect(provider.openrouter.type).toBe('openai');
     expect(provider.openrouter.baseURL).toBe('https://openrouter.ai/api/v1');
     expect(provider.openrouter.models['deepseek-chat'].contextWindow).toBe(128000);
+  });
+
+  it('writes multiple settings atomically without splitting model IDs on dots', () => {
+    const provider = {
+      type: 'openai',
+      apiKey: 'secret',
+      models: { 'vendor/model.v2': { label: 'Model V2' } },
+    };
+    expect(
+      persistSettingsLocal(dir, {
+        'provider.gateway': provider,
+        model: 'gateway/vendor/model.v2',
+      }).ok,
+    ).toBe(true);
+    expect(readSettingsLocal(dir)).toEqual({
+      provider: { gateway: provider },
+      model: 'gateway/vendor/model.v2',
+    });
   });
 
   it('returns {ok:false, error} on a bad workspace rather than throwing', () => {

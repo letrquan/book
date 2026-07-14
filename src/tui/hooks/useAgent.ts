@@ -22,7 +22,13 @@ import type { AgentConfig } from '../../types.js';
 import { makeMessage, removeTrailingEmptyAssistantPlaceholder } from './streaming-state.js';
 import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-log.js';
 import { loadMemoryContext } from '../../memory-store.js';
-import { persistSettingLocal, persistPermissionRuleLocal } from '../persist.js';
+import {
+  persistSettingLocal,
+  persistSettingsLocal,
+  persistPermissionRuleLocal,
+} from '../persist.js';
+import { providerConfigSchema } from '../../settings.js';
+import { providerConfigFromDraft, type ProviderSaveRequest } from '../model-options.js';
 import { expandAtMentions, expandShellCommands } from '../input-expansion.js';
 import { selectSession, type SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';
@@ -727,13 +733,65 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [isThinking],
   );
 
-  // Switch the active model for the rest of the session and persist it to the
-  // local settings layer. (BOOK_MODEL env, if set, overrides settings on the
-  // next startup — app.tsx surfaces that warning, not here.)
+  // Switch the active model for the rest of the session, optionally persisting
+  // it to the local settings layer. BOOK_MODEL can still override settings on
+  // the next startup; app.tsx surfaces that warning.
   const setModel = useCallback(
-    (name: string) => {
-      setLiveConfig((c) => applyModelDefaults(resolveModelProviderConfig(c, name)));
-      persistSettingLocal(config.workspace, 'model', name);
+    (name: string, options: { persist?: boolean } = {}) => {
+      let next: AgentConfig;
+      try {
+        next = applyModelDefaults(resolveModelProviderConfig(liveConfigRef.current, name));
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+      if (options.persist !== false) {
+        const result = persistSettingLocal(config.workspace, 'model', name);
+        if (!result.ok) return result;
+      }
+      setLiveConfig(next);
+      return { ok: true };
+    },
+    [config.workspace],
+  );
+
+  const upsertProviderAndSelect = useCallback(
+    (request: ProviderSaveRequest) => {
+      const providerId = request.providerId;
+      let savedProvider;
+      try {
+        const existing = liveConfigRef.current.settings.provider[providerId];
+        savedProvider = providerConfigSchema.parse(
+          providerConfigFromDraft(request, existing, request.replaceModels),
+        );
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+
+      const selection = `${providerId}/${request.activeModelId}`;
+      const activate = request.activate !== false;
+      const result = persistSettingsLocal(config.workspace, {
+        [`provider.${providerId}`]: savedProvider,
+        ...(activate ? { model: selection } : {}),
+      });
+      if (!result.ok) return result;
+
+      setLiveConfig((current) => {
+        const withProvider: AgentConfig = {
+          ...current,
+          settings: {
+            ...current.settings,
+            ...(activate ? { model: selection } : {}),
+            provider: {
+              ...current.settings.provider,
+              [providerId]: savedProvider,
+            },
+          },
+        };
+        return activate
+          ? applyModelDefaults(resolveModelProviderConfig(withProvider, selection))
+          : withProvider;
+      });
+      return { ok: true };
     },
     [config.workspace],
   );
@@ -815,6 +873,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     cycleMode,
     addLocalMessage,
     setModel,
+    upsertProviderAndSelect,
     setEffort,
     setMemoryAutoSave,
 

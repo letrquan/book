@@ -68,6 +68,8 @@ export interface LoadConfigOptions {
   noSettings?: boolean;
   /** CLI -m/--model override, applied before provider registry resolution. */
   modelOverride?: string;
+  /** Let the interactive TUI start before a BYOK credential has been added. */
+  allowMissingApiKey?: boolean;
 }
 
 export function loadConfig(workspace?: string, options?: LoadConfigOptions): AgentConfig {
@@ -135,6 +137,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     apiKey: defaultApiKey,
     baseUrl: defaultBaseUrl,
     model: rawModel,
+    modelSelection: rawModel,
     maxTurns: process.env.BOOK_MAX_TURNS
       ? parseInt(process.env.BOOK_MAX_TURNS, 10)
       : (settings.maxTurns ?? legacy?.maxTurns ?? 25),
@@ -159,7 +162,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
 
   config = applyModelDefaults(resolveModelProviderConfig(config, rawModel));
 
-  if (!config.apiKey) {
+  if (!config.apiKey && !options?.allowMissingApiKey) {
     throw new Error(
       'BOOK_API_KEY or provider.<id>.apiKey not set. Set BOOK_API_KEY or use {env:VAR} in settings.',
     );
@@ -174,6 +177,7 @@ function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
     apiKey: config.defaultApiKey ?? config.apiKey,
     baseUrl: config.defaultBaseUrl ?? config.baseUrl,
     model,
+    modelSelection: model,
     modelInfo: undefined,
     provider: config.defaultProvider ?? config.provider,
   };
@@ -221,12 +225,13 @@ export function resolveModelProviderConfig(
     apiKey,
     baseUrl: provider.baseURL ?? provider.baseUrl ?? config.defaultBaseUrl ?? config.baseUrl,
     model,
+    modelSelection: rawModel,
     modelInfo: provider.models[model],
     provider: provider.type,
   };
 }
 
-function resolveSecret(raw: string | undefined, workspace: string): string | undefined {
+export function resolveSecret(raw: string | undefined, workspace: string): string | undefined {
   if (!raw) return undefined;
   const envMatch = raw.match(/^\{env:([^}]+)\}$/);
   if (envMatch) return process.env[envMatch[1]];

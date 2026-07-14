@@ -395,9 +395,12 @@ export interface ProviderMessage {
 }
 
 export interface AgentConfig {
+  /** May be empty until an interactive user adds a BYOK provider. */
   apiKey: string;
   baseUrl: string;
   model: string;
+  /** Raw picker/settings reference, including provider prefix when configured. */
+  modelSelection?: string;
   maxTurns: number;
   maxTokens: number;
   /** True when maxTokens came from user config/env, not a default or model metadata. */

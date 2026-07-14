@@ -112,6 +112,17 @@ describe('loadConfig retry — settings.json', () => {
 });
 
 describe('loadConfig provider registry', () => {
+  it('allows the interactive TUI to start before BYOK is configured', () => {
+    delete process.env.BOOK_API_KEY;
+    const config = loadConfig(workspace, { noSettings: true, allowMissingApiKey: true });
+    expect(config.apiKey).toBe('');
+  });
+
+  it('still requires a key for non-interactive callers', () => {
+    delete process.env.BOOK_API_KEY;
+    expect(() => loadConfig(workspace, { noSettings: true })).toThrow(/BOOK_API_KEY/);
+  });
+
   it('resolves provider/model, env api key, metadata, max tokens, and effort=false', () => {
     process.env.OPENROUTER_API_KEY = 'or-key';
     writeFileSync(
@@ -141,6 +152,7 @@ describe('loadConfig provider registry', () => {
     expect(config.provider).toBe('openai');
     expect(config.baseUrl).toBe('https://openrouter.ai/api/v1');
     expect(config.model).toBe('deepseek-chat');
+    expect(config.modelSelection).toBe('openrouter/deepseek-chat');
     expect(config.apiKey).toBe('or-key');
     expect(config.maxTokens).toBe(8192);
     expect(config.effort).toBeUndefined();
