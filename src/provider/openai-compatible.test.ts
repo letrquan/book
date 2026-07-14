@@ -69,9 +69,7 @@ function textStream(content: string): ReadableStream {
   return new ReadableStream({
     start(c) {
       const enc = new TextEncoder();
-      c.enqueue(
-        enc.encode(`data: {"choices":[{"delta":{"content":"${content}"}}]}\n\n`),
-      );
+      c.enqueue(enc.encode(`data: {"choices":[{"delta":{"content":"${content}"}}]}\n\n`));
       c.enqueue(enc.encode('data: [DONE]\n\n'));
       c.close();
     },
@@ -93,9 +91,7 @@ function delayedStream(content: string, delayMs: number): ReadableStream {
     start(c) {
       const enc = new TextEncoder();
       setTimeout(() => {
-        c.enqueue(
-          enc.encode(`data: {"choices":[{"delta":{"content":"${content}"}}]}\n\n`),
-        );
+        c.enqueue(enc.encode(`data: {"choices":[{"delta":{"content":"${content}"}}]}\n\n`));
         c.enqueue(enc.encode('data: [DONE]\n\n'));
         c.close();
       }, delayMs);
@@ -121,11 +117,7 @@ describe('chatCompletionStream retry — status codes', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      config,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     expect(calls).toBe(3);
@@ -146,11 +138,7 @@ describe('chatCompletionStream retry — status codes', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      config,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     expect(calls).toBe(2);
@@ -171,11 +159,7 @@ describe('chatCompletionStream retry — status codes', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      config,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     expect(calls).toBe(3);
@@ -196,11 +180,7 @@ describe('chatCompletionStream retry — status codes', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      config,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     expect(calls).toBe(2);
@@ -221,11 +201,7 @@ describe('chatCompletionStream retry — status codes', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      config,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     expect(calls).toBe(2);
@@ -243,11 +219,7 @@ describe('chatCompletionStream retry — status codes', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      config,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     expect(calls).toBe(1); // no retry on 400
@@ -265,11 +237,7 @@ describe('chatCompletionStream retry — status codes', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      config,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     expect(calls).toBe(1);
@@ -287,11 +255,7 @@ describe('chatCompletionStream retry — status codes', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      config,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     expect(calls).toBe(1);
@@ -309,11 +273,7 @@ describe('chatCompletionStream retry — status codes', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      config,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     expect(calls).toBe(1);
@@ -322,7 +282,16 @@ describe('chatCompletionStream retry — status codes', () => {
 
   it('yields error after exhausting retries on persistent 500', async () => {
     const cfg = defaultConfig({
-      retry: { maxAttempts: 2, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 2,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 0,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
     let calls = 0;
     vi.stubGlobal(
@@ -334,11 +303,7 @@ describe('chatCompletionStream retry — status codes', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      cfg,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(cfg, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     // initial + 2 retries = 3 total
@@ -348,7 +313,16 @@ describe('chatCompletionStream retry — status codes', () => {
 
   it('yields formatted error message on persistent 429', async () => {
     const cfg = defaultConfig({
-      retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 1,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 0,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
     vi.stubGlobal(
       'fetch',
@@ -358,11 +332,7 @@ describe('chatCompletionStream retry — status codes', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      cfg,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(cfg, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     const err = events.find((e) => e.type === 'error');
@@ -386,11 +356,7 @@ describe('chatCompletionStream retry — network errors', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      config,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     expect(calls).toBe(2);
@@ -399,7 +365,16 @@ describe('chatCompletionStream retry — network errors', () => {
 
   it('yields error after all network retries exhausted', async () => {
     const cfg = defaultConfig({
-      retry: { maxAttempts: 2, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 2,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 0,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
     vi.stubGlobal(
       'fetch',
@@ -409,11 +384,7 @@ describe('chatCompletionStream retry — network errors', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      cfg,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(cfg, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     expect(events.some((e) => e.type === 'error' && e.error?.includes('ECONNREFUSED'))).toBe(true);
@@ -436,16 +407,11 @@ describe('chatCompletionStream retry — callbacks', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      config,
-      [{ role: 'user', content: 'hi' }],
-      [],
-      {
-        onRetry: (attempt, max, delayMs) => {
-          retryCalls.push({ attempt, max, delayMs });
-        },
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [], {
+      onRetry: (attempt, max, delayMs) => {
+        retryCalls.push({ attempt, max, delayMs });
       },
-    )) {
+    })) {
       events.push(e);
     }
     expect(retryCalls.length).toBe(2); // two retry attempts
@@ -457,7 +423,16 @@ describe('chatCompletionStream retry — callbacks', () => {
 
   it('calls onStreamStall and yields error when stream hangs', async () => {
     const cfg = defaultConfig({
-      retry: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 50, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 3,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 50,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
     let stallFired = false;
     vi.stubGlobal(
@@ -468,16 +443,11 @@ describe('chatCompletionStream retry — callbacks', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      cfg,
-      [{ role: 'user', content: 'hi' }],
-      [],
-      {
-        onStreamStall: () => {
-          stallFired = true;
-        },
+    for await (const e of chatCompletionStream(cfg, [{ role: 'user', content: 'hi' }], [], {
+      onStreamStall: () => {
+        stallFired = true;
       },
-    )) {
+    })) {
       events.push(e);
     }
     expect(stallFired).toBe(true);
@@ -486,7 +456,16 @@ describe('chatCompletionStream retry — callbacks', () => {
 
   it('does not fire stall for streams that deliver data quickly', async () => {
     const cfg = defaultConfig({
-      retry: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 1000, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 3,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 1000,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
     let stallFired = false;
     vi.stubGlobal(
@@ -497,14 +476,11 @@ describe('chatCompletionStream retry — callbacks', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      cfg,
-      [{ role: 'user', content: 'hi' }],
-      [],
-      {
-        onStreamStall: () => { stallFired = true; },
+    for await (const e of chatCompletionStream(cfg, [{ role: 'user', content: 'hi' }], [], {
+      onStreamStall: () => {
+        stallFired = true;
       },
-    )) {
+    })) {
       events.push(e);
     }
     expect(stallFired).toBe(false);
@@ -527,12 +503,9 @@ describe('chatCompletionStream retry — edge cases', () => {
     controller.abort();
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      config,
-      [{ role: 'user', content: 'hi' }],
-      [],
-      { signal: controller.signal },
-    )) {
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [], {
+      signal: controller.signal,
+    })) {
       events.push(e);
     }
     expect(calls).toBe(1);
@@ -540,7 +513,16 @@ describe('chatCompletionStream retry — edge cases', () => {
 
   it('does not retry when maxAttempts is 0', async () => {
     const cfg = defaultConfig({
-      retry: { maxAttempts: 0, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 0,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 0,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
     let calls = 0;
     vi.stubGlobal(
@@ -552,11 +534,7 @@ describe('chatCompletionStream retry — edge cases', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      cfg,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(cfg, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     expect(calls).toBe(1); // one attempt, no retries
@@ -565,7 +543,16 @@ describe('chatCompletionStream retry — edge cases', () => {
 
   it('formats auth error with recovery hint', async () => {
     const cfg = defaultConfig({
-      retry: { maxAttempts: 0, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 0,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 0,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
     vi.stubGlobal(
       'fetch',
@@ -575,11 +562,7 @@ describe('chatCompletionStream retry — edge cases', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      cfg,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(cfg, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     const err = events.find((e) => e.type === 'error');
@@ -590,7 +573,16 @@ describe('chatCompletionStream retry — edge cases', () => {
 
   it('formats overloaded error with recovery hint', async () => {
     const cfg = defaultConfig({
-      retry: { maxAttempts: 0, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 0,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 0,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
     vi.stubGlobal(
       'fetch',
@@ -600,11 +592,7 @@ describe('chatCompletionStream retry — edge cases', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      cfg,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(cfg, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     const err = events.find((e) => e.type === 'error');
@@ -614,7 +602,16 @@ describe('chatCompletionStream retry — edge cases', () => {
 
   it('formats server error with recovery hint', async () => {
     const cfg = defaultConfig({
-      retry: { maxAttempts: 0, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 0,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 0,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
     vi.stubGlobal(
       'fetch',
@@ -624,11 +621,7 @@ describe('chatCompletionStream retry — edge cases', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      cfg,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(cfg, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     const err = events.find((e) => e.type === 'error');
@@ -638,7 +631,16 @@ describe('chatCompletionStream retry — edge cases', () => {
 
   it('formats timeout message', async () => {
     const cfg = defaultConfig({
-      retry: { maxAttempts: 0, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 0, watchdog: false },
+      retry: {
+        maxAttempts: 0,
+        baseDelayMs: 0,
+        maxDelayMs: 10,
+        totalBudgetMs: 0,
+        requestTimeoutMs: 0,
+        streamStallTimeoutMs: 0,
+        toolRetries: 0,
+        watchdog: false,
+      },
     });
     vi.stubGlobal(
       'fetch',
@@ -648,11 +650,7 @@ describe('chatCompletionStream retry — edge cases', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      cfg,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(cfg, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     const err = events.find((e) => e.type === 'error');
@@ -709,7 +707,18 @@ describe('chatCompletionStream tool call streaming', () => {
     setTimeout(() => controller.abort(), 10);
     const events = [];
     for await (const e of chatCompletionStream(
-      defaultConfig({ retry: { maxAttempts: 0, baseDelayMs: 0, maxDelayMs: 10, totalBudgetMs: 0, requestTimeoutMs: 0, streamStallTimeoutMs: 0, toolRetries: 0, watchdog: false } }),
+      defaultConfig({
+        retry: {
+          maxAttempts: 0,
+          baseDelayMs: 0,
+          maxDelayMs: 10,
+          totalBudgetMs: 0,
+          requestTimeoutMs: 0,
+          streamStallTimeoutMs: 0,
+          toolRetries: 0,
+          watchdog: false,
+        },
+      }),
       [{ role: 'user', content: 'hi' }],
       [],
       { signal: controller.signal },
@@ -729,9 +738,7 @@ describe('chatCompletionStream usage', () => {
         const body = new ReadableStream({
           start(c) {
             const enc = new TextEncoder();
-            c.enqueue(
-              enc.encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'),
-            );
+            c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'));
             c.enqueue(
               enc.encode(
                 'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n',
@@ -746,11 +753,7 @@ describe('chatCompletionStream usage', () => {
     );
 
     const events = [];
-    for await (const e of chatCompletionStream(
-      config,
-      [{ role: 'user', content: 'hi' }],
-      [],
-    )) {
+    for await (const e of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
       events.push(e);
     }
     const done = events.find((e) => e.type === 'done');

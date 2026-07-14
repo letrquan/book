@@ -138,7 +138,7 @@ export function allocateTableColumns(
   if (naturalTotal <= terminalWidth) return natural;
 
   // Budget available for pure cell content.
-  const contentBudget = terminalWidth - (tableChromeWidth(Array(n).fill(0)));
+  const contentBudget = terminalWidth - tableChromeWidth(Array(n).fill(0));
   // tableChromeWidth(zeros) = 0*n + 3n = 3n ... wait:
   // sum(0+2) + (n-1) + 2 = 2n + n - 1 + 2 = 3n + 1. Yes.
   // contentBudget = terminalWidth - (3n + 1), and sum(widths) must equal contentBudget?
@@ -390,8 +390,7 @@ export function layoutCodeBlock(
   terminalWidth: number | undefined,
   options: { lang?: string; preferLineNumbers?: boolean } = {},
 ): CodeBlockLayout {
-  const preferLineNumbers =
-    options.preferLineNumbers ?? sourceLines.length > 5;
+  const preferLineNumbers = options.preferLineNumbers ?? sourceLines.length > 5;
   const lang = options.lang?.trim() || null;
 
   // Without a known width, keep full chrome and do not wrap (Ink may hard-wrap).
@@ -399,9 +398,7 @@ export function layoutCodeBlock(
     const gutterWidth = String(Math.max(sourceLines.length, 1)).length;
     const showLineNumbers = preferLineNumbers;
     const lines: CodeLineLayout[] = sourceLines.map((text, i) => {
-      const gutter = showLineNumbers
-        ? `${String(i + 1).padStart(gutterWidth, ' ')} │ `
-        : '';
+      const gutter = showLineNumbers ? `${String(i + 1).padStart(gutterWidth, ' ')} │ ` : '';
       return {
         gutter,
         text,
@@ -459,11 +456,7 @@ export function layoutCodeBlock(
   contentWidth = Math.max(1, contentWidth);
 
   const langLabel =
-    lang === null
-      ? null
-      : fitsIn(lang, contentWidth)
-        ? lang
-        : truncateDisplay(lang, contentWidth);
+    lang === null ? null : fitsIn(lang, contentWidth) ? lang : truncateDisplay(lang, contentWidth);
 
   const lines: CodeLineLayout[] = [];
   for (let i = 0; i < sourceLines.length; i++) {

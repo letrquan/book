@@ -70,9 +70,7 @@ function loadSkillFile(dirPath: string, source: 'user' | 'project'): Skill | nul
     name,
     description: (frontmatter.description as string) || name,
     whenToUse: frontmatter.when_to_use as string | undefined,
-    allowedTools: Array.isArray(frontmatter.tools)
-      ? (frontmatter.tools as string[])
-      : undefined,
+    allowedTools: Array.isArray(frontmatter.tools) ? (frontmatter.tools as string[]) : undefined,
     model: frontmatter.model as string | undefined,
     body,
     source,
@@ -151,10 +149,7 @@ export function discoverSkills(workspace: string): Skill[] {
  * @param budgetChars - Max chars for the listing (default 1536 from maxSkillDescriptionChars)
  * @returns A compact markdown string
  */
-export function generateSkillListing(
-  skills: Skill[],
-  budgetChars = 1536,
-): string {
+export function generateSkillListing(skills: Skill[], budgetChars = 1536): string {
   if (skills.length === 0) return '';
 
   // Sort by invocation count descending (most-used first).
@@ -162,9 +157,7 @@ export function generateSkillListing(
 
   const lines: string[] = [];
   lines.push('## Available skills');
-  lines.push(
-    'You have skills available. To invoke one, respond with the InvokeSkill tool.',
-  );
+  lines.push('You have skills available. To invoke one, respond with the InvokeSkill tool.');
 
   let remainingBudget = budgetChars - lines.join('\n').length;
 

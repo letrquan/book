@@ -21,7 +21,9 @@ export function TaskList({ tasks }: TaskListProps) {
       paddingX={1}
       marginY={1}
     >
-      <Text color={theme.brand} bold>Tasks ({tasks.length})</Text>
+      <Text color={theme.brand} bold>
+        Tasks ({tasks.length})
+      </Text>
       {visible.length === 0 && (
         <Text color={theme.subtle}>No tasks yet. Use /task &lt;description&gt; to create one.</Text>
       )}
@@ -39,9 +41,7 @@ export function TaskList({ tasks }: TaskListProps) {
           </Box>
         );
       })}
-      {tasks.length > 5 && (
-        <Text color={theme.subtle}>...and {tasks.length - 5} more</Text>
-      )}
+      {tasks.length > 5 && <Text color={theme.subtle}>...and {tasks.length - 5} more</Text>}
     </Box>
   );
 }

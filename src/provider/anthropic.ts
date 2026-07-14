@@ -35,11 +35,7 @@ function jitter(ms: number): number {
   return ms * (0.5 + Math.random());
 }
 
-function backoffMs(
-  attempt: number,
-  retry: RetryConfig,
-  retryAfter?: string | null,
-): number {
+function backoffMs(attempt: number, retry: RetryConfig, retryAfter?: string | null): number {
   if (retryAfter) {
     const secs = Number(retryAfter);
     if (!Number.isNaN(secs) && secs > 0) {
@@ -51,7 +47,17 @@ function backoffMs(
 }
 
 function classifyHttpStatus(status: number): {
-  code: 'network' | 'timeout' | 'rate_limited' | 'overloaded' | 'server_error' | 'auth' | 'bad_request' | 'not_found' | 'quota' | 'unknown';
+  code:
+    | 'network'
+    | 'timeout'
+    | 'rate_limited'
+    | 'overloaded'
+    | 'server_error'
+    | 'auth'
+    | 'bad_request'
+    | 'not_found'
+    | 'quota'
+    | 'unknown';
   retryable: boolean;
 } {
   if (status === 429) return { code: 'rate_limited', retryable: true };
@@ -113,7 +119,9 @@ async function fetchWithRetry(
         const merged = new AbortController();
         const onAbort = () => merged.abort(signal.reason);
         signal.addEventListener('abort', onAbort, { once: true });
-        timeoutSignal.addEventListener('abort', () => merged.abort(timeoutSignal.reason), { once: true });
+        timeoutSignal.addEventListener('abort', () => merged.abort(timeoutSignal.reason), {
+          once: true,
+        });
         fetchInit.signal = merged.signal;
       } else {
         fetchInit.signal = timeoutSignal;
@@ -133,7 +141,11 @@ async function fetchWithRetry(
       const delay = backoffMs(attempt, retry);
       log.warn('retry network error', { attempt: attempt + 1, delayMs: delay, error: lastError });
       onRetry?.(attempt + 1, maxAttempts > 100 ? -1 : maxAttempts, delay);
-      try { await sleep(delay, signal); } catch { throw e; }
+      try {
+        await sleep(delay, signal);
+      } catch {
+        throw e;
+      }
       continue;
     }
 
@@ -147,7 +159,11 @@ async function fetchWithRetry(
       const delay = backoffMs(attempt, retry, resp.headers.get('retry-after'));
       log.warn('retry http status', { attempt: attempt + 1, status: resp.status, delayMs: delay });
       onRetry?.(attempt + 1, isWatchdogRetryable ? -1 : maxAttempts, delay);
-      try { await sleep(delay, signal); } catch { return resp; }
+      try {
+        await sleep(delay, signal);
+      } catch {
+        return resp;
+      }
       continue;
     }
 
@@ -197,7 +213,10 @@ function messageText(content: ProviderMessage['content'], fallback = ''): string
   return typeof content === 'string' ? content : fallback;
 }
 
-export function buildSystemBlocks(system: string, systemZones?: SystemPromptZones): Array<{
+export function buildSystemBlocks(
+  system: string,
+  systemZones?: SystemPromptZones,
+): Array<{
   type: 'text';
   text: string;
   cache_control?: { type: 'ephemeral' };
@@ -225,9 +244,15 @@ export function buildSystemBlocks(system: string, systemZones?: SystemPromptZone
 
 /** Models that support adaptive thinking. All others get no thinking field. */
 const ADAPTIVE_THINKING_MODELS = new Set([
-  'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-opus-4-5',
-  'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-sonnet-4-5',
-  'claude-fable-5', 'claude-mythos-5',
+  'claude-opus-4-8',
+  'claude-opus-4-7',
+  'claude-opus-4-6',
+  'claude-opus-4-5',
+  'claude-sonnet-5',
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-5',
+  'claude-fable-5',
+  'claude-mythos-5',
 ]);
 
 function supportsAdaptiveThinking(model: string): boolean {
@@ -244,9 +269,11 @@ function supportsAdaptiveThinking(model: string): boolean {
  * Tool results from a single assistant turn are merged into one user message to satisfy
  * Anthropic's strict alternating user/assistant requirement.
  */
-export function convertMessages(
-  messages: ProviderMessage[],
-): { system: string; systemZones?: SystemPromptZones; messages: AnthropicMessage[] } {
+export function convertMessages(messages: ProviderMessage[]): {
+  system: string;
+  systemZones?: SystemPromptZones;
+  messages: AnthropicMessage[];
+} {
   let system = 'You are a helpful AI coding assistant.';
   let systemZones: SystemPromptZones | undefined;
 
@@ -273,7 +300,12 @@ export function convertMessages(
           content: messageText(msg.content),
         };
         const last = anthropicMessages[anthropicMessages.length - 1];
-        if (last?.role === 'user' && Array.isArray(last.content) && last.content.length > 0 && last.content[0].type === 'tool_result') {
+        if (
+          last?.role === 'user' &&
+          Array.isArray(last.content) &&
+          last.content.length > 0 &&
+          last.content[0].type === 'tool_result'
+        ) {
           last.content.push(block);
         } else {
           anthropicMessages.push({ role: 'user', content: [block] });
@@ -298,7 +330,10 @@ export function convertMessages(
       content.push({ type: 'text', text: messageText(msg.content) });
 
       if (msg.tool_calls && msg.tool_calls.length > 0) {
-        for (const tc of msg.tool_calls as Array<{ id: string; function?: { name: string; arguments: string } }>) {
+        for (const tc of msg.tool_calls as Array<{
+          id: string;
+          function?: { name: string; arguments: string };
+        }>) {
           const input = parseToolArguments(tc.function?.arguments ?? '{}');
           content.push({
             type: 'tool_use',
@@ -311,7 +346,8 @@ export function convertMessages(
 
       anthropicMessages.push({
         role: 'assistant',
-        content: content.length === 1 && content[0].type === 'text' ? (content[0].text ?? '') : content,
+        content:
+          content.length === 1 && content[0].type === 'text' ? (content[0].text ?? '') : content,
       });
       continue;
     }
@@ -324,7 +360,12 @@ export function convertMessages(
         content: messageText(msg.content),
       };
       const last = anthropicMessages[anthropicMessages.length - 1];
-      if (last?.role === 'user' && Array.isArray(last.content) && last.content.length > 0 && last.content[0].type === 'tool_result') {
+      if (
+        last?.role === 'user' &&
+        Array.isArray(last.content) &&
+        last.content.length > 0 &&
+        last.content[0].type === 'tool_result'
+      ) {
         last.content.push(block);
       } else {
         anthropicMessages.push({ role: 'user', content: [block] });
@@ -506,15 +547,26 @@ export async function* chatCompletionStream(
       const result = await readStreamChunk(reader, signal, stallTimeoutMs);
 
       if (result.tag === 'abort') {
-        try { await reader.cancel(); } catch { /* ignore */ }
+        try {
+          await reader.cancel();
+        } catch {
+          /* ignore */
+        }
         return;
       }
 
       if (result.tag === 'stall') {
         log.warn('stream stalled', { timeoutMs: stallTimeoutMs });
         options?.onStreamStall?.(stallTimeoutMs);
-        try { await reader.cancel(); } catch { /* ignore */ }
-        yield { type: 'error', error: 'Stream stalled: no data received for ' + stallTimeoutMs + 'ms' };
+        try {
+          await reader.cancel();
+        } catch {
+          /* ignore */
+        }
+        yield {
+          type: 'error',
+          error: 'Stream stalled: no data received for ' + stallTimeoutMs + 'ms',
+        };
         return;
       }
 
@@ -633,7 +685,11 @@ export async function* chatCompletionStream(
     yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
     return;
   } finally {
-    try { reader.releaseLock(); } catch { /* ignore */ }
+    try {
+      reader.releaseLock();
+    } catch {
+      /* ignore */
+    }
   }
 
   // Fallback: if we reached end-of-body without message_stop, emit done

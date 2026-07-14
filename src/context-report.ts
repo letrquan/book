@@ -109,7 +109,9 @@ export function buildContextReport(
   }
   lines.push('  Git/workspace   : branch, status, OS, date');
   if (ambient.hasMemoryIndex !== undefined) {
-    lines.push(`  Memory index    : ${ambient.hasMemoryIndex ? 'loaded (approved memory)' : 'none found'}`);
+    lines.push(
+      `  Memory index    : ${ambient.hasMemoryIndex ? 'loaded (approved memory)' : 'none found'}`,
+    );
   }
   if (ambient.hasClaudeMdLoader) {
     lines.push('  CLAUDE.md       : loaded (Phase 1b)');

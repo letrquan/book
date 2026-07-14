@@ -34,10 +34,7 @@ describe('CLI --settings flag', () => {
     );
 
     const overridePath = join(dir, 'override.json');
-    writeFileSync(
-      overridePath,
-      JSON.stringify({ model: 'override-model' }),
-    );
+    writeFileSync(overridePath, JSON.stringify({ model: 'override-model' }));
 
     // -p with a prompt that just echoes — we use bash to test settings load.
     // Since no provider is running, this will fail at the network call,
@@ -45,10 +42,11 @@ describe('CLI --settings flag', () => {
     // does not mention a settings-load failure.
     let stderr = '';
     try {
-      execSync(
-        `${RUNNER} -w "${dir}" --settings "${overridePath}" -p "hi" --output-format json`,
-        { env: ENV, encoding: 'utf-8', timeout: 15000 },
-      );
+      execSync(`${RUNNER} -w "${dir}" --settings "${overridePath}" -p "hi" --output-format json`, {
+        env: ENV,
+        encoding: 'utf-8',
+        timeout: 15000,
+      });
     } catch (e: any) {
       stderr = e.stderr ?? e.message ?? '';
     }
@@ -68,10 +66,11 @@ describe('CLI --settings flag', () => {
 
     let stderr = '';
     try {
-      execSync(
-        `${RUNNER} -w "${dir}" --no-settings -p "hi" --output-format json`,
-        { env: ENV, encoding: 'utf-8', timeout: 15000 },
-      );
+      execSync(`${RUNNER} -w "${dir}" --no-settings -p "hi" --output-format json`, {
+        env: ENV,
+        encoding: 'utf-8',
+        timeout: 15000,
+      });
     } catch (e: any) {
       stderr = e.stderr ?? e.message ?? '';
     }

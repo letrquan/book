@@ -56,9 +56,7 @@ export async function runConfigCommand(
       'env',
     ];
     if (!validKeys.includes(topKey)) {
-      console.error(
-        'Unknown top-level key: ' + topKey + '. Valid keys: ' + validKeys.join(', '),
-      );
+      console.error('Unknown top-level key: ' + topKey + '. Valid keys: ' + validKeys.join(', '));
       exit(1);
     }
 
@@ -90,8 +88,6 @@ export async function runConfigCommand(
     return;
   }
 
-  console.error(
-    'Unknown action: ' + action + '. Use: get <key>, set <key> <value>, or list',
-  );
+  console.error('Unknown action: ' + action + '. Use: get <key>, set <key> <value>, or list');
   exit(1);
 }

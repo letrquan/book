@@ -12,7 +12,7 @@ beforeEach(() => {
   fakeHome = mkdtempSync(join(tmpdir(), 'book-home-'));
   // Point os.homedir() at our fake home for these tests.
   vi.mock('os', async (orig) => ({
-    ...(await orig() as typeof import('os')),
+    ...((await orig()) as typeof import('os')),
     homedir: () => fakeHome,
   }));
 });
@@ -30,10 +30,7 @@ describe('migrateLegacyPermissions', () => {
 
   it('returns false when legacy file has no rules', () => {
     mkdirSync(join(fakeHome, '.book'), { recursive: true });
-    writeFileSync(
-      join(fakeHome, '.book', 'permissions.json'),
-      JSON.stringify({ rules: [] }),
-    );
+    writeFileSync(join(fakeHome, '.book', 'permissions.json'), JSON.stringify({ rules: [] }));
     expect(migrateLegacyPermissions(dir)).toBe(false);
   });
 
@@ -75,7 +72,10 @@ describe('migrateLegacyPermissions', () => {
     mkdirSync(join(dir, '.book'), { recursive: true });
     writeFileSync(
       join(dir, '.book', 'settings.local.json'),
-      JSON.stringify({ model: 'existing-model', permissions: { allow: ['Read(*)'], ask: [], deny: [] } }),
+      JSON.stringify({
+        model: 'existing-model',
+        permissions: { allow: ['Read(*)'], ask: [], deny: [] },
+      }),
     );
 
     migrateLegacyPermissions(dir);
@@ -104,10 +104,7 @@ describe('migrateLegacyPermissions', () => {
 
   it('returns false on corrupt legacy file (no crash)', () => {
     mkdirSync(join(fakeHome, '.book'), { recursive: true });
-    writeFileSync(
-      join(fakeHome, '.book', 'permissions.json'),
-      '{not json',
-    );
+    writeFileSync(join(fakeHome, '.book', 'permissions.json'), '{not json');
     expect(migrateLegacyPermissions(dir)).toBe(false);
   });
 });

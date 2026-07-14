@@ -2,33 +2,35 @@ import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 
 /** Very small HTML-to-text converter: strips scripts/styles/tags, keeps text. */
 function htmlToText(html: string): string {
-  return html
-    // Remove script and style blocks entirely.
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    // Drop comments.
-    .replace(/<!--[\s\S]*?-->/g, '')
-    // Turn block-level closers into newlines so headings/paragraphs separate.
-    .replace(/<\/(p|div|h[1-6]|li|ul|ol|tr|table|section|article|header|footer|nav|main|br)>/gi, '\n')
-    .replace(/<br\s*\/?>/gi, '\n')
-    // Remove all remaining tags.
-    .replace(/<[^>]+>/g, '')
-    // Decode a few common entities.
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ')
-    // Collapse runs of blank lines.
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return (
+    html
+      // Remove script and style blocks entirely.
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      // Drop comments.
+      .replace(/<!--[\s\S]*?-->/g, '')
+      // Turn block-level closers into newlines so headings/paragraphs separate.
+      .replace(
+        /<\/(p|div|h[1-6]|li|ul|ol|tr|table|section|article|header|footer|nav|main|br)>/gi,
+        '\n',
+      )
+      .replace(/<br\s*\/?>/gi, '\n')
+      // Remove all remaining tags.
+      .replace(/<[^>]+>/g, '')
+      // Decode a few common entities.
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&nbsp;/g, ' ')
+      // Collapse runs of blank lines.
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  );
 }
 
-async function webFetch(
-  args: Record<string, unknown>,
-  _ctx: ToolContext,
-): Promise<ToolResult> {
+async function webFetch(args: Record<string, unknown>, _ctx: ToolContext): Promise<ToolResult> {
   const url = args.url as string;
   const prompt = (args.prompt as string) ?? 'Return the full content';
 
@@ -81,10 +83,7 @@ async function webFetch(
   };
 }
 
-async function webSearch(
-  args: Record<string, unknown>,
-  ctx: ToolContext,
-): Promise<ToolResult> {
+async function webSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const query = args.query as string;
   // Backend is chosen per-call, else env, else a global default — pluggable.
   const backend =
@@ -104,7 +103,7 @@ async function webSearch(
   let resp: Response;
   try {
     resp = await fetch(`${backend}?q=${encodeURIComponent(query)}`, {
-      headers: { 'Accept': 'application/json' },
+      headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(20_000),
     });
   } catch (e) {
@@ -126,13 +125,17 @@ async function webSearch(
   }
 
   try {
-    const data = (await resp.json()) as { results?: Array<{ title?: string; url?: string; snippet?: string }> };
+    const data = (await resp.json()) as {
+      results?: Array<{ title?: string; url?: string; snippet?: string }>;
+    };
     const results = data.results ?? [];
     if (results.length === 0) {
       return { toolCallId: '', success: true, output: `No results for: ${query}` };
     }
     const out = results
-      .map((r, i) => `${i + 1}. ${r.title ?? '(untitled)'}\n   ${r.url ?? ''}\n   ${r.snippet ?? ''}`)
+      .map(
+        (r, i) => `${i + 1}. ${r.title ?? '(untitled)'}\n   ${r.url ?? ''}\n   ${r.snippet ?? ''}`,
+      )
       .join('\n\n');
     return { toolCallId: '', success: true, output: `Search: ${query}\n\n${out}` };
   } catch {

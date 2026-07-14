@@ -32,9 +32,7 @@ export function AgentTodoList({ todos }: AgentTodoListProps) {
           </Box>
         );
       })}
-      {todos.length > 8 && (
-        <Text color={theme.subtle}>…and {todos.length - 8} more</Text>
-      )}
+      {todos.length > 8 && <Text color={theme.subtle}>…and {todos.length - 8} more</Text>}
     </Box>
   );
 }

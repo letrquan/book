@@ -55,7 +55,16 @@ describe('plan mode tools', () => {
   });
 
   it('classifies expected read-only and mutating tools for plan mode', () => {
-    for (const name of ['Read', 'Glob', 'Grep', 'GitStatus', 'GitDiff', 'WebFetch', 'EnterPlanMode', 'ExitPlanMode']) {
+    for (const name of [
+      'Read',
+      'Glob',
+      'Grep',
+      'GitStatus',
+      'GitDiff',
+      'WebFetch',
+      'EnterPlanMode',
+      'ExitPlanMode',
+    ]) {
       expect(READ_ONLY_PLAN_TOOLS.has(name), `expected ${name} read-only`).toBe(true);
     }
 

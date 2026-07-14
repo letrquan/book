@@ -29,7 +29,10 @@ describe('runHooks — empty input', () => {
 describe('runHooks — continue', () => {
   it('runs a hook that exits 0 and returns continue', async () => {
     const hook: HookEntry = {
-      command: process.platform === 'win32' ? 'echo {"action":"continue"}' : 'echo \'{"action":"continue"}\'',
+      command:
+        process.platform === 'win32'
+          ? 'echo {"action":"continue"}'
+          : 'echo \'{"action":"continue"}\'',
       env: {},
     };
     const results = await runHooks([hook], 'Stop', ctx({ event: 'Stop' as HookEvent }));
@@ -51,9 +54,10 @@ describe('runHooks — continue', () => {
 describe('runHooks — block', () => {
   it('detects exit code 2 as block', async () => {
     const hook: HookEntry = {
-      command: process.platform === 'win32'
-        ? 'echo {"action":"block","message":"nope"} & exit 2'
-        : 'echo \'{"action":"block","message":"nope"}\' && exit 2',
+      command:
+        process.platform === 'win32'
+          ? 'echo {"action":"block","message":"nope"} & exit 2'
+          : 'echo \'{"action":"block","message":"nope"}\' && exit 2',
       env: {},
     };
     const results = await runHooks([hook], 'PreToolUse', ctx());
@@ -80,9 +84,10 @@ describe('runHooks — block', () => {
 describe('runHooks — modify', () => {
   it('returns modify action with modified prompt', async () => {
     const hook: HookEntry = {
-      command: process.platform === 'win32'
-        ? 'echo {"action":"modify","message":"new prompt"}'
-        : 'echo \'{"action":"modify","message":"new prompt"}\'',
+      command:
+        process.platform === 'win32'
+          ? 'echo {"action":"modify","message":"new prompt"}'
+          : 'echo \'{"action":"modify","message":"new prompt"}\'',
       env: {},
     };
     const results = await runHooks(
@@ -99,9 +104,7 @@ describe('runHooks — modify', () => {
 describe('runHooks — timeout', () => {
   it('skips a hook that exceeds the 10s timeout', async () => {
     const hook: HookEntry = {
-      command: process.platform === 'win32'
-        ? 'ping -n 30 127.0.0.1 > nul'
-        : 'sleep 30',
+      command: process.platform === 'win32' ? 'ping -n 30 127.0.0.1 > nul' : 'sleep 30',
       env: {},
     };
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -116,9 +119,10 @@ describe('runHooks — matcher filtering', () => {
   it('runs hook when matcher matches the tool call', async () => {
     const hook: HookEntry = {
       matcher: 'Bash(ls *)',
-      command: process.platform === 'win32'
-        ? 'echo {"action":"block"} & exit 2'
-        : 'echo \'{"action":"block"}\' && exit 2',
+      command:
+        process.platform === 'win32'
+          ? 'echo {"action":"block"} & exit 2'
+          : 'echo \'{"action":"block"}\' && exit 2',
       env: {},
     };
     const results = await runHooks([hook], 'PreToolUse', ctx());
@@ -161,9 +165,7 @@ else
 fi`,
     );
     const hook: HookEntry = {
-      command: process.platform === 'win32'
-        ? `echo {"action":"continue"}`
-        : `bash "${scriptPath}"`,
+      command: process.platform === 'win32' ? `echo {"action":"continue"}` : `bash "${scriptPath}"`,
       env: {},
     };
     const results = await runHooks([hook], 'Stop', ctx({ event: 'Stop' as HookEvent }));

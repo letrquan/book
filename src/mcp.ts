@@ -40,10 +40,7 @@ interface McpToolDef {
  * Priority: project .mcp.json overrides user ~/.book/mcp.json on name collision.
  */
 export function loadMcpConfig(workspace: string): Record<string, McpServerConfig> {
-  const sources = [
-    join(homedir(), '.book', 'mcp.json'),
-    join(workspace, '.mcp.json'),
-  ];
+  const sources = [join(homedir(), '.book', 'mcp.json'), join(workspace, '.mcp.json')];
 
   const servers: Record<string, McpServerConfig> = {};
 
@@ -110,10 +107,7 @@ function processLine(conn: McpConnection, line: string): void {
  * Connect to an MCP server over stdio and negotiate the protocol.
  * Returns the connection with discovered tools, or null on failure.
  */
-async function connectMcpServer(
-  name: string,
-  cfg: McpServerConfig,
-): Promise<McpConnection | null> {
+async function connectMcpServer(name: string, cfg: McpServerConfig): Promise<McpConnection | null> {
   const child = spawn(cfg.command, cfg.args ?? [], {
     env: { ...process.env, ...cfg.env },
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -171,7 +165,9 @@ async function connectMcpServer(
     conn.tools = result.tools ?? [];
     return conn;
   } catch (e) {
-    console.warn(`⚠  Failed to connect to MCP server "${name}": ${e instanceof Error ? e.message : String(e)}`);
+    console.warn(
+      `⚠  Failed to connect to MCP server "${name}": ${e instanceof Error ? e.message : String(e)}`,
+    );
     child.kill();
     return null;
   }

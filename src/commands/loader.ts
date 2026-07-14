@@ -7,10 +7,7 @@ import type { SlashCommand } from '../types.js';
 /**
  * Load a single .md command file. Returns null if the file doesn't exist.
  */
-function loadCommandFile(
-  filePath: string,
-  source: 'user' | 'project',
-): SlashCommand | null {
+function loadCommandFile(filePath: string, source: 'user' | 'project'): SlashCommand | null {
   if (!existsSync(filePath) || extname(filePath) !== '.md') return null;
   const raw = readFileSync(filePath, 'utf-8');
   const { body, frontmatter } = parseFrontmatter(raw);

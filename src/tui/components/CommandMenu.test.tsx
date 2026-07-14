@@ -36,7 +36,15 @@ describe('CommandMenu', () => {
   it('caps visible rows and shows a hidden-count footer', () => {
     const view = render(
       withTheme(
-        <CommandMenu items={items} filterText="" selectedIndex={4} visible terminalWidth={48} maxRows={3} reducedMotion />,
+        <CommandMenu
+          items={items}
+          filterText=""
+          selectedIndex={4}
+          visible
+          terminalWidth={48}
+          maxRows={3}
+          reducedMotion
+        />,
       ),
     );
 
@@ -50,7 +58,16 @@ describe('CommandMenu', () => {
     const width = 34;
     const view = render(
       withTheme(
-        <CommandMenu items={items} filterText="co" selectedIndex={2} visible terminalWidth={width} maxRows={4} compact reducedMotion />,
+        <CommandMenu
+          items={items}
+          filterText="co"
+          selectedIndex={2}
+          visible
+          terminalWidth={width}
+          maxRows={4}
+          compact
+          reducedMotion
+        />,
       ),
     );
 

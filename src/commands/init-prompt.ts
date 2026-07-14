@@ -24,7 +24,7 @@ export function buildInitPrompt(_workspace: string): string {
     '  ## Architecture (high-level module map with key files)',
     '  ## Common commands (build, dev, test, lint — exact commands, runnable)',
     '  ## Key conventions (naming, patterns, testing habits observed)',
-    '  ## Do/Don\'t notes grounded in what you observed in the repo',
+    "  ## Do/Don't notes grounded in what you observed in the repo",
     '',
     'If CLAUDE.md ALREADY exists, do NOT overwrite it. Read it, then propose targeted improvements as a short bulleted list and offer to apply them — let the user confirm before writing.',
     '',

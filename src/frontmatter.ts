@@ -20,7 +20,10 @@ export function parseFrontmatter(raw: string): {
     return { body: raw, frontmatter: {} };
   }
   const fmLines = lines.slice(1, endIdx);
-  const body = lines.slice(endIdx + 1).join('\n').trim();
+  const body = lines
+    .slice(endIdx + 1)
+    .join('\n')
+    .trim();
   const frontmatter: Record<string, unknown> = {};
   let currentKey: string | null = null;
   let currentArray: string[] = [];

@@ -30,7 +30,10 @@ function currentMode(ctx: ToolContext): PermissionMode {
   return ctx.currentMode ?? 'default';
 }
 
-async function enterPlanMode(_args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+async function enterPlanMode(
+  _args: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
   const mode = currentMode(ctx);
   if (mode === 'plan') {
     return ok(
@@ -51,7 +54,9 @@ async function exitPlanMode(args: Record<string, unknown>, ctx: ToolContext): Pr
   if (!plan) return fail('plan must be a non-empty string');
 
   ctx.pendingPlanApproval = { plan };
-  return ok('Plan submitted for user approval. Wait for the approval result before making changes.');
+  return ok(
+    'Plan submitted for user approval. Wait for the approval result before making changes.',
+  );
 }
 
 export const planModeTools: ToolDefinition[] = [

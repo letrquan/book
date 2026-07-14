@@ -233,7 +233,9 @@ describe('loadConfig provider registry', () => {
       }),
     );
 
-    const switched = applyModelDefaults(resolveModelProviderConfig(loadConfig(workspace), 'gpt-4o'));
+    const switched = applyModelDefaults(
+      resolveModelProviderConfig(loadConfig(workspace), 'gpt-4o'),
+    );
     expect(switched.model).toBe('gpt-4o');
     expect(switched.provider).toBe('auto');
     expect(switched.baseUrl).toBe('https://api.openai.com/v1');
@@ -258,7 +260,9 @@ describe('loadConfig provider registry', () => {
       }),
     );
 
-    const switched = applyModelDefaults(resolveModelProviderConfig(loadConfig(workspace), 'missing/gpt-4o'));
+    const switched = applyModelDefaults(
+      resolveModelProviderConfig(loadConfig(workspace), 'missing/gpt-4o'),
+    );
     expect(switched.model).toBe('missing/gpt-4o');
     expect(switched.provider).toBe('auto');
     expect(switched.baseUrl).toBe('https://api.openai.com/v1');
@@ -317,6 +321,8 @@ describe('loadConfig provider registry', () => {
 
   it('rejects zero env max tokens', () => {
     process.env.BOOK_MAX_TOKENS = '0';
-    expect(() => loadConfig(workspace, { noSettings: true })).toThrow(/BOOK_MAX_TOKENS must be a positive integer/);
+    expect(() => loadConfig(workspace, { noSettings: true })).toThrow(
+      /BOOK_MAX_TOKENS must be a positive integer/,
+    );
   });
 });

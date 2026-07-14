@@ -46,11 +46,7 @@ export function assistantMsg(
   };
 }
 
-export function toolCall(
-  id: string,
-  name: string,
-  args: Record<string, unknown> = {},
-): ToolCall {
+export function toolCall(id: string, name: string, args: Record<string, unknown> = {}): ToolCall {
   return { id, name, arguments: args };
 }
 

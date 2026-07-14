@@ -10,11 +10,7 @@ export function getNestedValue(obj: Record<string, unknown>, path: string): unkn
 }
 
 /** Deeply nested value setter, creating intermediate objects as needed. */
-export function setNestedValue(
-  obj: Record<string, unknown>,
-  path: string,
-  value: unknown,
-): void {
+export function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): void {
   const parts = path.split('.');
   let current = obj;
   for (let i = 0; i < parts.length - 1; i++) {

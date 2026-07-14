@@ -33,10 +33,7 @@ function mergeSettings(base: ResolvedSettings, override: Partial<BookSettings>):
       !Array.isArray(existing)
     ) {
       // Nested objects merge recursively.
-      result[key] = mergeSettings(
-        existing as ResolvedSettings,
-        value as Partial<BookSettings>,
-      );
+      result[key] = mergeSettings(existing as ResolvedSettings, value as Partial<BookSettings>);
     } else {
       // Scalars override.
       result[key] = value;
@@ -77,10 +74,7 @@ function loadSettingsFile(path: string): BookSettings | null {
  * @param overridePath - Optional path to an ad-hoc settings file (--settings flag)
  * @returns Fully resolved settings with all defaults filled
  */
-export function resolveSettings(
-  workspace: string,
-  overridePath?: string,
-): ResolvedSettings {
+export function resolveSettings(workspace: string, overridePath?: string): ResolvedSettings {
   let resolved = structuredClone(DEFAULT_SETTINGS);
 
   // Layer 1: User settings (~/.book/settings.json)
@@ -123,7 +117,9 @@ export function migrateLegacyPermissions(workspace: string): boolean {
   let legacyRules: Array<{ toolName: string; pattern?: string; effect: string }> = [];
   try {
     const raw = readFileSync(legacyPath, 'utf-8');
-    const parsed = JSON.parse(raw) as { rules: Array<{ toolName: string; pattern?: string; effect: string }> };
+    const parsed = JSON.parse(raw) as {
+      rules: Array<{ toolName: string; pattern?: string; effect: string }>;
+    };
     legacyRules = parsed.rules ?? [];
   } catch {
     return false; // corrupt — leave the legacy file alone

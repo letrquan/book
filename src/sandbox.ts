@@ -22,11 +22,7 @@ function detectBwrap(): string | null {
     }).trim();
     if (out) return out;
     // Try absolute path on macOS (Homebrew).
-    const altPaths = [
-      '/usr/local/bin/bwrap',
-      '/opt/homebrew/bin/bwrap',
-      '/usr/bin/bwrap',
-    ];
+    const altPaths = ['/usr/local/bin/bwrap', '/opt/homebrew/bin/bwrap', '/usr/bin/bwrap'];
     for (const p of altPaths) {
       try {
         execSync(`test -x "${p}"`, { timeout: 1000, stdio: 'ignore' });

@@ -71,9 +71,9 @@ export type HookEvent = (typeof HOOK_EVENTS)[number];
  * Hooks configuration — a map from event name to an array of hook entries.
  */
 export const hooksSchema = z.object(
-  Object.fromEntries(
-    HOOK_EVENTS.map((e) => [e, z.array(hookEntrySchema).default([])]),
-  ) as { [K in HookEvent]: z.ZodDefault<z.ZodArray<typeof hookEntrySchema>> },
+  Object.fromEntries(HOOK_EVENTS.map((e) => [e, z.array(hookEntrySchema).default([])])) as {
+    [K in HookEvent]: z.ZodDefault<z.ZodArray<typeof hookEntrySchema>>;
+  },
 );
 
 export type HooksConfig = z.infer<typeof hooksSchema>;
@@ -158,8 +158,27 @@ export type BookSettings = z.infer<typeof bookSettingsSchema>;
  * Resolved settings after layering (all defaults filled).
  */
 export type ResolvedSettings = Required<
-  Omit<BookSettings, 'model' | 'maxTurns' | 'maxTokens' | 'effort' | 'autoCompactEnabled' | 'defaultMode' | 'disableBypassPermissionsMode'>
-> & Pick<BookSettings, 'model' | 'maxTurns' | 'maxTokens' | 'effort' | 'autoCompactEnabled' | 'defaultMode' | 'disableBypassPermissionsMode'>;
+  Omit<
+    BookSettings,
+    | 'model'
+    | 'maxTurns'
+    | 'maxTokens'
+    | 'effort'
+    | 'autoCompactEnabled'
+    | 'defaultMode'
+    | 'disableBypassPermissionsMode'
+  >
+> &
+  Pick<
+    BookSettings,
+    | 'model'
+    | 'maxTurns'
+    | 'maxTokens'
+    | 'effort'
+    | 'autoCompactEnabled'
+    | 'defaultMode'
+    | 'disableBypassPermissionsMode'
+  >;
 
 /**
  * Default settings used as the base layer before user/project/local override.

@@ -142,10 +142,7 @@ describe('discoverCommands', () => {
   it('discovers commands from .book/commands/*.md', () => {
     const cmdsDir = join(dir, '.book', 'commands');
     mkdirSync(cmdsDir, { recursive: true });
-    writeFileSync(
-      join(cmdsDir, 'greet.md'),
-      '---\ndescription: Say hello\n---\nHello!',
-    );
+    writeFileSync(join(cmdsDir, 'greet.md'), '---\ndescription: Say hello\n---\nHello!');
     writeFileSync(
       join(cmdsDir, 'commit.md'),
       '---\ndescription: Git commit\nargument-hint: <message>\nallowed-tools:\n- Bash(git *)\n---\nCommit changes.',
@@ -154,9 +151,7 @@ describe('discoverCommands', () => {
     const result = discoverCommands(dir);
     expect(result).toHaveLength(2);
     expect(result.find((c) => c.name === 'greet')?.description).toBe('Say hello');
-    expect(result.find((c) => c.name === 'commit')?.allowedTools).toEqual([
-      'Bash(git *)',
-    ]);
+    expect(result.find((c) => c.name === 'commit')?.allowedTools).toEqual(['Bash(git *)']);
   });
 
   it('ignores non-md files', () => {
@@ -176,14 +171,9 @@ describe('discoverCommands', () => {
     // later entries override earlier ones.
     const cmdsDir = join(dir, '.book', 'commands');
     mkdirSync(cmdsDir, { recursive: true });
-    writeFileSync(
-      join(cmdsDir, 'same.md'),
-      '---\ndescription: Project version\n---\nProject body',
-    );
+    writeFileSync(join(cmdsDir, 'same.md'), '---\ndescription: Project version\n---\nProject body');
 
     const result = discoverCommands(dir);
-    expect(result.find((c) => c.name === 'same')?.description).toBe(
-      'Project version',
-    );
+    expect(result.find((c) => c.name === 'same')?.description).toBe('Project version');
   });
 });

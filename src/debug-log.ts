@@ -209,10 +209,13 @@ export function createDebugLogger(namespace: string): DebugLogger {
 export function createDebugLoggerWithCounter(namespace: string): DebugLogger {
   if (!DEBUG_ENABLED) return NOOP_LOGGER;
   const base = buildLogger(namespace);
-  const wrap = (level: 'debug' | 'info' | 'warn') =>
+  const wrap =
+    (level: 'debug' | 'info' | 'warn') =>
     (...args: unknown[]) => {
       const id = nextEventId(namespace);
-      writeDebugLine(`[${timestamp()}] [${namespace}] [${level.toUpperCase()}#${id}] ${formatMessage(...args)}\n`);
+      writeDebugLine(
+        `[${timestamp()}] [${namespace}] [${level.toUpperCase()}#${id}] ${formatMessage(...args)}\n`,
+      );
     };
   return {
     debug: wrap('debug'),

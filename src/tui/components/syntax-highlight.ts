@@ -125,7 +125,11 @@ function highlightLine(raw: string, lang: string, theme: ThemeTokens): StyledLin
   return line.length > 0 ? line : [{ text: '', color: theme.mdCodeText }];
 }
 
-export function highlightCode(code: string, lang: string | undefined, theme: ThemeTokens): StyledLine[] {
+export function highlightCode(
+  code: string,
+  lang: string | undefined,
+  theme: ThemeTokens,
+): StyledLine[] {
   const normalized = normalizeLang(lang);
   const key = `${normalized}\0${code}\0${JSON.stringify({
     keyword: theme.mdCodeKeyword,

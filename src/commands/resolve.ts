@@ -103,10 +103,7 @@ export function resolveVariables(
   if (context?.model) {
     resolved = resolved.replace(/\$\{BOOK_MODEL\}/g, context.model);
   }
-  resolved = resolved.replace(
-    /\$\{BOOK_DATE\}/g,
-    new Date().toISOString().split('T')[0],
-  );
+  resolved = resolved.replace(/\$\{BOOK_DATE\}/g, new Date().toISOString().split('T')[0]);
 
   return resolved;
 }
@@ -130,49 +127,43 @@ export function resolveShellInjection(
   let resolved = body;
 
   // Fenced code blocks: ```! ... ```
-  resolved = resolved.replace(
-    /```!\s*\n([\s\S]*?)```/g,
-    (_match: string, cmd: string) => {
-      try {
-        return execSync(cmd.trim(), {
-          cwd: workspace,
-          encoding: 'utf-8',
-          timeout: 5000,
-          maxBuffer: 1024 * 1024, // 1MB
-          shell: process.env.ComSpec || 'cmd.exe',
-        }).trim();
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        errors.push(`Shell block failed: ${msg}`);
-        return `[shell error: ${msg}]`;
-      }
-    },
-  );
+  resolved = resolved.replace(/```!\s*\n([\s\S]*?)```/g, (_match: string, cmd: string) => {
+    try {
+      return execSync(cmd.trim(), {
+        cwd: workspace,
+        encoding: 'utf-8',
+        timeout: 5000,
+        maxBuffer: 1024 * 1024, // 1MB
+        shell: process.env.ComSpec || 'cmd.exe',
+      }).trim();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push(`Shell block failed: ${msg}`);
+      return `[shell error: ${msg}]`;
+    }
+  });
 
   // Inline backtick commands: !`cmd` or `!cmd`
-  resolved = resolved.replace(
-    /!?`([^`]+)`/g,
-    (_match: string, cmd: string) => {
-      // Only expand patterns with ! prefix (either !`cmd` or `!cmd`).
-      // Skip regular markdown inline code like `code`.
-      const isShell = _match.startsWith('!`') || cmd.startsWith('!');
-      if (!isShell) return _match;
-      const shellCmd = cmd.startsWith('!') ? cmd.slice(1).trim() : cmd.trim();
-      try {
-        return execSync(shellCmd, {
-          cwd: workspace,
-          encoding: 'utf-8',
-          timeout: 5000,
-          maxBuffer: 1024 * 1024,
-          shell: process.env.ComSpec || 'cmd.exe',
-        }).trim();
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        errors.push(`Shell command '${shellCmd}' failed: ${msg}`);
-        return `[shell error: ${msg}]`;
-      }
-    },
-  );
+  resolved = resolved.replace(/!?`([^`]+)`/g, (_match: string, cmd: string) => {
+    // Only expand patterns with ! prefix (either !`cmd` or `!cmd`).
+    // Skip regular markdown inline code like `code`.
+    const isShell = _match.startsWith('!`') || cmd.startsWith('!');
+    if (!isShell) return _match;
+    const shellCmd = cmd.startsWith('!') ? cmd.slice(1).trim() : cmd.trim();
+    try {
+      return execSync(shellCmd, {
+        cwd: workspace,
+        encoding: 'utf-8',
+        timeout: 5000,
+        maxBuffer: 1024 * 1024,
+        shell: process.env.ComSpec || 'cmd.exe',
+      }).trim();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push(`Shell command '${shellCmd}' failed: ${msg}`);
+      return `[shell error: ${msg}]`;
+    }
+  });
 
   return { resolved, errors };
 }

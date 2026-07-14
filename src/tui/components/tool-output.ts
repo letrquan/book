@@ -80,8 +80,10 @@ function formatToolOutputFooter({
   hint?: string;
 }): string {
   const parts: string[] = [];
-  if (hiddenLines > 0) parts.push(`${hiddenLines} more ${hiddenLines === 1 ? 'line' : 'lines'} hidden`);
-  if (truncatedLines > 0) parts.push(`${truncatedLines} long ${truncatedLines === 1 ? 'line' : 'lines'} shortened`);
+  if (hiddenLines > 0)
+    parts.push(`${hiddenLines} more ${hiddenLines === 1 ? 'line' : 'lines'} hidden`);
+  if (truncatedLines > 0)
+    parts.push(`${truncatedLines} long ${truncatedLines === 1 ? 'line' : 'lines'} shortened`);
   const summary = `${totalLines} ${totalLines === 1 ? 'line' : 'lines'}, ${formatByteSize(totalChars)} total`;
   return `… ${parts.join(', ')} (${summary}${hint ? `; ${hint}` : ''})`;
 }

@@ -10,12 +10,18 @@ program
   .version('0.1.0')
   .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
   .option('-m, --model <model>', 'Model to use')
-  .option('-p, --print [prompt]', 'Print mode (non-interactive). Reads prompt from the flag or stdin.')
+  .option(
+    '-p, --print [prompt]',
+    'Print mode (non-interactive). Reads prompt from the flag or stdin.',
+  )
   .option('--output-format <format>', 'text | json | stream-json (print mode)', 'text')
   .option('--input-format <format>', 'text | stream-json (print mode)', 'text')
   .option('--max-turns <n>', 'Max agent turns (print mode)')
   .option('--max-budget-usd <amount>', 'Max USD spend (print mode)')
-  .option('--permission-mode <mode>', 'default | acceptEdits | plan | auto | dontAsk | bypassPermissions')
+  .option(
+    '--permission-mode <mode>',
+    'default | acceptEdits | plan | auto | dontAsk | bypassPermissions',
+  )
   .option('--verbose', 'Full turn-by-turn output')
   .option('--json-schema <schema>', 'Return validated JSON matching a JSON Schema (print mode)')
   .option('-r, --resume <id|name>', 'Resume a session by id or name')
@@ -30,7 +36,11 @@ program
   .option('--scrollback', 'Use terminal-native scrollback instead of the full-screen TUI')
   .option('--settings <path>', 'Path to an ad-hoc settings file (overrides all scopes)')
   .option('--no-settings', 'Skip all settings.json layers (use defaults + legacy .bookrc.json)')
-  .option('--effort <level>', 'Thinking effort: low, medium, high, xhigh, max (default: high)', 'high')
+  .option(
+    '--effort <level>',
+    'Thinking effort: low, medium, high, xhigh, max (default: high)',
+    'high',
+  )
   .option('--provider <type>', 'Provider: anthropic, openai, auto (default: auto-detect)');
 
 // ---- book doctor ----

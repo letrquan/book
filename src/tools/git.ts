@@ -1,7 +1,10 @@
 import { execSync } from 'child_process';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 
-export function runGit(args: string[], ctx: ToolContext): { success: boolean; output: string; error?: string } {
+export function runGit(
+  args: string[],
+  ctx: ToolContext,
+): { success: boolean; output: string; error?: string } {
   try {
     const output = execSync(`git ${args.join(' ')}`, {
       cwd: ctx.workspaceRoot,

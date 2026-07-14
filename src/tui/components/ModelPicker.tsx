@@ -116,7 +116,8 @@ export function ModelPicker({
                 color={isSel ? theme.inverseText : isCurrent ? theme.brand : theme.subtle}
                 bold={isSel || isCurrent}
               >
-                {isSel ? '❯' : ' '} {m.label}{isCurrent ? '  (current)' : ''}
+                {isSel ? '❯' : ' '} {m.label}
+                {isCurrent ? '  (current)' : ''}
               </Text>
             </Box>
           );
@@ -124,14 +125,17 @@ export function ModelPicker({
       </Box>
       <Box marginTop={1} flexDirection="column">
         <Text color={theme.subtle} dimColor>
-          ↑↓ select  •  Enter switch+save default  •  s session-only  •  e effort  •  Esc cancel
+          ↑↓ select • Enter switch+save default • s session-only • e effort • Esc cancel
         </Text>
         {onEffort && (
           <Box marginTop={1}>
             <Text color={theme.brand} bold>
               Effort [{EFFORT_LEVELS[effIdx]}]
             </Text>
-            <Text color={theme.subtle} dimColor>  ← → adjust</Text>
+            <Text color={theme.subtle} dimColor>
+              {' '}
+              ← → adjust
+            </Text>
           </Box>
         )}
         {hasPriorOutput && (

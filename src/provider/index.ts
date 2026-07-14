@@ -8,7 +8,12 @@
  * 4. Default → OpenAI-compatible
  */
 
-import type { AgentConfig, ProviderMessage, ProviderStreamEvent, ToolDefinition } from '../types.js';
+import type {
+  AgentConfig,
+  ProviderMessage,
+  ProviderStreamEvent,
+  ToolDefinition,
+} from '../types.js';
 import { chatCompletionStream as openaiStream } from './openai-compatible.js';
 import { chatCompletionStream as anthropicStream, isAnthropicUrl } from './anthropic.js';
 

@@ -16,14 +16,18 @@ const legacyConfigSchema = z.object({
   maxTurns: z.number().int().min(1).max(100).optional(),
   maxTokens: z.number().int().min(1000).optional(),
   autoCompactEnabled: z.boolean().optional(),
-  animation: z.object({
-    typewriterSpeed: z.number().int().min(1).max(50).default(3),
-    spinnerStyle: z.enum(['braille', 'dots']).default('braille'),
-  }).optional(),
-  accessibility: z.object({
-    screenReader: z.boolean().default(false),
-    reducedMotion: z.boolean().default(false),
-  }).optional(),
+  animation: z
+    .object({
+      typewriterSpeed: z.number().int().min(1).max(50).default(3),
+      spinnerStyle: z.enum(['braille', 'dots']).default('braille'),
+    })
+    .optional(),
+  accessibility: z
+    .object({
+      screenReader: z.boolean().default(false),
+      reducedMotion: z.boolean().default(false),
+    })
+    .optional(),
 });
 
 /**
@@ -108,16 +112,19 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     toolRetries: process.env.BOOK_TOOL_RETRIES
       ? clampInt(process.env.BOOK_TOOL_RETRIES, 0, 3)
       : (settings.retry?.toolRetries ?? DEFAULT_SETTINGS.retry.toolRetries),
-    watchdog: process.env.BOOK_RETRY_WATCHDOG === '1'
-      || settings.retry?.watchdog === true,
+    watchdog: process.env.BOOK_RETRY_WATCHDOG === '1' || settings.retry?.watchdog === true,
   };
 
   const memoryContext = settings.memory.enabled ? loadMemoryContext(resolvedWorkspace) : undefined;
 
   const envMaxTokens = parsePositiveInt(process.env.BOOK_MAX_TOKENS, 'BOOK_MAX_TOKENS');
-  const maxTokensExplicit = envMaxTokens !== undefined || settings.maxTokens !== undefined || legacy?.maxTokens !== undefined;
+  const maxTokensExplicit =
+    envMaxTokens !== undefined ||
+    settings.maxTokens !== undefined ||
+    legacy?.maxTokens !== undefined;
   const effortExplicit = Boolean(process.env.BOOK_EFFORT || settings.effort);
-  const rawModel = options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
+  const rawModel =
+    options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
   const defaultApiKey = process.env.BOOK_API_KEY || '';
   const defaultBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl || DEFAULT_OPENAI_BASE_URL;
   const defaultMaxTokens = envMaxTokens ?? settings.maxTokens ?? legacy?.maxTokens ?? 128000;
@@ -130,7 +137,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     model: rawModel,
     maxTurns: process.env.BOOK_MAX_TURNS
       ? parseInt(process.env.BOOK_MAX_TURNS, 10)
-      : settings.maxTurns ?? legacy?.maxTurns ?? 25,
+      : (settings.maxTurns ?? legacy?.maxTurns ?? 25),
     maxTokens: defaultMaxTokens,
     maxTokensExplicit,
     defaultMaxTokens,
@@ -139,8 +146,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     defaultApiKey,
     defaultBaseUrl,
     defaultProvider,
-    autoCompactEnabled:
-      settings.autoCompactEnabled ?? legacy?.autoCompactEnabled ?? true,
+    autoCompactEnabled: settings.autoCompactEnabled ?? legacy?.autoCompactEnabled ?? true,
     workspace: resolvedWorkspace,
     animation: legacy?.animation || { typewriterSpeed: 3, spinnerStyle: 'braille' },
     accessibility: legacy?.accessibility || { screenReader: false, reducedMotion: false },
@@ -154,7 +160,9 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   config = applyModelDefaults(resolveModelProviderConfig(config, rawModel));
 
   if (!config.apiKey) {
-    throw new Error('BOOK_API_KEY or provider.<id>.apiKey not set. Set BOOK_API_KEY or use {env:VAR} in settings.');
+    throw new Error(
+      'BOOK_API_KEY or provider.<id>.apiKey not set. Set BOOK_API_KEY or use {env:VAR} in settings.',
+    );
   }
 
   return config;
@@ -174,7 +182,7 @@ function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
 export function applyModelDefaults(config: AgentConfig): AgentConfig {
   const maxTokens = config.maxTokensExplicit
     ? config.maxTokens
-    : config.modelInfo?.maxOutputTokens ?? config.defaultMaxTokens ?? config.maxTokens;
+    : (config.modelInfo?.maxOutputTokens ?? config.defaultMaxTokens ?? config.maxTokens);
 
   let effort = config.effort;
   if (!config.effortExplicit) {
@@ -191,7 +199,10 @@ export function applyModelDefaults(config: AgentConfig): AgentConfig {
 }
 
 /** Resolve "provider/model" strings through settings.provider, OpenCode-style. */
-export function resolveModelProviderConfig(config: AgentConfig, rawModel = config.model): AgentConfig {
+export function resolveModelProviderConfig(
+  config: AgentConfig,
+  rawModel = config.model,
+): AgentConfig {
   const slash = rawModel.indexOf('/');
   if (slash <= 0) return plainModelConfig(config, rawModel);
   if (slash === rawModel.length - 1) {

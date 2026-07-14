@@ -45,9 +45,7 @@ describe('WelcomeScreen', () => {
 
   it('uses compact copy on narrow terminals', () => {
     const view = render(
-      withTheme(
-        <WelcomeScreen terminalWidth={36} terminalHeight={10} reducedMotion />,
-      ),
+      withTheme(<WelcomeScreen terminalWidth={36} terminalHeight={10} reducedMotion />),
     );
 
     const output = stripAnsi(view.lastFrame());
@@ -61,7 +59,13 @@ describe('WelcomeScreen', () => {
   it('renders plain useful text for screen readers', () => {
     const view = render(
       withTheme(
-        <WelcomeScreen terminalWidth={80} terminalHeight={24} screenReader model="model-x" mode="plan" />,
+        <WelcomeScreen
+          terminalWidth={80}
+          terminalHeight={24}
+          screenReader
+          model="model-x"
+          mode="plan"
+        />,
       ),
     );
 

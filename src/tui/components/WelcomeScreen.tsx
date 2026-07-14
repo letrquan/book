@@ -51,7 +51,12 @@ export function WelcomeScreen({
   const tiny = width < 42 || height < 12;
   const motionDisabled = reducedMotion || screenReader || !animate;
   const reveal = useStaggeredReveal(tiny ? 3 : compact ? 5 : 8, animate, 110, motionDisabled);
-  const tagline = useTypewriter('Your coding workspace, indexed.', 18, !tiny && animate, motionDisabled);
+  const tagline = useTypewriter(
+    'Your coding workspace, indexed.',
+    18,
+    !tiny && animate,
+    motionDisabled,
+  );
   const spinner = useGradientSpinner(animate, 'dots', motionDisabled);
   const contentWidth = Math.max(10, width - 2);
 
@@ -60,8 +65,18 @@ export function WelcomeScreen({
       <Box flexDirection="column" paddingX={1} width={width}>
         <Text bold>BOOK</Text>
         <Text>{truncateDisplay('Your coding workspace, indexed.', contentWidth)}</Text>
-        <Text>{truncateDisplay(`Workspace ${workspaceName(workspace)}. Model ${model}. Mode ${mode}.`, contentWidth)}</Text>
-        <Text>{truncateDisplay('Type /help for commands, Ctrl+/ for shortcuts, @file for context, !cmd for shell.', contentWidth)}</Text>
+        <Text>
+          {truncateDisplay(
+            `Workspace ${workspaceName(workspace)}. Model ${model}. Mode ${mode}.`,
+            contentWidth,
+          )}
+        </Text>
+        <Text>
+          {truncateDisplay(
+            'Type /help for commands, Ctrl+/ for shortcuts, @file for context, !cmd for shell.',
+            contentWidth,
+          )}
+        </Text>
       </Box>
     );
   }
@@ -69,9 +84,13 @@ export function WelcomeScreen({
   if (tiny) {
     return (
       <Box flexDirection="column" paddingX={1} width={width}>
-        <Text color={theme.brand} bold>BOOK</Text>
+        <Text color={theme.brand} bold>
+          BOOK
+        </Text>
         <WelcomeLine visible={reveal >= 1}>
-          <Text color={theme.text}>{truncateDisplay('Ask anything, or type /help', contentWidth)}</Text>
+          <Text color={theme.text}>
+            {truncateDisplay('Ask anything, or type /help', contentWidth)}
+          </Text>
         </WelcomeLine>
         <WelcomeLine visible={reveal >= 2}>
           <Text color={theme.subtle} dimColor>
@@ -85,7 +104,9 @@ export function WelcomeScreen({
   if (compact) {
     return (
       <Box flexDirection="column" paddingX={1} width={width}>
-        <Text color={theme.brand} bold>BOOK</Text>
+        <Text color={theme.brand} bold>
+          BOOK
+        </Text>
         <WelcomeLine visible={reveal >= 1}>
           <Text color={theme.text}>{truncateDisplay(tagline || ' ', contentWidth)}</Text>
         </WelcomeLine>
@@ -104,7 +125,10 @@ export function WelcomeScreen({
         </WelcomeLine>
         <WelcomeLine visible={reveal >= 4}>
           <Text color={theme.subtle} dimColor>
-            {truncateDisplay(`Index ready: ${commandCount} commands · ${skillCount} skills`, contentWidth)}
+            {truncateDisplay(
+              `Index ready: ${commandCount} commands · ${skillCount} skills`,
+              contentWidth,
+            )}
           </Text>
         </WelcomeLine>
       </Box>
@@ -114,33 +138,43 @@ export function WelcomeScreen({
   return (
     <Box flexDirection="column" paddingX={1} width={width}>
       <AsciiBanner />
-      <Text color={theme.brand} bold>BOOK</Text>
+      <Text color={theme.brand} bold>
+        BOOK
+      </Text>
       <WelcomeLine visible={reveal >= 1}>
         <Text color={spinner.color}>{spinner.frame} </Text>
         <Text color={theme.text}>{truncateDisplay(tagline || ' ', contentWidth - 2)}</Text>
       </WelcomeLine>
       <WelcomeLine visible={reveal >= 2}>
         <Text color={theme.subtle} dimColor>
-          {truncateDisplay(`Cover: ${workspaceName(workspace)} · ${model} · mode ${mode}`, contentWidth)}
+          {truncateDisplay(
+            `Cover: ${workspaceName(workspace)} · ${model} · mode ${mode}`,
+            contentWidth,
+          )}
         </Text>
       </WelcomeLine>
       <WelcomeLine visible={reveal >= 3}>
         <Text color={theme.brand}>Open a page</Text>
       </WelcomeLine>
       <WelcomeLine visible={reveal >= 4}>
-        <Text color={theme.brand}>  /init</Text>
-        <Text color={theme.subtle}> project memory  </Text>
+        <Text color={theme.brand}> /init</Text>
+        <Text color={theme.subtle}> project memory </Text>
         <Text color={theme.brand}>/skills</Text>
-        <Text color={theme.subtle}> workflows  </Text>
+        <Text color={theme.subtle}> workflows </Text>
         <Text color={theme.brand}>/review</Text>
         <Text color={theme.subtle}> current diff</Text>
       </WelcomeLine>
       <WelcomeLine visible={reveal >= 5}>
-        <Text color={theme.subtle}>Ctrl+/ shortcuts · Shift+Tab mode · @file context · !cmd shell</Text>
+        <Text color={theme.subtle}>
+          Ctrl+/ shortcuts · Shift+Tab mode · @file context · !cmd shell
+        </Text>
       </WelcomeLine>
       <WelcomeLine visible={reveal >= 6}>
         <Text color={theme.subtle} dimColor>
-          {truncateDisplay(`Index ready: ${commandCount} commands · ${skillCount} skills`, contentWidth)}
+          {truncateDisplay(
+            `Index ready: ${commandCount} commands · ${skillCount} skills`,
+            contentWidth,
+          )}
         </Text>
       </WelcomeLine>
     </Box>

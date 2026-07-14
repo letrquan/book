@@ -21,7 +21,12 @@ export const AVAILABLE_MODELS: ModelOption[] = [
   { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', provider: 'anthropic', effort: true },
   { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', provider: 'anthropic', effort: true },
   { id: 'claude-opus-4-7', label: 'Claude Opus 4.7', provider: 'anthropic', effort: true },
-  { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', provider: 'anthropic', effort: true },
+  {
+    id: 'claude-haiku-4-5-20251001',
+    label: 'Claude Haiku 4.5',
+    provider: 'anthropic',
+    effort: true,
+  },
   { id: 'claude-fable-5', label: 'Claude Fable 5', provider: 'anthropic', effort: true },
   { id: 'gpt-4o', label: 'GPT-4o', provider: 'openai' },
   { id: 'gpt-5', label: 'GPT-5', provider: 'openai' },

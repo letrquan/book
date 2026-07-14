@@ -28,8 +28,16 @@ describe('buildMemoryReport', () => {
   it('lists approved memory and reports the line cap', () => {
     const dir = getProjectMemoryDir(workspace, { bookRoot });
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'MEMORY.md'), Array.from({ length: 205 }, (_, i) => `line ${i + 1}`).join('\n'), 'utf-8');
-    writeFileSync(join(dir, 'a.md'), '---\ntype: project\nstatus: approved\n---\n# Project rule\nBody', 'utf-8');
+    writeFileSync(
+      join(dir, 'MEMORY.md'),
+      Array.from({ length: 205 }, (_, i) => `line ${i + 1}`).join('\n'),
+      'utf-8',
+    );
+    writeFileSync(
+      join(dir, 'a.md'),
+      '---\ntype: project\nstatus: approved\n---\n# Project rule\nBody',
+      'utf-8',
+    );
 
     const report = buildMemoryReport({ workspace, bookRoot, settings: DEFAULT_SETTINGS });
     expect(report).toContain('first 200 of 205');
@@ -39,12 +47,16 @@ describe('buildMemoryReport', () => {
   it('shows disabled auto-capture and pending inbox candidates', () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.memory.autoSave = false;
-    writeMemoryCandidate(workspace, {
-      type: 'user',
-      title: 'User likes short answers',
-      body: 'User likes short answers.',
-      source: 'auto',
-    }, { bookRoot });
+    writeMemoryCandidate(
+      workspace,
+      {
+        type: 'user',
+        title: 'User likes short answers',
+        body: 'User likes short answers.',
+        source: 'auto',
+      },
+      { bookRoot },
+    );
 
     const report = buildMemoryReport({ workspace, bookRoot, settings });
     expect(report).toContain('Auto-capture: disabled');

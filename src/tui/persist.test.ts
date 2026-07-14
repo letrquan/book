@@ -64,7 +64,11 @@ describe('persistPermissionRuleLocal', () => {
   it('writes each list under its own permissions key', () => {
     persistPermissionRuleLocal(dir, 'deny', 'Bash(rm -rf)');
     persistPermissionRuleLocal(dir, 'ask', 'WebFetch');
-    const perms = readSettingsLocal(dir).permissions as { allow: string[]; deny: string[]; ask: string[] };
+    const perms = readSettingsLocal(dir).permissions as {
+      allow: string[];
+      deny: string[];
+      ask: string[];
+    };
     expect(perms.deny).toEqual(['Bash(rm -rf)']);
     expect(perms.ask).toEqual(['WebFetch']);
     expect(perms.allow).toBeUndefined();

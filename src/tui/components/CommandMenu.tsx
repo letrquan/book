@@ -67,7 +67,15 @@ function formatCommandRow(
   shimmer: boolean,
   screenReader: boolean,
 ): string {
-  const marker = screenReader ? (selected ? 'selected ' : '') : selected ? (shimmer ? '▸ ' : '› ') : '  ';
+  const marker = screenReader
+    ? selected
+      ? 'selected '
+      : ''
+    : selected
+      ? shimmer
+        ? '▸ '
+        : '› '
+      : '  ';
   const hint = item.hint ? ` ${item.hint}` : '';
   const category = compact
     ? COMPACT_CATEGORY_LABELS[item.category]
@@ -121,11 +129,21 @@ export function CommandMenu({
     : 'Commands';
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1} width={width}>
-      <Text bold color={theme.brand}>{title}</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="single"
+      borderColor={theme.subtle}
+      paddingX={1}
+      width={width}
+    >
+      <Text bold color={theme.brand}>
+        {title}
+      </Text>
 
       {items.length === 0 ? (
-        <Text color={theme.subtle} dimColor>No matching commands</Text>
+        <Text color={theme.subtle} dimColor>
+          No matching commands
+        </Text>
       ) : (
         visibleItems.map((item, index) => {
           const globalIndex = window.start + index;

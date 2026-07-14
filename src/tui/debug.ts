@@ -16,11 +16,7 @@
 
 import { useRef, useEffect } from 'react';
 import type { DebugLogger } from '../debug-log.js';
-import {
-  isUiDebugEnabled,
-  isRenderDebugEnabled,
-  isFlowDebugEnabled,
-} from '../debug-log.js';
+import { isUiDebugEnabled, isRenderDebugEnabled, isFlowDebugEnabled } from '../debug-log.js';
 
 // ---------------------------------------------------------------------------
 // Hooks — useDebug* helpers for components to use inside render/effect bodies.
@@ -33,10 +29,7 @@ import {
  * When `BOOK_DEBUG_UI=1` (or `BOOK_DEBUG=1`) this logs `mounted` on first render
  * and `unmounted` in the cleanup effect.
  */
-export function useDebugMount(
-  log: DebugLogger,
-  info?: Record<string, unknown>,
-): void {
+export function useDebugMount(log: DebugLogger, info?: Record<string, unknown>): void {
   if (!isUiDebugEnabled()) return;
 
   const isMount = useRef(true);
@@ -123,10 +116,7 @@ export function debugInput(
 /**
  * Log a layout / sizing decision. Gated by render debug (noisy).
  */
-export function debugLayout(
-  log: DebugLogger,
-  info: Record<string, unknown>,
-): void {
+export function debugLayout(log: DebugLogger, info: Record<string, unknown>): void {
   if (!isRenderDebugEnabled()) return;
   log.event('layout', info);
 }

@@ -5,10 +5,7 @@ import { discoverSkills } from '../skills.js';
  * InvokeSkill tool — allows the model to invoke a loaded skill by name.
  * Returns the skill's body as the tool output, which the model can then follow.
  */
-async function invokeSkill(
-  args: Record<string, unknown>,
-  ctx: ToolContext,
-): Promise<ToolResult> {
+async function invokeSkill(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const skillName = args.skill as string;
   const promptArgs = (args.args as string) ?? '';
   const extraContext = (args.context as string) ?? '';

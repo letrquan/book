@@ -24,10 +24,7 @@ describe('WebFetch', () => {
       }),
     );
 
-    const r = await fetchTool.execute(
-      { url: 'https://example.com/', prompt: 'summarize' },
-      ctx,
-    );
+    const r = await fetchTool.execute({ url: 'https://example.com/', prompt: 'summarize' }, ctx);
     expect(r.success).toBe(true);
     expect(r.output).toMatch(/Hello World/);
     expect(r.output).toMatch(/test page/);
@@ -56,16 +53,17 @@ describe('WebSearch', () => {
   it('calls the configured search backend and returns results', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            results: [
-              { title: 'Result One', url: 'https://a.example.com', snippet: 'snippet a' },
-              { title: 'Result Two', url: 'https://b.example.com', snippet: 'snippet b' },
-            ],
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              results: [
+                { title: 'Result One', url: 'https://a.example.com', snippet: 'snippet a' },
+                { title: 'Result Two', url: 'https://b.example.com', snippet: 'snippet b' },
+              ],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
       ),
     );
 

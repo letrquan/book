@@ -95,15 +95,11 @@ describe('AgentMessage retry layout contract', () => {
 
 describe('trimPartialClosingFences', () => {
   it('strips partial closing fence (``)', () => {
-    expect(trimPartialClosingFences('```rust\nfn main() {}\n``')).toBe(
-      '```rust\nfn main() {}\n',
-    );
+    expect(trimPartialClosingFences('```rust\nfn main() {}\n``')).toBe('```rust\nfn main() {}\n');
   });
 
   it('strips partial closing fence (single backtick)', () => {
-    expect(trimPartialClosingFences('```ts\nconst x = 1;\n`')).toBe(
-      '```ts\nconst x = 1;\n',
-    );
+    expect(trimPartialClosingFences('```ts\nconst x = 1;\n`')).toBe('```ts\nconst x = 1;\n');
   });
 
   it('leaves complete fence unchanged', () => {

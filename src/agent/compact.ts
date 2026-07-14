@@ -1,11 +1,7 @@
 import type { Message, Usage } from '../types.js';
 
 /** Decide whether the context window is approaching its limit and needs compaction. */
-export function shouldCompact(
-  usage: Usage | null,
-  maxTokens: number,
-  threshold = 0.8,
-): boolean {
+export function shouldCompact(usage: Usage | null, maxTokens: number, threshold = 0.8): boolean {
   if (!usage) return false;
   return usage.totalTokens >= maxTokens * threshold;
 }

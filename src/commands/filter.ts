@@ -131,10 +131,7 @@ export function getCommandsForEmptyQuery(commands: SlashCommand[]): CommandItem[
 
 // ── Typed query: Fuse.js fuzzy search with priority ranking ──
 
-export function getCommandsForQuery(
-  commands: SlashCommand[],
-  query: string,
-): CommandItem[] {
+export function getCommandsForQuery(commands: SlashCommand[], query: string): CommandItem[] {
   const fuse = getFuse(commands);
   const q = query.toLowerCase().trim();
   const builtinNames = new Set(BUILTIN_COMMANDS.map((c) => c.name));

@@ -37,10 +37,7 @@ describe('loadSettingsFile', () => {
   });
 
   it('loads a valid settings file', () => {
-    writeFileSync(
-      join(dir, 'good.json'),
-      JSON.stringify({ model: 'gpt-4o', maxTurns: 10 }),
-    );
+    writeFileSync(join(dir, 'good.json'), JSON.stringify({ model: 'gpt-4o', maxTurns: 10 }));
     const result = loadSettingsFile(join(dir, 'good.json'));
     expect(result?.model).toBe('gpt-4o');
     expect(result?.maxTurns).toBe(10);
@@ -120,7 +117,9 @@ describe('mergeSettings', () => {
 
   it('merges nested memory settings without losing defaults', () => {
     const base = structuredClone(DEFAULT_SETTINGS);
-    const result = mergeSettings(base, { memory: { autoSave: false } } as Partial<ResolvedSettings>);
+    const result = mergeSettings(base, {
+      memory: { autoSave: false },
+    } as Partial<ResolvedSettings>);
     expect(result.memory.enabled).toBe(true);
     expect(result.memory.autoSave).toBe(false);
     expect(result.memory.requireApproval).toBe(true);
@@ -214,10 +213,7 @@ describe('resolveSettings — layered merging', () => {
   it('rejects malformed settings files with clear error', () => {
     const projectSettingsDir = join(dir, '.book');
     mkdirSync(projectSettingsDir, { recursive: true });
-    writeFileSync(
-      join(projectSettingsDir, 'settings.json'),
-      '{broken json',
-    );
+    writeFileSync(join(projectSettingsDir, 'settings.json'), '{broken json');
 
     expect(() => resolveSettings(dir)).toThrow(/Invalid JSON/);
   });
@@ -231,10 +227,7 @@ describe('resolveSettings — layered merging', () => {
     );
 
     const overridePath = join(dir, 'override.json');
-    writeFileSync(
-      overridePath,
-      JSON.stringify({ model: 'override-model', maxTurns: 3 }),
-    );
+    writeFileSync(overridePath, JSON.stringify({ model: 'override-model', maxTurns: 3 }));
 
     const result = resolveSettings(dir, overridePath);
     expect(result.model).toBe('override-model');

@@ -88,7 +88,9 @@ describe('MarkdownBlock', () => {
   it('renders differentiated heading levels', () => {
     const view = render(
       withTheme(
-        React.createElement(MarkdownBlock, { content: '# Heading One\n\n## Heading Two\n\n### Heading Three' }),
+        React.createElement(MarkdownBlock, {
+          content: '# Heading One\n\n## Heading Two\n\n### Heading Three',
+        }),
       ),
     );
     const output = frame(view.lastFrame);

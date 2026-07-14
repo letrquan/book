@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { parseArgs, resolveVariables, resolveShellInjection, resolveCommandBody } from './resolve.js';
+import {
+  parseArgs,
+  resolveVariables,
+  resolveShellInjection,
+  resolveCommandBody,
+} from './resolve.js';
 import type { SlashCommand } from '../types.js';
 
 describe('parseArgs', () => {
@@ -59,7 +64,11 @@ describe('resolveVariables', () => {
   });
 
   it('substitutes named arguments', () => {
-    const result = resolveVariables('File: $file, Focus: $focus', ['src/app.ts', 'performance'], ['file', 'focus']);
+    const result = resolveVariables(
+      'File: $file, Focus: $focus',
+      ['src/app.ts', 'performance'],
+      ['file', 'focus'],
+    );
     expect(result).toBe('File: src/app.ts, Focus: performance');
   });
 
@@ -80,7 +89,9 @@ describe('resolveVariables', () => {
   });
 
   it('substitutes ${BOOK_SESSION_ID} from context', () => {
-    const result = resolveVariables('Session: ${BOOK_SESSION_ID}', [], [], { sessionId: 'abc-123' });
+    const result = resolveVariables('Session: ${BOOK_SESSION_ID}', [], [], {
+      sessionId: 'abc-123',
+    });
     expect(result).toBe('Session: abc-123');
   });
 
@@ -97,10 +108,7 @@ describe('resolveVariables', () => {
 
 describe('resolveShellInjection', () => {
   it('injects inline !`cmd` output', () => {
-    const { resolved, errors } = resolveShellInjection(
-      'Output: !`echo hello_test`',
-      process.cwd(),
-    );
+    const { resolved, errors } = resolveShellInjection('Output: !`echo hello_test`', process.cwd());
     expect(resolved).toContain('hello_test');
     expect(errors).toHaveLength(0);
   });

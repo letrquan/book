@@ -1,5 +1,12 @@
 import { createInterface } from 'node:readline/promises';
-import type { AgentConfig, AgentLoopCallbacks, Message, PermissionMode, ToolCall, ToolResult } from '../types.js';
+import type {
+  AgentConfig,
+  AgentLoopCallbacks,
+  Message,
+  PermissionMode,
+  ToolCall,
+  ToolResult,
+} from '../types.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { createDefaultRegistry, type ToolRegistry } from '../tools/registry.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
@@ -22,7 +29,7 @@ export function formatToolResult(result: ToolResult, call?: ToolCall): string {
   const label = result.success ? '[OK]' : '[ERR]';
   const name = call?.name ?? 'tool';
   const primary = call ? getPrimaryArg(call.arguments) : '';
-  const detail = result.success ? result.output : result.error ?? '';
+  const detail = result.success ? result.output : (result.error ?? '');
   return `${label} ${name}${primary ? ` ${primary}` : ''}${detail ? `\n${detail.trimEnd()}` : ''}\n`;
 }
 
@@ -53,21 +60,29 @@ export async function runScrollbackSession(
       }
 
       output.write('\nBook\n');
-      const updated = await runLoop(config, registry, prompt, history, {
-        onText: (text) => output.write(text),
-        onToolCall: (call) => {
-          toolCalls.set(call.id, call);
-          output.write(formatToolCall(call));
-        },
-        onToolResult: (result) => output.write(formatToolResult(result, toolCalls.get(result.toolCallId))),
-        onError: (error) => output.write(`\n[error] ${error}\n`),
-        onTurnStart: (turn) => {
-          if (turn > 1) output.write(`\nBook turn ${turn}\n`);
-        },
-        onDone: () => output.write('\n'),
-        onPermissionRequired: (call) => askPermission(call, close.read, output),
-        onUsage: () => {},
-      } satisfies AgentLoopCallbacks, options.mode);
+      const updated = await runLoop(
+        config,
+        registry,
+        prompt,
+        history,
+        {
+          onText: (text) => output.write(text),
+          onToolCall: (call) => {
+            toolCalls.set(call.id, call);
+            output.write(formatToolCall(call));
+          },
+          onToolResult: (result) =>
+            output.write(formatToolResult(result, toolCalls.get(result.toolCallId))),
+          onError: (error) => output.write(`\n[error] ${error}\n`),
+          onTurnStart: (turn) => {
+            if (turn > 1) output.write(`\nBook turn ${turn}\n`);
+          },
+          onDone: () => output.write('\n'),
+          onPermissionRequired: (call) => askPermission(call, close.read, output),
+          onUsage: () => {},
+        } satisfies AgentLoopCallbacks,
+        options.mode,
+      );
 
       history.length = 0;
       history.push(...updated);
@@ -84,7 +99,8 @@ function createPromptReader(options: ScrollbackOptions): {
   read: (prompt?: string) => Promise<string | null>;
   close: () => void;
 } {
-  if (options.readPrompt) return { read: () => options.readPrompt?.() ?? Promise.resolve(null), close: () => {} };
+  if (options.readPrompt)
+    return { read: () => options.readPrompt?.() ?? Promise.resolve(null), close: () => {} };
 
   const rl = createInterface({
     input: options.input ?? process.stdin,
@@ -102,7 +118,9 @@ async function askPermission(
   read: (prompt?: string) => Promise<string | null>,
   output: { write: (s: string) => boolean | void },
 ): Promise<'allow' | 'deny' | 'always'> {
-  output.write(`[permission] ${call.name}${getPrimaryArg(call.arguments) ? ` ${getPrimaryArg(call.arguments)}` : ''}\nAllow? [y]es/[n]o/[a]lways: `);
+  output.write(
+    `[permission] ${call.name}${getPrimaryArg(call.arguments) ? ` ${getPrimaryArg(call.arguments)}` : ''}\nAllow? [y]es/[n]o/[a]lways: `,
+  );
   const answer = (await read(''))?.trim().toLowerCase();
   if (answer === 'a' || answer === 'always') return 'always';
   if (answer === 'y' || answer === 'yes') return 'allow';

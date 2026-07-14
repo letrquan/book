@@ -34,9 +34,7 @@ describe('compactHistory', () => {
   });
 
   it('returns empty summarized when history is short', () => {
-    const history: Message[] = [
-      { id: '1', role: 'user', content: 'only', timestamp: 0 },
-    ];
+    const history: Message[] = [{ id: '1', role: 'user', content: 'only', timestamp: 0 }];
     const { kept, summarized } = compactHistory(history, 2);
     expect(kept.length).toBe(1);
     expect(summarized.length).toBe(0);

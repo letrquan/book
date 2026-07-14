@@ -44,11 +44,7 @@ function jitter(ms: number): number {
  * Compute the backoff delay for a given attempt.
  * Respects the Retry-After header when present (capped at maxDelayMs).
  */
-function backoffMs(
-  attempt: number,
-  retry: RetryConfig,
-  retryAfter?: string | null,
-): number {
+function backoffMs(attempt: number, retry: RetryConfig, retryAfter?: string | null): number {
   if (retryAfter) {
     const secs = Number(retryAfter);
     if (!Number.isNaN(secs) && secs > 0) {
@@ -63,7 +59,17 @@ function backoffMs(
  * Classify an HTTP status code into a machine-readable error code.
  */
 function classifyHttpStatus(status: number): {
-  code: 'network' | 'timeout' | 'rate_limited' | 'overloaded' | 'server_error' | 'auth' | 'bad_request' | 'not_found' | 'quota' | 'unknown';
+  code:
+    | 'network'
+    | 'timeout'
+    | 'rate_limited'
+    | 'overloaded'
+    | 'server_error'
+    | 'auth'
+    | 'bad_request'
+    | 'not_found'
+    | 'quota'
+    | 'unknown';
   retryable: boolean;
 } {
   if (status === 429) return { code: 'rate_limited', retryable: true };
@@ -107,7 +113,9 @@ async function fetchWithRetry(
         const merged = new AbortController();
         const onAbort = () => merged.abort(signal.reason);
         signal.addEventListener('abort', onAbort, { once: true });
-        timeoutSignal.addEventListener('abort', () => merged.abort(timeoutSignal.reason), { once: true });
+        timeoutSignal.addEventListener('abort', () => merged.abort(timeoutSignal.reason), {
+          once: true,
+        });
         fetchInit.signal = merged.signal;
       } else {
         fetchInit.signal = timeoutSignal;
@@ -285,7 +293,12 @@ export async function* chatCompletionStream(
   config: AgentConfig,
   messages: ProviderMessage[],
   tools: ToolDefinition[],
-  options?: { signal?: AbortSignal; onRetry?: (attempt: number, max: number, delayMs: number) => void; onStreamStall?: (countdownMs: number) => void; onStreamResume?: () => void },
+  options?: {
+    signal?: AbortSignal;
+    onRetry?: (attempt: number, max: number, delayMs: number) => void;
+    onStreamStall?: (countdownMs: number) => void;
+    onStreamResume?: () => void;
+  },
 ): AsyncGenerator<ProviderStreamEvent> {
   const retry = config.retry;
   const signal = options?.signal;
@@ -328,7 +341,7 @@ export async function* chatCompletionStream(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${config.apiKey}`,
+          Authorization: `Bearer ${config.apiKey}`,
         },
         body: JSON.stringify(body),
       },
@@ -401,7 +414,10 @@ export async function* chatCompletionStream(
         } catch {
           // ignore cancellation failures
         }
-        yield { type: 'error', error: 'Stream stalled: no data received for ' + stallTimeoutMs + 'ms' };
+        yield {
+          type: 'error',
+          error: 'Stream stalled: no data received for ' + stallTimeoutMs + 'ms',
+        };
         return;
       }
 

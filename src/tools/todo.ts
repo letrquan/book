@@ -12,10 +12,7 @@ function isTodoList(value: unknown): value is Todo[] {
   return Array.isArray(value);
 }
 
-async function todoWrite(
-  args: Record<string, unknown>,
-  ctx: ToolContext,
-): Promise<ToolResult> {
+async function todoWrite(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const todos = args.todos;
   if (!isTodoList(todos)) {
     return {
@@ -71,8 +68,7 @@ async function todoWrite(
   const summary = parsed.length
     ? parsed
         .map((t) => {
-          const mark =
-            t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '→' : '○';
+          const mark = t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '→' : '○';
           return `  ${mark} ${t.content}`;
         })
         .join('\n')

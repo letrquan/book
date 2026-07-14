@@ -3,7 +3,11 @@ import { usageReport, costReport } from './pricing.js';
 
 describe('usageReport', () => {
   it('reports a placeholder before first response when usage is null', () => {
-    const r = usageReport('claude-sonnet-5', null, { currentTurn: 0, messageCount: 2, turnDurationMs: 0 });
+    const r = usageReport('claude-sonnet-5', null, {
+      currentTurn: 0,
+      messageCount: 2,
+      turnDurationMs: 0,
+    });
     expect(r).toContain('no model response yet');
     expect(r).toContain('claude-sonnet-5');
   });

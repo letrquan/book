@@ -119,9 +119,7 @@ describe('discoverSkills', () => {
     );
 
     const result = discoverSkills(dir);
-    expect(result.find((s) => s.name === 'review')?.description).toBe(
-      'Project review version',
-    );
+    expect(result.find((s) => s.name === 'review')?.description).toBe('Project review version');
   });
 });
 
