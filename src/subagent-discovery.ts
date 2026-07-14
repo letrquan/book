@@ -16,8 +16,8 @@ export interface SubagentDef {
   allowedTools: string[];
   /** Override model for this subagent (optional). */
   model?: string;
-  /** Maximum turns for this subagent (default 5). */
-  maxTurns: number;
+  /** Maximum turns for this subagent. Undefined = unlimited. */
+  maxTurns?: number;
   /** The raw Markdown body — injected as the subagent's system prompt. */
   body: string;
   /** Source directory. */
@@ -43,8 +43,8 @@ function loadAgentFile(filePath: string, source: 'user' | 'project'): SubagentDe
       typeof frontmatter.maxTurns === 'number'
         ? (frontmatter.maxTurns as number)
         : typeof frontmatter.maxTurns === 'string'
-          ? parseInt(frontmatter.maxTurns as string, 10) || 5
-          : 5,
+          ? parseInt(frontmatter.maxTurns as string, 10) || undefined
+          : undefined,
     body,
     source,
   };

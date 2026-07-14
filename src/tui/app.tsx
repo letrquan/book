@@ -881,7 +881,15 @@ export function App({ config, session, redrawViewport }: AppProps) {
                     description={String(config.maxTokens)}
                     theme={theme}
                   />
-                  <HelpRow label="Max Turns" description={String(config.maxTurns)} theme={theme} />
+                  <HelpRow
+                    label="Max Turns"
+                    description={
+                      config.maxTurns == null || config.maxTurns <= 0
+                        ? 'unlimited'
+                        : String(config.maxTurns)
+                    }
+                    theme={theme}
+                  />
                   <HelpRow label="Mode" description={mode} theme={theme} />
                   <HelpRow label="Tokens Used" description={`${tokenCount}`} theme={theme} />
                   <HelpRow label="Turn" description={`${currentTurn}`} theme={theme} />
