@@ -196,7 +196,14 @@ export function InputBar({
     // handler on every keypress, so Enter/Tab/Esc would double-fire.
     if (inputSuppressed) return;
     // Filter out Alt/Meta-modified keys — they're shortcuts, not text input.
-    if (key.meta) return;
+    // ink-text-input has its own useInput listener and can still append the
+    // printable part of an Alt chord (Alt+P → "p"). Restore this handler's
+    // pre-event value after all listeners in the current input turn finish.
+    if (key.meta) {
+      const preservedValue = value;
+      queueMicrotask(() => setValue(preservedValue));
+      return;
+    }
 
     if (key.shift && key.tab) {
       onCycleMode();
@@ -300,9 +307,15 @@ export function InputBar({
       uiLog.event(key.ctrl ? 'input:Ctrl+J' : 'input:Shift+Enter', { action: 'insert-newline' });
       return;
     }
-    // Forward Ctrl-based shortcuts to the parent App.
+    // Forward Ctrl-based shortcuts to the parent App. As with Alt chords,
+    // restore the pre-event value when consumed because ink-text-input has its
+    // own listener and otherwise inserts printable Ctrl bytes (Ctrl+L → "l").
     if (key.ctrl && onGlobalShortcut) {
-      if (onGlobalShortcut(_input, key)) return;
+      if (onGlobalShortcut(_input, key)) {
+        const preservedValue = value;
+        queueMicrotask(() => setValue(preservedValue));
+        return;
+      }
     }
     // Up arrow — navigate history backward
     if (key.upArrow && history.length > 0 && historyIndex < history.length - 1) {

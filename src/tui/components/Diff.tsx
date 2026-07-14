@@ -10,6 +10,8 @@ interface DiffProps {
   maxLines?: number;
   /** When true, render a short preview with a hidden-output summary. */
   collapsed?: boolean;
+  /** Available width, including this component's indentation and line prefix. */
+  terminalWidth?: number;
 }
 
 export function isUnifiedDiffLike(output: string): boolean {
@@ -33,7 +35,15 @@ export function isUnifiedDiffLike(output: string): boolean {
 function parseDiffLines(output: string): Array<{
   text: string;
   /** Theme token: 'diffAdded' | 'diffRemoved' | 'diffAddedWord' | 'diffRemovedWord' | 'diffHunk' | 'diffCtx' | 'diffAddedDimmed' | 'diffRemovedDimmed' */
-  kind: 'diffAdded' | 'diffRemoved' | 'diffAddedWord' | 'diffRemovedWord' | 'diffHunk' | 'diffCtx' | 'diffAddedDimmed' | 'diffRemovedDimmed';
+  kind:
+    | 'diffAdded'
+    | 'diffRemoved'
+    | 'diffAddedWord'
+    | 'diffRemovedWord'
+    | 'diffHunk'
+    | 'diffCtx'
+    | 'diffAddedDimmed'
+    | 'diffRemovedDimmed';
 }> {
   const lines = output.split('\n');
   const result: ReturnType<typeof parseDiffLines> = [];
@@ -87,12 +97,18 @@ function parseDiffLines(output: string): Array<{
 function parseWordLevelDiff(
   line: string,
   mode: 'add' | 'del',
-): Array<{ text: string; kind: 'diffAdded' | 'diffRemoved' | 'diffAddedWord' | 'diffRemovedWord' }> | null {
+): Array<{
+  text: string;
+  kind: 'diffAdded' | 'diffRemoved' | 'diffAddedWord' | 'diffRemovedWord';
+}> | null {
   // Check for CC-style markers: {+...+} or {-...-}
   const addedRe = /\{\+(.+?)\+\}/g;
   const removedRe = /\{\-(.+?)\-\}/g;
 
-  const tokens: Array<{ text: string; kind: 'diffAdded' | 'diffRemoved' | 'diffAddedWord' | 'diffRemovedWord' }> = [];
+  const tokens: Array<{
+    text: string;
+    kind: 'diffAdded' | 'diffRemoved' | 'diffAddedWord' | 'diffRemovedWord';
+  }> = [];
   let remaining = line;
   let lastIdx = 0;
 
@@ -137,14 +153,21 @@ const DIFF_COLOR_MAP: Record<string, keyof ReturnType<typeof useTheme>> = {
   diffRemovedDimmed: 'diffRemovedDimmed',
 };
 
-export function DiffBlock({ output, maxLines = 200, collapsed = false }: DiffProps) {
+export function DiffBlock({
+  output,
+  maxLines = 200,
+  collapsed = false,
+  terminalWidth = 120,
+}: DiffProps) {
   const theme = useTheme();
   const parsed = parseDiffLines(output);
   const displayLimit = collapsed ? 5 : maxLines;
   const display = displayLimit > 0 ? parsed.slice(0, displayLimit) : parsed;
+  // Two-column margin plus the `│ ` prefix live inside the supplied budget.
+  const lineWidth = Math.max(8, Math.floor(terminalWidth) - 4);
   const outputDisplay = prepareToolOutputDisplay(output, {
     maxLines: displayLimit,
-    maxLineWidth: 120,
+    maxLineWidth: lineWidth,
     hint: collapsed ? 'Ctrl+E shows all' : undefined,
   });
 
@@ -153,8 +176,7 @@ export function DiffBlock({ output, maxLines = 200, collapsed = false }: DiffPro
       {display.map((segment, i) => {
         const colorKey = DIFF_COLOR_MAP[segment.kind] ?? 'subtle';
         const color = theme[colorKey] as string;
-        const isDimmed =
-          segment.kind === 'diffAddedDimmed' || segment.kind === 'diffRemovedDimmed';
+        const isDimmed = segment.kind === 'diffAddedDimmed' || segment.kind === 'diffRemovedDimmed';
 
         return (
           <Box key={i} marginLeft={2}>
@@ -163,7 +185,7 @@ export function DiffBlock({ output, maxLines = 200, collapsed = false }: DiffPro
               dimColor={isDimmed}
               bold={segment.kind === 'diffAddedWord' || segment.kind === 'diffRemovedWord'}
             >
-              {'│'} {truncateDisplay(segment.text, 120)}
+              {'│'} {truncateDisplay(segment.text, lineWidth)}
             </Text>
           </Box>
         );
@@ -171,7 +193,7 @@ export function DiffBlock({ output, maxLines = 200, collapsed = false }: DiffPro
       {outputDisplay.footer && (
         <Box marginLeft={2}>
           <Text color={theme.subtle} dimColor>
-            {'│'} {outputDisplay.footer}
+            {'│'} {truncateDisplay(outputDisplay.footer, lineWidth)}
           </Text>
         </Box>
       )}

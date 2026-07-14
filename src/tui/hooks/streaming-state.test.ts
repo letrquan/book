@@ -5,7 +5,9 @@ import {
   appendNestedToolResultToMessage,
   appendToolCallToMessage,
   appendToolResultToMessage,
+  isTotallyEmptyAssistant,
   makeMessage,
+  removeTrailingEmptyAssistantPlaceholder,
 } from './streaming-state.js';
 import type { Message } from '../../types.js';
 
@@ -51,6 +53,15 @@ describe('streaming TUI message state helpers', () => {
     expect(messages.map((m) => m.content)).toEqual(['old', '']);
   });
 
+  it('keeps text append-only and ignores empty deltas', () => {
+    const messages = [msg('assistant-1', 'assistant', 'Hi')];
+    const same = appendContentToMessage(messages, 'assistant-1', '');
+    expect(same).toBe(messages);
+    const next = appendContentToMessage(messages, 'assistant-1', ' there');
+    expect(next[0].content).toBe('Hi there');
+    expect(messages[0].content).toBe('Hi');
+  });
+
   it('keeps multi-turn tool calls and results on their originating assistant turn', () => {
     let messages = [
       msg('assistant-1', 'assistant', 'turn 1'),
@@ -72,6 +83,51 @@ describe('streaming TUI message state helpers', () => {
     expect(messages[0].toolResults?.map((tr) => tr.toolCallId)).toEqual(['call-1']);
     expect(messages[1]).not.toHaveProperty('toolCalls');
     expect(messages[1].content).toBe('turn 2 final');
+  });
+
+  it('upserts top-level tool calls and results by stable id', () => {
+    let messages = [msg('assistant-1', 'assistant', '')];
+    messages = appendToolCallToMessage(messages, 'assistant-1', {
+      id: 'call-1',
+      name: 'Read',
+      arguments: { filePath: 'a.ts' },
+    });
+    messages = appendToolCallToMessage(messages, 'assistant-1', {
+      id: 'call-1',
+      name: 'Read',
+      arguments: { filePath: 'b.ts' },
+    });
+    messages = appendToolCallToMessage(messages, 'assistant-1', {
+      id: 'call-2',
+      name: 'Write',
+      arguments: { filePath: 'c.ts' },
+    });
+    messages = appendToolResultToMessage(messages, 'assistant-1', {
+      toolCallId: 'call-1',
+      success: true,
+      output: 'first',
+    });
+    messages = appendToolResultToMessage(messages, 'assistant-1', {
+      toolCallId: 'call-1',
+      success: true,
+      output: 'updated',
+    });
+    messages = appendToolResultToMessage(messages, 'assistant-1', {
+      toolCallId: 'call-2',
+      success: false,
+      output: 'err',
+    });
+
+    expect(messages[0].toolCalls).toHaveLength(2);
+    expect(messages[0].toolCalls?.[0]).toEqual({
+      id: 'call-1',
+      name: 'Read',
+      arguments: { filePath: 'b.ts' },
+    });
+    expect(messages[0].toolCalls?.[1].id).toBe('call-2');
+    expect(messages[0].toolResults).toHaveLength(2);
+    expect(messages[0].toolResults?.[0].output).toBe('updated');
+    expect(messages[0].toolResults?.[1].toolCallId).toBe('call-2');
   });
 
   it('attaches nested results by trace id without confusing duplicate provider ids', () => {
@@ -96,5 +152,76 @@ describe('streaming TUI message state helpers', () => {
     expect(messages[0].nestedToolInvocations).not.toBe(before);
     expect(messages[0].nestedToolInvocations?.[0].result).toBeUndefined();
     expect(messages[0].nestedToolInvocations?.[1].result?.output).toBe('b');
+  });
+
+  it('upserts nested invocations by trace id and preserves existing results', () => {
+    let messages = [msg('assistant-1', 'assistant', '')];
+    messages = appendNestedToolInvocationToMessage(messages, 'assistant-1', {
+      traceId: 'task/1:read',
+      parentTraceId: 'task',
+      call: { id: 'read', name: 'Read', arguments: { filePath: 'a.ts' } },
+    });
+    messages = appendNestedToolResultToMessage(messages, 'assistant-1', 'task/1:read', {
+      toolCallId: 'read',
+      success: true,
+      output: 'a',
+    });
+    // Re-emit the same invocation (e.g. retry/update) without a result payload.
+    messages = appendNestedToolInvocationToMessage(messages, 'assistant-1', {
+      traceId: 'task/1:read',
+      parentTraceId: 'task',
+      call: { id: 'read', name: 'Read', arguments: { filePath: 'a.ts', offset: 10 } },
+    });
+    // Re-emit result with new payload — replace in place.
+    messages = appendNestedToolResultToMessage(messages, 'assistant-1', 'task/1:read', {
+      toolCallId: 'read',
+      success: true,
+      output: 'a-updated',
+    });
+
+    expect(messages[0].nestedToolInvocations).toHaveLength(1);
+    expect(messages[0].nestedToolInvocations?.[0].call.arguments).toEqual({
+      filePath: 'a.ts',
+      offset: 10,
+    });
+    expect(messages[0].nestedToolInvocations?.[0].result?.output).toBe('a-updated');
+  });
+
+  it('detects totally-empty assistant placeholders and removes only a trailing one', () => {
+    const empty = msg('a-empty', 'assistant', '');
+    const partial = msg('a-partial', 'assistant', 'hi');
+    const withTools: Message = {
+      ...msg('a-tools', 'assistant', ''),
+      toolCalls: [{ id: 'c1', name: 'Read', arguments: {} }],
+    };
+    const withNested: Message = {
+      ...msg('a-nested', 'assistant', ''),
+      nestedToolInvocations: [
+        {
+          traceId: 't/1',
+          parentTraceId: 't',
+          call: { id: 'c1', name: 'Read', arguments: {} },
+        },
+      ],
+    };
+
+    expect(isTotallyEmptyAssistant(empty)).toBe(true);
+    expect(isTotallyEmptyAssistant(partial)).toBe(false);
+    expect(isTotallyEmptyAssistant(withTools)).toBe(false);
+    expect(isTotallyEmptyAssistant(withNested)).toBe(false);
+    expect(isTotallyEmptyAssistant(msg('u', 'user', ''))).toBe(false);
+
+    const history = [msg('u1', 'user', 'q'), empty];
+    expect(removeTrailingEmptyAssistantPlaceholder(history).map((m) => m.id)).toEqual(['u1']);
+
+    const keepPartial = [msg('u1', 'user', 'q'), partial];
+    expect(removeTrailingEmptyAssistantPlaceholder(keepPartial)).toBe(keepPartial);
+
+    const keepTools = [msg('u1', 'user', 'q'), withTools];
+    expect(removeTrailingEmptyAssistantPlaceholder(keepTools)).toBe(keepTools);
+
+    // Non-trailing empty must stay (only trailing is safe to drop).
+    const nonTrailing = [empty, msg('u2', 'user', 'later')];
+    expect(removeTrailingEmptyAssistantPlaceholder(nonTrailing)).toBe(nonTrailing);
   });
 });

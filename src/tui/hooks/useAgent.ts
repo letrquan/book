@@ -19,7 +19,7 @@ import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js'
 import { createDefaultRegistry } from '../../tools/registry.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types.js';
-import { makeMessage } from './streaming-state.js';
+import { makeMessage, removeTrailingEmptyAssistantPlaceholder } from './streaming-state.js';
 import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-log.js';
 import { loadMemoryContext } from '../../memory-store.js';
 import { persistSettingLocal, persistPermissionRuleLocal } from '../persist.js';
@@ -32,6 +32,66 @@ const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
 import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
+
+type PendingPermission = {
+  toolCall: ToolCall;
+  resolve: (value: PermissionResult) => void;
+};
+
+type PendingPlanApproval = {
+  plan: string;
+  resolve: (value: PlanApprovalResult) => void;
+};
+
+/**
+ * Idempotent permission settlement used by resolve/cancel/clear/unmount.
+ * Exported for pure unit tests of the lifecycle contract.
+ */
+export function settlePermissionRequest(
+  pendingRef: { current: PendingPermission | null },
+  setPending: (value: PendingPermission | null) => void,
+  result: PermissionResult,
+  via: string,
+): boolean {
+  const pending = pendingRef.current;
+  if (!pending) {
+    uiLog.event('permission:settled:noop', { reason: 'no-pending', result, via });
+    return false;
+  }
+  // Clear ref first so a re-entrant call cannot double-resolve.
+  pendingRef.current = null;
+  setPending(null);
+  uiLog.event('permission:settled', {
+    tool: pending.toolCall.name,
+    id: pending.toolCall.id,
+    result,
+    via,
+  });
+  pending.resolve(result);
+  return true;
+}
+
+/**
+ * Idempotent plan-approval settlement used by resolve/cancel/clear/unmount.
+ * Exported for pure unit tests of the lifecycle contract.
+ */
+export function settlePlanApprovalRequest(
+  pendingRef: { current: PendingPlanApproval | null },
+  setPending: (value: PendingPlanApproval | null) => void,
+  result: PlanApprovalResult,
+  via: string,
+): boolean {
+  const pending = pendingRef.current;
+  if (!pending) {
+    uiLog.event('plan-approval:settled:noop', { reason: 'no-pending', result, via });
+    return false;
+  }
+  pendingRef.current = null;
+  setPending(null);
+  uiLog.event('plan-approval:settled', { result, via, len: pending.plan.length });
+  pending.resolve(result);
+  return true;
+}
 
 export interface UseAgentSessionOptions extends SessionBootstrap {
   store?: SessionStoreInterface;
@@ -51,14 +111,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // mutate liveConfig so subsequent runAgentLoop calls pick up the change.
   // Without this, /model would silently no-op (send closes over `config`).
   const [liveConfig, setLiveConfig] = useState<AgentConfig>(config);
-  const [pendingPermission, setPendingPermission] = useState<{
-    toolCall: ToolCall;
-    resolve: (value: PermissionResult) => void;
-  } | null>(null);
-  const [pendingPlanApproval, setPendingPlanApproval] = useState<{
-    plan: string;
-    resolve: (value: PlanApprovalResult) => void;
-  } | null>(null);
+  const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
+  const [pendingPlanApproval, setPendingPlanApproval] = useState<PendingPlanApproval | null>(null);
   const [turnDurationMs, setTurnDurationMs] = useState<number>(0);
   const [sessionId, setSessionId] = useState(session.sessionId);
   const [sessionName, setSessionName] = useState(session.sessionName);
@@ -80,13 +134,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const lifecycleStartedRef = useRef(false);
   const lifecycleEndedRef = useRef(false);
   const liveConfigRef = useRef(liveConfig);
-  const pendingPermissionRef = useRef(pendingPermission);
-  const pendingPlanApprovalRef = useRef(pendingPlanApproval);
   const turnStartRef = useRef(Date.now());
   // Countdown timer ref for retry countdown.
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Message accumulator for batched streaming updates.
   const accumulatorRef = useRef<MessageAccumulator | null>(null);
+  // Synchronous single-flight lock for send(). isThinking is UI-only and may
+  // lag a render; this ref is the authoritative gate. Cancel aborts the stream
+  // but leaves the lock held until send()'s finally block releases it.
+  const sendInFlightRef = useRef(false);
+  // Resolve handles for pending interactive prompts (refs for idempotent settle).
+  const pendingPermissionRef = useRef<PendingPermission | null>(pendingPermission);
+  const pendingPlanApprovalRef = useRef<PendingPlanApproval | null>(pendingPlanApproval);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -96,13 +155,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     liveConfigRef.current = liveConfig;
   }, [liveConfig]);
 
-  useEffect(() => {
-    pendingPermissionRef.current = pendingPermission;
-  }, [pendingPermission]);
+  const settlePermission = useCallback((result: PermissionResult, via: string) => {
+    return settlePermissionRequest(pendingPermissionRef, setPendingPermission, result, via);
+  }, []);
 
-  useEffect(() => {
-    pendingPlanApprovalRef.current = pendingPlanApproval;
-  }, [pendingPlanApproval]);
+  const settlePlanApproval = useCallback((result: PlanApprovalResult, via: string) => {
+    return settlePlanApprovalRequest(pendingPlanApprovalRef, setPendingPlanApproval, result, via);
+  }, []);
 
   useEffect(() => {
     if (lifecycleStartedRef.current) return;
@@ -126,13 +185,20 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     };
   }, []);
 
-  // Clean up countdown timer on unmount.
+  // Clean up timers / pending prompts / in-flight work on unmount.
   useEffect(() => {
     return () => {
       if (countdownRef.current) {
         clearInterval(countdownRef.current);
         countdownRef.current = null;
       }
+      accumulatorRef.current?.stop();
+      accumulatorRef.current = null;
+      abortRef.current?.abort();
+      abortRef.current = null;
+      // Deny/reject so agent-loop promises never hang after unmount.
+      settlePermissionRequest(pendingPermissionRef, () => {}, 'deny', 'unmount');
+      settlePlanApprovalRequest(pendingPlanApprovalRef, () => {}, 'reject', 'unmount');
     };
   }, []);
 
@@ -143,17 +209,24 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     }
   }, []);
 
+  const finalizeStreamingMessages = useCallback(() => {
+    setMessages((prev) => {
+      const next = removeTrailingEmptyAssistantPlaceholder(prev);
+      messagesRef.current = next;
+      return next;
+    });
+  }, []);
+
   const resetConversationState = useCallback(
     (nextId: string, nextName: string | undefined, history: Message[]) => {
       sessionGenerationRef.current++;
-      pendingPermissionRef.current?.resolve('deny');
-      pendingPlanApprovalRef.current?.resolve('reject');
-      pendingPermissionRef.current = null;
-      pendingPlanApprovalRef.current = null;
+      settlePermission('deny', 'session-reset');
+      settlePlanApproval('reject', 'session-reset');
       accumulatorRef.current?.discard();
       accumulatorRef.current = null;
       abortRef.current?.abort();
       abortRef.current = null;
+      sendInFlightRef.current = false;
       clearCountdown();
 
       sessionIdRef.current = nextId;
@@ -168,8 +241,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setCurrentTurn(0);
       setUsage(null);
       setAgentTodos([]);
-      setPendingPermission(null);
-      setPendingPlanApproval(null);
       setTurnDurationMs(0);
       setRetryPhase('none');
       setRetryAttempt(0);
@@ -183,7 +254,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           : undefined,
       }));
     },
-    [clearCountdown],
+    [clearCountdown, settlePermission, settlePlanApproval],
   );
 
   const endCurrentSession = useCallback(
@@ -211,7 +282,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       resetConversationState(nextId, undefined, []);
       await runSessionStart(liveConfigRef.current, nextId, 'clear');
     },
-    [endCurrentSession, liveConfig, resetConversationState, session.store],
+    [endCurrentSession, liveConfig.workspace, resetConversationState, session.store],
   );
 
   const resumeConversation = useCallback(
@@ -231,7 +302,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       resetConversationState(selected.id, loaded.meta.name, loaded.history);
       await runSessionStart(liveConfigRef.current, selected.id, 'resume');
     },
-    [endCurrentSession, liveConfig, resetConversationState, session.store],
+    [endCurrentSession, liveConfig.workspace, resetConversationState, session.store],
   );
 
   const listSessions = useCallback((): SessionMeta[] => {
@@ -242,14 +313,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
   const send = useCallback(
     async (userMessage: string, commandContext?: CommandContext) => {
-      if (isThinking) {
-        uiLog.event('send:rejected', { reason: 'already-thinking', len: userMessage.length });
+      // Synchronous single-flight: reject concurrent sends even if React has
+      // not yet committed isThinking=true from a prior call.
+      if (sendInFlightRef.current) {
+        uiLog.event('send:rejected', { reason: 'already-in-flight', len: userMessage.length });
         return;
       }
+      sendInFlightRef.current = true;
 
       const generation = sessionGenerationRef.current;
       const activeSessionId = sessionIdRef.current;
       const stillCurrent = () => sessionGenerationRef.current === generation;
+      let activeAccumulator: MessageAccumulator | null = null;
 
       log.info('send message', {
         len: userMessage.length,
@@ -304,13 +379,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
       // Create and start the batched message accumulator.
       // All streaming callbacks push to this queue; it flushes at ~60fps.
-      accumulatorRef.current = createMessageAccumulator(
-        placeholder.id,
-        setMessages,
-        messagesRef,
-        16,
-      );
-      accumulatorRef.current.start();
+      activeAccumulator = createMessageAccumulator(placeholder.id, setMessages, messagesRef, 16);
+      accumulatorRef.current = activeAccumulator;
+      activeAccumulator.start();
       uiLog.event('accumulator:started', { flushIntervalMs: 16 });
 
       const registry = createDefaultRegistry();
@@ -328,13 +399,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           history,
           {
             onText: (text) => {
-              if (stillCurrent()) accumulatorRef.current?.addText(text);
+              if (stillCurrent()) activeAccumulator?.addText(text);
             },
             onToolCall: (call: ToolCall) => {
-              if (stillCurrent()) accumulatorRef.current?.addToolCall(call);
+              if (stillCurrent()) activeAccumulator?.addToolCall(call);
             },
             onToolResult: (result: ToolResult) => {
-              if (stillCurrent()) accumulatorRef.current?.addToolResult(result);
+              if (stillCurrent()) activeAccumulator?.addToolResult(result);
             },
             onTodos: (todos) => {
               if (stillCurrent()) setAgentTodos(todos as Todo[]);
@@ -350,7 +421,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               setCurrentTurn(turn);
               turnStartRef.current = Date.now();
               if (turn > 1) {
-                accumulatorRef.current?.stop();
+                activeAccumulator?.stop();
                 uiLog.event('accumulator:stopped', { reason: 'new-turn', turn });
                 const next = makeMessage('assistant', '');
                 streamingIdRef.current = next.id;
@@ -360,13 +431,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                   messagesRef.current = updated;
                   return updated;
                 });
-                accumulatorRef.current = createMessageAccumulator(
-                  next.id,
-                  setMessages,
-                  messagesRef,
-                  32,
-                );
-                accumulatorRef.current.start();
+                activeAccumulator = createMessageAccumulator(next.id, setMessages, messagesRef, 32);
+                accumulatorRef.current = activeAccumulator;
+                activeAccumulator.start();
                 uiLog.event('accumulator:started', { flushIntervalMs: 32, turn });
               }
             },
@@ -375,6 +442,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               log.info('agent done', { durationMs: Date.now() - turnStartRef.current });
               uiLog.event('send:done', { durationMs: Date.now() - turnStartRef.current });
               setTurnDurationMs(Date.now() - turnStartRef.current);
+              // UI may stop showing the spinner early; the single-flight lock
+              // stays held until finally so a concurrent send cannot start yet.
               setIsThinking(false);
               clearCountdown();
             },
@@ -385,9 +454,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                   tool: toolCall.name,
                   id: toolCall.id,
                 });
-                const pending = { toolCall, resolve };
-                pendingPermissionRef.current = pending;
-                setPendingPermission(pending);
+                const entry: PendingPermission = { toolCall, resolve };
+                pendingPermissionRef.current = entry;
+                setPendingPermission(entry);
               });
             },
             onUsage: (u: Usage) => {
@@ -400,9 +469,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               if (!stillCurrent()) return Promise.resolve('reject');
               return new Promise((resolve) => {
                 uiLog.event('plan-approval:pending', { len: plan.length });
-                const pending = { plan, resolve };
-                pendingPlanApprovalRef.current = pending;
-                setPendingPlanApproval(pending);
+                const entry: PendingPlanApproval = { plan, resolve };
+                pendingPlanApprovalRef.current = entry;
+                setPendingPlanApproval(entry);
               });
             },
             onRetry: (phase, attempt, max, delayMs) => {
@@ -455,10 +524,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             signal: controller.signal,
             nestedToolObserver: {
               onToolCall: (invocation: NestedToolInvocation) => {
-                if (stillCurrent()) accumulatorRef.current?.addNestedToolCall(invocation);
+                if (stillCurrent()) activeAccumulator?.addNestedToolCall(invocation);
               },
               onToolResult: (traceId: string, result: ToolResult) => {
-                if (stillCurrent()) accumulatorRef.current?.addNestedToolResult(traceId, result);
+                if (stillCurrent()) activeAccumulator?.addNestedToolResult(traceId, result);
               },
             },
             manageSessionHooks: false,
@@ -469,9 +538,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           },
         );
         if (stillCurrent()) {
-          accumulatorRef.current?.stop();
-          messagesRef.current = updatedHistory;
-          setMessages(updatedHistory);
+          // Flush the UI accumulator, but keep its authoritative display state:
+          // nested tool traces are display-only and are not present in the loop's
+          // returned API history.
+          activeAccumulator?.stop();
 
           if (session.store) {
             for (const assistant of updatedHistory.slice(history.length)) {
@@ -493,9 +563,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         if (stillCurrent()) setError(e instanceof Error ? e.message : String(e));
       } finally {
         if (stillCurrent()) {
-          accumulatorRef.current?.stop();
+          activeAccumulator?.stop();
           uiLog.event('accumulator:stopped', { reason: 'done' });
-          accumulatorRef.current = null;
+          if (accumulatorRef.current === activeAccumulator) accumulatorRef.current = null;
+          // Drop a trailing totally-empty assistant placeholder (e.g. cancelled
+          // before any tokens/tools). Never strip partial or tool-bearing turns.
+          finalizeStreamingMessages();
           setIsThinking(false);
           streamingIdRef.current = null;
           setStreamingMessageId(null);
@@ -504,59 +577,49 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           setRetryPhase('none');
           setRetryCountdownMs(0);
         }
+        // Release single-flight only if this invocation still owns the active
+        // session/abort controller. A stale invocation must not unlock or clear
+        // a newer session's send.
+        if (stillCurrent() && abortRef.current === null) sendInFlightRef.current = false;
+        uiLog.event('send:finally', { durationMs: Date.now() - turnStartRef.current });
       }
     },
-    [liveConfig, isThinking, mode, clearCountdown, session.store],
+    [liveConfig, mode, clearCountdown, finalizeStreamingMessages, session.store],
   );
 
   const resolvePermission = useCallback(
     (result: PermissionResult) => {
-      if (pendingPermission) {
-        uiLog.event('permission:resolved', {
-          tool: pendingPermission.toolCall.name,
-          result,
-        });
-        pendingPermission.resolve(result);
-        setPendingPermission(null);
-      } else {
-        uiLog.event('permission:resolved:noop', { reason: 'no-pending', result });
-      }
+      settlePermission(result, 'resolve');
     },
-    [pendingPermission],
+    [settlePermission],
   );
 
   const cancelPermission = useCallback(() => {
-    if (pendingPermission) {
-      uiLog.event('permission:cancelled', { tool: pendingPermission.toolCall.name });
-      pendingPermission.resolve('deny');
-      setPendingPermission(null);
-    } else {
-      uiLog.event('permission:cancelled:noop', { reason: 'no-pending' });
-    }
-  }, [pendingPermission]);
+    settlePermission('deny', 'cancel-permission');
+  }, [settlePermission]);
 
   const resolvePlanApproval = useCallback(
     (result: PlanApprovalResult) => {
-      if (pendingPlanApproval) {
-        uiLog.event('plan-approval:resolved', { result });
-        pendingPlanApproval.resolve(result);
-        setPendingPlanApproval(null);
-      } else {
-        uiLog.event('plan-approval:resolved:noop', { reason: 'no-pending', result });
-      }
+      settlePlanApproval(result, 'resolve');
     },
-    [pendingPlanApproval],
+    [settlePlanApproval],
   );
 
   // Abort the in-flight agent stream (Esc while thinking).
+  // Lock stays held until send()'s finally; only the abort signal is raised.
   const cancel = useCallback(() => {
     const hadAbort = abortRef.current !== null;
     const hadAccumulator = accumulatorRef.current !== null;
-    uiLog.event('cancel', { hadAbort, hadAccumulator });
+    const inFlight = sendInFlightRef.current;
+    uiLog.event('cancel', { hadAbort, hadAccumulator, inFlight });
+    settlePermission('deny', 'cancel');
+    settlePlanApproval('reject', 'cancel');
     abortRef.current?.abort();
+    // Do not null abortRef / release sendInFlightRef / stop accumulator here —
+    // finally owns that so concurrent send cannot slip through mid-unwind.
     clearCountdown();
     setRetryPhase('none');
-  }, [clearCountdown]);
+  }, [clearCountdown, settlePermission, settlePlanApproval]);
 
   // Manually compact the conversation (summarize older turns).
   const compact = useCallback(async () => {
@@ -597,6 +660,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   }, [liveConfig, messages]);
 
   const clear = useCallback(() => {
+    // Abort + stop accumulator BEFORE wiping message state so no late flush
+    // can resurrect content into a cleared conversation.
+    accumulatorRef.current?.stop();
+    accumulatorRef.current = null;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    settlePermission('deny', 'clear');
+    settlePlanApproval('reject', 'clear');
     messagesRef.current = [];
     setMessages([]);
     setError(null);
@@ -607,9 +678,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setPendingPlanApproval(null);
     streamingIdRef.current = null;
     setStreamingMessageId(null);
+    // isThinking / sendInFlightRef are released by send()'s finally after abort.
+    // If nothing is in flight they are already false.
+    if (!sendInFlightRef.current) {
+      setIsThinking(false);
+    }
     clearCountdown();
     setRetryPhase('none');
-  }, [clearCountdown]);
+    setRetryCountdownMs(0);
+  }, [clearCountdown, settlePermission, settlePlanApproval]);
 
   const cycleMode = useCallback(() => {
     const modes: PermissionMode[] = [
@@ -632,8 +709,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // /init-pre /memory-noop to show output instantly.
   const addLocalMessage = useCallback(
     (text: string) => {
-      if (isThinking) {
-        uiLog.event('local-message:blocked', { reason: 'is-thinking', preview: text.slice(0, 40) });
+      if (sendInFlightRef.current || isThinking) {
+        uiLog.event('local-message:blocked', {
+          reason: sendInFlightRef.current ? 'in-flight' : 'is-thinking',
+          preview: text.slice(0, 40),
+        });
         return; // don't clobber a streaming turn
       }
       uiLog.event('local-message:added', { preview: text.slice(0, 40) });

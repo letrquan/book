@@ -21,11 +21,33 @@ function findMessageIndex(messages: Message[], id: string): number {
   return -1;
 }
 
+/** True when an assistant message has no text and no tool activity. */
+export function isTotallyEmptyAssistant(message: Message): boolean {
+  if (message.role !== 'assistant') return false;
+  if (message.content !== '') return false;
+  if ((message.toolCalls?.length ?? 0) > 0) return false;
+  if ((message.toolResults?.length ?? 0) > 0) return false;
+  if ((message.nestedToolInvocations?.length ?? 0) > 0) return false;
+  return true;
+}
+
+/**
+ * Drop only a trailing totally-empty assistant placeholder.
+ * Partial content, tools, or non-trailing empties are left untouched.
+ */
+export function removeTrailingEmptyAssistantPlaceholder(messages: Message[]): Message[] {
+  if (messages.length === 0) return messages;
+  const last = messages[messages.length - 1];
+  if (!isTotallyEmptyAssistant(last)) return messages;
+  return messages.slice(0, -1);
+}
+
 export function appendContentToMessage(
   messages: Message[],
   id: string,
   content: string,
 ): Message[] {
+  if (content === '') return messages;
   const index = findMessageIndex(messages, id);
   if (index === -1) return messages;
   const next = messages.slice();
@@ -34,6 +56,7 @@ export function appendContentToMessage(
   return next;
 }
 
+/** Upsert a top-level tool call by stable `call.id` (append-only for new ids). */
 export function appendToolCallToMessage(
   messages: Message[],
   id: string,
@@ -41,12 +64,24 @@ export function appendToolCallToMessage(
 ): Message[] {
   const index = findMessageIndex(messages, id);
   if (index === -1) return messages;
-  const next = messages.slice();
   const message = messages[index];
-  next[index] = { ...message, toolCalls: [...(message.toolCalls ?? []), call] };
+  const existing = message.toolCalls ?? [];
+  const existingIndex = existing.findIndex((item) => item.id === call.id);
+  let toolCalls: ToolCall[];
+  if (existingIndex === -1) {
+    toolCalls = [...existing, call];
+  } else if (existing[existingIndex] === call) {
+    return messages;
+  } else {
+    toolCalls = existing.slice();
+    toolCalls[existingIndex] = call;
+  }
+  const next = messages.slice();
+  next[index] = { ...message, toolCalls };
   return next;
 }
 
+/** Upsert a top-level tool result by stable `toolCallId`. */
 export function appendToolResultToMessage(
   messages: Message[],
   id: string,
@@ -54,12 +89,24 @@ export function appendToolResultToMessage(
 ): Message[] {
   const index = findMessageIndex(messages, id);
   if (index === -1) return messages;
-  const next = messages.slice();
   const message = messages[index];
-  next[index] = { ...message, toolResults: [...(message.toolResults ?? []), result] };
+  const existing = message.toolResults ?? [];
+  const existingIndex = existing.findIndex((item) => item.toolCallId === result.toolCallId);
+  let toolResults: ToolResult[];
+  if (existingIndex === -1) {
+    toolResults = [...existing, result];
+  } else if (existing[existingIndex] === result) {
+    return messages;
+  } else {
+    toolResults = existing.slice();
+    toolResults[existingIndex] = result;
+  }
+  const next = messages.slice();
+  next[index] = { ...message, toolResults };
   return next;
 }
 
+/** Upsert a nested tool invocation by stable `traceId`. */
 export function appendNestedToolInvocationToMessage(
   messages: Message[],
   id: string,
@@ -67,15 +114,37 @@ export function appendNestedToolInvocationToMessage(
 ): Message[] {
   const index = findMessageIndex(messages, id);
   if (index === -1) return messages;
-  const next = messages.slice();
   const message = messages[index];
-  next[index] = {
-    ...message,
-    nestedToolInvocations: [...(message.nestedToolInvocations ?? []), invocation],
-  };
+  const existing = message.nestedToolInvocations ?? [];
+  const existingIndex = existing.findIndex((item) => item.traceId === invocation.traceId);
+  let nestedToolInvocations: NestedToolInvocation[];
+  if (existingIndex === -1) {
+    nestedToolInvocations = [...existing, invocation];
+  } else {
+    const prev = existing[existingIndex];
+    // Preserve an already-attached result unless the upsert carries a newer one.
+    const merged: NestedToolInvocation = {
+      ...prev,
+      ...invocation,
+      result: invocation.result ?? prev.result,
+    };
+    if (
+      prev.traceId === merged.traceId &&
+      prev.parentTraceId === merged.parentTraceId &&
+      prev.call === merged.call &&
+      prev.result === merged.result
+    ) {
+      return messages;
+    }
+    nestedToolInvocations = existing.slice();
+    nestedToolInvocations[existingIndex] = merged;
+  }
+  const next = messages.slice();
+  next[index] = { ...message, nestedToolInvocations };
   return next;
 }
 
+/** Attach/replace a nested tool result by stable `traceId`. */
 export function appendNestedToolResultToMessage(
   messages: Message[],
   id: string,
@@ -88,6 +157,7 @@ export function appendNestedToolResultToMessage(
   const invocations = message.nestedToolInvocations ?? [];
   const invocationIndex = invocations.findIndex((invocation) => invocation.traceId === traceId);
   if (invocationIndex === -1) return messages;
+  if (invocations[invocationIndex].result === result) return messages;
 
   const nestedToolInvocations = invocations.slice();
   nestedToolInvocations[invocationIndex] = {

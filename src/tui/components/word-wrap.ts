@@ -445,11 +445,53 @@ export function truncateDisplay(text: string, maxWidth: number, suffix = '…'):
 }
 
 /**
+ * Split text into chunks that each fit within `maxWidth` display columns.
+ *
+ * Breaks mid-word when needed. Wide characters (CJK/emoji) never split a
+ * grapheme cluster produced by `for...of` (code-point safe). A single
+ * character wider than `maxWidth` is still emitted alone so content is never
+ * dropped. Combining marks stay attached to the preceding base when they are
+ * zero-width and fit in the same iteration budget.
+ */
+export function hardWrap(text: string, maxWidth: number): string {
+  if (maxWidth <= 0 || !text) return text;
+  return text
+    .split('\n')
+    .map((line) => hardWrapLine(line, maxWidth).join('\n'))
+    .join('\n');
+}
+
+/** Display-width-aware hard wrap for a single line (no embedded newlines). */
+export function hardWrapLine(text: string, maxWidth: number): string[] {
+  if (maxWidth <= 0 || !text) return text ? [text] : [''];
+  if (fitsDisplayWidth(text, maxWidth)) return [text];
+
+  const lines: string[] = [];
+  let current = '';
+  let currentWidth = 0;
+
+  for (const ch of text) {
+    const chWidth = displayWidth(ch);
+    if (current && currentWidth + chWidth > maxWidth) {
+      lines.push(current);
+      current = ch;
+      currentWidth = chWidth;
+      continue;
+    }
+    current += ch;
+    currentWidth += chWidth;
+  }
+
+  if (current) lines.push(current);
+  return lines.length > 0 ? lines : [''];
+}
+
+/**
  * Soft-wrap text at word boundaries to fit within `maxWidth` columns.
  *
- * Words longer than maxWidth are kept intact (they will be handled by
- * Ink's hard wrap as a safety net). Multiple consecutive spaces are
- * collapsed. Paragraph breaks (blank lines / double-newline) are preserved.
+ * Words longer than maxWidth are hard-wrapped by display width (CJK/emoji
+ * safe). Multiple consecutive spaces are collapsed when wrapping. Paragraph
+ * breaks (blank lines / double-newline) are preserved.
  *
  * @param text    The text to wrap
  * @param maxWidth Maximum columns per line
@@ -473,6 +515,27 @@ export function wordWrap(text: string, maxWidth: number): string {
     let current = '';
     let currentWidth = 0;
 
+    const pushWordChunks = (word: string) => {
+      const chunks = hardWrapLine(word, maxWidth);
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i]!;
+        const chunkWidth = displayWidth(chunk);
+        if (!current) {
+          current = chunk;
+          currentWidth = chunkWidth;
+        } else if (currentWidth + 1 + chunkWidth <= maxWidth && i === 0) {
+          // Only the first chunk of a hard-broken word can share a line with
+          // previous content; continuation chunks always start a new line.
+          current = `${current} ${chunk}`;
+          currentWidth = currentWidth + 1 + chunkWidth;
+        } else {
+          lines.push(current);
+          current = chunk;
+          currentWidth = chunkWidth;
+        }
+      }
+    };
+
     for (const word of words) {
       if (word === '') {
         // Consecutive spaces — add one space to current line if not empty.
@@ -486,18 +549,22 @@ export function wordWrap(text: string, maxWidth: number): string {
       const wordWidth = displayWidth(word);
       const candidateWidth = current ? currentWidth + 1 + wordWidth : wordWidth;
 
-      if (candidateWidth > maxWidth) {
+      if (wordWidth > maxWidth) {
+        // Long token: flush current line, then hard-wrap the word.
+        if (current) {
+          lines.push(current);
+          current = '';
+          currentWidth = 0;
+        }
+        pushWordChunks(word);
+      } else if (candidateWidth > maxWidth) {
         // This word would overflow — start a new line.
         if (current) {
           lines.push(current);
           current = word;
           currentWidth = wordWidth;
         } else {
-          // Single word longer than maxWidth — keep it intact.
-          // Ink's hard wrap will handle character-level breaking.
-          lines.push(word);
-          current = '';
-          currentWidth = 0;
+          pushWordChunks(word);
         }
       } else {
         current = current ? `${current} ${word}` : word;
@@ -510,4 +577,26 @@ export function wordWrap(text: string, maxWidth: number): string {
   }
 
   return wrapped.join('\n');
+}
+
+/**
+ * Pad `text` to `width` display columns (not string length).
+ * Truncates with ellipsis when text is wider than `width`.
+ */
+export function padDisplay(
+  text: string,
+  width: number,
+  align: 'left' | 'right' | 'center' = 'left',
+): string {
+  const limit = Math.max(0, Math.floor(width));
+  if (limit === 0) return '';
+  const clipped = fitsDisplayWidth(text, limit) ? text : truncateDisplay(text, limit);
+  const pad = Math.max(0, limit - displayWidth(clipped));
+  if (pad === 0) return clipped;
+  if (align === 'right') return `${' '.repeat(pad)}${clipped}`;
+  if (align === 'center') {
+    const left = Math.floor(pad / 2);
+    return `${' '.repeat(left)}${clipped}${' '.repeat(pad - left)}`;
+  }
+  return `${clipped}${' '.repeat(pad)}`;
 }

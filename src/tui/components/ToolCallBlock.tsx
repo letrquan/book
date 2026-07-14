@@ -6,7 +6,7 @@ import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { highlightCode } from './syntax-highlight.js';
 import { prepareToolOutputDisplay } from './tool-output.js';
-import { truncateDisplay } from './word-wrap.js';
+import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { getPrimaryArg } from '../../tools/primary-arg.js';
 import { canonicalToolName } from '../../tools/aliases.js';
 import { isFileMutatingTool } from '../../tools/tool-capabilities.js';
@@ -25,6 +25,8 @@ interface ToolCallBlockProps {
   screenReader?: boolean;
   /** When true, expanded tool results show the larger output cap instead of a short preview. */
   showAllToolOutput?: boolean;
+  /** Available terminal width, including this block's outer indentation. */
+  terminalWidth?: number;
 }
 
 /**
@@ -116,8 +118,12 @@ function ToolCallBlockInner({
   reducedMotion = false,
   screenReader = false,
   showAllToolOutput = false,
+  terminalWidth = 120,
 }: ToolCallBlockProps) {
   const theme = useTheme();
+  const blockWidth = Math.max(12, Math.floor(terminalWidth) - 2);
+  const detailWidth = Math.max(8, blockWidth - 6);
+  const summaryWidth = Math.max(8, blockWidth - 4);
   const isRunning = !result && !isPending;
   const canonical = canonicalToolName(name);
   const primaryArg = getPrimaryArg(args);
@@ -125,6 +131,11 @@ function ToolCallBlockInner({
   const toolColor = agentColor || theme.brand;
 
   const isFileModifying = isFileMutatingTool(canonical);
+  const statusPrefix = isRunning ? '▶ ◌ ' : `▶ ${label} `;
+  const primaryArgWidth = Math.max(
+    4,
+    blockWidth - displayWidth(statusPrefix) - displayWidth(toolLabel(canonical)) - 1,
+  );
   const fileMutation = result?.fileMutation;
   const filePathStr = fileMutation?.filePath || primaryArg;
   const actionName = fileMutation?.kind === 'create' || result?.isCreate ? 'Create' : 'Update';
@@ -149,15 +160,14 @@ function ToolCallBlockInner({
       return (
         <Box flexDirection="column" marginLeft={2}>
           <Text>
-            {actionName}({filePathStr}) {statusText}
-            {statsText}
+            {truncateDisplay(`${actionName}(${filePathStr}) ${statusText}${statsText}`, blockWidth)}
           </Text>
           {result?.error ? <Text> Error: {result.error}</Text> : null}
           {isExpanded && result?.success && result.output ? (
             <Box flexDirection="column">
               {result.output.split('\n').map((line, i) => (
                 <Box key={i}>
-                  <Text> {line}</Text>
+                  <Text> {truncateDisplay(line, detailWidth)}</Text>
                 </Box>
               ))}
             </Box>
@@ -169,7 +179,7 @@ function ToolCallBlockInner({
     const srOutput = result?.output
       ? prepareToolOutputDisplay(result.output, {
           maxLines: showAllToolOutput ? 200 : 10,
-          maxLineWidth: 120,
+          maxLineWidth: detailWidth,
           hint: showAllToolOutput ? undefined : 'Ctrl+E shows more',
         })
       : undefined;
@@ -179,7 +189,7 @@ function ToolCallBlockInner({
         <Text>
           {isRunning ? '[Running] ' : `${label} `}
           {toolLabel(canonical)}
-          {primaryArg ? ` ${truncateDisplay(primaryArg, 80)}` : ''}
+          {primaryArg ? ` ${truncateDisplay(primaryArg, summaryWidth)}` : ''}
         </Text>
         {isPending ? <Text>[needs approval]</Text> : null}
         {isExpanded && srOutput ? (
@@ -193,7 +203,7 @@ function ToolCallBlockInner({
           </Box>
         ) : null}
         {isExpanded && result?.error && !result.error.startsWith('SKIPPED') ? (
-          <Text color="red"> Error: {truncateDisplay(result.error, 120)}</Text>
+          <Text color="red"> Error: {truncateDisplay(result.error, detailWidth)}</Text>
         ) : null}
       </Box>
     );
@@ -225,7 +235,7 @@ function ToolCallBlockInner({
             {bulletSymbol}{' '}
           </Text>
           <Text color={theme.text} bold>
-            {actionName}({filePathStr})
+            {truncateDisplay(`${actionName}(${filePathStr})`, summaryWidth)}
           </Text>
           {result?.retryAttempt && result.retryAttempt > 1 ? (
             <Text color={theme.subtle} dimColor>
@@ -251,7 +261,7 @@ function ToolCallBlockInner({
             </Box>
           ) : showStats ? (
             <Box marginLeft={4}>
-              <Text color={theme.subtle}>{statsLabel}</Text>
+              <Text color={theme.subtle}>{truncateDisplay(statsLabel ?? '', detailWidth)}</Text>
             </Box>
           ) : null
         ) : isPending ? (
@@ -262,7 +272,11 @@ function ToolCallBlockInner({
 
         {/* Expanded: show diff block */}
         {isExpanded && result?.success && isDiffOutput(name, result) ? (
-          <DiffBlock output={result.output} collapsed={!showAllToolOutput} />
+          <DiffBlock
+            output={result.output}
+            collapsed={!showAllToolOutput}
+            terminalWidth={blockWidth}
+          />
         ) : null}
       </Box>
     );
@@ -283,7 +297,9 @@ function ToolCallBlockInner({
         <Text color={toolColor} bold>
           {toolLabel(canonical)}
         </Text>
-        {primaryArg ? <Text color={theme.subtle}> {truncateDisplay(primaryArg, 80)}</Text> : null}
+        {primaryArg ? (
+          <Text color={theme.subtle}> {truncateDisplay(primaryArg, primaryArgWidth)}</Text>
+        ) : null}
         {result?.retryAttempt && result.retryAttempt > 1 ? (
           <Text color={theme.subtle} dimColor>
             {' '}
@@ -304,12 +320,13 @@ function ToolCallBlockInner({
         <Box marginLeft={4} flexDirection="column">
           {Object.entries(args).map(([key, val]) => {
             const valStr = typeof val === 'string' ? val : JSON.stringify(val);
+            const valueWidth = Math.max(4, detailWidth - displayWidth(`${key}: `));
             return (
               <Box key={key}>
                 <Text color={theme.subtle} dimColor>
                   {key}:{' '}
                 </Text>
-                <Text color={theme.text}>{truncateDisplay(valStr, 120)}</Text>
+                <Text color={theme.text}>{truncateDisplay(valStr, valueWidth)}</Text>
               </Box>
             );
           })}
@@ -324,13 +341,14 @@ function ToolCallBlockInner({
           theme={theme}
           showAllToolOutput={showAllToolOutput}
           toolName={canonical}
+          terminalWidth={blockWidth}
         />
       ) : null}
       {/* Expanded: show error */}
       {isExpanded && result?.error && !result.error.startsWith('SKIPPED') ? (
         <Box marginLeft={4}>
           <Text color={theme.error}>
-            {'│'} {truncateDisplay(result.error, 120)}
+            {'│'} {truncateDisplay(result.error, detailWidth)}
           </Text>
         </Box>
       ) : null}
@@ -357,20 +375,25 @@ function OutputBlock({
   theme,
   showAllToolOutput,
   toolName,
+  terminalWidth,
 }: {
   output: string;
   theme: ReturnType<typeof useTheme>;
   showAllToolOutput: boolean;
   toolName: string;
+  terminalWidth: number;
 }) {
+  // OutputBlock adds four columns of margin plus a `│ ` prefix.
+  const contentWidth = Math.max(8, Math.floor(terminalWidth) - 8);
+  const footerWidth = Math.max(4, contentWidth - 2);
   const display = useMemo(
     () =>
       prepareToolOutputDisplay(output, {
         maxLines: showAllToolOutput ? 200 : 5,
-        maxLineWidth: 120,
+        maxLineWidth: contentWidth,
         hint: showAllToolOutput ? undefined : 'Ctrl+E shows all',
       }),
-    [output, showAllToolOutput],
+    [contentWidth, output, showAllToolOutput],
   );
   const language = inferLanguage(output, toolName);
   const displayText = display.lines.join('\n');
@@ -385,10 +408,10 @@ function OutputBlock({
         <Text color={theme.subtle} dimColor>
           │
         </Text>
-        <MarkdownBlock content={display.lines.join('\n')} terminalWidth={120} />
+        <MarkdownBlock content={display.lines.join('\n')} terminalWidth={contentWidth} />
         {display.footer ? (
           <Text color={theme.subtle} dimColor>
-            │ {display.footer}
+            │ {truncateDisplay(display.footer, footerWidth)}
           </Text>
         ) : null}
       </Box>
@@ -424,7 +447,7 @@ function OutputBlock({
       {display.footer ? (
         <Box>
           <Text color={theme.subtle} dimColor>
-            {'│'} {display.footer}
+            {'│'} {truncateDisplay(display.footer, footerWidth)}
           </Text>
         </Box>
       ) : null}

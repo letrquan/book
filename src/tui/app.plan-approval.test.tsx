@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
-import { App } from './app.js';
+import { App, ownsModalInput } from './app.js';
 import type { AgentConfig } from '../types.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
 
@@ -208,5 +208,10 @@ describe('App plan approval keyboard ownership', () => {
 
     expect(agentState.cycleMode).not.toHaveBeenCalled();
     expect(stripAnsi(view.lastFrame())).toContain('Plan approval required.');
+  });
+
+  it('suppresses the input bar while the model picker owns input', () => {
+    expect(ownsModalInput(null, null, true)).toBe(true);
+    expect(ownsModalInput(null, null, false)).toBe(false);
   });
 });

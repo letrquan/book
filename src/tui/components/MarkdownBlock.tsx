@@ -4,6 +4,14 @@ import { marked, Tokens, Token } from 'marked';
 import { useTheme } from '../theme.js';
 import { wordWrap } from './word-wrap.js';
 import { highlightCode, type StyledLine } from './syntax-highlight.js';
+import {
+  layoutCodeBlock,
+  layoutHeadingChrome,
+  layoutHorizontalRule,
+  layoutTable,
+  nestedContentWidth,
+  sliceStyledLine,
+} from './markdown-layout.js';
 
 interface MarkdownBlockProps {
   /** Raw markdown string to render. */
@@ -30,9 +38,14 @@ interface RenderContext {
   textColor?: string;
   depth: number;
   isStreaming: boolean;
+  /** Nested blockquote depth for width budgeting. */
+  blockquoteDepth: number;
 }
 
 export function wrapParagraphLines(rawText: string, terminalWidth: number): string[] {
+  if (terminalWidth <= 0) return rawText.split('\n');
+  // wordWrap already hard-wraps overlong tokens with displayWidth semantics;
+  // scanning every completed line a second time doubles paragraph render cost.
   return wordWrap(rawText, terminalWidth).split('\n');
 }
 
@@ -123,7 +136,9 @@ function appendRun(runs: InlineRun[], text: string, style: InlineStyle) {
     previous.text += text;
     return;
   }
-  runs.push({ text, ...style });
+  // Style first, then text — callers may pass an InlineRun as `style`, and the
+  // sliced `text` argument must win over any previous `style.text`.
+  runs.push({ ...style, text });
 }
 
 function plainTextFromTokens(tokens: Token[]): string {
@@ -194,7 +209,11 @@ function inlineRunsFromTokens(
         runs.push(...linkRuns);
         const label = linkRuns.map((run) => run.text).join('');
         if (t.href && t.href !== label) {
-          appendRun(runs, ` (${t.href})`, mergeStyle(style, { color: theme?.mdLink ?? style.color }));
+          appendRun(
+            runs,
+            ` (${t.href})`,
+            mergeStyle(style, { color: theme?.mdLink ?? style.color }),
+          );
         }
         break;
       }
@@ -253,18 +272,24 @@ function sliceRunsForLine(runs: InlineRun[], line: string, offset: number): Inli
 function wrappedInlineRuns(runs: InlineRun[], terminalWidth: number): InlineRun[][] {
   const rawText = runs.map((run) => run.text).join('');
   const lines = wrapParagraphLines(rawText, terminalWidth);
-  let offset = 0;
+  let searchOffset = 0;
   return lines.map((line) => {
-    const lineRuns = sliceRunsForLine(runs, line, offset);
-    offset += line.length;
-    if (rawText[offset] === ' ') offset += 1;
+    // wordWrap may collapse spaces or replace an original newline with a visual
+    // line break. Locate each rendered slice in the source instead of assuming
+    // every break consumed exactly one space; otherwise style offsets drift and
+    // later lines can lose their final character.
+    const locatedOffset = rawText.indexOf(line, searchOffset);
+    const lineOffset = locatedOffset === -1 ? searchOffset : locatedOffset;
+    const lineRuns = sliceRunsForLine(runs, line, lineOffset);
+    searchOffset = lineOffset + line.length;
     return lineRuns;
   });
 }
 
 function InlineRuns({ runs }: { runs: InlineRun[] }) {
+  // Parent already soft/hard-wrapped to terminal width — disable Ink re-wrap.
   return (
-    <Text wrap="wrap">
+    <Text wrap="truncate">
       {runs.map((run, i) => (
         <Text
           key={i}
@@ -329,20 +354,8 @@ function renderStyledLine(line: StyledLine, keyPrefix: string) {
   );
 }
 
-function alignCell(text: string, width: number, align?: string | null): string {
-  const padding = Math.max(0, width - text.length);
-  if (align === 'right') return `${' '.repeat(padding)}${text}`;
-  if (align === 'center') {
-    const left = Math.floor(padding / 2);
-    return `${' '.repeat(left)}${text}${' '.repeat(padding - left)}`;
-  }
-  return `${text}${' '.repeat(padding)}`;
-}
-
-function renderTableRow(
-  cells: Tokens.TableCell[],
-  widths: number[],
-  align: Array<string | null>,
+function renderTableCells(
+  cells: string[],
   key: string,
   theme: ReturnType<typeof useTheme>,
   bold = false,
@@ -352,8 +365,8 @@ function renderTableRow(
       <Text color={theme.mdTableBorder}>│ </Text>
       {cells.map((cell, ci) => (
         <React.Fragment key={`${key}-${ci}`}>
-          <Text bold={bold || cell.header} color={theme.text}>
-            {alignCell(cell.text, widths[ci] ?? 3, align[ci])}
+          <Text bold={bold} color={theme.text}>
+            {cell}
           </Text>
           <Text color={theme.mdTableBorder}> │ </Text>
         </React.Fragment>
@@ -376,12 +389,14 @@ function renderBlockToken(
     case 'heading': {
       const t = token as Tokens.Heading;
       const text = plainTextFromTokens(t.tokens);
-      const prefix = '#'.repeat(t.depth);
+      const chrome = layoutHeadingChrome(text, t.depth, terminalWidth);
       if (t.depth === 1) {
         return (
           <Box key={`h-${index}`} flexDirection="column" marginTop={1} marginBottom={1}>
             <Text bold color={theme.mdHeadingH1}>
-              ═══ {text.toUpperCase()} ═══
+              {chrome.prefix}
+              {chrome.text}
+              {chrome.suffix}
             </Text>
           </Box>
         );
@@ -390,7 +405,9 @@ function renderBlockToken(
         return (
           <Box key={`h-${index}`} flexDirection="column" marginTop={1} marginBottom={1}>
             <Text bold color={theme.mdHeadingH2}>
-              ── {text} ──
+              {chrome.prefix}
+              {chrome.text}
+              {chrome.suffix}
             </Text>
           </Box>
         );
@@ -398,7 +415,8 @@ function renderBlockToken(
       return (
         <Box key={`h-${index}`} flexDirection="column" marginTop={1} marginBottom={1}>
           <Text bold={t.depth <= 4} color={theme.mdHeading} dimColor={t.depth >= 5}>
-            {prefix} {renderInlineTokens(t.tokens, theme, `h-${index}`, theme.mdHeading)}
+            {chrome.prefix}
+            {chrome.text}
           </Text>
         </Box>
       );
@@ -406,7 +424,11 @@ function renderBlockToken(
 
     case 'paragraph': {
       const t = token as Tokens.Paragraph;
-      const runs = inlineRunsFromTokens(t.tokens, { color: context.textColor ?? theme.text }, theme);
+      const runs = inlineRunsFromTokens(
+        t.tokens,
+        { color: context.textColor ?? theme.text },
+        theme,
+      );
       if (terminalWidth) {
         const wrappedLines = wrappedInlineRuns(runs, terminalWidth);
         return (
@@ -431,48 +453,71 @@ function renderBlockToken(
       const lines = t.text.split('\n');
       const displayLines =
         lines.length > 0 && lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines;
-      const showLineNumbers = displayLines.length > 5;
-      const gutterWidth = String(displayLines.length).length;
+      const layout = layoutCodeBlock(displayLines, terminalWidth, {
+        lang: t.lang,
+        preferLineNumbers: displayLines.length > 5,
+      });
       const highlighted = context.isStreaming
         ? undefined
         : highlightCode(displayLines.join('\n'), t.lang, theme);
 
+      const widthProp =
+        terminalWidth && terminalWidth > 0 ? { width: Math.max(1, Math.floor(terminalWidth)) } : {};
+
+      const boxProps = layout.showBorder
+        ? {
+            ...widthProp,
+            paddingX: 1 as const,
+            borderStyle: 'round' as const,
+            borderColor: theme.mdCodeBorder,
+            backgroundColor: theme.mdCodeBackground,
+          }
+        : {
+            ...widthProp,
+            backgroundColor: theme.mdCodeBackground,
+          };
+
       return (
-        <Box
-          key={`code-${index}`}
-          flexDirection="column"
-          paddingX={1}
-          borderStyle="round"
-          borderColor={theme.mdCodeBorder}
-          backgroundColor={theme.mdCodeBackground}
-        >
-          {t.lang ? (
+        <Box key={`code-${index}`} flexDirection="column" {...boxProps}>
+          {layout.langLabel ? (
             <Box marginBottom={1}>
               <Text color={theme.mdCodeBorder} dimColor>
-                {t.lang}
+                {layout.langLabel}
               </Text>
             </Box>
           ) : null}
-          {displayLines.map((line, li) => (
-            <Box key={`code-${index}-l${li}`}>
-              {showLineNumbers ? (
-                <Text color={theme.mdCodeLineNumber} dimColor>
-                  {String(li + 1).padStart(gutterWidth, ' ')} │{' '}
-                </Text>
-              ) : null}
-              {highlighted ? (
-                renderStyledLine(highlighted[li] ?? [{ text: line, color: theme.mdCodeText }], `code-${index}-${li}`)
-              ) : (
-                <Text color={theme.mdCodeText}>{line}</Text>
-              )}
-            </Box>
-          ))}
+          {layout.lines.map((visual, vi) => {
+            const highlightedLine = highlighted?.[visual.sourceLineIndex];
+            const segments: StyledLine = highlightedLine
+              ? sliceStyledLine(highlightedLine, visual.sourceStart, visual.sourceEnd)
+              : [{ text: visual.text, color: theme.mdCodeText }];
+            const safeSegments: StyledLine =
+              segments.length > 0 ? segments : [{ text: visual.text, color: theme.mdCodeText }];
+
+            return (
+              <Box key={`code-${index}-v${vi}`}>
+                {layout.showLineNumbers ? (
+                  <Text color={theme.mdCodeLineNumber} dimColor>
+                    {visual.gutter}
+                  </Text>
+                ) : null}
+                {highlighted ? (
+                  renderStyledLine(safeSegments, `code-${index}-${vi}`)
+                ) : (
+                  <Text color={theme.mdCodeText}>{visual.text}</Text>
+                )}
+              </Box>
+            );
+          })}
         </Box>
       );
     }
 
     case 'blockquote': {
       const t = token as Tokens.Blockquote;
+      // Incremental budget: border + paddingLeft ≈ 2 columns per quote level.
+      const childWidth =
+        terminalWidth !== undefined ? Math.max(1, Math.floor(terminalWidth) - 2) : undefined;
       return (
         <Box
           key={`bq-${index}`}
@@ -482,9 +527,10 @@ function renderBlockToken(
           paddingLeft={1}
         >
           {t.tokens.map((childToken, ci) =>
-            renderBlockToken(childToken, theme, index * 1000 + ci, terminalWidth, {
+            renderBlockToken(childToken, theme, index * 1000 + ci, childWidth, {
               ...context,
               textColor: theme.mdBlockquoteText,
+              blockquoteDepth: context.blockquoteDepth + 1,
             }),
           )}
         </Box>
@@ -508,7 +554,12 @@ function renderBlockToken(
                 ? theme.mdCheckboxChecked
                 : theme.mdCheckboxUnchecked
               : theme.mdListMarker;
-            const itemWidth = terminalWidth ? Math.max(10, terminalWidth - 5 - context.depth * 2) : undefined;
+            // Incremental: marker column + margins. Nested lists receive an already-reduced width.
+            const itemWidth = nestedContentWidth(terminalWidth, {
+              depth: 0,
+              listGutter: 5,
+              blockquoteDepth: 0,
+            });
             return (
               <Box key={`li-${index}-${ii}`} flexDirection="row" marginLeft={2}>
                 <Box width={3} flexShrink={0}>
@@ -519,7 +570,11 @@ function renderBlockToken(
                     if (childToken.type === 'text') {
                       const textToken = childToken as Tokens.Text & { tokens?: Token[] };
                       const childRuns = textToken.tokens?.length
-                        ? inlineRunsFromTokens(textToken.tokens, { color: context.textColor ?? theme.text }, theme)
+                        ? inlineRunsFromTokens(
+                            textToken.tokens,
+                            { color: context.textColor ?? theme.text },
+                            theme,
+                          )
                         : [{ text: textToken.text, color: context.textColor ?? theme.text }];
                       if (itemWidth) {
                         const wrapped = wrappedInlineRuns(childRuns, itemWidth);
@@ -556,11 +611,11 @@ function renderBlockToken(
     }
 
     case 'hr': {
-      const width = Math.min(terminalWidth ?? 40, 60);
+      const rule = layoutHorizontalRule(terminalWidth);
       return (
         <Box key={`hr-${index}`}>
           <Text color={theme.mdHr} dimColor>
-            {'─'.repeat(Math.max(5, width))}
+            {rule}
           </Text>
         </Box>
       );
@@ -568,29 +623,36 @@ function renderBlockToken(
 
     case 'table': {
       const t = token as Tokens.Table;
-      const allRows = [t.header, ...t.rows];
-      if (allRows.length === 0) return null;
+      if (t.header.length === 0 && t.rows.length === 0) return null;
 
-      const colWidths: number[] = [];
-      for (const row of allRows) {
-        for (let ci = 0; ci < row.length; ci++) {
-          const len = row[ci].text.length;
-          colWidths[ci] = Math.max(colWidths[ci] ?? 3, len);
-        }
+      const layout = layoutTable({
+        header: t.header.map((cell) => ({ text: cell.text })),
+        rows: t.rows.map((row) => row.map((cell) => ({ text: cell.text }))),
+        align: t.align ?? [],
+        terminalWidth: terminalWidth ?? 80,
+      });
+
+      if (layout.mode === 'stacked') {
+        return (
+          <Box key={`table-${index}`} flexDirection="column" marginBottom={1}>
+            {layout.lines.map((line, li) => (
+              <Text key={`table-${index}-s${li}`} color={theme.text}>
+                {line}
+              </Text>
+            ))}
+          </Box>
+        );
       }
-      const separator = colWidths.map((width) => '─'.repeat(width + 2));
-      const top = `┌${separator.join('┬')}┐`;
-      const middle = `├${separator.join('┼')}┤`;
-      const bottom = `└${separator.join('┴')}┘`;
-      const align = t.align ?? [];
 
       return (
         <Box key={`table-${index}`} flexDirection="column" marginBottom={1}>
-          <Text color={theme.mdTableBorder}>{top}</Text>
-          {renderTableRow(t.header, colWidths, align, `tr-${index}-h`, theme, true)}
-          <Text color={theme.mdTableBorder}>{middle}</Text>
-          {t.rows.map((row, ri) => renderTableRow(row, colWidths, align, `tr-${index}-${ri}`, theme))}
-          <Text color={theme.mdTableBorder}>{bottom}</Text>
+          <Text color={theme.mdTableBorder}>{layout.top}</Text>
+          {layout.headerRows.map((row, ri) =>
+            renderTableCells(row, `tr-${index}-h${ri}`, theme, true),
+          )}
+          <Text color={theme.mdTableBorder}>{layout.middle}</Text>
+          {layout.bodyRows.map((row, ri) => renderTableCells(row, `tr-${index}-${ri}`, theme))}
+          <Text color={theme.mdTableBorder}>{layout.bottom}</Text>
         </Box>
       );
     }
@@ -637,7 +699,11 @@ export function MarkdownBlock({ content, terminalWidth, isStreaming = false }: M
   return (
     <Box flexDirection="column">
       {tokens.map((token, i) =>
-        renderBlockToken(token, theme, i, terminalWidth, { depth: 0, isStreaming }),
+        renderBlockToken(token, theme, i, terminalWidth, {
+          depth: 0,
+          isStreaming,
+          blockquoteDepth: 0,
+        }),
       )}
     </Box>
   );
