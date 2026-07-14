@@ -18,13 +18,22 @@ See [`MILESTONES.md`](./MILESTONES.md) for the full progress roadmap (Phase 1 Cl
 
 ## Installation
 
+Requires **Node.js 20+**.
+
 ```bash
-git clone <repo>
+# Clone (repo is currently private — use a machine with GitHub access)
+git clone https://github.com/letrquan/book.git
 cd book
 npm install
 npm run build
-npm link  # makes `book` available globally
+npm link   # makes `book` available globally
+
+# Or install a tagged release without linking
+npm install -g github:letrquan/book#v0.1.0
 ```
+
+> **Note:** The unscoped npm name `book` is already taken on the public registry.
+> v0.1.0 is distributed via GitHub only.
 
 ## Quick Start
 

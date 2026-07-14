@@ -1,8 +1,37 @@
 {
   "name": "book",
   "version": "0.1.0",
-  "description": "AI coding agent CLI with rich TUI",
+  "description": "AI coding agent CLI with rich TUI — open-source, provider-agnostic alternative to Claude Code",
   "type": "module",
+  "license": "MIT",
+  "author": "letrquan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/letrquan/book.git"
+  },
+  "bugs": {
+    "url": "https://github.com/letrquan/book/issues"
+  },
+  "homepage": "https://github.com/letrquan/book#readme",
+  "keywords": [
+    "ai",
+    "cli",
+    "coding-agent",
+    "tui",
+    "anthropic",
+    "openai",
+    "mcp",
+    "agent"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "bin": {
     "book": "./dist/index.js"
   },
