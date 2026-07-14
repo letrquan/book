@@ -62,7 +62,7 @@ describe('discoverAgents', () => {
     expect(result[0].name).toBe('test-agent');
   });
 
-  it('defaults maxTurns to 5 when not specified', () => {
+  it('defaults maxTurns to unlimited when not specified', () => {
     const agentsDir = join(dir, '.book', 'agents');
     mkdirSync(agentsDir, { recursive: true });
     writeFileSync(
@@ -71,7 +71,7 @@ describe('discoverAgents', () => {
     );
 
     const result = discoverAgents(dir);
-    expect(result[0].maxTurns).toBe(5);
+    expect(result[0].maxTurns).toBeUndefined();
   });
 
   it('defaults allowedTools to empty array (all tools)', () => {

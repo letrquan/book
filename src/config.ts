@@ -13,7 +13,7 @@ const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 const legacyConfigSchema = z.object({
   model: z.string().optional(),
   baseUrl: z.string().url().optional(),
-  maxTurns: z.number().int().min(1).max(100).optional(),
+  maxTurns: z.number().int().min(1).optional(),
   maxTokens: z.number().int().min(1000).optional(),
   autoCompactEnabled: z.boolean().optional(),
   animation: z
@@ -135,9 +135,10 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     apiKey: defaultApiKey,
     baseUrl: defaultBaseUrl,
     model: rawModel,
+    // Undefined = unlimited. Only set when env/settings/legacy explicitly provide a value.
     maxTurns: process.env.BOOK_MAX_TURNS
       ? parseInt(process.env.BOOK_MAX_TURNS, 10)
-      : (settings.maxTurns ?? legacy?.maxTurns ?? 25),
+      : (settings.maxTurns ?? legacy?.maxTurns),
     maxTokens: defaultMaxTokens,
     maxTokensExplicit,
     defaultMaxTokens,

@@ -398,7 +398,8 @@ export interface AgentConfig {
   apiKey: string;
   baseUrl: string;
   model: string;
-  maxTurns: number;
+  /** Max agent turns per user message. Undefined = unlimited. */
+  maxTurns?: number;
   maxTokens: number;
   /** True when maxTokens came from user config/env, not a default or model metadata. */
   maxTokensExplicit?: boolean;

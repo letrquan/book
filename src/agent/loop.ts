@@ -173,7 +173,8 @@ export async function runAgentLoop(
   let lastUsage: Usage | null = null;
   let effectiveMode = initialMode;
 
-  while (turn < config.maxTurns) {
+  // maxTurns undefined/0 = unlimited; otherwise stop once the cap is hit.
+  while (config.maxTurns == null || config.maxTurns <= 0 || turn < config.maxTurns) {
     if (signal?.aborted) break;
 
     // Auto-compact when usage approaches the context limit.
@@ -572,7 +573,7 @@ export async function runAgentLoop(
     }
   }
 
-  if (turn >= config.maxTurns) {
+  if (config.maxTurns != null && config.maxTurns > 0 && turn >= config.maxTurns) {
     log.warn('max turns reached', { maxTurns: config.maxTurns });
     callbacks.onError(
       `Reached max turns (${config.maxTurns}). Refine your prompt or increase BOOK_MAX_TURNS.`,

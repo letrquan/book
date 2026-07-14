@@ -134,7 +134,8 @@ export type ProviderConfig = z.infer<typeof providerConfigSchema>;
  */
 export const bookSettingsSchema = z.object({
   model: z.string().optional(),
-  maxTurns: z.number().int().min(1).max(100).optional(),
+  /** Max agent turns per user message. Omit for unlimited. */
+  maxTurns: z.number().int().min(1).optional(),
   maxTokens: z.number().int().min(1000).optional(),
   effort: effortLevelSchema.optional(),
   autoCompactEnabled: z.boolean().optional(),

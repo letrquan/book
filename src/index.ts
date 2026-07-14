@@ -16,7 +16,7 @@ program
   )
   .option('--output-format <format>', 'text | json | stream-json (print mode)', 'text')
   .option('--input-format <format>', 'text | stream-json (print mode)', 'text')
-  .option('--max-turns <n>', 'Max agent turns (print mode)')
+  .option('--max-turns <n>', 'Max agent turns (print mode; omit for unlimited)')
   .option('--max-budget-usd <amount>', 'Max USD spend (print mode)')
   .option(
     '--permission-mode <mode>',
