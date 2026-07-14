@@ -1,5 +1,6 @@
 import { exit } from './exit.js';
 import { getNestedValue, setNestedValue } from './utils.js';
+import { redactSettingValue, redactSettingsForDisplay } from '../settings-redaction.js';
 
 export async function runConfigCommand(
   workspace: string,
@@ -12,7 +13,7 @@ export async function runConfigCommand(
 
   if (!action || action === 'list') {
     console.log('Resolved settings:');
-    console.log(JSON.stringify(settings, null, 2));
+    console.log(JSON.stringify(redactSettingsForDisplay(settings), null, 2));
     return;
   }
 
@@ -25,7 +26,7 @@ export async function runConfigCommand(
     if (val === undefined) {
       console.log('Key ' + key + ' is not set (no value).');
     } else {
-      console.log(JSON.stringify(val, null, 2));
+      console.log(JSON.stringify(redactSettingValue(key, val), null, 2));
     }
     return;
   }
@@ -84,7 +85,14 @@ export async function runConfigCommand(
 
     setNestedValue(existing, key, parsedValue);
     writeFileSync(localPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
-    console.log('Set ' + key + ' = ' + JSON.stringify(parsedValue) + ' in ' + localPath);
+    console.log(
+      'Set ' +
+        key +
+        ' = ' +
+        JSON.stringify(redactSettingValue(key, parsedValue)) +
+        ' in ' +
+        localPath,
+    );
     return;
   }
 

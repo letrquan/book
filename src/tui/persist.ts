@@ -32,22 +32,29 @@ export function readSettingsLocal(workspace: string): Record<string, unknown> {
  * `value` is stored verbatim (string) — number/bool/object callers should
  * pre-serialize, but a non-string is also stored as-is.
  */
-export function persistSettingLocal(
+export function persistSettingsLocal(
   workspace: string,
-  key: string,
-  value: unknown,
+  values: Record<string, unknown>,
 ): { ok: boolean; error?: string } {
   try {
     const localDir = join(workspace, LOCAL_DIR);
     const localPath = join(localDir, LOCAL_FILE);
     mkdirSync(localDir, { recursive: true });
     const existing = readSettingsLocal(workspace);
-    setNestedValue(existing, key, value);
+    for (const [key, value] of Object.entries(values)) setNestedValue(existing, key, value);
     writeFileSync(localPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+export function persistSettingLocal(
+  workspace: string,
+  key: string,
+  value: unknown,
+): { ok: boolean; error?: string } {
+  return persistSettingsLocal(workspace, { [key]: value });
 }
 
 /**

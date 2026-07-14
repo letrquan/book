@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { buildSystemBlocks, convertMessages } from './anthropic.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { buildSystemBlocks, chatCompletionStream, convertMessages } from './anthropic.js';
+import { defaultConfig } from '../test/fixtures.js';
 
 // Anthropic request-body assembly is mostly covered indirectly by convertMessages:
 // zoned system prompts are carried through so chatCompletionStream can place
@@ -29,6 +30,26 @@ describe('convertMessages', () => {
 
     expect(out.systemZones).toBeUndefined();
     expect(out.system).toBe('flat instructions');
+  });
+});
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe('Anthropic request URL', () => {
+  it.each([
+    ['https://api.anthropic.com', 'https://api.anthropic.com/v1/messages'],
+    ['https://proxy.test/v1', 'https://proxy.test/v1/messages'],
+  ])('normalizes %s without duplicating /v1', async (baseUrl, expected) => {
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response('{}', { status: 400 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const stream = chatCompletionStream(defaultConfig({ baseUrl, provider: 'anthropic' }), [], []);
+    for await (const _event of stream) {
+      // Drain the error event.
+    }
+    expect(fetchMock.mock.calls[0][0]).toBe(expected);
   });
 });
 

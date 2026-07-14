@@ -39,6 +39,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       settingsOverridePath: options.settings as string | undefined,
       noSettings: options.settings === false,
       modelOverride: options.model as string | undefined,
+      allowMissingApiKey: options.print === undefined && !options.scrollback,
     }) as AgentConfig;
     if (options.effort) config.effort = options.effort as AgentConfig['effort'];
     if (options.maxTurns) config.maxTurns = parseInt(options.maxTurns as string, 10);
@@ -137,6 +138,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           redrawViewport,
           session: { ...bootstrap, store: sessionStore },
         }),
+        { exitOnCtrlC: false },
       );
       await app.waitUntilExit();
     } finally {

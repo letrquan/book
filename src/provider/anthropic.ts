@@ -453,7 +453,8 @@ export async function* chatCompletionStream(
 ): AsyncGenerator<ProviderStreamEvent> {
   const retry = config.retry;
   const signal = options?.signal;
-  const url = `${config.baseUrl}/v1/messages`;
+  const normalizedBaseUrl = config.baseUrl.replace(/\/+$/, '');
+  const url = `${normalizedBaseUrl}${/\/v1$/i.test(normalizedBaseUrl) ? '' : '/v1'}/messages`;
 
   // Convert messages and tools to Anthropic format
   const { system, systemZones, messages: anthropicMessages } = convertMessages(messages);
