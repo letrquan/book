@@ -1105,6 +1105,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
           <Box flexDirection="column" flexShrink={0} width={termWidth}>
             {pendingPermission ? (
               <PermissionButtons
+                key={pendingPermission.toolCall.id}
                 toolCall={pendingPermission.toolCall}
                 onResolve={resolvePermission}
                 screenReader={screenReader}

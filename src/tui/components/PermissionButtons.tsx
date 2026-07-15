@@ -65,7 +65,7 @@ export function PermissionButtons({
 }: PermissionButtonsProps) {
   const theme = useTheme();
   const [selected, setSelected] = useState(0);
-  const resolvedRef = useRef(false);
+  const resolvedToolCallIdRef = useRef<string | null>(null);
   const canonical = canonicalToolName(toolCall.name);
   const primaryArg = getPrimaryArg(toolCall.arguments);
   const risk = toolRiskLevel(toolCall);
@@ -83,14 +83,14 @@ export function PermissionButtons({
 
   const handleResolve = useCallback(
     (value: PermissionResult) => {
-      if (resolvedRef.current) {
+      if (resolvedToolCallIdRef.current === toolCall.id) {
         uiLog.event('resolve:double-fire-prevented', {
           tool: canonical,
           attempt: value,
         });
         return;
       }
-      resolvedRef.current = true;
+      resolvedToolCallIdRef.current = toolCall.id;
       uiLog.event('resolve', {
         tool: canonical,
         result: value,
@@ -98,7 +98,7 @@ export function PermissionButtons({
       });
       onResolve(value);
     },
-    [canonical, onResolve, selected],
+    [canonical, onResolve, selected, toolCall.id],
   );
 
   useInput(
