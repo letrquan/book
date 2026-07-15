@@ -454,11 +454,14 @@ export function App({ config, session, redrawViewport }: AppProps) {
           addLocalMessage('Usage: /config [key=value] or /config --help');
         }
       } else if (value.startsWith('/diff')) {
-        const r = runGit(['diff'], {
+        void runGit(['diff'], {
           workspaceRoot: config.workspace,
           env: process.env as Record<string, string>,
+        }).then((result) => {
+          addLocalMessage(
+            result.error ? `✕ ${result.error}` : result.output.trim() || '(no changes)',
+          );
         });
-        addLocalMessage(r.error ? `✕ ${r.error}` : r.output.trim() || '(no changes)');
       } else if (value.startsWith('/status')) {
         setShowStatus((s) => !s);
       } else if (value === '/memory' || value.startsWith('/memory ')) {

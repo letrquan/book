@@ -1,6 +1,6 @@
 import { Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
-import { useState, useCallback, useRef, useMemo } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useInput } from 'ink';
 import { useTimedFlash, usePulse } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
@@ -25,6 +25,7 @@ import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 
 const uiLog = createUiDebugLogger('tui:inputbar');
+const FILE_MENTION_DEBOUNCE_MS = 40;
 
 interface InputBarProps {
   onSubmit: (value: string) => void;
@@ -155,6 +156,7 @@ export function InputBar({
   // File mention menu state
   const [fileMenuVisible, setFileMenuVisible] = useState(false);
   const [fileMention, setFileMention] = useState<ActiveFileMention | null>(null);
+  const [fileCandidates, setFileCandidates] = useState<FileMentionCandidate[]>([]);
   const [fileSelected, setFileSelected] = useState(0);
   const fileMenuVisibleRef = useRef(false);
   const fileMentionRef = useRef<ActiveFileMention | null>(null);
@@ -166,10 +168,39 @@ export function InputBar({
     [commands, menuFilter],
   );
   const workspace = process.env.BOOK_WORKSPACE || process.cwd();
-  const fileCandidates = useMemo(
-    () => (fileMention ? getFileMentionCandidates(workspace, fileMention.query) : []),
-    [workspace, fileMention],
-  );
+
+  useEffect(() => {
+    if (!fileMention) {
+      setFileCandidates([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    const query = fileMention.query;
+    const timer = setTimeout(() => {
+      void getFileMentionCandidates(workspace, query, 50, controller.signal)
+        .then((candidates) => {
+          if (controller.signal.aborted) return;
+          setFileCandidates(candidates);
+          setFileSelected((selected) =>
+            candidates.length === 0 ? 0 : Math.min(selected, candidates.length - 1),
+          );
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted) {
+            uiLog.event('file-menu:error', {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            setFileCandidates([]);
+          }
+        });
+    }, FILE_MENTION_DEBOUNCE_MS);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [fileMention?.query, workspace]);
 
   menuVisibleRef.current = menuVisible;
   menuFilterRef.current = menuFilter;
@@ -190,6 +221,7 @@ export function InputBar({
       const nextMention = findActiveFileMention(nextValue);
       setFileMention(nextMention);
       setFileMenuVisible(!!nextMention);
+      setFileCandidates([]);
       setFileSelected(0);
       uiLog.event(`input:${trigger}`, { action: 'autofill-file-mention', path: selected.path });
       return true;
@@ -272,6 +304,8 @@ export function InputBar({
     if (fileMenuVisible) {
       if (key.escape) {
         setFileMenuVisible(false);
+        setFileMention(null);
+        setFileCandidates([]);
         setFileSelected(0);
         uiLog.event('input:Escape', { action: 'dismiss-file-menu' });
         return;
@@ -314,6 +348,7 @@ export function InputBar({
       setMenuSelected(0);
       setFileMenuVisible(false);
       setFileMention(null);
+      setFileCandidates([]);
       setFileSelected(0);
       uiLog.event(key.ctrl ? 'input:Ctrl+J' : 'input:Shift+Enter', { action: 'insert-newline' });
       return;
@@ -361,6 +396,7 @@ export function InputBar({
       setMenuSelected(0);
       setFileMenuVisible(false);
       setFileMention(null);
+      setFileCandidates([]);
       return;
     } else if (clean.startsWith('/') && clean.includes(' ')) {
       // User typed a space after command name — dismiss menu, they're typing args.
@@ -377,6 +413,7 @@ export function InputBar({
 
     const activeMention = findActiveFileMention(clean);
     setFileMention(activeMention);
+    setFileCandidates([]);
     setFileSelected(0);
     const showFileMenu = !!activeMention;
     if (showFileMenu && !fileMenuVisibleRef.current) {
@@ -400,6 +437,7 @@ export function InputBar({
         setMenuSelected(0);
         setFileMenuVisible(false);
         setFileMention(null);
+        setFileCandidates([]);
         setValue('');
         if (!commandValue) {
           uiLog.event('submit:menu', { result: 'no-command-value' });
@@ -436,6 +474,7 @@ export function InputBar({
       setMenuSelected(0);
       setFileMenuVisible(false);
       setFileMention(null);
+      setFileCandidates([]);
       setFileSelected(0);
 
       const normalized = normalizeInput(val);

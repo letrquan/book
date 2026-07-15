@@ -346,7 +346,7 @@ describe('InputBar @ file mention menu', () => {
     await tick();
 
     view.stdin.write('@src/');
-    await tick(40);
+    await tick(200);
 
     expect(view.lastFrame()).toContain('@src/app.ts');
   });
@@ -362,11 +362,11 @@ describe('InputBar @ file mention menu', () => {
     await tick();
 
     view.stdin.write('@src/');
-    await tick(40);
+    await tick(200);
     view.stdin.write('\t');
     await tick(20);
     view.stdin.write('\r');
-    await tick(40);
+    await tick(200);
 
     expect(submitted[0]).toBe('@src/app.ts ');
     expect(submitted[0]).not.toContain('Contents of src/app.ts:');
@@ -383,15 +383,15 @@ describe('InputBar @ file mention menu', () => {
     await tick();
 
     view.stdin.write('@src/');
-    await tick(40);
+    await tick(200);
     view.stdin.write('\r');
-    await tick(40);
+    await tick(200);
 
     expect(submitted).toEqual([]);
     expect(view.lastFrame()).toContain('@src/app.ts');
 
     view.stdin.write('\r');
-    await tick(40);
+    await tick(200);
 
     expect(submitted).toEqual(['@src/app.ts ']);
   });

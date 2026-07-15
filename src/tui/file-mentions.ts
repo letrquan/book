@@ -1,6 +1,6 @@
-import { existsSync, statSync } from 'fs';
 import { isAbsolute, relative, resolve } from 'path';
 import fg from 'fast-glob';
+import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { loadGitignore } from '../tools/gitignore.js';
 
 export interface ActiveFileMention {
@@ -22,6 +22,7 @@ const DEFAULT_IGNORE = [
   '**/dist/**',
   '**/.claude/worktrees/**',
 ];
+const SCORE_YIELD_INTERVAL = 256;
 
 function isMentionBoundary(input: string, index: number): boolean {
   if (index === 0) return true;
@@ -75,31 +76,36 @@ export function replaceActiveFileMention(
   return input.slice(0, mention.start) + mentionText + input.slice(mention.end);
 }
 
-export function getFileMentionCandidates(
+export async function getFileMentionCandidates(
   workspace: string,
   query: string,
   limit = 50,
-): FileMentionCandidate[] {
+  signal?: AbortSignal,
+): Promise<FileMentionCandidate[]> {
   const normalizedQuery = normalizeMentionPath(query).toLowerCase();
   const gitignore = loadGitignore(workspace).patterns;
   const ignore = [...DEFAULT_IGNORE, ...gitignore];
 
-  let entries: string[];
+  let entries: fg.Entry[];
   try {
-    entries = fg.sync('**/*', {
+    entries = await fg('**/*', {
       cwd: workspace,
       dot: true,
       onlyFiles: false,
       unique: true,
       ignore,
+      objectMode: true,
+      stats: true,
     });
   } catch {
     return [];
   }
+  throwIfAborted(signal);
 
   const scored: Array<FileMentionCandidate & { score: number }> = [];
-  for (const entry of entries) {
-    const display = normalizeMentionPath(entry);
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index];
+    const display = normalizeMentionPath(entry.path);
     const lower = display.toLowerCase();
     const base = lower.split('/').pop() ?? lower;
 
@@ -109,23 +115,18 @@ export function getFileMentionCandidates(
     else if (lower.startsWith(normalizedQuery)) score = 1;
     else if (base.startsWith(normalizedQuery)) score = 2;
     else if (lower.includes(normalizedQuery)) score = 4;
-    if (score === null) continue;
 
-    const resolved = resolveWorkspaceMentionPath(workspace, display);
-    if (!resolved || !existsSync(resolved.filePath)) continue;
-
-    try {
-      const stat = statSync(resolved.filePath);
-      const kind = stat.isDirectory() ? 'directory' : 'file';
+    if (score !== null) {
+      const kind = entry.dirent.isDirectory() ? 'directory' : 'file';
       scored.push({
         path: kind === 'directory' ? `${display}/` : display,
         kind,
-        desc: kind === 'directory' ? 'directory' : `${stat.size} bytes`,
+        desc: kind === 'directory' ? 'directory' : `${entry.stats?.size ?? 0} bytes`,
         score,
       });
-    } catch {
-      // Ignore races with filesystem changes.
     }
+
+    if (index > 0 && index % SCORE_YIELD_INTERVAL === 0) await yieldToEventLoop(signal);
   }
 
   scored.sort((a, b) => {
@@ -134,5 +135,6 @@ export function getFileMentionCandidates(
     return a.path.localeCompare(b.path);
   });
 
+  throwIfAborted(signal);
   return scored.slice(0, limit).map(({ score, ...item }) => item);
 }

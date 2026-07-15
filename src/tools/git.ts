@@ -1,47 +1,66 @@
-import { execSync } from 'child_process';
+import { execFile } from 'child_process';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 
-export function runGit(
+type ExecFile = typeof execFile;
+
+export async function runGit(
   args: string[],
   ctx: ToolContext,
-): { success: boolean; output: string; error?: string } {
-  try {
-    const output = execSync(`git ${args.join(' ')}`, {
+  execute: ExecFile = execFile,
+): Promise<{ success: boolean; output: string; error?: string }> {
+  return new Promise((resolve) => {
+    const options = {
       cwd: ctx.workspaceRoot,
-      encoding: 'utf-8',
+      encoding: 'utf-8' as const,
       timeout: 30_000,
+      signal: ctx.signal,
+      env: { ...process.env, ...ctx.env },
+    };
+
+    execute('git', args, options, (error, stdout, stderr) => {
+      if (!error) {
+        resolve({ success: true, output: stdout || '(no output)' });
+        return;
+      }
+
+      if (ctx.signal?.aborted) {
+        resolve({ success: false, output: '', error: 'CANCELLED: Git command was cancelled' });
+        return;
+      }
+
+      resolve({
+        success: false,
+        output: '',
+        error: stderr || error.message || 'Git command failed',
+      });
     });
-    return { success: true, output: output || '(no output)' };
-  } catch (e) {
-    const err = e as { stderr?: string; message?: string };
-    return { success: false, output: '', error: err.stderr || err.message || 'Git command failed' };
-  }
+  });
 }
 
 async function gitStatus(_args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const r = runGit(['status', '--short'], ctx);
-  return { toolCallId: '', ...r };
+  const result = await runGit(['status', '--short'], ctx);
+  return { toolCallId: '', ...result };
 }
 
 async function gitDiff(_args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const r = runGit(['diff'], ctx);
-  return { toolCallId: '', ...r };
+  const result = await runGit(['diff'], ctx);
+  return { toolCallId: '', ...result };
 }
 
 async function gitLog(_args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const r = runGit(['log', '--oneline', '-20'], ctx);
-  return { toolCallId: '', ...r };
+  const result = await runGit(['log', '--oneline', '-20'], ctx);
+  return { toolCallId: '', ...result };
 }
 
 async function gitCommit(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const message = args.message as string;
-  const r = runGit(['commit', '-m', message], ctx);
-  return { toolCallId: '', ...r };
+  const result = await runGit(['commit', '-m', message], ctx);
+  return { toolCallId: '', ...result };
 }
 
 async function gitBranch(_args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const r = runGit(['branch', '-a'], ctx);
-  return { toolCallId: '', ...r };
+  const result = await runGit(['branch', '-a'], ctx);
+  return { toolCallId: '', ...result };
 }
 
 export const gitTools: ToolDefinition[] = [

@@ -212,12 +212,13 @@ export async function runAgentLoop(
     callbacks.onTurnStart(turn);
     log.debug('turn start', { turn, maxTurns: config.maxTurns, mode: effectiveMode });
 
-    const messages = buildMessages(
+    const messages = await buildMessages(
       effectiveConfig,
       newHistory,
       effectiveDefinitions ?? registry.getDefinitions(),
       toolContext.todos,
       options?.commands,
+      signal,
     );
     let assistantContent = '';
     const toolCalls: ToolCall[] = [];
