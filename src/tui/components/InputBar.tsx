@@ -49,7 +49,14 @@ interface InputBarProps {
   /** Forward unrecognized global keyboard shortcuts to the parent App. */
   onGlobalShortcut?: (
     input: string,
-    key: { ctrl?: boolean; meta?: boolean; shift?: boolean; tab?: boolean },
+    key: {
+      ctrl?: boolean;
+      meta?: boolean;
+      shift?: boolean;
+      tab?: boolean;
+      home?: boolean;
+      end?: boolean;
+    },
   ) => boolean;
   /** Commands for the autocomplete menu (from discoverCommands). */
   commands?: SlashCommand[];
@@ -191,6 +198,10 @@ export function InputBar({
   );
 
   useInput((_input, key) => {
+    // Mouse reports are handled by TranscriptView. Ignore them here before
+    // menu/history routing so wheel movement cannot mutate the prompt.
+    if (_input.startsWith('[<') || _input.startsWith('\x1b[<')) return;
+
     // While a modal (permission prompt) owns the keyboard, ignore all keys —
     // PermissionButtons handles them. Without this, Ink fires every `useInput`
     // handler on every keypress, so Enter/Tab/Esc would double-fire.

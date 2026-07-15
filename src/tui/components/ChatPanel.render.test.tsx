@@ -1,4 +1,3 @@
-import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
@@ -129,21 +128,12 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('streamed reply');
   });
 
-  /** Advance one post-gap release under fake timers (setTimeout(0) handoff tick). */
-  async function flushHandoffFrame(): Promise<void> {
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-  }
-
-  it('hands a wrapped response from dynamic output to Static without duplicating its unique suffix', async () => {
-    vi.useFakeTimers();
+  it('keeps wrapped content mounted exactly once when streaming completes', () => {
     const marker = 'UNIQUE_FINAL_SUFFIX_42';
     const messages = [
       msg('u1', 'user', 'write a long answer'),
       msg('a1', 'assistant', `${'wrapped response content '.repeat(16)}\n${marker}`),
     ];
-
     const view = render(
       withTheme(
         <ChatPanel
@@ -155,10 +145,6 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-
-    const streamingFrame = frame(view.lastFrame);
-    expect(streamingFrame).toContain(marker);
-    const beforeCompletion = view.frames.length;
 
     view.rerender(
       withTheme(
@@ -172,54 +158,21 @@ describe('ChatPanel Ink rendering', () => {
       ),
     );
 
-    // Immediate withhold: marker leaves dynamic/static for the ownership gap.
-    const gapFrame = frame(view.lastFrame);
-    expect(gapFrame).not.toContain(marker);
-
-    // Passive effect releases into Static after the gap frame.
-    await flushHandoffFrame();
-
-    const transitionFrames = view.frames.slice(beforeCompletion).map(stripAnsi);
-    expect(transitionFrames.length).toBeGreaterThanOrEqual(2);
-    // Ownership gap: at least one committed frame must omit the unique suffix.
-    expect(transitionFrames.some((output) => !output.includes(marker))).toBe(true);
-    expect(gapFrame).not.toContain(marker);
-    // After release, the unique suffix is present again in Static scrollback.
-    expect(frame(view.lastFrame)).toContain(marker);
+    const output = frame(view.lastFrame);
+    expect(output).toContain(marker);
+    expect(output.match(new RegExp(marker, 'g'))).toHaveLength(1);
   });
 
-  it('queues rapid streaming handoffs and commits them FIFO via gap frames', async () => {
-    vi.useFakeTimers();
-    const messagesA = [msg('a1', 'assistant', 'MARKER_A')];
+  it('renders rapid streaming identity changes without withholding prior messages', () => {
+    const messages = [
+      msg('a1', 'assistant', 'MARKER_A'),
+      msg('a2', 'assistant', 'MARKER_B'),
+      msg('a3', 'assistant', 'MARKER_C'),
+    ];
     const view = render(
       withTheme(
         <ChatPanel
-          messages={messagesA}
-          streamingMessageId="a1"
-          terminalWidth={50}
-          reducedMotion
-          screenReader
-        />,
-      ),
-    );
-
-    const messagesB = [...messagesA, msg('a2', 'assistant', 'MARKER_B')];
-    view.rerender(
-      withTheme(
-        <ChatPanel
-          messages={messagesB}
-          streamingMessageId="a2"
-          terminalWidth={50}
-          reducedMotion
-          screenReader
-        />,
-      ),
-    );
-    const messagesC = [...messagesB, msg('a3', 'assistant', 'MARKER_C')];
-    view.rerender(
-      withTheme(
-        <ChatPanel
-          messages={messagesC}
+          messages={messages}
           streamingMessageId="a3"
           terminalWidth={50}
           reducedMotion
@@ -228,72 +181,34 @@ describe('ChatPanel Ink rendering', () => {
       ),
     );
 
-    // Both previous ids withheld immediately; only active C is visible.
-    expect(frame(view.lastFrame)).not.toContain('MARKER_A');
-    expect(frame(view.lastFrame)).not.toContain('MARKER_B');
-    expect(frame(view.lastFrame)).toContain('MARKER_C');
-
-    // One release per gap-frame tick (FIFO).
-    await flushHandoffFrame();
-    expect(frame(view.lastFrame)).toContain('MARKER_A');
-    expect(frame(view.lastFrame)).not.toContain('MARKER_B');
-    expect(frame(view.lastFrame)).toContain('MARKER_C');
-
-    await flushHandoffFrame();
-    expect(frame(view.lastFrame)).toContain('MARKER_A');
-    expect(frame(view.lastFrame)).toContain('MARKER_B');
-    expect(frame(view.lastFrame)).toContain('MARKER_C');
+    const output = frame(view.lastFrame);
+    expect(output).toContain('MARKER_A');
+    expect(output).toContain('MARKER_B');
+    expect(output).toContain('MARKER_C');
   });
 
-  it('keeps the previous turn completed while a new assistant turn starts streaming', async () => {
-    vi.useFakeTimers();
+  it('keeps the previous turn visible while a new assistant turn streams', () => {
     const previousMarker = 'PREVIOUS_TURN_SUFFIX';
     const activeMarker = 'ACTIVE_TURN_TEXT';
-    const previousMessages = [
+    const messages = [
       msg('u1', 'user', 'inspect the project'),
       msg('a1', 'assistant', `${'completed wrapped text '.repeat(10)}${previousMarker}`),
+      msg('a2', 'assistant', activeMarker),
     ];
-
     const view = render(
       withTheme(
         <ChatPanel
-          messages={previousMessages}
-          streamingMessageId="a1"
-          terminalWidth={50}
-          reducedMotion
-          screenReader
-          retryPhase="transport"
-          retryAttempt={2}
-          retryMax={5}
-          retryCountdownMs={4_000}
-        />,
-      ),
-    );
-
-    view.rerender(
-      withTheme(
-        <ChatPanel
-          messages={[...previousMessages, msg('a2', 'assistant', activeMarker)]}
+          messages={messages}
           streamingMessageId="a2"
           terminalWidth={50}
           reducedMotion
           screenReader
-          retryPhase="transport"
-          retryAttempt={2}
-          retryMax={5}
-          retryCountdownMs={4_000}
         />,
       ),
     );
 
-    const handoffFrame = frame(view.lastFrame);
-    expect(handoffFrame).not.toContain(previousMarker);
-    expect(handoffFrame).toContain(activeMarker);
-
-    await flushHandoffFrame();
-    const committedFrame = frame(view.lastFrame);
-    expect(committedFrame).toContain(previousMarker);
-    expect(committedFrame).toContain(activeMarker);
+    expect(frame(view.lastFrame)).toContain(previousMarker);
+    expect(frame(view.lastFrame)).toContain(activeMarker);
   });
 
   it('merges whitespace-only tool-only assistant content into the prior turn', () => {
@@ -327,70 +242,28 @@ describe('ChatPanel Ink rendering', () => {
     );
   });
 
-  it('re-emits Static history after epoch bump while a handoff is in flight', async () => {
-    vi.useFakeTimers();
-    const historyMarker = 'EPOCH_HISTORY_MARKER';
-    const activeMarker = 'EPOCH_ACTIVE_MARKER';
+  it('keeps completed history in the dynamic tree during active streaming', () => {
     const messages = [
-      msg('u1', 'user', historyMarker),
+      msg('u1', 'user', 'DYNAMIC_HISTORY_MARKER'),
       msg('a1', 'assistant', 'done'),
-      msg('a2', 'assistant', activeMarker),
+      msg('a2', 'assistant', 'DYNAMIC_ACTIVE_MARKER'),
     ];
-
     const view = render(
       withTheme(
         <ChatPanel
-          messages={messages.slice(0, 2)}
-          streamingMessageId="a1"
-          terminalWidth={80}
-          reducedMotion
-          screenReader
-          staticEpoch={0}
-        />,
-      ),
-    );
-
-    view.rerender(
-      withTheme(
-        <ChatPanel
           messages={messages}
           streamingMessageId="a2"
           terminalWidth={80}
           reducedMotion
           screenReader
-          staticEpoch={0}
         />,
       ),
     );
 
-    // a1 withheld; bump epoch while handoff is pending.
-    expect(frame(view.lastFrame)).not.toContain('done');
-    expect(frame(view.lastFrame)).toContain(activeMarker);
-
-    view.rerender(
-      withTheme(
-        <ChatPanel
-          messages={messages}
-          streamingMessageId="a2"
-          terminalWidth={80}
-          reducedMotion
-          screenReader
-          staticEpoch={1}
-        />,
-      ),
-    );
-
-    // History user message is re-emitted via Static remount; withheld a1 still absent.
-    const mid = frame(view.lastFrame);
-    expect(mid).toContain(historyMarker);
-    expect(mid).toContain(activeMarker);
-    expect(mid).not.toContain('done');
-
-    await flushHandoffFrame();
-    const after = frame(view.lastFrame);
-    expect(after).toContain(historyMarker);
-    expect(after).toContain('done');
-    expect(after).toContain(activeMarker);
+    const output = frame(view.lastFrame);
+    expect(output).toContain('DYNAMIC_HISTORY_MARKER');
+    expect(output).toContain('done');
+    expect(output).toContain('DYNAMIC_ACTIVE_MARKER');
   });
 
   it('renders every consecutive same-name tool call as its own row', () => {
@@ -555,7 +428,7 @@ describe('ChatPanel Ink rendering', () => {
     );
   });
 
-  it('renders a pending permission prompt inside the matching assistant message', () => {
+  it('marks a pending permission on the matching assistant tool row', () => {
     const toolCall: ToolCall = {
       id: 'call-pending',
       name: 'Bash',
@@ -584,9 +457,8 @@ describe('ChatPanel Ink rendering', () => {
     const output = frame(view.lastFrame);
     expect(output).toContain('I need to run a command.');
     expect(output).toContain('[needs approval]');
-    expect(output).toContain('Permission required for: Bash');
-    expect(output).toContain('Primary argument: npm test');
-    expect(output).toContain('Press: [R] Run once [S] Skip [A] Always allow [Esc] Deny');
+    expect(output).not.toContain('Permission required for: Bash');
+    expect(output).not.toContain('Primary argument: npm test');
   });
 
   it('keeps a streaming tool-call-only message dynamic so permission prompts can appear', () => {
@@ -635,13 +507,11 @@ describe('ChatPanel Ink rendering', () => {
     const output = frame(view.lastFrame);
     expect(output).toContain('I will inspect the project first.');
     expect(output).toContain('[needs approval]');
-    expect(output).toContain('Permission required for: Glob');
-    expect(output).toContain('Primary argument: *.ts');
-    expect(output).toContain('Press: [R] Run once [S] Skip [A] Always allow [Esc] Deny');
+    expect(output).not.toContain('Permission required for: Glob');
+    expect(output).not.toContain('Primary argument: *.ts');
   });
 
-  it('mounts a quiescent plan approval alongside the active message', () => {
-    vi.useFakeTimers();
+  it('keeps plan approval controls outside transcript content', () => {
     const toolCall: ToolCall = {
       id: 'call-exit-plan-mode',
       name: 'ExitPlanMode',
@@ -649,15 +519,9 @@ describe('ChatPanel Ink rendering', () => {
     };
     const messages: Message[] = [
       msg('u1', 'user', 'fix plan mode scrolling'),
-      { ...msg('a1', 'assistant', 'I found the likely cause.') },
+      msg('a1', 'assistant', 'I found the likely cause.'),
       { ...msg('a2', 'assistant', ''), toolCalls: [toolCall] },
     ];
-    const resolve = vi.fn();
-    const pendingPlanApproval = {
-      plan: 'Step 1: update rendering\nStep 2: run tests',
-      resolve,
-    };
-
     const view = render(
       withTheme(
         <ChatPanel
@@ -665,69 +529,17 @@ describe('ChatPanel Ink rendering', () => {
           streamingMessageId="a2"
           activeToolCallId="call-exit-plan-mode"
           terminalWidth={100}
-          reducedMotion
           screenReader
         />,
       ),
     );
 
-    const outputBeforeApproval = frame(view.lastFrame);
-    expect(outputBeforeApproval).toContain('fix plan mode scrolling');
-    expect(outputBeforeApproval).toContain('I found the likely cause.');
-    expect(outputBeforeApproval).toContain('ExitPlanMode');
-    expect(outputBeforeApproval).not.toContain('Plan approval required.');
-
-    view.rerender(
-      withTheme(
-        <ChatPanel
-          messages={messages}
-          streamingMessageId="a2"
-          pendingPlanApproval={pendingPlanApproval}
-          onResolvePlanApproval={resolve}
-          activeToolCallId="call-exit-plan-mode"
-          terminalWidth={100}
-          screenReader
-        />,
-      ),
-    );
-
-    const outputDuringApproval = frame(view.lastFrame);
-    const writesDuringApproval = view.frames.length;
-    expect(outputDuringApproval).toContain('fix plan mode scrolling');
-    expect(outputDuringApproval).toContain('I found the likely cause.');
-    expect(outputDuringApproval).toContain('ExitPlanMode');
-    expect(outputDuringApproval).toContain('Plan approval required');
-    expect(outputDuringApproval).toContain('Step 1: update rendering');
-    expect(outputDuringApproval).toContain('Step 2: run tests');
-    expect(outputDuringApproval).toContain('Press: [A] Approve [R] Reject [Esc] Reject');
-
-    act(() => {
-      vi.advanceTimersByTime(800);
-    });
-    expect(view.frames).toHaveLength(writesDuringApproval);
-
-    view.stdin.write('a');
-    expect(resolve).toHaveBeenCalledOnce();
-    expect(resolve).toHaveBeenCalledWith('approve');
-
-    view.rerender(
-      withTheme(
-        <ChatPanel
-          messages={messages}
-          streamingMessageId="a2"
-          activeToolCallId="call-exit-plan-mode"
-          terminalWidth={100}
-          reducedMotion
-          screenReader
-        />,
-      ),
-    );
-
-    const outputAfterApproval = frame(view.lastFrame);
-    expect(outputAfterApproval).toContain('fix plan mode scrolling');
-    expect(outputAfterApproval).toContain('I found the likely cause.');
-    expect(outputAfterApproval).toContain('ExitPlanMode');
-    expect(outputAfterApproval).not.toContain('Plan approval required');
+    const output = frame(view.lastFrame);
+    expect(output).toContain('fix plan mode scrolling');
+    expect(output).toContain('I found the likely cause.');
+    expect(output).toContain('ExitPlanMode');
+    expect(output).not.toContain('Plan approval required');
+    expect(output).not.toContain('Approve plan');
   });
 
   it('merges a tool-call-only assistant message after streaming completes', () => {

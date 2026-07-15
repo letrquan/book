@@ -11,6 +11,9 @@ import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
 import { ModelPicker } from './components/ModelPicker.js';
 import { SessionPicker } from './components/SessionPicker.js';
+import { TranscriptView } from './components/TranscriptView.js';
+import { PermissionButtons } from './components/PermissionButtons.js';
+import { PlanApprovalActions, PlanApprovalDetails } from './components/PlanApprovalButtons.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
 import {
@@ -90,18 +93,16 @@ interface AppProps {
 }
 
 /**
- * Pi-style interactive TUI.
+ * Full-screen interactive TUI with an application-owned transcript viewport.
  *
- * Renders to the main terminal screen (no alternate screen buffer).
- * The terminal emulator owns scrollback — users scroll with Shift+PgUp,
- * mouse wheel, or tmux copy mode. The input bar and status line scroll
- * off-screen when browsing history and reappear when scrolled to bottom.
+ * The transcript scrolls independently while approvals, input, and status stay
+ * visible. The default CLI enters the alternate screen; --scrollback preserves
+ * linear terminal-owned history as an accessibility/fallback mode.
  *
  * Layout (top to bottom):
- *   1. ASCII BOOK banner
- *   2. Chat panel — all messages rendered in order, no viewport culling
- *   3. Status line — model, turn, tokens, usage meter, mode, git, tasks
- *   4. Input bar — supports @mentions, !commands, history
+ *   1. Scrollable transcript and informational panels
+ *   2. Fixed approval/picker interaction area
+ *   3. Working indicator, input bar, and status line
  *
  * Keyboard shortcuts:
  *   Esc      — cancel permission / abort stream
@@ -109,6 +110,8 @@ interface AppProps {
  *   Ctrl+T   — toggle task list
  *   Ctrl+L   — redraw
  *   Ctrl+J   — insert newline
+ *   PgUp/PgDn, Ctrl+U/Ctrl+D — scroll transcript
+ *   Ctrl+Home/Ctrl+End — jump to transcript start/latest
  *   Alt+M    — cycle permission mode
  *   Alt+P    — open model picker
  *   Shift+Tab — cycle permission mode
@@ -164,6 +167,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
   const [showSkills, setShowSkills] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
+  const [followRequestKey, setFollowRequestKey] = useState(0);
   const [currentTheme, setCurrentTheme] = useState<ThemeTokens>(DEFAULT_THEME);
   const { tasks, addTask, updateTaskStatus, removeTask, clearTasks } = useTasks();
   const theme = useTheme();
@@ -183,7 +187,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
     [stdout],
   );
   const [terminalSize, setTerminalSize] = useState(readTerminalSize);
-  const [staticEpoch, setStaticEpoch] = useState(0);
   const lastAppliedSizeRef = useRef(terminalSize);
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -191,10 +194,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
     (nextSize: { columns: number; rows: number }, redraw: boolean) => {
       const previousSize = lastAppliedSizeRef.current;
       if (nextSize.columns === previousSize.columns && nextSize.rows === previousSize.rows) return;
-      if (redraw) {
-        redrawViewport?.();
-        setStaticEpoch((epoch) => epoch + 1);
-      }
+      if (redraw) redrawViewport?.();
       lastAppliedSizeRef.current = nextSize;
       setTerminalSize(nextSize);
     },
@@ -315,7 +315,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
     if (key.ctrl && input === 'l') {
       uiLog.event('input:Ctrl+L', { action: 'redraw' });
       redrawViewport?.();
-      setStaticEpoch((epoch) => epoch + 1);
       return;
     }
   });
@@ -337,6 +336,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
 
   const handleSubmit = useCallback(
     (value: string) => {
+      setFollowRequestKey((key) => key + 1);
       // Coarse slash-command dispatch trace (one event per submit).
       if (value.startsWith('/')) {
         const spaceIdx = value.indexOf(' ');
@@ -682,7 +682,14 @@ export function App({ config, session, redrawViewport }: AppProps) {
   const handleGlobalShortcut = useCallback(
     (
       input: string,
-      key: { ctrl?: boolean; meta?: boolean; shift?: boolean; tab?: boolean },
+      key: {
+        ctrl?: boolean;
+        meta?: boolean;
+        shift?: boolean;
+        tab?: boolean;
+        home?: boolean;
+        end?: boolean;
+      },
     ): boolean => {
       // Ctrl+/ and Ctrl+E must be handled here (not only in the parent useInput)
       // because ink-text-input consumes some Ctrl key events before they reach
@@ -705,7 +712,12 @@ export function App({ config, session, redrawViewport }: AppProps) {
       if (key.ctrl && input === 'l') {
         uiLog.event('input:Ctrl+L', { action: 'redraw' });
         redrawViewport?.();
-        setStaticEpoch((epoch) => epoch + 1);
+        return true;
+      }
+      if (
+        key.ctrl &&
+        (input.toLowerCase() === 'u' || input.toLowerCase() === 'd' || key.home || key.end)
+      ) {
         return true;
       }
       if (key.ctrl && input === '/') {
@@ -734,295 +746,378 @@ export function App({ config, session, redrawViewport }: AppProps) {
   // Track input changes for command menu filtering — now handled inside InputBar.
   // handleGlobalShortcut remains for Ctrl+/ keyboard shortcut reference.
 
+  const pickerOwnsTranscript = showModelPicker || showSessionPicker;
+
   return (
     <ThemeContext.Provider value={currentTheme}>
       <ErrorBoundary>
-        <Box flexDirection="column" width={termWidth}>
-          {/* Message area — all messages rendered in order. Keep normal flow so new output stays near the prompt in terminal scrollback. */}
-          <Box flexDirection="column" width={termWidth}>
-            {error && (
-              <Box paddingX={1} marginBottom={1}>
-                <Text color={theme.error}>✕ {error}</Text>
-              </Box>
-            )}
-            <ChatPanel
-              messages={messages}
-              streamingMessageId={streamingMessageId}
-              pendingPermission={pendingPermission}
-              onResolvePermission={resolvePermission}
-              pendingPlanApproval={pendingPlanApproval}
-              onResolvePlanApproval={resolvePlanApproval}
-              activeToolCallId={expandedToolId}
-              reducedMotion={motionDisabled}
-              screenReader={screenReader}
-              terminalWidth={termWidth}
-              terminalHeight={termHeight}
-              staticEpoch={staticEpoch}
-              workspace={config.workspace}
-              model={liveConfig.modelSelection ?? liveConfig.model}
-              mode={mode}
-              commandCount={commands.length}
-              skillCount={skills.length}
-              retryPhase={retryPhase}
-              showAllToolOutput={showAllToolOutput}
-              retryAttempt={retryAttempt}
-              retryMax={retryMax}
-              retryCountdownMs={retryCountdownMs}
-            />
-            {agentTodos.length > 0 && <AgentTodoList todos={agentTodos} />}
-            {showTasks && (
-              <TaskList tasks={tasks} onUpdateStatus={updateTaskStatus} onRemove={removeTask} />
-            )}
-            {showHelp && (
-              <Box
-                flexDirection="column"
-                borderStyle="single"
-                borderColor={theme.subtle}
-                paddingX={1}
-                marginTop={1}
-              >
-                <Text bold color={theme.brand}>
-                  Slash Commands
-                </Text>
-                <Box flexDirection="column" marginTop={1}>
-                  <HelpRow label="/help" description="Toggle this help" theme={theme} />
-                  <HelpRow
-                    label="/clear [name]"
-                    description="Start new; save previous (/new, /reset)"
-                    theme={theme}
-                  />
-                  <HelpRow
-                    label="/resume [id|name]"
-                    description="Resume a saved conversation"
-                    theme={theme}
-                  />
-                  <HelpRow
-                    label="/compact"
-                    description="Summarize this conversation"
-                    theme={theme}
-                  />
-                  <HelpRow label="/task <subject>" description="Add a task" theme={theme} />
-                  <HelpRow
-                    label="/theme [dark|light|auto]"
-                    description="Switch theme"
-                    theme={theme}
-                  />
-                  <HelpRow
-                    label="/model [name]"
-                    description="Switch model or add a BYOK provider"
-                    theme={theme}
-                  />
-                  <HelpRow label="/config" description="Show configuration" theme={theme} />
-                  <HelpRow label="/diff" description="Show git diff" theme={theme} />
-                  <HelpRow label="/status" description="Session status" theme={theme} />
-                  <HelpRow label="/memory" description="Manage memory" theme={theme} />
-                  <HelpRow label="/permissions" description="Permission rules" theme={theme} />
-                  <HelpRow label="/cost" description="Token usage/cost" theme={theme} />
-                  <HelpRow label="/skills" description="List skills" theme={theme} />
-                  <HelpRow label="/init" description="Initialize CLAUDE.md" theme={theme} />
-                  <HelpRow label="/reload-skills" description="Reload commands" theme={theme} />
-                  <HelpRow label="/export [file]" description="Export conversation" theme={theme} />
-                  <HelpRow
-                    label="/usage"
-                    description="Session cost & tokens (/stats)"
-                    theme={theme}
-                  />
-                  <HelpRow
-                    label="/context"
-                    description="What fills the context window"
-                    theme={theme}
-                  />
-                  <HelpRow
-                    label="/review [scope]"
-                    description="Review current git diff"
-                    theme={theme}
-                  />
-                  <HelpRow
-                    label="/security-review [scope]"
-                    description="Security audit of the diff"
-                    theme={theme}
-                  />
-                  <HelpRow label="/release-notes" description="Version + changelog" theme={theme} />
-                  <HelpRow
-                    label="/feedback [note]"
-                    description="Save a bug-report snapshot"
-                    theme={theme}
-                  />
-                  <HelpRow label="/exit" description="Exit book" theme={theme} />
-                  {commands.length > 0 && (
-                    <>
+        <Box
+          flexDirection="column"
+          width={termWidth}
+          height={Math.max(1, termHeight - 1)}
+          overflow="hidden"
+        >
+          <TranscriptView
+            key={sessionId}
+            width={termWidth}
+            isActive={!pickerOwnsTranscript}
+            followRequestKey={followRequestKey}
+          >
+            <Box flexDirection="column" width={termWidth}>
+              {error && (
+                <Box paddingX={1} marginBottom={1}>
+                  <Text color={theme.error}>✕ {error}</Text>
+                </Box>
+              )}
+              <ChatPanel
+                messages={messages}
+                streamingMessageId={streamingMessageId}
+                pendingPermission={pendingPermission}
+                activeToolCallId={expandedToolId}
+                reducedMotion={motionDisabled}
+                screenReader={screenReader}
+                terminalWidth={termWidth}
+                terminalHeight={termHeight}
+                workspace={config.workspace}
+                model={liveConfig.modelSelection ?? liveConfig.model}
+                mode={mode}
+                commandCount={commands.length}
+                skillCount={skills.length}
+                retryPhase={retryPhase}
+                showAllToolOutput={showAllToolOutput}
+                retryAttempt={retryAttempt}
+                retryMax={retryMax}
+                retryCountdownMs={retryCountdownMs}
+              />
+              {agentTodos.length > 0 && <AgentTodoList todos={agentTodos} />}
+              {showTasks && (
+                <TaskList tasks={tasks} onUpdateStatus={updateTaskStatus} onRemove={removeTask} />
+              )}
+              {showHelp && (
+                <Box
+                  flexDirection="column"
+                  borderStyle="single"
+                  borderColor={theme.subtle}
+                  paddingX={1}
+                  marginTop={1}
+                >
+                  <Text bold color={theme.brand}>
+                    Slash Commands
+                  </Text>
+                  <Box flexDirection="column" marginTop={1}>
+                    <HelpRow label="/help" description="Toggle this help" theme={theme} />
+                    <HelpRow
+                      label="/clear [name]"
+                      description="Start new; save previous (/new, /reset)"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/resume [id|name]"
+                      description="Resume a saved conversation"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/compact"
+                      description="Summarize this conversation"
+                      theme={theme}
+                    />
+                    <HelpRow label="/task <subject>" description="Add a task" theme={theme} />
+                    <HelpRow
+                      label="/theme [dark|light|auto]"
+                      description="Switch theme"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/model [name]"
+                      description="Switch model or add a BYOK provider"
+                      theme={theme}
+                    />
+                    <HelpRow label="/config" description="Show configuration" theme={theme} />
+                    <HelpRow label="/diff" description="Show git diff" theme={theme} />
+                    <HelpRow label="/status" description="Session status" theme={theme} />
+                    <HelpRow label="/memory" description="Manage memory" theme={theme} />
+                    <HelpRow label="/permissions" description="Permission rules" theme={theme} />
+                    <HelpRow label="/cost" description="Token usage/cost" theme={theme} />
+                    <HelpRow label="/skills" description="List skills" theme={theme} />
+                    <HelpRow label="/init" description="Initialize CLAUDE.md" theme={theme} />
+                    <HelpRow label="/reload-skills" description="Reload commands" theme={theme} />
+                    <HelpRow
+                      label="/export [file]"
+                      description="Export conversation"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/usage"
+                      description="Session cost & tokens (/stats)"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/context"
+                      description="What fills the context window"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/review [scope]"
+                      description="Review current git diff"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/security-review [scope]"
+                      description="Security audit of the diff"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/release-notes"
+                      description="Version + changelog"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/feedback [note]"
+                      description="Save a bug-report snapshot"
+                      theme={theme}
+                    />
+                    <HelpRow label="/exit" description="Exit book" theme={theme} />
+                    {commands.length > 0 && (
+                      <>
+                        <Text color={theme.subtle} dimColor>
+                          ─── Custom (.book/commands/) ───
+                        </Text>
+                        {commands.map((cmd) => (
+                          <HelpRow
+                            key={cmd.name}
+                            label={`/${cmd.name}${cmd.argumentHint ? ` ${cmd.argumentHint}` : ''}`}
+                            description={cmd.description}
+                            theme={theme}
+                          />
+                        ))}
+                      </>
+                    )}
+                  </Box>
+                </Box>
+              )}
+              {showStatus && (
+                <Box
+                  flexDirection="column"
+                  borderStyle="single"
+                  borderColor={theme.subtle}
+                  paddingX={1}
+                  marginTop={1}
+                >
+                  <Text bold color={theme.brand}>
+                    Session Status
+                  </Text>
+                  <Box flexDirection="column" marginTop={1}>
+                    <HelpRow
+                      label="Model"
+                      description={liveConfig.modelSelection ?? liveConfig.model}
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="Session"
+                      description={`${sessionName ? `${sessionName} · ` : ''}${sessionId}`}
+                      theme={theme}
+                    />
+                    <HelpRow label="Workspace" description={config.workspace} theme={theme} />
+                    <HelpRow
+                      label="Max Tokens"
+                      description={String(config.maxTokens)}
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="Max Turns"
+                      description={
+                        config.maxTurns == null || config.maxTurns <= 0
+                          ? 'unlimited'
+                          : String(config.maxTurns)
+                      }
+                      theme={theme}
+                    />
+                    <HelpRow label="Mode" description={mode} theme={theme} />
+                    <HelpRow label="Tokens Used" description={`${tokenCount}`} theme={theme} />
+                    <HelpRow label="Turn" description={`${currentTurn}`} theme={theme} />
+                    <HelpRow
+                      label="Tasks"
+                      description={`${tasks.length} (${tasks.filter((t) => t.status === 'in_progress').length} active)`}
+                      theme={theme}
+                    />
+                  </Box>
+                </Box>
+              )}
+              {showPermissions && (
+                <Box
+                  flexDirection="column"
+                  borderStyle="single"
+                  borderColor={theme.subtle}
+                  paddingX={1}
+                  marginTop={1}
+                >
+                  <Text bold color={theme.brand}>
+                    Permission Mode
+                  </Text>
+                  <Box flexDirection="column" marginTop={1}>
+                    <HelpRow label="Current Mode" description={mode} theme={theme} />
+                    <HelpRow
+                      label="Modes"
+                      description="default, auto, plan, accept-edits, dontAsk, bypassPermissions"
+                      theme={theme}
+                    />
+                    <HelpRow label="Switch" description="Alt+M or Shift+Tab" theme={theme} />
+                  </Box>
+                  <Box marginTop={1} flexDirection="column">
+                    <Text color={theme.subtle} dimColor>
+                      Permission rules (add via the "Always allow" option at tool prompts):
+                    </Text>
+                    <Text color={theme.subtle} dimColor>
+                      {' '}
+                      allow:
+                    </Text>
+                    {liveConfig.settings.permissions.allow.length === 0 ? (
                       <Text color={theme.subtle} dimColor>
-                        ─── Custom (.book/commands/) ───
+                        {' '}
+                        (none)
                       </Text>
-                      {commands.map((cmd) => (
+                    ) : (
+                      liveConfig.settings.permissions.allow.map((r) => (
+                        <Text key={r} color={theme.subtle} dimColor>
+                          {' '}
+                          {r}
+                        </Text>
+                      ))
+                    )}
+                    <Text color={theme.subtle} dimColor>
+                      {' '}
+                      ask:
+                    </Text>
+                    {liveConfig.settings.permissions.ask.length === 0 ? (
+                      <Text color={theme.subtle} dimColor>
+                        {' '}
+                        (none)
+                      </Text>
+                    ) : (
+                      liveConfig.settings.permissions.ask.map((r) => (
+                        <Text key={r} color={theme.subtle} dimColor>
+                          {' '}
+                          {r}
+                        </Text>
+                      ))
+                    )}
+                    <Text color={theme.subtle} dimColor>
+                      {' '}
+                      deny:
+                    </Text>
+                    {liveConfig.settings.permissions.deny.length === 0 ? (
+                      <Text color={theme.subtle} dimColor>
+                        {' '}
+                        (none)
+                      </Text>
+                    ) : (
+                      liveConfig.settings.permissions.deny.map((r) => (
+                        <Text key={r} color={theme.subtle} dimColor>
+                          {' '}
+                          {r}
+                        </Text>
+                      ))
+                    )}
+                  </Box>
+                </Box>
+              )}
+              {showSkills && (
+                <Box
+                  flexDirection="column"
+                  borderStyle="single"
+                  borderColor={theme.subtle}
+                  paddingX={1}
+                  marginTop={1}
+                >
+                  <Text bold color={theme.brand}>
+                    Skills ({skills.length})
+                  </Text>
+                  <Box flexDirection="column" marginTop={1}>
+                    {skills.length === 0 ? (
+                      <Text color={theme.subtle} dimColor>
+                        (none discovered in .book/skills/ or ~/.book/skills/)
+                      </Text>
+                    ) : (
+                      skills.map((s) => (
                         <HelpRow
-                          key={cmd.name}
-                          label={`/${cmd.name}${cmd.argumentHint ? ` ${cmd.argumentHint}` : ''}`}
-                          description={cmd.description}
+                          key={s.name}
+                          label={s.name}
+                          description={s.description}
                           theme={theme}
                         />
-                      ))}
-                    </>
-                  )}
+                      ))
+                    )}
+                  </Box>
                 </Box>
-              </Box>
-            )}
-            {showStatus && (
-              <Box
-                flexDirection="column"
-                borderStyle="single"
-                borderColor={theme.subtle}
-                paddingX={1}
-                marginTop={1}
-              >
-                <Text bold color={theme.brand}>
-                  Session Status
-                </Text>
-                <Box flexDirection="column" marginTop={1}>
-                  <HelpRow
-                    label="Model"
-                    description={liveConfig.modelSelection ?? liveConfig.model}
-                    theme={theme}
-                  />
-                  <HelpRow
-                    label="Session"
-                    description={`${sessionName ? `${sessionName} · ` : ''}${sessionId}`}
-                    theme={theme}
-                  />
-                  <HelpRow label="Workspace" description={config.workspace} theme={theme} />
-                  <HelpRow
-                    label="Max Tokens"
-                    description={String(config.maxTokens)}
-                    theme={theme}
-                  />
-                  <HelpRow
-                    label="Max Turns"
-                    description={
-                      config.maxTurns == null || config.maxTurns <= 0
-                        ? 'unlimited'
-                        : String(config.maxTurns)
-                    }
-                    theme={theme}
-                  />
-                  <HelpRow label="Mode" description={mode} theme={theme} />
-                  <HelpRow label="Tokens Used" description={`${tokenCount}`} theme={theme} />
-                  <HelpRow label="Turn" description={`${currentTurn}`} theme={theme} />
-                  <HelpRow
-                    label="Tasks"
-                    description={`${tasks.length} (${tasks.filter((t) => t.status === 'in_progress').length} active)`}
-                    theme={theme}
-                  />
-                </Box>
-              </Box>
-            )}
-            {showPermissions && (
-              <Box
-                flexDirection="column"
-                borderStyle="single"
-                borderColor={theme.subtle}
-                paddingX={1}
-                marginTop={1}
-              >
-                <Text bold color={theme.brand}>
-                  Permission Mode
-                </Text>
-                <Box flexDirection="column" marginTop={1}>
-                  <HelpRow label="Current Mode" description={mode} theme={theme} />
-                  <HelpRow
-                    label="Modes"
-                    description="default, auto, plan, accept-edits, dontAsk, bypassPermissions"
-                    theme={theme}
-                  />
-                  <HelpRow label="Switch" description="Alt+M or Shift+Tab" theme={theme} />
-                </Box>
-                <Box marginTop={1} flexDirection="column">
-                  <Text color={theme.subtle} dimColor>
-                    Permission rules (add via the "Always allow" option at tool prompts):
+              )}
+              {pendingPlanApproval ? (
+                <PlanApprovalDetails plan={pendingPlanApproval.plan} screenReader={screenReader} />
+              ) : null}
+              {showShortcuts && (
+                <Box
+                  flexDirection="column"
+                  borderStyle="single"
+                  borderColor={theme.subtle}
+                  paddingX={1}
+                  marginTop={1}
+                >
+                  <Text bold color={theme.brand}>
+                    Keyboard Shortcuts
                   </Text>
-                  <Text color={theme.subtle} dimColor>
-                    {' '}
-                    allow:
-                  </Text>
-                  {liveConfig.settings.permissions.allow.length === 0 ? (
-                    <Text color={theme.subtle} dimColor>
-                      {' '}
-                      (none)
-                    </Text>
-                  ) : (
-                    liveConfig.settings.permissions.allow.map((r) => (
-                      <Text key={r} color={theme.subtle} dimColor>
-                        {' '}
-                        {r}
-                      </Text>
-                    ))
-                  )}
-                  <Text color={theme.subtle} dimColor>
-                    {' '}
-                    ask:
-                  </Text>
-                  {liveConfig.settings.permissions.ask.length === 0 ? (
-                    <Text color={theme.subtle} dimColor>
-                      {' '}
-                      (none)
-                    </Text>
-                  ) : (
-                    liveConfig.settings.permissions.ask.map((r) => (
-                      <Text key={r} color={theme.subtle} dimColor>
-                        {' '}
-                        {r}
-                      </Text>
-                    ))
-                  )}
-                  <Text color={theme.subtle} dimColor>
-                    {' '}
-                    deny:
-                  </Text>
-                  {liveConfig.settings.permissions.deny.length === 0 ? (
-                    <Text color={theme.subtle} dimColor>
-                      {' '}
-                      (none)
-                    </Text>
-                  ) : (
-                    liveConfig.settings.permissions.deny.map((r) => (
-                      <Text key={r} color={theme.subtle} dimColor>
-                        {' '}
-                        {r}
-                      </Text>
-                    ))
-                  )}
+                  <Box flexDirection="column" marginTop={1}>
+                    <HelpRow
+                      label="Esc"
+                      description="Cancel permission / abort stream"
+                      theme={theme}
+                    />
+                    <HelpRow label="Ctrl+C" description="Cancel current turn" theme={theme} />
+                    <HelpRow label="Ctrl+T" description="Toggle task list" theme={theme} />
+                    <HelpRow label="Ctrl+E" description="Toggle full tool output" theme={theme} />
+                    <HelpRow label="Ctrl+L" description="Redraw screen" theme={theme} />
+                    <HelpRow label="Alt+M" description="Cycle permission mode" theme={theme} />
+                    <HelpRow label="Alt+P" description="Open model picker" theme={theme} />
+                    <HelpRow label="Up/Down" description="Navigate input history" theme={theme} />
+                    <HelpRow label="PgUp/PgDn" description="Scroll transcript" theme={theme} />
+                    <HelpRow
+                      label="Ctrl+U/Ctrl+D"
+                      description="Scroll transcript half a page"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="Ctrl+Home/End"
+                      description="Jump to transcript start/latest"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="Ctrl+J / Shift+Enter"
+                      description="Insert newline (multiline)"
+                      theme={theme}
+                    />
+                    <HelpRow label="Ctrl+/" description="Toggle this reference" theme={theme} />
+                    <HelpRow label="@path" description="Expand file contents" theme={theme} />
+                    <HelpRow label="!cmd" description="Run shell command" theme={theme} />
+                  </Box>
                 </Box>
-              </Box>
-            )}
-            {showSkills && (
-              <Box
-                flexDirection="column"
-                borderStyle="single"
-                borderColor={theme.subtle}
-                paddingX={1}
-                marginTop={1}
-              >
-                <Text bold color={theme.brand}>
-                  Skills ({skills.length})
-                </Text>
-                <Box flexDirection="column" marginTop={1}>
-                  {skills.length === 0 ? (
-                    <Text color={theme.subtle} dimColor>
-                      (none discovered in .book/skills/ or ~/.book/skills/)
-                    </Text>
-                  ) : (
-                    skills.map((s) => (
-                      <HelpRow
-                        key={s.name}
-                        label={s.name}
-                        description={s.description}
-                        theme={theme}
-                      />
-                    ))
-                  )}
-                </Box>
-              </Box>
-            )}
-            {showSessionPicker && (
+              )}
+            </Box>
+          </TranscriptView>
+
+          <Box flexDirection="column" flexShrink={0} width={termWidth}>
+            {pendingPermission ? (
+              <PermissionButtons
+                toolCall={pendingPermission.toolCall}
+                onResolve={resolvePermission}
+                screenReader={screenReader}
+              />
+            ) : null}
+            {pendingPlanApproval ? (
+              <PlanApprovalActions
+                plan={pendingPlanApproval.plan}
+                onResolve={resolvePlanApproval}
+                screenReader={screenReader}
+              />
+            ) : null}
+            {showSessionPicker ? (
               <SessionPicker
                 sessions={listSessions()}
                 currentSessionId={sessionId}
@@ -1035,8 +1130,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 }}
                 onCancel={() => setShowSessionPicker(false)}
               />
-            )}
-            {showModelPicker && (
+            ) : null}
+            {showModelPicker ? (
               <ModelPicker
                 options={modelOptions}
                 currentModel={liveConfig.modelSelection ?? liveConfig.model}
@@ -1078,42 +1173,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 }}
                 onCancel={() => setShowModelPicker(false)}
               />
-            )}
-            {showShortcuts && (
-              <Box
-                flexDirection="column"
-                borderStyle="single"
-                borderColor={theme.subtle}
-                paddingX={1}
-                marginTop={1}
-              >
-                <Text bold color={theme.brand}>
-                  Keyboard Shortcuts
-                </Text>
-                <Box flexDirection="column" marginTop={1}>
-                  <HelpRow
-                    label="Esc"
-                    description="Cancel permission / abort stream"
-                    theme={theme}
-                  />
-                  <HelpRow label="Ctrl+C" description="Cancel current turn" theme={theme} />
-                  <HelpRow label="Ctrl+T" description="Toggle task list" theme={theme} />
-                  <HelpRow label="Ctrl+E" description="Toggle full tool output" theme={theme} />
-                  <HelpRow label="Ctrl+L" description="Redraw screen" theme={theme} />
-                  <HelpRow label="Alt+M" description="Cycle permission mode" theme={theme} />
-                  <HelpRow label="Alt+P" description="Open model picker" theme={theme} />
-                  <HelpRow label="Up/Down" description="Navigate input history" theme={theme} />
-                  <HelpRow
-                    label="Ctrl+J / Shift+Enter"
-                    description="Insert newline (multiline)"
-                    theme={theme}
-                  />
-                  <HelpRow label="Ctrl+/" description="Toggle this reference" theme={theme} />
-                  <HelpRow label="@path" description="Expand file contents" theme={theme} />
-                  <HelpRow label="!cmd" description="Run shell command" theme={theme} />
-                </Box>
-              </Box>
-            )}
+            ) : null}
           </Box>
 
           <WorkingIndicator
