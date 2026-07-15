@@ -2,7 +2,6 @@ import { Text, Box } from 'ink';
 import React, { useMemo } from 'react';
 import { Spinner } from './Spinner.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
-import { PermissionButtons } from './PermissionButtons.js';
 import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { useTheme } from '../theme.js';
@@ -21,7 +20,6 @@ interface AgentMessageProps {
   message: Message;
   isStreaming: boolean;
   pendingPermission?: PendingPermission | null;
-  onResolvePermission?: (result: PermissionResult) => void;
   activeToolCallId?: string | null;
   reducedMotion?: boolean;
   screenReader?: boolean;
@@ -233,7 +231,6 @@ export function AgentMessageInner({
   message,
   isStreaming,
   pendingPermission,
-  onResolvePermission,
   activeToolCallId,
   reducedMotion = false,
   screenReader = false,
@@ -349,13 +346,6 @@ export function AgentMessageInner({
               showAllToolOutput={showAllToolOutput}
               terminalWidth={terminalWidth}
             />
-            {isPending && onResolvePermission ? (
-              <PermissionButtons
-                toolCall={tc}
-                onResolve={onResolvePermission}
-                screenReader={screenReader}
-              />
-            ) : null}
             {childrenByParent.has(tc.id) ? (
               <NestedToolRows
                 childrenByParent={childrenByParent}
@@ -381,10 +371,6 @@ export function AgentMessageInner({
  * Scalar props are compared first (fast path). Message arrays use reference
  * equality because every streaming append/result update replaces its array.
  *
- * `onResolvePermission` is deliberately excluded from the comparison:
- * its identity changes every render (it captures `pendingPermission`), but
- * the important signal — which tool call is pending — is already covered
- * by `pendingPermission?.toolCall?.id`.
  */
 export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
   // Fast path: same references for the most common props.

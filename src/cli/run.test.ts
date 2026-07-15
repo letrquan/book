@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { enterAlternateScreen } from './run.js';
+import { enterInteractiveScreen } from './run.js';
 
 function fakeStdout(isTTY: boolean) {
   const writes: string[] = [];
@@ -14,22 +14,25 @@ function fakeStdout(isTTY: boolean) {
   return { stdout, writes };
 }
 
-describe('enterAlternateScreen', () => {
-  it('writes enter and one restore sequence for TTY output', () => {
+describe('enterInteractiveScreen', () => {
+  it('enters alternate screen and enables SGR mouse reporting for TTY output', () => {
     const { stdout, writes } = fakeStdout(true);
-    const restore = enterAlternateScreen(stdout);
+    const restore = enterInteractiveScreen(stdout);
 
-    expect(writes).toEqual(['\x1b[?1049h']);
+    expect(writes).toEqual(['\x1b[?1049h\x1b[?1000h\x1b[?1006h']);
 
     restore();
     restore();
 
-    expect(writes).toEqual(['\x1b[?1049h', '\x1b[?1049l']);
+    expect(writes).toEqual([
+      '\x1b[?1049h\x1b[?1000h\x1b[?1006h',
+      '\x1b[?1006l\x1b[?1000l\x1b[?1049l',
+    ]);
   });
 
   it('does nothing for non-TTY output', () => {
     const { stdout, writes } = fakeStdout(false);
-    const restore = enterAlternateScreen(stdout);
+    const restore = enterInteractiveScreen(stdout);
 
     restore();
 

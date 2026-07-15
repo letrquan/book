@@ -346,7 +346,7 @@ describe('InputBar @ file mention menu', () => {
     await tick();
 
     view.stdin.write('@src/');
-    await tick(40);
+    await tick(200);
 
     expect(view.lastFrame()).toContain('@src/app.ts');
   });
@@ -362,11 +362,11 @@ describe('InputBar @ file mention menu', () => {
     await tick();
 
     view.stdin.write('@src/');
-    await tick(40);
+    await tick(200);
     view.stdin.write('\t');
     await tick(20);
     view.stdin.write('\r');
-    await tick(40);
+    await tick(200);
 
     expect(submitted[0]).toBe('@src/app.ts ');
     expect(submitted[0]).not.toContain('Contents of src/app.ts:');
@@ -383,15 +383,15 @@ describe('InputBar @ file mention menu', () => {
     await tick();
 
     view.stdin.write('@src/');
-    await tick(40);
+    await tick(200);
     view.stdin.write('\r');
-    await tick(40);
+    await tick(200);
 
     expect(submitted).toEqual([]);
     expect(view.lastFrame()).toContain('@src/app.ts');
 
     view.stdin.write('\r');
-    await tick(40);
+    await tick(200);
 
     expect(submitted).toEqual(['@src/app.ts ']);
   });
@@ -453,6 +453,38 @@ function simulateInputHandler(
 }
 
 describe('keyboard shortcut filtering', () => {
+  it('keeps the editor draft unchanged when an SGR wheel report arrives', async () => {
+    const view = render(inputBar(() => {}));
+    await tick();
+
+    view.stdin.write('draft');
+    await tick(20);
+    view.stdin.write('\x1b[<64;13;20M');
+    await tick(20);
+
+    expect(stripAnsi(view.lastFrame())).toContain('draft');
+    expect(stripAnsi(view.lastFrame())).not.toContain('[<64');
+  });
+
+  it('does not navigate prompt history when an SGR wheel report arrives', async () => {
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value)));
+    await tick();
+
+    view.stdin.write('previous');
+    await tick(20);
+    view.stdin.write('\r');
+    await tick(20);
+    view.stdin.write('current');
+    await tick(20);
+    view.stdin.write('\x1b[<64;13;20M');
+    await tick(20);
+
+    expect(submitted).toEqual(['previous']);
+    expect(stripAnsi(view.lastFrame())).toContain('current');
+    expect(stripAnsi(view.lastFrame())).not.toContain('previous');
+  });
+
   it('restores the editor value after Alt and consumed Ctrl shortcuts', async () => {
     const view = render(
       inputBar(() => {}, {

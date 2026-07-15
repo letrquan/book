@@ -13,9 +13,13 @@ import { resolveSessionBootstrap } from '../session/resolve.js';
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
+const ENABLE_MOUSE_TRACKING = '\x1b[?1000h';
+const ENABLE_SGR_MOUSE = '\x1b[?1006h';
+const DISABLE_SGR_MOUSE = '\x1b[?1006l';
+const DISABLE_MOUSE_TRACKING = '\x1b[?1000l';
 const EXIT_ALT_SCREEN = '\x1b[?1049l';
 
-export function enterAlternateScreen(
+export function enterInteractiveScreen(
   stdout: Pick<NodeJS.WriteStream, 'isTTY' | 'write'> = process.stdout,
 ): () => void {
   if (!stdout.isTTY) return () => {};
@@ -24,11 +28,11 @@ export function enterAlternateScreen(
   const restore = () => {
     if (restored) return;
     restored = true;
-    stdout.write(EXIT_ALT_SCREEN);
+    stdout.write(DISABLE_SGR_MOUSE + DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN);
     process.off('exit', restore);
   };
 
-  stdout.write(ENTER_ALT_SCREEN);
+  stdout.write(ENTER_ALT_SCREEN + ENABLE_MOUSE_TRACKING + ENABLE_SGR_MOUSE);
   process.once('exit', restore);
   return restore;
 }
@@ -131,6 +135,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       app?.clear();
       process.stdout.write('\x1b[H\x1b[2J');
     };
+    const restoreScreen = config.accessibility.screenReader
+      ? () => {}
+      : enterInteractiveScreen(process.stdout);
     try {
       app = render(
         createElement(App, {
@@ -138,11 +145,15 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           redrawViewport,
           session: { ...bootstrap, store: sessionStore },
         }),
-        { exitOnCtrlC: false },
+        {
+          exitOnCtrlC: false,
+          isScreenReaderEnabled: config.accessibility.screenReader,
+        },
       );
       await app.waitUntilExit();
     } finally {
       app?.cleanup();
+      restoreScreen();
     }
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));

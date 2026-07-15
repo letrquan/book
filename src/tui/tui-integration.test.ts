@@ -131,19 +131,23 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
 }
 
 // ANSI escape sequences for common keys.
-const KEYS = {
+const keys = {
   up: '\x1b[A',
   down: '\x1b[B',
   pageUp: '\x1b[5~',
   pageDown: '\x1b[6~',
   home: '\x1b[H',
   end: '\x1b[F',
+  ctrlHome: '\x1b[1;5H',
+  ctrlEnd: '\x1b[1;5F',
   escape: '\x1b',
   ctrlS: '\x13',
   ctrlT: '\x14',
   ctrlL: '\x0c',
   ctrlSlash: '\x1f',
   altM: '\x1bm',
+  wheelUp: '\x1b[<64;60;20M',
+  wheelDown: '\x1b[<65;60;20M',
 };
 
 // ---------------------------------------------------------------------------
@@ -168,20 +172,16 @@ afterEach(async () => {
 describe('TUI slash commands', () => {
   it('/help shows the help panel with slash commands list', async () => {
     session = await startAndWait();
-    // Type char by char to avoid ConPTY batch-delivery races with the
-    // autocomplete menu. The menu intercepts Enter when visible, and batch
-    // delivery can cause state inconsistencies.
-    session.sendKey('/');
-    await sleep(50);
-    session.sendKey('h');
-    await sleep(50);
-    session.sendKey('e');
-    await sleep(50);
-    session.sendKey('l');
-    await sleep(50);
-    session.sendKey('p');
-    await sleep(50);
+    // Enter accepts the selected /help completion; the second Enter submits it.
+    for (const ch of '/help') {
+      session.sendKey(ch);
+      await sleep(50);
+    }
     session.sendKey('\r');
+    await sleep(100);
+    session.sendKey('\r');
+    await sleep(300);
+    session.sendKey(keys.ctrlHome);
     const output = await session.waitFor('Slash Commands', 5000);
     expect(output).toContain('Slash Commands');
     expect(output).toContain('/help');
@@ -272,9 +272,9 @@ describe('TUI keyboard input', () => {
 
   it('Up arrow key does not crash', async () => {
     session = await startAndWait();
-    session.sendKey(KEYS.up);
-    session.sendKey(KEYS.up);
-    session.sendKey(KEYS.up);
+    session.sendKey(keys.up);
+    session.sendKey(keys.up);
+    session.sendKey(keys.up);
     await sleep(500);
     const output = session.read();
     expect(output).toContain('Ask me anything');
@@ -282,8 +282,8 @@ describe('TUI keyboard input', () => {
 
   it('Down arrow key does not crash', async () => {
     session = await startAndWait();
-    session.sendKey(KEYS.down);
-    session.sendKey(KEYS.down);
+    session.sendKey(keys.down);
+    session.sendKey(keys.down);
     await sleep(500);
     const output = session.read();
     expect(output).toContain('Ask me anything');
@@ -291,17 +291,36 @@ describe('TUI keyboard input', () => {
 
   it('PageUp / PageDown keys do not crash', async () => {
     session = await startAndWait();
-    session.sendKey(KEYS.pageUp);
-    session.sendKey(KEYS.pageDown);
+    session.sendKey(keys.pageUp);
+    session.sendKey(keys.pageDown);
     await sleep(500);
     const output = session.read();
     expect(output).toContain('Ask me anything');
   }, 20_000);
 
+  it('wheel events do not enter the prompt', async () => {
+    session = await startAndWait();
+    // ConPTY consumes terminal-mode sequences such as ?1000h and ?1006h
+    // instead of forwarding them through onData, so their exact lifecycle is
+    // covered by run.test.ts. This test verifies the resulting input routing.
+    expect(session.readRaw()).toContain('\x1b[?1049h');
+
+    session.sendKey('MOUSE_DRAFT');
+    await session.waitFor('MOUSE_DRAFT');
+    session.sendKey(keys.wheelUp);
+    session.sendKey(keys.wheelDown);
+    await sleep(500);
+
+    const output = session.read();
+    expect(output).toContain('MOUSE_DRAFT');
+    expect(output).not.toContain('[<64;60;20M');
+    expect(output).not.toContain('[<65;60;20M');
+  }, 20_000);
+
   it('Home / End keys do not crash', async () => {
     session = await startAndWait();
-    session.sendKey(KEYS.home);
-    session.sendKey(KEYS.end);
+    session.sendKey(keys.home);
+    session.sendKey(keys.end);
     await sleep(500);
     const output = session.read();
     expect(output).toContain('Ask me anything');
@@ -309,7 +328,7 @@ describe('TUI keyboard input', () => {
 
   it('Escape key does not crash when not streaming', async () => {
     session = await startAndWait();
-    session.sendKey(KEYS.escape);
+    session.sendKey(keys.escape);
     await sleep(300);
     const output = session.read();
     expect(output).toContain('Ask me anything');
@@ -317,7 +336,7 @@ describe('TUI keyboard input', () => {
 
   it('Ctrl+L redraws without crashing', async () => {
     session = await startAndWait();
-    session.sendKey(KEYS.ctrlL);
+    session.sendKey(keys.ctrlL);
     await sleep(300);
     const output = session.read();
     expect(output).toContain('Ask me anything');
@@ -325,9 +344,9 @@ describe('TUI keyboard input', () => {
 
   it('Alt+M cycles permission mode without crashing', async () => {
     session = await startAndWait();
-    session.sendKey(KEYS.altM);
+    session.sendKey(keys.altM);
     await sleep(300);
-    session.sendKey(KEYS.altM);
+    session.sendKey(keys.altM);
     await sleep(300);
     const output = session.read();
     expect(output).toContain('Ask me anything');
@@ -339,7 +358,7 @@ describe('TUI keyboard input', () => {
     'Ctrl+/ shows keyboard shortcuts reference',
     async () => {
       session = await startAndWait();
-      session.sendKey(KEYS.ctrlSlash);
+      session.sendKey(keys.ctrlSlash);
       await sleep(500);
       const output = session.read();
       expect(output).toContain('Keyboard Shortcuts');

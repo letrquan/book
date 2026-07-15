@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { SPINNER_TIPS } from './Spinner.js';
 
 describe('Spinner tips', () => {
-  it('does not advertise unsupported application scrolling keys', () => {
+  it('advertises supported transcript scrolling keys', () => {
     const tips = SPINNER_TIPS.join('\n');
-    expect(tips).not.toMatch(/PgUp|PgDn|End to jump/);
-    expect(tips).toContain('terminal scrollback');
+    expect(tips).toContain('PageUp/PageDown');
+    expect(tips).not.toContain('terminal scrollback');
   });
 });

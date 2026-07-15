@@ -1,40 +1,101 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFile as readTextFile, writeFile as writeTextFile } from 'fs/promises';
 import fg from 'fast-glob';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
-import { renderDiffWithStats } from './diff.js';
+import { throwIfAborted, yieldToEventLoop } from '../async.js';
+import { renderDiffWithStatsAsync } from './diff.js';
 import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
 
 const GLOB_OUTPUT_LIMIT = 1000;
+const PATH_YIELD_INTERVAL = 128;
+const LINE_YIELD_INTERVAL = 2_048;
+
+function isMissingFile(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+}
+
+async function countOccurrences(
+  source: string,
+  needle: string,
+  signal?: AbortSignal,
+): Promise<number> {
+  if (needle.length === 0) return 0;
+
+  let count = 0;
+  let index = source.indexOf(needle);
+  while (index !== -1) {
+    count++;
+    index = source.indexOf(needle, index + needle.length);
+    if (count % LINE_YIELD_INTERVAL === 0) await yieldToEventLoop(signal);
+  }
+  return count;
+}
 
 async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath } = resolved;
-  if (!existsSync(filePath)) {
+  const offset = (args.offset as number) || 1;
+  const limit = (args.limit as number) || 2000;
+
+  let content: string;
+  try {
+    content = await readTextFile(filePath, 'utf-8');
+  } catch (error) {
     return {
       toolCallId: '',
       success: false,
       output: '',
-      error: `File not found: ${args.filePath}`,
+      error: isMissingFile(error)
+        ? `File not found: ${args.filePath}`
+        : `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
-  const offset = (args.offset as number) || 1;
-  const limit = (args.limit as number) || 2000;
-  const lines = readFileSync(filePath, 'utf-8').split('\n');
-  const slice = lines.slice(offset - 1, offset - 1 + limit);
-  const result = slice.map((l, i) => `${offset + i}: ${l}`).join('\n');
-  return { toolCallId: '', success: true, output: result };
+
+  throwIfAborted(ctx.signal);
+  const lines = content.split('\n');
+  const end = Math.min(lines.length, offset - 1 + limit);
+  const output: string[] = [];
+  for (let index = offset - 1; index < end; index++) {
+    output.push(`${index + 1}: ${lines[index]}`);
+    if ((index - offset + 2) % LINE_YIELD_INTERVAL === 0) await yieldToEventLoop(ctx.signal);
+  }
+  return { toolCallId: '', success: true, output: output.join('\n') };
 }
 
 async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath, relativePath } = resolved;
-  const existed = existsSync(filePath);
-  const oldContent = existed ? readFileSync(filePath, 'utf-8') : '';
+  let existed = true;
+  let oldContent = '';
+  try {
+    oldContent = await readTextFile(filePath, 'utf-8');
+  } catch (error) {
+    if (isMissingFile(error)) {
+      existed = false;
+    } else {
+      return {
+        toolCallId: '',
+        success: false,
+        output: '',
+        error: `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
   const newContent = args.content as string;
-  writeFileSync(filePath, newContent, 'utf-8');
-  const { diff, stats } = renderDiffWithStats(oldContent, newContent);
+  const { diff, stats } = await renderDiffWithStatsAsync(oldContent, newContent, 3, ctx.signal);
+  throwIfAborted(ctx.signal);
+  try {
+    await writeTextFile(filePath, newContent, 'utf-8');
+  } catch (error) {
+    return {
+      toolCallId: '',
+      success: false,
+      output: '',
+      error: `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   return {
     toolCallId: '',
     success: true,
@@ -53,15 +114,21 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath, relativePath } = resolved;
-  if (!existsSync(filePath)) {
+
+  let content: string;
+  try {
+    content = await readTextFile(filePath, 'utf-8');
+  } catch (error) {
     return {
       toolCallId: '',
       success: false,
       output: '',
-      error: `File not found: ${args.filePath}`,
+      error: isMissingFile(error)
+        ? `File not found: ${args.filePath}`
+        : `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
-  const content = readFileSync(filePath, 'utf-8');
+
   const oldStr = args.oldString as string;
   const newStr = args.newString as string;
   const replaceAll = (args.replaceAll as boolean) ?? false;
@@ -75,19 +142,7 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
     };
   }
 
-  // Count non-overlapping occurrences.
-  const countOccurrences = (src: string, needle: string): number => {
-    if (needle.length === 0) return 0;
-    let count = 0;
-    let idx = src.indexOf(needle);
-    while (idx !== -1) {
-      count++;
-      idx = src.indexOf(needle, idx + needle.length);
-    }
-    return count;
-  };
-  const occurrences = countOccurrences(content, oldStr);
-
+  const occurrences = await countOccurrences(content, oldStr, ctx.signal);
   if (occurrences > 1 && !replaceAll) {
     return {
       toolCallId: '',
@@ -100,8 +155,18 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   const newContent = replaceAll
     ? content.split(oldStr).join(newStr)
     : content.replace(oldStr, newStr);
-  writeFileSync(filePath, newContent, 'utf-8');
-  const { diff, stats } = renderDiffWithStats(content, newContent);
+  const { diff, stats } = await renderDiffWithStatsAsync(content, newContent, 3, ctx.signal);
+  throwIfAborted(ctx.signal);
+  try {
+    await writeTextFile(filePath, newContent, 'utf-8');
+  } catch (error) {
+    return {
+      toolCallId: '',
+      success: false,
+      output: '',
+      error: `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   return {
     toolCallId: '',
     success: true,
@@ -119,14 +184,6 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath, relativePath } = resolved;
-  if (!existsSync(filePath)) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `File not found: ${args.filePath}`,
-    };
-  }
   const edits =
     (args.edits as Array<{
       oldString: string;
@@ -142,12 +199,24 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
     };
   }
 
-  let content = readFileSync(filePath, 'utf-8');
+  let content: string;
+  try {
+    content = await readTextFile(filePath, 'utf-8');
+  } catch (error) {
+    return {
+      toolCallId: '',
+      success: false,
+      output: '',
+      error: isMissingFile(error)
+        ? `File not found: ${args.filePath}`
+        : `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   const original = content;
 
   for (let i = 0; i < edits.length; i++) {
-    const e = edits[i];
-    if (!content.includes(e.oldString)) {
+    const edit = edits[i];
+    if (!content.includes(edit.oldString)) {
       return {
         toolCallId: '',
         success: false,
@@ -155,25 +224,35 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
         error: `Edit ${i + 1}: oldString not found (no changes applied — MultiEdit is atomic)`,
       };
     }
-    if (e.replaceAll) {
-      content = content.split(e.oldString).join(e.newString);
+    if (edit.replaceAll) {
+      content = content.split(edit.oldString).join(edit.newString);
     } else {
-      // Reject ambiguous single edits within MultiEdit too.
-      const occ = e.oldString.length === 0 ? 0 : content.split(e.oldString).length - 1;
-      if (occ > 1) {
+      const occurrences = await countOccurrences(content, edit.oldString, ctx.signal);
+      if (occurrences > 1) {
         return {
           toolCallId: '',
           success: false,
           output: '',
-          error: `Edit ${i + 1}: oldString matches ${occ} times; set replaceAll: true or be more specific (no changes applied — MultiEdit is atomic)`,
+          error: `Edit ${i + 1}: oldString matches ${occurrences} times; set replaceAll: true or be more specific (no changes applied — MultiEdit is atomic)`,
         };
       }
-      content = content.replace(e.oldString, e.newString);
+      content = content.replace(edit.oldString, edit.newString);
     }
+    await yieldToEventLoop(ctx.signal);
   }
 
-  writeFileSync(filePath, content, 'utf-8');
-  const { diff, stats } = renderDiffWithStats(original, content);
+  const { diff, stats } = await renderDiffWithStatsAsync(original, content, 3, ctx.signal);
+  throwIfAborted(ctx.signal);
+  try {
+    await writeTextFile(filePath, content, 'utf-8');
+  } catch (error) {
+    return {
+      toolCallId: '',
+      success: false,
+      output: '',
+      error: `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   return {
     toolCallId: '',
     success: true,
@@ -195,20 +274,22 @@ async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
     ignore: ctx.gitignorePatterns ?? [],
   });
 
+  throwIfAborted(ctx.signal);
   const seen = new Set<string>();
   const output: string[] = [];
   let truncated = false;
 
-  for (const file of files) {
-    const resolved = resolveWorkspacePath(ctx.workspaceRoot, file);
-    if (!resolved || seen.has(resolved.relativePath)) continue;
-
-    seen.add(resolved.relativePath);
-    if (output.length >= GLOB_OUTPUT_LIMIT) {
-      truncated = true;
-      break;
+  for (let index = 0; index < files.length; index++) {
+    const resolved = resolveWorkspacePath(ctx.workspaceRoot, files[index]);
+    if (resolved && !seen.has(resolved.relativePath)) {
+      seen.add(resolved.relativePath);
+      if (output.length >= GLOB_OUTPUT_LIMIT) {
+        truncated = true;
+        break;
+      }
+      output.push(resolved.relativePath);
     }
-    output.push(resolved.relativePath);
+    if (index > 0 && index % PATH_YIELD_INTERVAL === 0) await yieldToEventLoop(ctx.signal);
   }
 
   if (output.length === 0) {
@@ -217,6 +298,16 @@ async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
 
   const suffix = truncated ? `\n... (truncated at ${GLOB_OUTPUT_LIMIT} files; refine pattern)` : '';
   return { toolCallId: '', success: true, output: output.join('\n') + suffix };
+}
+
+interface GrepMatch {
+  line: number;
+  text: string;
+}
+
+interface GrepFileMatches {
+  matches: GrepMatch[];
+  lines?: string[];
 }
 
 async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
@@ -228,25 +319,9 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
   const multiline = (args.multiline as boolean) ?? false;
   const headLimit = (args.head_limit as number) ?? 500;
 
-  const files = await fg(includePattern, {
-    cwd: ctx.workspaceRoot,
-    dot: true,
-    ignore: ctx.gitignorePatterns ?? [],
-  });
-  const inWorkspaceFiles: Array<{ file: string; filePath: string }> = [];
-  const seenFiles = new Set<string>();
-
-  for (const file of files) {
-    const resolved = resolveWorkspacePath(ctx.workspaceRoot, file);
-    if (!resolved || seenFiles.has(resolved.relativePath)) continue;
-    seenFiles.add(resolved.relativePath);
-    inWorkspaceFiles.push({ file: resolved.relativePath, filePath: resolved.filePath });
-  }
-
-  const flags = multiline ? 'gm' : 'g';
   let regex: RegExp;
   try {
-    regex = new RegExp(pattern, flags);
+    regex = new RegExp(pattern, multiline ? 'gms' : 'g');
   } catch {
     return {
       toolCallId: '',
@@ -256,46 +331,89 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
     };
   }
 
-  const matchesByFile = new Map<string, Array<{ line: number; text: string }>>();
+  const files = await fg(includePattern, {
+    cwd: ctx.workspaceRoot,
+    dot: true,
+    ignore: ctx.gitignorePatterns ?? [],
+  });
+  throwIfAborted(ctx.signal);
+
+  const inWorkspaceFiles: Array<{ file: string; filePath: string }> = [];
+  const seenFiles = new Set<string>();
+  for (let index = 0; index < files.length; index++) {
+    const resolved = resolveWorkspacePath(ctx.workspaceRoot, files[index]);
+    if (resolved && !seenFiles.has(resolved.relativePath)) {
+      seenFiles.add(resolved.relativePath);
+      inWorkspaceFiles.push({ file: resolved.relativePath, filePath: resolved.filePath });
+    }
+    if (index > 0 && index % PATH_YIELD_INTERVAL === 0) await yieldToEventLoop(ctx.signal);
+  }
+
+  const matchesByFile = new Map<string, GrepFileMatches>();
   let totalMatches = 0;
 
-  for (const { file, filePath } of inWorkspaceFiles) {
+  for (let fileIndex = 0; fileIndex < inWorkspaceFiles.length; fileIndex++) {
     if (totalMatches >= headLimit) break;
+    const { file, filePath } = inWorkspaceFiles[fileIndex];
     let content: string;
     try {
-      content = readFileSync(filePath, 'utf-8');
+      content = await readTextFile(filePath, 'utf-8');
     } catch {
       continue;
     }
+    throwIfAborted(ctx.signal);
+
     const lines = content.split('\n');
-    const fileMatches: Array<{ line: number; text: string }> = [];
+    const matches: GrepMatch[] = [];
 
     if (multiline) {
-      // Scan the whole text for span matches; record the start line of each.
-      let m: RegExpExecArray | null;
-      const re = new RegExp(pattern, 'gm');
-      while ((m = re.exec(content)) !== null) {
-        const startLine = content.slice(0, m.index).split('\n').length;
-        fileMatches.push({ line: startLine, text: m[0].replace(/\n/g, '\\n') });
+      regex.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      let line = 1;
+      let countedUntil = 0;
+      let iterations = 0;
+      while ((match = regex.exec(content)) !== null) {
+        for (let index = countedUntil; index < match.index; index++) {
+          if (content.charCodeAt(index) === 10) line++;
+          if (index > countedUntil && index % LINE_YIELD_INTERVAL === 0) {
+            await yieldToEventLoop(ctx.signal);
+          }
+        }
+        countedUntil = match.index;
+        matches.push({ line, text: match[0].replace(/\n/g, '\\n') });
         totalMatches++;
+        iterations++;
         if (totalMatches >= headLimit) break;
-        if (m.index === re.lastIndex) re.lastIndex++;
+        if (match.index === regex.lastIndex) regex.lastIndex++;
+        if (iterations % PATH_YIELD_INTERVAL === 0) await yieldToEventLoop(ctx.signal);
       }
     } else {
-      for (let i = 0; i < lines.length; i++) {
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         regex.lastIndex = 0;
-        if (regex.test(lines[i])) {
-          fileMatches.push({ line: i + 1, text: lines[i] });
+        if (regex.test(lines[lineIndex])) {
+          matches.push({ line: lineIndex + 1, text: lines[lineIndex] });
           totalMatches++;
           if (totalMatches >= headLimit) break;
         }
+        if (lineIndex > 0 && lineIndex % LINE_YIELD_INTERVAL === 0) {
+          await yieldToEventLoop(ctx.signal);
+        }
       }
     }
-    if (fileMatches.length > 0) matchesByFile.set(file, fileMatches);
+
+    if (matches.length > 0) {
+      matchesByFile.set(file, {
+        matches,
+        lines: outputMode === 'content' ? lines : undefined,
+      });
+    }
+    await yieldToEventLoop(ctx.signal);
   }
 
   if (outputMode === 'count') {
-    const lines = Array.from(matchesByFile.entries()).map(([f, ms]) => `${f}:${ms.length}`);
+    const lines = Array.from(matchesByFile.entries()).map(
+      ([file, result]) => `${file}:${result.matches.length}`,
+    );
     return {
       toolCallId: '',
       success: true,
@@ -304,41 +422,35 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
   }
 
   if (outputMode === 'files_with_matches') {
-    const files2 = Array.from(matchesByFile.keys());
+    const matchedFiles = Array.from(matchesByFile.keys());
     return {
       toolCallId: '',
       success: true,
-      output: files2.join('\n') || 'No matches found',
+      output: matchedFiles.join('\n') || 'No matches found',
     };
   }
 
-  // content mode
-  const out: string[] = [];
-  for (const [file, ms] of matchesByFile) {
-    for (const match of ms) {
-      // Read context lines lazily; cheap for small context values.
-      const lines = (() => {
-        const resolved = resolveWorkspacePath(ctx.workspaceRoot, file);
-        if (!resolved) return [];
-        try {
-          return readFileSync(resolved.filePath, 'utf-8').split('\n');
-        } catch {
-          return [];
-        }
-      })();
+  const output: string[] = [];
+  for (const [file, result] of matchesByFile) {
+    const lines = result.lines ?? [];
+    for (const match of result.matches) {
       const start = Math.max(1, match.line - contextBefore);
       const end = Math.min(lines.length, match.line + contextAfter);
-      for (let ln = start; ln <= end; ln++) {
-        const text = lines[ln - 1] ?? '';
-        const marker = ln === match.line ? ':' : '-';
-        out.push(`${file}:${ln}${marker} ${text}`);
+      for (let line = start; line <= end; line++) {
+        const text = lines[line - 1] ?? '';
+        const marker = line === match.line ? ':' : '-';
+        output.push(`${file}:${line}${marker} ${text}`);
+        if (output.length >= headLimit) break;
       }
+      if (output.length >= headLimit) break;
     }
+    if (output.length >= headLimit) break;
+    await yieldToEventLoop(ctx.signal);
   }
   return {
     toolCallId: '',
     success: true,
-    output: out.slice(0, headLimit).join('\n') || 'No matches found',
+    output: output.join('\n') || 'No matches found',
   };
 }
 

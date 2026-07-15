@@ -70,6 +70,25 @@ describe('read_file', () => {
       rmSync(outsidePath, { force: true });
     }
   });
+
+  it('yields while formatting large reads', async () => {
+    writeFileSync(
+      join(dir, 'large.txt'),
+      Array.from({ length: 5_000 }, (_, index) => `line ${index}`).join('\n'),
+    );
+    let timerFired = false;
+    const timer = setTimeout(() => {
+      timerFired = true;
+    }, 0);
+
+    try {
+      const result = await read.execute({ filePath: 'large.txt', limit: 5_000 }, ctx);
+      expect(result.success).toBe(true);
+      expect(timerFired).toBe(true);
+    } finally {
+      clearTimeout(timer);
+    }
+  });
 });
 
 describe('write_file', () => {
@@ -137,6 +156,22 @@ describe('write_file', () => {
       addedLines: 2,
       removedLines: 1,
     });
+  });
+
+  it('does not write when cancellation arrives during a large diff', async () => {
+    const path = join(dir, 'large.txt');
+    const before = Array.from({ length: 500 }, (_, index) => `old ${index}`).join('\n');
+    const after = Array.from({ length: 500 }, (_, index) => `new ${index}`).join('\n');
+    writeFileSync(path, before);
+    const controller = new AbortController();
+    const pending = write.execute(
+      { filePath: 'large.txt', content: after },
+      { ...ctx, signal: controller.signal },
+    );
+    setTimeout(() => controller.abort(new Error('write cancelled')), 0);
+
+    await expect(pending).rejects.toThrow('write cancelled');
+    expect(readFileSync(path, 'utf-8')).toBe(before);
   });
 
   it('rejects writes outside the workspace', async () => {
@@ -251,5 +286,63 @@ describe('grep', () => {
     const r = await grep.execute({ pattern: 'zzzzz', include: '*.ts' }, ctx);
     expect(r.success).toBe(true);
     expect(r.output).toMatch(/No matches/);
+  });
+
+  it('preserves count, files-only, context, multiline, and limit behavior', async () => {
+    writeFileSync(join(dir, 'a.ts'), 'before\nconst first = 1;\nafter\nconst second = 2;');
+    writeFileSync(join(dir, 'b.ts'), 'const third = 3;');
+
+    const count = await grep.execute(
+      { pattern: 'const', include: '*.ts', output_mode: 'count' },
+      ctx,
+    );
+    expect(count.output).toContain('a.ts:2');
+    expect(count.output).toContain('b.ts:1');
+
+    const files = await grep.execute(
+      { pattern: 'second', include: '*.ts', output_mode: 'files_with_matches' },
+      ctx,
+    );
+    expect(files.output).toBe('a.ts');
+
+    const context = await grep.execute({ pattern: 'first', include: '*.ts', A: 1, B: 1 }, ctx);
+    expect(context.output).toContain('a.ts:1- before');
+    expect(context.output).toContain('a.ts:2: const first = 1;');
+    expect(context.output).toContain('a.ts:3- after');
+
+    const multiline = await grep.execute(
+      { pattern: 'before\\nconst', include: '*.ts', multiline: true },
+      ctx,
+    );
+    expect(multiline.output).toContain('a.ts:1: before');
+
+    const limited = await grep.execute({ pattern: 'const', include: '*.ts', head_limit: 1 }, ctx);
+    expect(limited.output?.split('\n')).toHaveLength(1);
+  });
+
+  it('keeps timers responsive and observes abort during a broad scan', async () => {
+    for (let index = 0; index < 160; index++) {
+      writeFileSync(join(dir, `file-${index}.txt`), 'no match here\n'.repeat(10));
+    }
+
+    let timerFired = false;
+    const timer = setTimeout(() => {
+      timerFired = true;
+    }, 0);
+    try {
+      const result = await grep.execute({ pattern: 'missing-token', include: '*.txt' }, ctx);
+      expect(result.success).toBe(true);
+      expect(timerFired).toBe(true);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const controller = new AbortController();
+    const pending = grep.execute(
+      { pattern: 'missing-token', include: '*.txt' },
+      { ...ctx, signal: controller.signal },
+    );
+    setTimeout(() => controller.abort(new Error('grep cancelled')), 0);
+    await expect(pending).rejects.toThrow('grep cancelled');
   });
 });

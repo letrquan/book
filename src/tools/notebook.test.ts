@@ -313,6 +313,25 @@ describe('NotebookEdit', () => {
     expect(readFileSync(path, 'utf-8')).toBe(before);
   });
 
+  it('yields and honors cancellation before writing a large notebook', async () => {
+    const cells = Array.from({ length: 300 }, (_, index) => codeCell(`cell-${index}`));
+    const path = writeNotebook(notebook(cells));
+    const before = readFileSync(path, 'utf-8');
+    const controller = new AbortController();
+    const pending = edit.execute(
+      {
+        notebook_path: 'test.ipynb',
+        cell_id: 'cell-150',
+        new_source: 'updated',
+      },
+      { ...ctx, signal: controller.signal },
+    );
+    setTimeout(() => controller.abort(new Error('notebook cancelled')), 0);
+
+    await expect(pending).rejects.toThrow('notebook cancelled');
+    expect(readFileSync(path, 'utf-8')).toBe(before);
+  });
+
   it('rejects duplicate target ids without writing', async () => {
     const path = writeNotebook(notebook([codeCell('duplicate'), markdownCell('duplicate')]));
     const before = readFileSync(path, 'utf-8');

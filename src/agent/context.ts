@@ -69,14 +69,18 @@ function isInGitWorktree(workspace: string): boolean {
   }
 }
 
-function gitContext(workspace: string): string {
+async function gitContext(workspace: string, signal?: AbortSignal): Promise<string> {
   if (!isInGitWorktree(workspace)) return '';
 
-  const ctx: ToolContext = { workspaceRoot: workspace, env: process.env as Record<string, string> };
-  const branch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], ctx);
+  const ctx: ToolContext = {
+    workspaceRoot: workspace,
+    env: process.env as Record<string, string>,
+    signal,
+  };
+  const branch = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], ctx);
   if (!branch.success) return '';
 
-  const status = runGit(['status', '--short'], ctx);
+  const status = await runGit(['status', '--short'], ctx);
   const branchName = branch.output.trim();
   if (!status.success) return `branch ${branchName}`;
 
@@ -135,16 +139,17 @@ function todoSection(
   ].join('\n');
 }
 
-export function buildSystemPromptZones(
+export async function buildSystemPromptZones(
   config: AgentConfig,
   todos: Array<{ content: string; status: string; activeForm?: string }>,
   commands?: SlashCommand[],
   tools: ToolDefinition[] = [],
-): SystemPromptZones {
+  signal?: AbortSignal,
+): Promise<SystemPromptZones> {
   const skills = discoverSkills(config.workspace);
   const cmdList = mergeCommands(commands ?? discoverCommands(config.workspace));
   const claudeMd = renderClaudeMd(discoverClaudeMd(config.workspace));
-  const git = gitContext(config.workspace);
+  const git = await gitContext(config.workspace, signal);
 
   const staticSections = [
     `You are Book, an AI coding agent. You help users write, fix, and understand code.`,
@@ -174,28 +179,30 @@ export function buildSystemPromptZones(
   };
 }
 
-export function buildSystemPrompt(
+export async function buildSystemPrompt(
   config: AgentConfig,
   todos: Array<{ content: string; status: string; activeForm?: string }>,
   commands?: SlashCommand[],
   tools: ToolDefinition[] = [],
-): string {
-  const zones = buildSystemPromptZones(config, todos, commands, tools);
+  signal?: AbortSignal,
+): Promise<string> {
+  const zones = await buildSystemPromptZones(config, todos, commands, tools, signal);
   return [zones.cachedPrefix, zones.dynamicSuffix].filter(Boolean).join('\n\n');
 }
 
-export function buildMessages(
+export async function buildMessages(
   config: AgentConfig,
   history: Message[],
   tools: ToolDefinition[],
   todos?: Array<{ content: string; status: string; activeForm?: string }>,
   commands?: SlashCommand[],
-): ProviderMessage[] {
+  signal?: AbortSignal,
+): Promise<ProviderMessage[]> {
   const messages: ProviderMessage[] = [];
 
   messages.push({
     role: 'system',
-    content: buildSystemPromptZones(config, todos ?? [], commands, tools),
+    content: await buildSystemPromptZones(config, todos ?? [], commands, tools, signal),
   });
 
   for (const msg of history) {

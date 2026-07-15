@@ -19,7 +19,7 @@ export const SPINNER_TIPS = [
   'Type /task <subject> to add a task',
   'The model can use multiple tools per turn',
   'Use /new to start fresh; /resume returns to saved conversations',
-  'Use your terminal scrollback to review earlier messages',
+  'Use PageUp/PageDown to review earlier messages',
   'Tab to accept suggestions in the input bar',
   'Up/Down arrows for input history',
   'Ctrl+L to redraw the screen',

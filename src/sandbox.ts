@@ -1,5 +1,6 @@
+import { accessSync, constants, existsSync, statSync } from 'fs';
+import { delimiter, join } from 'path';
 import { platform } from 'os';
-import { execSync } from 'child_process';
 import type { ResolvedSettings } from './settings.js';
 
 export interface Sandbox {
@@ -14,27 +15,27 @@ export interface Sandbox {
  * Try to detect bubblewrap (bwrap) on the system PATH.
  * Returns the bwrap binary path or null if not found.
  */
-function detectBwrap(): string | null {
+function isExecutableFile(path: string): boolean {
   try {
-    const out = execSync('which bwrap 2>/dev/null || command -v bwrap 2>/dev/null || echo ""', {
-      encoding: 'utf-8',
-      timeout: 2000,
-    }).trim();
-    if (out) return out;
-    // Try absolute path on macOS (Homebrew).
-    const altPaths = ['/usr/local/bin/bwrap', '/opt/homebrew/bin/bwrap', '/usr/bin/bwrap'];
-    for (const p of altPaths) {
-      try {
-        execSync(`test -x "${p}"`, { timeout: 1000, stdio: 'ignore' });
-        return p;
-      } catch {
-        // not found
-      }
-    }
-    return null;
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, constants.X_OK);
+    return true;
   } catch {
-    return null;
+    return false;
   }
+}
+
+function detectBwrap(): string | null {
+  const candidates = [
+    ...(process.env.PATH ?? '')
+      .split(delimiter)
+      .filter(Boolean)
+      .map((dir) => join(dir, 'bwrap')),
+    '/usr/local/bin/bwrap',
+    '/opt/homebrew/bin/bwrap',
+    '/usr/bin/bwrap',
+  ];
+  return candidates.find(isExecutableFile) ?? null;
 }
 
 /**
@@ -66,13 +67,8 @@ function buildBwrapCmd(
 
   // Minimal system directories read-only.
   const roDirs = ['/usr', '/lib', '/lib64', '/bin', '/sbin', '/etc', '/opt'];
-  for (const d of roDirs) {
-    try {
-      execSync(`test -d "${d}"`, { timeout: 1000, stdio: 'ignore' });
-      parts.push('--ro-bind', d, d);
-    } catch {
-      // directory doesn't exist — skip
-    }
+  for (const dir of roDirs) {
+    if (existsSync(dir)) parts.push('--ro-bind', dir, dir);
   }
 
   // Apply filesystem restrictions from settings.

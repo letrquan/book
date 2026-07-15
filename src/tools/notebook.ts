@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { readFile, writeFile } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { extname } from 'path';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types.js';
-import { renderDiffWithStats } from './diff.js';
+import { throwIfAborted, yieldToEventLoop } from '../async.js';
+import { renderDiffWithStatsAsync } from './diff.js';
 import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
 
 type CellType = 'code' | 'markdown';
@@ -180,20 +181,24 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, notebookPath);
   if (!resolved) return pathOutsideWorkspaceResult(notebookPath);
   const { filePath, relativePath } = resolved;
-  if (!existsSync(filePath)) return fail(`Notebook not found: ${notebookPath}`);
 
   let original: string;
   try {
-    original = readFileSync(filePath, 'utf-8');
+    original = await readFile(filePath, 'utf-8');
   } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+      return fail(`Notebook not found: ${notebookPath}`);
+    }
     return fail(
       `Failed to read notebook: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  throwIfAborted(ctx.signal);
 
   const parsed = parseNotebook(original);
   if ('result' in parsed) return parsed.result;
   const { notebook } = parsed;
+  await yieldToEventLoop(ctx.signal);
 
   if (mode === 'replace') {
     const target = findTargetIndex(notebook.cells, cellId as string);
@@ -223,9 +228,10 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   }
 
   const updated = serializeNotebook(notebook, detectJsonStyle(original));
-  const { diff, stats } = renderDiffWithStats(original, updated);
+  const { diff, stats } = await renderDiffWithStatsAsync(original, updated, 3, ctx.signal);
+  throwIfAborted(ctx.signal);
   try {
-    writeFileSync(filePath, updated, 'utf-8');
+    await writeFile(filePath, updated, 'utf-8');
   } catch (error) {
     return fail(
       `Failed to write notebook: ${error instanceof Error ? error.message : String(error)}`,

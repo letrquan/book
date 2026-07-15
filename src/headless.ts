@@ -202,7 +202,12 @@ export async function runHeadless(
   // Prompt suggestions: ask model for follow-up prompts.
   if (opts.promptSuggestions && opts.outputFormat === 'stream-json') {
     try {
-      const suggestions = await generatePromptSuggestions(config, registry, newHistory);
+      const suggestions = await generatePromptSuggestions(
+        config,
+        registry,
+        newHistory,
+        opts.signal,
+      );
       if (suggestions.length > 0) {
         emit({ type: 'prompt_suggestions', suggestions });
       }
@@ -259,13 +264,14 @@ function lastAssistantText(history: Message[]): string {
 
 async function generatePromptSuggestions(
   config: AgentConfig,
-  registry: ToolRegistry,
+  _registry: ToolRegistry,
   history: Message[],
+  signal?: AbortSignal,
 ): Promise<string[]> {
   const { chatCompletionStream } = await import('./provider/openai-compatible.js');
   const { buildMessages } = await import('./agent/context.js');
 
-  const suggestionMessages = buildMessages(
+  const suggestionMessages = await buildMessages(
     config,
     [
       ...history,
@@ -278,9 +284,12 @@ async function generatePromptSuggestions(
       },
     ],
     [],
+    undefined,
+    undefined,
+    signal,
   );
 
-  const stream = chatCompletionStream(config, suggestionMessages, [], {});
+  const stream = chatCompletionStream(config, suggestionMessages, [], { signal });
   let content = '';
   for await (const event of stream) {
     if (event.type === 'text' && event.content) {

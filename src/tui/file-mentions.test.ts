@@ -60,7 +60,7 @@ describe('file mention helpers', () => {
     expect(resolveWorkspaceMentionPath(ws, './src/app.ts')?.relativePath).toBe('src/app.ts');
   });
 
-  it('returns gitignore-aware file candidates', () => {
+  it('returns gitignore-aware file candidates', async () => {
     const ws = workspace();
     mkdirSync(join(ws, 'src'));
     mkdirSync(join(ws, 'dist'));
@@ -68,9 +68,36 @@ describe('file mention helpers', () => {
     writeFileSync(join(ws, 'src', 'app.ts'), 'app');
     writeFileSync(join(ws, 'dist', 'app.js'), 'ignored');
 
-    const candidates = getFileMentionCandidates(ws, 'app');
+    const candidates = await getFileMentionCandidates(ws, 'app');
 
     expect(candidates.map((c) => c.path)).toContain('src/app.ts');
     expect(candidates.map((c) => c.path)).not.toContain('dist/app.js');
+  });
+
+  it('returns metadata asynchronously and honors cancellation', async () => {
+    const ws = workspace();
+    mkdirSync(join(ws, 'src'));
+    for (let index = 0; index < 300; index++) {
+      writeFileSync(join(ws, 'src', `file-${index}.ts`), String(index));
+    }
+
+    let timerFired = false;
+    const timer = setTimeout(() => {
+      timerFired = true;
+    }, 0);
+    try {
+      const candidates = await getFileMentionCandidates(ws, 'file', 10);
+      expect(timerFired).toBe(true);
+      expect(candidates).toHaveLength(10);
+      expect(candidates[0]).toMatchObject({ kind: 'file', desc: expect.stringMatching(/bytes/) });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const controller = new AbortController();
+    controller.abort(new Error('mention cancelled'));
+    await expect(getFileMentionCandidates(ws, 'file', 50, controller.signal)).rejects.toThrow(
+      'mention cancelled',
+    );
   });
 });

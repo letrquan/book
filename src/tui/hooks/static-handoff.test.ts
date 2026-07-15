@@ -1,113 +1,60 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../../types.js';
 import {
-  advanceStaticHandoff,
-  assertDisjointZones,
-  createStaticHandoffState,
   isBlankAssistantContent,
   mergeAssistantMessages,
-  partitionMessageZones,
-  syncStaticHandoff,
-} from './static-handoff.js';
+} from '../components/transcript-messages.js';
 
-function msg(id: string, role: 'user' | 'assistant', content: string): Message {
-  return { id, role, content, timestamp: 1 };
-}
+const message = (id: string, role: Message['role'], content: string): Message => ({
+  id,
+  role,
+  content,
+  timestamp: 1,
+});
 
-describe('static-handoff pure helpers', () => {
-  it('treats whitespace-only assistant text as empty', () => {
-    expect(isBlankAssistantContent('')).toBe(true);
-    expect(isBlankAssistantContent('   \n\t  ')).toBe(true);
-    expect(isBlankAssistantContent('hello')).toBe(false);
+describe('transcript display messages', () => {
+  it('treats whitespace-only assistant content as blank', () => {
+    expect(isBlankAssistantContent(' \n\t')).toBe(true);
+    expect(isBlankAssistantContent('text')).toBe(false);
   });
 
-  it('merges whitespace-only tool-only assistant turns into the prior message', () => {
+  it('merges completed tool-only assistant messages in order', () => {
     const messages: Message[] = [
-      msg('a1', 'assistant', 'I will inspect.'),
+      message('a1', 'assistant', 'working'),
       {
-        ...msg('a2', 'assistant', '  \n'),
-        toolCalls: [{ id: 'c1', name: 'Read', arguments: { filePath: 'a.ts' } }],
-        toolResults: [{ toolCallId: 'c1', success: true, output: 'ok' }],
+        ...message('a2', 'assistant', ''),
+        toolCalls: [{ id: 'call-1', name: 'Read', arguments: {} }],
+      },
+      {
+        ...message('a3', 'assistant', ' '),
+        toolCalls: [{ id: 'call-2', name: 'Grep', arguments: {} }],
       },
     ];
+
     const merged = mergeAssistantMessages(messages);
     expect(merged).toHaveLength(1);
-    expect(merged[0].id).toBe('a1');
-    expect(merged[0].toolCalls).toHaveLength(1);
-    expect(merged[0].toolResults).toHaveLength(1);
+    expect(merged[0].toolCalls?.map((call) => call.id)).toEqual(['call-1', 'call-2']);
+    expect(messages[0].toolCalls).toBeUndefined();
   });
 
-  it('does not merge streaming or withheld ids during display merge', () => {
+  it('keeps the active streaming message separate', () => {
     const messages: Message[] = [
-      msg('a1', 'assistant', 'base'),
+      message('a1', 'assistant', 'working'),
       {
-        ...msg('a2', 'assistant', ''),
-        toolCalls: [{ id: 'c1', name: 'Read', arguments: { filePath: 'a.ts' } }],
-      },
-      {
-        ...msg('a3', 'assistant', ''),
-        toolCalls: [{ id: 'c2', name: 'Read', arguments: { filePath: 'b.ts' } }],
+        ...message('a2', 'assistant', ''),
+        toolCalls: [{ id: 'call-1', name: 'Read', arguments: {} }],
       },
     ];
-    const merged = mergeAssistantMessages(messages, 'a2', new Set(['a3']));
-    expect(merged.map((m) => m.id)).toEqual(['a1', 'a2', 'a3']);
+
+    expect(mergeAssistantMessages(messages, 'a2')).toEqual(messages);
   });
 
-  it('withholds previous streaming id immediately on sync', () => {
-    let state = createStaticHandoffState('a1');
-    const ids = new Set(['a1', 'a2']);
-    state = syncStaticHandoff(state, 'a2', ids);
-    expect(state.observedStreamingId).toBe('a2');
-    expect(state.withheldQueue).toEqual(['a1']);
-  });
-
-  it('releases one id per advance after the gap frame (FIFO)', () => {
-    let state = createStaticHandoffState('a1');
-    const ids = new Set(['a1', 'a2', 'a3']);
-    state = syncStaticHandoff(state, 'a2', ids);
-    state = syncStaticHandoff(state, 'a3', ids);
-    expect(state.withheldQueue).toEqual(['a1', 'a2']);
-
-    // Gap frame already painted with both withheld; each advance releases one head.
-    state = advanceStaticHandoff(state);
-    expect(state.withheldQueue).toEqual(['a2']);
-
-    state = advanceStaticHandoff(state);
-    expect(state.withheldQueue).toEqual([]);
-  });
-
-  it('keeps active/withheld/static zones disjoint for rapid A→B→C', () => {
-    let state = createStaticHandoffState('a1');
-    const messageIds = ['a1', 'a2', 'a3'];
-    const idSet = new Set(messageIds);
-
-    state = syncStaticHandoff(state, 'a2', idSet);
-    state = syncStaticHandoff(state, 'a3', idSet);
-
-    const zones = partitionMessageZones(messageIds, 'a3', state.withheldQueue);
-    expect(zones.activeId).toBe('a3');
-    expect([...zones.withheldIds]).toEqual(['a1', 'a2']);
-    expect([...zones.staticIds]).toEqual([]);
-    expect(assertDisjointZones(zones)).toBe(true);
-
-    state = advanceStaticHandoff(state);
-    const afterA = partitionMessageZones(messageIds, 'a3', state.withheldQueue);
-    expect([...afterA.withheldIds]).toEqual(['a2']);
-    expect([...afterA.staticIds]).toEqual(['a1']);
-    expect(assertDisjointZones(afterA)).toBe(true);
-
-    state = advanceStaticHandoff(state);
-    const afterB = partitionMessageZones(messageIds, 'a3', state.withheldQueue);
-    expect([...afterB.withheldIds]).toEqual([]);
-    expect([...afterB.staticIds].sort()).toEqual(['a1', 'a2']);
-    expect(assertDisjointZones(afterB)).toBe(true);
-  });
-
-  it('prunes withheld ids that disappear from messages', () => {
-    let state = createStaticHandoffState('a1');
-    state = syncStaticHandoff(state, 'a2', new Set(['a1', 'a2']));
-    expect(state.withheldQueue).toEqual(['a1']);
-    state = syncStaticHandoff(state, 'a2', new Set(['a2']));
-    expect(state.withheldQueue).toEqual([]);
+  it('does not merge across user turns or visible assistant content', () => {
+    const messages = [
+      message('a1', 'assistant', 'first'),
+      message('u1', 'user', 'next'),
+      message('a2', 'assistant', 'second'),
+    ];
+    expect(mergeAssistantMessages(messages)).toEqual(messages);
   });
 });
