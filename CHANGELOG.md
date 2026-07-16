@@ -11,6 +11,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- `/compact` is a full compaction pipeline: shared `runCompact` engine, optional focus instructions (`/compact focus on …`), durable session `compact` records (resume keeps the summary), PreCompact/PostCompact hooks, and cross-turn auto-compact when `autoCompactEnabled` is on
+- Compact UX: `Compacting…` / `Auto-compacting…` spinner, context-diff card animation, exact `Conversation compacted` success notice (provider-invisible)
+- Auto-compact threshold uses model `contextWindow` and Anthropic cache-aware `contextTokens` (no longer confuses output `maxTokens` with context size)
+- Assistant turns persist via `onAssistantMessageComplete` so mid-loop compact cannot drop tool-bearing history
+
 ## [0.1.0] - 2026-07-14
 
 First public-ready release of Book — an open-source, provider-agnostic AI coding agent CLI with a Claude Code–style terminal UI.

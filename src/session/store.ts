@@ -8,7 +8,7 @@ import {
   statSync,
 } from 'fs';
 import { join, normalize, resolve } from 'path';
-import type { Message, SessionMeta, SessionRecord } from '../types.js';
+import type { CompactRecordData, Message, SessionMeta, SessionRecord } from '../types.js';
 
 export type { SessionMeta } from '../types.js';
 
@@ -105,6 +105,11 @@ export class SessionStore {
         complete?: boolean;
         toolCalls?: Message['toolCalls'];
         toolResults?: Message['toolResults'];
+        version?: number;
+        replacementHistory?: Message[];
+        summary?: string;
+        trigger?: string;
+        preContextTokens?: number;
       };
 
       if (data.kind === 'session_meta_patch') {
@@ -112,6 +117,29 @@ export class SessionStore {
         continue;
       }
       if (data.kind === 'session_meta' || data.kind === 'session_touch') continue;
+
+      // Atomic compact boundary: replace history with the stored snapshot.
+      if (record.type === 'compact') {
+        const compactData = data as unknown as CompactRecordData;
+        const replacement = Array.isArray(compactData.replacementHistory)
+          ? compactData.replacementHistory
+          : [];
+        history.length = 0;
+        count = 0;
+        for (const msg of replacement) {
+          count++;
+          history.push({
+            id: crypto.randomUUID(),
+            role: msg.role,
+            content: msg.content ?? '',
+            contextContent: msg.contextContent,
+            toolCalls: msg.toolCalls,
+            toolResults: msg.toolResults,
+            timestamp: msg.timestamp ?? record.timestamp,
+          });
+        }
+        continue;
+      }
 
       if (record.type === 'user') {
         count++;

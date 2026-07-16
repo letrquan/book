@@ -22,6 +22,10 @@ interface PendingPlanApproval {
 
 interface WorkingIndicatorProps {
   isThinking: boolean;
+  /** True while /compact or auto-compact summarization is running. */
+  isCompacting?: boolean;
+  /** Auto vs manual compact busy label. */
+  compactTrigger?: 'manual' | 'auto';
   messages: Message[];
   streamingMessageId?: string | null;
   pendingPermission?: PendingPermission | null;
@@ -66,6 +70,8 @@ function hasPendingToolResult(message: Message | undefined): boolean {
 
 function workingText({
   isThinking,
+  isCompacting,
+  compactTrigger,
   messages,
   streamingMessageId,
   pendingPermission,
@@ -77,6 +83,9 @@ function workingText({
 }: Omit<WorkingIndicatorProps, 'terminalWidth' | 'reducedMotion' | 'screenReader'>): string | null {
   const retry = retryText(retryPhase, retryAttempt, retryMax, retryCountdownMs);
   if (retry) return retry;
+  if (isCompacting) {
+    return compactTrigger === 'auto' ? 'Auto-compacting…' : 'Compacting…';
+  }
   if (!isThinking) return null;
   if (pendingPlanApproval) return 'Waiting for plan approval';
   if (pendingPermission) return 'Waiting for permission';
@@ -93,6 +102,8 @@ function workingText({
 
 export function WorkingIndicator({
   isThinking,
+  isCompacting = false,
+  compactTrigger,
   messages,
   streamingMessageId,
   pendingPermission,
@@ -108,6 +119,8 @@ export function WorkingIndicator({
   const theme = useTheme();
   const label = workingText({
     isThinking,
+    isCompacting,
+    compactTrigger,
     messages,
     streamingMessageId,
     pendingPermission,
@@ -132,7 +145,7 @@ export function WorkingIndicator({
     ? ' · Esc to reject'
     : pendingPermission
       ? ' · Esc to deny'
-      : isThinking
+      : isThinking || isCompacting
         ? ' · Esc to cancel'
         : '';
   const text = truncateDisplay(`${label}${hint}`, Math.max(1, contentWidth - 2));

@@ -24,7 +24,11 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   },
   { name: 'resume', description: 'Resume a saved conversation', argumentHint: '[id|name]' },
   { name: 'continue', description: 'Alias for /resume', argumentHint: '[id|name]', isHidden: true },
-  { name: 'compact', description: 'Summarize older turns' },
+  {
+    name: 'compact',
+    description: 'Summarize older turns',
+    argumentHint: '[focus instructions]',
+  },
   { name: 'exit', description: 'Exit book' },
   { name: 'help', description: 'Toggle help' },
   { name: 'task', description: 'Add a task' },

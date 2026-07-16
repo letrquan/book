@@ -20,6 +20,10 @@ export interface HookContext {
   source?: string;
   /** Why a session ended (clear, resume, exit, or completion). */
   reason?: string;
+  /** For PreCompact/PostCompact: what triggered compaction. */
+  trigger?: 'manual' | 'auto';
+  /** For PreCompact/PostCompact: optional focus instructions from /compact. */
+  focus?: string;
 }
 
 /** Result of running a single hook. */
@@ -58,16 +62,22 @@ export async function runHooks(
     sessionId: ctx.sessionId ?? null,
     source: ctx.source ?? null,
     reason: ctx.reason ?? null,
+    trigger: ctx.trigger ?? null,
+    focus: ctx.focus ?? null,
   });
 
   const results: HookResult[] = [];
-  const blockingEvents: HookEvent[] = ['PreToolUse', 'UserPromptSubmit'];
+  const blockingEvents: HookEvent[] = ['PreToolUse', 'UserPromptSubmit', 'PreCompact'];
 
   for (const entry of hooks) {
-    // Filter by matcher if present (for tool events).
-    if (entry.matcher && ctx.toolName) {
-      if (!matchesHookMatcher(entry.matcher, ctx.toolName, ctx.toolArgs ?? {})) {
-        continue;
+    // Filter by matcher when present.
+    if (entry.matcher) {
+      if (event === 'PreCompact' || event === 'PostCompact') {
+        if (!matchesCompactTrigger(entry.matcher, ctx.trigger)) continue;
+      } else if (ctx.toolName) {
+        if (!matchesHookMatcher(entry.matcher, ctx.toolName, ctx.toolArgs ?? {})) {
+          continue;
+        }
       }
     }
 
@@ -81,6 +91,15 @@ export async function runHooks(
   }
 
   return results;
+}
+
+/** Match PreCompact/PostCompact hooks against trigger (`manual` | `auto` | `*`). */
+function matchesCompactTrigger(matcher: string, trigger?: 'manual' | 'auto'): boolean {
+  const m = matcher.trim();
+  if (!m || m === '*') return true;
+  if (!trigger) return false;
+  // Support simple alternation: manual|auto
+  return m.split('|').some((part) => part.trim() === trigger);
 }
 
 /**
@@ -147,6 +166,8 @@ async function runSingleHook(
     session_id: ctx.sessionId,
     source: ctx.source,
     reason: ctx.reason,
+    trigger: ctx.trigger,
+    focus: ctx.focus,
   });
 
   return new Promise<HookResult>((resolve) => {
