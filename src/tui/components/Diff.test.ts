@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 describe('parseDiffLines', () => {
-  it('parses a unified diff into categorized segments', () => {
+  it('parses a unified diff into one row per source line', () => {
     const output = [
       '@@ -1,3 +1,4 @@',
       ' unchanged',
@@ -31,47 +31,29 @@ describe('parseDiffLines', () => {
       ' more unchanged',
     ].join('\n');
 
-    const segments = parseDiffLines(output);
-    const kinds = segments.map((s) => s.kind);
-    expect(kinds).toEqual(['diffHunk', 'diffCtx', 'diffRemoved', 'diffAdded', 'diffCtx']);
+    const lines = parseDiffLines(output);
+    expect(lines.map((line) => line.kind)).toEqual(['hunk', 'ctx', 'del', 'add', 'ctx']);
+    expect(lines).toHaveLength(output.split('\n').length);
   });
 
-  it('detects CC-style word-level diff markers {+...+} and {-...-}', () => {
+  it('keeps CC-style word-level markers inline on their parent row', () => {
     const output = ['@@ -1 +1 @@', '-original text', '+modified {-text-}{+content+}'].join('\n');
 
-    const segments = parseDiffLines(output);
-    const removed = segments.filter((s) => s.kind === 'diffRemoved');
-    const added = segments.filter((s) => s.kind === 'diffAdded');
-    const addedWords = segments.filter((s) => s.kind === 'diffAddedWord');
-    const removedWords = segments.filter((s) => s.kind === 'diffRemovedWord');
+    const lines = parseDiffLines(output);
+    const changed = lines[2];
 
-    expect(removed.length).toBeGreaterThan(0);
-    expect(added.length).toBeGreaterThanOrEqual(0);
-    expect(addedWords.length > 0 || removedWords.length > 0).toBe(true);
+    expect(lines).toHaveLength(3);
+    expect(changed.kind).toBe('add');
+    expect(changed.spans).toEqual([
+      { text: '+modified ', kind: 'plain' },
+      { text: 'text', kind: 'removedWord' },
+      { text: 'content', kind: 'addedWord' },
+    ]);
   });
 
-  it('handles empty diff', () => {
+  it('handles empty and context-only input', () => {
     expect(parseDiffLines('')).toEqual([]);
-  });
-
-  it('handles diff with no hunks (just context lines)', () => {
-    const output = 'just\nsome\ncontext\nlines';
-    const segments = parseDiffLines(output);
-    expect(segments.every((s) => s.kind === 'diffCtx')).toBe(true);
-  });
-
-  it('truncates at maxLines via DiffBlock (logic check)', () => {
-    const manyLines = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n');
-    const segments = parseDiffLines(manyLines);
-    expect(segments).toHaveLength(300);
-  });
-
-  it('handles lines starting with special chars but not diff markers', () => {
-    const output = ['+genuine addition', '-genuine removal', ' context'].join('\n');
-    const segments = parseDiffLines(output);
-    expect(segments[0].kind).toBe('diffAdded');
-    expect(segments[1].kind).toBe('diffRemoved');
-    expect(segments[2].kind).toBe('diffCtx');
+    expect(parseDiffLines('just\nsome\ncontext').every((line) => line.kind === 'ctx')).toBe(true);
   });
 });
 
@@ -102,6 +84,22 @@ describe('DiffBlock', () => {
     expect(rendered).toContain('+new 2');
     expect(rendered).not.toContain('-old 3');
     expect(rendered).toContain('2 more lines hidden');
+  });
+
+  it('renders word-level markers on one content row', () => {
+    const output = '@@ -1 +1 @@\n-old\n+new {+value+}';
+    const view = render(withTheme(React.createElement(DiffBlock, { output })));
+    const rows = frame(view.lastFrame)
+      .split('\n')
+      .filter((row) => row.trim().length > 0);
+
+    expect(rows).toHaveLength(3);
+    expect(rows[2]).toContain('+new value');
+  });
+
+  it('keeps the configured background-token palette for added and removed lines', () => {
+    expect(DEFAULT_THEME.diffRemoved).toBe('#3b1818');
+    expect(DEFAULT_THEME.diffAdded).toBe('#12351f');
   });
 
   it('uses display-width truncation for long diff lines', () => {

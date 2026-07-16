@@ -62,6 +62,35 @@ describe('message-accumulator', () => {
     expect(getMessages()[0].toolCalls![1].id).toBe('tc2');
   });
 
+  it('preserves file mutation diff metadata through an accumulator flush', () => {
+    const { acc, getMessages } = createTestAccumulator();
+    const diff = '@@ -1 +1 @@\n-old\n+new';
+    acc.start();
+    acc.addToolResult({
+      toolCallId: 'edit',
+      success: true,
+      output: diff,
+      fileMutation: {
+        kind: 'update',
+        filePath: 'src/a.ts',
+        addedLines: 1,
+        removedLines: 1,
+      },
+    });
+
+    vi.advanceTimersByTime(20);
+
+    expect(getMessages()[0].toolResults?.[0]).toMatchObject({
+      output: diff,
+      fileMutation: {
+        kind: 'update',
+        filePath: 'src/a.ts',
+        addedLines: 1,
+        removedLines: 1,
+      },
+    });
+  });
+
   it('preserves FIFO order across mixed op types', () => {
     const { acc, getMessages } = createTestAccumulator();
     acc.start();

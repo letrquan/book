@@ -183,12 +183,12 @@ export const DEFAULT_THEME: ThemeTokens = {
   modeDontAsk: 'red',
   modeBypass: 'yellow',
 
-  diffAdded: 'green',
-  diffRemoved: 'red',
-  diffAddedWord: '#4caf50',
-  diffRemovedWord: '#f44336',
-  diffAddedDimmed: '#2e7d32',
-  diffRemovedDimmed: '#c62828',
+  diffAdded: '#12351f',
+  diffRemoved: '#3b1818',
+  diffAddedWord: '#1f6f3a',
+  diffRemovedWord: '#7f2e2e',
+  diffAddedDimmed: '#0c2515',
+  diffRemovedDimmed: '#281010',
 
   usageMeter: 'cyan',
   usageMeterHigh: 'yellow',

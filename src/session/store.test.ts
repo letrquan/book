@@ -117,22 +117,43 @@ describe('SessionStore', () => {
     expect(loaded.meta.messageCount).toBe(0);
   });
 
-  it('replays complete assistant turns with tool metadata', () => {
+  it('replays complete assistant turns with file mutation metadata', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj' });
+    const diff = '@@ -1 +1 @@\n-old\n+new';
     s.append(id, {
       type: 'assistant',
       timestamp: 2,
       data: {
         complete: true,
         content: 'done',
-        toolCalls: [{ id: 'tc1', name: 'Read', arguments: { filePath: 'a.ts' } }],
-        toolResults: [{ toolCallId: 'tc1', success: true, output: 'ok' }],
+        toolCalls: [{ id: 'tc1', name: 'Edit', arguments: { filePath: 'a.ts' } }],
+        toolResults: [
+          {
+            toolCallId: 'tc1',
+            success: true,
+            output: diff,
+            fileMutation: {
+              kind: 'update',
+              filePath: 'a.ts',
+              addedLines: 1,
+              removedLines: 1,
+            },
+          },
+        ],
       },
     });
     const assistant = s.load(id).history[0];
-    expect(assistant.toolCalls?.[0].name).toBe('Read');
-    expect(assistant.toolResults?.[0].output).toBe('ok');
+    expect(assistant.toolCalls?.[0].name).toBe('Edit');
+    expect(assistant.toolResults?.[0]).toMatchObject({
+      output: diff,
+      fileMutation: {
+        kind: 'update',
+        filePath: 'a.ts',
+        addedLines: 1,
+        removedLines: 1,
+      },
+    });
   });
 
   it('touches a session without adding a message', () => {

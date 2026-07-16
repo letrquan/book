@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Keep the latest completed `Write`/`Edit`/`MultiEdit`/`NotebookEdit` diff visible as a bounded Claude Code-style preview, with line-background and inline word-level highlighting.
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
@@ -12,6 +18,7 @@ First public-ready release of Book — an open-source, provider-agnostic AI codi
 ### Added
 
 #### Core agent
+
 - Agent loop with multi-turn tool use, mid-stream abort (`Esc`), and context compaction (`/compact`)
 - Anthropic Messages API provider (SSE streaming, prompt caching, adaptive thinking, `--effort`)
 - OpenAI-compatible provider with auto-detect from `baseUrl`, retries, and usage tracking
@@ -23,6 +30,7 @@ First public-ready release of Book — an open-source, provider-agnostic AI codi
 - Optional stream-json enrichments: hook events, partial messages, prompt suggestions
 
 #### Tools
+
 - File tools: `Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `NotebookEdit`
 - Shell: `Bash` with `run_in_background`, `BashOutput`, `KillShell`
 - Git tools and unified diff rendering
@@ -33,12 +41,14 @@ First public-ready release of Book — an open-source, provider-agnostic AI codi
 - MCP client (stdio transport)
 
 #### Project context & memory
+
 - CLAUDE.md / rules tree walk (user → project → local → `.claude/rules`)
 - Auto-memory store under `~/.book/projects/<project>/memory/` with approval inbox
 - Secret detection before memory writes
 - Skills, slash commands, and subagents discovered from `.book/`
 
 #### TUI
+
 - Ink/React interactive UI with welcome banner and status line
 - Markdown rendering (tables, code, syntax highlighting)
 - Transparent tool-call display; collapse long tool output; Claude-style edit summaries
@@ -50,6 +60,7 @@ First public-ready release of Book — an open-source, provider-agnostic AI codi
 - Debug instrumentation via `BOOK_DEBUG*` flags
 
 #### CLI & config
+
 - Layered settings: `~/.book/settings.json` → `.book/settings.json` → `.book/settings.local.json` → `--settings`
 - `book doctor` and `book config` subcommands
 - Built-in slash commands including `/help`, `/model`, `/config`, `/permissions`, `/memory`, `/cost`, `/usage`, `/context`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/init`
@@ -57,9 +68,11 @@ First public-ready release of Book — an open-source, provider-agnostic AI codi
 - Optional bubblewrap sandbox and lifecycle hooks (JSON-over-stdio)
 
 #### SDK
+
 - Programmatic `query()` generator export for embedding Book in other tools
 
 ### Notes
+
 - npm package name `book` is already taken on the public registry; this release is distributed via GitHub only.
 - One ConPTY-based TUI integration test can flake under full parallel load on Windows; it passes in isolation.
 - See [`MILESTONES.md`](./MILESTONES.md) for remaining Phase 1 parity work (LSP, more CLI flags, vim mode, etc.).

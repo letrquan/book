@@ -2,7 +2,7 @@ import { Text, Box } from 'ink';
 import React, { useMemo } from 'react';
 import { Spinner } from './Spinner.js';
 import { useTheme } from '../theme.js';
-import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
+import { DiffBlock } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { highlightCode } from './syntax-highlight.js';
 import { prepareToolOutputDisplay } from './tool-output.js';
@@ -10,6 +10,7 @@ import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { getPrimaryArg } from '../../tools/primary-arg.js';
 import { canonicalToolName } from '../../tools/aliases.js';
 import { isFileMutatingTool } from '../../tools/tool-capabilities.js';
+import { isRenderableFileMutationDiff } from '../file-mutation-display.js';
 import type { ToolResult } from '../../types.js';
 
 interface ToolCallBlockProps {
@@ -17,7 +18,6 @@ interface ToolCallBlockProps {
   args: Record<string, unknown>;
   result?: ToolResult;
   isExpanded: boolean;
-  onToggle?: () => void;
   isPending?: boolean;
   agentColor?: string;
   reducedMotion?: boolean;
@@ -41,8 +41,7 @@ function getResultLabel(result?: ToolResult): { label: string; color: string } {
 }
 
 function isDiffOutput(toolName: string, result: ToolResult | undefined): boolean {
-  if (!result?.success || !result.output) return false;
-  return isFileMutatingTool(canonicalToolName(toolName)) && isUnifiedDiffLike(result.output);
+  return isRenderableFileMutationDiff(toolName, result);
 }
 
 function toolLabel(name: string): string {
@@ -112,7 +111,6 @@ function ToolCallBlockInner({
   args,
   result,
   isExpanded,
-  onToggle,
   isPending,
   agentColor,
   reducedMotion = false,
@@ -163,15 +161,25 @@ function ToolCallBlockInner({
             {truncateDisplay(`${actionName}(${filePathStr}) ${statusText}${statsText}`, blockWidth)}
           </Text>
           {result?.error ? <Text> Error: {result.error}</Text> : null}
-          {isExpanded && result?.success && result.output ? (
-            <Box flexDirection="column">
-              {result.output.split('\n').map((line, i) => (
-                <Box key={i}>
-                  <Text> {truncateDisplay(line, detailWidth)}</Text>
-                </Box>
-              ))}
-            </Box>
-          ) : null}
+          {isExpanded && result?.success && result.output
+            ? (() => {
+                const display = prepareToolOutputDisplay(result.output, {
+                  maxLines: showAllToolOutput ? 200 : 5,
+                  maxLineWidth: detailWidth,
+                  hint: showAllToolOutput ? undefined : 'Ctrl+E shows all',
+                });
+                return (
+                  <Box flexDirection="column">
+                    {display.lines.map((line, i) => (
+                      <Box key={i}>
+                        <Text> {line}</Text>
+                      </Box>
+                    ))}
+                    {display.footer ? <Text> {display.footer}</Text> : null}
+                  </Box>
+                );
+              })()
+            : null}
         </Box>
       );
     }
@@ -334,7 +342,11 @@ function ToolCallBlockInner({
       ) : null}
       {/* Expanded: show result output */}
       {isExpanded && result && isDiffOutput(name, result) ? (
-        <DiffBlock output={result.output} collapsed={!showAllToolOutput} />
+        <DiffBlock
+          output={result.output}
+          collapsed={!showAllToolOutput}
+          terminalWidth={blockWidth}
+        />
       ) : isExpanded && result?.output ? (
         <OutputBlock
           output={result.output}
