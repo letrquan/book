@@ -541,6 +541,8 @@ export async function* chatCompletionStream(
   let currentToolArgs = '';
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheCreationInputTokens = 0;
+  let cacheReadInputTokens = 0;
   const stallTimeoutMs = retry.streamStallTimeoutMs;
 
   try {
@@ -602,6 +604,8 @@ export async function* chatCompletionStream(
             if (msg?.usage) {
               const usage = msg.usage as Record<string, number>;
               inputTokens = usage.input_tokens ?? 0;
+              cacheCreationInputTokens = usage.cache_creation_input_tokens ?? 0;
+              cacheReadInputTokens = usage.cache_read_input_tokens ?? 0;
             }
             break;
           }
@@ -661,6 +665,10 @@ export async function* chatCompletionStream(
               promptTokens: inputTokens,
               completionTokens: outputTokens,
               totalTokens: inputTokens + outputTokens,
+              cacheCreationInputTokens,
+              cacheReadInputTokens,
+              contextTokens:
+                inputTokens + cacheCreationInputTokens + cacheReadInputTokens,
             };
             log.info('stream done', usage);
             yield { type: 'done', usage };
@@ -698,6 +706,9 @@ export async function* chatCompletionStream(
     promptTokens: inputTokens,
     completionTokens: outputTokens,
     totalTokens: inputTokens + outputTokens,
+    cacheCreationInputTokens,
+    cacheReadInputTokens,
+    contextTokens: inputTokens + cacheCreationInputTokens + cacheReadInputTokens,
   };
   log.info('stream done (end of body)', usage);
   yield { type: 'done', usage };

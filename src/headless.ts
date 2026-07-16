@@ -1,5 +1,6 @@
 import type {
   AgentConfig,
+  CompactRecordData,
   Message,
   ToolCall,
   ToolResult,
@@ -10,6 +11,13 @@ import type {
   SessionStoreInterface,
 } from './types.js';
 import { runAgentLoop } from './agent/loop.js';
+import {
+  resolveContextLimit,
+  runCompact,
+  runPostCompactHooks,
+  shouldCompact,
+  usagePressureTokens,
+} from './agent/compact.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { expandAtMentions } from './tui/input-expansion.js';
 import { runSessionEnd, runSessionStart } from './session/lifecycle.js';
@@ -93,6 +101,71 @@ export async function runHeadless(
 
   for (const prompt of prompts) {
     const expandedPrompt = expandAtMentions(prompt, config.workspace);
+
+    // Cross-turn auto-compact before appending the new user message.
+    const contextLimit = resolveContextLimit(config);
+    if (
+      config.autoCompactEnabled !== false &&
+      contextLimit != null &&
+      shouldCompact(lastUsage, contextLimit)
+    ) {
+      try {
+        const compactResult = await runCompact(config, newHistory, {
+          trigger: 'auto',
+          sessionId,
+          preContextTokens: usagePressureTokens(lastUsage),
+          signal: opts.signal,
+          onHookEvent: opts.includeHookEvents
+            ? (event, payload) => {
+                if (opts.outputFormat === 'stream-json') {
+                  emit({ type: 'hook_event', event, ...payload });
+                }
+              }
+            : undefined,
+        });
+        if (compactResult.status === 'compacted') {
+          newHistory.length = 0;
+          newHistory.push(...compactResult.replacementHistory);
+          lastUsage = null;
+          if (store && sessionId) {
+            const data: CompactRecordData = {
+              version: 1,
+              trigger: compactResult.trigger,
+              summary: compactResult.summary,
+              preContextTokens: compactResult.preContextTokens,
+              replacementHistory: compactResult.replacementHistory,
+            };
+            store.append(sessionId, {
+              type: 'compact',
+              timestamp: Date.now(),
+              data,
+            } satisfies SessionRecord);
+          }
+          await runPostCompactHooks(config, {
+            trigger: 'auto',
+            sessionId,
+            onHookEvent: opts.includeHookEvents
+              ? (event, payload) => {
+                  if (opts.outputFormat === 'stream-json') {
+                    emit({ type: 'hook_event', event, ...payload });
+                  }
+                }
+              : undefined,
+          });
+          if (opts.outputFormat === 'stream-json') {
+            emit({
+              type: 'system',
+              subtype: 'compact_boundary',
+              trigger: 'auto',
+              pre_tokens: compactResult.preContextTokens,
+            });
+          }
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+
     if (store && sessionId) {
       store.append(sessionId, {
         type: 'user',
@@ -115,13 +188,8 @@ export async function runHeadless(
       newHistory,
       {
         onText: (text) => {
-          if (store && sessionId) {
-            store.append(sessionId, {
-              type: 'assistant',
-              timestamp: Date.now(),
-              data: { content: text },
-            } satisfies SessionRecord);
-          }
+          // Streaming partials only — complete assistant turns persist via
+          // onAssistantMessageComplete so tool metadata is not lost.
           if (opts.outputFormat === 'stream-json' && opts.includePartialMessages !== false) {
             emit({ type: 'assistant', text });
           }
@@ -170,6 +238,72 @@ export async function runHeadless(
           : undefined,
         onUsage: (u) => {
           lastUsage = u;
+        },
+        onCompact: async (history, usage) => {
+          const result = await runCompact(config, history, {
+            trigger: 'auto',
+            sessionId,
+            preContextTokens: usagePressureTokens(usage),
+            signal: opts.signal,
+            onHookEvent: opts.includeHookEvents
+              ? (event, payload) => {
+                  if (opts.outputFormat === 'stream-json') {
+                    emit({ type: 'hook_event', event, ...payload });
+                  }
+                }
+              : undefined,
+          });
+          if (result.status === 'compacted') {
+            if (store && sessionId) {
+              const data: CompactRecordData = {
+                version: 1,
+                trigger: result.trigger,
+                summary: result.summary,
+                preContextTokens: result.preContextTokens,
+                replacementHistory: result.replacementHistory,
+              };
+              store.append(sessionId, {
+                type: 'compact',
+                timestamp: Date.now(),
+                data,
+              } satisfies SessionRecord);
+            }
+            await runPostCompactHooks(config, {
+              trigger: 'auto',
+              sessionId,
+              onHookEvent: opts.includeHookEvents
+                ? (event, payload) => {
+                    if (opts.outputFormat === 'stream-json') {
+                      emit({ type: 'hook_event', event, ...payload });
+                    }
+                  }
+                : undefined,
+            });
+            if (opts.outputFormat === 'stream-json') {
+              emit({
+                type: 'system',
+                subtype: 'compact_boundary',
+                trigger: 'auto',
+                pre_tokens: result.preContextTokens,
+              });
+            }
+            lastUsage = null;
+          }
+          return result;
+        },
+        onAssistantMessageComplete: (message) => {
+          if (store && sessionId) {
+            store.append(sessionId, {
+              type: 'assistant',
+              timestamp: message.timestamp,
+              data: {
+                complete: true,
+                content: message.content,
+                toolCalls: message.toolCalls,
+                toolResults: message.toolResults,
+              },
+            } satisfies SessionRecord);
+          }
         },
       },
       opts.mode,

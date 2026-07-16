@@ -6,6 +6,7 @@ import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { StatusLine } from './components/StatusLine.js';
 import { WorkingIndicator } from './components/WorkingIndicator.js';
+import { CompactDiffCard } from './components/CompactDiffCard.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
@@ -121,6 +122,9 @@ export function App({ config, session, redrawViewport }: AppProps) {
   const {
     messages,
     isThinking,
+    isCompacting,
+    compactUi,
+    setCompactUi,
     streamingMessageId,
     error,
     currentTurn,
@@ -372,8 +376,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
             addLocalMessage(`✕ ${err instanceof Error ? err.message : String(err)}`);
           });
         }
-      } else if (value.startsWith('/compact')) {
-        compact();
+      } else if (commandName === 'compact') {
+        void compact(commandArg || undefined);
       } else if (value.startsWith('/exit')) {
         void endCurrentSession('exit').finally(exitApp);
       } else if (value.startsWith('/help')) {
@@ -820,8 +824,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
                       theme={theme}
                     />
                     <HelpRow
-                      label="/compact"
-                      description="Summarize this conversation"
+                      label="/compact [focus]"
+                      description="Summarize conversation (optional focus)"
                       theme={theme}
                     />
                     <HelpRow label="/task <subject>" description="Add a task" theme={theme} />
@@ -1182,6 +1186,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
 
           <WorkingIndicator
             isThinking={isThinking}
+            isCompacting={isCompacting}
+            compactTrigger={compactUi?.trigger}
             messages={messages}
             streamingMessageId={streamingMessageId}
             pendingPermission={pendingPermission}
@@ -1195,12 +1201,26 @@ export function App({ config, session, redrawViewport }: AppProps) {
             screenReader={screenReader}
           />
 
+          {compactUi && compactUi.phase !== 'working' ? (
+            <CompactDiffCard
+              state={compactUi}
+              terminalWidth={termWidth}
+              reducedMotion={motionDisabled}
+              screenReader={screenReader}
+              onSettled={() => {
+                if (compactUi.phase === 'diff') {
+                  setCompactUi({ ...compactUi, phase: 'done' });
+                }
+              }}
+            />
+          ) : null}
+
           {/* Input bar — above the status line. Command menu is built into InputBar. */}
           <Box flexDirection="column" flexShrink={0} width={termWidth}>
             <InputBar
               key={sessionId}
               onSubmit={handleSubmit}
-              disabled={isThinking}
+              disabled={isThinking || isCompacting}
               mode={mode}
               onCycleMode={cycleMode}
               onInterrupt={cancel}

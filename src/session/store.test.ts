@@ -39,6 +39,43 @@ describe('SessionStore', () => {
     expect(loaded.history[1].content).toBe('hello');
   });
 
+  it('replaces history atomically on a compact record', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, { type: 'user', timestamp: 1, data: { content: 'old1' } });
+    s.append(id, { type: 'assistant', timestamp: 2, data: { content: 'old2', complete: true } });
+    s.append(id, {
+      type: 'compact',
+      timestamp: 3,
+      data: {
+        version: 1,
+        trigger: 'manual',
+        summary: 'all the old stuff',
+        replacementHistory: [
+          {
+            id: 'sum',
+            role: 'user',
+            content: '[Compacted summary of earlier conversation]\nall the old stuff',
+            timestamp: 3,
+          },
+        ],
+      },
+    });
+    s.append(id, { type: 'user', timestamp: 4, data: { content: 'next' } });
+    s.append(id, {
+      type: 'assistant',
+      timestamp: 5,
+      data: { content: 'ok', complete: true },
+    });
+
+    const loaded = s.load(id);
+    expect(loaded.history.length).toBe(3);
+    expect(loaded.history[0].content).toMatch(/Compacted summary/);
+    expect(loaded.history[1].content).toBe('next');
+    expect(loaded.history[2].content).toBe('ok');
+    expect(loaded.meta.messageCount).toBe(3);
+  });
+
   it('preserves hidden context content for resumed user messages', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj' });

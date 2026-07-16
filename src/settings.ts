@@ -63,6 +63,7 @@ export const HOOK_EVENTS = [
   'PostToolUse',
   'Stop',
   'PreCompact',
+  'PostCompact',
 ] as const;
 
 export type HookEvent = (typeof HOOK_EVENTS)[number];
@@ -203,6 +204,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     PostToolUse: [],
     Stop: [],
     PreCompact: [],
+    PostCompact: [],
   },
   additionalDirectories: [],
   env: {},

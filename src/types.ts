@@ -232,7 +232,38 @@ export interface Usage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** Context-pressure metric for auto-compact (includes Anthropic cache tokens when known). */
+  contextTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
 }
+
+/** What triggered a compaction attempt. */
+export type CompactTrigger = 'manual' | 'auto';
+
+/**
+ * Result of `runCompact`. Discriminated so hosts can clear usage only on success
+ * and avoid treating blocked/too-short outcomes as a history rewrite.
+ */
+export type CompactResult =
+  | {
+      status: 'compacted';
+      trigger: CompactTrigger;
+      replacementHistory: Message[];
+      summary: string;
+      preContextTokens?: number;
+      preMessageCount: number;
+    }
+  | {
+      status: 'skipped';
+      reason: 'too-short' | 'blocked' | 'disabled';
+      message?: string;
+    }
+  | {
+      status: 'failed';
+      reason: 'provider-error' | 'empty-summary' | 'aborted' | 'unexpected-stream';
+      error: string;
+    };
 
 export type PermissionResult = 'allow' | 'deny' | 'always';
 export type PlanApprovalResult = 'approve' | 'reject';
@@ -467,8 +498,16 @@ export interface AgentLoopCallbacks {
   onModeChange?: (mode: PermissionMode) => void;
   /** Called when ExitPlanMode submits a plan for host approval. */
   onPlanApprovalRequired?: (plan: string) => Promise<PlanApprovalResult>;
-  /** Called when the context approaches its limit; returns a compacted history. */
-  onCompact?: (history: Message[], usage: Usage | null) => Promise<Message[]>;
+  /**
+   * Called when the context approaches its limit mid-loop.
+   * Return a CompactResult; only `status: 'compacted'` replaces loop history.
+   */
+  onCompact?: (history: Message[], usage: Usage | null) => Promise<CompactResult>;
+  /**
+   * Called when an assistant turn (including tool results) is finalized.
+   * Hosts should persist this immediately rather than slicing the final history.
+   */
+  onAssistantMessageComplete?: (message: Message) => void;
   /** Called after each tool execution with the current agent todo list. */
   onTodos?: (todos: Array<{ content: string; status: string; activeForm?: string }>) => void;
   /** Called when a transport-level retry starts (delay > 0). */
@@ -491,9 +530,19 @@ export type OutputFormat = 'text' | 'json' | 'stream-json';
 export type InputFormat = 'text' | 'stream-json';
 
 export interface SessionRecord {
-  type: 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'usage' | 'session_meta';
+  type: 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'usage' | 'session_meta' | 'compact';
   timestamp: number;
   data: unknown;
+}
+
+/** Payload stored in a SessionRecord of type `compact`. */
+export interface CompactRecordData {
+  version: 1;
+  trigger: CompactTrigger;
+  summary: string;
+  preContextTokens?: number;
+  /** Full post-compact history (summary message + any retained tail). */
+  replacementHistory: Message[];
 }
 
 export interface SessionMeta {

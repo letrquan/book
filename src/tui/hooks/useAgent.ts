@@ -13,8 +13,18 @@ import type {
   SessionMeta,
   SessionRecord,
   SessionStoreInterface,
+  CompactResult,
+  CompactRecordData,
+  CompactTrigger,
 } from '../../types.js';
 import { runAgentLoop } from '../../agent/loop.js';
+import {
+  resolveContextLimit,
+  runCompact,
+  runPostCompactHooks,
+  shouldCompact,
+  usagePressureTokens,
+} from '../../agent/compact.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
 import { createDefaultRegistry } from '../../tools/registry.js';
 import type { Todo } from '../../tools/todo.js';
@@ -103,9 +113,20 @@ export interface UseAgentSessionOptions extends SessionBootstrap {
   store?: SessionStoreInterface;
 }
 
+/** UI-only compact status — never appended to provider history. */
+export type CompactUiState = {
+  phase: 'working' | 'diff' | 'done' | 'error' | 'skipped';
+  trigger: CompactTrigger;
+  preMessages?: number;
+  preContextTokens?: number;
+  message?: string;
+};
+
 export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const [messages, setMessages] = useState<Message[]>(session.history);
   const [isThinking, setIsThinking] = useState(false);
+  const [isCompacting, setIsCompacting] = useState(false);
+  const [compactUi, setCompactUi] = useState<CompactUiState | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [currentTurn, setCurrentTurn] = useState(0);
@@ -145,10 +166,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Message accumulator for batched streaming updates.
   const accumulatorRef = useRef<MessageAccumulator | null>(null);
-  // Synchronous single-flight lock for send(). isThinking is UI-only and may
-  // lag a render; this ref is the authoritative gate. Cancel aborts the stream
-  // but leaves the lock held until send()'s finally block releases it.
+  // Synchronous single-flight lock for send()/compact(). isThinking is UI-only
+  // and may lag a render; this ref is the authoritative gate.
   const sendInFlightRef = useRef(false);
+  const operationInFlightRef = useRef<'send' | 'compact' | null>(null);
+  const compactAbortRef = useRef<AbortController | null>(null);
+  const hostUsageRef = useRef<Usage | null>(null);
   // Resolve handles for pending interactive prompts (refs for idempotent settle).
   const pendingPermissionRef = useRef<PendingPermission | null>(pendingPermission);
   const pendingPlanApprovalRef = useRef<PendingPlanApproval | null>(pendingPlanApproval);
@@ -317,15 +340,52 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     return session.store.list().filter((meta) => meta.cwd === cwd);
   }, [liveConfig.workspace, session.store]);
 
+  const commitCompactResult = useCallback(
+    async (
+      result: Extract<CompactResult, { status: 'compacted' }>,
+      opts: { focus?: string; sessionId: string },
+    ) => {
+      if (session.store) {
+        const data: CompactRecordData = {
+          version: 1,
+          trigger: result.trigger,
+          summary: result.summary,
+          preContextTokens: result.preContextTokens,
+          replacementHistory: result.replacementHistory,
+        };
+        session.store.append(opts.sessionId, {
+          type: 'compact',
+          timestamp: Date.now(),
+          data,
+        } satisfies SessionRecord);
+      }
+      messagesRef.current = result.replacementHistory;
+      setMessages(result.replacementHistory);
+      setUsage(null);
+      hostUsageRef.current = null;
+      await runPostCompactHooks(liveConfigRef.current, {
+        trigger: result.trigger,
+        sessionId: opts.sessionId,
+        focus: opts.focus,
+      });
+    },
+    [session.store],
+  );
+
   const send = useCallback(
     async (userMessage: string, commandContext?: CommandContext) => {
       // Synchronous single-flight: reject concurrent sends even if React has
       // not yet committed isThinking=true from a prior call.
-      if (sendInFlightRef.current) {
-        uiLog.event('send:rejected', { reason: 'already-in-flight', len: userMessage.length });
+      if (sendInFlightRef.current || operationInFlightRef.current) {
+        uiLog.event('send:rejected', {
+          reason: operationInFlightRef.current === 'compact' ? 'compacting' : 'already-in-flight',
+          len: userMessage.length,
+        });
         return;
       }
       sendInFlightRef.current = true;
+      operationInFlightRef.current = 'send';
+      setCompactUi(null);
 
       const generation = sessionGenerationRef.current;
       const activeSessionId = sessionIdRef.current;
@@ -348,6 +408,48 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         expandAtMentions(userMessage, liveConfig.workspace),
         liveConfig.workspace,
       );
+
+      // Cross-turn auto-compact before appending the new user message.
+      const contextLimit = resolveContextLimit(liveConfig);
+      if (
+        liveConfig.autoCompactEnabled !== false &&
+        contextLimit != null &&
+        shouldCompact(hostUsageRef.current, contextLimit)
+      ) {
+        try {
+          setIsCompacting(true);
+          setCompactUi({
+            phase: 'working',
+            trigger: 'auto',
+            preMessages: messagesRef.current.length,
+            preContextTokens: usagePressureTokens(hostUsageRef.current),
+          });
+          const autoResult = await runCompact(liveConfig, messagesRef.current, {
+            trigger: 'auto',
+            sessionId: activeSessionId,
+            preContextTokens: usagePressureTokens(hostUsageRef.current),
+          });
+          if (stillCurrent() && autoResult.status === 'compacted') {
+            await commitCompactResult(autoResult, { sessionId: activeSessionId });
+            setCompactUi({
+              phase: 'diff',
+              trigger: 'auto',
+              preMessages: autoResult.preMessageCount,
+              preContextTokens: autoResult.preContextTokens,
+              message: 'Conversation compacted',
+            });
+          } else if (stillCurrent()) {
+            setCompactUi(null);
+          }
+        } catch (err) {
+          log.warn('pre-turn auto-compact failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          if (stillCurrent()) setCompactUi(null);
+        } finally {
+          if (stillCurrent()) setIsCompacting(false);
+        }
+      }
 
       // --- Optimistic, Claude-Code-style update ---
       // Render the user's message IMMEDIATELY, and seed a fresh, empty
@@ -466,7 +568,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               });
             },
             onUsage: (u: Usage) => {
-              if (stillCurrent()) setUsage(u);
+              if (!stillCurrent()) return;
+              hostUsageRef.current = u;
+              setUsage(u);
             },
             onModeChange: (newMode: PermissionMode) => {
               if (stillCurrent()) setMode(newMode);
@@ -479,6 +583,43 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 pendingPlanApprovalRef.current = entry;
                 setPendingPlanApproval(entry);
               });
+            },
+            onCompact: async (history, usage) => {
+              if (!stillCurrent()) {
+                return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
+              }
+              // Flush display accumulator so it cannot overwrite a replacement.
+              activeAccumulator?.stop();
+              const result = await runCompact(liveConfigRef.current, history, {
+                trigger: 'auto',
+                sessionId: activeSessionId,
+                preContextTokens: usagePressureTokens(usage),
+              });
+              if (!stillCurrent()) return result;
+              if (result.status === 'compacted') {
+                await commitCompactResult(result, { sessionId: activeSessionId });
+                setCompactUi({
+                  phase: 'diff',
+                  trigger: 'auto',
+                  preMessages: result.preMessageCount,
+                  preContextTokens: result.preContextTokens,
+                  message: 'Conversation compacted',
+                });
+              }
+              return result;
+            },
+            onAssistantMessageComplete: (message) => {
+              if (!stillCurrent() || !session.store) return;
+              session.store.append(activeSessionId, {
+                type: 'assistant',
+                timestamp: message.timestamp,
+                data: {
+                  complete: true,
+                  content: message.content,
+                  toolCalls: message.toolCalls,
+                  toolResults: message.toolResults,
+                },
+              } satisfies SessionRecord);
             },
             onRetry: (phase, attempt, max, delayMs) => {
               if (!stillCurrent()) return;
@@ -546,24 +687,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         if (stillCurrent()) {
           // Flush the UI accumulator, but keep its authoritative display state:
           // nested tool traces are display-only and are not present in the loop's
-          // returned API history.
+          // returned API history. Assistant turns are persisted via
+          // onAssistantMessageComplete (not final-history length slicing).
           activeAccumulator?.stop();
-
-          if (session.store) {
-            for (const assistant of updatedHistory.slice(history.length)) {
-              if (assistant.role !== 'assistant') continue;
-              session.store.append(activeSessionId, {
-                type: 'assistant',
-                timestamp: assistant.timestamp,
-                data: {
-                  complete: true,
-                  content: assistant.content,
-                  toolCalls: assistant.toolCalls,
-                  toolResults: assistant.toolResults,
-                },
-              } satisfies SessionRecord);
-            }
-          }
+          void updatedHistory; // loop return still drives completion; display is accumulator-owned
         }
       } catch (e) {
         if (stillCurrent()) setError(e instanceof Error ? e.message : String(e));
@@ -586,11 +713,21 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // Release single-flight only if this invocation still owns the active
         // session/abort controller. A stale invocation must not unlock or clear
         // a newer session's send.
-        if (stillCurrent() && abortRef.current === null) sendInFlightRef.current = false;
+        if (stillCurrent() && abortRef.current === null) {
+          sendInFlightRef.current = false;
+          if (operationInFlightRef.current === 'send') operationInFlightRef.current = null;
+        }
         uiLog.event('send:finally', { durationMs: Date.now() - turnStartRef.current });
       }
     },
-    [liveConfig, mode, clearCountdown, finalizeStreamingMessages, session.store],
+    [
+      liveConfig,
+      mode,
+      clearCountdown,
+      finalizeStreamingMessages,
+      session.store,
+      commitCompactResult,
+    ],
   );
 
   const resolvePermission = useCallback(
@@ -611,16 +748,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [settlePlanApproval],
   );
 
-  // Abort the in-flight agent stream (Esc while thinking).
+  // Abort the in-flight agent stream (Esc while thinking) or compact request.
   // Lock stays held until send()'s finally; only the abort signal is raised.
   const cancel = useCallback(() => {
     const hadAbort = abortRef.current !== null;
+    const hadCompact = compactAbortRef.current !== null;
     const hadAccumulator = accumulatorRef.current !== null;
     const inFlight = sendInFlightRef.current;
-    uiLog.event('cancel', { hadAbort, hadAccumulator, inFlight });
+    uiLog.event('cancel', { hadAbort, hadCompact, hadAccumulator, inFlight });
     settlePermission('deny', 'cancel');
     settlePlanApproval('reject', 'cancel');
     abortRef.current?.abort();
+    compactAbortRef.current?.abort();
     // Do not null abortRef / release sendInFlightRef / stop accumulator here —
     // finally owns that so concurrent send cannot slip through mid-unwind.
     clearCountdown();
@@ -628,42 +767,91 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   }, [clearCountdown, settlePermission, settlePlanApproval]);
 
   // Manually compact the conversation (summarize older turns).
-  const compact = useCallback(async () => {
-    if (messages.length <= 4) return;
-    const { compactHistory, buildCompactPrompt } = await import('../../agent/compact.js');
-    const { kept, summarized } = compactHistory(messages, 4);
-    if (summarized.length === 0) return;
-    // Summarize via a one-shot provider call.
-    const { chatCompletionStream } = await import('../../provider/index.js');
-    let summary = '';
-    try {
-      const stream = chatCompletionStream(
-        liveConfig,
-        [
-          {
-            role: 'system',
-            content: 'You are a conversation summarizer. Produce a concise prose summary.',
-          },
-          { role: 'user', content: buildCompactPrompt(summarized) },
-        ],
-        [],
-      );
-      for await (const ev of stream) {
-        if (ev.type === 'text' && ev.content) summary += ev.content;
+  const compact = useCallback(
+    async (focus?: string) => {
+      if (sendInFlightRef.current || operationInFlightRef.current) {
+        setCompactUi({
+          phase: 'skipped',
+          trigger: 'manual',
+          message: 'Cannot compact while a turn is in progress.',
+        });
+        return;
       }
-    } catch {
-      return; // non-fatal
-    }
-    const summaryMsg: Message = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: `[Compacted summary of earlier conversation]\n${summary}`,
-      timestamp: Date.now(),
-    };
-    const compactedMessages = [summaryMsg, ...kept];
-    messagesRef.current = compactedMessages;
-    setMessages(compactedMessages);
-  }, [liveConfig, messages]);
+      operationInFlightRef.current = 'compact';
+      const generation = sessionGenerationRef.current;
+      const activeSessionId = sessionIdRef.current;
+      const stillCurrent = () => sessionGenerationRef.current === generation;
+      const controller = new AbortController();
+      compactAbortRef.current = controller;
+      const preMessages = messagesRef.current.length;
+      const preContextTokens = usagePressureTokens(hostUsageRef.current);
+
+      setIsCompacting(true);
+      setCompactUi({
+        phase: 'working',
+        trigger: 'manual',
+        preMessages,
+        preContextTokens,
+      });
+
+      try {
+        const result = await runCompact(liveConfigRef.current, messagesRef.current, {
+          trigger: 'manual',
+          focus,
+          sessionId: activeSessionId,
+          preContextTokens,
+          signal: controller.signal,
+        });
+
+        if (!stillCurrent()) return;
+
+        if (result.status === 'skipped') {
+          setCompactUi({
+            phase: 'skipped',
+            trigger: 'manual',
+            preMessages,
+            message: result.message ?? 'Not enough messages to compact.',
+          });
+          return;
+        }
+        if (result.status === 'failed') {
+          setCompactUi({
+            phase: 'error',
+            trigger: 'manual',
+            preMessages,
+            message: result.error,
+          });
+          return;
+        }
+
+        await commitCompactResult(result, { focus, sessionId: activeSessionId });
+        if (!stillCurrent()) return;
+        setCompactUi({
+          phase: 'diff',
+          trigger: 'manual',
+          preMessages: result.preMessageCount,
+          preContextTokens: result.preContextTokens,
+          message: 'Conversation compacted',
+        });
+      } catch (e) {
+        if (stillCurrent()) {
+          setCompactUi({
+            phase: 'error',
+            trigger: 'manual',
+            preMessages,
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
+      } finally {
+        if (compactAbortRef.current === controller) compactAbortRef.current = null;
+        if (stillCurrent()) {
+          setIsCompacting(false);
+          if (operationInFlightRef.current === 'compact') operationInFlightRef.current = null;
+        }
+      }
+    },
+    [commitCompactResult],
+  );
 
   const clear = useCallback(() => {
     // Abort + stop accumulator BEFORE wiping message state so no late flush
@@ -842,6 +1030,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   return {
     messages,
     isThinking,
+    isCompacting,
+    compactUi,
+    setCompactUi,
     streamingMessageId,
     error,
     currentTurn,

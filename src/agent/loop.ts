@@ -15,7 +15,7 @@ import { chatCompletionStream } from '../provider/index.js';
 import { buildMessages } from './context.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
-import { shouldCompact } from './compact.js';
+import { resolveContextLimit, shouldCompact, usagePressureTokens } from './compact.js';
 import { evaluatePermission } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import type { HookContext } from '../hooks.js';
@@ -171,40 +171,41 @@ export async function runAgentLoop(
   let turn = 0;
   let approveAll: string[] = [];
   let lastUsage: Usage | null = null;
+  /** Avoid re-attempting compact for the same pressure snapshot after skip/fail. */
+  let lastCompactAttemptKey: string | null = null;
   let effectiveMode = initialMode;
 
   // maxTurns undefined/0 = unlimited; otherwise stop once the cap is hit.
   while (config.maxTurns == null || config.maxTurns <= 0 || turn < config.maxTurns) {
     if (signal?.aborted) break;
 
-    // Auto-compact when usage approaches the context limit.
+    // Mid-loop auto-compact safety net (host also runs pre-turn compact).
+    const contextLimit = resolveContextLimit(config);
     if (
       config.autoCompactEnabled !== false &&
       callbacks.onCompact &&
-      shouldCompact(lastUsage, config.maxTokens ?? 128000)
+      contextLimit != null &&
+      shouldCompact(lastUsage, contextLimit)
     ) {
-      log.info('auto-compact triggered', {
-        tokens: lastUsage?.totalTokens ?? 0,
-        maxTokens: config.maxTokens,
-      });
-      // PreCompact hook — fire-and-forget before compaction.
-      runHooks(
-        config.settings.hooks.PreCompact,
-        'PreCompact',
-        {
-          workspace: config.workspace,
-          event: 'PreCompact',
-        },
-        { onHookEvent: callbacks.onHookEvent },
-      ).catch((err) => console.warn('PreCompact hook failed:', err));
-
-      try {
-        const compacted = await callbacks.onCompact(newHistory, lastUsage);
-        newHistory.length = 0;
-        newHistory.push(...compacted);
-        lastUsage = null;
-      } catch {
-        // non-fatal: continue with full history this turn
+      const attemptKey = `${usagePressureTokens(lastUsage)}:${newHistory.length}`;
+      if (attemptKey !== lastCompactAttemptKey) {
+        lastCompactAttemptKey = attemptKey;
+        log.info('auto-compact triggered', {
+          tokens: usagePressureTokens(lastUsage),
+          contextLimit,
+        });
+        try {
+          const result = await callbacks.onCompact(newHistory, lastUsage);
+          if (result.status === 'compacted') {
+            newHistory.length = 0;
+            newHistory.push(...result.replacementHistory);
+            lastUsage = null;
+            lastCompactAttemptKey = null;
+          }
+          // skipped/failed: keep lastUsage so the host can still act; do not retry same snapshot
+        } catch {
+          // non-fatal: continue with full history this turn
+        }
       }
     }
 
@@ -553,14 +554,16 @@ export async function runAgentLoop(
       { onHookEvent: callbacks.onHookEvent },
     ).catch((err) => console.warn('Stop hook failed:', err));
 
-    newHistory.push({
+    const assistantMessage: Message = {
       id: crypto.randomUUID(),
       role: 'assistant',
       content: assistantContent,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       toolResults: toolResults.length > 0 ? toolResults : undefined,
       timestamp: Date.now(),
-    });
+    };
+    newHistory.push(assistantMessage);
+    callbacks.onAssistantMessageComplete?.(assistantMessage);
 
     log.info('turn complete', {
       turn,
