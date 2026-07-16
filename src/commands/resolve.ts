@@ -134,7 +134,6 @@ export function resolveShellInjection(
         encoding: 'utf-8',
         timeout: 5000,
         maxBuffer: 1024 * 1024, // 1MB
-        shell: process.env.ComSpec || 'cmd.exe',
       }).trim();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -156,7 +155,6 @@ export function resolveShellInjection(
         encoding: 'utf-8',
         timeout: 5000,
         maxBuffer: 1024 * 1024,
-        shell: process.env.ComSpec || 'cmd.exe',
       }).trim();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

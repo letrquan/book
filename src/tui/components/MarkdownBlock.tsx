@@ -101,7 +101,6 @@ export function useThrottledValue<T>(next: T, intervalMs: number): T {
         setValue(nextRef.current);
       }, remaining);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [next, intervalMs]);
 
   useEffect(() => {

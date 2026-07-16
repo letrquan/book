@@ -108,10 +108,11 @@ export { mergeSettings, loadSettingsFile };
  * settings file (<workspace>/.book/settings.local.json). Runs once on first
  * load when the legacy file exists and the local settings don't have rules yet.
  *
+ * @param home - User home directory; injectable for isolated migration tests
  * @returns true if migration occurred, false otherwise
  */
-export function migrateLegacyPermissions(workspace: string): boolean {
-  const legacyPath = join(homedir(), '.book', 'permissions.json');
+export function migrateLegacyPermissions(workspace: string, home = homedir()): boolean {
+  const legacyPath = join(home, '.book', 'permissions.json');
   if (!existsSync(legacyPath)) return false;
 
   let legacyRules: Array<{ toolName: string; pattern?: string; effect: string }> = [];

@@ -133,9 +133,7 @@ describe('buildCompactPrompt / serialize', () => {
         role: 'assistant',
         content: '',
         timestamp: 0,
-        toolCalls: [
-          { id: 't1', name: 'Read', arguments: { file_path: 'a.ts' } },
-        ],
+        toolCalls: [{ id: 't1', name: 'Read', arguments: { file_path: 'a.ts' } }],
         toolResults: [
           {
             toolCallId: 't1',
@@ -162,9 +160,11 @@ describe('runCompact', () => {
   });
 
   it('skips when history is too short', async () => {
-    const result = await runCompact(makeConfig(), [
-      { id: '1', role: 'user', content: 'only', timestamp: 0 },
-    ], { trigger: 'manual' });
+    const result = await runCompact(
+      makeConfig(),
+      [{ id: '1', role: 'user', content: 'only', timestamp: 0 }],
+      { trigger: 'manual' },
+    );
     expect(result.status).toBe('skipped');
     if (result.status === 'skipped') {
       expect(result.reason).toBe('too-short');

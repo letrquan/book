@@ -1,10 +1,4 @@
-import type {
-  AgentConfig,
-  CompactResult,
-  CompactTrigger,
-  Message,
-  Usage,
-} from '../types.js';
+import type { AgentConfig, CompactResult, CompactTrigger, Message, Usage } from '../types.js';
 import { chatCompletionStream } from '../provider/index.js';
 import { runHooks } from '../hooks.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
@@ -123,14 +117,9 @@ export function serializeHistoryForCompact(messages: readonly Message[]): string
 }
 
 /** Build the summarization user message (final message of the one-shot request). */
-export function buildCompactPrompt(
-  summarized: readonly Message[],
-  focus?: string,
-): string {
+export function buildCompactPrompt(summarized: readonly Message[], focus?: string): string {
   const transcript = serializeHistoryForCompact(summarized);
-  const focusBlock = focus?.trim()
-    ? `\n\nSpecial focus from the user: ${focus.trim()}`
-    : '';
+  const focusBlock = focus?.trim() ? `\n\nSpecial focus from the user: ${focus.trim()}` : '';
   return (
     `Summarize the following conversation so far into a compact structured markdown summary ` +
     `for continuing work. Preserve key decisions, file paths, code changes, errors/fixes, ` +

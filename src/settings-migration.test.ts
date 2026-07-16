@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -10,28 +10,22 @@ let fakeHome: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'book-migrate-'));
   fakeHome = mkdtempSync(join(tmpdir(), 'book-home-'));
-  // Point os.homedir() at our fake home for these tests.
-  vi.mock('os', async (orig) => ({
-    ...((await orig()) as typeof import('os')),
-    homedir: () => fakeHome,
-  }));
 });
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
   rmSync(fakeHome, { recursive: true, force: true });
-  vi.doUnmock('os');
 });
 
 describe('migrateLegacyPermissions', () => {
   it('returns false when no legacy permissions.json exists', () => {
-    expect(migrateLegacyPermissions(dir)).toBe(false);
+    expect(migrateLegacyPermissions(dir, fakeHome)).toBe(false);
   });
 
   it('returns false when legacy file has no rules', () => {
     mkdirSync(join(fakeHome, '.book'), { recursive: true });
     writeFileSync(join(fakeHome, '.book', 'permissions.json'), JSON.stringify({ rules: [] }));
-    expect(migrateLegacyPermissions(dir)).toBe(false);
+    expect(migrateLegacyPermissions(dir, fakeHome)).toBe(false);
   });
 
   it('migrates allow/deny/ask rules into settings.local.json', () => {
@@ -48,7 +42,7 @@ describe('migrateLegacyPermissions', () => {
       }),
     );
 
-    const migrated = migrateLegacyPermissions(dir);
+    const migrated = migrateLegacyPermissions(dir, fakeHome);
     expect(migrated).toBe(true);
 
     const localPath = join(dir, '.book', 'settings.local.json');
@@ -78,7 +72,7 @@ describe('migrateLegacyPermissions', () => {
       }),
     );
 
-    migrateLegacyPermissions(dir);
+    migrateLegacyPermissions(dir, fakeHome);
     const local = JSON.parse(readFileSync(join(dir, '.book', 'settings.local.json'), 'utf-8'));
     expect(local.model).toBe('existing-model');
     expect(local.permissions.allow).toContain('Read(*)');
@@ -94,8 +88,8 @@ describe('migrateLegacyPermissions', () => {
       }),
     );
 
-    migrateLegacyPermissions(dir);
-    migrateLegacyPermissions(dir); // second run should not duplicate
+    migrateLegacyPermissions(dir, fakeHome);
+    migrateLegacyPermissions(dir, fakeHome); // second run should not duplicate
 
     const local = JSON.parse(readFileSync(join(dir, '.book', 'settings.local.json'), 'utf-8'));
     const allowRules = local.permissions.allow.filter((r: string) => r === 'Bash(ls)');
@@ -105,6 +99,6 @@ describe('migrateLegacyPermissions', () => {
   it('returns false on corrupt legacy file (no crash)', () => {
     mkdirSync(join(fakeHome, '.book'), { recursive: true });
     writeFileSync(join(fakeHome, '.book', 'permissions.json'), '{not json');
-    expect(migrateLegacyPermissions(dir)).toBe(false);
+    expect(migrateLegacyPermissions(dir, fakeHome)).toBe(false);
   });
 });
