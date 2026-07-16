@@ -5,16 +5,19 @@ AI coding agent CLI with rich terminal UI. An open-source, provider-agnostic alt
 ## Features
 
 - **Interactive TUI** (Ink/React) plus **print mode** (`-p`) with `text` / `json` / `stream-json` output for CI.
-- **Providers**: Anthropic Messages API (prompt caching, extended thinking, `--effort`) and any OpenAI-compatible endpoint, auto-detected from `baseUrl`.
-- **Project context**: walks the tree to load `CLAUDE.md` (user-global → project → local → `.claude/rules/*.md`), injects git status, platform info, and the discovered skills, slash commands, and subagents into the system prompt.
+- **Providers**: Anthropic Messages API (prompt caching, adaptive thinking, `--effort`) and any OpenAI-compatible endpoint, auto-detected from `baseUrl` / `--provider`.
+- **Project context**: walks the tree to load `CLAUDE.md` (user-global → project → local → `.claude/rules/*.md`), injects git status, platform info, and discovered skills, slash commands, and subagents into a two-zone system prompt (cacheable static prefix + dynamic per-turn suffix).
 - **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
-- **Slash commands**: built-ins including `/init`, `/model`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, plus custom commands from `.book/commands/*.md`.
-- **Permissions**: allow/ask/deny rule matching with six permission modes (default, acceptEdits, plan, bypassPermissions, and more) — see `/permissions`.
-- **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio contract) for `PreToolUse` / `PostToolUse` / etc.
+- **Sessions**: append-only JSONL persistence with `--resume`, `--continue`, `--session-id`, `--name`, `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, and `/compact`.
+- **Tools**: file (`Read` / `Write` / `Edit` / `MultiEdit` / `Glob` / `Grep` / `NotebookEdit`), shell (`Bash` + `run_in_background`, `BashOutput`, `KillShell`), git, web (`WebFetch` / `WebSearch`), tasks (`TaskCreate` / `TaskList` / `TaskGet` / `TaskUpdate` / `TaskStop`), plan mode (`EnterPlanMode` / `ExitPlanMode`), skills (`InvokeSkill`), and subagent `Task` delegation.
+- **Slash commands**: built-ins including `/init`, `/model`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`.
+- **Permissions**: allow/ask/deny rule matching with six modes — `default`, `acceptEdits` (`accept-edits`), `plan`, `auto`, `dontAsk`, `bypassPermissions` — see `/permissions` or `--permission-mode`.
+- **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events.
 - **Skills & subagents**: discover skills from `.book/skills/` and subagents from `.book/agents/`; delegate via the `Task` tool.
 - **MCP**: stdio-transport MCP client for tool servers.
+- **CLI helpers**: `book doctor` (diagnose env/config) and `book config` (get/set/list settings).
 
-See [`MILESTONES.md`](./MILESTONES.md) for the full progress roadmap (Phase 1 Claude-Code-parity work, Phase 2 harness extension points, Phase 3 polish).
+See [`MILESTONES.md`](./MILESTONES.md) for the full progress roadmap (Phase 1 Claude-Code-parity work, Phase 2 harness extension points, Phase 3 polish). See [`CHANGELOG.md`](./CHANGELOG.md) for release notes.
 
 ## Installation
 
@@ -51,22 +54,56 @@ book -p "Refactor auth module" --output-format json
 book -p "Run tests" --output-format stream-json
 
 # Resume a previous session
-book --resume
+book --resume <id-or-name>
 book --continue  # most recent session in current directory
+
+# Diagnose setup / edit settings from the shell
+book doctor
+book config list
+book config get permissions.deny
+book config set permissions.allow '["Read(*)","Glob(*)","Grep(*)"]'
 ```
+
+### Common flags
+
+| Flag | Purpose |
+| --- | --- |
+| `-w, --workspace <path>` | Workspace root (default: cwd) |
+| `-m, --model <model>` | Model override |
+| `-p, --print [prompt]` | Non-interactive / CI mode |
+| `--output-format <fmt>` | `text` \| `json` \| `stream-json` |
+| `--permission-mode <mode>` | `default` \| `acceptEdits` \| `plan` \| `auto` \| `dontAsk` \| `bypassPermissions` |
+| `--effort <level>` | Thinking effort: `low` \| `medium` \| `high` \| `xhigh` \| `max` |
+| `--provider <type>` | `anthropic` \| `openai` \| `auto` |
+| `--max-turns <n>` | Cap agent turns (print mode) |
+| `--max-budget-usd <amount>` | Cap spend (print mode) |
+| `--json-schema <schema>` | Structured JSON output (print mode) |
+| `-r, --resume <id\|name>` | Resume a named/id session |
+| `-c, --continue` | Resume most recent session here |
+| `--session-id <uuid>` | Pin a session id |
+| `-n, --name <name>` | Display name for the session |
+| `--fork-session` | On resume, fork to a new session id |
+| `--no-session-persistence` | Do not write the session to disk |
+| `--settings <path>` / `--no-settings` | Ad-hoc settings file, or skip all layers |
+| `--scrollback` | Terminal-native scrollback instead of full-screen TUI |
 
 ## Configuration
 
-Settings are loaded from:
+Settings are loaded in priority order (later wins):
 
 1. `~/.book/settings.json` (user-global)
 2. `.book/settings.json` (project)
 3. `.book/settings.local.json` (local, should be gitignored)
+4. `--settings <path>` CLI flag
+
+Legacy `.bookrc.json` is still supported but deprecated. Use `--no-settings` to skip all `settings.json` layers (defaults + legacy only).
 
 ### Example `.book/settings.json`
 
 ```json
 {
+  "model": "claude-opus-4-6",
+  "effort": "high",
   "permissions": {
     "allow": ["Read(*)", "Glob(*)", "Grep(*)"],
     "deny": ["Bash(rm *)", "Write(.env)"]
@@ -78,9 +115,28 @@ Settings are loaded from:
     "PreToolUse": [
       { "matcher": "Bash(*)", "command": "my-validator" }
     ]
+  },
+  "memory": {
+    "enabled": true,
+    "autoSave": true,
+    "requireApproval": true
   }
 }
 ```
+
+### Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `BOOK_API_KEY` | Default API key (or `{env:VAR}` in provider settings) |
+| `BOOK_BASE_URL` | Default OpenAI-compatible base URL |
+| `BOOK_MODEL` | Default model |
+| `BOOK_PROVIDER` | `anthropic` \| `openai` \| `auto` |
+| `BOOK_EFFORT` | Thinking effort level |
+| `BOOK_WORKSPACE` | Default workspace |
+| `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS` | Generation / turn limits |
+| `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning |
+| `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW` | Debug logging flags |
 
 ## Slash Commands
 
@@ -94,25 +150,37 @@ description: Check for spelling errors
 Run a spell check on the codebase and fix any issues found.
 ```
 
+Built-ins include session controls (`/clear`, `/resume`, `/compact`), config (`/model`, `/config`, `/permissions`, `/theme`), inspection (`/status`, `/cost`, `/usage`, `/context`, `/diff`, `/skills`, `/memory`), and agent prompts (`/init`, `/review`, `/security-review`).
+
 ## SDK Usage
 
 ```typescript
 import { query } from 'book';
 
-for await (const event of query("Explain this code", {
+for await (const event of query('Explain this code', {
   workspace: process.cwd(),
-  apiKey: process.env.BOOK_API_KEY,
 })) {
-  if (event.type === 'text') console.log(event.text);
+  if (event.type === 'text') process.stdout.write(event.content);
+  if (event.type === 'tool_use') console.log('tool:', event.toolCall.name);
+  if (event.type === 'result') console.log('usage:', event.usage);
 }
 ```
+
+Auth and model selection come from settings / env (`BOOK_API_KEY`, `BOOK_MODEL`, provider blocks), not from `query()` options. See `src/sdk.ts` for the full `QueryEvent` / `QueryOptions` surface.
 
 ## Development
 
 ```bash
 npm run typecheck    # TypeScript check
-npm test             # Run tests
-npm run build        # Build for distribution
+npm test             # Run tests (vitest run)
+npm run test:watch   # Watch mode
+npm run test:coverage
+npm run build        # tsup → dist/
+npm run dev          # Run via tsx
+npm run lint         # ESLint
+npm run format       # Prettier
+npm run format:check
+npm run bench:ui     # TUI micro-benchmarks
 ```
 
 ## License
