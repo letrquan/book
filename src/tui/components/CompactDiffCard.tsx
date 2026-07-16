@@ -79,9 +79,7 @@ export function CompactDiffCard({
 
   const hunk = `@@ context  −${pre} msgs  →  +1 summary @@`;
   const metrics =
-    typeof preTok === 'number' && preTok > 0
-      ? `pre ~${(preTok / 1000).toFixed(1)}k context`
-      : null;
+    typeof preTok === 'number' && preTok > 0 ? `pre ~${(preTok / 1000).toFixed(1)}k context` : null;
 
   return (
     <Box
@@ -95,9 +93,7 @@ export function CompactDiffCard({
       <Text color={theme.subtle} bold>
         compact
       </Text>
-      {show(1) && (
-        <Text color={theme.subtle}>{truncateDisplay(hunk, contentWidth)}</Text>
-      )}
+      {show(1) && <Text color={theme.subtle}>{truncateDisplay(hunk, contentWidth)}</Text>}
       {show(2) && (
         <Text color={theme.diffRemoved}>
           {truncateDisplay('−  older conversation turns & tool dumps', contentWidth)}

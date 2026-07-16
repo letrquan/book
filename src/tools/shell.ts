@@ -384,7 +384,10 @@ async function bashBackground(
   });
   proc.on('close', (code, signal) => {
     if (shell.status === 'stopping') {
-      finishShell(shell, 'stopping', code, signal);
+      shell.exitCode = code;
+      shell.signal = signal;
+      shell.finishedAt = Date.now();
+      clearShellTimer(shell);
       return;
     }
     finishShell(shell, code === 0 ? 'exited' : 'failed', code, signal);

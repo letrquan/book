@@ -667,8 +667,7 @@ export async function* chatCompletionStream(
               totalTokens: inputTokens + outputTokens,
               cacheCreationInputTokens,
               cacheReadInputTokens,
-              contextTokens:
-                inputTokens + cacheCreationInputTokens + cacheReadInputTokens,
+              contextTokens: inputTokens + cacheCreationInputTokens + cacheReadInputTokens,
             };
             log.info('stream done', usage);
             yield { type: 'done', usage };

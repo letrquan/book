@@ -244,8 +244,11 @@ async function runSingleHook(
       },
     );
 
-    // Write the event payload to stdin.
-    child.stdin?.write(inputPayload);
-    child.stdin?.end();
+    // Some hooks exit before reading stdin. Treat a closed pipe as normal hook
+    // lifecycle instead of surfacing an unhandled EPIPE from the parent process.
+    if (child.stdin) {
+      child.stdin.on('error', () => {});
+      child.stdin.end(inputPayload);
+    }
   });
 }
