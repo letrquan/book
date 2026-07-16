@@ -141,6 +141,74 @@ describe('ToolCallBlock', () => {
     expect(rendered).toContain('Added 2 lines, removed 1 line');
   });
 
+  it('renders a bounded expanded file diff preview', () => {
+    const output = [
+      '@@ -1,8 +1,8 @@',
+      '-old 1',
+      '+new 1',
+      '-old 2',
+      '+new 2',
+      '-old 3',
+      '+new 3',
+    ].join('\n');
+    const view = render(
+      withTheme(
+        <ToolCallBlock
+          name="Edit"
+          args={{ filePath: 'src/a.ts' }}
+          result={{
+            toolCallId: 'call-diff',
+            success: true,
+            output,
+            fileMutation: {
+              kind: 'update',
+              filePath: 'src/a.ts',
+              addedLines: 3,
+              removedLines: 3,
+            },
+          }}
+          isExpanded
+          reducedMotion
+        />,
+      ),
+    );
+
+    const rendered = frame(view.lastFrame);
+    expect(rendered).toContain('-old 2');
+    expect(rendered).not.toContain('-old 3');
+    expect(rendered).toContain('2 more lines hidden');
+    expect(rendered).toContain('Ctrl+E shows all');
+  });
+
+  it('bounds expanded file diffs in screen reader mode', () => {
+    const output = [
+      '@@ -1,8 +1,8 @@',
+      '-old 1',
+      '+new 1',
+      '-old 2',
+      '+new 2',
+      '-old 3',
+      '+new 3',
+    ].join('\n');
+    const view = render(
+      withTheme(
+        <ToolCallBlock
+          name="Edit"
+          args={{ filePath: 'src/a.ts' }}
+          result={{ toolCallId: 'call-sr-diff', success: true, output }}
+          isExpanded
+          screenReader
+          reducedMotion
+        />,
+      ),
+    );
+
+    const rendered = frame(view.lastFrame);
+    expect(rendered).toContain('-old 2');
+    expect(rendered).not.toContain('-old 3');
+    expect(rendered).toContain('2 more lines hidden');
+  });
+
   it('renders NotebookEdit as a file update with notebook path and stats', () => {
     const view = render(
       withTheme(
@@ -178,7 +246,7 @@ describe('ToolCallBlock', () => {
           result={{
             toolCallId: 'call-2',
             success: true,
-            output: '+first line\n+second line',
+            output: '@@ -1 +1 @@\n+first line\n+second line',
             fileMutation: {
               kind: 'create',
               filePath: 'src/new-file.txt',

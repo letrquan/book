@@ -20,7 +20,7 @@ interface AgentMessageProps {
   message: Message;
   isStreaming: boolean;
   pendingPermission?: PendingPermission | null;
-  activeToolCallId?: string | null;
+  expandedToolCallId?: string | null;
   reducedMotion?: boolean;
   screenReader?: boolean;
   /** Terminal width in columns — passed down to MarkdownBlock for word-wrap. */
@@ -40,7 +40,7 @@ function NestedToolRows({
   childrenByParent,
   parentTraceId,
   depth,
-  activeToolCallId,
+  expandedToolCallId,
   reducedMotion,
   screenReader,
   showAllToolOutput,
@@ -49,7 +49,7 @@ function NestedToolRows({
   childrenByParent: NestedToolChildren;
   parentTraceId: string;
   depth: number;
-  activeToolCallId?: string | null;
+  expandedToolCallId?: string | null;
   reducedMotion: boolean;
   screenReader: boolean;
   showAllToolOutput: boolean;
@@ -63,7 +63,7 @@ function NestedToolRows({
         name={invocation.call.name}
         args={invocation.call.arguments}
         result={invocation.result}
-        isExpanded={activeToolCallId === invocation.traceId}
+        isExpanded={expandedToolCallId === invocation.traceId}
         reducedMotion={reducedMotion}
         screenReader={screenReader}
         showAllToolOutput={showAllToolOutput}
@@ -73,7 +73,7 @@ function NestedToolRows({
         childrenByParent={childrenByParent}
         parentTraceId={invocation.traceId}
         depth={depth + 1}
-        activeToolCallId={activeToolCallId}
+        expandedToolCallId={expandedToolCallId}
         reducedMotion={reducedMotion}
         screenReader={screenReader}
         showAllToolOutput={showAllToolOutput}
@@ -231,7 +231,7 @@ export function AgentMessageInner({
   message,
   isStreaming,
   pendingPermission,
-  activeToolCallId,
+  expandedToolCallId,
   reducedMotion = false,
   screenReader = false,
   terminalWidth,
@@ -339,7 +339,7 @@ export function AgentMessageInner({
               name={tc.name}
               args={tc.arguments}
               result={result}
-              isExpanded={activeToolCallId === tc.id}
+              isExpanded={expandedToolCallId === tc.id}
               isPending={isPending}
               reducedMotion={reducedMotion}
               screenReader={screenReader}
@@ -351,7 +351,7 @@ export function AgentMessageInner({
                 childrenByParent={childrenByParent}
                 parentTraceId={tc.id}
                 depth={1}
-                activeToolCallId={activeToolCallId}
+                expandedToolCallId={expandedToolCallId}
                 reducedMotion={reducedMotion}
                 screenReader={screenReader}
                 showAllToolOutput={showAllToolOutput}
@@ -376,7 +376,7 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
   // Fast path: same references for the most common props.
   if (
     prev.isStreaming === next.isStreaming &&
-    prev.activeToolCallId === next.activeToolCallId &&
+    prev.expandedToolCallId === next.expandedToolCallId &&
     prev.pendingPermission?.toolCall?.id === next.pendingPermission?.toolCall?.id &&
     prev.retryPhase === next.retryPhase &&
     prev.retryAttempt === next.retryAttempt &&

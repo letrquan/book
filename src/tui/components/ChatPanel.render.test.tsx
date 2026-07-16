@@ -226,7 +226,7 @@ describe('ChatPanel Ink rendering', () => {
       withTheme(
         <ChatPanel
           messages={messages}
-          activeToolCallId="call-ws"
+          expandedToolCallId="call-ws"
           terminalWidth={100}
           reducedMotion
           screenReader
@@ -407,7 +407,7 @@ describe('ChatPanel Ink rendering', () => {
       withTheme(
         <ChatPanel
           messages={messages}
-          activeToolCallId="call-1"
+          expandedToolCallId="call-1"
           terminalWidth={100}
           reducedMotion
           screenReader
@@ -446,7 +446,7 @@ describe('ChatPanel Ink rendering', () => {
           messages={messages}
           pendingPermission={{ toolCall, resolve: onResolve }}
           onResolvePermission={onResolve}
-          activeToolCallId="call-pending"
+          expandedToolCallId="call-pending"
           terminalWidth={100}
           reducedMotion
           screenReader
@@ -479,7 +479,7 @@ describe('ChatPanel Ink rendering', () => {
         <ChatPanel
           messages={messages}
           streamingMessageId="a2"
-          activeToolCallId="call-streaming-pending"
+          expandedToolCallId="call-streaming-pending"
           terminalWidth={100}
           reducedMotion
           screenReader
@@ -496,7 +496,7 @@ describe('ChatPanel Ink rendering', () => {
           streamingMessageId="a2"
           pendingPermission={{ toolCall, resolve: onResolve }}
           onResolvePermission={onResolve}
-          activeToolCallId="call-streaming-pending"
+          expandedToolCallId="call-streaming-pending"
           terminalWidth={100}
           reducedMotion
           screenReader
@@ -527,7 +527,7 @@ describe('ChatPanel Ink rendering', () => {
         <ChatPanel
           messages={messages}
           streamingMessageId="a2"
-          activeToolCallId="call-exit-plan-mode"
+          expandedToolCallId="call-exit-plan-mode"
           terminalWidth={100}
           screenReader
         />,
@@ -557,7 +557,7 @@ describe('ChatPanel Ink rendering', () => {
       withTheme(
         <ChatPanel
           messages={messages}
-          activeToolCallId="call-merged"
+          expandedToolCallId="call-merged"
           terminalWidth={100}
           reducedMotion
           screenReader
@@ -645,7 +645,7 @@ describe('ChatPanel Ink rendering', () => {
       withTheme(
         <ChatPanel
           messages={messages}
-          activeToolCallId="call-1"
+          expandedToolCallId="call-1"
           terminalWidth={100}
           reducedMotion
         />,
@@ -673,7 +673,7 @@ describe('ChatPanel Ink rendering', () => {
       withTheme(
         <ChatPanel
           messages={messages}
-          activeToolCallId="call-1"
+          expandedToolCallId="call-1"
           terminalWidth={100}
           reducedMotion
           showAllToolOutput
@@ -686,7 +686,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).not.toContain('more lines hidden');
   });
 
-  it('renders Claude-style file mutation metadata under the assistant turn', () => {
+  it('keeps the latest completed file mutation preview visible under the assistant turn', () => {
     const diffOutput = ['@@ -1 +1 @@', '-old line', '+new line'].join('\n');
     const messages: Message[] = [
       {
@@ -706,25 +706,56 @@ describe('ChatPanel Ink rendering', () => {
           },
         ],
       },
+      msg('a2', 'assistant', 'Done.'),
     ];
 
     const view = render(
-      withTheme(
-        <ChatPanel
-          messages={messages}
-          activeToolCallId="call-1"
-          terminalWidth={100}
-          reducedMotion
-        />,
-      ),
+      withTheme(<ChatPanel messages={messages} terminalWidth={100} reducedMotion />),
     );
 
     const output = frame(view.lastFrame);
     expect(output).toContain('I will update it.');
+    expect(output).toContain('Done.');
     expect(output).toContain('Update(src/a.ts)');
     expect(output).toContain('Added 1 line, removed 1 line');
     expect(output).toContain('-old line');
     expect(output).toContain('+new line');
+  });
+
+  it('collapses an older file preview when a newer non-file tool turn completes', () => {
+    const messages: Message[] = [
+      {
+        ...msg('a1', 'assistant', 'Editing the first file.'),
+        toolCalls: [{ id: 'edit', name: 'Edit', arguments: { filePath: 'src/a.ts' } }],
+        toolResults: [
+          {
+            toolCallId: 'edit',
+            success: true,
+            output: '@@ -1 +1 @@\n-old marker\n+new marker',
+            fileMutation: {
+              kind: 'update',
+              filePath: 'src/a.ts',
+              addedLines: 1,
+              removedLines: 1,
+            },
+          },
+        ],
+      },
+      {
+        ...msg('a2', 'assistant', ''),
+        toolCalls: [{ id: 'read', name: 'Read', arguments: { filePath: 'src/b.ts' } }],
+        toolResults: [{ toolCallId: 'read', success: true, output: 'contents' }],
+      },
+    ];
+
+    const view = render(
+      withTheme(<ChatPanel messages={messages} terminalWidth={100} reducedMotion />),
+    );
+    const output = frame(view.lastFrame);
+
+    expect(output).toContain('Update(src/a.ts)');
+    expect(output).not.toContain('-old marker');
+    expect(output).not.toContain('+new marker');
   });
 
   it('merges adjacent assistant messages where later has no content (tool-call-only turn)', () => {
@@ -753,7 +784,7 @@ describe('ChatPanel Ink rendering', () => {
       withTheme(
         <ChatPanel
           messages={messages}
-          activeToolCallId="call-1"
+          expandedToolCallId="call-1"
           terminalWidth={100}
           reducedMotion
           screenReader

@@ -1,7 +1,7 @@
 import { Text, Box } from 'ink';
 import { useTheme } from '../theme.js';
 import { prepareToolOutputDisplay } from './tool-output.js';
-import { truncateDisplay } from './word-wrap.js';
+import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 interface DiffProps {
   /** Raw unified diff output string (lines starting with @@, +, -, or space). */
@@ -20,144 +20,84 @@ export function isUnifiedDiffLike(output: string): boolean {
   return hasHunk && hasChangedLine;
 }
 
-/**
- * Parse a unified diff string into structured segments for color rendering.
- * Handles:
- *   @@ -old,count +new,count @@  → hunk header (subtle)
- *   +added line                    → diffAdded color
- *   -removed line                  → diffRemoved color
- *   context line                   → normal text color
- *
- * For word-level highlights (CC-style inline diffs), lines starting with
- * + or - that contain sub-parts surrounded by `{+...+}` or `{-...-}`
- * are split into staggered colored spans using diffAddedWord/diffRemovedWord.
- */
-function parseDiffLines(output: string): Array<{
+type DiffLineKind = 'add' | 'del' | 'hunk' | 'ctx';
+type DiffSpanKind = 'plain' | 'addedWord' | 'removedWord';
+
+export interface ParsedDiffLine {
   text: string;
-  /** Theme token: 'diffAdded' | 'diffRemoved' | 'diffAddedWord' | 'diffRemovedWord' | 'diffHunk' | 'diffCtx' | 'diffAddedDimmed' | 'diffRemovedDimmed' */
-  kind:
-    | 'diffAdded'
-    | 'diffRemoved'
-    | 'diffAddedWord'
-    | 'diffRemovedWord'
-    | 'diffHunk'
-    | 'diffCtx'
-    | 'diffAddedDimmed'
-    | 'diffRemovedDimmed';
-}> {
-  const lines = output.split('\n');
-  const result: ReturnType<typeof parseDiffLines> = [];
-
-  for (const line of lines) {
-    if (line === '' && output.length === 0) continue; // skip empty result for truly empty input
-    if (line.startsWith('@@')) {
-      result.push({ text: line, kind: 'diffHunk' });
-    } else if (line.startsWith('+')) {
-      // Check for CC-style word-level highlights: {+added+} within the line.
-      const stripped = line.slice(1);
-      const wordTokens = parseWordLevelDiff(stripped, 'add');
-      if (wordTokens) {
-        for (const wt of wordTokens) {
-          result.push({
-            text: wt.text,
-            kind: wt.kind,
-          });
-        }
-      } else {
-        result.push({ text: line, kind: 'diffAdded' });
-      }
-    } else if (line.startsWith('-')) {
-      const stripped = line.slice(1);
-      const wordTokens = parseWordLevelDiff(stripped, 'del');
-      if (wordTokens) {
-        for (const wt of wordTokens) {
-          result.push({
-            text: wt.text,
-            kind: wt.kind,
-          });
-        }
-      } else {
-        result.push({ text: line, kind: 'diffRemoved' });
-      }
-    } else {
-      result.push({ text: line, kind: 'diffCtx' });
-    }
-  }
-
-  return result;
+  kind: DiffLineKind;
+  spans?: Array<{ text: string; kind: DiffSpanKind }>;
 }
 
 /**
- * Parse lines with CC-style inline word diffs:
- *   {+added+}  → diffAddedWord
- *   {-removed-} → diffRemovedWord
- *
- * Returns null if no word-level tokens found.
+ * Parse one diff source line into one visual row. Word-level markers become
+ * inline spans instead of separate rows, preserving the original line count.
  */
-function parseWordLevelDiff(
-  line: string,
-  mode: 'add' | 'del',
-): Array<{
-  text: string;
-  kind: 'diffAdded' | 'diffRemoved' | 'diffAddedWord' | 'diffRemovedWord';
-}> | null {
-  // Check for CC-style markers: {+...+} or {-...-}
-  const addedRe = /\{\+(.+?)\+\}/g;
-  const removedRe = /\{\-(.+?)\-\}/g;
-
-  const tokens: Array<{
-    text: string;
-    kind: 'diffAdded' | 'diffRemoved' | 'diffAddedWord' | 'diffRemovedWord';
-  }> = [];
-  let remaining = line;
-  let lastIdx = 0;
-
-  // Combined regex that matches both.
+function parseWordLevelDiff(line: string): Array<{ text: string; kind: DiffSpanKind }> | undefined {
+  const spans: Array<{ text: string; kind: DiffSpanKind }> = [];
   const combined = /\{(\+|\-)(.+?)\1\}/gs;
+  let lastIndex = 0;
   let match: RegExpExecArray | null;
-  let hasWordDiff = false;
 
   while ((match = combined.exec(line)) !== null) {
-    hasWordDiff = true;
-    // Text before this match is plain.
-    const before = line.slice(lastIdx, match.index);
-    if (before) {
-      tokens.push({ text: before, kind: mode === 'add' ? 'diffAdded' : 'diffRemoved' });
-    }
-    // The word-diff region.
-    const wordKind = match[1] === '+' ? 'diffAddedWord' : 'diffRemovedWord';
-    tokens.push({ text: match[2], kind: wordKind });
-    lastIdx = combined.lastIndex;
+    const before = line.slice(lastIndex, match.index);
+    if (before) spans.push({ text: before, kind: 'plain' });
+    spans.push({
+      text: match[2],
+      kind: match[1] === '+' ? 'addedWord' : 'removedWord',
+    });
+    lastIndex = combined.lastIndex;
   }
 
-  if (!hasWordDiff) return null;
-
-  // Trailing text.
-  const after = line.slice(lastIdx);
-  if (after) {
-    tokens.push({ text: after, kind: mode === 'add' ? 'diffAdded' : 'diffRemoved' });
-  }
-
-  return tokens;
+  if (spans.length === 0) return undefined;
+  const after = line.slice(lastIndex);
+  if (after) spans.push({ text: after, kind: 'plain' });
+  return spans;
 }
 
-/** Theme token → color keys for lookups. */
-const DIFF_COLOR_MAP: Record<string, keyof ReturnType<typeof useTheme>> = {
-  diffAdded: 'diffAdded',
-  diffRemoved: 'diffRemoved',
-  diffAddedWord: 'diffAddedWord',
-  diffRemovedWord: 'diffRemovedWord',
-  diffHunk: 'brand',
-  diffCtx: 'subtle',
-  diffAddedDimmed: 'diffAddedDimmed',
-  diffRemovedDimmed: 'diffRemovedDimmed',
-};
+export function parseDiffLines(output: string): ParsedDiffLine[] {
+  if (output.length === 0) return [];
+
+  return output.split('\n').map((line) => {
+    if (line.startsWith('@@')) return { text: line, kind: 'hunk' };
+    if (line.startsWith('+')) {
+      return { text: line, kind: 'add', spans: parseWordLevelDiff(line) };
+    }
+    if (line.startsWith('-')) {
+      return { text: line, kind: 'del', spans: parseWordLevelDiff(line) };
+    }
+    return { text: line, kind: 'ctx' };
+  });
+}
+
+function truncateSpans(
+  spans: NonNullable<ParsedDiffLine['spans']>,
+  width: number,
+): NonNullable<ParsedDiffLine['spans']> {
+  const limit = Math.max(0, Math.floor(width));
+  if (limit === 0) return [];
+
+  const output: NonNullable<ParsedDiffLine['spans']> = [];
+  let remaining = limit;
+  for (const span of spans) {
+    if (remaining <= 0) break;
+    const spanWidth = displayWidth(span.text);
+    if (spanWidth <= remaining) {
+      output.push(span);
+      remaining -= spanWidth;
+      continue;
+    }
+    output.push({ ...span, text: truncateDisplay(span.text, remaining) });
+    remaining = 0;
+  }
+  return output;
+}
 
 export function DiffBlock({
   output,
   maxLines = 200,
   collapsed = false,
-  terminalWidth = 120,
+  terminalWidth = 80,
 }: DiffProps) {
   const theme = useTheme();
   const parsed = parseDiffLines(output);
@@ -173,32 +113,60 @@ export function DiffBlock({
 
   return (
     <Box flexDirection="column">
-      {display.map((segment, i) => {
-        const colorKey = DIFF_COLOR_MAP[segment.kind] ?? 'subtle';
-        const color = theme[colorKey] as string;
-        const isDimmed = segment.kind === 'diffAddedDimmed' || segment.kind === 'diffRemovedDimmed';
+      {display.map((line, index) => {
+        const backgroundColor =
+          line.kind === 'add'
+            ? theme.diffAdded
+            : line.kind === 'del'
+              ? theme.diffRemoved
+              : undefined;
+        const foregroundColor = line.kind === 'hunk' ? theme.brand : theme.text;
+        const clippedText = truncateDisplay(line.text, lineWidth);
+        const clippedSpans = line.spans ? truncateSpans(line.spans, lineWidth) : undefined;
+        const contentWidth = clippedSpans
+          ? clippedSpans.reduce((total, span) => total + displayWidth(span.text), 0)
+          : displayWidth(clippedText);
+        const padding = backgroundColor ? ' '.repeat(Math.max(0, lineWidth - contentWidth)) : '';
 
         return (
-          <Box key={i} marginLeft={2}>
-            <Text
-              color={color}
-              dimColor={isDimmed}
-              bold={segment.kind === 'diffAddedWord' || segment.kind === 'diffRemovedWord'}
-            >
-              {'│'} {truncateDisplay(segment.text, lineWidth)}
-            </Text>
+          <Box key={index} marginLeft={2}>
+            <Text color={theme.subtle}>│ </Text>
+            {clippedSpans ? (
+              <Text backgroundColor={backgroundColor} color={foregroundColor}>
+                {clippedSpans.map((span, spanIndex) => (
+                  <Text
+                    key={spanIndex}
+                    backgroundColor={
+                      span.kind === 'addedWord'
+                        ? theme.diffAddedWord
+                        : span.kind === 'removedWord'
+                          ? theme.diffRemovedWord
+                          : backgroundColor
+                    }
+                    color={foregroundColor}
+                    bold={span.kind !== 'plain'}
+                  >
+                    {span.text}
+                  </Text>
+                ))}
+                {padding}
+              </Text>
+            ) : (
+              <Text backgroundColor={backgroundColor} color={foregroundColor}>
+                {clippedText}
+                {padding}
+              </Text>
+            )}
           </Box>
         );
       })}
-      {outputDisplay.footer && (
+      {outputDisplay.footer ? (
         <Box marginLeft={2}>
           <Text color={theme.subtle} dimColor>
-            {'│'} {truncateDisplay(outputDisplay.footer, lineWidth)}
+            │ {truncateDisplay(outputDisplay.footer, lineWidth)}
           </Text>
         </Box>
-      )}
+      ) : null}
     </Box>
   );
 }
-
-export { parseDiffLines };

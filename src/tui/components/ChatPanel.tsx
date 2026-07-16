@@ -15,6 +15,7 @@ import { AsciiBanner } from './AsciiBanner.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 import { mergeAssistantMessages } from './transcript-messages.js';
+import { selectExpandedToolId } from '../tool-traces.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
@@ -66,7 +67,7 @@ interface ChatPanelProps {
   onResolvePlanApproval?: (result: PlanApprovalResult) => void;
   /** @deprecated Dynamic transcript rendering no longer needs Static replay epochs. */
   staticEpoch?: number;
-  activeToolCallId?: string | null;
+  expandedToolCallId?: string | null;
   reducedMotion?: boolean;
   screenReader?: boolean;
   terminalWidth?: number;
@@ -88,7 +89,7 @@ export function ChatPanel({
   messages,
   streamingMessageId,
   pendingPermission,
-  activeToolCallId,
+  expandedToolCallId,
   reducedMotion = false,
   screenReader = false,
   terminalWidth,
@@ -109,6 +110,8 @@ export function ChatPanel({
     () => mergeAssistantMessages(messages, streamingMessageId),
     [messages, streamingMessageId],
   );
+  const selectedToolCallId =
+    expandedToolCallId === undefined ? selectExpandedToolId(messages) : expandedToolCallId;
 
   renderLog.event('render', {
     total: displayMessages.length,
@@ -162,7 +165,7 @@ export function ChatPanel({
               message={message}
               isStreaming={isStreaming}
               pendingPermission={pendingPermission}
-              activeToolCallId={activeToolCallId}
+              expandedToolCallId={selectedToolCallId}
               reducedMotion={reducedMotion}
               screenReader={screenReader}
               terminalWidth={terminalWidth}

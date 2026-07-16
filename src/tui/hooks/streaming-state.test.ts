@@ -130,6 +130,32 @@ describe('streaming TUI message state helpers', () => {
     expect(messages[0].toolResults?.[1].toolCallId).toBe('call-2');
   });
 
+  it('preserves file mutation diff metadata while upserting tool results', () => {
+    const diff = '@@ -1 +1 @@\n-old\n+new';
+    let messages = [msg('assistant-1', 'assistant', '')];
+    messages = appendToolResultToMessage(messages, 'assistant-1', {
+      toolCallId: 'edit',
+      success: true,
+      output: diff,
+      fileMutation: {
+        kind: 'update',
+        filePath: 'src/a.ts',
+        addedLines: 1,
+        removedLines: 1,
+      },
+    });
+
+    expect(messages[0].toolResults?.[0]).toMatchObject({
+      output: diff,
+      fileMutation: {
+        kind: 'update',
+        filePath: 'src/a.ts',
+        addedLines: 1,
+        removedLines: 1,
+      },
+    });
+  });
+
   it('attaches nested results by trace id without confusing duplicate provider ids', () => {
     let messages = [msg('assistant-1', 'assistant', '')];
     messages = appendNestedToolInvocationToMessage(messages, 'assistant-1', {

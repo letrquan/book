@@ -55,7 +55,7 @@ import { persistSettingLocal } from './persist.js';
 import { buildModelOptions } from './model-options.js';
 import { redactSettingValue, redactSettingsForDisplay } from '../settings-redaction.js';
 import { createUiDebugLogger } from '../debug-log.js';
-import { selectActiveToolId } from './tool-traces.js';
+import { selectExpandedToolId } from './tool-traces.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
 
 const uiLog = createUiDebugLogger('tui:app');
@@ -157,7 +157,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
     retryCountdownMs,
   } = useAgent(config, session);
 
-  const [expandedToolId, setExpandedToolId] = useState<string | null>(null);
   const [showTasks, setShowTasks] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -287,12 +286,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
       void endCurrentSession('exit').finally(exitApp);
       return;
     }
-    // Ctrl+E — toggle full tool output
-    if (key.ctrl && input === 'e') {
-      uiLog.event('input:Ctrl+E', { action: 'toggle-tool-output' });
-      setShowAllToolOutput((s) => !s);
-      return;
-    }
     // Ctrl+T — toggle task list
     if (key.ctrl && input === 't') {
       uiLog.event('input:Ctrl+T', { action: 'toggle-tasks' });
@@ -328,11 +321,9 @@ export function App({ config, session, redrawViewport }: AppProps) {
     }
   }, [isThinking, messages.length, currentTurn]);
 
-  // Auto-expand the latest running nested tool, then fall back to the latest
-  // running top-level tool. Collapse once every invocation is terminal.
-  useEffect(() => {
-    setExpandedToolId(selectActiveToolId(messages[messages.length - 1]));
-  }, [messages]);
+  // Keep the latest running tool open. Once it completes, preserve the newest
+  // file mutation in the latest tool-bearing turn as a bounded diff preview.
+  const expandedToolId = useMemo(() => selectExpandedToolId(messages), [messages]);
 
   const handleSubmit = useCallback(
     (value: string) => {
@@ -355,7 +346,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
       const commandArg = firstSpace === -1 ? '' : value.slice(firstSpace + 1).trim();
       if (commandName === 'clear' || commandName === 'new' || commandName === 'reset') {
         clearTasks();
-        setExpandedToolId(null);
         setShowHelp(false);
         setShowStatus(false);
         setShowSessionPicker(false);
@@ -723,11 +713,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
       ) {
         return true;
       }
-      if (key.ctrl && input === '/') {
+      if (key.ctrl && (input === '/' || input === '_')) {
         setShowShortcuts((s) => !s);
         return true; // consumed
       }
-      if (key.ctrl && input === 'e') {
+      if (key.ctrl && (input === 'e' || input.charCodeAt(0) === 5)) {
         uiLog.event('input:Ctrl+E', { action: 'toggle-tool-output' });
         setShowAllToolOutput((s) => !s);
         return true; // consumed
@@ -776,7 +766,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 messages={messages}
                 streamingMessageId={streamingMessageId}
                 pendingPermission={pendingPermission}
-                activeToolCallId={expandedToolId}
+                expandedToolCallId={expandedToolId}
                 reducedMotion={motionDisabled}
                 screenReader={screenReader}
                 terminalWidth={termWidth}
