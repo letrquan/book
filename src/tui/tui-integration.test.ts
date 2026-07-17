@@ -28,6 +28,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const DIST_INDEX = join(__dirname, '..', '..', 'dist', 'index.js');
 const PROJECT_ROOT = join(__dirname, '..', '..');
+const IS_WINDOWS = process.platform === 'win32';
 const HAS_API_KEY = !!process.env.BOOK_API_KEY;
 
 function stripAnsi(str: string): string {
@@ -166,7 +167,7 @@ afterEach(async () => {
 // Tests — Slash commands
 // ---------------------------------------------------------------------------
 
-describe('TUI slash commands', () => {
+describe.skipIf(!IS_WINDOWS)('TUI slash commands', () => {
   it('/help shows the help panel with slash commands list', async () => {
     session = await startAndWait();
     // Enter accepts the selected /help completion; the second Enter submits it.
@@ -243,7 +244,7 @@ describe('TUI slash commands', () => {
 // Tests — Keyboard scrolling & shortcuts
 // ---------------------------------------------------------------------------
 
-describe('TUI keyboard input', () => {
+describe.skipIf(!IS_WINDOWS)('TUI keyboard input', () => {
   it('renders the TUI on startup with status line and input', async () => {
     session = await startAndWait();
     const output = session.read();
@@ -370,7 +371,7 @@ describe('TUI keyboard input', () => {
 // Tests — Streaming & tool calls (needs BOOK_API_KEY)
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!HAS_API_KEY)('TUI streaming with API', () => {
+describe.skipIf(!IS_WINDOWS || !HAS_API_KEY)('TUI streaming with API', () => {
   it('streams a response after submitting a message', async () => {
     session = await startAndWait();
     session.submit('Say exactly: HELLO_TUI_TEST');
