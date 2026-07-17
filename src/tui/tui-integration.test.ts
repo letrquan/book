@@ -8,15 +8,12 @@
  * Uses node-pty's onData event to collect output. Slash-command-only tests
  * run without an API key. Streaming tests require BOOK_API_KEY env var.
  *
- * NOTE: On Windows ConPTY, these tests MUST run sequentially (Vitest
- * file-level `--pool forks --poolOptions.forks.singleFork`) because
- * spawning multiple ConPTY sessions in parallel causes "AttachConsole
- * failed" errors. The "AttachConsole failed" messages from
- * conpty_console_list_agent.js in stdout are non-fatal — they come from
- * a helper process spawned by node-pty and don't affect the TUI.
+ * NOTE: These tests use Windows ConPTY on Windows and the native Unix PTY
+ * elsewhere. Keep them sequential because parallel ConPTY sessions can emit
+ * non-fatal "AttachConsole failed" helper errors and interfere with each other.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { spawn, IPty, IDisposable } from 'node-pty';
+import { spawn } from 'node-pty';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -39,6 +36,16 @@ function stripAnsi(str: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+async function typeAndWait(session: TuiSession, text: string): Promise<void> {
+  let typed = '';
+  for (const ch of text) {
+    typed += ch;
+    session.sendKey(ch);
+    const output = await session.waitFor(`> ${typed}`, 5000);
+    expect(output).toContain(`> ${typed}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +79,7 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
     rows: 40,
     env,
     name: 'xterm-256color',
-    useConpty: true,
+    useConpty: IS_WINDOWS,
   });
 
   let output = '';
@@ -158,7 +165,7 @@ afterEach(async () => {
   if (session) {
     session.kill();
     session = null;
-    // Let ConPTY cleanup before next spawn.
+    // Let the previous PTY clean up before the next spawn.
     await sleep(500);
   }
 });
@@ -167,16 +174,10 @@ afterEach(async () => {
 // Tests — Slash commands
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!IS_WINDOWS)('TUI slash commands', () => {
+describe('TUI slash commands', () => {
   it('/help shows the help panel with slash commands list', async () => {
     session = await startAndWait();
-    // Enter accepts the selected /help completion; the second Enter submits it.
-    for (const ch of '/help') {
-      session.sendKey(ch);
-      await sleep(50);
-    }
-    session.sendKey('\r');
-    await sleep(100);
+    await typeAndWait(session, '/help');
     session.sendKey('\r');
     await sleep(300);
     session.sendKey(keys.ctrlHome);
@@ -191,17 +192,10 @@ describe.skipIf(!IS_WINDOWS)('TUI slash commands', () => {
 
   it('/help toggle hides the help panel', async () => {
     session = await startAndWait();
-    // Char-by-char to avoid ConPTY batch race with autocomplete menu.
-    for (const ch of '/help') {
-      session.sendKey(ch);
-      await sleep(50);
-    }
+    await typeAndWait(session, '/help');
     session.sendKey('\r');
     await session.waitFor('Slash Commands', 5000);
-    for (const ch of '/help') {
-      session.sendKey(ch);
-      await sleep(50);
-    }
+    await typeAndWait(session, '/help');
     session.sendKey('\r');
     await sleep(500);
     const output = session.read();
@@ -244,7 +238,7 @@ describe.skipIf(!IS_WINDOWS)('TUI slash commands', () => {
 // Tests — Keyboard scrolling & shortcuts
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!IS_WINDOWS)('TUI keyboard input', () => {
+describe('TUI keyboard input', () => {
   it('renders the TUI on startup with status line and input', async () => {
     session = await startAndWait();
     const output = session.read();
@@ -262,8 +256,8 @@ describe.skipIf(!IS_WINDOWS)('TUI keyboard input', () => {
     await sleep(500);
 
     const resizeOutput = session.readRaw().slice(beforeResize);
-    // Windows ConPTY may inject its own resize/cursor-position sequence between
-    // Ink's home and clear commands, so assert the destructive clear itself.
+    // PTY resize handling may insert cursor-position sequences between Ink's
+    // home and clear commands, so assert the destructive clear itself.
     expect(resizeOutput).toContain('\x1b[2J');
     expect(stripAnsi(resizeOutput)).toContain('RESIZE_MARKER');
   }, 20_000);
@@ -298,9 +292,8 @@ describe.skipIf(!IS_WINDOWS)('TUI keyboard input', () => {
 
   it('wheel events do not enter the prompt', async () => {
     session = await startAndWait();
-    // ConPTY consumes terminal-mode sequences such as ?1000h and ?1006h
-    // instead of forwarding them through onData, so their exact lifecycle is
-    // covered by run.test.ts. This test verifies the resulting input routing.
+    // Terminal-mode lifecycle is covered by run.test.ts. This test verifies
+    // the resulting mouse input routing through the active PTY.
     expect(session.readRaw()).toContain('\x1b[?1049h');
 
     session.sendKey('MOUSE_DRAFT');
@@ -371,7 +364,7 @@ describe.skipIf(!IS_WINDOWS)('TUI keyboard input', () => {
 // Tests — Streaming & tool calls (needs BOOK_API_KEY)
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!IS_WINDOWS || !HAS_API_KEY)('TUI streaming with API', () => {
+describe.skipIf(!HAS_API_KEY)('TUI streaming with API', () => {
   it('streams a response after submitting a message', async () => {
     session = await startAndWait();
     session.submit('Say exactly: HELLO_TUI_TEST');
