@@ -69,6 +69,9 @@ interface TuiSession {
 async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiSession> {
   const env = {
     ...process.env,
+    // Ink suppresses intermediate frames in CI, but this child is an interactive PTY.
+    CI: 'false',
+    CONTINUOUS_INTEGRATION: 'false',
     BOOK_API_KEY: process.env.BOOK_API_KEY ?? 'sk-test-placeholder',
     ...extraEnv,
   };
