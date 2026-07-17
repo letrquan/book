@@ -14,7 +14,8 @@ import { WelcomeScreen } from './WelcomeScreen.js';
 import { AsciiBanner } from './AsciiBanner.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
-import { mergeAssistantMessages } from './transcript-messages.js';
+import { buildTranscriptItems, type TranscriptCompactBoundary } from './transcript-messages.js';
+import { CompactDiffCard } from './CompactDiffCard.js';
 import { selectExpandedToolId } from '../tool-traces.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');
@@ -57,6 +58,9 @@ interface PendingPlanApproval {
 
 interface ChatPanelProps {
   messages: Message[];
+  compactBoundaries?: TranscriptCompactBoundary[];
+  animatedBoundaryId?: string | null;
+  onBoundarySettled?: (boundaryId: string) => void;
   streamingMessageId?: string | null;
   pendingPermission?: PendingPermission | null;
   /** @deprecated Approval actions now render in App's fixed interaction area. */
@@ -87,6 +91,9 @@ interface ChatPanelProps {
 /** Dynamically renders transcript content. TranscriptView owns clipping and navigation. */
 export function ChatPanel({
   messages,
+  compactBoundaries = [],
+  animatedBoundaryId,
+  onBoundarySettled,
   streamingMessageId,
   pendingPermission,
   expandedToolCallId,
@@ -106,20 +113,20 @@ export function ChatPanel({
   retryCountdownMs = 0,
 }: ChatPanelProps) {
   useDebugMount(uiLog, { model, mode, commandCount, skillCount });
-  const displayMessages = useMemo(
-    () => mergeAssistantMessages(messages, streamingMessageId),
-    [messages, streamingMessageId],
+  const transcriptItems = useMemo(
+    () => buildTranscriptItems(messages, compactBoundaries, streamingMessageId),
+    [messages, compactBoundaries, streamingMessageId],
   );
   const selectedToolCallId =
     expandedToolCallId === undefined ? selectExpandedToolId(messages) : expandedToolCallId;
 
   renderLog.event('render', {
-    total: displayMessages.length,
+    total: transcriptItems.length,
     active: streamingMessageId?.slice(-8) ?? null,
-    isEmpty: displayMessages.length === 0,
+    isEmpty: transcriptItems.length === 0,
   });
 
-  if (displayMessages.length === 0) {
+  if (transcriptItems.length === 0) {
     return (
       <WelcomeScreen
         terminalWidth={terminalWidth ?? 80}
@@ -141,8 +148,26 @@ export function ChatPanel({
       <Box marginBottom={1}>
         <AsciiBanner />
       </Box>
-      {displayMessages.map((message, index) => {
-        const previous = displayMessages[index - 1];
+      {transcriptItems.map((item, index) => {
+        if (item.type === 'compact_boundary') {
+          return (
+            <CompactDiffCard
+              key={item.id}
+              boundary={item.boundary}
+              animated={item.id === animatedBoundaryId}
+              terminalWidth={terminalWidth}
+              reducedMotion={reducedMotion}
+              screenReader={screenReader}
+              onSettled={
+                item.id === animatedBoundaryId ? () => onBoundarySettled?.(item.id) : undefined
+              }
+            />
+          );
+        }
+
+        const message = item.message;
+        const previousItem = transcriptItems[index - 1];
+        const previous = previousItem?.type === 'message' ? previousItem.message : undefined;
         if (message.role === 'user') {
           return (
             <Box key={message.id} flexDirection="column">

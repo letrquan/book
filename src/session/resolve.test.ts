@@ -52,9 +52,35 @@ describe('resolveSessionBootstrap', () => {
     expect(resolveSessionBootstrap(store, { cwd: '/proj', resume: prefix }).sessionId).toBe(local);
   });
 
-  it('forks resumed history into a durable new session', () => {
+  it('forks the ordered event stream with transcript, context, locals, and boundaries', () => {
     const id = store.create({ cwd: '/proj' });
-    store.append(id, { type: 'user', timestamp: 1, data: { content: 'copied' } });
+    store.append(id, { type: 'user', eventId: 'old', timestamp: 1, data: { content: 'copied' } });
+    store.append(id, {
+      type: 'local',
+      eventId: 'local',
+      timestamp: 2,
+      data: { kind: 'local', role: 'assistant', content: 'local output' },
+    });
+    store.append(id, {
+      type: 'compact',
+      eventId: 'boundary',
+      timestamp: 3,
+      data: {
+        version: 1,
+        trigger: 'manual',
+        summary: 'summary',
+        replacementHistory: [
+          {
+            id: 'summary',
+            role: 'user',
+            content: 'summary',
+            includeInContext: true,
+            timestamp: 3,
+          },
+        ],
+      },
+    });
+    store.append(id, { type: 'user', eventId: 'later', timestamp: 4, data: { content: 'later' } });
 
     const result = resolveSessionBootstrap(store, {
       cwd: '/proj',
@@ -62,7 +88,20 @@ describe('resolveSessionBootstrap', () => {
       forkSession: true,
     });
     expect(result.sessionId).not.toBe(id);
-    expect(store.load(result.sessionId).history[0].content).toBe('copied');
+    expect(result.history.map((message) => message.content)).toEqual(['summary', 'later']);
+    expect(result.contextHistory).toBe(result.history);
+    expect(result.transcript?.map((message) => message.content)).toEqual([
+      'copied',
+      'local output',
+      'later',
+    ]);
+    expect(result.compactBoundaries).toHaveLength(1);
+    expect(store.readEvents(result.sessionId).map((event) => event.eventId)).toEqual([
+      'old',
+      'local',
+      'boundary',
+      'later',
+    ]);
   });
 
   it('uses an ephemeral id when persistence is disabled', () => {

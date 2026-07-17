@@ -4,6 +4,12 @@ import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
+import {
+  createTextFileObservation,
+  rememberFileObservations,
+  staleMutationError,
+  toolObservationSource,
+} from './file-observation.js';
 
 const GLOB_OUTPUT_LIMIT = 1000;
 const PATH_YIELD_INTERVAL = 128;
@@ -33,9 +39,9 @@ async function countOccurrences(
 async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
-  const { filePath } = resolved;
-  const offset = (args.offset as number) || 1;
-  const limit = (args.limit as number) || 2000;
+  const { filePath, relativePath } = resolved;
+  const offset = Math.max(1, Math.floor((args.offset as number) || 1));
+  const limit = Math.max(1, Math.floor((args.limit as number) || 2000));
 
   let content: string;
   try {
@@ -59,7 +65,25 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
     output.push(`${index + 1}: ${lines[index]}`);
     if ((index - offset + 2) % LINE_YIELD_INTERVAL === 0) await yieldToEventLoop(ctx.signal);
   }
-  return { toolCallId: '', success: true, output: output.join('\n') };
+  const coverage =
+    offset === 1 && end === lines.length
+      ? ({ kind: 'full' } as const)
+      : ({ kind: 'lines', startLine: offset, endLine: end, totalLines: lines.length } as const);
+  const observation = createTextFileObservation({
+    workspaceRoot: ctx.workspaceRoot,
+    path: relativePath,
+    content,
+    coverage,
+    operation: 'read',
+    sourceRef: toolObservationSource(ctx),
+  });
+  rememberFileObservations(ctx, [observation]);
+  return {
+    toolCallId: '',
+    success: true,
+    output: output.join('\n'),
+    fileObservations: [observation],
+  };
 }
 
 async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
@@ -83,6 +107,11 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
     }
   }
 
+  const freshnessError = staleMutationError(ctx, relativePath, existed ? oldContent : null);
+  if (freshnessError) {
+    return { toolCallId: '', success: false, output: '', error: freshnessError };
+  }
+
   const newContent = args.content as string;
   const { diff, stats } = await renderDiffWithStatsAsync(oldContent, newContent, 3, ctx.signal);
   throwIfAborted(ctx.signal);
@@ -96,6 +125,14 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
       error: `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+  const observation = createTextFileObservation({
+    workspaceRoot: ctx.workspaceRoot,
+    path: relativePath,
+    content: newContent,
+    operation: existed ? 'write' : 'create',
+    sourceRef: toolObservationSource(ctx),
+  });
+  rememberFileObservations(ctx, [observation]);
   return {
     toolCallId: '',
     success: true,
@@ -106,6 +143,7 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
       addedLines: stats.addedLines,
       removedLines: stats.removedLines,
     },
+    fileObservations: [observation],
     isCreate: !existed,
   };
 }
@@ -127,6 +165,11 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
         ? `File not found: ${args.filePath}`
         : `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
     };
+  }
+
+  const freshnessError = staleMutationError(ctx, relativePath, content);
+  if (freshnessError) {
+    return { toolCallId: '', success: false, output: '', error: freshnessError };
   }
 
   const oldStr = args.oldString as string;
@@ -167,6 +210,14 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
       error: `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+  const observation = createTextFileObservation({
+    workspaceRoot: ctx.workspaceRoot,
+    path: relativePath,
+    content: newContent,
+    operation: 'edit',
+    sourceRef: toolObservationSource(ctx),
+  });
+  rememberFileObservations(ctx, [observation]);
   return {
     toolCallId: '',
     success: true,
@@ -177,6 +228,7 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
       addedLines: stats.addedLines,
       removedLines: stats.removedLines,
     },
+    fileObservations: [observation],
   };
 }
 
@@ -213,6 +265,10 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
     };
   }
   const original = content;
+  const freshnessError = staleMutationError(ctx, relativePath, original);
+  if (freshnessError) {
+    return { toolCallId: '', success: false, output: '', error: freshnessError };
+  }
 
   for (let i = 0; i < edits.length; i++) {
     const edit = edits[i];
@@ -253,6 +309,14 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
       error: `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+  const observation = createTextFileObservation({
+    workspaceRoot: ctx.workspaceRoot,
+    path: relativePath,
+    content,
+    operation: 'edit',
+    sourceRef: toolObservationSource(ctx),
+  });
+  rememberFileObservations(ctx, [observation]);
   return {
     toolCallId: '',
     success: true,
@@ -263,6 +327,7 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
       addedLines: stats.addedLines,
       removedLines: stats.removedLines,
     },
+    fileObservations: [observation],
   };
 }
 

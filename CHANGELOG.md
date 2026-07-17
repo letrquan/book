@@ -4,21 +4,23 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Reference-aware compact checkpoints retain a token-budgeted exact recent tail, grounded historical constraints, task episodes, and freshness-checked file observations.
+- Bounded `SessionHistorySearch` / `SessionHistoryRead` tools recover compacted-away evidence through stable current-session references.
+
+### Changed
+
+- Compaction now replaces only active model context. The append-only transcript and chronological compact boundaries remain visible, scrollable, and resumable.
+- `/context` reports visible transcript size separately from active provider context.
+
 ### Fixed
 
-- Keep local slash-command output visible in the TUI without adding it to provider or compaction context.
+- Keep local slash-command output visible and resumable in the TUI without adding it to provider or compaction context.
 - Keep the latest completed `Write`/`Edit`/`MultiEdit`/`NotebookEdit` diff visible as a bounded Claude Code-style preview, with line-background and inline word-level highlighting.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
-
-### Changed
-- `/compact` is a full compaction pipeline: shared `runCompact` engine, optional focus instructions (`/compact focus on …`), durable session `compact` records (resume keeps the summary), PreCompact/PostCompact hooks, and cross-turn auto-compact when `autoCompactEnabled` is on
-- Compact UX: `Compacting…` / `Auto-compacting…` spinner, context-diff card animation, exact `Conversation compacted` success notice (provider-invisible)
-- Auto-compact threshold uses model `contextWindow` and Anthropic cache-aware `contextTokens` (no longer confuses output `maxTokens` with context size)
-- Assistant turns persist via `onAssistantMessageComplete` so mid-loop compact cannot drop tool-bearing history
 
 ## [0.1.0] - 2026-07-14
 

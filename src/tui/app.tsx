@@ -6,7 +6,6 @@ import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { StatusLine } from './components/StatusLine.js';
 import { WorkingIndicator } from './components/WorkingIndicator.js';
-import { CompactDiffCard } from './components/CompactDiffCard.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
@@ -121,10 +120,13 @@ interface AppProps {
 export function App({ config, session, redrawViewport }: AppProps) {
   const {
     messages,
+    contextHistory,
+    compactBoundaries,
+    animatedBoundaryId,
+    settleAnimatedBoundary,
     isThinking,
     isCompacting,
     compactUi,
-    setCompactUi,
     streamingMessageId,
     error,
     currentTurn,
@@ -528,7 +530,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
         );
       } else if (value.startsWith('/context')) {
         addLocalMessage(
-          buildContextReport(messages, {
+          buildContextReport(contextHistory, {
+            transcriptMessages: messages,
             model: liveConfig.model,
             maxTokens: liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens,
             skillCount: skills.length,
@@ -768,6 +771,9 @@ export function App({ config, session, redrawViewport }: AppProps) {
               )}
               <ChatPanel
                 messages={messages}
+                compactBoundaries={compactBoundaries}
+                animatedBoundaryId={animatedBoundaryId}
+                onBoundarySettled={settleAnimatedBoundary}
                 streamingMessageId={streamingMessageId}
                 pendingPermission={pendingPermission}
                 expandedToolCallId={expandedToolId}
@@ -1190,20 +1196,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
             reducedMotion={motionDisabled}
             screenReader={screenReader}
           />
-
-          {compactUi && compactUi.phase !== 'working' ? (
-            <CompactDiffCard
-              state={compactUi}
-              terminalWidth={termWidth}
-              reducedMotion={motionDisabled}
-              screenReader={screenReader}
-              onSettled={() => {
-                if (compactUi.phase === 'diff') {
-                  setCompactUi({ ...compactUi, phase: 'done' });
-                }
-              }}
-            />
-          ) : null}
 
           {/* Input bar — above the status line. Command menu is built into InputBar. */}
           <Box flexDirection="column" flexShrink={0} width={termWidth}>
