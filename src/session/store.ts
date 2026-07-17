@@ -133,6 +133,7 @@ export class SessionStore {
             role: msg.role,
             content: msg.content ?? '',
             contextContent: msg.contextContent,
+            includeInContext: msg.includeInContext ?? true,
             toolCalls: msg.toolCalls,
             toolResults: msg.toolResults,
             timestamp: msg.timestamp ?? record.timestamp,
@@ -148,6 +149,7 @@ export class SessionStore {
           role: 'user',
           content: data.content ?? '',
           contextContent: data.contextContent,
+          includeInContext: true,
           timestamp: record.timestamp,
         });
       } else if (record.type === 'assistant') {
@@ -157,6 +159,7 @@ export class SessionStore {
             id: crypto.randomUUID(),
             role: 'assistant',
             content: data.content ?? '',
+            includeInContext: true,
             toolCalls: data.toolCalls,
             toolResults: data.toolResults,
             timestamp: record.timestamp,
@@ -171,6 +174,7 @@ export class SessionStore {
               id: crypto.randomUUID(),
               role: 'assistant',
               content: data.content ?? '',
+              includeInContext: true,
               timestamp: record.timestamp,
             });
           }

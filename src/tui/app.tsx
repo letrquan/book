@@ -558,7 +558,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
         send(promptBody, ctx);
       } else if (value.startsWith('/reload-skills')) {
         // Force re-discovery of commands and skills on next render.
-        send('Commands and skills have been reloaded. What would you like to do?');
+        addLocalMessage('Commands and skills have been reloaded.');
       } else if (value.startsWith('/export')) {
         const filename = value.slice('/export'.length).trim() || 'conversation.txt';
         try {

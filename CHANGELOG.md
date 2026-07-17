@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Keep local slash-command output visible in the TUI without adding it to provider or compaction context.
 - Keep the latest completed `Write`/`Edit`/`MultiEdit`/`NotebookEdit` diff visible as a bounded Claude Code-style preview, with line-background and inline word-level highlighting.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

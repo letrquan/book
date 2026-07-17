@@ -18,7 +18,7 @@ function withTheme(children: React.ReactElement): React.ReactElement {
 }
 
 function msg(id: string, role: 'user' | 'assistant', content: string): Message {
-  return { id, role, content, timestamp: 1 };
+  return { id, role, content, includeInContext: true, timestamp: 1 };
 }
 
 afterEach(() => {

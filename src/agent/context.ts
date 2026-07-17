@@ -206,6 +206,7 @@ export async function buildMessages(
   });
 
   for (const msg of history) {
+    if (!msg.includeInContext) continue;
     if (msg.role === 'user') {
       messages.push({ role: 'user', content: msg.contextContent ?? msg.content });
     } else if (msg.role === 'assistant') {

@@ -3,7 +3,13 @@ import { estimateTokens, buildContextBreakdown, buildContextReport } from './con
 import type { Message } from './types.js';
 
 function msg(role: 'user' | 'assistant', content: string, toolCalls = 0, toolResults = 0): Message {
-  const m: Message = { id: crypto.randomUUID(), role, content, timestamp: 0 };
+  const m: Message = {
+    id: crypto.randomUUID(),
+    role,
+    content,
+    includeInContext: true,
+    timestamp: 0,
+  };
   if (toolCalls)
     m.toolCalls = Array.from({ length: toolCalls }, () => ({ id: 't', name: 'Read' }) as never);
   if (toolResults)
@@ -34,6 +40,18 @@ describe('buildContextBreakdown', () => {
     expect(b.toolCalls).toBe(2);
     expect(b.toolResults).toBe(1);
     expect(b.estimatedTokens).toBeGreaterThan(0);
+  });
+
+  it('excludes local-only messages from context totals', () => {
+    const local = msg('assistant', 'x'.repeat(400));
+    local.includeInContext = false;
+
+    const b = buildContextBreakdown([msg('user', 'real prompt'), local]);
+
+    expect(b.totalMessages).toBe(1);
+    expect(b.userMessages).toBe(1);
+    expect(b.assistantMessages).toBe(0);
+    expect(b.estimatedTokens).toBe(3);
   });
 
   it('handles empty conversation', () => {

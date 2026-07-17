@@ -28,7 +28,7 @@ export function defaultConfig(overrides: Partial<AgentConfig> = {}): AgentConfig
 }
 
 export function userMsg(content: string): Message {
-  return { id: 'u1', role: 'user', content, timestamp: 0 };
+  return { id: 'u1', role: 'user', content, includeInContext: true, timestamp: 0 };
 }
 
 export function assistantMsg(
@@ -40,6 +40,7 @@ export function assistantMsg(
     id: 'a1',
     role: 'assistant',
     content,
+    includeInContext: true,
     toolCalls,
     toolResults,
     timestamp: 0,

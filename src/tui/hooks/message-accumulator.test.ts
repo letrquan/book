@@ -4,7 +4,7 @@ import type { MessageAccumulator } from './message-accumulator.js';
 import type { Message, ToolCall, ToolResult } from '../../types.js';
 
 function makeMsg(id: string, content: string): Message {
-  return { id, role: 'assistant', content, timestamp: 1 };
+  return { id, role: 'assistant', content, includeInContext: true, timestamp: 1 };
 }
 
 function createTestAccumulator(intervalMs = 16) {

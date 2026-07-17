@@ -460,6 +460,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         'user',
         userMessage,
         contextMessage === userMessage ? undefined : contextMessage,
+        true,
       );
       if (session.store) {
         session.store.append(activeSessionId, {
@@ -468,7 +469,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           data: { content: userMessage, contextContent: userMsg.contextContent },
         } satisfies SessionRecord);
       }
-      const placeholder = makeMessage('assistant', '');
+      const placeholder = makeMessage('assistant', '', undefined, true);
       streamingIdRef.current = placeholder.id;
       setStreamingMessageId(placeholder.id);
       setIsThinking(true);
@@ -531,7 +532,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               if (turn > 1) {
                 activeAccumulator?.stop();
                 uiLog.event('accumulator:stopped', { reason: 'new-turn', turn });
-                const next = makeMessage('assistant', '');
+                const next = makeMessage('assistant', '', undefined, true);
                 streamingIdRef.current = next.id;
                 setStreamingMessageId(next.id);
                 setMessages((prev) => {

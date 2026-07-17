@@ -52,6 +52,35 @@ describe('buildMessages', () => {
     expect(out[3].content).toBe('1: hi');
   });
 
+  it('serializes only explicitly included conversation messages', async () => {
+    const call = toolCall('call_1', 'Read', { filePath: 'a.ts' });
+    const result = toolResult('call_1', 'file contents');
+    const toolMessage = assistantMsg('Reading...', [call], [result]);
+    const localMessage = {
+      ...assistantMsg('Context window breakdown: local command output'),
+      includeInContext: false,
+    };
+
+    const out = await buildMessages(
+      config,
+      [userMsg('inspect a.ts'), toolMessage, localMessage, userMsg('what did you find?')],
+      [],
+    );
+
+    expect(out.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+      'user',
+    ]);
+    expect(JSON.stringify(out)).not.toContain('local command output');
+    expect(out.find((message) => message.role === 'tool')).toMatchObject({
+      tool_call_id: 'call_1',
+      content: 'file contents',
+    });
+  });
+
   it('does not serialize display-only nested subagent tools to the provider', async () => {
     const outerCall = toolCall('task_1', 'Task', { agent: 'explorer', prompt: 'inspect' });
     const outerResult = toolResult('task_1', 'done');

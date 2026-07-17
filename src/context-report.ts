@@ -34,6 +34,7 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
   let toolResults = 0;
 
   for (const m of messages) {
+    if (!m.includeInContext) continue;
     const msgTokens = estimateTokens(m.content);
     if (m.role === 'user') {
       userMsgs++;
@@ -53,7 +54,7 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
   }
 
   return {
-    totalMessages: messages.length,
+    totalMessages: userMsgs + assistantMsgs,
     userMessages: userMsgs,
     assistantMessages: assistantMsgs,
     toolCalls,

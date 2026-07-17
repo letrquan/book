@@ -76,6 +76,7 @@ export function serializeHistoryForCompact(messages: readonly Message[]): string
   let total = 0;
 
   for (const m of messages) {
+    if (!m.includeInContext) continue;
     if (total >= MAX_TRANSCRIPT_CHARS) {
       parts.push('\n[... transcript truncated ...]');
       break;
@@ -153,9 +154,10 @@ export async function runCompact(
   options: RunCompactOptions,
 ): Promise<CompactResult> {
   const minMessages = options.minMessages ?? 2;
-  const preMessageCount = history.length;
+  const contextHistory = history.filter((message) => message.includeInContext);
+  const preMessageCount = contextHistory.length;
 
-  if (history.length < minMessages) {
+  if (contextHistory.length < minMessages) {
     return {
       status: 'skipped',
       reason: 'too-short',
@@ -192,7 +194,7 @@ export async function runCompact(
     return { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' };
   }
 
-  const userPrompt = buildCompactPrompt(history, options.focus);
+  const userPrompt = buildCompactPrompt(contextHistory, options.focus);
   let summary = '';
   let sawDone = false;
   let streamError: string | undefined;
@@ -255,6 +257,7 @@ export async function runCompact(
     id: crypto.randomUUID(),
     role: 'user',
     content: `[Compacted summary of earlier conversation]\n${summary.trim()}`,
+    includeInContext: true,
     timestamp: Date.now(),
   };
 

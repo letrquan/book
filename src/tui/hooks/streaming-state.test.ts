@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 function msg(id: string, role: 'user' | 'assistant', content: string): Message {
-  return { id, role, content, timestamp: 1 };
+  return { id, role, content, includeInContext: true, timestamp: 1 };
 }
 
 describe('streaming TUI message state helpers', () => {
@@ -33,6 +33,9 @@ describe('streaming TUI message state helpers', () => {
     const assistant = makeMessage('assistant', '');
     const next = [...history, user, assistant];
 
+    expect(user.includeInContext).toBe(false);
+    expect(assistant.includeInContext).toBe(false);
+    expect(makeMessage('user', 'provider prompt', undefined, true).includeInContext).toBe(true);
     expect(next.map((m) => [m.id, m.role, m.content])).toEqual([
       ['old-user', 'user', 'old'],
       ['old-assistant', 'assistant', 'answer'],
