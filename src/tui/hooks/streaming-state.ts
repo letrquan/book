@@ -4,12 +4,14 @@ export function makeMessage(
   role: 'user' | 'assistant',
   content: string,
   contextContent?: string,
+  includeInContext = false,
 ): Message {
   return {
     id: crypto.randomUUID(),
     role,
     content,
     contextContent,
+    includeInContext,
     timestamp: Date.now(),
   };
 }

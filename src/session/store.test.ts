@@ -76,6 +76,55 @@ describe('SessionStore', () => {
     expect(loaded.meta.messageCount).toBe(3);
   });
 
+  it('loads legacy conversation records as included context', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, { type: 'user', timestamp: 1, data: { content: 'legacy prompt' } });
+    s.append(id, {
+      type: 'assistant',
+      timestamp: 2,
+      data: { content: 'legacy answer', complete: true },
+    });
+
+    const loaded = s.load(id);
+
+    expect(loaded.history.map((message) => message.includeInContext)).toEqual([true, true]);
+  });
+
+  it('preserves explicit context inclusion on compact replacement history', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, {
+      type: 'compact',
+      timestamp: 1,
+      data: {
+        version: 1,
+        trigger: 'manual',
+        summary: 'summary',
+        replacementHistory: [
+          {
+            id: 'local',
+            role: 'assistant',
+            content: 'local-only',
+            includeInContext: false,
+            timestamp: 1,
+          },
+          {
+            id: 'summary',
+            role: 'user',
+            content: 'included summary',
+            includeInContext: true,
+            timestamp: 1,
+          },
+        ],
+      },
+    });
+
+    const loaded = s.load(id);
+
+    expect(loaded.history.map((message) => message.includeInContext)).toEqual([false, true]);
+  });
+
   it('preserves hidden context content for resumed user messages', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj' });

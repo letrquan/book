@@ -414,6 +414,7 @@ async function generatePromptSuggestions(
         role: 'user' as const,
         content:
           'Based on the conversation above, suggest 1-3 follow-up prompts the user might want to ask next. Keep each suggestion under 80 characters. Return ONLY a JSON array of strings, no other text.',
+        includeInContext: true,
         timestamp: Date.now(),
       },
     ],

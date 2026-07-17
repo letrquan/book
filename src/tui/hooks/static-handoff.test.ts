@@ -9,6 +9,7 @@ const message = (id: string, role: Message['role'], content: string): Message =>
   id,
   role,
   content,
+  includeInContext: true,
   timestamp: 1,
 });
 

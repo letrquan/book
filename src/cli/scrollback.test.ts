@@ -47,8 +47,14 @@ describe('runScrollbackSession', () => {
       callbacks.onDone();
       return [
         ...history,
-        { id: 'u1', role: 'user', content: prompt, timestamp: 1 },
-        { id: 'a1', role: 'assistant', content: 'answer', timestamp: 2 },
+        { id: 'u1', role: 'user', content: prompt, includeInContext: true, timestamp: 1 },
+        {
+          id: 'a1',
+          role: 'assistant',
+          content: 'answer',
+          includeInContext: true,
+          timestamp: 2,
+        },
       ];
     };
 

@@ -362,6 +362,8 @@ export interface Message {
   content: string;
   /** Provider-facing text when it differs from the displayed content. */
   contextContent?: string;
+  /** Whether this message is included in provider and compaction context. */
+  includeInContext: boolean;
   toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
   /** UI-only subagent activity. Never serialized as provider tool calls. */

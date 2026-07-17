@@ -86,10 +86,10 @@ describe('usagePressureTokens', () => {
 describe('compactHistory', () => {
   it('keeps the last K turns, returns the rest for summarization', () => {
     const history: Message[] = [
-      { id: '1', role: 'user', content: 'old1', timestamp: 0 },
-      { id: '2', role: 'assistant', content: 'old2', timestamp: 0 },
-      { id: '3', role: 'user', content: 'recent1', timestamp: 0 },
-      { id: '4', role: 'assistant', content: 'recent2', timestamp: 0 },
+      { id: '1', role: 'user', content: 'old1', includeInContext: true, timestamp: 0 },
+      { id: '2', role: 'assistant', content: 'old2', includeInContext: true, timestamp: 0 },
+      { id: '3', role: 'user', content: 'recent1', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'recent2', includeInContext: true, timestamp: 0 },
     ];
     const { kept, summarized } = compactHistory(history, 2);
     expect(kept.length).toBe(2);
@@ -99,7 +99,9 @@ describe('compactHistory', () => {
   });
 
   it('returns empty summarized when history is short', () => {
-    const history: Message[] = [{ id: '1', role: 'user', content: 'only', timestamp: 0 }];
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'only', includeInContext: true, timestamp: 0 },
+    ];
     const { kept, summarized } = compactHistory(history, 2);
     expect(kept.length).toBe(1);
     expect(summarized.length).toBe(0);
@@ -109,8 +111,8 @@ describe('compactHistory', () => {
 describe('buildCompactPrompt / serialize', () => {
   it('builds a summarization prompt from the summarized turns', () => {
     const summarized: Message[] = [
-      { id: '1', role: 'user', content: 'do X', timestamp: 0 },
-      { id: '2', role: 'assistant', content: 'done X', timestamp: 0 },
+      { id: '1', role: 'user', content: 'do X', includeInContext: true, timestamp: 0 },
+      { id: '2', role: 'assistant', content: 'done X', includeInContext: true, timestamp: 0 },
     ];
     const prompt = buildCompactPrompt(summarized);
     expect(prompt).toMatch(/Summarize/);
@@ -120,10 +122,34 @@ describe('buildCompactPrompt / serialize', () => {
 
   it('includes focus instructions', () => {
     const prompt = buildCompactPrompt(
-      [{ id: '1', role: 'user', content: 'hi', timestamp: 0 }],
+      [{ id: '1', role: 'user', content: 'hi', includeInContext: true, timestamp: 0 }],
       'focus on auth',
     );
     expect(prompt).toMatch(/Special focus from the user: focus on auth/);
+  });
+
+  it('excludes local-only messages from the compact transcript', () => {
+    const text = serializeHistoryForCompact([
+      { id: '1', role: 'user', content: 'real request', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'Cost report from /cost',
+        includeInContext: false,
+        timestamp: 0,
+      },
+      {
+        id: '3',
+        role: 'assistant',
+        content: 'real response',
+        includeInContext: true,
+        timestamp: 0,
+      },
+    ]);
+
+    expect(text).toContain('User: real request');
+    expect(text).toContain('Assistant: real response');
+    expect(text).not.toContain('Cost report from /cost');
   });
 
   it('includes truncated tool activity', () => {
@@ -132,6 +158,7 @@ describe('buildCompactPrompt / serialize', () => {
         id: '1',
         role: 'assistant',
         content: '',
+        includeInContext: true,
         timestamp: 0,
         toolCalls: [{ id: 't1', name: 'Read', arguments: { file_path: 'a.ts' } }],
         toolResults: [
@@ -162,7 +189,7 @@ describe('runCompact', () => {
   it('skips when history is too short', async () => {
     const result = await runCompact(
       makeConfig(),
-      [{ id: '1', role: 'user', content: 'only', timestamp: 0 }],
+      [{ id: '1', role: 'user', content: 'only', includeInContext: true, timestamp: 0 }],
       { trigger: 'manual' },
     );
     expect(result.status).toBe('skipped');
@@ -170,6 +197,26 @@ describe('runCompact', () => {
       expect(result.reason).toBe('too-short');
       expect(result.message).toMatch(/Not enough messages/);
     }
+  });
+
+  it('does not count local-only messages toward the compact threshold', async () => {
+    const result = await runCompact(
+      makeConfig(),
+      [
+        { id: '1', role: 'user', content: 'only real turn', includeInContext: true, timestamp: 0 },
+        {
+          id: '2',
+          role: 'assistant',
+          content: 'local /context output',
+          includeInContext: false,
+          timestamp: 0,
+        },
+      ],
+      { trigger: 'manual' },
+    );
+
+    expect(result).toMatchObject({ status: 'skipped', reason: 'too-short' });
+    expect(mockedStream).not.toHaveBeenCalled();
   });
 
   it('returns compacted history on successful stream', async () => {
@@ -182,8 +229,8 @@ describe('runCompact', () => {
     });
 
     const history: Message[] = [
-      { id: '1', role: 'user', content: 'do X', timestamp: 0 },
-      { id: '2', role: 'assistant', content: 'done X', timestamp: 0 },
+      { id: '1', role: 'user', content: 'do X', includeInContext: true, timestamp: 0 },
+      { id: '2', role: 'assistant', content: 'done X', includeInContext: true, timestamp: 0 },
     ];
     const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
     expect(result.status).toBe('compacted');
@@ -202,8 +249,8 @@ describe('runCompact', () => {
     });
 
     const history: Message[] = [
-      { id: '1', role: 'user', content: 'a', timestamp: 0 },
-      { id: '2', role: 'assistant', content: 'b', timestamp: 0 },
+      { id: '1', role: 'user', content: 'a', includeInContext: true, timestamp: 0 },
+      { id: '2', role: 'assistant', content: 'b', includeInContext: true, timestamp: 0 },
     ];
     const result = await runCompact(makeConfig(), history, { trigger: 'auto' });
     expect(result.status).toBe('failed');
@@ -222,8 +269,8 @@ describe('runCompact', () => {
     });
 
     const history: Message[] = [
-      { id: '1', role: 'user', content: 'a', timestamp: 0 },
-      { id: '2', role: 'assistant', content: 'b', timestamp: 0 },
+      { id: '1', role: 'user', content: 'a', includeInContext: true, timestamp: 0 },
+      { id: '2', role: 'assistant', content: 'b', includeInContext: true, timestamp: 0 },
     ];
     const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
     expect(result.status).toBe('failed');

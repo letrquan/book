@@ -110,6 +110,7 @@ export async function runAgentLoop(
         id: crypto.randomUUID(),
         role: 'assistant',
         content: `[UserPromptSubmit hook blocked the prompt${r.message ? `: ${r.message}` : ''}]`,
+        includeInContext: false,
         timestamp: Date.now(),
       });
       return newHistory;
@@ -125,6 +126,7 @@ export async function runAgentLoop(
     role: 'user',
     content: displayPrompt,
     contextContent: effectivePrompt === displayPrompt ? undefined : effectivePrompt,
+    includeInContext: true,
     timestamp: Date.now(),
   });
 
@@ -132,7 +134,7 @@ export async function runAgentLoop(
     try {
       let previousAssistant: string | undefined;
       for (let i = history.length - 1; i >= 0; i--) {
-        if (history[i].role === 'assistant') {
+        if (history[i].role === 'assistant' && history[i].includeInContext) {
           previousAssistant = history[i].content;
           break;
         }
@@ -305,6 +307,7 @@ export async function runAgentLoop(
           id: crypto.randomUUID(),
           role: 'assistant',
           content: assistantContent,
+          includeInContext: true,
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           timestamp: Date.now(),
         });
@@ -335,6 +338,7 @@ export async function runAgentLoop(
           id: crypto.randomUUID(),
           role: 'assistant',
           content: assistantContent,
+          includeInContext: true,
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           toolResults: cancelledResults.length > 0 ? cancelledResults : undefined,
           timestamp: Date.now(),
@@ -558,6 +562,7 @@ export async function runAgentLoop(
       id: crypto.randomUUID(),
       role: 'assistant',
       content: assistantContent,
+      includeInContext: true,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       toolResults: toolResults.length > 0 ? toolResults : undefined,
       timestamp: Date.now(),

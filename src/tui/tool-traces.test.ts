@@ -10,7 +10,14 @@ import { isRenderableFileMutationDiff } from './file-mutation-display.js';
 const DIFF = '@@ -1 +1 @@\n-old\n+new';
 
 function assistant(overrides: Partial<Message>): Message {
-  return { id: 'assistant', role: 'assistant', content: '', timestamp: 1, ...overrides };
+  return {
+    id: 'assistant',
+    role: 'assistant',
+    content: '',
+    includeInContext: true,
+    timestamp: 1,
+    ...overrides,
+  };
 }
 
 function result(toolCallId: string, overrides: Partial<ToolResult> = {}): ToolResult {
