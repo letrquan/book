@@ -39,6 +39,98 @@ describe('SessionStore', () => {
     expect(loaded.history[1].content).toBe('hello');
   });
 
+  it('preserves stable event ids and keeps local records transcript-only', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, {
+      type: 'user',
+      eventId: 'user-1',
+      timestamp: 1,
+      data: { id: 'user-1', content: 'visible' },
+    });
+    s.append(id, {
+      type: 'local',
+      eventId: 'local-1',
+      timestamp: 2,
+      data: { id: 'local-1', content: 'local report' },
+    });
+
+    const loaded = s.load(id);
+    expect(loaded.transcript.map((message) => message.id)).toEqual(['user-1', 'local-1']);
+    expect(loaded.contextHistory.map((message) => message.id)).toEqual(['user-1']);
+    expect(loaded.transcript[1]).toMatchObject({ kind: 'local', includeInContext: false });
+  });
+
+  it('ignores malformed compact records without changing context or boundaries', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, { type: 'user', eventId: 'u1', timestamp: 1, data: { content: 'keep me' } });
+    s.append(id, {
+      type: 'compact',
+      eventId: 'bad',
+      timestamp: 2,
+      data: { version: 2, replacementHistory: [] },
+    });
+
+    const loaded = s.load(id);
+    expect(loaded.contextHistory.map((message) => message.content)).toEqual(['keep me']);
+    expect(loaded.compactBoundaries).toEqual([]);
+  });
+
+  it('searches and reads compacted-away current-session evidence with bounded references', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, {
+      type: 'assistant',
+      eventId: 'a1',
+      timestamp: 1,
+      data: {
+        complete: true,
+        content: 'inspected authentication',
+        toolCalls: [{ id: 't1', name: 'Read', arguments: { filePath: 'src/auth.ts' } }],
+        toolResults: [{ toolCallId: 't1', success: true, output: 'secret evidence' }],
+      },
+    });
+
+    expect(s.searchCurrent(id, 'auth')).toMatchObject([
+      { ref: 'session://current/event/a1', role: 'assistant' },
+    ]);
+    expect(s.readCurrent(id, ['session://current/tool-result/a1/t1'])[0].content).toContain(
+      'secret evidence',
+    );
+    expect(() => s.readCurrent(id, ['session://another/event/a1'])).toThrow(/current/);
+  });
+
+  it('searches provider-facing context content as well as displayed content', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, {
+      type: 'user',
+      eventId: 'u1',
+      timestamp: 1,
+      data: {
+        content: 'Explain @src/auth.ts',
+        contextContent: 'Explain the expanded file containing unique_provider_evidence',
+      },
+    });
+
+    expect(s.searchCurrent(id, 'unique_provider_evidence')).toMatchObject([
+      { ref: 'session://current/event/u1', role: 'user' },
+    ]);
+  });
+
+  it('marks a copied fork as recently updated', () => {
+    const s = new SessionStore(dir);
+    const sourceId = s.create({ cwd: '/proj' });
+    s.append(sourceId, { type: 'user', eventId: 'old', timestamp: 1, data: { content: 'old' } });
+    const beforeFork = Date.now();
+
+    const forkId = s.fork(sourceId, { cwd: '/proj' });
+
+    expect(s.load(forkId).meta.updatedAt).toBeGreaterThanOrEqual(beforeFork);
+    expect(s.load(forkId).transcript[0].id).toBe('old');
+  });
+
   it('replaces history atomically on a compact record', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj' });
@@ -73,7 +165,14 @@ describe('SessionStore', () => {
     expect(loaded.history[0].content).toMatch(/Compacted summary/);
     expect(loaded.history[1].content).toBe('next');
     expect(loaded.history[2].content).toBe('ok');
-    expect(loaded.meta.messageCount).toBe(3);
+    expect(loaded.transcript.map((message) => message.content)).toEqual([
+      'old1',
+      'old2',
+      'next',
+      'ok',
+    ]);
+    expect(loaded.compactBoundaries).toHaveLength(1);
+    expect(loaded.meta.messageCount).toBe(4);
   });
 
   it('loads legacy conversation records as included context', () => {

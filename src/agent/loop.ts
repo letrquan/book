@@ -55,6 +55,12 @@ export async function runAgentLoop(
     modelOverride?: string;
     /** User-facing text to retain in history when userMessage is expanded context. */
     displayMessage?: string;
+    /** Stable host-assigned identity for the user event. */
+    userMessageId?: string;
+    userMessageTimestamp?: number;
+    userFileObservations?: Message['fileObservations'];
+    /** Host identity for each streamed assistant turn. */
+    assistantMessageId?: (turn: number) => string | undefined;
     /** True when this loop is a subagent (Task tool) invocation — skips memory auto-capture. */
     isSubagent?: boolean;
     /** Display-only observer for tools invoked by this subagent. */
@@ -122,12 +128,14 @@ export async function runAgentLoop(
   }
 
   newHistory.push({
-    id: crypto.randomUUID(),
+    id: options?.userMessageId ?? crypto.randomUUID(),
     role: 'user',
     content: displayPrompt,
     contextContent: effectivePrompt === displayPrompt ? undefined : effectivePrompt,
     includeInContext: true,
-    timestamp: Date.now(),
+    kind: 'conversation',
+    fileObservations: options?.userFileObservations,
+    timestamp: options?.userMessageTimestamp ?? Date.now(),
   });
 
   if (!options?.isSubagent) {
@@ -155,6 +163,7 @@ export async function runAgentLoop(
 
   config.tasks ??= [];
   config.backgroundShells ??= { nextId: 1, shells: new Map() };
+  config.fileObservationLedger ??= new Map();
   const initialMode = mode as PermissionMode;
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
@@ -167,6 +176,7 @@ export async function runAgentLoop(
     todos: [],
     tasks: config.tasks,
     backgroundShells: config.backgroundShells,
+    fileObservationLedger: config.fileObservationLedger,
     currentMode: initialMode,
   };
 
@@ -559,12 +569,14 @@ export async function runAgentLoop(
     ).catch((err) => console.warn('Stop hook failed:', err));
 
     const assistantMessage: Message = {
-      id: crypto.randomUUID(),
+      id: options?.assistantMessageId?.(turn) ?? crypto.randomUUID(),
       role: 'assistant',
       content: assistantContent,
       includeInContext: true,
+      kind: 'conversation',
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       toolResults: toolResults.length > 0 ? toolResults : undefined,
+      fileObservations: toolResults.flatMap((result) => result.fileObservations ?? []),
       timestamp: Date.now(),
     };
     newHistory.push(assistantMessage);

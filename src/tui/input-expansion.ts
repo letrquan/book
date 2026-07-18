@@ -1,5 +1,8 @@
 import { existsSync, readFileSync, statSync } from 'fs';
 import { execSync } from 'child_process';
+import { createHash } from 'crypto';
+import type { FileObservation } from '../types.js';
+import { workspaceIdentity } from '../tools/file-provenance.js';
 import { resolveWorkspaceMentionPath } from './file-mentions.js';
 
 const AT_MENTION_CHAR_LIMIT = 20_000;
@@ -133,6 +136,36 @@ export function expandAtMentions(input: string, workspace: string): string {
   }
   output += input.slice(cursor);
   return output;
+}
+
+export function collectAtMentionObservations(
+  input: string,
+  workspace: string,
+  sourceRef: string,
+): FileObservation[] {
+  const workspaceId = workspaceIdentity(workspace);
+  const observations: FileObservation[] = [];
+  for (const token of findMentionTokens(input)) {
+    const resolved = resolveWorkspaceMentionPath(workspace, token.path);
+    if (!resolved || !existsSync(resolved.filePath)) continue;
+    try {
+      const info = statSync(resolved.filePath);
+      if (!info.isFile()) continue;
+      const bytes = readFileSync(resolved.filePath);
+      observations.push({
+        path: resolved.relativePath,
+        workspaceId,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        byteSize: bytes.byteLength,
+        operation: 'mention',
+        sourceRef,
+        timestamp: Date.now(),
+      });
+    } catch {
+      // Failed mentions are represented in expanded context, not provenance.
+    }
+  }
+  return observations;
 }
 
 /**

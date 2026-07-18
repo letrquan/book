@@ -2,6 +2,7 @@ import { Box, Text } from 'ink';
 import { useMemo } from 'react';
 import { useTheme } from '../theme.js';
 import type {
+  CompactBoundary,
   Message,
   PermissionResult,
   PlanApprovalResult,
@@ -56,6 +57,7 @@ interface PendingPlanApproval {
 
 interface ChatPanelProps {
   messages: Message[];
+  compactBoundaries?: CompactBoundary[];
   streamingMessageId?: string | null;
   pendingPermission?: PendingPermission | null;
   /** @deprecated Approval actions now render in App's fixed interaction area. */
@@ -86,6 +88,7 @@ interface ChatPanelProps {
 /** Dynamically renders transcript content. TranscriptView owns clipping and navigation. */
 export function ChatPanel({
   messages,
+  compactBoundaries = [],
   streamingMessageId,
   pendingPermission,
   expandedToolCallId,
@@ -105,20 +108,20 @@ export function ChatPanel({
   retryCountdownMs = 0,
 }: ChatPanelProps) {
   useDebugMount(uiLog, { model, mode, commandCount, skillCount });
-  const displayMessages = useMemo(
-    () => mergeAssistantMessages(messages, streamingMessageId),
-    [messages, streamingMessageId],
+  const timeline = useMemo(
+    () => buildTimeline(messages, compactBoundaries, streamingMessageId),
+    [messages, compactBoundaries, streamingMessageId],
   );
   const selectedToolCallId =
     expandedToolCallId === undefined ? selectExpandedToolId(messages) : expandedToolCallId;
 
   renderLog.event('render', {
-    total: displayMessages.length,
+    total: timeline.length,
     active: streamingMessageId?.slice(-8) ?? null,
-    isEmpty: displayMessages.length === 0,
+    isEmpty: timeline.length === 0,
   });
 
-  if (displayMessages.length === 0) {
+  if (timeline.length === 0) {
     return (
       <WelcomeScreen
         terminalWidth={terminalWidth ?? 80}
@@ -137,8 +140,12 @@ export function ChatPanel({
 
   return (
     <Box flexDirection="column">
-      {displayMessages.map((message, index) => {
-        const previous = displayMessages[index - 1];
+      {timeline.map((entry, index) => {
+        if ('transcriptOrdinal' in entry) {
+          return <CompactBoundaryRow key={`boundary-${entry.id}`} boundary={entry} />;
+        }
+        const message = entry;
+        const previous = timeline[index - 1];
         if (message.role === 'user') {
           return (
             <Box key={message.id} flexDirection="column">
@@ -155,7 +162,7 @@ export function ChatPanel({
           <Box
             key={message.id}
             flexDirection="column"
-            marginTop={previous?.role === 'user' ? 1 : 0}
+            marginTop={previous && 'role' in previous && previous.role === 'user' ? 1 : 0}
           >
             <AgentMessage
               message={message}
@@ -177,4 +184,57 @@ export function ChatPanel({
       })}
     </Box>
   );
+}
+
+function buildTimeline(
+  messages: Message[],
+  boundaries: CompactBoundary[],
+  streamingMessageId?: string | null,
+): Array<Message | CompactBoundary> {
+  const byOrdinal = new Map<number, CompactBoundary[]>();
+  for (const boundary of boundaries) {
+    const group = byOrdinal.get(boundary.transcriptOrdinal) ?? [];
+    group.push(boundary);
+    byOrdinal.set(boundary.transcriptOrdinal, group);
+  }
+  const timeline: Array<Message | CompactBoundary> = [];
+  let segment: Message[] = [];
+  const flush = () => {
+    if (!segment.length) return;
+    timeline.push(...mergeAssistantMessages(segment, streamingMessageId));
+    segment = [];
+  };
+  for (let index = 0; index <= messages.length; index++) {
+    const markers = byOrdinal.get(index);
+    if (markers?.length) {
+      flush();
+      timeline.push(...markers.sort((a, b) => a.timestamp - b.timestamp));
+    }
+    if (index < messages.length) segment.push(messages[index]);
+  }
+  flush();
+  return timeline;
+}
+
+function CompactBoundaryRow({ boundary }: { boundary: CompactBoundary }) {
+  const theme = useTheme();
+  const removed = Math.max(0, boundary.preContextCount - boundary.postContextCount);
+  const tokens =
+    boundary.preContextTokens !== undefined && boundary.postContextTokens !== undefined
+      ? ` · ~${formatCompactNumber(boundary.preContextTokens)} → ~${formatCompactNumber(boundary.postContextTokens)} tokens`
+      : '';
+  return (
+    <Box flexDirection="column" marginY={1} paddingX={1}>
+      <Text color={theme.subtle}>Context compacted · full transcript retained</Text>
+      <Text color={theme.subtle} dimColor>
+        −{removed} context messages → checkpoint + {Math.max(0, boundary.postContextCount - 1)}{' '}
+        recent messages{tokens} · generation {boundary.generation}
+      </Text>
+    </Box>
+  );
+}
+
+function formatCompactNumber(value: number): string {
+  if (value < 1_000) return String(Math.round(value));
+  return `${Math.round(value / 1_000)}k`;
 }

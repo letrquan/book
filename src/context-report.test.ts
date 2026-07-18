@@ -51,7 +51,7 @@ describe('buildContextBreakdown', () => {
     expect(b.totalMessages).toBe(1);
     expect(b.userMessages).toBe(1);
     expect(b.assistantMessages).toBe(0);
-    expect(b.estimatedTokens).toBe(3);
+    expect(b.estimatedTokens).toBe(9);
   });
 
   it('handles empty conversation', () => {

@@ -122,6 +122,8 @@ interface AppProps {
 export function App({ config, session, redrawViewport }: AppProps) {
   const {
     messages,
+    contextHistory,
+    compactBoundaries,
     isThinking,
     isCompacting,
     compactUi,
@@ -553,6 +555,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
         const ambient = {
           model: liveConfig.model,
           maxTokens: liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens,
+          contextHistory,
+          compactBoundaries,
           skillCount: skills.length,
           commandCount: commands.length,
           subagentCount: discoverAgents(config.workspace).length,
@@ -561,7 +565,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
           ),
           hasClaudeMdLoader: discoverClaudeMd(config.workspace).length > 0,
         };
-        const breakdown = buildContextBreakdown(messages);
+        const breakdown = buildContextBreakdown(contextHistory);
         addLocalMessage(buildContextReport(messages, ambient), {
           kind: 'context',
           model: ambient.model,
@@ -810,6 +814,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
               )}
               <ChatPanel
                 messages={messages}
+                compactBoundaries={compactBoundaries}
                 streamingMessageId={streamingMessageId}
                 pendingPermission={pendingPermission}
                 expandedToolCallId={expandedToolId}

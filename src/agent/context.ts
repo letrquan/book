@@ -10,6 +10,9 @@ import type {
   ToolContext,
   ToolDefinition,
 } from '../types.js';
+import { createHash } from 'crypto';
+import { readFile, stat } from 'fs/promises';
+import { workspaceIdentity } from '../tools/file-provenance.js';
 import { discoverSkills, generateSkillListing } from '../skills.js';
 import { discoverCommands, generateCommandListing } from '../commands/loader.js';
 import { BUILTIN_COMMANDS } from '../commands/builtins.js';
@@ -208,7 +211,13 @@ export async function buildMessages(
   for (const msg of history) {
     if (!msg.includeInContext) continue;
     if (msg.role === 'user') {
-      messages.push({ role: 'user', content: msg.contextContent ?? msg.content });
+      messages.push({
+        role: 'user',
+        content:
+          msg.kind === 'checkpoint'
+            ? await renderCheckpointFreshness(config, msg.contextContent ?? msg.content)
+            : (msg.contextContent ?? msg.content),
+      });
     } else if (msg.role === 'assistant') {
       const assistant: ProviderMessage = {
         role: 'assistant',
@@ -249,4 +258,60 @@ export async function buildMessages(
   }
 
   return messages;
+}
+
+async function renderCheckpointFreshness(config: AgentConfig, content: string): Promise<string> {
+  const jsonStart = content.indexOf('{');
+  if (jsonStart < 0) return content;
+  let checkpoint: {
+    files?: Array<{
+      path: string;
+      summary?: string;
+      sources?: unknown;
+      observation?: { workspaceId?: string; sha256?: string; byteSize?: number };
+    }>;
+  };
+  try {
+    checkpoint = JSON.parse(content.slice(jsonStart));
+  } catch {
+    return content;
+  }
+  if (!checkpoint.files?.length) return content;
+  const currentWorkspaceId = workspaceIdentity(config.workspace);
+  const cache = new Map<string, string>();
+  checkpoint.files = await Promise.all(
+    checkpoint.files.slice(0, 30).map(async (file) => {
+      const observation = file.observation;
+      if (!observation?.sha256 || observation.workspaceId !== currentWorkspaceId) {
+        return {
+          path: file.path,
+          sources: file.sources,
+          freshness: 'stale: reread required before exact reliance',
+        };
+      }
+      try {
+        const absolute = resolve(config.workspace, file.path);
+        const info = await stat(absolute);
+        const key = `${absolute}:${info.size}:${info.mtimeMs}`;
+        let hash = cache.get(key);
+        if (!hash) {
+          hash = createHash('sha256')
+            .update(await readFile(absolute))
+            .digest('hex');
+          cache.set(key, hash);
+        }
+        if (hash === observation.sha256) {
+          return { ...file, freshness: 'current: hash matches observed file' };
+        }
+      } catch {
+        // Missing files are stale locators.
+      }
+      return {
+        path: file.path,
+        sources: file.sources,
+        freshness: 'stale: file changed or is missing; reread required',
+      };
+    }),
+  );
+  return `${content.slice(0, jsonStart)}${JSON.stringify(checkpoint)}`;
 }

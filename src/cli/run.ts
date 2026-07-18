@@ -88,6 +88,8 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         inputFormat: options.inputFormat as 'text' | 'stream-json',
         outputFormat: options.outputFormat as 'text' | 'json' | 'stream-json',
         history: bootstrap.history,
+        transcript: bootstrap.transcript,
+        compactBoundaries: bootstrap.compactBoundaries,
         mode,
         maxTurns: options.maxTurns ? parseInt(options.maxTurns as string, 10) : undefined,
         maxBudgetUsd: options.maxBudgetUsd ? parseFloat(options.maxBudgetUsd as string) : undefined,

@@ -6,7 +6,8 @@
  * token estimator). The real per-turn token counts come from the provider via
  * onUsage; this is the structural breakdown the user asks for with /context.
  */
-import type { Message } from './types.js';
+import type { CompactBoundary, Message } from './types.js';
+import { estimateMessageTokens } from './agent/compact.js';
 
 /** Rough token estimate for an arbitrary string. ~4 chars/token for English/code. */
 export function estimateTokens(text: string): number {
@@ -35,7 +36,7 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
 
   for (const m of messages) {
     if (!m.includeInContext) continue;
-    const msgTokens = estimateTokens(m.content);
+    const msgTokens = estimateTokens(m.contextContent ?? m.content) + 6;
     if (m.role === 'user') {
       userMsgs++;
       userTokens += msgTokens;
@@ -43,13 +44,16 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
       assistantMsgs++;
       assistantTokens += msgTokens;
     }
-    for (const c of m.toolCalls ?? []) toolCalls++;
+    for (const c of m.toolCalls ?? []) {
+      toolCalls++;
+      assistantTokens += estimateTokens(c.name) + estimateTokens(JSON.stringify(c.arguments)) + 12;
+    }
     for (const r of m.toolResults ?? []) {
       toolResults++;
       // Tool result output is stored on the assistant message's toolResults (it
       // is echoed back as text content by the renderer), but the raw output
       // text contributes to tokens too — count it under assistant.
-      assistantTokens += estimateTokens(r.output);
+      assistantTokens += estimateTokens(r.output) + 12;
     }
   }
 
@@ -70,6 +74,8 @@ export function buildContextReport(
   ambient: {
     model: string;
     maxTokens: number;
+    contextHistory?: Message[];
+    compactBoundaries?: CompactBoundary[];
     skillCount?: number;
     commandCount: number;
     subagentCount?: number;
@@ -78,10 +84,18 @@ export function buildContextReport(
     hasClaudeMdLoader: boolean;
   },
 ): string {
-  const b = buildContextBreakdown(messages);
+  const activeHistory = ambient.contextHistory ?? messages;
+  const b = buildContextBreakdown(activeHistory);
+  const visibleCount = messages.filter(
+    (message) => message.kind !== 'checkpoint' && message.role !== undefined,
+  ).length;
+  const boundaries = ambient.compactBoundaries ?? [];
+  const latestBoundary = boundaries.at(-1);
   const lines: string[] = ['Context window breakdown', ''];
   lines.push(
-    `Conversation messages: ${b.totalMessages} (user: ${b.userMessages}, assistant: ${b.assistantMessages})`,
+    `Visible transcript messages: ${visibleCount}`,
+    `Active provider-context messages: ${b.totalMessages} (user: ${b.userMessages}, assistant: ${b.assistantMessages})`,
+    `Compact boundaries: ${boundaries.length}`,
   );
   lines.push(`Tool calls recorded: ${b.toolCalls}  •  tool results: ${b.toolResults}`);
   lines.push('');
@@ -90,6 +104,16 @@ export function buildContextReport(
   lines.push(`    user turns       : ~${b.byRole.user.toLocaleString()}`);
   lines.push(`    assistant turns  : ~${b.byRole.assistant.toLocaleString()}`);
   lines.push('');
+  if (latestBoundary) {
+    lines.push(
+      `Most recent compact: generation ${latestBoundary.generation}` +
+        (latestBoundary.preContextTokens !== undefined &&
+        latestBoundary.postContextTokens !== undefined
+          ? ` (~${latestBoundary.preContextTokens.toLocaleString()} → ~${latestBoundary.postContextTokens.toLocaleString()} tokens)`
+          : ''),
+    );
+    lines.push('');
+  }
   lines.push(
     `Model context budget: ${ambient.maxTokens.toLocaleString()} tokens (${ambient.model})`,
   );
@@ -124,4 +148,12 @@ export function buildContextReport(
     '(Token estimates use the chars/4 heuristic. Real counts come from the provider per turn — see /usage.)',
   );
   return lines.join('\n');
+}
+
+/** Active provider-context estimate including structural and tool overhead. */
+export function estimateActiveContextTokens(messages: Message[]): number {
+  return messages.reduce(
+    (total, message) => total + (message.includeInContext ? estimateMessageTokens(message) : 0),
+    0,
+  );
 }

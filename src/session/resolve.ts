@@ -1,4 +1,4 @@
-import type { Message, SessionMeta, SessionStoreInterface } from '../types.js';
+import type { CompactBoundary, Message, SessionMeta, SessionStoreInterface } from '../types.js';
 import { normalizeWorkspace } from './store.js';
 
 export type SessionStartSource = 'startup' | 'resume' | 'clear';
@@ -7,6 +7,9 @@ export interface SessionBootstrap {
   sessionId: string;
   sessionName?: string;
   history: Message[];
+  transcript?: Message[];
+  contextHistory?: Message[];
+  compactBoundaries?: CompactBoundary[];
   source: SessionStartSource;
   persisted: boolean;
   created: boolean;
@@ -47,15 +50,27 @@ export function persistHistory(
   for (const message of history) {
     store.append(sessionId, {
       type: message.role,
+      eventId: message.id,
       timestamp: message.timestamp,
       data:
         message.role === 'user'
-          ? { content: message.content, contextContent: message.contextContent }
+          ? {
+              id: message.id,
+              content: message.content,
+              contextContent: message.contextContent,
+              kind: message.kind,
+              includeInContext: message.includeInContext,
+              fileObservations: message.fileObservations,
+            }
           : {
+              id: message.id,
               complete: true,
               content: message.content,
+              kind: message.kind,
+              includeInContext: message.includeInContext,
               toolCalls: message.toolCalls,
               toolResults: message.toolResults,
+              fileObservations: message.fileObservations,
             },
     });
   }
@@ -73,6 +88,9 @@ export function resolveSessionBootstrap(
       sessionId: crypto.randomUUID(),
       sessionName: options.sessionName,
       history: [],
+      transcript: [],
+      contextHistory: [],
+      compactBoundaries: [],
       source: 'startup',
       persisted: false,
       created: true,
@@ -96,6 +114,9 @@ export function resolveSessionBootstrap(
         sessionId,
         sessionName: options.sessionName,
         history: [],
+        transcript: [],
+        contextHistory: [],
+        compactBoundaries: [],
         source: 'startup',
         persisted: true,
         created: true,
@@ -108,12 +129,17 @@ export function resolveSessionBootstrap(
   if (selected) {
     const loaded = store.load(selected.id);
     if (options.forkSession) {
-      const sessionId = store.create({ cwd: options.cwd, name: options.sessionName });
-      persistHistory(store, sessionId, loaded.history);
+      const sessionId = store.fork
+        ? store.fork(selected.id, { cwd: options.cwd, name: options.sessionName })
+        : store.create({ cwd: options.cwd, name: options.sessionName });
+      if (!store.fork) persistHistory(store, sessionId, loaded.transcript);
       return {
         sessionId,
         sessionName: options.sessionName,
-        history: loaded.history,
+        history: loaded.contextHistory,
+        transcript: loaded.transcript,
+        contextHistory: loaded.contextHistory,
+        compactBoundaries: loaded.compactBoundaries,
         source: 'resume',
         persisted: true,
         created: true,
@@ -123,7 +149,10 @@ export function resolveSessionBootstrap(
     return {
       sessionId: selected.id,
       sessionName: loaded.meta.name,
-      history: loaded.history,
+      history: loaded.contextHistory,
+      transcript: loaded.transcript,
+      contextHistory: loaded.contextHistory,
+      compactBoundaries: loaded.compactBoundaries,
       source: 'resume',
       persisted: true,
       created: false,
@@ -135,6 +164,9 @@ export function resolveSessionBootstrap(
     sessionId,
     sessionName: options.sessionName,
     history: [],
+    transcript: [],
+    contextHistory: [],
+    compactBoundaries: [],
     source: 'startup',
     persisted: true,
     created: true,
