@@ -81,6 +81,44 @@ describe('ChatPanel Ink rendering', () => {
     expect(output.match(/answer marker/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('renders compact boundaries inline without hiding transcript messages', () => {
+    const messages = [
+      msg('u1', 'user', 'before compact'),
+      msg('a1', 'assistant', 'first answer'),
+      msg('u2', 'user', 'after compact'),
+      msg('a2', 'assistant', 'second answer'),
+    ];
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          compactBoundaries={[
+            {
+              id: 'c1',
+              trigger: 'manual',
+              transcriptOrdinal: 2,
+              preContextCount: 8,
+              postContextCount: 3,
+              preContextTokens: 10_300,
+              postContextTokens: 3_800,
+              generation: 2,
+              checkpointVersion: 2,
+              timestamp: 2,
+            },
+          ]}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('before compact');
+    expect(output).toContain('after compact');
+    expect(output).toContain('Context compacted · full transcript retained');
+    expect(output).not.toContain('Historical conversation checkpoint');
+  });
+
   it('renders a submitted user message, assistant placeholder, then streamed text without overwriting older messages', () => {
     const baseMessages = [
       msg('u0', 'user', 'older question'),

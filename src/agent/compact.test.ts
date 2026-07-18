@@ -19,6 +19,39 @@ import { chatCompletionStream } from '../provider/index.js';
 
 const mockedStream = vi.mocked(chatCompletionStream);
 
+function validCheckpoint() {
+  return JSON.stringify({
+    version: 2,
+    generation: 1,
+    state: { summary: 'Summary of work.', status: 'active' },
+    constraints: [],
+    files: [],
+    episodes: [
+      {
+        task: 'do X',
+        outcome: 'done X',
+        status: 'complete',
+        sources: [{ eventRef: '1' }],
+      },
+    ],
+    openThreads: [],
+    statistics: { summarizedMessages: 2, retainedMessages: 2, preTokens: 1, postTokens: 1 },
+  });
+}
+
+const twoTurns: Message[] = [
+  { id: '1', role: 'user', content: 'do X', includeInContext: true, timestamp: 0 },
+  {
+    id: '2',
+    role: 'assistant',
+    content: 'done X '.repeat(5_000),
+    includeInContext: true,
+    timestamp: 0,
+  },
+  { id: '3', role: 'user', content: 'do Y', includeInContext: true, timestamp: 0 },
+  { id: '4', role: 'assistant', content: 'done Y', includeInContext: true, timestamp: 0 },
+];
+
 function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return defaultConfig({
     autoCompactEnabled: true,
@@ -221,24 +254,21 @@ describe('runCompact', () => {
 
   it('returns compacted history on successful stream', async () => {
     mockedStream.mockImplementation(async function* () {
-      yield { type: 'text', content: 'Summary of work.' };
+      yield { type: 'text', content: validCheckpoint() };
       yield {
         type: 'done',
         usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
       };
     });
 
-    const history: Message[] = [
-      { id: '1', role: 'user', content: 'do X', includeInContext: true, timestamp: 0 },
-      { id: '2', role: 'assistant', content: 'done X', includeInContext: true, timestamp: 0 },
-    ];
-    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+    const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
     expect(result.status).toBe('compacted');
     if (result.status === 'compacted') {
-      expect(result.replacementHistory).toHaveLength(1);
+      expect(result.replacementHistory).toHaveLength(3);
       expect(result.replacementHistory[0].content).toMatch(/Summary of work/);
       expect(result.summary).toBe('Summary of work.');
-      expect(result.preMessageCount).toBe(2);
+      expect(result.preMessageCount).toBe(4);
+      expect(result.replacementHistory.slice(1)).toEqual(twoTurns.slice(2));
     }
   });
 
@@ -248,11 +278,7 @@ describe('runCompact', () => {
       yield { type: 'error', error: 'boom' };
     });
 
-    const history: Message[] = [
-      { id: '1', role: 'user', content: 'a', includeInContext: true, timestamp: 0 },
-      { id: '2', role: 'assistant', content: 'b', includeInContext: true, timestamp: 0 },
-    ];
-    const result = await runCompact(makeConfig(), history, { trigger: 'auto' });
+    const result = await runCompact(makeConfig(), twoTurns, { trigger: 'auto' });
     expect(result.status).toBe('failed');
     if (result.status === 'failed') {
       expect(result.reason).toBe('provider-error');
@@ -268,14 +294,84 @@ describe('runCompact', () => {
       };
     });
 
-    const history: Message[] = [
-      { id: '1', role: 'user', content: 'a', includeInContext: true, timestamp: 0 },
-      { id: '2', role: 'assistant', content: 'b', includeInContext: true, timestamp: 0 },
-    ];
-    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+    const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
     expect(result.status).toBe('failed');
     if (result.status === 'failed') {
       expect(result.reason).toBe('empty-summary');
     }
+  });
+
+  it('performs exactly one schema repair attempt', async () => {
+    mockedStream
+      .mockImplementationOnce(async function* () {
+        yield { type: 'text', content: '{"version":2}' };
+        yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+      })
+      .mockImplementationOnce(async function* () {
+        yield { type: 'text', content: validCheckpoint() };
+        yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+      });
+
+    const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
+    expect(result.status).toBe('compacted');
+    expect(mockedStream).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects checkpoint references that do not exist', async () => {
+    const invalid = JSON.parse(validCheckpoint());
+    invalid.episodes[0].sources[0].eventRef = 'missing-event';
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: JSON.stringify(invalid) };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+
+    const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
+    expect(result).toMatchObject({ status: 'failed', reason: 'invalid-checkpoint' });
+  });
+
+  it('fails closed when the complete historical prefix exceeds the summarizer budget', async () => {
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'oversized evidence '.repeat(7_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result).toMatchObject({ status: 'failed', reason: 'budget-overflow' });
+    expect(mockedStream).not.toHaveBeenCalled();
+  });
+
+  it('passes an integer checkpoint output budget to the provider', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'old evidence '.repeat(700),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig({ modelInfo: { contextWindow: 8_192 } }), history, {
+      trigger: 'manual',
+    });
+
+    expect(result.status).toBe('compacted');
+    expect(mockedStream.mock.calls[0][3]).toMatchObject({ maxOutputTokens: 819 });
   });
 });

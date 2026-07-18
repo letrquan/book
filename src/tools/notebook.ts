@@ -5,6 +5,7 @@ import type { ToolContext, ToolDefinition, ToolResult } from '../types.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
+import { observeFile, requireFreshObservation } from './file-provenance.js';
 
 type CellType = 'code' | 'markdown';
 type EditMode = 'replace' | 'insert' | 'delete';
@@ -181,6 +182,8 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, notebookPath);
   if (!resolved) return pathOutsideWorkspaceResult(notebookPath);
   const { filePath, relativePath } = resolved;
+  const stale = await requireFreshObservation(ctx, filePath, relativePath);
+  if (stale) return fail(stale);
 
   let original: string;
   try {
@@ -238,6 +241,7 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
     );
   }
 
+  const observation = await observeFile(ctx, filePath, 'edit');
   return {
     toolCallId: '',
     success: true,
@@ -248,6 +252,7 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
       addedLines: stats.addedLines,
       removedLines: stats.removedLines,
     },
+    fileObservations: [observation],
   };
 }
 

@@ -42,6 +42,7 @@ export async function* chatCompletionStream(
     onRetry?: (attempt: number, max: number, delayMs: number) => void;
     onStreamStall?: (countdownMs: number) => void;
     onStreamResume?: () => void;
+    maxOutputTokens?: number;
   },
 ): AsyncGenerator<ProviderStreamEvent> {
   if (isAnthropicProvider(config)) {

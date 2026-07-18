@@ -10,6 +10,7 @@ import { taskTools } from './tasks.js';
 import { planModeTools } from './plan-mode.js';
 import { notebookTools } from './notebook.js';
 import { TOOL_ALIASES } from './aliases.js';
+import { createSessionHistoryTools, type SessionHistoryCapability } from './session-history.js';
 
 async function executeWithTimeout(
   tool: ToolDefinition,
@@ -208,7 +209,9 @@ export function createRegistry() {
   };
 }
 
-export function createDefaultRegistry(): ReturnType<typeof createRegistry> {
+export function createDefaultRegistry(capabilities?: {
+  sessionHistory?: SessionHistoryCapability;
+}): ReturnType<typeof createRegistry> {
   const registry = createRegistry();
   registry.registerAll([
     ...fileTools,
@@ -222,6 +225,9 @@ export function createDefaultRegistry(): ReturnType<typeof createRegistry> {
     ...planModeTools,
     ...notebookTools,
   ]);
+  if (capabilities?.sessionHistory) {
+    registry.registerAll(createSessionHistoryTools(capabilities.sessionHistory));
+  }
   return registry;
 }
 

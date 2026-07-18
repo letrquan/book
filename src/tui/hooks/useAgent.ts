@@ -16,6 +16,7 @@ import type {
   CompactResult,
   CompactRecordData,
   CompactTrigger,
+  CompactBoundary,
 } from '../../types.js';
 import { runAgentLoop } from '../../agent/loop.js';
 import {
@@ -39,7 +40,12 @@ import {
 } from '../persist.js';
 import { providerConfigSchema } from '../../settings.js';
 import { providerConfigFromDraft, type ProviderSaveRequest } from '../model-options.js';
-import { expandAtMentions, expandShellCommands } from '../input-expansion.js';
+import {
+  collectAtMentionObservations,
+  expandAtMentions,
+  expandShellCommands,
+} from '../input-expansion.js';
+import { observationKey } from '../../tools/file-provenance.js';
 import { selectSession, type SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';
 import { runSessionEnd, runSessionStart } from '../../session/lifecycle.js';
@@ -122,8 +128,25 @@ export type CompactUiState = {
   message?: string;
 };
 
+function buildObservationLedger(messages: Message[]) {
+  const ledger = new Map<string, NonNullable<Message['fileObservations']>[number]>();
+  for (const message of messages) {
+    for (const observation of message.fileObservations ?? []) {
+      const key = observationKey(observation.workspaceId, observation.path);
+      const current = ledger.get(key);
+      if (!current || current.timestamp <= observation.timestamp) ledger.set(key, observation);
+    }
+  }
+  return ledger;
+}
+
 export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
-  const [messages, setMessages] = useState<Message[]>(session.history);
+  const initialTranscript = session.transcript ?? session.history;
+  const initialContext = session.contextHistory ?? session.history;
+  const [messages, setMessages] = useState<Message[]>(initialTranscript);
+  const [compactBoundaries, setCompactBoundaries] = useState<CompactBoundary[]>(
+    session.compactBoundaries ?? [],
+  );
   const [isThinking, setIsThinking] = useState(false);
   const [isCompacting, setIsCompacting] = useState(false);
   const [compactUi, setCompactUi] = useState<CompactUiState | null>(null);
@@ -137,7 +160,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // prop) is the startup snapshot; setModel/setEffort/persistPermissionRule
   // mutate liveConfig so subsequent runAgentLoop calls pick up the change.
   // Without this, /model would silently no-op (send closes over `config`).
-  const [liveConfig, setLiveConfig] = useState<AgentConfig>(config);
+  const [liveConfig, setLiveConfig] = useState<AgentConfig>(() => ({
+    ...config,
+    fileObservationLedger: buildObservationLedger(initialTranscript),
+  }));
   const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
   const [pendingPlanApproval, setPendingPlanApproval] = useState<PendingPlanApproval | null>(null);
   const [turnDurationMs, setTurnDurationMs] = useState<number>(0);
@@ -155,7 +181,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // the latest in-progress message without stale-closure issues.
   const streamingIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const messagesRef = useRef<Message[]>(session.history);
+  const messagesRef = useRef<Message[]>(initialTranscript);
+  const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
   const sessionGenerationRef = useRef(0);
   const lifecycleStartedRef = useRef(false);
@@ -172,6 +199,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const operationInFlightRef = useRef<'send' | 'compact' | null>(null);
   const compactAbortRef = useRef<AbortController | null>(null);
   const hostUsageRef = useRef<Usage | null>(null);
+  const lastHostCompactAttemptRef = useRef<string | null>(null);
   // Resolve handles for pending interactive prompts (refs for idempotent settle).
   const pendingPermissionRef = useRef<PendingPermission | null>(pendingPermission);
   const pendingPlanApprovalRef = useRef<PendingPlanApproval | null>(pendingPlanApproval);
@@ -247,7 +275,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   }, []);
 
   const resetConversationState = useCallback(
-    (nextId: string, nextName: string | undefined, history: Message[]) => {
+    (
+      nextId: string,
+      nextName: string | undefined,
+      transcript: Message[],
+      contextHistory: Message[] = transcript,
+      boundaries: CompactBoundary[] = [],
+    ) => {
       sessionGenerationRef.current++;
       settlePermission('deny', 'session-reset');
       settlePlanApproval('reject', 'session-reset');
@@ -259,16 +293,20 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       clearCountdown();
 
       sessionIdRef.current = nextId;
-      messagesRef.current = history;
+      messagesRef.current = transcript;
+      contextHistoryRef.current = contextHistory;
       streamingIdRef.current = null;
       setSessionId(nextId);
       setSessionName(nextName);
-      setMessages(history);
+      setMessages(transcript);
+      setCompactBoundaries(boundaries);
       setIsThinking(false);
       setStreamingMessageId(null);
       setError(null);
       setCurrentTurn(0);
       setUsage(null);
+      hostUsageRef.current = null;
+      lastHostCompactAttemptRef.current = null;
       setAgentTodos([]);
       setTurnDurationMs(0);
       setRetryPhase('none');
@@ -278,6 +316,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setLiveConfig((current) => ({
         ...current,
         tasks: [],
+        fileObservationLedger: buildObservationLedger(transcript),
         memoryContext: current.settings.memory.enabled
           ? loadMemoryContext(current.workspace)
           : undefined,
@@ -328,7 +367,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       await endCurrentSession('resume');
       session.store.touch(selected.id);
       lifecycleEndedRef.current = false;
-      resetConversationState(selected.id, loaded.meta.name, loaded.history);
+      resetConversationState(
+        selected.id,
+        loaded.meta.name,
+        loaded.transcript,
+        loaded.contextHistory,
+        loaded.compactBoundaries,
+      );
       await runSessionStart(liveConfigRef.current, selected.id, 'resume');
     },
     [endCurrentSession, liveConfig.workspace, resetConversationState, session.store],
@@ -345,22 +390,45 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       result: Extract<CompactResult, { status: 'compacted' }>,
       opts: { focus?: string; sessionId: string },
     ) => {
+      const timestamp = Date.now();
+      const boundary: CompactBoundary = {
+        id: result.compactId,
+        trigger: result.trigger,
+        transcriptOrdinal: messagesRef.current.length,
+        preContextCount: result.preMessageCount,
+        postContextCount: result.replacementHistory.length,
+        preContextTokens: result.preContextTokens,
+        postContextTokens: result.postContextTokens,
+        generation: result.generation,
+        checkpointVersion: 2,
+        timestamp,
+      };
       if (session.store) {
         const data: CompactRecordData = {
-          version: 1,
+          version: 2,
+          compactId: result.compactId,
+          generation: result.generation,
           trigger: result.trigger,
+          focus: opts.focus,
+          checkpoint: result.checkpoint,
           summary: result.summary,
           preContextTokens: result.preContextTokens,
+          postContextTokens: result.postContextTokens,
           replacementHistory: result.replacementHistory,
+          boundary,
+          throughEventRef: result.throughEventRef,
+          summarizedCount: result.summarizedCount,
+          retainedCount: result.retainedCount,
         };
         session.store.append(opts.sessionId, {
           type: 'compact',
-          timestamp: Date.now(),
+          eventId: result.compactId,
+          timestamp,
           data,
         } satisfies SessionRecord);
       }
-      messagesRef.current = result.replacementHistory;
-      setMessages(result.replacementHistory);
+      contextHistoryRef.current = result.replacementHistory;
+      setCompactBoundaries((current) => [...current, boundary]);
       setUsage(null);
       hostUsageRef.current = null;
       await runPostCompactHooks(liveConfigRef.current, {
@@ -411,23 +479,27 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
       // Cross-turn auto-compact before appending the new user message.
       const contextLimit = resolveContextLimit(liveConfig);
+      const hostCompactAttemptKey = `${usagePressureTokens(hostUsageRef.current)}:${contextHistoryRef.current.length}`;
       if (
         liveConfig.autoCompactEnabled !== false &&
         contextLimit != null &&
-        shouldCompact(hostUsageRef.current, contextLimit)
+        shouldCompact(hostUsageRef.current, contextLimit) &&
+        lastHostCompactAttemptRef.current !== hostCompactAttemptKey
       ) {
+        lastHostCompactAttemptRef.current = hostCompactAttemptKey;
         try {
           setIsCompacting(true);
           setCompactUi({
             phase: 'working',
             trigger: 'auto',
-            preMessages: messagesRef.current.length,
+            preMessages: contextHistoryRef.current.length,
             preContextTokens: usagePressureTokens(hostUsageRef.current),
           });
-          const autoResult = await runCompact(liveConfig, messagesRef.current, {
+          const autoResult = await runCompact(liveConfig, contextHistoryRef.current, {
             trigger: 'auto',
             sessionId: activeSessionId,
             preContextTokens: usagePressureTokens(hostUsageRef.current),
+            upcomingUserIntent: userMessage,
           });
           if (stillCurrent() && autoResult.status === 'compacted') {
             await commitCompactResult(autoResult, { sessionId: activeSessionId });
@@ -455,18 +527,38 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       // Render the user's message IMMEDIATELY, and seed a fresh, empty
       // assistant message that we will stream into. Prior messages are never
       // touched, so they stay visible (scrolled above) while the reply streams.
-      const history = messagesRef.current;
+      const history = contextHistoryRef.current;
       const userMsg = makeMessage(
         'user',
         userMessage,
         contextMessage === userMessage ? undefined : contextMessage,
         true,
       );
+      userMsg.kind = 'conversation';
+      userMsg.fileObservations = collectAtMentionObservations(
+        userMessage,
+        liveConfig.workspace,
+        userMsg.id,
+      );
+      liveConfig.fileObservationLedger ??= new Map();
+      for (const observation of userMsg.fileObservations) {
+        liveConfig.fileObservationLedger.set(
+          observationKey(observation.workspaceId, observation.path),
+          observation,
+        );
+      }
       if (session.store) {
         session.store.append(activeSessionId, {
           type: 'user',
+          eventId: userMsg.id,
           timestamp: userMsg.timestamp,
-          data: { content: userMessage, contextContent: userMsg.contextContent },
+          data: {
+            id: userMsg.id,
+            content: userMessage,
+            contextContent: userMsg.contextContent,
+            kind: 'conversation',
+            fileObservations: userMsg.fileObservations,
+          },
         } satisfies SessionRecord);
       }
       const placeholder = makeMessage('assistant', '', undefined, true);
@@ -493,7 +585,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       activeAccumulator.start();
       uiLog.event('accumulator:started', { flushIntervalMs: 16 });
 
-      const registry = createDefaultRegistry();
+      const registry = createDefaultRegistry(
+        session.store
+          ? {
+              sessionHistory: {
+                store: session.store,
+                sessionId: () => sessionIdRef.current,
+              },
+            }
+          : undefined,
+      );
       const controller = new AbortController();
       abortRef.current = controller;
 
@@ -571,6 +672,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             onUsage: (u: Usage) => {
               if (!stillCurrent()) return;
               hostUsageRef.current = u;
+              lastHostCompactAttemptRef.current = null;
               setUsage(u);
             },
             onModeChange: (newMode: PermissionMode) => {
@@ -613,12 +715,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               if (!stillCurrent() || !session.store) return;
               session.store.append(activeSessionId, {
                 type: 'assistant',
+                eventId: message.id,
                 timestamp: message.timestamp,
                 data: {
+                  id: message.id,
                   complete: true,
                   content: message.content,
+                  kind: message.kind ?? 'conversation',
                   toolCalls: message.toolCalls,
                   toolResults: message.toolResults,
+                  fileObservations: message.fileObservations,
                 },
               } satisfies SessionRecord);
             },
@@ -680,6 +786,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             },
             manageSessionHooks: false,
             displayMessage: userMessage,
+            userMessageId: userMsg.id,
+            userMessageTimestamp: userMsg.timestamp,
+            userFileObservations: userMsg.fileObservations,
+            assistantMessageId: () => streamingIdRef.current ?? undefined,
             allowedTools: commandContext?.allowedTools,
             modelOverride: commandContext?.modelOverride,
             commands: commandContext ? [commandContext.command] : undefined,
@@ -691,7 +801,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           // returned API history. Assistant turns are persisted via
           // onAssistantMessageComplete (not final-history length slicing).
           activeAccumulator?.stop();
-          void updatedHistory; // loop return still drives completion; display is accumulator-owned
+          contextHistoryRef.current = updatedHistory;
         }
       } catch (e) {
         if (stillCurrent()) setError(e instanceof Error ? e.message : String(e));
@@ -784,7 +894,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const stillCurrent = () => sessionGenerationRef.current === generation;
       const controller = new AbortController();
       compactAbortRef.current = controller;
-      const preMessages = messagesRef.current.length;
+      const preMessages = contextHistoryRef.current.length;
       const preContextTokens = usagePressureTokens(hostUsageRef.current);
 
       setIsCompacting(true);
@@ -796,7 +906,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       });
 
       try {
-        const result = await runCompact(liveConfigRef.current, messagesRef.current, {
+        const result = await runCompact(liveConfigRef.current, contextHistoryRef.current, {
           trigger: 'manual',
           focus,
           sessionId: activeSessionId,
@@ -864,10 +974,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     settlePermission('deny', 'clear');
     settlePlanApproval('reject', 'clear');
     messagesRef.current = [];
+    contextHistoryRef.current = [];
     setMessages([]);
+    setCompactBoundaries([]);
     setError(null);
     setCurrentTurn(0);
     setUsage(null);
+    hostUsageRef.current = null;
+    lastHostCompactAttemptRef.current = null;
     setAgentTodos([]);
     setPendingPermission(null);
     setPendingPlanApproval(null);
@@ -912,14 +1026,22 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         return; // don't clobber a streaming turn
       }
       uiLog.event('local-message:added', { preview: text.slice(0, 40) });
-      const msg = makeMessage('assistant', text);
+      const msg = { ...makeMessage('assistant', text, undefined, false), kind: 'local' as const };
+      if (session.store) {
+        session.store.append(sessionIdRef.current, {
+          type: 'local',
+          eventId: msg.id,
+          timestamp: msg.timestamp,
+          data: { id: msg.id, content: msg.content, kind: 'local', includeInContext: false },
+        });
+      }
       setMessages((prev) => {
         const next = [...prev, msg];
         messagesRef.current = next;
         return next;
       });
     },
-    [isThinking],
+    [isThinking, session.store],
   );
 
   // Switch the active model for the rest of the session, optionally persisting
@@ -1030,6 +1152,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
   return {
     messages,
+    compactBoundaries,
+    contextHistory: contextHistoryRef.current,
     isThinking,
     isCompacting,
     compactUi,
