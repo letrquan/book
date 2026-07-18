@@ -12,6 +12,7 @@ import {
 } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
+import { createFileObservationLedger, workspaceIdentity } from './file-observation.js';
 
 let dir: string;
 const ctx: ToolContext = { workspaceRoot: '', env: {} };
@@ -88,6 +89,21 @@ describe('read_file', () => {
     } finally {
       clearTimeout(timer);
     }
+  });
+
+  it('hashes the full file while recording partial line coverage', async () => {
+    writeFileSync(join(dir, 'partial.txt'), 'one\ntwo\nthree');
+    const result = await read.execute({ filePath: 'partial.txt', offset: 2, limit: 1 }, ctx);
+
+    expect(result.fileObservations).toHaveLength(1);
+    expect(result.fileObservations?.[0]).toMatchObject({
+      path: 'partial.txt',
+      workspaceIdentity: workspaceIdentity(dir),
+      sizeBytes: 13,
+      coverage: { kind: 'lines', startLine: 2, endLine: 2, totalLines: 3 },
+      operation: 'read',
+    });
+    expect(result.fileObservations?.[0].sha256).toHaveLength(64);
   });
 });
 
@@ -182,6 +198,68 @@ describe('write_file', () => {
     expect(r.error).toMatch(/outside workspace/);
     expect(r.fileMutation).toBeUndefined();
     expect(existsSync(outsidePath)).toBe(false);
+  });
+
+  it('preserves current behavior when no observation exists', async () => {
+    writeFileSync(join(dir, 'unobserved.txt'), 'before');
+    const result = await write.execute(
+      { filePath: 'unobserved.txt', content: 'after' },
+      { ...ctx, fileObservations: createFileObservationLedger() },
+    );
+
+    expect(result.success).toBe(true);
+    expect(readFileSync(join(dir, 'unobserved.txt'), 'utf-8')).toBe('after');
+    expect(result.fileObservations?.[0]).toMatchObject({ operation: 'write' });
+  });
+
+  it('rejects a stale remembered mutation then permits it after a fresh reread', async () => {
+    const path = join(dir, 'stale.txt');
+    writeFileSync(path, 'observed');
+    const ledger = createFileObservationLedger();
+    const observed = await read.execute(
+      { filePath: 'stale.txt' },
+      { ...ctx, fileObservations: ledger },
+    );
+    expect(observed.success).toBe(true);
+
+    writeFileSync(path, 'external change');
+    const stale = await write.execute(
+      { filePath: 'stale.txt', content: 'rejected' },
+      { ...ctx, fileObservations: ledger },
+    );
+    expect(stale.success).toBe(false);
+    expect(stale.error).toMatch(/changed since it was last observed/i);
+    expect(readFileSync(path, 'utf-8')).toBe('external change');
+
+    await read.execute({ filePath: 'stale.txt' }, { ...ctx, fileObservations: ledger });
+    const recovered = await write.execute(
+      { filePath: 'stale.txt', content: 'accepted' },
+      { ...ctx, fileObservations: ledger },
+    );
+    expect(recovered.success).toBe(true);
+    expect(readFileSync(path, 'utf-8')).toBe('accepted');
+  });
+
+  it('rejects remembered observations from another workspace', async () => {
+    writeFileSync(join(dir, 'same.txt'), 'same');
+    const other = mkdtempSync(join(tmpdir(), 'book-file-other-'));
+    try {
+      writeFileSync(join(other, 'same.txt'), 'same');
+      const ledger = createFileObservationLedger();
+      await read.execute(
+        { filePath: 'same.txt' },
+        { workspaceRoot: other, env: {}, fileObservations: ledger },
+      );
+
+      const result = await write.execute(
+        { filePath: 'same.txt', content: 'nope' },
+        { ...ctx, fileObservations: ledger },
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/different workspace/i);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
   });
 });
 

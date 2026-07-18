@@ -2,25 +2,23 @@ import { Box, Text } from 'ink';
 import { useEffect } from 'react';
 import { useTheme } from '../theme.js';
 import { useStaggeredReveal } from '../hooks/useAnimation.js';
-import type { CompactUiState } from '../hooks/useAgent.js';
+import type { TranscriptCompactBoundary } from './transcript-messages.js';
 import { truncateDisplay } from './word-wrap.js';
 
 export interface CompactDiffCardProps {
-  state: CompactUiState;
+  boundary: TranscriptCompactBoundary;
+  animated?: boolean;
   terminalWidth?: number;
   reducedMotion?: boolean;
   screenReader?: boolean;
-  /** Called once the stagger settles so the host can collapse to a one-liner. */
+  /** Called once the newest boundary's reveal settles. */
   onSettled?: () => void;
 }
 
-/**
- * Context-diff card shown after a successful compact.
- * Borrows diff theme tokens; does not parse chat as a unified diff.
- * UI-only — never part of provider history.
- */
+/** Durable, non-chat compact marker rendered inline in transcript order. */
 export function CompactDiffCard({
-  state,
+  boundary,
+  animated = false,
   terminalWidth = 80,
   reducedMotion = false,
   screenReader = false,
@@ -30,56 +28,41 @@ export function CompactDiffCard({
   const motionDisabled = reducedMotion || screenReader;
   const width = Math.max(24, Math.floor(terminalWidth));
   const contentWidth = Math.max(12, width - 4);
-
-  const playDiff = state.phase === 'diff' || state.phase === 'done';
-  const reveal = useStaggeredReveal(4, playDiff && !motionDisabled, 140, motionDisabled);
+  const reveal = useStaggeredReveal(3, animated && !motionDisabled, 140, motionDisabled);
 
   useEffect(() => {
-    if (!playDiff || !onSettled) return;
+    if (!animated || !onSettled) return;
     if (motionDisabled) {
       onSettled();
       return;
     }
-    const t = setTimeout(onSettled, 140 * 4 + 200);
-    return () => clearTimeout(t);
-  }, [playDiff, motionDisabled, onSettled]);
+    const timer = setTimeout(onSettled, 140 * 3 + 200);
+    return () => clearTimeout(timer);
+  }, [animated, motionDisabled, onSettled]);
 
-  if (state.phase === 'working') {
-    return null; // WorkingIndicator owns the busy spinner
+  const show = (step: number) => !animated || motionDisabled || reveal >= step;
+  const contextChange = `−${boundary.preContextMessages} model-context messages → +checkpoint +${Math.max(
+    0,
+    boundary.retainedContextMessages - 1,
+  )} recent messages`;
+  const tokenParts: string[] = [];
+  if (typeof boundary.preContextTokens === 'number') {
+    tokenParts.push(`pre ~${boundary.preContextTokens.toLocaleString()} tokens`);
   }
+  if (typeof boundary.estimatedPostTokens === 'number') {
+    tokenParts.push(`post ~${boundary.estimatedPostTokens.toLocaleString()} tokens`);
+  }
+  tokenParts.push(`generation ${boundary.generation}`);
 
-  if (state.phase === 'skipped' || state.phase === 'error') {
-    const color = state.phase === 'error' ? theme.error : theme.subtle;
+  if (!animated || width < 58) {
     return (
       <Box flexDirection="column" marginY={1} width={width} paddingX={1}>
-        <Text color={color}>{truncateDisplay(state.message ?? '', contentWidth)}</Text>
-      </Box>
-    );
-  }
-
-  if (!playDiff) return null;
-
-  const pre = state.preMessages ?? 0;
-  const preTok = state.preContextTokens;
-  const narrow = width < 48;
-  const show = (n: number) => motionDisabled || reveal >= n;
-
-  if (narrow) {
-    return (
-      <Box flexDirection="column" marginY={1} width={width} paddingX={1}>
-        <Text>
-          <Text color={theme.diffRemoved}>−{pre} msgs</Text>
-          <Text color={theme.subtle}> → </Text>
-          <Text color={theme.diffAdded}>+summary</Text>
-          <Text color={theme.success}> · Conversation compacted</Text>
+        <Text color={theme.subtle}>
+          {truncateDisplay('Context compacted · full transcript retained', contentWidth)}
         </Text>
       </Box>
     );
   }
-
-  const hunk = `@@ context  −${pre} msgs  →  +1 summary @@`;
-  const metrics =
-    typeof preTok === 'number' && preTok > 0 ? `pre ~${(preTok / 1000).toFixed(1)}k context` : null;
 
   return (
     <Box
@@ -90,26 +73,18 @@ export function CompactDiffCard({
       borderColor={theme.subtle}
       paddingX={1}
     >
-      <Text color={theme.subtle} bold>
-        compact
+      <Text color={theme.success} bold>
+        Context compacted · full transcript retained
       </Text>
-      {show(1) && <Text color={theme.subtle}>{truncateDisplay(hunk, contentWidth)}</Text>}
-      {show(2) && (
-        <Text color={theme.diffRemoved}>
-          {truncateDisplay('−  older conversation turns & tool dumps', contentWidth)}
+      {show(1) && <Text color={theme.subtle}>{truncateDisplay(contextChange, contentWidth)}</Text>}
+      {show(2) && tokenParts.length > 0 ? (
+        <Text color={theme.subtle}>{truncateDisplay(tokenParts.join(' · '), contentWidth)}</Text>
+      ) : null}
+      {show(3) ? (
+        <Text color={theme.subtle} dimColor>
+          {boundary.trigger === 'auto' ? 'Automatic compact' : 'Manual compact'}
         </Text>
-      )}
-      {show(3) && (
-        <Text color={theme.diffAdded}>
-          {truncateDisplay('+  Structured summary (goals, files, tasks)', contentWidth)}
-        </Text>
-      )}
-      {show(4) && (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color={theme.success}>{state.message ?? 'Conversation compacted'}</Text>
-          {metrics && <Text color={theme.subtle}>{truncateDisplay(metrics, contentWidth)}</Text>}
-        </Box>
-      )}
+      ) : null}
     </Box>
   );
 }

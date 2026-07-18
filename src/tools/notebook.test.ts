@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import type { ToolContext } from '../types.js';
 import { notebookTools } from './notebook.js';
+import { createFileObservationLedger } from './file-observation.js';
 
 let dir: string;
 const ctx: ToolContext = { workspaceRoot: '', env: {} };
@@ -330,6 +331,42 @@ describe('NotebookEdit', () => {
 
     await expect(pending).rejects.toThrow('notebook cancelled');
     expect(readFileSync(path, 'utf-8')).toBe(before);
+  });
+
+  it('rejects stale remembered notebooks and allows retry after replacing the observation', async () => {
+    writeNotebook(notebook([codeCell('cell')]));
+    const ledger = createFileObservationLedger();
+    ledger.remember({
+      workspaceIdentity: 'workspace:stale',
+      path: 'test.ipynb',
+      sha256: '0'.repeat(64),
+      sizeBytes: 1,
+      coverage: { kind: 'full' },
+      operation: 'read',
+      sourceRef: 'tool://current/read',
+    });
+
+    const stale = await edit.execute(
+      { notebook_path: 'test.ipynb', cell_id: 'cell', new_source: 'print(2)' },
+      { ...ctx, fileObservations: ledger },
+    );
+    expect(stale.success).toBe(false);
+    expect(stale.error).toMatch(/different workspace|changed since/i);
+  });
+
+  it('returns a full observation after a successful notebook mutation', async () => {
+    writeNotebook(notebook([codeCell('cell')]));
+    const result = await edit.execute(
+      { notebook_path: 'test.ipynb', cell_id: 'cell', new_source: 'print(2)' },
+      ctx,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.fileObservations?.[0]).toMatchObject({
+      path: 'test.ipynb',
+      coverage: { kind: 'full' },
+      operation: 'edit',
+    });
   });
 
   it('rejects duplicate target ids without writing', async () => {

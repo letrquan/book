@@ -7,6 +7,9 @@ import {
   resolveContextLimit,
   usagePressureTokens,
   runCompact,
+  groupUserLedBundles,
+  fitMessagesToTokenBudget,
+  selectRecentTail,
 } from './compact.js';
 import type { AgentConfig, Message, Usage } from '../types.js';
 import { defaultConfig } from '../test/fixtures.js';
@@ -115,9 +118,9 @@ describe('buildCompactPrompt / serialize', () => {
       { id: '2', role: 'assistant', content: 'done X', includeInContext: true, timestamp: 0 },
     ];
     const prompt = buildCompactPrompt(summarized);
-    expect(prompt).toMatch(/Summarize/);
-    expect(prompt).toMatch(/User: do X/);
-    expect(prompt).toMatch(/Assistant: done X/);
+    expect(prompt).toMatch(/bounded JSON checkpoint/);
+    expect(prompt).toMatch(/User \[session:\/\/current\/event\/1\]: do X/);
+    expect(prompt).toMatch(/Assistant \[session:\/\/current\/event\/2\]: done X/);
   });
 
   it('includes focus instructions', () => {
@@ -125,7 +128,9 @@ describe('buildCompactPrompt / serialize', () => {
       [{ id: '1', role: 'user', content: 'hi', includeInContext: true, timestamp: 0 }],
       'focus on auth',
     );
-    expect(prompt).toMatch(/Special focus from the user: focus on auth/);
+    expect(prompt).toMatch(
+      /MANUAL FOCUS \(selection hint only; not completed work\): focus on auth/,
+    );
   });
 
   it('excludes local-only messages from the compact transcript', () => {
@@ -147,8 +152,8 @@ describe('buildCompactPrompt / serialize', () => {
       },
     ]);
 
-    expect(text).toContain('User: real request');
-    expect(text).toContain('Assistant: real response');
+    expect(text).toContain('User [session://current/event/1]: real request');
+    expect(text).toContain('Assistant [session://current/event/3]: real response');
     expect(text).not.toContain('Cost report from /cost');
   });
 
@@ -174,6 +179,47 @@ describe('buildCompactPrompt / serialize', () => {
     expect(text).toMatch(/Read/);
     expect(text).toMatch(/a\.ts/);
     expect(text).toMatch(/file body here/);
+  });
+});
+
+describe('hybrid tail selection', () => {
+  it('keeps complete user-led bundles and makes the newest mandatory', () => {
+    const history: Message[] = [
+      { id: 'u1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
+      { id: 'a1', role: 'assistant', content: 'old answer', includeInContext: true, timestamp: 0 },
+      { id: 'u2', role: 'user', content: 'new exact task', includeInContext: true, timestamp: 0 },
+      { id: 'a2', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    expect(groupUserLedBundles(history).map((bundle) => bundle.map((m) => m.id))).toEqual([
+      ['u1', 'a1'],
+      ['u2', 'a2'],
+    ]);
+    const selected = selectRecentTail(history, 20);
+    expect(selected?.tail.map((m) => m.id)).toEqual(['u2', 'a2']);
+    expect(selected?.prefix.map((m) => m.id)).toEqual(['u1', 'a1']);
+  });
+
+  it('clips oversized tool output deterministically with a stable result ref', () => {
+    const bundle: Message[] = [
+      { id: 'u', role: 'user', content: 'inspect', includeInContext: true, timestamp: 0 },
+      {
+        id: 'a',
+        role: 'assistant',
+        content: '',
+        includeInContext: true,
+        timestamp: 0,
+        toolCalls: [{ id: 'call', name: 'Read', arguments: { file_path: 'a.ts' } }],
+        toolResults: [{ toolCallId: 'call', success: true, output: 'x'.repeat(4_000) }],
+      },
+    ];
+    const fitted = fitMessagesToTokenBudget(bundle, 120);
+    expect(fitted).not.toBeNull();
+    expect(fitted?.[1].toolCalls?.[0].id).toBe('call');
+    expect(fitted?.[1].toolResults?.[0].output).toContain(
+      'session://current/event/a/tool-result/call',
+    );
+    expect(bundle[1].toolResults?.[0].output).toHaveLength(4_000);
   });
 });
 
@@ -219,9 +265,22 @@ describe('runCompact', () => {
     expect(mockedStream).not.toHaveBeenCalled();
   });
 
-  it('returns compacted history on successful stream', async () => {
+  it('returns a grounded checkpoint plus the exact newest bundle', async () => {
     mockedStream.mockImplementation(async function* () {
-      yield { type: 'text', content: 'Summary of work.' };
+      yield {
+        type: 'text',
+        content: JSON.stringify({
+          stateAtCheckpoint: {
+            taskSummary: 'Finished the older task.',
+            status: 'completed',
+            sourceRefs: ['session://current/event/1'],
+          },
+          constraints: [],
+          files: [],
+          episodes: [],
+          openThreads: [],
+        }),
+      };
       yield {
         type: 'done',
         usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
@@ -229,16 +288,25 @@ describe('runCompact', () => {
     });
 
     const history: Message[] = [
-      { id: '1', role: 'user', content: 'do X', includeInContext: true, timestamp: 0 },
-      { id: '2', role: 'assistant', content: 'done X', includeInContext: true, timestamp: 0 },
+      { id: '1', role: 'user', content: 'do old X', includeInContext: true, timestamp: 0 },
+      { id: '2', role: 'assistant', content: 'done old X', includeInContext: true, timestamp: 0 },
+      { id: '3', role: 'user', content: 'do new Y exactly', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'working on Y', includeInContext: true, timestamp: 0 },
     ];
-    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+    const result = await runCompact(makeConfig(), history, {
+      trigger: 'manual',
+      tailBudgetTokens: 20,
+    });
     expect(result.status).toBe('compacted');
     if (result.status === 'compacted') {
-      expect(result.replacementHistory).toHaveLength(1);
-      expect(result.replacementHistory[0].content).toMatch(/Summary of work/);
-      expect(result.summary).toBe('Summary of work.');
-      expect(result.preMessageCount).toBe(2);
+      expect(result.replacementHistory).toHaveLength(3);
+      expect(result.replacementHistory[0]).toMatchObject({ kind: 'checkpoint', role: 'user' });
+      expect(result.replacementHistory.slice(1).map((m) => m.content)).toEqual([
+        'do new Y exactly',
+        'working on Y',
+      ]);
+      expect(result.checkpoint.version).toBe(2);
+      expect(result.preMessageCount).toBe(4);
     }
   });
 
@@ -251,8 +319,13 @@ describe('runCompact', () => {
     const history: Message[] = [
       { id: '1', role: 'user', content: 'a', includeInContext: true, timestamp: 0 },
       { id: '2', role: 'assistant', content: 'b', includeInContext: true, timestamp: 0 },
+      { id: '3', role: 'user', content: 'c', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'd', includeInContext: true, timestamp: 0 },
     ];
-    const result = await runCompact(makeConfig(), history, { trigger: 'auto' });
+    const result = await runCompact(makeConfig(), history, {
+      trigger: 'auto',
+      tailBudgetTokens: 12,
+    });
     expect(result.status).toBe('failed');
     if (result.status === 'failed') {
       expect(result.reason).toBe('provider-error');
@@ -271,8 +344,13 @@ describe('runCompact', () => {
     const history: Message[] = [
       { id: '1', role: 'user', content: 'a', includeInContext: true, timestamp: 0 },
       { id: '2', role: 'assistant', content: 'b', includeInContext: true, timestamp: 0 },
+      { id: '3', role: 'user', content: 'c', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'd', includeInContext: true, timestamp: 0 },
     ];
-    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+    const result = await runCompact(makeConfig(), history, {
+      trigger: 'manual',
+      tailBudgetTokens: 12,
+    });
     expect(result.status).toBe('failed');
     if (result.status === 'failed') {
       expect(result.reason).toBe('empty-summary');

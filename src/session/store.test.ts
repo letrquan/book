@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SessionStore } from './store.js';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
+import { appendFileSync, mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -70,10 +70,23 @@ describe('SessionStore', () => {
 
     const loaded = s.load(id);
     expect(loaded.history.length).toBe(3);
+    expect(loaded.history).toBe(loaded.contextHistory);
     expect(loaded.history[0].content).toMatch(/Compacted summary/);
     expect(loaded.history[1].content).toBe('next');
     expect(loaded.history[2].content).toBe('ok');
-    expect(loaded.meta.messageCount).toBe(3);
+    expect(loaded.transcript.map((message) => message.content)).toEqual([
+      'old1',
+      'old2',
+      'next',
+      'ok',
+    ]);
+    expect(loaded.compactBoundaries).toHaveLength(1);
+    expect(loaded.compactBoundaries[0]).toMatchObject({
+      afterTranscriptOrdinal: 2,
+      checkpointVersion: 1,
+      retainedContextMessages: 1,
+    });
+    expect(loaded.meta.messageCount).toBe(4);
   });
 
   it('loads legacy conversation records as included context', () => {
@@ -253,6 +266,192 @@ describe('SessionStore', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: join(dir, 'project', '..', 'project') });
     expect(s.mostRecentInCwd(join(dir, 'project'))?.id).toBe(id);
+  });
+
+  it('preserves persisted event ids and derives stable legacy line refs', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, {
+      type: 'user',
+      eventId: 'user-event',
+      timestamp: 1,
+      data: { content: 'stable' },
+    });
+    const file = join(dir, `${id}.jsonl`);
+    const legacy = { type: 'assistant', timestamp: 2, data: { content: 'legacy', complete: true } };
+    appendFileSync(file, JSON.stringify(legacy) + '\n', 'utf-8');
+
+    const first = s.load(id);
+    const second = s.load(id);
+    expect(first.transcript.map((message) => message.id)).toEqual(['user-event', 'legacy-line-3']);
+    expect(second.transcript.map((message) => message.id)).toEqual(
+      first.transcript.map((message) => message.id),
+    );
+    expect(s.readEvents(id).map((event) => event.ref)).toEqual([
+      'session://current/event/user-event',
+      'session://current/event/legacy-line-3',
+    ]);
+  });
+
+  it('keeps prior active context when compact data is malformed or unknown', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, { type: 'user', eventId: 'before', timestamp: 1, data: { content: 'before' } });
+    s.append(id, {
+      type: 'compact',
+      timestamp: 2,
+      data: { version: 1, trigger: 'manual', summary: 'missing replacement' },
+    });
+    s.append(id, {
+      type: 'compact',
+      timestamp: 3,
+      data: { version: 99, replacementHistory: [{ role: 'user', content: 'bad' }] },
+    });
+    s.append(id, {
+      type: 'compact',
+      timestamp: 4,
+      data: {
+        version: 2,
+        trigger: 'manual',
+        summary: 'incomplete v2',
+        replacementHistory: [{ role: 'user', content: 'also bad' }],
+      },
+    });
+    s.append(id, { type: 'assistant', timestamp: 5, data: { content: 'after', complete: true } });
+
+    const loaded = s.load(id);
+    expect(loaded.contextHistory.map((message) => message.content)).toEqual(['before', 'after']);
+    expect(loaded.transcript.map((message) => message.content)).toEqual(['before', 'after']);
+    expect(loaded.compactBoundaries).toEqual([]);
+  });
+
+  it('replays transcript-only local records outside provider context', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, { type: 'user', timestamp: 1, data: { content: 'question' } });
+    s.append(id, {
+      type: 'local',
+      eventId: 'local-context',
+      timestamp: 2,
+      data: { kind: 'local', role: 'assistant', content: 'local /context output' },
+    });
+
+    const loaded = s.load(id);
+    expect(loaded.transcript.map((message) => message.content)).toEqual([
+      'question',
+      'local /context output',
+    ]);
+    expect(loaded.transcript[1]).toMatchObject({
+      id: 'local-context',
+      kind: 'local',
+      includeInContext: false,
+    });
+    expect(loaded.contextHistory.map((message) => message.content)).toEqual(['question']);
+    expect(loaded.meta.messageCount).toBe(1);
+  });
+
+  it('replays v2 compact records into active context with structured checkpoint data', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, { type: 'user', timestamp: 1, data: { content: 'old task' } });
+    s.append(id, {
+      type: 'compact',
+      eventId: 'compact-v2',
+      timestamp: 2,
+      data: {
+        version: 2,
+        trigger: 'manual',
+        summary: 'old task summary',
+        generation: 3,
+        throughEventRef: 'session://current/event/legacy-line-2',
+        stateAtCheckpoint: {
+          taskSummary: 'Old task',
+          status: 'paused',
+          sourceRefs: ['session://current/event/legacy-line-2'],
+        },
+        constraints: [],
+        files: [],
+        episodes: [],
+        openThreads: [],
+        stats: { preMessages: 1 },
+        replacementHistory: [
+          {
+            id: 'checkpoint-message',
+            role: 'user',
+            content: '[Book checkpoint v2]',
+            includeInContext: true,
+            timestamp: 2,
+          },
+        ],
+      },
+    });
+
+    const loaded = s.load(id);
+    expect(loaded.contextHistory[0]).toMatchObject({
+      id: 'checkpoint-message',
+      kind: 'checkpoint',
+      checkpoint: { version: 2, generation: 3 },
+    });
+    expect(loaded.transcript.map((message) => message.content)).toEqual(['old task']);
+    expect(loaded.compactBoundaries[0]).toMatchObject({
+      id: 'compact-v2',
+      checkpointVersion: 2,
+      generation: 3,
+    });
+  });
+
+  it('reads and searches bounded events hidden behind compact boundaries', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, {
+      type: 'assistant',
+      eventId: 'evidence',
+      timestamp: 1,
+      data: {
+        content: 'found the unique needle',
+        complete: true,
+        toolCalls: [{ id: 'read-1', name: 'Read', arguments: { filePath: 'a.ts' } }],
+        toolResults: [{ toolCallId: 'read-1', success: true, output: 'exact tool output' }],
+      },
+    });
+    s.append(id, {
+      type: 'compact',
+      timestamp: 2,
+      data: {
+        version: 1,
+        trigger: 'auto',
+        summary: 'summary',
+        replacementHistory: [
+          {
+            id: 'summary',
+            role: 'user',
+            content: 'summary',
+            includeInContext: true,
+            timestamp: 2,
+          },
+        ],
+      },
+    });
+
+    expect(s.searchEvents(id, { query: 'needle', limit: 1, previewChars: 8 })).toEqual([
+      expect.objectContaining({
+        ref: 'session://current/event/evidence',
+        text: 'found t…',
+        toolNames: ['Read'],
+      }),
+    ]);
+    expect(
+      s.readEvents(id, {
+        refs: ['session://current/event/evidence/tool-result/read-1'],
+        limit: 1,
+        maxChars: 100,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        ref: 'session://current/event/evidence/tool-result/read-1',
+        text: 'exact tool output',
+      }),
+    ]);
   });
 
   it('deletes sessions older than cleanupPeriodDays', () => {

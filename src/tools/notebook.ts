@@ -5,6 +5,12 @@ import type { ToolContext, ToolDefinition, ToolResult } from '../types.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
+import {
+  createTextFileObservation,
+  rememberFileObservations,
+  staleMutationError,
+  toolObservationSource,
+} from './file-observation.js';
 
 type CellType = 'code' | 'markdown';
 type EditMode = 'replace' | 'insert' | 'delete';
@@ -195,6 +201,9 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   }
   throwIfAborted(ctx.signal);
 
+  const freshnessError = staleMutationError(ctx, relativePath, original);
+  if (freshnessError) return fail(freshnessError);
+
   const parsed = parseNotebook(original);
   if ('result' in parsed) return parsed.result;
   const { notebook } = parsed;
@@ -238,6 +247,14 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
     );
   }
 
+  const observation = createTextFileObservation({
+    workspaceRoot: ctx.workspaceRoot,
+    path: relativePath,
+    content: updated,
+    operation: 'edit',
+    sourceRef: toolObservationSource(ctx),
+  });
+  rememberFileObservations(ctx, [observation]);
   return {
     toolCallId: '',
     success: true,
@@ -248,6 +265,7 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
       addedLines: stats.addedLines,
       removedLines: stats.removedLines,
     },
+    fileObservations: [observation],
   };
 }
 

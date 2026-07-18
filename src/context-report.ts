@@ -14,7 +14,7 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-interface ContextBreakdown {
+export interface ContextBreakdown {
   totalMessages: number;
   userMessages: number;
   assistantMessages: number;
@@ -22,6 +22,32 @@ interface ContextBreakdown {
   toolResults: number;
   estimatedTokens: number;
   byRole: { user: number; assistant: number };
+}
+
+/** Deterministic provider-facing footprint, including message structure and tool payloads. */
+export function estimateMessageTokens(message: Message): number {
+  if (!message.includeInContext || message.kind === 'local') return 0;
+
+  let chars =
+    16 +
+    (message.role === 'user' ? (message.contextContent ?? message.content) : message.content)
+      .length;
+  for (const call of message.toolCalls ?? []) {
+    chars += 24 + call.id.length + call.name.length + JSON.stringify(call.arguments ?? {}).length;
+  }
+  const callIds = new Set(message.toolCalls?.map((call) => call.id) ?? []);
+  for (const result of message.toolResults ?? []) {
+    if (!callIds.has(result.toolCallId)) continue;
+    const rendered = result.success
+      ? result.output
+      : `ERROR: ${result.error ?? 'tool failed'}\n${result.output ?? ''}`;
+    chars += 24 + result.toolCallId.length + rendered.length;
+  }
+  return estimateTokens('x'.repeat(chars));
+}
+
+export function estimateMessagesTokens(messages: readonly Message[]): number {
+  return messages.reduce((total, message) => total + estimateMessageTokens(message), 0);
 }
 
 /** Summarize the live history into a context-window breakdown. */
@@ -34,8 +60,8 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
   let toolResults = 0;
 
   for (const m of messages) {
-    if (!m.includeInContext) continue;
-    const msgTokens = estimateTokens(m.content);
+    if (!m.includeInContext || m.kind === 'local') continue;
+    const msgTokens = estimateMessageTokens(m);
     if (m.role === 'user') {
       userMsgs++;
       userTokens += msgTokens;
@@ -43,14 +69,9 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
       assistantMsgs++;
       assistantTokens += msgTokens;
     }
-    for (const c of m.toolCalls ?? []) toolCalls++;
-    for (const r of m.toolResults ?? []) {
-      toolResults++;
-      // Tool result output is stored on the assistant message's toolResults (it
-      // is echoed back as text content by the renderer), but the raw output
-      // text contributes to tokens too — count it under assistant.
-      assistantTokens += estimateTokens(r.output);
-    }
+    toolCalls += m.toolCalls?.length ?? 0;
+    const callIds = new Set(m.toolCalls?.map((call) => call.id) ?? []);
+    toolResults += m.toolResults?.filter((result) => callIds.has(result.toolCallId)).length ?? 0;
   }
 
   return {
@@ -76,12 +97,16 @@ export function buildContextReport(
     hasMemoryIndex?: boolean;
     /** Whether CLAUDE.md instructions were found for this workspace. */
     hasClaudeMdLoader: boolean;
+    /** Full visible transcript when it differs from provider-facing messages. */
+    transcriptMessages?: Message[];
   },
 ): string {
   const b = buildContextBreakdown(messages);
+  const visibleTranscript = ambient.transcriptMessages ?? messages;
   const lines: string[] = ['Context window breakdown', ''];
+  lines.push(`Visible transcript messages: ${visibleTranscript.length}`);
   lines.push(
-    `Conversation messages: ${b.totalMessages} (user: ${b.userMessages}, assistant: ${b.assistantMessages})`,
+    `Active context messages: ${b.totalMessages} (user: ${b.userMessages}, assistant: ${b.assistantMessages})`,
   );
   lines.push(`Tool calls recorded: ${b.toolCalls}  •  tool results: ${b.toolResults}`);
   lines.push('');

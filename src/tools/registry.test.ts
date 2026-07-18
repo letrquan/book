@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createDefaultRegistry, createRegistry } from './registry.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
+import { workspaceIdentity } from './file-observation.js';
 import type { ToolContext } from '../types.js';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -59,6 +60,29 @@ describe('createDefaultRegistry — canonical CC tool names', () => {
       ctx,
     );
     return expect(result).resolves.toMatchObject({ success: true });
+  });
+
+  it('exposes session history tools only with an active matching capability', () => {
+    const r = createDefaultRegistry();
+    const withoutCapability = new Set(r.getDefinitions().map((tool) => tool.name));
+    expect(withoutCapability.has('SessionHistorySearch')).toBe(false);
+    expect(withoutCapability.has('SessionHistoryRead')).toBe(false);
+
+    const withCapability = new Set(
+      r
+        .getDefinitions({
+          ...ctx,
+          sessionHistory: {
+            sessionId: 'session-1',
+            workspaceIdentity: workspaceIdentity(dir),
+            search: async () => [],
+            read: async () => [],
+          },
+        })
+        .map((tool) => tool.name),
+    );
+    expect(withCapability.has('SessionHistorySearch')).toBe(true);
+    expect(withCapability.has('SessionHistoryRead')).toBe(true);
   });
 });
 

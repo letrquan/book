@@ -1,5 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'fs';
 import { execSync } from 'child_process';
+import type { FileObservation } from '../types.js';
+import { createTextFileObservation } from '../tools/file-observation.js';
 import { resolveWorkspaceMentionPath } from './file-mentions.js';
 
 const AT_MENTION_CHAR_LIMIT = 20_000;
@@ -89,50 +91,88 @@ function looksBinary(content: string): boolean {
   return content.includes('\0');
 }
 
-function expandMention(filePath: string, workspace: string): string {
+interface ExpandedMention {
+  text: string;
+  observation?: FileObservation;
+}
+
+export interface ExpandedAtMentions {
+  text: string;
+  fileObservations: FileObservation[];
+}
+
+function expandMention(filePath: string, workspace: string, sourceRef: string): ExpandedMention {
   const resolved = resolveWorkspaceMentionPath(workspace, filePath);
-  if (!resolved) return formatMentionError(filePath, 'path is outside the workspace');
-  if (!existsSync(resolved.filePath)) return formatMentionError(filePath, 'file not found');
+  if (!resolved) return { text: formatMentionError(filePath, 'path is outside the workspace') };
+  if (!existsSync(resolved.filePath))
+    return { text: formatMentionError(filePath, 'file not found') };
 
   try {
     const stat = statSync(resolved.filePath);
-    if (stat.isDirectory()) return formatMentionError(resolved.relativePath, 'path is a directory');
+    if (stat.isDirectory())
+      return { text: formatMentionError(resolved.relativePath, 'path is a directory') };
     if (!stat.isFile())
-      return formatMentionError(resolved.relativePath, 'path is not a regular file');
+      return { text: formatMentionError(resolved.relativePath, 'path is not a regular file') };
 
     const content = readFileSync(resolved.filePath, 'utf-8');
     if (looksBinary(content))
-      return formatMentionError(resolved.relativePath, 'file appears to be binary');
+      return { text: formatMentionError(resolved.relativePath, 'file appears to be binary') };
 
     const truncated = content.length > AT_MENTION_CHAR_LIMIT;
     const body = truncated ? content.slice(0, AT_MENTION_CHAR_LIMIT) : content;
     const suffix = truncated
       ? `\n\n[File truncated at ${AT_MENTION_CHAR_LIMIT} characters; use the Read tool for more.]`
       : '';
+    const endByte = Buffer.byteLength(body, 'utf-8');
+    const observation = createTextFileObservation({
+      workspaceRoot: workspace,
+      path: resolved.relativePath,
+      content,
+      coverage: truncated
+        ? { kind: 'bytes', startByte: 0, endByte, totalBytes: Buffer.byteLength(content, 'utf-8') }
+        : { kind: 'full' },
+      operation: 'mention',
+      sourceRef,
+    });
 
-    return `\nContents of ${resolved.relativePath}:\n\n\`\`\`\n${body}${suffix}\n\`\`\`\n`;
+    return {
+      text: `\nContents of ${resolved.relativePath}:\n\n\`\`\`\n${body}${suffix}\n\`\`\`\n`,
+      observation,
+    };
   } catch (e: any) {
-    return formatMentionError(filePath, e?.message?.slice(0, 200) || 'unable to read file');
+    return {
+      text: formatMentionError(filePath, e?.message?.slice(0, 200) || 'unable to read file'),
+    };
   }
 }
 
-/**
- * Expand @path references to file contents in user input.
- */
-export function expandAtMentions(input: string, workspace: string): string {
+/** Expand @path references and return their exact file observations. */
+export function expandAtMentionsWithObservations(
+  input: string,
+  workspace: string,
+  sourceRef = 'message://current/user-input',
+): ExpandedAtMentions {
   const tokens = findMentionTokens(input);
-  if (tokens.length === 0) return input;
+  if (tokens.length === 0) return { text: input, fileObservations: [] };
 
   let output = '';
   let cursor = 0;
+  const fileObservations: FileObservation[] = [];
   for (const token of tokens) {
     output += input.slice(cursor, token.start);
-    output += expandMention(token.path, workspace);
+    const expanded = expandMention(token.path, workspace, sourceRef);
+    output += expanded.text;
+    if (expanded.observation) fileObservations.push(expanded.observation);
     output += token.trailing;
     cursor = token.end + token.trailing.length;
   }
   output += input.slice(cursor);
-  return output;
+  return { text: output, fileObservations };
+}
+
+/** Backward-compatible convenience wrapper returning expanded text only. */
+export function expandAtMentions(input: string, workspace: string): string {
+  return expandAtMentionsWithObservations(input, workspace).text;
 }
 
 /**

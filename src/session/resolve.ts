@@ -1,4 +1,10 @@
-import type { Message, SessionMeta, SessionStoreInterface } from '../types.js';
+import type {
+  CompactBoundary,
+  Message,
+  SessionMeta,
+  SessionRecord,
+  SessionStoreInterface,
+} from '../types.js';
 import { normalizeWorkspace } from './store.js';
 
 export type SessionStartSource = 'startup' | 'resume' | 'clear';
@@ -6,7 +12,13 @@ export type SessionStartSource = 'startup' | 'resume' | 'clear';
 export interface SessionBootstrap {
   sessionId: string;
   sessionName?: string;
+  /** Compatibility alias for contextHistory. */
   history: Message[];
+  /** Full transcript when supplied by the Phase 1 store; optional for legacy hosts. */
+  transcript?: Message[];
+  /** Active provider history when supplied by the Phase 1 store. */
+  contextHistory?: Message[];
+  compactBoundaries?: CompactBoundary[];
   source: SessionStartSource;
   persisted: boolean;
   created: boolean;
@@ -45,20 +57,55 @@ export function persistHistory(
   history: Message[],
 ): void {
   for (const message of history) {
-    store.append(sessionId, {
-      type: message.role,
+    const record: SessionRecord = {
+      type: message.kind === 'local' ? 'local' : message.role,
+      eventId: message.id,
       timestamp: message.timestamp,
       data:
-        message.role === 'user'
-          ? { content: message.content, contextContent: message.contextContent }
-          : {
-              complete: true,
+        message.kind === 'local'
+          ? {
+              kind: 'local',
+              role: message.role,
               content: message.content,
-              toolCalls: message.toolCalls,
-              toolResults: message.toolResults,
-            },
-    });
+              includeInContext: false,
+            }
+          : message.role === 'user'
+            ? {
+                content: message.content,
+                contextContent: message.contextContent,
+                includeInContext: message.includeInContext,
+                fileObservations: message.fileObservations,
+              }
+            : {
+                complete: true,
+                content: message.content,
+                includeInContext: message.includeInContext,
+                toolCalls: message.toolCalls,
+                toolResults: message.toolResults,
+                fileObservations: message.fileObservations,
+              },
+    };
+    store.append(sessionId, record);
   }
+}
+
+function emptyBootstrap(
+  sessionId: string,
+  sessionName: string | undefined,
+  persisted: boolean,
+): SessionBootstrap {
+  const contextHistory: Message[] = [];
+  return {
+    sessionId,
+    sessionName,
+    history: contextHistory,
+    transcript: [],
+    contextHistory,
+    compactBoundaries: [],
+    source: 'startup',
+    persisted,
+    created: true,
+  };
 }
 
 export function resolveSessionBootstrap(
@@ -69,14 +116,7 @@ export function resolveSessionBootstrap(
     if (options.resume || options.continue) {
       throw new Error('Session persistence is disabled; /resume and --continue are unavailable.');
     }
-    return {
-      sessionId: crypto.randomUUID(),
-      sessionName: options.sessionName,
-      history: [],
-      source: 'startup',
-      persisted: false,
-      created: true,
-    };
+    return emptyBootstrap(crypto.randomUUID(), options.sessionName, false);
   }
 
   let selected: SessionMeta | undefined;
@@ -92,14 +132,7 @@ export function resolveSessionBootstrap(
         cwd: options.cwd,
         name: options.sessionName,
       });
-      return {
-        sessionId,
-        sessionName: options.sessionName,
-        history: [],
-        source: 'startup',
-        persisted: true,
-        created: true,
-      };
+      return emptyBootstrap(sessionId, options.sessionName, true);
     }
   } else if (options.sessionName) {
     selected = store.findByName(options.sessionName);
@@ -109,11 +142,15 @@ export function resolveSessionBootstrap(
     const loaded = store.load(selected.id);
     if (options.forkSession) {
       const sessionId = store.create({ cwd: options.cwd, name: options.sessionName });
-      persistHistory(store, sessionId, loaded.history);
+      store.copyEvents(selected.id, sessionId);
+      const forked = store.load(sessionId);
       return {
         sessionId,
         sessionName: options.sessionName,
-        history: loaded.history,
+        history: forked.contextHistory,
+        transcript: forked.transcript,
+        contextHistory: forked.contextHistory,
+        compactBoundaries: forked.compactBoundaries,
         source: 'resume',
         persisted: true,
         created: true,
@@ -123,7 +160,10 @@ export function resolveSessionBootstrap(
     return {
       sessionId: selected.id,
       sessionName: loaded.meta.name,
-      history: loaded.history,
+      history: loaded.contextHistory,
+      transcript: loaded.transcript,
+      contextHistory: loaded.contextHistory,
+      compactBoundaries: loaded.compactBoundaries,
       source: 'resume',
       persisted: true,
       created: false,
@@ -131,12 +171,5 @@ export function resolveSessionBootstrap(
   }
 
   const sessionId = store.create({ cwd: options.cwd, name: options.sessionName });
-  return {
-    sessionId,
-    sessionName: options.sessionName,
-    history: [],
-    source: 'startup',
-    persisted: true,
-    created: true,
-  };
+  return emptyBootstrap(sessionId, options.sessionName, true);
 }

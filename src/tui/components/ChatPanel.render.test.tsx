@@ -81,6 +81,82 @@ describe('ChatPanel Ink rendering', () => {
     expect(output.match(/answer marker/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('renders a durable compact boundary inline without showing checkpoint summary content', () => {
+    const messages = [
+      msg('u1', 'user', 'before boundary'),
+      msg('a1', 'assistant', 'answer before'),
+      msg('u2', 'user', 'after boundary'),
+    ];
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          compactBoundaries={[
+            {
+              id: 'compact-1',
+              timestamp: 2,
+              trigger: 'manual',
+              afterTranscriptOrdinal: 2,
+              preContextMessages: 2,
+              retainedContextMessages: 1,
+              checkpointVersion: 1,
+              generation: 1,
+            },
+          ]}
+          terminalWidth={80}
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output.indexOf('answer before')).toBeLessThan(output.indexOf('Context compacted'));
+    expect(output.indexOf('Context compacted')).toBeLessThan(output.indexOf('after boundary'));
+    expect(output).toContain('full transcript retained');
+    expect(output).not.toContain('Compacted summary of earlier conversation');
+  });
+
+  it('does not merge assistant rows across a compact boundary', () => {
+    const messages: Message[] = [
+      msg('a1', 'assistant', 'before marker'),
+      {
+        ...msg('a2', 'assistant', ''),
+        toolCalls: [{ id: 'read-after', name: 'Read', arguments: { filePath: 'src/a.ts' } }],
+        toolResults: [{ toolCallId: 'read-after', success: true, output: 'done' }],
+      },
+    ];
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          compactBoundaries={[
+            {
+              id: 'compact-1',
+              timestamp: 2,
+              trigger: 'auto',
+              afterTranscriptOrdinal: 1,
+              preContextMessages: 2,
+              retainedContextMessages: 1,
+              checkpointVersion: 1,
+              generation: 1,
+            },
+          ]}
+          terminalWidth={100}
+          expandedToolCallId="read-after"
+          reducedMotion
+          screenReader
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output.indexOf('before marker')).toBeLessThan(output.indexOf('Context compacted'));
+    expect(output.indexOf('Context compacted')).toBeLessThan(
+      output.indexOf('[OK] Read file src/a.ts'),
+    );
+  });
+
   it('renders a submitted user message, assistant placeholder, then streamed text without overwriting older messages', () => {
     const baseMessages = [
       msg('u0', 'user', 'older question'),

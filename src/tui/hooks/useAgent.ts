@@ -13,9 +13,10 @@ import type {
   SessionMeta,
   SessionRecord,
   SessionStoreInterface,
+  CompactBoundary,
   CompactResult,
-  CompactRecordData,
   CompactTrigger,
+  FileObservationLedger,
 } from '../../types.js';
 import { runAgentLoop } from '../../agent/loop.js';
 import {
@@ -27,6 +28,10 @@ import {
 } from '../../agent/compact.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
 import { createDefaultRegistry } from '../../tools/registry.js';
+import {
+  createFileObservationLedger,
+  observationsFromMessages,
+} from '../../tools/file-observation.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types.js';
 import { makeMessage, removeTrailingEmptyAssistantPlaceholder } from './streaming-state.js';
@@ -39,10 +44,12 @@ import {
 } from '../persist.js';
 import { providerConfigSchema } from '../../settings.js';
 import { providerConfigFromDraft, type ProviderSaveRequest } from '../model-options.js';
-import { expandAtMentions, expandShellCommands } from '../input-expansion.js';
+import { expandAtMentionsWithObservations, expandShellCommands } from '../input-expansion.js';
 import { selectSession, type SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';
 import { runSessionEnd, runSessionStart } from '../../session/lifecycle.js';
+import { buildCompactRecord } from '../../session/compact-record.js';
+import { createSessionHistoryCapability } from '../../tools/session-history.js';
 
 const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
@@ -123,7 +130,13 @@ export type CompactUiState = {
 };
 
 export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
-  const [messages, setMessages] = useState<Message[]>(session.history);
+  const initialTranscript = session.transcript ?? session.history;
+  const initialContextHistory = session.contextHistory ?? session.history;
+  const initialCompactBoundaries = session.compactBoundaries ?? [];
+  const [messages, setMessages] = useState<Message[]>(initialTranscript);
+  const [compactBoundaries, setCompactBoundaries] =
+    useState<CompactBoundary[]>(initialCompactBoundaries);
+  const [animatedBoundaryId, setAnimatedBoundaryId] = useState<string | null>(null);
   const [isThinking, setIsThinking] = useState(false);
   const [isCompacting, setIsCompacting] = useState(false);
   const [compactUi, setCompactUi] = useState<CompactUiState | null>(null);
@@ -155,7 +168,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // the latest in-progress message without stale-closure issues.
   const streamingIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const messagesRef = useRef<Message[]>(session.history);
+  const messagesRef = useRef<Message[]>(initialTranscript);
+  const contextHistoryRef = useRef<Message[]>(initialContextHistory);
+  const compactGenerationRef = useRef(
+    initialCompactBoundaries.reduce((max, boundary) => Math.max(max, boundary.generation), 0),
+  );
   const sessionIdRef = useRef(session.sessionId);
   const sessionGenerationRef = useRef(0);
   const lifecycleStartedRef = useRef(false);
@@ -175,6 +192,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // Resolve handles for pending interactive prompts (refs for idempotent settle).
   const pendingPermissionRef = useRef<PendingPermission | null>(pendingPermission);
   const pendingPlanApprovalRef = useRef<PendingPlanApproval | null>(pendingPlanApproval);
+  const fileObservationLedgerRef = useRef<FileObservationLedger>(
+    createFileObservationLedger(observationsFromMessages(initialContextHistory)),
+  );
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -247,7 +267,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   }, []);
 
   const resetConversationState = useCallback(
-    (nextId: string, nextName: string | undefined, history: Message[]) => {
+    (
+      nextId: string,
+      nextName: string | undefined,
+      transcript: Message[],
+      contextHistory: Message[] = transcript,
+      boundaries: CompactBoundary[] = [],
+    ) => {
       sessionGenerationRef.current++;
       settlePermission('deny', 'session-reset');
       settlePlanApproval('reject', 'session-reset');
@@ -259,11 +285,22 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       clearCountdown();
 
       sessionIdRef.current = nextId;
-      messagesRef.current = history;
+      messagesRef.current = transcript;
+      contextHistoryRef.current = contextHistory;
+      compactGenerationRef.current = boundaries.reduce(
+        (max, boundary) => Math.max(max, boundary.generation),
+        0,
+      );
+      fileObservationLedgerRef.current = createFileObservationLedger(
+        observationsFromMessages(contextHistory),
+      );
       streamingIdRef.current = null;
       setSessionId(nextId);
       setSessionName(nextName);
-      setMessages(history);
+      setMessages(transcript);
+      setCompactBoundaries(boundaries);
+      setAnimatedBoundaryId(null);
+      setCompactUi(null);
       setIsThinking(false);
       setStreamingMessageId(null);
       setError(null);
@@ -328,7 +365,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       await endCurrentSession('resume');
       session.store.touch(selected.id);
       lifecycleEndedRef.current = false;
-      resetConversationState(selected.id, loaded.meta.name, loaded.history);
+      resetConversationState(
+        selected.id,
+        loaded.meta.name,
+        loaded.transcript,
+        loaded.contextHistory,
+        loaded.compactBoundaries,
+      );
       await runSessionStart(liveConfigRef.current, selected.id, 'resume');
     },
     [endCurrentSession, liveConfig.workspace, resetConversationState, session.store],
@@ -345,22 +388,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       result: Extract<CompactResult, { status: 'compacted' }>,
       opts: { focus?: string; sessionId: string },
     ) => {
-      if (session.store) {
-        const data: CompactRecordData = {
-          version: 1,
-          trigger: result.trigger,
-          summary: result.summary,
-          preContextTokens: result.preContextTokens,
-          replacementHistory: result.replacementHistory,
-        };
-        session.store.append(opts.sessionId, {
-          type: 'compact',
-          timestamp: Date.now(),
-          data,
-        } satisfies SessionRecord);
-      }
-      messagesRef.current = result.replacementHistory;
-      setMessages(result.replacementHistory);
+      const built = buildCompactRecord(result, {
+        afterTranscriptOrdinal: messagesRef.current.length,
+        generation: compactGenerationRef.current + 1,
+        estimatedPostTokens: result.estimatedPostTokens,
+        checkpoint: result.checkpoint,
+      });
+      // Durable append is the commit point. If this throws, neither projection changes.
+      if (session.store) session.store.append(opts.sessionId, built.record);
+      compactGenerationRef.current = built.boundary.generation;
+      contextHistoryRef.current = result.replacementHistory;
+      setCompactBoundaries((previous) => [...previous, built.boundary]);
+      setAnimatedBoundaryId(built.boundary.id);
       setUsage(null);
       hostUsageRef.current = null;
       await runPostCompactHooks(liveConfigRef.current, {
@@ -368,6 +407,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         sessionId: opts.sessionId,
         focus: opts.focus,
       });
+      return built.boundary;
     },
     [session.store],
   );
@@ -404,10 +444,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         hasCommandContext: !!commandContext,
       });
 
-      const contextMessage = expandShellCommands(
-        expandAtMentions(userMessage, liveConfig.workspace),
+      const mentionExpansion = expandAtMentionsWithObservations(
+        userMessage,
         liveConfig.workspace,
+        `session://current/event/pending-user-${generation}`,
       );
+      const contextMessage = expandShellCommands(mentionExpansion.text, liveConfig.workspace);
 
       // Cross-turn auto-compact before appending the new user message.
       const contextLimit = resolveContextLimit(liveConfig);
@@ -421,13 +463,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           setCompactUi({
             phase: 'working',
             trigger: 'auto',
-            preMessages: messagesRef.current.length,
+            preMessages: contextHistoryRef.current.length,
             preContextTokens: usagePressureTokens(hostUsageRef.current),
           });
-          const autoResult = await runCompact(liveConfig, messagesRef.current, {
+          const autoResult = await runCompact(liveConfig, contextHistoryRef.current, {
             trigger: 'auto',
             sessionId: activeSessionId,
             preContextTokens: usagePressureTokens(hostUsageRef.current),
+            upcomingUserIntent: contextMessage,
+            fileObservations: fileObservationLedgerRef.current.all(),
           });
           if (stillCurrent() && autoResult.status === 'compacted') {
             await commitCompactResult(autoResult, { sessionId: activeSessionId });
@@ -455,18 +499,30 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       // Render the user's message IMMEDIATELY, and seed a fresh, empty
       // assistant message that we will stream into. Prior messages are never
       // touched, so they stay visible (scrolled above) while the reply streams.
-      const history = messagesRef.current;
+      const history = contextHistoryRef.current;
       const userMsg = makeMessage(
         'user',
         userMessage,
         contextMessage === userMessage ? undefined : contextMessage,
         true,
       );
+      userMsg.fileObservations =
+        mentionExpansion.fileObservations.length > 0
+          ? mentionExpansion.fileObservations.map((observation) => ({
+              ...observation,
+              sourceRef: `session://current/event/${userMsg.id}`,
+            }))
+          : undefined;
       if (session.store) {
         session.store.append(activeSessionId, {
           type: 'user',
+          eventId: userMsg.id,
           timestamp: userMsg.timestamp,
-          data: { content: userMessage, contextContent: userMsg.contextContent },
+          data: {
+            content: userMessage,
+            contextContent: userMsg.contextContent,
+            fileObservations: userMsg.fileObservations,
+          },
         } satisfies SessionRecord);
       }
       const placeholder = makeMessage('assistant', '', undefined, true);
@@ -595,6 +651,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 trigger: 'auto',
                 sessionId: activeSessionId,
                 preContextTokens: usagePressureTokens(usage),
+                fileObservations: fileObservationLedgerRef.current.all(),
               });
               if (!stillCurrent()) return result;
               if (result.status === 'compacted') {
@@ -613,12 +670,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               if (!stillCurrent() || !session.store) return;
               session.store.append(activeSessionId, {
                 type: 'assistant',
+                eventId: message.id,
                 timestamp: message.timestamp,
                 data: {
                   complete: true,
                   content: message.content,
                   toolCalls: message.toolCalls,
                   toolResults: message.toolResults,
+                  fileObservations: message.fileObservations,
                 },
               } satisfies SessionRecord);
             },
@@ -670,6 +729,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           mode,
           {
             signal: controller.signal,
+            userMessageId: userMsg.id,
+            fileObservations: userMsg.fileObservations,
+            fileObservationLedger: fileObservationLedgerRef.current,
+            sessionHistory:
+              session.store && activeSessionId
+                ? createSessionHistoryCapability(
+                    session.store,
+                    activeSessionId,
+                    liveConfig.workspace,
+                  )
+                : undefined,
             nestedToolObserver: {
               onToolCall: (invocation: NestedToolInvocation) => {
                 if (stillCurrent()) activeAccumulator?.addNestedToolCall(invocation);
@@ -686,12 +756,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           },
         );
         if (stillCurrent()) {
-          // Flush the UI accumulator, but keep its authoritative display state:
-          // nested tool traces are display-only and are not present in the loop's
-          // returned API history. Assistant turns are persisted via
-          // onAssistantMessageComplete (not final-history length slicing).
+          // The loop return is authoritative provider context. Optimistic messages
+          // remain append-only in the visible transcript.
+          contextHistoryRef.current = updatedHistory;
           activeAccumulator?.stop();
-          void updatedHistory; // loop return still drives completion; display is accumulator-owned
         }
       } catch (e) {
         if (stillCurrent()) setError(e instanceof Error ? e.message : String(e));
@@ -784,7 +852,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const stillCurrent = () => sessionGenerationRef.current === generation;
       const controller = new AbortController();
       compactAbortRef.current = controller;
-      const preMessages = messagesRef.current.length;
+      const preMessages = contextHistoryRef.current.length;
       const preContextTokens = usagePressureTokens(hostUsageRef.current);
 
       setIsCompacting(true);
@@ -796,12 +864,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       });
 
       try {
-        const result = await runCompact(liveConfigRef.current, messagesRef.current, {
+        const result = await runCompact(liveConfigRef.current, contextHistoryRef.current, {
           trigger: 'manual',
           focus,
           sessionId: activeSessionId,
           preContextTokens,
           signal: controller.signal,
+          fileObservations: fileObservationLedgerRef.current.all(),
         });
 
         if (!stillCurrent()) return;
@@ -864,7 +933,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     settlePermission('deny', 'clear');
     settlePlanApproval('reject', 'clear');
     messagesRef.current = [];
+    contextHistoryRef.current = [];
+    compactGenerationRef.current = 0;
+    fileObservationLedgerRef.current = createFileObservationLedger();
     setMessages([]);
+    setCompactBoundaries([]);
+    setAnimatedBoundaryId(null);
+    setCompactUi(null);
     setError(null);
     setCurrentTurn(0);
     setUsage(null);
@@ -912,7 +987,23 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         return; // don't clobber a streaming turn
       }
       uiLog.event('local-message:added', { preview: text.slice(0, 40) });
-      const msg = makeMessage('assistant', text);
+      const msg: Message = {
+        ...makeMessage('assistant', text, undefined, false),
+        kind: 'local',
+      };
+      if (session.store) {
+        session.store.append(sessionIdRef.current, {
+          type: 'local',
+          eventId: msg.id,
+          timestamp: msg.timestamp,
+          data: {
+            kind: 'local',
+            role: msg.role,
+            content: msg.content,
+            includeInContext: false,
+          },
+        } satisfies SessionRecord);
+      }
       setMessages((prev) => {
         const next = [...prev, msg];
         messagesRef.current = next;
@@ -1030,6 +1121,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
   return {
     messages,
+    contextHistory: contextHistoryRef.current,
+    compactBoundaries,
+    animatedBoundaryId,
+    settleAnimatedBoundary: (boundaryId: string) => {
+      setAnimatedBoundaryId((current) => (current === boundaryId ? null : current));
+    },
     isThinking,
     isCompacting,
     compactUi,
