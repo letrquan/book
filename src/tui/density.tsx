@@ -6,7 +6,7 @@ export type TuiDensity = 'compact' | 'tight';
 
 export interface DensityMetrics {
   panelMarginY: 0;
-  turnMarginY: 0 | 1;
+  turnMarginY: 0;
   userPaddingX: 1;
   userPaddingY: 0;
   headingGapBefore: 0 | 1;
@@ -17,7 +17,7 @@ export interface DensityMetrics {
 
 const COMPACT_METRICS: DensityMetrics = {
   panelMarginY: 0,
-  turnMarginY: 1,
+  turnMarginY: 0,
   userPaddingX: 1,
   userPaddingY: 0,
   headingGapBefore: 1,
@@ -28,7 +28,6 @@ const COMPACT_METRICS: DensityMetrics = {
 
 const TIGHT_METRICS: DensityMetrics = {
   ...COMPACT_METRICS,
-  turnMarginY: 0,
   headingGapBefore: 0,
   majorBlockGap: 0,
   showOptionalHelp: false,

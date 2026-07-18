@@ -128,7 +128,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('streamed reply');
   });
 
-  it('frames user messages with separation before and after', () => {
+  it('keeps the original padded user-message band separate from agent output', () => {
     const view = render(
       withTheme(
         <ChatPanel
@@ -143,7 +143,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).not.toContain('██████');
     expect(output).toContain('compact request');
     expect(output).toContain('compact reply');
-    expect(output.split('\n')).toEqual(['', ' compact request', '', '  compact reply']);
+    expect(output.split('\n')).toEqual(['', '  compact request', '', '', '  compact reply']);
   });
 
   it('keeps wrapped content mounted exactly once when streaming completes', () => {

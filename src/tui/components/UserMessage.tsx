@@ -1,7 +1,6 @@
 import { Box, Text } from 'ink';
 import React from 'react';
 import { useTheme } from '../theme.js';
-import { useDensityMetrics } from '../density.js';
 
 interface UserMessageProps {
   content: string;
@@ -92,20 +91,12 @@ function parseMentionSegments(content: string): Array<{ text: string; isMention:
  */
 function UserMessageInner({ content, terminalWidth = 80 }: UserMessageProps) {
   const theme = useTheme();
-  const density = useDensityMetrics();
   const width = Math.max(20, Math.floor(terminalWidth));
   const segments = parseMentionSegments(content);
-  const contentWidth = Math.max(1, width - density.userPaddingX * 2);
 
   return (
-    <Box
-      width={width}
-      marginTop={density.turnMarginY}
-      paddingX={density.userPaddingX}
-      paddingY={density.userPaddingY}
-      backgroundColor={theme.userBg}
-    >
-      <Box width={contentWidth}>
+    <Box width={width} paddingX={2} paddingY={1} backgroundColor={theme.userBg}>
+      <Box width={Math.max(1, width - 4)}>
         <Text wrap="wrap">
           {segments.map((seg, i) =>
             seg.isMention ? (
