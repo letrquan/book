@@ -11,7 +11,6 @@ import type {
 import { AgentMessage } from './AgentMessage.js';
 import { UserMessage } from './UserMessage.js';
 import { WelcomeScreen } from './WelcomeScreen.js';
-import { AsciiBanner } from './AsciiBanner.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 import { mergeAssistantMessages } from './transcript-messages.js';
@@ -37,7 +36,7 @@ function TurnSeparator({
   const width = Math.max(20, Math.min(terminalWidth ?? 60, 80));
   const suffix = '─'.repeat(Math.max(5, width - label.length - 4));
   return (
-    <Box marginTop={1} marginBottom={1}>
+    <Box>
       <Text color={theme.mdTurnSeparator} dimColor>
         ── {label} {suffix}
       </Text>
@@ -138,9 +137,6 @@ export function ChatPanel({
 
   return (
     <Box flexDirection="column">
-      <Box marginBottom={1}>
-        <AsciiBanner />
-      </Box>
       {displayMessages.map((message, index) => {
         const previous = displayMessages[index - 1];
         if (message.role === 'user') {

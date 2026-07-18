@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useTheme } from '../theme.js';
+import { useDensityMetrics } from '../density.js';
 import { getPrimaryArg } from '../../tools/primary-arg.js';
 import { canonicalToolName } from '../../tools/aliases.js';
 import { isFileMutatingTool } from '../../tools/tool-capabilities.js';
@@ -64,6 +65,7 @@ export function PermissionButtons({
   screenReader = false,
 }: PermissionButtonsProps) {
   const theme = useTheme();
+  const density = useDensityMetrics();
   const [selected, setSelected] = useState(0);
   const resolvedToolCallIdRef = useRef<string | null>(null);
   const canonical = canonicalToolName(toolCall.name);
@@ -166,7 +168,7 @@ export function PermissionButtons({
 
   if (screenReader) {
     return (
-      <Box marginLeft={2} marginY={1} flexDirection="column">
+      <Box marginLeft={2} flexDirection="column">
         <Text>Permission required for: {canonical}</Text>
         <Text>Primary argument: {primaryArg || '(none)'}</Text>
         {hint ? <Text>Warning: {hint}</Text> : null}
@@ -178,7 +180,6 @@ export function PermissionButtons({
   return (
     <Box
       marginLeft={2}
-      marginY={1}
       flexDirection="column"
       borderStyle="single"
       borderColor={
@@ -188,21 +189,19 @@ export function PermissionButtons({
     >
       <Box>
         <Text bold color={theme.permission}>
-          Permission required
+          Permission required ·{' '}
         </Text>
-      </Box>
-      <Box>
         <Text bold color={theme.brand}>
           {canonical}
         </Text>
-        {primaryArg ? <Text color={theme.text}> {primaryArg.slice(0, 80)}</Text> : null}
+        {primaryArg ? <Text color={theme.text}> {primaryArg.slice(0, 72)}</Text> : null}
       </Box>
       {hint ? (
         <Box>
           <Text color={risk === 'shell' ? theme.error : theme.warning}>{hint}</Text>
         </Box>
       ) : null}
-      <Box marginTop={1}>
+      <Box>
         {BUTTONS.map((btn, i) => {
           const isSelected = i === selected;
           const btnColor = theme[btn.colorKey];
@@ -220,11 +219,13 @@ export function PermissionButtons({
           );
         })}
       </Box>
-      <Box>
-        <Text color={theme.subtle} dimColor>
-          ← → to select • Enter to confirm • R/S/A shortcuts • Esc to deny
-        </Text>
-      </Box>
+      {density.showOptionalHelp ? (
+        <Box>
+          <Text color={theme.subtle} dimColor>
+            ← → select · Enter confirm · R/S/A shortcuts · Esc deny
+          </Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }

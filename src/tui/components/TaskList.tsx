@@ -14,13 +14,7 @@ export function TaskList({ tasks }: TaskListProps) {
   const visible = tasks.slice(0, 5);
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={theme.brand}
-      paddingX={1}
-      marginY={1}
-    >
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.brand} paddingX={1}>
       <Text color={theme.brand} bold>
         Tasks ({tasks.length})
       </Text>

@@ -4,6 +4,7 @@ import { Spinner } from './Spinner.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
 import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
+import { CommandPanel } from './CommandPanel.js';
 import { useTheme } from '../theme.js';
 import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
@@ -58,7 +59,7 @@ function NestedToolRows({
   const children = childrenByParent.get(parentTraceId) ?? [];
 
   return children.map((invocation) => (
-    <Box key={invocation.traceId} flexDirection="column" marginLeft={screenReader ? 2 : depth * 2}>
+    <Box key={invocation.traceId} flexDirection="column" marginLeft={screenReader ? 2 : depth}>
       <ToolCallBlock
         name={invocation.call.name}
         args={invocation.call.arguments}
@@ -67,7 +68,7 @@ function NestedToolRows({
         reducedMotion={reducedMotion}
         screenReader={screenReader}
         showAllToolOutput={showAllToolOutput}
-        terminalWidth={terminalWidth ? Math.max(12, terminalWidth - depth * 2) : undefined}
+        terminalWidth={terminalWidth ? Math.max(12, terminalWidth - depth) : undefined}
       />
       <NestedToolRows
         childrenByParent={childrenByParent}
@@ -195,7 +196,6 @@ function ThinkBlock({
       borderLeftColor={theme.mdThinkBorder}
       backgroundColor={theme.mdThinkBg}
       paddingLeft={1}
-      marginBottom={1}
     >
       <Box>
         <Spinner active style="dots" color={theme.mdThinkText} reducedMotion={reducedMotion} />
@@ -272,6 +272,18 @@ export function AgentMessageInner({
   const contentWidth = terminalWidth ? Math.max(12, Math.floor(terminalWidth) - 2) : undefined;
   const mdWidth = contentWidth;
   const contentParts = useMemo(() => splitThinkBlocks(displayContent), [displayContent]);
+
+  if (message.localCommand) {
+    return (
+      <CommandPanel
+        display={message.localCommand}
+        fallback={displayContent}
+        terminalWidth={terminalWidth}
+        reducedMotion={reducedMotion}
+        screenReader={screenReader}
+      />
+    );
+  }
 
   return (
     <Box flexDirection="column">
@@ -394,6 +406,7 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
     if (
       pm.id === nm.id &&
       pm.content === nm.content &&
+      pm.localCommand === nm.localCommand &&
       pm.toolCalls === nm.toolCalls &&
       pm.toolResults === nm.toolResults &&
       pm.nestedToolInvocations === nm.nestedToolInvocations

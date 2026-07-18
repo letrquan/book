@@ -97,6 +97,16 @@ function formatFileMutationStats(addedLines: number, removedLines: number): stri
   return parts.length > 0 ? parts.join(', ') : undefined;
 }
 
+function formatCompactFileMutationStats(
+  addedLines: number,
+  removedLines: number,
+): string | undefined {
+  const parts: string[] = [];
+  if (addedLines > 0) parts.push(`+${addedLines}`);
+  if (removedLines > 0) parts.push(`-${removedLines}`);
+  return parts.length > 0 ? parts.join(' ') : undefined;
+}
+
 /**
  * Claude Code-style tool call block.
  *
@@ -232,7 +242,30 @@ function ToolCallBlockInner({
       ? (fileMutation ?? getDiffStats(result.output))
       : { addedLines: 0, removedLines: 0 };
     const statsLabel = formatFileMutationStats(stats.addedLines, stats.removedLines);
+    const compactStatsLabel = formatCompactFileMutationStats(stats.addedLines, stats.removedLines);
     const showStats = result?.success && Boolean(statsLabel);
+    const durationLabel =
+      result?.durationMs !== undefined && result.durationMs > 0
+        ? result.durationMs < 1000
+          ? `${result.durationMs}ms`
+          : `${(result.durationMs / 1000).toFixed(1)}s`
+        : undefined;
+    const retryLabel =
+      result?.retryAttempt && result.retryAttempt > 1 ? `retry ${result.retryAttempt}` : undefined;
+    const baseSummary = `${actionName}(${filePathStr})`;
+    const alwaysMetadata = [retryLabel, durationLabel].filter(Boolean).join(' ');
+    const candidateMetadata = [compactStatsLabel, retryLabel, durationLabel]
+      .filter(Boolean)
+      .join(' ');
+    const showInlineStats =
+      showStats &&
+      Boolean(compactStatsLabel) &&
+      displayWidth(`${baseSummary} ${candidateMetadata}`) <= summaryWidth;
+    const summaryMetadata = showInlineStats ? candidateMetadata : alwaysMetadata;
+    const baseWidth = Math.max(
+      4,
+      summaryWidth - (summaryMetadata ? displayWidth(summaryMetadata) + 1 : 0),
+    );
 
     return (
       <Box flexDirection="column" marginLeft={2}>
@@ -243,20 +276,12 @@ function ToolCallBlockInner({
             {bulletSymbol}{' '}
           </Text>
           <Text color={theme.text} bold>
-            {truncateDisplay(`${actionName}(${filePathStr})`, summaryWidth)}
+            {truncateDisplay(baseSummary, baseWidth)}
           </Text>
-          {result?.retryAttempt && result.retryAttempt > 1 ? (
+          {summaryMetadata ? (
             <Text color={theme.subtle} dimColor>
               {' '}
-              (retried, succeeded on attempt {result.retryAttempt})
-            </Text>
-          ) : null}
-          {result?.durationMs !== undefined && result.durationMs > 0 ? (
-            <Text color={theme.subtle} dimColor>
-              {' '}
-              {result.durationMs < 1000
-                ? `${result.durationMs}ms`
-                : `${(result.durationMs / 1000).toFixed(1)}s`}
+              {summaryMetadata}
             </Text>
           ) : null}
         </Box>
@@ -264,16 +289,16 @@ function ToolCallBlockInner({
         {/* Stats or error line */}
         {result ? (
           !result.success ? (
-            <Box marginLeft={4}>
+            <Box marginLeft={2}>
               <Text color={theme.error}>{result.error || 'Error editing file'}</Text>
             </Box>
-          ) : showStats ? (
-            <Box marginLeft={4}>
+          ) : showStats && !showInlineStats ? (
+            <Box marginLeft={2}>
               <Text color={theme.subtle}>{truncateDisplay(statsLabel ?? '', detailWidth)}</Text>
             </Box>
           ) : null
         ) : isPending ? (
-          <Box marginLeft={4}>
+          <Box marginLeft={2}>
             <Text color={theme.warning}>[needs approval]</Text>
           </Box>
         ) : null}
@@ -325,7 +350,7 @@ function ToolCallBlockInner({
       </Box>
       {/* Expanded: show full args */}
       {isExpanded && !isRunning ? (
-        <Box marginLeft={4} flexDirection="column">
+        <Box marginLeft={2} flexDirection="column">
           {Object.entries(args).map(([key, val]) => {
             const valStr = typeof val === 'string' ? val : JSON.stringify(val);
             const valueWidth = Math.max(4, detailWidth - displayWidth(`${key}: `));
@@ -358,7 +383,7 @@ function ToolCallBlockInner({
       ) : null}
       {/* Expanded: show error */}
       {isExpanded && result?.error && !result.error.startsWith('SKIPPED') ? (
-        <Box marginLeft={4}>
+        <Box marginLeft={2}>
           <Text color={theme.error}>
             {'│'} {truncateDisplay(result.error, detailWidth)}
           </Text>
@@ -395,9 +420,9 @@ function OutputBlock({
   toolName: string;
   terminalWidth: number;
 }) {
-  // OutputBlock adds four columns of margin plus a `│ ` prefix.
-  const contentWidth = Math.max(8, Math.floor(terminalWidth) - 8);
-  const footerWidth = Math.max(4, contentWidth - 2);
+  // A two-column indent plus the border/padding rail live inside the budget.
+  const contentWidth = Math.max(8, Math.floor(terminalWidth) - 4);
+  const footerWidth = contentWidth;
   const display = useMemo(
     () =>
       prepareToolOutputDisplay(output, {
@@ -416,14 +441,17 @@ function OutputBlock({
 
   if (looksLikeMarkdown(output, toolName) && !language) {
     return (
-      <Box marginLeft={4} flexDirection="column">
-        <Text color={theme.subtle} dimColor>
-          │
-        </Text>
+      <Box
+        marginLeft={2}
+        flexDirection="column"
+        borderLeft
+        borderLeftColor={theme.subtle}
+        paddingLeft={1}
+      >
         <MarkdownBlock content={display.lines.join('\n')} terminalWidth={contentWidth} />
         {display.footer ? (
           <Text color={theme.subtle} dimColor>
-            │ {truncateDisplay(display.footer, footerWidth)}
+            {truncateDisplay(display.footer, footerWidth)}
           </Text>
         ) : null}
       </Box>
@@ -431,12 +459,15 @@ function OutputBlock({
   }
 
   return (
-    <Box marginLeft={4} flexDirection="column">
+    <Box
+      marginLeft={2}
+      flexDirection="column"
+      borderLeft
+      borderLeftColor={theme.subtle}
+      paddingLeft={1}
+    >
       {display.lines.map((line, i) => (
         <Box key={i}>
-          <Text color={theme.subtle} dimColor>
-            {'│'}{' '}
-          </Text>
           {highlighted ? (
             <Text>
               {highlighted[i]?.map((segment, si) => (
@@ -459,7 +490,7 @@ function OutputBlock({
       {display.footer ? (
         <Box>
           <Text color={theme.subtle} dimColor>
-            {'│'} {truncateDisplay(display.footer, footerWidth)}
+            {truncateDisplay(display.footer, footerWidth)}
           </Text>
         </Box>
       ) : null}

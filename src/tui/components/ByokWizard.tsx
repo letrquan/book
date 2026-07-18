@@ -17,6 +17,7 @@ import {
   validateProviderId,
   type ProviderSaveRequest,
 } from '../model-options.js';
+import { useDensityMetrics } from '../density.js';
 import { useTheme } from '../theme.js';
 
 export interface ByokWizardProps {
@@ -68,6 +69,7 @@ export function ByokWizard({
   onCancel,
 }: ByokWizardProps) {
   const theme = useTheme();
+  const density = useDensityMetrics();
   const [step, setStep] = useState<Step>('provider');
   const [providerId, setProviderId] = useState('');
   const [type, setType] = useState<ProviderProtocol>('openai');
@@ -326,15 +328,10 @@ export function ByokWizard({
     ),
   );
   const visibleModels = filteredModels.slice(modelWindowStart, modelWindowStart + maxVisibleModels);
+  const showOptionalHelp = !compact && density.showOptionalHelp;
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="single"
-      borderColor={theme.subtle}
-      paddingX={1}
-      marginY={1}
-    >
+    <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1}>
       <Box justifyContent="space-between">
         <Text bold color={theme.brand}>
           Add BYOK provider
@@ -346,11 +343,11 @@ export function ByokWizard({
         )}
       </Box>
 
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column">
         {step === 'provider' && (
           <Field
             label="Provider ID"
-            hint="Example: openrouter"
+            hint={showOptionalHelp ? 'Example: openrouter' : undefined}
             value={providerId}
             onChange={setProviderId}
             onSubmit={submitProvider}
@@ -371,7 +368,7 @@ export function ByokWizard({
           <Field
             label="Base URL"
             hint={
-              compact
+              !showOptionalHelp
                 ? undefined
                 : type === 'openai'
                   ? 'Include /v1 when required by the endpoint.'
@@ -386,7 +383,9 @@ export function ByokWizard({
         {step === 'api-key' && (
           <Field
             label="API key"
-            hint="Stored in .book/settings.local.json (gitignored)."
+            hint={
+              showOptionalHelp ? 'Stored in .book/settings.local.json (gitignored).' : undefined
+            }
             value={apiKey}
             onChange={setApiKey}
             onSubmit={submitApiKey}
@@ -435,7 +434,7 @@ export function ByokWizard({
         {step === 'manual-model' && (
           <Field
             label="Model ID"
-            hint="Example: deepseek-chat"
+            hint={showOptionalHelp ? 'Example: deepseek-chat' : undefined}
             value={manualModel}
             onChange={setManualModel}
             onSubmit={submitManualModel}
@@ -476,7 +475,9 @@ export function ByokWizard({
               ? 'Esc cancel request'
               : step === 'choose-models' || step === 'discovery-error'
                 ? ''
-                : 'Enter continue · Esc back · Ctrl+C cancel'}
+                : showOptionalHelp
+                  ? 'Enter continue · Esc back · Ctrl+C cancel'
+                  : 'Enter continue · Esc back'}
       </Text>
     </Box>
   );

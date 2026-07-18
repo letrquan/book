@@ -355,6 +355,60 @@ export interface ToolResult {
   isCreate?: boolean;
 }
 
+/**
+ * Structured presentation data for local slash-command output.
+ *
+ * These snapshots stay UI-only: local command messages are excluded from the
+ * provider context and are never persisted as assistant turns.
+ */
+export interface ConfigCommandDisplay {
+  kind: 'config';
+  snapshot: Record<string, unknown>;
+  runtime: {
+    model: string;
+    provider: string;
+    effort?: string;
+    mode: string;
+    maxTokens: number;
+    workspace: string;
+  };
+}
+
+export interface ContextCommandDisplay {
+  kind: 'context';
+  model: string;
+  maxTokens: number;
+  estimatedTokens: number;
+  totalMessages: number;
+  userMessages: number;
+  assistantMessages: number;
+  toolCalls: number;
+  toolResults: number;
+  userTokens: number;
+  assistantTokens: number;
+  ambient: {
+    commandCount: number;
+    skillCount?: number;
+    subagentCount?: number;
+    hasMemoryIndex?: boolean;
+    hasClaudeMdLoader: boolean;
+  };
+}
+
+export interface UsageCommandDisplay {
+  kind: 'usage';
+  model: string;
+  currentTurn: number;
+  messageCount: number;
+  turnDurationMs: number;
+  usage: Usage | null;
+  rate?: { inputPerMillion: number; outputPerMillion: number };
+  estimatedCostUsd?: number;
+}
+
+export type LocalCommandDisplay =
+  ConfigCommandDisplay | ContextCommandDisplay | UsageCommandDisplay;
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -368,6 +422,8 @@ export interface Message {
   toolResults?: ToolResult[];
   /** UI-only subagent activity. Never serialized as provider tool calls. */
   nestedToolInvocations?: NestedToolInvocation[];
+  /** UI-only visual treatment for local slash-command output. */
+  localCommand?: LocalCommandDisplay;
   timestamp: number;
 }
 

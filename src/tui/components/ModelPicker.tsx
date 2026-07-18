@@ -7,6 +7,7 @@ import { resolveSecret } from '../../config.js';
 import { discoverModels, type ModelDiscoveryOptions } from '../../provider/model-discovery.js';
 import type { ModelPickerOption, ProviderSaveRequest } from '../model-options.js';
 import { ByokWizard } from './ByokWizard.js';
+import { useDensityMetrics } from '../density.js';
 
 const EFFORT_LEVELS: AgentConfig['effort'][] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
@@ -48,6 +49,7 @@ export function ModelPicker({
   onCancel,
 }: ModelPickerProps) {
   const theme = useTheme();
+  const density = useDensityMetrics();
   const [selected, setSelected] = useState(0);
   const [filter, setFilter] = useState('');
   const [onEffort, setOnEffort] = useState(false);
@@ -231,18 +233,12 @@ export function ModelPicker({
   ].slice(windowStart, windowStart + maxVisibleModels);
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="single"
-      borderColor={theme.subtle}
-      paddingX={1}
-      marginY={1}
-    >
+    <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1}>
       <Text bold color={theme.brand}>
         Switch model
       </Text>
       <Text color={theme.brand}>Filter: {filter || '(type to filter)'}</Text>
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column">
         {rows.map((row, visibleIndex) => {
           const index = windowStart + visibleIndex;
           const isSelected = index === selected && !onEffort;
@@ -274,12 +270,11 @@ export function ModelPicker({
           );
         })}
       </Box>
-      <Box marginTop={1} flexDirection="column">
+      <Box flexDirection="column">
         <Text color={theme.subtle} dimColor>
-          Type to filter · ↑↓ select · Enter switch+save · Backspace edit
-        </Text>
-        <Text color={theme.subtle} dimColor>
-          Alt+A add BYOK · Alt+S session-only · Alt+R refresh · Alt+E effort · Esc clear/cancel
+          {compact || !density.showOptionalHelp
+            ? '↑↓ select · Enter save · Alt+S session · Esc cancel'
+            : 'Type filter · ↑↓ select · Enter save · Alt+A add BYOK · Alt+S session · Esc cancel'}
         </Text>
         {refreshing && <Text color={theme.brand}>Refreshing {refreshing} models…</Text>}
         {onEffort && (

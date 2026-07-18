@@ -36,11 +36,30 @@ describe('WelcomeScreen', () => {
     );
 
     const output = stripAnsi(view.lastFrame());
-    expect(output).toContain('BOOK');
+    expect(output).toContain('██████');
     expect(output).toContain('Your coding workspace, indexed.');
     expect(output).toContain('/init');
     expect(output).toContain('/skills');
     expect(output).toContain('Ctrl+/ shortcuts');
+    expect(lines(output)).toHaveLength(9);
+  });
+
+  it('keeps the compact welcome to four rows', () => {
+    const view = render(
+      withTheme(
+        <WelcomeScreen
+          terminalWidth={60}
+          terminalHeight={16}
+          workspace="/tmp/book"
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = stripAnsi(view.lastFrame());
+    expect(lines(output)).toHaveLength(4);
+    expect(output).toContain('BOOK');
+    expect(output).toContain('/skills');
   });
 
   it('uses compact copy on narrow terminals', () => {

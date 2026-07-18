@@ -2,6 +2,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
+import { DensityContext, type TuiDensity } from '../density.js';
 import { defaultConfig } from '../../test/fixtures.js';
 import { ByokWizard } from './ByokWizard.js';
 
@@ -13,19 +14,24 @@ function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
 }
 
-function createWizard(overrides: Partial<React.ComponentProps<typeof ByokWizard>> = {}) {
+function createWizard(
+  overrides: Partial<React.ComponentProps<typeof ByokWizard>> = {},
+  density: TuiDensity = 'compact',
+) {
   const onSave = vi.fn(() => ({ ok: true }));
   const onCancel = vi.fn();
   const discover = vi.fn(async () => [{ id: 'model-a', label: 'Model A' }, { id: 'model-b' }]);
   const view = render(
     withTheme(
-      <ByokWizard
-        retry={defaultConfig().retry}
-        onSave={onSave}
-        onCancel={onCancel}
-        discover={discover}
-        {...overrides}
-      />,
+      <DensityContext.Provider value={density}>
+        <ByokWizard
+          retry={defaultConfig().retry}
+          onSave={onSave}
+          onCancel={onCancel}
+          discover={discover}
+          {...overrides}
+        />
+      </DensityContext.Provider>,
     ),
   );
   return { view, onSave, onCancel, discover };
@@ -64,6 +70,15 @@ async function advanceToModelChoice(view: ReturnType<typeof render>, key = 'supe
 afterEach(cleanup);
 
 describe('ByokWizard', () => {
+  it('removes optional guidance in tight terminals', () => {
+    const { view } = createWizard({}, 'tight');
+    const output = stripAnsi(view.lastFrame());
+
+    expect(output).toContain('Provider ID');
+    expect(output).not.toContain('Example: openrouter');
+    expect(output).not.toContain('Ctrl+C cancel');
+  });
+
   it('masks an API key and never renders its raw value', async () => {
     const { view } = createWizard();
     await advanceToApiKey(view);

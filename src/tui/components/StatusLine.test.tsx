@@ -52,6 +52,7 @@ describe('StatusLine', () => {
     expect(output).toContain('tokens 12.0k/128k');
     expect(output).toContain('default');
     expect(output).toContain('tasks 1/3');
+    expect(output.split('\n')).toHaveLength(1);
   });
 
   it('keeps narrow output within terminal width', () => {
