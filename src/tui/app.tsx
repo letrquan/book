@@ -11,6 +11,7 @@ import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
 import { ModelPicker } from './components/ModelPicker.js';
+import { EffortPicker } from './components/EffortPicker.js';
 import { SessionPicker } from './components/SessionPicker.js';
 import { TranscriptView } from './components/TranscriptView.js';
 import { PermissionButtons } from './components/PermissionButtons.js';
@@ -58,6 +59,12 @@ import { redactSettingValue, redactSettingsForDisplay } from '../settings-redact
 import { createUiDebugLogger } from '../debug-log.js';
 import { selectExpandedToolId } from './tool-traces.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
+import {
+  EFFORT_USAGE,
+  getAvailableEffortLevels,
+  getEffortUnavailableError,
+  isEffortLevel,
+} from './effort.js';
 
 const uiLog = createUiDebugLogger('tui:app');
 
@@ -66,8 +73,15 @@ export function ownsModalInput(
   pendingPlanApproval: unknown,
   showModelPicker: boolean,
   showSessionPicker = false,
+  showEffortPicker = false,
 ): boolean {
-  return Boolean(pendingPermission || pendingPlanApproval || showModelPicker || showSessionPicker);
+  return Boolean(
+    pendingPermission ||
+    pendingPlanApproval ||
+    showModelPicker ||
+    showSessionPicker ||
+    showEffortPicker,
+  );
 }
 
 /** Settable top-level settings keys (for /config --help). Mirrors cli/config-cmd.ts allowlist. */
@@ -171,6 +185,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
   const [showPermissions, setShowPermissions] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showEffortPicker, setShowEffortPicker] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [followRequestKey, setFollowRequestKey] = useState(0);
   const [currentTheme, setCurrentTheme] = useState<ThemeTokens>(DEFAULT_THEME);
@@ -182,6 +197,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
   const commands = useMemo(() => discoverCommands(config.workspace), [config.workspace]);
   const skills = useMemo(() => discoverSkills(config.workspace), [config.workspace]);
   const modelOptions = useMemo(() => buildModelOptions(liveConfig.settings), [liveConfig.settings]);
+  const effortLevels = useMemo(() => getAvailableEffortLevels(liveConfig), [liveConfig.modelInfo]);
 
   const { stdout } = useStdout();
   const readTerminalSize = useCallback(
@@ -256,13 +272,20 @@ export function App({ config, session, redrawViewport }: AppProps) {
   useDebugValueChange(uiLog, 'showPermissions', showPermissions, (v) => String(v));
   useDebugValueChange(uiLog, 'showSkills', showSkills, (v) => String(v));
   useDebugValueChange(uiLog, 'showModelPicker', showModelPicker, (v) => String(v));
+  useDebugValueChange(uiLog, 'showEffortPicker', showEffortPicker, (v) => String(v));
 
   useInput((input, key) => {
     // Modal prompts own the keyboard until they resolve. Let their own
     // useInput handlers receive the event, but do not open another modal or
     // mutate surrounding UI state from this global handler.
     if (
-      ownsModalInput(pendingPermission, pendingPlanApproval, showModelPicker, showSessionPicker)
+      ownsModalInput(
+        pendingPermission,
+        pendingPlanApproval,
+        showModelPicker,
+        showSessionPicker,
+        showEffortPicker,
+      )
     ) {
       if (key.escape) {
         uiLog.event('input:Escape', { action: 'noop-modal-active' });
@@ -403,6 +426,24 @@ export function App({ config, session, redrawViewport }: AppProps) {
           );
         } else {
           setShowModelPicker(true);
+        }
+      } else if (commandName === 'effort') {
+        if (!commandArg) {
+          const unavailable = getEffortUnavailableError(liveConfig);
+          if (unavailable) addLocalMessage(`✕ ${unavailable}`);
+          else setShowEffortPicker(true);
+        } else {
+          const normalized = commandArg.toLowerCase();
+          if (!isEffortLevel(normalized)) {
+            addLocalMessage(EFFORT_USAGE);
+          } else {
+            const result = setEffort(normalized);
+            addLocalMessage(
+              result.ok
+                ? `Set effort level to ${normalized} (saved as default).`
+                : `✕ ${result.error}`,
+            );
+          }
         }
       } else if (value.startsWith('/config')) {
         const arg = value.slice('/config'.length).trim();
@@ -668,6 +709,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       liveConfig,
       addLocalMessage,
       setModel,
+      setEffort,
       messages,
       currentTurn,
       turnDurationMs,
@@ -695,7 +737,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       // Ctrl+/ and Ctrl+E must be handled here (not only in the parent useInput)
       // because ink-text-input consumes some Ctrl key events before they reach
       // the parent handler.
-      if (showModelPicker) return true;
+      if (showModelPicker || showEffortPicker) return true;
       if (key.ctrl && input === 'c') {
         if (pendingPermission || pendingPlanApproval) {
           uiLog.event('input:Ctrl+C', { action: 'noop-approval-active' });
@@ -740,6 +782,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       pendingPermission,
       pendingPlanApproval,
       redrawViewport,
+      showEffortPicker,
       showModelPicker,
     ],
   );
@@ -747,7 +790,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
   // Track input changes for command menu filtering — now handled inside InputBar.
   // handleGlobalShortcut remains for Ctrl+/ keyboard shortcut reference.
 
-  const pickerOwnsTranscript = showModelPicker || showSessionPicker;
+  const pickerOwnsTranscript = showModelPicker || showEffortPicker || showSessionPicker;
 
   return (
     <ThemeContext.Provider value={currentTheme}>
@@ -832,6 +875,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
                     <HelpRow
                       label="/model [name]"
                       description="Switch model or add a BYOK provider"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/effort [low|medium|high|xhigh|max]"
+                      description="Set thinking effort"
                       theme={theme}
                     />
                     <HelpRow label="/config" description="Show configuration" theme={theme} />
@@ -1139,6 +1187,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 options={modelOptions}
                 currentModel={liveConfig.modelSelection ?? liveConfig.model}
                 currentEffort={liveConfig.effort}
+                effortLevels={effortLevels ?? []}
                 hasPriorOutput={messages.length > 0}
                 providers={liveConfig.settings.provider}
                 workspace={config.workspace}
@@ -1175,6 +1224,20 @@ export function App({ config, session, redrawViewport }: AppProps) {
                   setShowModelPicker(false);
                 }}
                 onCancel={() => setShowModelPicker(false)}
+              />
+            ) : null}
+            {showEffortPicker && effortLevels ? (
+              <EffortPicker
+                current={liveConfig.effort}
+                availableLevels={effortLevels}
+                onSelect={(level) => {
+                  const result = setEffort(level);
+                  if (!result.ok) return result;
+                  addLocalMessage(`Set effort level to ${level} (saved as default).`);
+                  setShowEffortPicker(false);
+                  return result;
+                }}
+                onCancel={() => setShowEffortPicker(false)}
               />
             ) : null}
           </Box>
@@ -1224,6 +1287,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 pendingPlanApproval,
                 showModelPicker,
                 showSessionPicker,
+                showEffortPicker,
               )}
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}

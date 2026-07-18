@@ -108,7 +108,7 @@ function pendingAgentState() {
     cycleMode: vi.fn(),
     addLocalMessage: vi.fn(),
     setModel: vi.fn(),
-    setEffort: vi.fn(),
+    setEffort: vi.fn(() => ({ ok: true })),
     setMemoryAutoSave: vi.fn(),
     refreshMemoryContext: vi.fn(),
     turnDurationMs: 0,
@@ -173,6 +173,112 @@ describe('App session commands', () => {
   });
 });
 
+describe('App effort command', () => {
+  const submit = async (view: ReturnType<typeof render>, value: string) => {
+    view.stdin.write(value);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+  };
+
+  function renderIdle(overrides: Record<string, unknown> = {}) {
+    const agentState = {
+      ...pendingAgentState(),
+      isThinking: false,
+      pendingPlanApproval: null,
+      ...overrides,
+    };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+    return { agentState, view: render(<App config={config()} session={testSession} />) };
+  }
+
+  it('opens a dedicated picker with the current effort highlighted', async () => {
+    const liveConfig = {
+      ...config(),
+      effort: 'high' as const,
+      modelInfo: { effort: { levels: ['low', 'medium', 'high'] as const } },
+    };
+    const { view } = renderIdle({ liveConfig });
+
+    await submit(view, '/effort');
+    const frame = stripAnsi(view.lastFrame());
+
+    expect(frame).toContain('Set effort level');
+    expect(frame).toContain('❯ high');
+    expect(frame).not.toContain('Maximum reasoning depth');
+  });
+
+  it('applies direct arguments case-insensitively and reports success', async () => {
+    const { agentState, view } = renderIdle();
+
+    await submit(view, '/effort XHIGH');
+
+    expect(agentState.setEffort).toHaveBeenCalledWith('xhigh');
+    expect(agentState.addLocalMessage).toHaveBeenCalledWith(
+      'Set effort level to xhigh (saved as default).',
+    );
+  });
+
+  it('shows accepted usage for invalid levels', async () => {
+    const { agentState, view } = renderIdle();
+
+    await submit(view, '/effort turbo');
+
+    expect(agentState.setEffort).not.toHaveBeenCalled();
+    expect(agentState.addLocalMessage).toHaveBeenCalledWith(
+      'Usage: /effort [low|medium|high|xhigh|max]',
+    );
+  });
+
+  it('does not open for models with effort disabled', async () => {
+    const liveConfig = { ...config(), modelInfo: { effort: false as const } };
+    const { agentState, view } = renderIdle({ liveConfig });
+
+    await submit(view, '/effort');
+
+    expect(stripAnsi(view.lastFrame())).not.toContain('Set effort level');
+    expect(agentState.setEffort).not.toHaveBeenCalled();
+    expect(agentState.addLocalMessage).toHaveBeenCalledWith(
+      '✕ Model "model-x" does not support configurable effort.',
+    );
+  });
+
+  it('surfaces selection failures without closing the picker', async () => {
+    const setEffort = vi.fn(() => ({ ok: false, error: 'Failed to save effort level: denied' }));
+    const { view } = renderIdle({ setEffort });
+
+    await submit(view, '/effort');
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    const frame = stripAnsi(view.lastFrame());
+    expect(frame).toContain('Set effort level');
+    expect(frame).toContain('Failed to save effort level: denied');
+  });
+
+  it('dispatches only the exact /effort command', async () => {
+    const { agentState, view } = renderIdle();
+
+    await submit(view, '/effortless high');
+
+    expect(agentState.setEffort).not.toHaveBeenCalled();
+    expect(agentState.send).toHaveBeenCalledWith('/effortless high');
+  });
+
+  it('lists /effort in /help', async () => {
+    const { view } = renderIdle();
+    await submit(view, '/help');
+    expect(view.frames.map(stripAnsi).join('\n')).toContain('/effort [low|medium|high|xhigh|max]');
+  });
+});
+
 describe('App plan approval keyboard ownership', () => {
   it('does not open the model picker while plan approval owns input', () => {
     const agentState = pendingAgentState();
@@ -215,6 +321,7 @@ describe('App plan approval keyboard ownership', () => {
 
   it('suppresses the input bar while the model picker owns input', () => {
     expect(ownsModalInput(null, null, true)).toBe(true);
+    expect(ownsModalInput(null, null, false, false, true)).toBe(true);
     expect(ownsModalInput(null, null, false)).toBe(false);
   });
 });

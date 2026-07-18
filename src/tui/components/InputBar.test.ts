@@ -333,6 +333,16 @@ describe('InputBar command menu', () => {
 
     expect(submitted).toEqual(['/clear']);
   });
+
+  it('includes /effort in slash-command autocomplete', async () => {
+    const view = render(inputBar(() => {}));
+    await tick();
+
+    view.stdin.write('/eff');
+    await tick(20);
+
+    expect(stripAnsi(view.lastFrame())).toContain('/effort [low|medium|high|xhigh|max]');
+  });
 });
 
 describe('InputBar @ file mention menu', () => {
