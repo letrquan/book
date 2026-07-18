@@ -1,9 +1,10 @@
 import { Box, Text } from 'ink';
 import { act } from 'react';
 import { render } from 'ink-testing-library';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { TranscriptView } from './TranscriptView.js';
+import { ToolCallBlock } from './ToolCallBlock.js';
 
 function Rows({ labels }: { labels: string[] }) {
   return (
@@ -81,6 +82,33 @@ describe('TranscriptView', () => {
     app.rerender(view(labels, { isActive: false }));
     act(() => app.stdin.write('\x1b[<64;10;5M'));
     expect(frameLines(app.lastFrame())).toEqual(['C', 'D', 'E', 'F']);
+  });
+
+  it('toggles only expandable tool summary rows on left-button presses', () => {
+    const onToggleTool = vi.fn();
+    const app = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={6} width={60} onToggleTool={onToggleTool}>
+          <ToolCallBlock
+            toolId="tool-1"
+            name="Bash"
+            args={{ command: 'npm test' }}
+            result={{ toolCallId: 'tool-1', success: true, output: 'passed' }}
+            isExpanded={false}
+            terminalWidth={60}
+            reducedMotion
+          />
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+
+    act(() => app.stdin.write('\x1b[<0;4;2M'));
+    expect(onToggleTool).toHaveBeenCalledWith('tool-1');
+
+    act(() => app.stdin.write('\x1b[<0;4;2m'));
+    act(() => app.stdin.write('\x1b[<32;4;2M'));
+    act(() => app.stdin.write('\x1b[<0;4;5M'));
+    expect(onToggleTool).toHaveBeenCalledTimes(1);
   });
 
   it('follows appended output while pinned to the tail', () => {

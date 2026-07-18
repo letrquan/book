@@ -1,5 +1,13 @@
 import { Box, Text, measureElement, useInput, useStdin, type DOMElement } from 'ink';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   createTranscriptScrollState,
   getTranscriptHalfPageRows,
@@ -11,8 +19,12 @@ import {
   type TranscriptMetrics,
   type TranscriptScrollState,
 } from '../transcript-scroll.js';
-import { parseMouseWheelDirection } from '../mouse.js';
+import { parseSgrMouseEvent } from '../mouse.js';
 import { useTheme } from '../theme.js';
+import {
+  ToolRowInteractionContext,
+  type ToolSummaryRowRegistration,
+} from './tool-row-interactions.js';
 
 interface TranscriptViewProps {
   children: ReactNode;
@@ -20,10 +32,24 @@ interface TranscriptViewProps {
   width?: number;
   isActive?: boolean;
   followRequestKey?: number;
+  onToggleTool?: (toolId: string) => void;
 }
 
 const INITIAL_METRICS: TranscriptMetrics = { contentRows: 0, viewportRows: 1 };
 const MOUSE_WHEEL_ROWS = 3;
+
+function getAbsolutePosition(node: DOMElement): { x: number; y: number } | undefined {
+  let current: DOMElement | undefined = node;
+  let x = 0;
+  let y = 0;
+  while (current?.parentNode) {
+    if (!current.yogaNode) return undefined;
+    x += current.yogaNode.getComputedLeft();
+    y += current.yogaNode.getComputedTop();
+    current = current.parentNode;
+  }
+  return { x, y };
+}
 
 export function TranscriptView({
   children,
@@ -31,6 +57,7 @@ export function TranscriptView({
   width,
   isActive = true,
   followRequestKey = 0,
+  onToggleTool,
 }: TranscriptViewProps) {
   const theme = useTheme();
   const { internal_eventEmitter } = useStdin();
@@ -42,6 +69,20 @@ export function TranscriptView({
   const previousFollowRequestRef = useRef(followRequestKey);
   const [scrollState, setScrollState] = useState(createTranscriptScrollState);
   const [hasNewOutput, setHasNewOutput] = useState(false);
+  const toolRowsRef = useRef(new Map<string, ToolSummaryRowRegistration>());
+  const interactionRegistry = useMemo(
+    () => ({
+      register: (registration: ToolSummaryRowRegistration) => {
+        toolRowsRef.current.set(registration.id, registration);
+        return () => {
+          if (toolRowsRef.current.get(registration.id) === registration) {
+            toolRowsRef.current.delete(registration.id);
+          }
+        };
+      },
+    }),
+    [],
+  );
 
   const applyScrollState = useCallback((next: TranscriptScrollState) => {
     stateRef.current = next;
@@ -91,18 +132,39 @@ export function TranscriptView({
     if (!isActive) return;
 
     const handleMouseInput = (input: string) => {
-      const direction = parseMouseWheelDirection(input);
-      if (!direction) return;
+      const event = parseSgrMouseEvent(input);
+      if (!event) return;
+      if (event.type === 'wheel') {
+        const rows = event.button === 'wheel-up' ? -MOUSE_WHEEL_ROWS : MOUSE_WHEEL_ROWS;
+        applyScrollState(scrollTranscriptBy(stateRef.current, metricsRef.current, rows));
+        return;
+      }
+      if (event.type !== 'press' || event.button !== 'left' || !onToggleTool) return;
 
-      const rows = direction === 'up' ? -MOUSE_WHEEL_ROWS : MOUSE_WHEEL_ROWS;
-      applyScrollState(scrollTranscriptBy(stateRef.current, metricsRef.current, rows));
+      const x = event.x - 1;
+      const y = event.y - 1;
+      for (const registration of toolRowsRef.current.values()) {
+        if (!registration.expandable || !registration.element.current) continue;
+        const rect = measureElement(registration.element.current);
+        const position = getAbsolutePosition(registration.element.current);
+        if (
+          position &&
+          x >= position.x &&
+          x < position.x + rect.width &&
+          y >= position.y &&
+          y < position.y + rect.height
+        ) {
+          onToggleTool(registration.id);
+          return;
+        }
+      }
     };
 
     internal_eventEmitter.on('input', handleMouseInput);
     return () => {
       internal_eventEmitter.removeListener('input', handleMouseInput);
     };
-  }, [applyScrollState, internal_eventEmitter, isActive]);
+  }, [applyScrollState, internal_eventEmitter, isActive, onToggleTool]);
 
   useInput(
     (input, key) => {
@@ -170,7 +232,9 @@ export function TranscriptView({
           width={width}
           marginTop={-scrollState.scrollTop}
         >
-          {children}
+          <ToolRowInteractionContext.Provider value={interactionRegistry}>
+            {children}
+          </ToolRowInteractionContext.Provider>
         </Box>
       </Box>
     </Box>

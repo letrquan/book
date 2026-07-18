@@ -20,6 +20,8 @@ interface MarkdownBlockProps {
   terminalWidth?: number;
   /** While streaming, keep expensive final-pass decoration such as syntax highlighting disabled. */
   isStreaming?: boolean;
+  /** Remove the final block's bottom margin when another transcript turn follows immediately. */
+  trimTrailingMargin?: boolean;
 }
 
 type InlineStyle = {
@@ -383,6 +385,7 @@ function renderBlockToken(
   index: number,
   terminalWidth: number | undefined,
   context: RenderContext,
+  trimBottomMargin = false,
 ): React.ReactNode {
   switch (token.type) {
     case 'heading': {
@@ -391,7 +394,12 @@ function renderBlockToken(
       const chrome = layoutHeadingChrome(text, t.depth, terminalWidth);
       if (t.depth === 1) {
         return (
-          <Box key={`h-${index}`} flexDirection="column" marginTop={1} marginBottom={1}>
+          <Box
+            key={`h-${index}`}
+            flexDirection="column"
+            marginTop={1}
+            marginBottom={trimBottomMargin ? 0 : 1}
+          >
             <Text bold color={theme.mdHeadingH1}>
               {chrome.prefix}
               {chrome.text}
@@ -402,7 +410,12 @@ function renderBlockToken(
       }
       if (t.depth === 2) {
         return (
-          <Box key={`h-${index}`} flexDirection="column" marginTop={1} marginBottom={1}>
+          <Box
+            key={`h-${index}`}
+            flexDirection="column"
+            marginTop={1}
+            marginBottom={trimBottomMargin ? 0 : 1}
+          >
             <Text bold color={theme.mdHeadingH2}>
               {chrome.prefix}
               {chrome.text}
@@ -412,7 +425,12 @@ function renderBlockToken(
         );
       }
       return (
-        <Box key={`h-${index}`} flexDirection="column" marginTop={1} marginBottom={1}>
+        <Box
+          key={`h-${index}`}
+          flexDirection="column"
+          marginTop={1}
+          marginBottom={trimBottomMargin ? 0 : 1}
+        >
           <Text bold={t.depth <= 4} color={theme.mdHeading} dimColor={t.depth >= 5}>
             {chrome.prefix}
             {chrome.text}
@@ -431,7 +449,12 @@ function renderBlockToken(
       if (terminalWidth) {
         const wrappedLines = wrappedInlineRuns(runs, terminalWidth);
         return (
-          <Box key={`p-${index}`} flexDirection="column" flexGrow={1} marginBottom={1}>
+          <Box
+            key={`p-${index}`}
+            flexDirection="column"
+            flexGrow={1}
+            marginBottom={trimBottomMargin ? 0 : 1}
+          >
             {wrappedLines.map((lineRuns, li) => (
               <Box key={`pw-${index}-${li}`} flexDirection="row">
                 <InlineRuns runs={lineRuns} />
@@ -441,7 +464,12 @@ function renderBlockToken(
         );
       }
       return (
-        <Box key={`p-${index}`} flexDirection="row" flexGrow={1} marginBottom={1}>
+        <Box
+          key={`p-${index}`}
+          flexDirection="row"
+          flexGrow={1}
+          marginBottom={trimBottomMargin ? 0 : 1}
+        >
           <InlineRuns runs={runs} />
         </Box>
       );
@@ -633,7 +661,11 @@ function renderBlockToken(
 
       if (layout.mode === 'stacked') {
         return (
-          <Box key={`table-${index}`} flexDirection="column" marginBottom={1}>
+          <Box
+            key={`table-${index}`}
+            flexDirection="column"
+            marginBottom={trimBottomMargin ? 0 : 1}
+          >
             {layout.lines.map((line, li) => (
               <Text key={`table-${index}-s${li}`} color={theme.text}>
                 {line}
@@ -644,7 +676,7 @@ function renderBlockToken(
       }
 
       return (
-        <Box key={`table-${index}`} flexDirection="column" marginBottom={1}>
+        <Box key={`table-${index}`} flexDirection="column" marginBottom={trimBottomMargin ? 0 : 1}>
           <Text color={theme.mdTableBorder}>{layout.top}</Text>
           {layout.headerRows.map((row, ri) =>
             renderTableCells(row, `tr-${index}-h${ri}`, theme, true),
@@ -685,7 +717,12 @@ function renderBlockToken(
  * block-level token to Ink Box/Text components with appropriate styling
  * from the current theme (mdCodeBackground, mdHeading, mdLink, etc.).
  */
-export function MarkdownBlock({ content, terminalWidth, isStreaming = false }: MarkdownBlockProps) {
+export function MarkdownBlock({
+  content,
+  terminalWidth,
+  isStreaming = false,
+  trimTrailingMargin = false,
+}: MarkdownBlockProps) {
   const theme = useTheme();
 
   const parsedContent = useThrottledValue(content, 60);
@@ -694,15 +731,29 @@ export function MarkdownBlock({ content, terminalWidth, isStreaming = false }: M
   if (!effectiveContent) return null;
 
   const tokens = useMemo(() => marked.lexer(effectiveContent), [effectiveContent]);
+  let lastBlockIndex = -1;
+  for (let index = tokens.length - 1; index >= 0; index--) {
+    if (tokens[index].type !== 'space') {
+      lastBlockIndex = index;
+      break;
+    }
+  }
 
   return (
     <Box flexDirection="column">
       {tokens.map((token, i) =>
-        renderBlockToken(token, theme, i, terminalWidth, {
-          depth: 0,
-          isStreaming,
-          blockquoteDepth: 0,
-        }),
+        renderBlockToken(
+          token,
+          theme,
+          i,
+          terminalWidth,
+          {
+            depth: 0,
+            isStreaming,
+            blockquoteDepth: 0,
+          },
+          trimTrailingMargin && i === lastBlockIndex,
+        ),
       )}
     </Box>
   );

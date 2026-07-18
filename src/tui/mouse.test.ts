@@ -1,5 +1,39 @@
 import { describe, expect, it } from 'vitest';
-import { parseMouseWheelDirection } from './mouse.js';
+import { parseMouseWheelDirection, parseSgrMouseEvent } from './mouse.js';
+
+describe('parseSgrMouseEvent', () => {
+  it('parses left clicks, releases, movement, coordinates, and modifiers', () => {
+    expect(parseSgrMouseEvent('\x1b[<0;13;20M')).toEqual({
+      type: 'press',
+      button: 'left',
+      x: 13,
+      y: 20,
+      shift: false,
+      alt: false,
+      ctrl: false,
+    });
+    expect(parseSgrMouseEvent('\x1b[<0;13;20m')).toMatchObject({
+      type: 'release',
+      button: 'left',
+    });
+    expect(parseSgrMouseEvent('\x1b[<52;4;7M')).toMatchObject({
+      type: 'move',
+      button: 'left',
+      shift: true,
+      ctrl: true,
+    });
+    expect(parseSgrMouseEvent('\x1b[<35;4;7M')).toMatchObject({
+      type: 'move',
+      button: 'none',
+    });
+  });
+
+  it('rejects malformed, zero-coordinate, and wheel-release reports', () => {
+    expect(parseSgrMouseEvent('\x1b[<0;0;2M')).toBeNull();
+    expect(parseSgrMouseEvent('\x1b[<64;1;1m')).toBeNull();
+    expect(parseSgrMouseEvent('text')).toBeNull();
+  });
+});
 
 describe('parseMouseWheelDirection', () => {
   it('parses wheel up and down reports', () => {

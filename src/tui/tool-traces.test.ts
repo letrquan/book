@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Message, NestedToolInvocation, ToolResult } from '../types.js';
 import {
   indexNestedToolInvocations,
+  countNestedToolInvocations,
   selectActiveToolId,
   selectExpandedToolId,
 } from './tool-traces.js';
@@ -49,6 +50,16 @@ describe('tool traces', () => {
 
     expect(index.get('root')?.map((item) => item.traceId)).toEqual(['a', 'c']);
     expect(index.get('other')?.map((item) => item.traceId)).toEqual(['b']);
+    expect(countNestedToolInvocations(index, 'root')).toBe(2);
+  });
+
+  it('counts recursive nested activity', () => {
+    const index = indexNestedToolInvocations([
+      nested('child', 'root'),
+      nested('grandchild', 'child'),
+      nested('sibling', 'root'),
+    ]);
+    expect(countNestedToolInvocations(index, 'root')).toBe(3);
   });
 
   it('prefers the latest unfinished nested invocation', () => {

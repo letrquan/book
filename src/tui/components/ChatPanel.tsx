@@ -17,6 +17,7 @@ import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js
 import { useDebugMount } from '../debug.js';
 import { mergeAssistantMessages } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
+import type { TranscriptMode } from '../tool-presentation.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
@@ -38,7 +39,7 @@ function TurnSeparator({
   const width = Math.max(20, Math.min(terminalWidth ?? 60, 80));
   const suffix = '─'.repeat(Math.max(5, width - label.length - 4));
   return (
-    <Box marginTop={1} marginBottom={1}>
+    <Box>
       <Text color={theme.mdTurnSeparator} dimColor>
         ── {label} {suffix}
       </Text>
@@ -70,6 +71,9 @@ interface ChatPanelProps {
   /** @deprecated Dynamic transcript rendering no longer needs Static replay epochs. */
   staticEpoch?: number;
   expandedToolCallId?: string | null;
+  transcriptMode?: TranscriptMode;
+  automaticToolCallId?: string | null;
+  toolExpansionOverrides?: ReadonlyMap<string, boolean>;
   reducedMotion?: boolean;
   screenReader?: boolean;
   terminalWidth?: number;
@@ -81,6 +85,7 @@ interface ChatPanelProps {
   skillCount?: number;
   retryPhase?: RetryPhase;
   showAllToolOutput?: boolean;
+  showAllToolOutputIds?: ReadonlySet<string>;
   retryAttempt?: number;
   retryMax?: number;
   retryCountdownMs?: number;
@@ -93,6 +98,9 @@ export function ChatPanel({
   streamingMessageId,
   pendingPermission,
   expandedToolCallId,
+  transcriptMode = 'compact',
+  automaticToolCallId,
+  toolExpansionOverrides,
   reducedMotion = false,
   screenReader = false,
   terminalWidth,
@@ -104,6 +112,7 @@ export function ChatPanel({
   skillCount = 0,
   retryPhase = 'none',
   showAllToolOutput = false,
+  showAllToolOutputIds,
   retryAttempt = 0,
   retryMax = 0,
   retryCountdownMs = 0,
@@ -149,7 +158,6 @@ export function ChatPanel({
           return <CompactBoundaryRow key={`boundary-${entry.id}`} boundary={entry} />;
         }
         const message = entry;
-        const previous = timeline[index - 1];
         if (message.role === 'user') {
           return (
             <Box key={message.id} flexDirection="column">
@@ -162,17 +170,18 @@ export function ChatPanel({
         }
 
         const isStreaming = message.id === streamingMessageId;
+        const next = timeline[index + 1];
+        const nextEntryIsUser = Boolean(next && 'role' in next && next.role === 'user');
         return (
-          <Box
-            key={message.id}
-            flexDirection="column"
-            marginTop={previous && 'role' in previous && previous.role === 'user' ? 1 : 0}
-          >
+          <Box key={message.id} flexDirection="column">
             <AgentMessage
               message={message}
               isStreaming={isStreaming}
               pendingPermission={pendingPermission}
               expandedToolCallId={selectedToolCallId}
+              transcriptMode={transcriptMode}
+              automaticToolCallId={automaticToolCallId ?? selectedToolCallId}
+              toolExpansionOverrides={toolExpansionOverrides}
               reducedMotion={reducedMotion}
               screenReader={screenReader}
               terminalWidth={terminalWidth}
@@ -182,6 +191,8 @@ export function ChatPanel({
               retryCountdownMs={isStreaming ? retryCountdownMs : 0}
               hideStreamingSpinner={isStreaming}
               showAllToolOutput={showAllToolOutput}
+              showAllToolOutputIds={showAllToolOutputIds}
+              trimTrailingSpacing={nextEntryIsUser}
             />
           </Box>
         );

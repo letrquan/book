@@ -5,6 +5,8 @@ import { marked, Tokens } from 'marked';
 import { ThemeContext } from '../theme.js';
 import { DEFAULT_THEME } from '../../types.js';
 import { MarkdownBlock, wrapParagraphLines } from '../components/MarkdownBlock.js';
+import { DiffBlock } from '../components/Diff.js';
+import { ToolCallBlock } from '../components/ToolCallBlock.js';
 import { wordWrap } from '../components/word-wrap.js';
 
 const TERMINAL_WIDTH = 80;
@@ -70,6 +72,17 @@ function getMeanMs(bench: Bench, name: string): number {
 
 const paragraph = makeParagraph(700);
 const markdown = makeMarkdown();
+const largeToolOutput = Array.from({ length: 1000 }, (_, index) => `output line ${index + 1}`).join(
+  '\n',
+);
+const multiHunkDiff = Array.from({ length: 120 }, (_, index) => [
+  `@@ -${index * 3 + 1},2 +${index * 3 + 1},2 @@`,
+  ` context ${index}`,
+  `-const value = oldValue${index};`,
+  `+const value = newValue${index};`,
+])
+  .flat()
+  .join('\n');
 
 const bench = new Bench({ time: 500, warmupTime: 100, warmupIterations: 16 });
 
@@ -84,6 +97,38 @@ bench
     const view = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <MarkdownBlock content={markdown} terminalWidth={TERMINAL_WIDTH} />
+      </ThemeContext.Provider>,
+    );
+    sink += view.lastFrame()?.length ?? 0;
+    view.unmount();
+    cleanup();
+  })
+  .add('large tool output preview render', () => {
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ToolCallBlock
+          name="Bash"
+          args={{ command: 'large-output' }}
+          result={{ toolCallId: 'bench-output', success: true, output: largeToolOutput }}
+          isExpanded
+          terminalWidth={TERMINAL_WIDTH}
+          reducedMotion
+        />
+      </ThemeContext.Provider>,
+    );
+    sink += view.lastFrame()?.length ?? 0;
+    view.unmount();
+    cleanup();
+  })
+  .add('multi-hunk diff preview render', () => {
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <DiffBlock
+          output={multiHunkDiff}
+          filePath="src/benchmark.ts"
+          collapsed
+          terminalWidth={TERMINAL_WIDTH}
+        />
       </ThemeContext.Provider>,
     );
     sink += view.lastFrame()?.length ?? 0;
