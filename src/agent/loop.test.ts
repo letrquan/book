@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { runAgentLoop } from './loop.js';
 import { createRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
-import type { ToolResult } from '../types.js';
+import type { ToolResult, UserQuestionRequest } from '../types.js';
+import { askUserQuestionTools } from '../tools/ask-user-question.js';
 
 const config = defaultConfig();
 
@@ -671,6 +672,95 @@ describe('runAgentLoop accept-edits mode', () => {
       expect(executed).toBe(true);
     });
   }
+});
+
+describe('runAgentLoop AskUserQuestion', () => {
+  const argumentsJson = JSON.stringify({
+    questions: [
+      {
+        question: 'Which database?',
+        header: 'Database',
+        options: [
+          { label: 'SQLite', description: 'Local file database' },
+          { label: 'Postgres', description: 'Network database' },
+        ],
+        multiSelect: false,
+      },
+    ],
+  });
+
+  it('asks without a permission prompt and returns the answer as the tool result', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              { id: 'ask_1', name: 'AskUserQuestion', arguments: argumentsJson },
+            ]),
+            { status: 200 },
+          ),
+      ),
+    );
+    const registry = createRegistry();
+    registry.registerAll(askUserQuestionTools);
+    const results: ToolResult[] = [];
+    const prompted = vi.fn();
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'choose',
+      [],
+      noopCallbacks({
+        onPermissionRequired: prompted,
+        onUserQuestionRequired: async (request: UserQuestionRequest) => ({
+          action: 'answer',
+          answers: { [request.questions[0].question]: 'SQLite' },
+        }),
+        onToolResult: (result: ToolResult) => results.push(result),
+      }),
+      'default',
+    );
+
+    expect(prompted).not.toHaveBeenCalled();
+    expect(results[0]).toMatchObject({ success: true });
+    expect(results[0].output).toContain('Which database?: SQLite');
+  });
+
+  it('blocks questions in dontAsk mode before invoking the host', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              { id: 'ask_1', name: 'AskUserQuestion', arguments: argumentsJson },
+            ]),
+            { status: 200 },
+          ),
+      ),
+    );
+    const registry = createRegistry();
+    registry.registerAll(askUserQuestionTools);
+    const handler = vi.fn();
+    const results: ToolResult[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'choose',
+      [],
+      noopCallbacks({
+        onUserQuestionRequired: handler,
+        onToolResult: (result: ToolResult) => results.push(result),
+      }),
+      'dontAsk',
+    );
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(results[0].error).toMatch(/disabled in dontAsk/);
+  });
 });
 
 describe('runAgentLoop plan mode', () => {

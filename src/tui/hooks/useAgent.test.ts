@@ -1,6 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { RetryPhase, PermissionResult, PlanApprovalResult, ToolCall } from '../../types.js';
-import { settlePermissionRequest, settlePlanApprovalRequest } from './useAgent.js';
+import type {
+  RetryPhase,
+  PermissionResult,
+  PlanApprovalResult,
+  ToolCall,
+  UserQuestionRequest,
+} from '../../types.js';
+import {
+  cancelUserQuestionRequests,
+  settlePermissionRequest,
+  settlePlanApprovalRequest,
+  settleUserQuestionRequest,
+} from './useAgent.js';
 
 // Simulate the retry state machine from useAgent.
 // This is a pure-function test of the state transitions without React rendering.
@@ -252,6 +263,46 @@ describe('permission / plan approval settlement', () => {
     // Second settle is a no-op (cancel/clear/unmount after resolve).
     expect(settlePermissionRequest(pendingRef, setPending, 'deny', 'cancel')).toBe(false);
     expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles queued user questions in FIFO order and cancels the remainder', () => {
+    const request = (id: string): UserQuestionRequest => ({
+      id,
+      source: { kind: 'root' },
+      questions: [
+        {
+          question: `Question ${id}?`,
+          header: 'Question',
+          options: [
+            { label: 'Yes', description: 'Yes' },
+            { label: 'No', description: 'No' },
+          ],
+          multiSelect: false,
+        },
+      ],
+    });
+    const first = vi.fn();
+    const second = vi.fn();
+    const setPending = vi.fn();
+    const pendingRef = {
+      current: [
+        { request: request('one'), resolve: first },
+        { request: request('two'), resolve: second },
+      ],
+    };
+
+    expect(
+      settleUserQuestionRequest(
+        pendingRef,
+        setPending,
+        { action: 'answer', answers: { 'Question one?': 'Yes' } },
+        'resolve',
+      ),
+    ).toBe(true);
+    expect(first).toHaveBeenCalledOnce();
+    expect(pendingRef.current.map((entry) => entry.request.id)).toEqual(['two']);
+    expect(cancelUserQuestionRequests(pendingRef, setPending, 'clear')).toBe(1);
+    expect(second).toHaveBeenCalledWith(expect.objectContaining({ action: 'cancel' }));
   });
 
   it('denies permission on cancel path without double-resolve', () => {

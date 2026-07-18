@@ -10,6 +10,8 @@ import type {
   Usage,
   RetryPhase,
   PermissionMode,
+  UserQuestionRequest,
+  UserQuestionResponse,
 } from '../types.js';
 import { chatCompletionStream } from '../provider/index.js';
 import { buildMessages } from './context.js';
@@ -25,6 +27,10 @@ import { createDebugLogger } from '../debug-log.js';
 import { maybeCaptureMemoryCandidate } from '../memory-autosave.js';
 import { READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
+import {
+  formatUserQuestionAnswers,
+  validateUserQuestionResponse,
+} from '../tools/ask-user-question.js';
 
 const log = createDebugLogger('agent');
 
@@ -67,6 +73,8 @@ export async function runAgentLoop(
     nestedToolObserver?: NestedToolObserver;
     /** Trace id of the Task invocation that launched this subagent loop. */
     parentToolTraceId?: string;
+    /** Nested agent names from the root agent to this loop. */
+    agentPath?: string[];
   },
 ): Promise<Message[]> {
   const signal = options?.signal;
@@ -178,6 +186,8 @@ export async function runAgentLoop(
     backgroundShells: config.backgroundShells,
     fileObservationLedger: config.fileObservationLedger,
     currentMode: initialMode,
+    userQuestionHandler: callbacks.onUserQuestionRequired,
+    agentPath: options?.agentPath ?? [],
   };
 
   let turn = 0;
@@ -411,7 +421,20 @@ export async function runAgentLoop(
 
       effectiveMode = toolContext.currentMode ?? effectiveMode;
       const planReadOnly = effectiveMode === 'plan' && READ_ONLY_PLAN_TOOLS.has(canonName);
-      const autoSafeTool = canonName === 'EnterPlanMode' || planReadOnly;
+      const isUserQuestion = canonName === 'AskUserQuestion';
+      const autoSafeTool = canonName === 'EnterPlanMode' || planReadOnly || isUserQuestion;
+
+      if (isUserQuestion && effectiveMode === 'dontAsk') {
+        const blockedResult: ToolResult = {
+          toolCallId: call.id,
+          success: false,
+          output: '',
+          error: 'SKIPPED: User questions are disabled in dontAsk mode',
+        };
+        toolResults.push(blockedResult);
+        publishResult(blockedResult);
+        continue;
+      }
 
       if (
         needsPermissionCheck(effectiveMode) &&
@@ -526,6 +549,70 @@ export async function runAgentLoop(
         if (modeAfterApproval !== effectiveMode) {
           effectiveMode = modeAfterApproval;
           callbacks.onModeChange?.(effectiveMode);
+        }
+      }
+
+      if (result.success && toolContext.pendingUserQuestion) {
+        const agentPath = toolContext.agentPath ?? [];
+        const request: UserQuestionRequest = {
+          id: crypto.randomUUID(),
+          questions: toolContext.pendingUserQuestion.questions,
+          source:
+            agentPath.length > 0
+              ? { kind: 'subagent', agentPath: [...agentPath], traceId: nestedTraceId }
+              : { kind: 'root', traceId: nestedTraceId },
+        };
+
+        let response: UserQuestionResponse;
+        try {
+          if (!callbacks.onUserQuestionRequired) {
+            response = {
+              action: 'decline',
+              message: 'User input is unavailable in this host.',
+            };
+          } else if (signal?.aborted) {
+            response = { action: 'cancel', message: 'Agent execution was interrupted.' };
+          } else {
+            response = await new Promise<UserQuestionResponse>((resolve, reject) => {
+              let settled = false;
+              const finish = (value: UserQuestionResponse) => {
+                if (settled) return;
+                settled = true;
+                signal?.removeEventListener('abort', onAbort);
+                resolve(value);
+              };
+              const onAbort = () =>
+                finish({ action: 'cancel', message: 'Agent execution was interrupted.' });
+              const fail = (error: unknown) => {
+                if (settled) return;
+                settled = true;
+                signal?.removeEventListener('abort', onAbort);
+                reject(error);
+              };
+              signal?.addEventListener('abort', onAbort, { once: true });
+              callbacks.onUserQuestionRequired!(request, { signal }).then(finish, fail);
+            });
+          }
+        } catch (error) {
+          response = {
+            action: 'cancel',
+            message: `User question handler failed: ${error instanceof Error ? error.message : String(error)}`,
+          };
+        } finally {
+          toolContext.pendingUserQuestion = undefined;
+        }
+
+        const validationError = validateUserQuestionResponse(request, response);
+        if (validationError) {
+          result.success = false;
+          result.output = '';
+          result.error = `Invalid user question response: ${validationError}`;
+        } else if (response.action === 'answer') {
+          result.output = formatUserQuestionAnswers(request, response);
+        } else {
+          result.success = false;
+          result.output = '';
+          result.error = `SKIPPED: User ${response.action === 'decline' ? 'declined' : 'cancelled'} the question${response.message ? `: ${response.message}` : ''}`;
         }
       }
 

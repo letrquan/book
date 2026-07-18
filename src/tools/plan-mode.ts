@@ -18,6 +18,7 @@ export const READ_ONLY_PLAN_TOOLS = new Set([
   'SessionHistoryRead',
   'EnterPlanMode',
   'ExitPlanMode',
+  'AskUserQuestion',
 ]);
 
 function ok(output: string): ToolResult {

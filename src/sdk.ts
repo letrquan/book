@@ -9,12 +9,19 @@
  *   }
  */
 
-import type { AgentConfig, Message, Usage, ToolCall, ToolResult } from './types.js';
+import type {
+  Message,
+  Usage,
+  ToolCall,
+  ToolResult,
+  UserQuestionHandler,
+  UserQuestionRequest,
+  UserQuestionResponse,
+} from './types.js';
 import type { HeadlessOptions, HeadlessResult } from './types.js';
 import { loadConfig, type LoadConfigOptions } from './config.js';
 import { runHeadless } from './headless.js';
 import { createDefaultRegistry } from './tools/registry.js';
-import type { ToolRegistry } from './tools/registry.js';
 import { connectMcpServers, disconnectMcpServers } from './mcp.js';
 
 /** Events emitted by the query() async iterable. */
@@ -24,6 +31,8 @@ export type QueryEvent =
   | { type: 'text'; content: string }
   | { type: 'tool_use'; toolCall: ToolCall }
   | { type: 'tool_result'; toolResult: ToolResult }
+  | { type: 'user_question'; request: UserQuestionRequest; status: 'pending' | 'unavailable' }
+  | { type: 'user_question_result'; requestId: string; response: UserQuestionResponse }
   | { type: 'error'; error: string }
   | { type: 'result'; messages: Message[]; usage: Usage | null; sessionId?: string }
   | { type: 'done' };
@@ -46,6 +55,8 @@ export interface QueryOptions {
   persistSession?: boolean;
   /** Session ID to resume or assign. */
   sessionId?: string;
+  /** Handle structured questions from the root agent or Task subagents. */
+  onUserQuestionRequired?: UserQuestionHandler;
 }
 
 /**
@@ -77,8 +88,6 @@ export async function* query(
   const registry = createDefaultRegistry();
   if (mcp.tools.length > 0) registry.registerAll(mcp.tools);
 
-  // Buffer to collect partial text for text events.
-  let textBuffer = '';
   let usage: Usage | null = null;
   const sessionId = options.sessionId;
 
@@ -90,7 +99,7 @@ export async function* query(
     // Use a passthrough stdout to capture events.
     const events: QueryEvent[] = [];
 
-    const result = await runHeadless(config, registry, {
+    await runHeadless(config, registry, {
       prompt,
       inputFormat: 'text',
       outputFormat: 'stream-json',
@@ -99,6 +108,7 @@ export async function* query(
       maxTurns: options.maxTurns,
       persistSession: options.persistSession,
       sessionId: options.sessionId,
+      onUserQuestionRequired: options.onUserQuestionRequired,
       stdout: {
         write: (s: string) => {
           try {
@@ -109,6 +119,18 @@ export async function* query(
               events.push({ type: 'tool_use', toolCall: parsed.tool_call as ToolCall });
             } else if (parsed.type === 'tool_result') {
               events.push({ type: 'tool_result', toolResult: parsed.tool_result as ToolResult });
+            } else if (parsed.type === 'user_question') {
+              events.push({
+                type: 'user_question',
+                request: parsed.request as UserQuestionRequest,
+                status: parsed.status as 'pending' | 'unavailable',
+              });
+            } else if (parsed.type === 'user_question_result') {
+              events.push({
+                type: 'user_question_result',
+                requestId: parsed.request_id as string,
+                response: parsed.response as UserQuestionResponse,
+              });
             } else if (parsed.type === 'error') {
               events.push({ type: 'error', error: parsed.error as string });
             } else if (parsed.type === 'result') {
@@ -145,3 +167,11 @@ export async function* query(
  * The session can be resumed later via query({ sessionId }).
  */
 export { loadConfig, type LoadConfigOptions };
+export type {
+  UserQuestion,
+  UserQuestionOption,
+  UserQuestionRequest,
+  UserQuestionResponse,
+  UserQuestionSource,
+  UserQuestionHandler,
+} from './types.js';

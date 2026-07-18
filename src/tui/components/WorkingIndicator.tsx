@@ -5,6 +5,7 @@ import type {
   PlanApprovalResult,
   RetryPhase,
   ToolCall,
+  UserQuestionRequest,
 } from '../../types.js';
 import { useGradientSpinner } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
@@ -20,6 +21,10 @@ interface PendingPlanApproval {
   resolve: (value: PlanApprovalResult) => void;
 }
 
+interface PendingUserQuestion {
+  request: UserQuestionRequest;
+}
+
 interface WorkingIndicatorProps {
   isThinking: boolean;
   /** True while /compact or auto-compact summarization is running. */
@@ -30,6 +35,7 @@ interface WorkingIndicatorProps {
   streamingMessageId?: string | null;
   pendingPermission?: PendingPermission | null;
   pendingPlanApproval?: PendingPlanApproval | null;
+  pendingUserQuestion?: PendingUserQuestion | null;
   retryPhase?: RetryPhase;
   retryAttempt?: number;
   retryMax?: number;
@@ -76,6 +82,7 @@ function workingText({
   streamingMessageId,
   pendingPermission,
   pendingPlanApproval,
+  pendingUserQuestion,
   retryPhase = 'none',
   retryAttempt = 0,
   retryMax = 0,
@@ -88,6 +95,7 @@ function workingText({
   }
   if (!isThinking) return null;
   if (pendingPlanApproval) return 'Waiting for plan approval';
+  if (pendingUserQuestion) return 'Waiting for your answer';
   if (pendingPermission) return 'Waiting for permission';
 
   const activeMessage = streamingMessageId
@@ -108,6 +116,7 @@ export function WorkingIndicator({
   streamingMessageId,
   pendingPermission,
   pendingPlanApproval,
+  pendingUserQuestion,
   retryPhase = 'none',
   retryAttempt = 0,
   retryMax = 0,
@@ -125,6 +134,7 @@ export function WorkingIndicator({
     streamingMessageId,
     pendingPermission,
     pendingPlanApproval,
+    pendingUserQuestion,
     retryPhase,
     retryAttempt,
     retryMax,
@@ -135,7 +145,7 @@ export function WorkingIndicator({
   const contentWidth = Math.max(8, width - 2);
   const motionDisabled = reducedMotion || screenReader;
   const spinner = useGradientSpinner(
-    Boolean(label) && !motionDisabled && !pendingPlanApproval,
+    Boolean(label) && !motionDisabled && !pendingPlanApproval && !pendingUserQuestion,
     'dots',
     motionDisabled,
   );
@@ -143,6 +153,8 @@ export function WorkingIndicator({
   if (!label) return null;
   const hint = pendingPlanApproval
     ? ' · Esc to reject'
+    : pendingUserQuestion
+      ? ' · answer the question above'
     : pendingPermission
       ? ' · Esc to deny'
       : isThinking || isCompacting

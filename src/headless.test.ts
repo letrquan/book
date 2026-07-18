@@ -6,7 +6,7 @@ import { runHeadless } from './headless.js';
 import { SessionStore } from './session/store.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
-import type { AgentConfig } from './types.js';
+import type { AgentConfig, UserQuestionRequest } from './types.js';
 
 const config = defaultConfig({ baseUrl: 'http://localhost/v1' });
 let tempDirs: string[] = [];
@@ -245,6 +245,114 @@ describe('runHeadless — stream-json output', () => {
       .filter(Boolean)
       .map((line) => JSON.parse(line));
     expect(events).toContainEqual({ type: 'session', session_id: sessionId });
+  });
+
+  it('emits structured user-question events and invokes an interactive host callback', async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        return fetchCalls === 1
+          ? sse([
+              toolDelta('ask-1', 'AskUserQuestion', {
+                questions: [
+                  {
+                    question: 'Which mode?',
+                    header: 'Mode',
+                    options: [
+                      { label: 'Fast', description: 'Less detail' },
+                      { label: 'Deep', description: 'More detail' },
+                    ],
+                    multiSelect: false,
+                  },
+                ],
+              }),
+            ])
+          : sse([textDelta('Continuing with Deep.')]);
+      }),
+    );
+    const writes: string[] = [];
+    const handler = vi.fn(async (request: UserQuestionRequest) => ({
+      action: 'answer' as const,
+      answers: { [request.questions[0].question]: 'Deep' },
+    }));
+
+    await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'choose',
+      inputFormat: 'text',
+      outputFormat: 'stream-json',
+      history: [],
+      mode: 'bypassPermissions',
+      maxTurns: 2,
+      onUserQuestionRequired: handler,
+      stdout: { write: (value) => (writes.push(value), true) },
+    });
+
+    const events = writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    expect(handler).toHaveBeenCalledOnce();
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'user_question', status: 'pending' }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'user_question_result',
+        response: expect.objectContaining({ action: 'answer' }),
+      }),
+    );
+  });
+
+  it('reports user input as unavailable when no interactive handler exists', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sse([
+          toolDelta('ask-1', 'AskUserQuestion', {
+            questions: [
+              {
+                question: 'Continue?',
+                header: 'Continue',
+                options: [
+                  { label: 'Yes', description: 'Continue' },
+                  { label: 'No', description: 'Stop' },
+                ],
+                multiSelect: false,
+              },
+            ],
+          }),
+        ]),
+      ),
+    );
+    const writes: string[] = [];
+
+    await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'choose',
+      inputFormat: 'text',
+      outputFormat: 'stream-json',
+      history: [],
+      mode: 'bypassPermissions',
+      maxTurns: 1,
+      stdout: { write: (value) => (writes.push(value), true) },
+    });
+
+    const events = writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'user_question', status: 'unavailable' }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'user_question_result',
+        response: expect.objectContaining({ action: 'decline' }),
+      }),
+    );
   });
 });
 

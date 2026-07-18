@@ -1,4 +1,9 @@
-import type { AgentConfig, Message, NestedToolObserver } from './types.js';
+import type {
+  AgentConfig,
+  Message,
+  NestedToolObserver,
+  UserQuestionHandler,
+} from './types.js';
 import { runAgentLoop } from './agent/loop.js';
 import { applyModelDefaults, resolveModelProviderConfig } from './config.js';
 import { createRegistry } from './tools/registry.js';
@@ -24,6 +29,8 @@ export async function runSubagent(
     signal?: AbortSignal;
     parentToolTraceId?: string;
     nestedToolObserver?: NestedToolObserver;
+    onUserQuestionRequired?: UserQuestionHandler;
+    agentPath?: string[];
   },
 ): Promise<{ content: string; error?: string }> {
   // Build the subagent's restricted registry if tools are specified.
@@ -32,7 +39,7 @@ export async function runSubagent(
     const allowed = new Set(def.allowedTools.map((t) => t.split('(')[0].trim()));
     registry = createRegistry();
     for (const tool of fullRegistry.getDefinitions()) {
-      if (allowed.has(tool.name)) {
+      if (allowed.has(tool.name) || tool.name === 'AskUserQuestion') {
         registry.register(tool);
       }
     }
@@ -73,6 +80,7 @@ export async function runSubagent(
         onDone: () => {},
         onPermissionRequired: async () => 'deny',
         onUsage: () => {},
+        onUserQuestionRequired: options?.onUserQuestionRequired,
       },
       'bypassPermissions', // subagents run with bypass to avoid interactive prompts
       {
@@ -81,6 +89,7 @@ export async function runSubagent(
         isSubagent: true,
         nestedToolObserver: options?.nestedToolObserver,
         parentToolTraceId: options?.parentToolTraceId,
+        agentPath: options?.agentPath,
       },
     );
 

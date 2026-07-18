@@ -216,5 +216,6 @@ describe('App plan approval keyboard ownership', () => {
   it('suppresses the input bar while the model picker owns input', () => {
     expect(ownsModalInput(null, null, true)).toBe(true);
     expect(ownsModalInput(null, null, false)).toBe(false);
+    expect(ownsModalInput(null, null, false, false, { request: {} })).toBe(true);
   });
 });

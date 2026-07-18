@@ -18,6 +18,8 @@ import type {
   CompactTrigger,
   LocalCommandDisplay,
   CompactBoundary,
+  UserQuestionRequest,
+  UserQuestionResponse,
 } from '../../types.js';
 import { runAgentLoop } from '../../agent/loop.js';
 import {
@@ -64,6 +66,11 @@ type PendingPermission = {
 type PendingPlanApproval = {
   plan: string;
   resolve: (value: PlanApprovalResult) => void;
+};
+
+export type PendingUserQuestion = {
+  request: UserQuestionRequest;
+  resolve: (value: UserQuestionResponse) => void;
 };
 
 /**
@@ -114,6 +121,53 @@ export function settlePlanApprovalRequest(
   uiLog.event('plan-approval:settled', { result, via, len: pending.plan.length });
   pending.resolve(result);
   return true;
+}
+
+/** Settle one queued user question and promote the next request. */
+export function settleUserQuestionRequest(
+  pendingRef: { current: PendingUserQuestion[] },
+  setPending: (value: PendingUserQuestion[]) => void,
+  result: UserQuestionResponse,
+  via: string,
+  requestId?: string,
+): boolean {
+  const index = requestId
+    ? pendingRef.current.findIndex((entry) => entry.request.id === requestId)
+    : 0;
+  if (index < 0 || pendingRef.current.length === 0) {
+    uiLog.event('user-question:settled:noop', { reason: 'no-pending', via, requestId });
+    return false;
+  }
+
+  const next = [...pendingRef.current];
+  const [pending] = next.splice(index, 1);
+  pendingRef.current = next;
+  setPending(next);
+  uiLog.event('user-question:settled', {
+    id: pending.request.id,
+    action: result.action,
+    via,
+    remaining: next.length,
+  });
+  pending.resolve(result);
+  return true;
+}
+
+/** Cancel every queued request so nested agent loops cannot remain suspended. */
+export function cancelUserQuestionRequests(
+  pendingRef: { current: PendingUserQuestion[] },
+  setPending: (value: PendingUserQuestion[]) => void,
+  via: string,
+): number {
+  const pending = pendingRef.current;
+  if (pending.length === 0) return 0;
+  pendingRef.current = [];
+  setPending([]);
+  for (const entry of pending) {
+    entry.resolve({ action: 'cancel', message: `Question cancelled via ${via}.` });
+  }
+  uiLog.event('user-question:cancelled-all', { via, count: pending.length });
+  return pending.length;
 }
 
 export interface UseAgentSessionOptions extends SessionBootstrap {
@@ -167,6 +221,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   }));
   const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
   const [pendingPlanApproval, setPendingPlanApproval] = useState<PendingPlanApproval | null>(null);
+  const [pendingUserQuestions, setPendingUserQuestions] = useState<PendingUserQuestion[]>([]);
   const [turnDurationMs, setTurnDurationMs] = useState<number>(0);
   const [sessionId, setSessionId] = useState(session.sessionId);
   const [sessionName, setSessionName] = useState(session.sessionName);
@@ -204,6 +259,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // Resolve handles for pending interactive prompts (refs for idempotent settle).
   const pendingPermissionRef = useRef<PendingPermission | null>(pendingPermission);
   const pendingPlanApprovalRef = useRef<PendingPlanApproval | null>(pendingPlanApproval);
+  const pendingUserQuestionsRef = useRef<PendingUserQuestion[]>(pendingUserQuestions);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -219,6 +275,22 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
   const settlePlanApproval = useCallback((result: PlanApprovalResult, via: string) => {
     return settlePlanApprovalRequest(pendingPlanApprovalRef, setPendingPlanApproval, result, via);
+  }, []);
+
+  const settleUserQuestion = useCallback(
+    (result: UserQuestionResponse, via: string, requestId?: string) =>
+      settleUserQuestionRequest(
+        pendingUserQuestionsRef,
+        setPendingUserQuestions,
+        result,
+        via,
+        requestId,
+      ),
+    [],
+  );
+
+  const cancelUserQuestions = useCallback((via: string) => {
+    return cancelUserQuestionRequests(pendingUserQuestionsRef, setPendingUserQuestions, via);
   }, []);
 
   useEffect(() => {
@@ -257,6 +329,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       // Deny/reject so agent-loop promises never hang after unmount.
       settlePermissionRequest(pendingPermissionRef, () => {}, 'deny', 'unmount');
       settlePlanApprovalRequest(pendingPlanApprovalRef, () => {}, 'reject', 'unmount');
+      cancelUserQuestionRequests(pendingUserQuestionsRef, () => {}, 'unmount');
     };
   }, []);
 
@@ -286,6 +359,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       sessionGenerationRef.current++;
       settlePermission('deny', 'session-reset');
       settlePlanApproval('reject', 'session-reset');
+      cancelUserQuestions('session-reset');
       accumulatorRef.current?.discard();
       accumulatorRef.current = null;
       abortRef.current?.abort();
@@ -323,7 +397,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           : undefined,
       }));
     },
-    [clearCountdown, settlePermission, settlePlanApproval],
+    [cancelUserQuestions, clearCountdown, settlePermission, settlePlanApproval],
   );
 
   const endCurrentSession = useCallback(
@@ -688,6 +762,23 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 setPendingPlanApproval(entry);
               });
             },
+            onUserQuestionRequired: (request): Promise<UserQuestionResponse> => {
+              if (!stillCurrent()) {
+                return Promise.resolve({ action: 'cancel', message: 'Session changed.' });
+              }
+              return new Promise((resolve) => {
+                const entry: PendingUserQuestion = { request, resolve };
+                const next = [...pendingUserQuestionsRef.current, entry];
+                pendingUserQuestionsRef.current = next;
+                setPendingUserQuestions(next);
+                uiLog.event('user-question:pending', {
+                  id: request.id,
+                  count: request.questions.length,
+                  queueLength: next.length,
+                  source: request.source.kind,
+                });
+              });
+            },
             onCompact: async (history, usage) => {
               if (!stillCurrent()) {
                 return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
@@ -860,6 +951,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [settlePlanApproval],
   );
 
+  const resolveUserQuestion = useCallback(
+    (result: UserQuestionResponse) => {
+      settleUserQuestion(result, 'resolve');
+    },
+    [settleUserQuestion],
+  );
+
   // Abort the in-flight agent stream (Esc while thinking) or compact request.
   // Lock stays held until send()'s finally; only the abort signal is raised.
   const cancel = useCallback(() => {
@@ -870,13 +968,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     uiLog.event('cancel', { hadAbort, hadCompact, hadAccumulator, inFlight });
     settlePermission('deny', 'cancel');
     settlePlanApproval('reject', 'cancel');
+    cancelUserQuestions('cancel');
     abortRef.current?.abort();
     compactAbortRef.current?.abort();
     // Do not null abortRef / release sendInFlightRef / stop accumulator here —
     // finally owns that so concurrent send cannot slip through mid-unwind.
     clearCountdown();
     setRetryPhase('none');
-  }, [clearCountdown, settlePermission, settlePlanApproval]);
+  }, [cancelUserQuestions, clearCountdown, settlePermission, settlePlanApproval]);
 
   // Manually compact the conversation (summarize older turns).
   const compact = useCallback(
@@ -974,6 +1073,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     abortRef.current = null;
     settlePermission('deny', 'clear');
     settlePlanApproval('reject', 'clear');
+    cancelUserQuestions('clear');
     messagesRef.current = [];
     contextHistoryRef.current = [];
     setMessages([]);
@@ -986,6 +1086,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setAgentTodos([]);
     setPendingPermission(null);
     setPendingPlanApproval(null);
+    setPendingUserQuestions([]);
     streamingIdRef.current = null;
     setStreamingMessageId(null);
     // isThinking / sendInFlightRef are released by send()'s finally after abort.
@@ -996,7 +1097,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     clearCountdown();
     setRetryPhase('none');
     setRetryCountdownMs(0);
-  }, [clearCountdown, settlePermission, settlePlanApproval]);
+  }, [cancelUserQuestions, clearCountdown, settlePermission, settlePlanApproval]);
 
   const cycleMode = useCallback(() => {
     const modes: PermissionMode[] = [
@@ -1174,6 +1275,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     mode,
     pendingPermission,
     pendingPlanApproval,
+    pendingUserQuestion: pendingUserQuestions[0] ?? null,
+    pendingUserQuestionCount: pendingUserQuestions.length,
     agentTodos,
     turnDurationMs,
     retryPhase,
@@ -1192,6 +1295,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     resolvePermission,
     cancelPermission,
     resolvePlanApproval,
+    resolveUserQuestion,
     cancel,
     compact,
     cycleMode,

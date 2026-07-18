@@ -5,6 +5,7 @@ import { join } from 'path';
 import { discoverAgents, runSubagent, type SubagentDef } from './subagent.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
+import type { UserQuestionRequest } from './types.js';
 
 let dir: string;
 
@@ -192,6 +193,57 @@ describe('runSubagent', () => {
     expect(calls[0]).toMatchObject({ parentTraceId: 'task-root', name: 'Read' });
     expect(calls[0].traceId).toContain('task-root/1-1:duplicate');
     expect(results).toEqual([{ traceId: calls[0].traceId, success: false }]);
+  });
+
+  it('allows restricted subagents to ask the root host with source attribution', async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        fetchCalls++;
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            if (fetchCalls === 1) {
+              c.enqueue(
+                enc.encode(
+                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"ask","function":{"name":"AskUserQuestion","arguments":"{\\"questions\\":[{\\"question\\":\\"Which mode?\\",\\"header\\":\\"Mode\\",\\"options\\":[{\\"label\\":\\"Fast\\",\\"description\\":\\"Less detail\\"},{\\"label\\":\\"Deep\\",\\"description\\":\\"More detail\\"}],\\"multiSelect\\":false}]}"}}]}}]}\n\n',
+                ),
+              );
+            } else {
+              c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"DONE."}}]}\n\n'));
+            }
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const handler = vi.fn(async (request: UserQuestionRequest) => ({
+      action: 'answer' as const,
+      answers: { [request.questions[0].question]: 'Deep' },
+    }));
+    const result = await runSubagent(
+      def,
+      'Ask first.',
+      defaultConfig({ maxTurns: 5 }),
+      createDefaultRegistry(),
+      {
+        parentToolTraceId: 'task-root',
+        agentPath: ['test-agent'],
+        onUserQuestionRequired: handler,
+      },
+    );
+
+    expect(result.content).toContain('DONE');
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: expect.objectContaining({ kind: 'subagent', agentPath: ['test-agent'] }),
+      }),
+      expect.any(Object),
+    );
   });
 
   it('restricts tools to allowedTools list', async () => {

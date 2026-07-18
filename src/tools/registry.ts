@@ -11,6 +11,7 @@ import { planModeTools } from './plan-mode.js';
 import { notebookTools } from './notebook.js';
 import { TOOL_ALIASES } from './aliases.js';
 import { createSessionHistoryTools, type SessionHistoryCapability } from './session-history.js';
+import { askUserQuestionTools } from './ask-user-question.js';
 
 async function executeWithTimeout(
   tool: ToolDefinition,
@@ -223,6 +224,7 @@ export function createDefaultRegistry(capabilities?: {
     ...taskTool,
     ...taskTools,
     ...planModeTools,
+    ...askUserQuestionTools,
     ...notebookTools,
   ]);
   if (capabilities?.sessionHistory) {

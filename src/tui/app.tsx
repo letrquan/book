@@ -15,6 +15,7 @@ import { SessionPicker } from './components/SessionPicker.js';
 import { TranscriptView } from './components/TranscriptView.js';
 import { PermissionButtons } from './components/PermissionButtons.js';
 import { PlanApprovalActions, PlanApprovalDetails } from './components/PlanApprovalButtons.js';
+import { AskUserQuestionWizard } from './components/AskUserQuestionWizard.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
 import {
@@ -67,8 +68,15 @@ export function ownsModalInput(
   pendingPlanApproval: unknown,
   showModelPicker: boolean,
   showSessionPicker = false,
+  pendingUserQuestion?: unknown,
 ): boolean {
-  return Boolean(pendingPermission || pendingPlanApproval || showModelPicker || showSessionPicker);
+  return Boolean(
+    pendingPermission ||
+      pendingPlanApproval ||
+      pendingUserQuestion ||
+      showModelPicker ||
+      showSessionPicker,
+  );
 }
 
 /** Settable top-level settings keys (for /config --help). Mirrors cli/config-cmd.ts allowlist. */
@@ -136,6 +144,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
     mode,
     pendingPermission,
     pendingPlanApproval,
+    pendingUserQuestion,
+    pendingUserQuestionCount,
     agentTodos,
     liveConfig,
     sessionId,
@@ -148,6 +158,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
     endCurrentSession,
     resolvePermission,
     resolvePlanApproval,
+    resolveUserQuestion,
     cancel,
     compact,
     cycleMode,
@@ -237,7 +248,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
   const reducedMotion = Boolean(config.accessibility?.reducedMotion);
   // Keep the whole live region quiescent while the terminal viewport belongs
   // to the user reviewing a plan. Any animation repaint can snap scrollback.
-  const motionDisabled = reducedMotion || Boolean(pendingPlanApproval);
+  const motionDisabled = reducedMotion || Boolean(pendingPlanApproval || pendingUserQuestion);
   const screenReader = Boolean(config.accessibility?.screenReader);
 
   useDebugMount(uiLog, {
@@ -264,12 +275,23 @@ export function App({ config, session, redrawViewport }: AppProps) {
     // useInput handlers receive the event, but do not open another modal or
     // mutate surrounding UI state from this global handler.
     if (
-      ownsModalInput(pendingPermission, pendingPlanApproval, showModelPicker, showSessionPicker)
+      ownsModalInput(
+        pendingPermission,
+        pendingPlanApproval,
+        showModelPicker,
+        showSessionPicker,
+        pendingUserQuestion,
+      )
     ) {
       if (key.escape) {
         uiLog.event('input:Escape', { action: 'noop-modal-active' });
       } else if (key.ctrl && input === 'c') {
-        uiLog.event('input:Ctrl+C', { action: 'noop-modal-active' });
+        if (pendingUserQuestion) {
+          uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
+          cancel();
+        } else {
+          uiLog.event('input:Ctrl+C', { action: 'noop-modal-active' });
+        }
       }
       return;
     }
@@ -739,6 +761,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
       // the parent handler.
       if (showModelPicker) return true;
       if (key.ctrl && input === 'c') {
+        if (pendingUserQuestion) {
+          uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
+          cancel();
+          return true;
+        }
         if (pendingPermission || pendingPlanApproval) {
           uiLog.event('input:Ctrl+C', { action: 'noop-approval-active' });
           return true;
@@ -781,6 +808,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       isThinking,
       pendingPermission,
       pendingPlanApproval,
+      pendingUserQuestion,
       redrawViewport,
       showModelPicker,
     ],
@@ -1157,6 +1185,16 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 screenReader={screenReader}
               />
             ) : null}
+            {pendingUserQuestion ? (
+              <AskUserQuestionWizard
+                key={pendingUserQuestion.request.id}
+                request={pendingUserQuestion.request}
+                queueLength={pendingUserQuestionCount}
+                terminalWidth={termWidth}
+                onResolve={resolveUserQuestion}
+                screenReader={screenReader}
+              />
+            ) : null}
             {showSessionPicker ? (
               <SessionPicker
                 sessions={listSessions()}
@@ -1238,6 +1276,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
             streamingMessageId={streamingMessageId}
             pendingPermission={pendingPermission}
             pendingPlanApproval={pendingPlanApproval}
+            pendingUserQuestion={pendingUserQuestion}
             retryPhase={retryPhase}
             retryAttempt={retryAttempt}
             retryMax={retryMax}
@@ -1261,6 +1300,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 pendingPlanApproval,
                 showModelPicker,
                 showSessionPicker,
+                pendingUserQuestion,
               )}
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}

@@ -92,6 +92,12 @@ Background shell state is shared via `AgentConfig` for TUI/headless session cont
 
 Plan mode is enforced in the agent loop: read-only exploration/status tools auto-run, mutating tools are blocked with `SKIPPED`, and `ExitPlanMode` gates leaving plan mode on host approval (TUI prompt; headless rejects by default unless bypassing permissions).
 
+**Structured user questions** [has] ✅ (2026-07-18):
+
+- [x] `AskUserQuestion` — 1-4 structured single/multi-select questions with host-provided free-text answers
+- [x] Root and nested `Task` subagents route questions through one cancellable host interaction channel
+- [x] Step-by-step TUI wizard, typed SDK callback, and deterministic non-interactive stream-json fallback
+
 **Code intelligence** [MISSING]:
 
 - `LSP` — go-to-definition, find-references, diagnostics, hover

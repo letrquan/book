@@ -13,6 +13,8 @@ export type StreamJsonEvent =
   | { type: 'assistant'; text?: string }
   | { type: 'tool_use'; tool_call?: unknown }
   | { type: 'tool_result'; tool_result?: unknown }
+  | { type: 'user_question'; request?: unknown; status?: 'pending' | 'unavailable' }
+  | { type: 'user_question_result'; request_id?: string; response?: unknown }
   | { type: 'error'; error?: string }
   | { type: 'result'; result?: unknown }
   | { type: 'done' };

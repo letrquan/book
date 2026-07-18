@@ -9,7 +9,7 @@ AI coding agent CLI with rich terminal UI. An open-source, provider-agnostic alt
 - **Project context**: walks the tree to load `CLAUDE.md` (user-global → project → local → `.claude/rules/*.md`), injects git status, platform info, and discovered skills, slash commands, and subagents into a two-zone system prompt (cacheable static prefix + dynamic per-turn suffix).
 - **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
 - **Sessions**: append-only JSONL persistence with `--resume`, `--continue`, `--session-id`, `--name`, `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, and reference-aware `/compact`. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, and remembered file facts are freshness-checked before reuse.
-- **Tools**: file (`Read` / `Write` / `Edit` / `MultiEdit` / `Glob` / `Grep` / `NotebookEdit`), shell (`Bash` + `run_in_background`, `BashOutput`, `KillShell`), git, web (`WebFetch` / `WebSearch`), tasks (`TaskCreate` / `TaskList` / `TaskGet` / `TaskUpdate` / `TaskStop`), plan mode (`EnterPlanMode` / `ExitPlanMode`), skills (`InvokeSkill`), and subagent `Task` delegation.
+- **Tools**: file (`Read` / `Write` / `Edit` / `MultiEdit` / `Glob` / `Grep` / `NotebookEdit`), shell (`Bash` + `run_in_background`, `BashOutput`, `KillShell`), git, web (`WebFetch` / `WebSearch`), tasks (`TaskCreate` / `TaskList` / `TaskGet` / `TaskUpdate` / `TaskStop`), structured clarification (`AskUserQuestion`), plan mode (`EnterPlanMode` / `ExitPlanMode`), skills (`InvokeSkill`), and subagent `Task` delegation.
 - **Slash commands**: built-ins including `/init`, `/model`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`.
 - **Permissions**: allow/ask/deny rule matching with six modes — `default`, `acceptEdits` (`accept-edits`), `plan`, `auto`, `dontAsk`, `bypassPermissions` — see `/permissions` or `--permission-mode`.
 - **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events.
@@ -159,12 +159,21 @@ import { query } from 'book';
 
 for await (const event of query('Explain this code', {
   workspace: process.cwd(),
+  onUserQuestionRequired: async (request) => ({
+    action: 'answer',
+    answers: Object.fromEntries(request.questions.map((question) => [
+      question.question,
+      question.multiSelect ? [question.options[0].label] : question.options[0].label,
+    ])),
+  }),
 })) {
   if (event.type === 'text') process.stdout.write(event.content);
   if (event.type === 'tool_use') console.log('tool:', event.toolCall.name);
   if (event.type === 'result') console.log('usage:', event.usage);
 }
 ```
+
+`AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Root agents and nested `Task` subagents use the same callback. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied; stdin response round-trips are not supported in v1.
 
 Auth and model selection come from settings / env (`BOOK_API_KEY`, `BOOK_MODEL`, provider blocks), not from `query()` options. See `src/sdk.ts` for the full `QueryEvent` / `QueryOptions` surface.
 

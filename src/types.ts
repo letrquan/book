@@ -282,6 +282,38 @@ export type CompactResult =
 export type PermissionResult = 'allow' | 'deny' | 'always';
 export type PlanApprovalResult = 'approve' | 'reject';
 
+export interface UserQuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface UserQuestion {
+  question: string;
+  header: string;
+  options: UserQuestionOption[];
+  multiSelect: boolean;
+}
+
+export type UserQuestionSource =
+  | { kind: 'root'; traceId?: string }
+  | { kind: 'subagent'; agentPath: string[]; traceId?: string };
+
+export interface UserQuestionRequest {
+  id: string;
+  questions: UserQuestion[];
+  source: UserQuestionSource;
+}
+
+export type UserQuestionResponse =
+  | { action: 'answer'; answers: Record<string, string | string[]> }
+  | { action: 'decline'; message?: string }
+  | { action: 'cancel'; message?: string };
+
+export type UserQuestionHandler = (
+  request: UserQuestionRequest,
+  context: { signal?: AbortSignal },
+) => Promise<UserQuestionResponse>;
+
 export type AgentTaskStatus = 'pending' | 'in_progress' | 'completed' | 'deleted';
 
 export interface AgentTask {
@@ -513,6 +545,12 @@ export interface ToolContext {
   previousMode?: PermissionMode;
   /** Plan text submitted by ExitPlanMode and awaiting host approval. */
   pendingPlanApproval?: { plan: string };
+  /** Structured questions submitted by AskUserQuestion and awaiting the host. */
+  pendingUserQuestion?: { questions: UserQuestion[] };
+  /** Host interaction capability propagated into Task subagents. */
+  userQuestionHandler?: UserQuestionHandler;
+  /** Nested agent names from the root agent to this loop. */
+  agentPath?: string[];
 }
 
 export interface SystemPromptZones {
@@ -616,6 +654,8 @@ export interface AgentLoopCallbacks {
   onModeChange?: (mode: PermissionMode) => void;
   /** Called when ExitPlanMode submits a plan for host approval. */
   onPlanApprovalRequired?: (plan: string) => Promise<PlanApprovalResult>;
+  /** Called when the root agent or a Task subagent needs structured user input. */
+  onUserQuestionRequired?: UserQuestionHandler;
   /**
    * Called when the context approaches its limit mid-loop.
    * Return a CompactResult; only `status: 'compacted'` replaces loop history.
@@ -804,6 +844,8 @@ export interface HeadlessOptions {
   includePartialMessages?: boolean;
   /** After completion, ask the model for follow-up prompt suggestions. */
   promptSuggestions?: boolean;
+  /** Optional interactive host callback for AskUserQuestion. */
+  onUserQuestionRequired?: UserQuestionHandler;
 }
 
 export interface HeadlessResult {

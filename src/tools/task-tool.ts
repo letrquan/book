@@ -1,4 +1,4 @@
-import type { ToolDefinition, ToolContext, ToolResult, AgentConfig } from '../types.js';
+import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { discoverAgents, runSubagent } from '../subagent.js';
 import { createDefaultRegistry } from './registry.js';
 
@@ -51,6 +51,8 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
     signal: ctx.signal,
     parentToolTraceId: ctx.currentToolTraceId,
     nestedToolObserver: ctx.nestedToolObserver,
+    onUserQuestionRequired: ctx.userQuestionHandler,
+    agentPath: [...(ctx.agentPath ?? []), agent.name],
   });
 
   if (error) {

@@ -83,6 +83,7 @@ src/
     todo.ts             TodoWrite tool
     tasks.ts            TaskCreate/List/Get/Update/Stop
     plan-mode.ts        EnterPlanMode / ExitPlanMode
+    ask-user-question.ts AskUserQuestion validation and pending-request tool
     diff.ts             Unified diff generator
     gitignore.ts        .gitignore loader
     skills-tool.ts      InvokeSkill tool
@@ -118,6 +119,7 @@ src/
       tool-output.ts          Tool output formatting
       PermissionButtons.tsx   Permission prompt UI
       PlanApprovalButtons.tsx Plan-mode approval UI
+      AskUserQuestionWizard.tsx Structured root/subagent question wizard
       AgentMessage.tsx        Assistant message renderer
       UserMessage.tsx         User message renderer
       MarkdownBlock.tsx       Markdown (tables, code, highlight)

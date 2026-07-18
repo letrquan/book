@@ -3,13 +3,12 @@ import type {
   CompactRecordData,
   Message,
   ToolCall,
-  ToolResult,
   HeadlessOptions,
   HeadlessResult,
   Usage,
   SessionRecord,
-  SessionStoreInterface,
   CompactBoundary,
+  UserQuestionResponse,
 } from './types.js';
 import { runAgentLoop } from './agent/loop.js';
 import {
@@ -297,6 +296,35 @@ export async function runHeadless(
             emit({ type: 'plan_approval', status: approved ? 'approve' : 'reject' });
           }
           return approved ? 'approve' : 'reject';
+        },
+        onUserQuestionRequired: async (request, context): Promise<UserQuestionResponse> => {
+          if (opts.outputFormat === 'stream-json') {
+            emit({
+              type: 'user_question',
+              request,
+              status: opts.onUserQuestionRequired ? 'pending' : 'unavailable',
+            });
+          }
+
+          let response: UserQuestionResponse;
+          try {
+            response = opts.onUserQuestionRequired
+              ? await opts.onUserQuestionRequired(request, context)
+              : {
+                  action: 'decline',
+                  message: 'User input is unavailable in non-interactive mode.',
+                };
+          } catch (error) {
+            response = {
+              action: 'cancel',
+              message: `User question handler failed: ${error instanceof Error ? error.message : String(error)}`,
+            };
+          }
+
+          if (opts.outputFormat === 'stream-json') {
+            emit({ type: 'user_question_result', request_id: request.id, response });
+          }
+          return response;
         },
         onHookEvent: opts.includeHookEvents
           ? (event, payload) => {
