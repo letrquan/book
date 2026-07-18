@@ -6,15 +6,15 @@ import type { ProviderConfig } from '../../settings.js';
 import { resolveSecret } from '../../config.js';
 import { discoverModels, type ModelDiscoveryOptions } from '../../provider/model-discovery.js';
 import type { ModelPickerOption, ProviderSaveRequest } from '../model-options.js';
+import { EFFORT_LEVELS, type EffortLevel, type EffortResult } from '../effort.js';
 import { ByokWizard } from './ByokWizard.js';
 import { useDensityMetrics } from '../density.js';
-
-const EFFORT_LEVELS: AgentConfig['effort'][] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 interface ModelPickerProps {
   options: ModelPickerOption[];
   currentModel: string;
   currentEffort?: AgentConfig['effort'];
+  effortLevels?: readonly EffortLevel[];
   hasPriorOutput: boolean;
   warnings?: string[];
   providers: Record<string, ProviderConfig>;
@@ -24,7 +24,7 @@ interface ModelPickerProps {
   maxVisibleModels?: number;
   discover?: (options: ModelDiscoveryOptions) => Promise<Array<{ id: string; label?: string }>>;
   onPick: (model: string, saveDefault: boolean) => { ok: boolean; error?: string } | void;
-  onPickEffort: (level: AgentConfig['effort']) => void;
+  onPickEffort: (level: EffortLevel) => EffortResult;
   onSaveProvider: (request: ProviderSaveRequest) => { ok: boolean; error?: string };
   onProviderSaved?: (request: ProviderSaveRequest) => void;
   onCancel: () => void;
@@ -34,6 +34,7 @@ export function ModelPicker({
   options,
   currentModel,
   currentEffort,
+  effortLevels = EFFORT_LEVELS,
   hasPriorOutput,
   warnings = [],
   providers,
@@ -149,10 +150,17 @@ export function ModelPicker({
           setOnEffort(false);
           return;
         }
-        const idx = currentEffort ? EFFORT_LEVELS.indexOf(currentEffort) : 2;
-        if (key.leftArrow) onPickEffort(EFFORT_LEVELS[Math.max(0, idx - 1)]);
-        if (key.rightArrow)
-          onPickEffort(EFFORT_LEVELS[Math.min(EFFORT_LEVELS.length - 1, idx + 1)]);
+        const currentIndex = currentEffort ? effortLevels.indexOf(currentEffort) : -1;
+        const idx = currentIndex >= 0 ? currentIndex : 0;
+        const nextLevel = key.leftArrow
+          ? effortLevels[Math.max(0, idx - 1)]
+          : key.rightArrow
+            ? effortLevels[Math.min(effortLevels.length - 1, idx + 1)]
+            : undefined;
+        if (nextLevel) {
+          const result = onPickEffort(nextLevel);
+          setError(result.ok ? undefined : (result.error ?? 'Could not save effort level.'));
+        }
         return;
       }
       if (key.return) {
@@ -183,7 +191,13 @@ export function ModelPicker({
         setError(undefined);
         return;
       }
-      if (key.meta && input === 'e' && selected !== addIndex && filteredOptions[selected]?.effort) {
+      if (
+        key.meta &&
+        input === 'e' &&
+        effortLevels.length > 0 &&
+        selected !== addIndex &&
+        filteredOptions[selected]?.effort
+      ) {
         setOnEffort(true);
         return;
       }
@@ -222,7 +236,8 @@ export function ModelPicker({
     );
   }
 
-  const effortIndex = currentEffort ? EFFORT_LEVELS.indexOf(currentEffort) : 2;
+  const effortIndex = currentEffort ? effortLevels.indexOf(currentEffort) : -1;
+  const displayedEffort = effortIndex >= 0 ? effortLevels[effortIndex] : effortLevels[0];
   const windowStart = Math.max(
     0,
     Math.min(selected - Math.floor(maxVisibleModels / 2), itemCount - maxVisibleModels),
@@ -279,7 +294,7 @@ export function ModelPicker({
         {refreshing && <Text color={theme.brand}>Refreshing {refreshing} models…</Text>}
         {onEffort && (
           <Text color={theme.brand} bold>
-            Effort [{EFFORT_LEVELS[effortIndex]}] <Text color={theme.subtle}>← → adjust</Text>
+            Effort [{displayedEffort}] <Text color={theme.subtle}>← → adjust</Text>
           </Text>
         )}
         {error && <Text color={theme.error}>✕ {error}</Text>}

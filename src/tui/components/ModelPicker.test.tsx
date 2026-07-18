@@ -39,7 +39,7 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof ModelPicker
         workspace="."
         retry={defaultConfig().retry}
         onPick={onPick}
-        onPickEffort={vi.fn()}
+        onPickEffort={vi.fn(() => ({ ok: true }))}
         onSaveProvider={onSaveProvider}
         onCancel={vi.fn()}
         {...overrides}
@@ -115,5 +115,20 @@ describe('ModelPicker', () => {
         replaceModels: true,
       }),
     );
+  });
+
+  it('keeps the effort control and respects restricted levels', async () => {
+    const onPickEffort = vi.fn(() => ({ ok: true }));
+    const { view } = renderPicker({
+      currentEffort: 'low',
+      effortLevels: ['low', 'high'],
+      onPickEffort,
+    });
+
+    await write(view, '\x1b[B');
+    await write(view, '\x1be');
+    await write(view, '\x1b[C');
+
+    expect(onPickEffort).toHaveBeenCalledWith('high');
   });
 });

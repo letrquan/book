@@ -10,7 +10,7 @@ AI coding agent CLI with rich terminal UI. An open-source, provider-agnostic alt
 - **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
 - **Sessions**: append-only JSONL persistence with `--resume`, `--continue`, `--session-id`, `--name`, `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, and reference-aware `/compact`. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, and remembered file facts are freshness-checked before reuse.
 - **Tools**: file (`Read` / `Write` / `Edit` / `MultiEdit` / `Glob` / `Grep` / `NotebookEdit`), shell (`Bash` + `run_in_background`, `BashOutput`, `KillShell`), git, web (`WebFetch` / `WebSearch`), tasks (`TaskCreate` / `TaskList` / `TaskGet` / `TaskUpdate` / `TaskStop`), structured clarification (`AskUserQuestion`), plan mode (`EnterPlanMode` / `ExitPlanMode`), skills (`InvokeSkill`), and subagent `Task` delegation.
-- **Slash commands**: built-ins including `/init`, `/model`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`.
+- **Slash commands**: built-ins including `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`.
 - **Permissions**: allow/ask/deny rule matching with six modes — `default`, `acceptEdits` (`accept-edits`), `plan`, `auto`, `dontAsk`, `bypassPermissions` — see `/permissions` or `--permission-mode`.
 - **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events.
 - **Skills & subagents**: discover skills from `.book/skills/` and subagents from `.book/agents/`; delegate via the `Task` tool.
@@ -150,7 +150,7 @@ description: Check for spelling errors
 Run a spell check on the codebase and fix any issues found.
 ```
 
-Built-ins include session controls (`/clear`, `/resume`, `/compact`), config (`/model`, `/config`, `/permissions`, `/theme`), inspection (`/status`, `/cost`, `/usage`, `/context`, `/diff`, `/skills`, `/memory`), and agent prompts (`/init`, `/review`, `/security-review`).
+Built-ins include session controls (`/clear`, `/resume`, `/compact`), config (`/model`, `/effort [low|medium|high|xhigh|max]`, `/config`, `/permissions`, `/theme`), inspection (`/status`, `/cost`, `/usage`, `/context`, `/diff`, `/skills`, `/memory`), and agent prompts (`/init`, `/review`, `/security-review`). `/effort` opens a picker when called without an argument and saves successful selections to `.book/settings.local.json`.
 
 ## SDK Usage
 

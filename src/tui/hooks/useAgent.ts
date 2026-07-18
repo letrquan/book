@@ -43,6 +43,7 @@ import {
 } from '../persist.js';
 import { providerConfigSchema } from '../../settings.js';
 import { providerConfigFromDraft, type ProviderSaveRequest } from '../model-options.js';
+import { updateEffortLevel } from '../effort.js';
 import {
   collectAtMentionObservations,
   expandAtMentions,
@@ -1217,10 +1218,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   );
 
   const setEffort = useCallback(
-    (level: AgentConfig['effort']) => {
-      setLiveConfig((c) => ({ ...c, effort: level, effortExplicit: true }));
-      persistSettingLocal(config.workspace, 'effort', level);
-    },
+    (level: NonNullable<AgentConfig['effort']>) =>
+      updateEffortLevel(
+        liveConfigRef.current,
+        level,
+        (selected) => persistSettingLocal(config.workspace, 'effort', selected),
+        (selected) =>
+          setLiveConfig((current) => ({
+            ...current,
+            effort: selected,
+            effortExplicit: true,
+          })),
+      ),
     [config.workspace],
   );
 

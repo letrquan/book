@@ -34,6 +34,11 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: 'task', description: 'Add a task' },
   { name: 'theme', description: 'Switch theme' },
   { name: 'model', description: 'Switch AI model' },
+  {
+    name: 'effort',
+    description: 'Set thinking effort',
+    argumentHint: '[low|medium|high|xhigh|max]',
+  },
   { name: 'config', description: 'Show current configuration' },
   { name: 'diff', description: 'Show git diff' },
   { name: 'status', description: 'Show session status' },
