@@ -184,6 +184,49 @@ describe('ChatPanel Ink rendering', () => {
     expect(output.split('\n')).toEqual(['', '  compact request', '', '', '  compact reply']);
   });
 
+  it('keeps the user-to-assistant transition compact', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[
+            msg('u1', 'user', 'QUESTION_SPACING_MARKER'),
+            msg('a1', 'assistant', 'ANSWER_SPACING_MARKER'),
+          ]}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+    const lines = frame(view.lastFrame).split('\n');
+    const questionLine = lines.findIndex((line) => line.includes('QUESTION_SPACING_MARKER'));
+    const answerLine = lines.findIndex((line) => line.includes('ANSWER_SPACING_MARKER'));
+
+    // Preserve main's restored separation between the padded user band and agent output.
+    expect(answerLine - questionLine).toBe(3);
+  });
+
+  it('keeps the timestamp transition into the next user turn compact', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[
+            msg('u1', 'user', 'FIRST_QUESTION_MARKER'),
+            msg('a1', 'assistant', 'FIRST_ANSWER_MARKER'),
+            { ...msg('u2', 'user', 'SECOND_QUESTION_MARKER'), timestamp: 1_700_000_000_000 },
+          ]}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+    const lines = frame(view.lastFrame).split('\n');
+    const answerLine = lines.findIndex((line) => line.includes('FIRST_ANSWER_MARKER'));
+    const nextQuestionLine = lines.findIndex((line) => line.includes('SECOND_QUESTION_MARKER'));
+
+    // One divider row plus the next bubble's top padding; no margin-only rows.
+    expect(nextQuestionLine - answerLine).toBe(3);
+  });
+
   it('keeps wrapped content mounted exactly once when streaming completes', () => {
     const marker = 'UNIQUE_FINAL_SUFFIX_42';
     const messages = [
@@ -710,9 +753,11 @@ describe('ChatPanel Ink rendering', () => {
 
     const output = frame(view.lastFrame);
     expect(output).toContain('line 1');
-    expect(output).toContain('line 5');
-    expect(output).not.toContain('line 6');
-    expect(output).toContain('3 more lines hidden');
+    expect(output).toContain('line 3');
+    expect(output).toContain('line 6');
+    expect(output).toContain('line 8');
+    expect(output).not.toContain('line 4');
+    expect(output).toContain('2 more lines hidden');
   });
 
   it('renders long tool output when show-all mode is enabled', () => {
@@ -740,6 +785,93 @@ describe('ChatPanel Ink rendering', () => {
     const output = frame(view.lastFrame);
     expect(output).toContain('line 8');
     expect(output).not.toContain('more lines hidden');
+  });
+
+  it('keeps compact tools concise and exposes every result in detailed mode', () => {
+    const message: Message = {
+      ...msg('a1', 'assistant', 'Inspecting.'),
+      toolCalls: [
+        { id: 'read', name: 'Read', arguments: { filePath: 'src/a.ts' } },
+        { id: 'bash', name: 'Bash', arguments: { command: 'npm test' } },
+      ],
+      toolResults: [
+        { toolCallId: 'read', success: true, output: 'READ_RESULT_MARKER' },
+        { toolCallId: 'bash', success: true, output: 'BASH_RESULT_MARKER' },
+      ],
+    };
+    const view = render(
+      withTheme(
+        <AgentMessage
+          message={message}
+          isStreaming={false}
+          transcriptMode="compact"
+          automaticToolCallId={null}
+          reducedMotion
+          terminalWidth={100}
+        />,
+      ),
+    );
+
+    expect(frame(view.lastFrame)).toContain('Read(src/a.ts)');
+    expect(frame(view.lastFrame)).toContain('Bash(npm test)');
+    expect(frame(view.lastFrame)).not.toContain('READ_RESULT_MARKER');
+    expect(frame(view.lastFrame)).not.toContain('BASH_RESULT_MARKER');
+
+    view.rerender(
+      withTheme(
+        <AgentMessage
+          message={message}
+          isStreaming={false}
+          transcriptMode="detailed"
+          automaticToolCallId={null}
+          reducedMotion
+          terminalWidth={100}
+        />,
+      ),
+    );
+    expect(frame(view.lastFrame)).toContain('filePath: src/a.ts');
+    expect(frame(view.lastFrame)).toContain('READ_RESULT_MARKER');
+    expect(frame(view.lastFrame)).toContain('command: npm test');
+    expect(frame(view.lastFrame)).toContain('BASH_RESULT_MARKER');
+  });
+
+  it('groups consecutive MCP calls by server only in compact mode', () => {
+    const message: Message = {
+      ...msg('a1', 'assistant', ''),
+      toolCalls: [
+        { id: 'mcp-1', name: 'mcp__slack__search', arguments: { query: 'release' } },
+        { id: 'mcp-2', name: 'mcp__slack__post', arguments: { channel: 'eng' } },
+      ],
+      toolResults: [
+        { toolCallId: 'mcp-1', success: true, output: 'found' },
+        { toolCallId: 'mcp-2', success: true, output: 'posted' },
+      ],
+    };
+    const view = render(
+      withTheme(
+        <AgentMessage
+          message={message}
+          isStreaming={false}
+          transcriptMode="compact"
+          reducedMotion
+        />,
+      ),
+    );
+    expect(frame(view.lastFrame)).toContain('Called slack 2 times');
+    expect(frame(view.lastFrame)).not.toContain('Called slack(search)');
+
+    view.rerender(
+      withTheme(
+        <AgentMessage
+          message={message}
+          isStreaming={false}
+          transcriptMode="detailed"
+          reducedMotion
+        />,
+      ),
+    );
+    expect(frame(view.lastFrame)).toContain('Called slack(search)');
+    expect(frame(view.lastFrame)).toContain('Called slack(post)');
   });
 
   it('keeps the latest completed file mutation preview visible under the assistant turn', () => {
@@ -773,9 +905,9 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('I will update it.');
     expect(output).toContain('Done.');
     expect(output).toContain('Update(src/a.ts)');
-    expect(output).toContain('+1 -1');
-    expect(output).toContain('-old line');
-    expect(output).toContain('+new line');
+    expect(output).toContain('· +1 -1');
+    expect(output).toContain('- old line');
+    expect(output).toContain('+ new line');
   });
 
   it('collapses an older file preview when a newer non-file tool turn completes', () => {

@@ -49,7 +49,33 @@ describe('prepareToolOutputDisplay', () => {
     const display = prepareToolOutputDisplay(output, { maxLines: 1, maxLineWidth: 120 });
 
     expect(display.totalChars).toBe(output.length);
+    expect(display.totalBytes).toBe(7);
     expect(display.footer).toContain('7 B total');
+  });
+
+  it('uses head-and-tail previews for successful noisy output', () => {
+    const output = Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join('\n');
+    const display = prepareToolOutputDisplay(output, {
+      maxLines: 4,
+      maxLineWidth: 120,
+      strategy: 'head-tail',
+    });
+
+    expect(display.lines).toEqual(['line 1', 'line 2', 'line 9', 'line 10']);
+    expect(display.hiddenLines).toBe(6);
+    expect(display.hiddenBytes).toBeGreaterThan(0);
+  });
+
+  it('prioritizes final error lines with a tail preview', () => {
+    const output = ['setup', 'running', 'warning', 'fatal: failed'].join('\n');
+    const display = prepareToolOutputDisplay(output, {
+      maxLines: 2,
+      maxLineWidth: 120,
+      strategy: 'tail',
+    });
+
+    expect(display.lines).toEqual(['warning', 'fatal: failed']);
+    expect(display.hiddenLines).toBe(2);
   });
 });
 

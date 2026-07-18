@@ -516,6 +516,23 @@ describe('keyboard shortcut filtering', () => {
     expect(stripAnsi(view.lastFrame())).not.toContain('draftl');
   });
 
+  it('preserves prompt text while detailed transcript mode suppresses input', async () => {
+    const view = render(inputBar(() => {}, { inputSuppressed: false }));
+    await tick();
+    view.stdin.write('draft prompt');
+    await tick(20);
+
+    view.rerender(inputBar(() => {}, { inputSuppressed: true }));
+    view.stdin.write('q');
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).toContain('draft prompt');
+    expect(stripAnsi(view.lastFrame())).not.toContain('draft promptq');
+
+    view.rerender(inputBar(() => {}, { inputSuppressed: false }));
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).toContain('draft prompt');
+  });
+
   it('Alt+M (meta+m) is consumed and does not write "m" into input', () => {
     expect(simulateInputHandler('m', { meta: true }, false)).toBe('consumed');
   });

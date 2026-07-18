@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
+import { act } from 'react';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
 import { displayWidth } from './word-wrap.js';
@@ -18,9 +19,23 @@ function withTheme(children: React.ReactElement): React.ReactElement {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 describe('ToolCallBlock', () => {
+  it('updates elapsed time while a tool remains active', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const view = render(
+      withTheme(
+        <ToolCallBlock name="Bash" args={{ command: 'npm test' }} isExpanded reducedMotion />,
+      ),
+    );
+
+    act(() => vi.advanceTimersByTime(1500));
+    expect(frame(view.lastFrame)).toContain('1.5s');
+  });
+
   it('renders a short collapsed preview for long tool output by default', () => {
     const output = Array.from({ length: 8 }, (_, i) => `line ${i + 1}`).join('\n');
     const view = render(
@@ -37,9 +52,11 @@ describe('ToolCallBlock', () => {
 
     const rendered = frame(view.lastFrame);
     expect(rendered).toContain('line 1');
-    expect(rendered).toContain('line 5');
-    expect(rendered).not.toContain('line 6');
-    expect(rendered).toContain('3 more lines hidden');
+    expect(rendered).toContain('line 3');
+    expect(rendered).toContain('line 6');
+    expect(rendered).toContain('line 8');
+    expect(rendered).not.toContain('line 4');
+    expect(rendered).toContain('2 more lines hidden, 14 B');
     expect(rendered).toContain('Ctrl+E shows all');
   });
 
@@ -63,7 +80,7 @@ describe('ToolCallBlock', () => {
     expect(rendered).not.toContain('more lines hidden');
   });
 
-  it('includes a truncation summary in screen reader mode', () => {
+  it('keeps tool output flat and complete in screen reader mode', () => {
     const output = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join('\n');
     const view = render(
       withTheme(
@@ -80,8 +97,8 @@ describe('ToolCallBlock', () => {
 
     const rendered = frame(view.lastFrame);
     expect(rendered).toContain('line 10');
-    expect(rendered).not.toContain('line 11');
-    expect(rendered).toContain('2 more lines hidden');
+    expect(rendered).toContain('line 12');
+    expect(rendered).not.toContain('more lines hidden');
   });
 
   it('uses width-aware truncation for long arguments and errors', () => {
@@ -101,7 +118,7 @@ describe('ToolCallBlock', () => {
 
     const rendered = frame(view.lastFrame);
     expect(rendered).toContain('…');
-    expect(rendered).toContain('│ error-');
+    expect(rendered).toContain('· error-');
   });
 
   it('renders a custom Update(filePath) block with stats for file updates', () => {
@@ -138,7 +155,7 @@ describe('ToolCallBlock', () => {
 
     const rendered = frame(view.lastFrame);
     expect(rendered).toContain('Update(src/tui/components/Diff.tsx)');
-    expect(rendered).toContain('+2 -1');
+    expect(rendered).toContain('· +2 -1');
     expect(rendered.split('\n')).toHaveLength(1);
   });
 
@@ -151,12 +168,19 @@ describe('ToolCallBlock', () => {
       '+new 2',
       '-old 3',
       '+new 3',
+      '-old 4',
+      '+new 4',
     ].join('\n');
     const view = render(
       withTheme(
         <ToolCallBlock
           name="Edit"
-          args={{ filePath: 'src/a.ts' }}
+          args={{
+            filePath: 'src/a.ts',
+            oldString: 'old 1',
+            newString: 'new 1',
+            replaceAll: false,
+          }}
           result={{
             toolCallId: 'call-diff',
             success: true,
@@ -175,10 +199,13 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered).toContain('-old 2');
-    expect(rendered).not.toContain('-old 3');
-    expect(rendered).toContain('2 more lines hidden');
-    expect(rendered).toContain('Ctrl+E shows all');
+    expect(rendered).toContain('- old 2');
+    expect(rendered).toContain('- old 4');
+    expect(rendered).not.toContain('filePath:');
+    expect(rendered).not.toContain('oldString:');
+    expect(rendered).not.toContain('newString:');
+    expect(rendered).not.toContain('replaceAll:');
+    expect(rendered).not.toContain('rows omitted');
   });
 
   it('bounds expanded file diffs in screen reader mode', () => {
@@ -190,6 +217,8 @@ describe('ToolCallBlock', () => {
       '+new 2',
       '-old 3',
       '+new 3',
+      '-old 4',
+      '+new 4',
     ].join('\n');
     const view = render(
       withTheme(
@@ -206,8 +235,8 @@ describe('ToolCallBlock', () => {
 
     const rendered = frame(view.lastFrame);
     expect(rendered).toContain('-old 2');
-    expect(rendered).not.toContain('-old 3');
-    expect(rendered).toContain('2 more lines hidden');
+    expect(rendered).toContain('-old 4');
+    expect(rendered).not.toContain('rows and');
   });
 
   it('renders NotebookEdit as a file update with notebook path and stats', () => {
@@ -235,7 +264,7 @@ describe('ToolCallBlock', () => {
 
     const rendered = frame(view.lastFrame);
     expect(rendered).toContain('Update(analysis.ipynb)');
-    expect(rendered).toContain('+1 -1');
+    expect(rendered).toContain('· +1 -1');
     expect(rendered.split('\n')).toHaveLength(1);
   });
 
@@ -264,7 +293,7 @@ describe('ToolCallBlock', () => {
 
     const rendered = frame(view.lastFrame);
     expect(rendered).toContain('Create(src/new-file.txt)');
-    expect(rendered).toContain('+2');
+    expect(rendered).toContain('· +2');
     expect(rendered.split('\n')).toHaveLength(1);
   });
 
@@ -315,8 +344,8 @@ describe('ToolCallBlock', () => {
       ),
     );
 
-    expect(frame(outputView.lastFrame)).toContain('Read shell output shell_1');
-    expect(frame(killView.lastFrame)).toContain('Kill shell shell_1');
+    expect(frame(outputView.lastFrame)).toContain('Shell output(shell_1)');
+    expect(frame(killView.lastFrame)).toContain('Kill shell(shell_1)');
   });
 
   it('bounds expanded output, arguments, and errors to a narrow width', () => {

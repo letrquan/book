@@ -15,6 +15,23 @@ export function indexNestedToolInvocations(
   return children;
 }
 
+export function countNestedToolInvocations(
+  childrenByParent: NestedToolChildren,
+  parentTraceId: string,
+): number {
+  let count = 0;
+  const visited = new Set<string>();
+  const stack = [...(childrenByParent.get(parentTraceId) ?? [])];
+  while (stack.length > 0) {
+    const invocation = stack.pop()!;
+    if (visited.has(invocation.traceId)) continue;
+    visited.add(invocation.traceId);
+    count++;
+    stack.push(...(childrenByParent.get(invocation.traceId) ?? []));
+  }
+  return count;
+}
+
 function selectCompletedFileMutationId(message: Message): string | null {
   const resultsById = new Map(
     (message.toolResults ?? []).map((result) => [result.toolCallId, result] as const),

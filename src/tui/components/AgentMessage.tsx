@@ -8,7 +8,17 @@ import { CommandPanel } from './CommandPanel.js';
 import { useTheme } from '../theme.js';
 import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
-import { indexNestedToolInvocations, type NestedToolChildren } from '../tool-traces.js';
+import {
+  countNestedToolInvocations,
+  indexNestedToolInvocations,
+  type NestedToolChildren,
+} from '../tool-traces.js';
+import {
+  groupConsecutiveMcpCalls,
+  shouldExpandTool,
+  type TranscriptMode,
+  type PresentableToolInvocation,
+} from '../tool-presentation.js';
 
 const renderLog = createRenderDebugLogger('tui:agentmsg');
 
@@ -22,6 +32,9 @@ interface AgentMessageProps {
   isStreaming: boolean;
   pendingPermission?: PendingPermission | null;
   expandedToolCallId?: string | null;
+  transcriptMode?: TranscriptMode;
+  automaticToolCallId?: string | null;
+  toolExpansionOverrides?: ReadonlyMap<string, boolean>;
   reducedMotion?: boolean;
   screenReader?: boolean;
   /** Terminal width in columns — passed down to MarkdownBlock for word-wrap. */
@@ -35,53 +48,135 @@ interface AgentMessageProps {
   hideStreamingSpinner?: boolean;
   /** When true, expanded tool results show the larger output cap instead of a short preview. */
   showAllToolOutput?: boolean;
+  /** Tool-specific full-output expansion used by compact transcript mode. */
+  showAllToolOutputIds?: ReadonlySet<string>;
+  /** Remove the final markdown block's margin before the next user turn. */
+  trimTrailingSpacing?: boolean;
+}
+
+const NO_EXPANSION_OVERRIDES = new Map<string, boolean>();
+
+function aggregateMcpResult(
+  id: string,
+  invocations: readonly PresentableToolInvocation<ToolCall>[],
+) {
+  const output = invocations
+    .map((invocation) => {
+      const result = invocation.result;
+      const body = result?.output || result?.error || '(no output)';
+      return `${invocation.name}\n${body}`;
+    })
+    .join('\n\n');
+  const durations = invocations.flatMap((invocation) =>
+    invocation.result?.durationMs === undefined ? [] : [invocation.result.durationMs],
+  );
+  const durationMs =
+    durations.length > 0 ? durations.reduce((total, value) => total + value, 0) : undefined;
+  return { toolCallId: id, success: true, output, durationMs };
 }
 
 function NestedToolRows({
   childrenByParent,
   parentTraceId,
   depth,
-  expandedToolCallId,
+  transcriptMode,
+  automaticToolCallId,
+  toolExpansionOverrides,
   reducedMotion,
   screenReader,
   showAllToolOutput,
+  showAllToolOutputIds,
   terminalWidth,
 }: {
   childrenByParent: NestedToolChildren;
   parentTraceId: string;
   depth: number;
-  expandedToolCallId?: string | null;
+  transcriptMode: TranscriptMode;
+  automaticToolCallId?: string | null;
+  toolExpansionOverrides: ReadonlyMap<string, boolean>;
   reducedMotion: boolean;
   screenReader: boolean;
   showAllToolOutput: boolean;
+  showAllToolOutputIds: ReadonlySet<string>;
   terminalWidth?: number;
 }) {
   const children = childrenByParent.get(parentTraceId) ?? [];
+  const invocations = children.map((invocation) => ({
+    id: invocation.traceId,
+    name: invocation.call.name,
+    call: invocation.call,
+    result: invocation.result,
+  }));
+  const rows =
+    transcriptMode === 'compact' && !screenReader
+      ? groupConsecutiveMcpCalls(invocations)
+      : invocations.map((invocation) => ({ kind: 'tool' as const, invocation }));
 
-  return children.map((invocation) => (
-    <Box key={invocation.traceId} flexDirection="column" marginLeft={screenReader ? 2 : depth}>
-      <ToolCallBlock
-        name={invocation.call.name}
-        args={invocation.call.arguments}
-        result={invocation.result}
-        isExpanded={expandedToolCallId === invocation.traceId}
-        reducedMotion={reducedMotion}
-        screenReader={screenReader}
-        showAllToolOutput={showAllToolOutput}
-        terminalWidth={terminalWidth ? Math.max(12, terminalWidth - depth) : undefined}
-      />
-      <NestedToolRows
-        childrenByParent={childrenByParent}
-        parentTraceId={invocation.traceId}
-        depth={depth + 1}
-        expandedToolCallId={expandedToolCallId}
-        reducedMotion={reducedMotion}
-        screenReader={screenReader}
-        showAllToolOutput={showAllToolOutput}
-        terminalWidth={terminalWidth}
-      />
-    </Box>
-  ));
+  return rows.map((row) => {
+    if (row.kind === 'mcp-group') {
+      return (
+        <Box key={row.id} marginLeft={screenReader ? 2 : depth * 2}>
+          <ToolCallBlock
+            toolId={row.id}
+            name={`mcp__${row.server}__group`}
+            args={{ __groupCount: row.invocations.length }}
+            result={aggregateMcpResult(row.id, row.invocations)}
+            isExpanded={shouldExpandTool({
+              mode: transcriptMode,
+              toolId: row.id,
+              automaticToolId: automaticToolCallId,
+              expansionOverrides: toolExpansionOverrides,
+              screenReader,
+            })}
+            reducedMotion={reducedMotion}
+            screenReader={screenReader}
+            showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(row.id)}
+            terminalWidth={terminalWidth ? Math.max(12, terminalWidth - depth * 2) : undefined}
+          />
+        </Box>
+      );
+    }
+
+    const invocation = children.find((child) => child.traceId === row.invocation.id)!;
+    return (
+      <Box
+        key={invocation.traceId}
+        flexDirection="column"
+        marginLeft={screenReader ? 2 : depth * 2}
+      >
+        <ToolCallBlock
+          toolId={invocation.traceId}
+          name={invocation.call.name}
+          args={invocation.call.arguments}
+          result={invocation.result}
+          isExpanded={shouldExpandTool({
+            mode: transcriptMode,
+            toolId: invocation.traceId,
+            automaticToolId: automaticToolCallId,
+            expansionOverrides: toolExpansionOverrides,
+            screenReader,
+          })}
+          reducedMotion={reducedMotion}
+          screenReader={screenReader}
+          showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(invocation.traceId)}
+          terminalWidth={terminalWidth ? Math.max(12, terminalWidth - depth * 2) : undefined}
+        />
+        <NestedToolRows
+          childrenByParent={childrenByParent}
+          parentTraceId={invocation.traceId}
+          depth={depth + 1}
+          transcriptMode={transcriptMode}
+          automaticToolCallId={automaticToolCallId}
+          toolExpansionOverrides={toolExpansionOverrides}
+          reducedMotion={reducedMotion}
+          screenReader={screenReader}
+          showAllToolOutput={showAllToolOutput}
+          showAllToolOutputIds={showAllToolOutputIds}
+          terminalWidth={terminalWidth}
+        />
+      </Box>
+    );
+  });
 }
 
 /**
@@ -232,6 +327,9 @@ export function AgentMessageInner({
   isStreaming,
   pendingPermission,
   expandedToolCallId,
+  transcriptMode = 'compact',
+  automaticToolCallId,
+  toolExpansionOverrides = NO_EXPANSION_OVERRIDES,
   reducedMotion = false,
   screenReader = false,
   terminalWidth,
@@ -241,6 +339,8 @@ export function AgentMessageInner({
   retryCountdownMs = 0,
   hideStreamingSpinner = false,
   showAllToolOutput = false,
+  showAllToolOutputIds = new Set<string>(),
+  trimTrailingSpacing = false,
 }: AgentMessageProps) {
   const theme = useTheme();
   const displayContent = isStreaming ? trimPartialClosingFences(message.content) : message.content;
@@ -272,6 +372,18 @@ export function AgentMessageInner({
   const contentWidth = terminalWidth ? Math.max(12, Math.floor(terminalWidth) - 2) : undefined;
   const mdWidth = contentWidth;
   const contentParts = useMemo(() => splitThinkBlocks(displayContent), [displayContent]);
+  const topLevelInvocations = useMemo(() => {
+    const invocations = toolCalls.map((call) => ({
+      id: call.id,
+      name: call.name,
+      call,
+      result: message.toolResults?.find((result) => result.toolCallId === call.id),
+    }));
+    return transcriptMode === 'compact' && !screenReader
+      ? groupConsecutiveMcpCalls(invocations)
+      : invocations.map((invocation) => ({ kind: 'tool' as const, invocation }));
+  }, [message.toolResults, screenReader, toolCalls, transcriptMode]);
+  const selectedAutomaticToolId = automaticToolCallId ?? expandedToolCallId;
 
   if (message.localCommand) {
     return (
@@ -333,6 +445,7 @@ export function AgentMessageInner({
                     content={part.text}
                     terminalWidth={mdWidth}
                     isStreaming={isStreaming}
+                    trimTrailingMargin={trimTrailingSpacing && i === contentParts.length - 1}
                   />
                 ),
               )}
@@ -342,20 +455,52 @@ export function AgentMessageInner({
       ) : null}
 
       {/* Every invocation gets its own row. Task subagent tools stay display-only and nest below it. */}
-      {toolCalls.map((tc, index) => {
-        const result = message.toolResults?.find((r) => r.toolCallId === tc.id);
+      {topLevelInvocations.map((row, index) => {
+        if (row.kind === 'mcp-group') {
+          return (
+            <ToolCallBlock
+              key={row.id}
+              toolId={row.id}
+              name={`mcp__${row.server}__group`}
+              args={{ __groupCount: row.invocations.length }}
+              result={aggregateMcpResult(row.id, row.invocations)}
+              isExpanded={shouldExpandTool({
+                mode: transcriptMode,
+                toolId: row.id,
+                automaticToolId: selectedAutomaticToolId,
+                expansionOverrides: toolExpansionOverrides,
+                screenReader,
+              })}
+              reducedMotion={reducedMotion}
+              screenReader={screenReader}
+              showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(row.id)}
+              terminalWidth={terminalWidth}
+            />
+          );
+        }
+
+        const tc = row.invocation.call;
+        const result = row.invocation.result;
         const isPending = pendingPermission?.toolCall.id === tc.id;
         return (
           <Box key={tc.id || `tool-${index}`} flexDirection="column">
             <ToolCallBlock
+              toolId={tc.id}
               name={tc.name}
               args={tc.arguments}
               result={result}
-              isExpanded={expandedToolCallId === tc.id}
+              isExpanded={shouldExpandTool({
+                mode: transcriptMode,
+                toolId: tc.id,
+                automaticToolId: selectedAutomaticToolId,
+                expansionOverrides: toolExpansionOverrides,
+                screenReader,
+              })}
               isPending={isPending}
+              nestedActivityCount={countNestedToolInvocations(childrenByParent, tc.id)}
               reducedMotion={reducedMotion}
               screenReader={screenReader}
-              showAllToolOutput={showAllToolOutput}
+              showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(tc.id)}
               terminalWidth={terminalWidth}
             />
             {childrenByParent.has(tc.id) ? (
@@ -363,10 +508,13 @@ export function AgentMessageInner({
                 childrenByParent={childrenByParent}
                 parentTraceId={tc.id}
                 depth={1}
-                expandedToolCallId={expandedToolCallId}
+                transcriptMode={transcriptMode}
+                automaticToolCallId={selectedAutomaticToolId}
+                toolExpansionOverrides={toolExpansionOverrides}
                 reducedMotion={reducedMotion}
                 screenReader={screenReader}
                 showAllToolOutput={showAllToolOutput}
+                showAllToolOutputIds={showAllToolOutputIds}
                 terminalWidth={terminalWidth}
               />
             ) : null}
@@ -389,6 +537,9 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
   if (
     prev.isStreaming === next.isStreaming &&
     prev.expandedToolCallId === next.expandedToolCallId &&
+    prev.transcriptMode === next.transcriptMode &&
+    prev.automaticToolCallId === next.automaticToolCallId &&
+    prev.toolExpansionOverrides === next.toolExpansionOverrides &&
     prev.pendingPermission?.toolCall?.id === next.pendingPermission?.toolCall?.id &&
     prev.retryPhase === next.retryPhase &&
     prev.retryAttempt === next.retryAttempt &&
@@ -396,6 +547,8 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
     prev.retryCountdownMs === next.retryCountdownMs &&
     prev.hideStreamingSpinner === next.hideStreamingSpinner &&
     prev.showAllToolOutput === next.showAllToolOutput &&
+    prev.showAllToolOutputIds === next.showAllToolOutputIds &&
+    prev.trimTrailingSpacing === next.trimTrailingSpacing &&
     prev.reducedMotion === next.reducedMotion &&
     prev.screenReader === next.screenReader &&
     prev.terminalWidth === next.terminalWidth

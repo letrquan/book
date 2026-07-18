@@ -60,6 +60,11 @@ import { buildModelOptions } from './model-options.js';
 import { redactSettingValue, redactSettingsForDisplay } from '../settings-redaction.js';
 import { createUiDebugLogger } from '../debug-log.js';
 import { selectExpandedToolId } from './tool-traces.js';
+import {
+  getTranscriptShortcutAction,
+  shouldExpandTool,
+  type TranscriptMode,
+} from './tool-presentation.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
 import {
   EFFORT_USAGE,
@@ -80,11 +85,11 @@ export function ownsModalInput(
 ): boolean {
   return Boolean(
     pendingPermission ||
-      pendingPlanApproval ||
-      pendingUserQuestion ||
-      showModelPicker ||
-      showSessionPicker ||
-      showEffortPicker,
+    pendingPlanApproval ||
+    pendingUserQuestion ||
+    showModelPicker ||
+    showSessionPicker ||
+    showEffortPicker,
   );
 }
 
@@ -127,6 +132,8 @@ interface AppProps {
  *   Esc      — cancel permission / abort stream
  *   Ctrl+C   — abort stream
  *   Ctrl+T   — toggle task list
+ *   Ctrl+O   — toggle detailed transcript
+ *   Ctrl+E   — expand the current tool output
  *   Ctrl+L   — redraw
  *   Ctrl+J   — insert newline
  *   PgUp/PgDn, Ctrl+U/Ctrl+D — scroll transcript
@@ -188,7 +195,13 @@ export function App({ config, session, redrawViewport }: AppProps) {
   const [showHelp, setShowHelp] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showStatus, setShowStatus] = useState(false);
-  const [showAllToolOutput, setShowAllToolOutput] = useState(false);
+  const [showAllDetailedOutput, setShowAllDetailedOutput] = useState(false);
+  const [showAllToolOutputIds, setShowAllToolOutputIds] = useState<Set<string>>(() => new Set());
+  const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>('compact');
+  const [toolExpansionOverrides, setToolExpansionOverrides] = useState<Map<string, boolean>>(
+    () => new Map(),
+  );
+  const [focusedToolId, setFocusedToolId] = useState<string | null>(null);
   const [showPermissions, setShowPermissions] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -276,7 +289,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
   useDebugValueChange(uiLog, 'showHelp', showHelp, (v) => String(v));
   useDebugValueChange(uiLog, 'showShortcuts', showShortcuts, (v) => String(v));
   useDebugValueChange(uiLog, 'showStatus', showStatus, (v) => String(v));
-  useDebugValueChange(uiLog, 'showAllToolOutput', showAllToolOutput, (v) => String(v));
+  useDebugValueChange(uiLog, 'showAllDetailedOutput', showAllDetailedOutput, (v) => String(v));
+  useDebugValueChange(uiLog, 'transcriptMode', transcriptMode);
   useDebugValueChange(uiLog, 'showPermissions', showPermissions, (v) => String(v));
   useDebugValueChange(uiLog, 'showSkills', showSkills, (v) => String(v));
   useDebugValueChange(uiLog, 'showModelPicker', showModelPicker, (v) => String(v));
@@ -307,6 +321,23 @@ export function App({ config, session, redrawViewport }: AppProps) {
         }
       }
       return;
+    }
+
+    if (transcriptMode === 'detailed') {
+      const transcriptAction = getTranscriptShortcutAction(transcriptMode, input, key);
+      if (transcriptAction === 'exit-detailed') {
+        uiLog.event('input:detail-exit', {
+          key: key.ctrl ? 'Ctrl+O' : key.escape ? 'Escape' : 'q',
+        });
+        setTranscriptMode('compact');
+        setShowAllDetailedOutput(false);
+        return;
+      }
+      if (transcriptAction === 'expand-output') {
+        uiLog.event('input:Ctrl+E', { action: 'show-all-detailed-output' });
+        setShowAllDetailedOutput(true);
+        return;
+      }
     }
 
     // Escape aborts an in-flight stream when no prompt owns the keyboard.
@@ -367,6 +398,33 @@ export function App({ config, session, redrawViewport }: AppProps) {
   // Keep the latest running tool open. Once it completes, preserve the newest
   // file mutation in the latest tool-bearing turn as a bounded diff preview.
   const expandedToolId = useMemo(() => selectExpandedToolId(messages), [messages]);
+
+  useEffect(() => {
+    setTranscriptMode('compact');
+    setShowAllDetailedOutput(false);
+    setShowAllToolOutputIds(new Set());
+    setToolExpansionOverrides(new Map());
+    setFocusedToolId(null);
+  }, [sessionId]);
+
+  const toggleToolExpansion = useCallback(
+    (toolId: string) => {
+      setFocusedToolId(toolId);
+      setToolExpansionOverrides((current) => {
+        const next = new Map(current);
+        const isExpanded = shouldExpandTool({
+          mode: transcriptMode,
+          toolId,
+          automaticToolId: expandedToolId,
+          expansionOverrides: current,
+          screenReader,
+        });
+        next.set(toolId, !isExpanded);
+        return next;
+      });
+    },
+    [expandedToolId, screenReader, transcriptMode],
+  );
 
   const handleSubmit = useCallback(
     (value: string) => {
@@ -826,9 +884,22 @@ export function App({ config, session, redrawViewport }: AppProps) {
         setShowShortcuts((s) => !s);
         return true; // consumed
       }
-      if (key.ctrl && (input === 'e' || input.charCodeAt(0) === 5)) {
-        uiLog.event('input:Ctrl+E', { action: 'toggle-tool-output' });
-        setShowAllToolOutput((s) => !s);
+      const transcriptAction = getTranscriptShortcutAction(transcriptMode, input, key);
+      if (transcriptAction === 'enter-detailed') {
+        uiLog.event('input:Ctrl+O', { action: 'enter-detailed-transcript' });
+        setTranscriptMode('detailed');
+        setShowAllDetailedOutput(false);
+        return true;
+      }
+      if (transcriptAction === 'expand-output') {
+        const targetToolId = expandedToolId ?? focusedToolId;
+        uiLog.event('input:Ctrl+E', { action: 'expand-current-tool', toolId: targetToolId });
+        if (targetToolId) {
+          setToolExpansionOverrides((current) => new Map(current).set(targetToolId, true));
+        }
+        if (targetToolId) {
+          setShowAllToolOutputIds((current) => new Set(current).add(targetToolId));
+        }
         return true; // consumed
       }
       return false; // not consumed — let text input handle it
@@ -844,6 +915,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
       redrawViewport,
       showEffortPicker,
       showModelPicker,
+      expandedToolId,
+      focusedToolId,
     ],
   );
 
@@ -866,6 +939,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
             width={termWidth}
             isActive={!pickerOwnsTranscript}
             followRequestKey={followRequestKey}
+            onToggleTool={toggleToolExpansion}
           >
             <Box flexDirection="column" width={termWidth}>
               {error && (
@@ -878,7 +952,9 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 compactBoundaries={compactBoundaries}
                 streamingMessageId={streamingMessageId}
                 pendingPermission={pendingPermission}
-                expandedToolCallId={expandedToolId}
+                transcriptMode={transcriptMode}
+                automaticToolCallId={expandedToolId}
+                toolExpansionOverrides={toolExpansionOverrides}
                 reducedMotion={motionDisabled}
                 screenReader={screenReader}
                 terminalWidth={termWidth}
@@ -889,7 +965,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 commandCount={commands.length}
                 skillCount={skills.length}
                 retryPhase={retryPhase}
-                showAllToolOutput={showAllToolOutput}
+                showAllToolOutput={showAllDetailedOutput}
+                showAllToolOutputIds={showAllToolOutputIds}
                 retryAttempt={retryAttempt}
                 retryMax={retryMax}
                 retryCountdownMs={retryCountdownMs}
@@ -1177,7 +1254,21 @@ export function App({ config, session, redrawViewport }: AppProps) {
                     />
                     <HelpRow label="Ctrl+C" description="Cancel current turn" theme={theme} />
                     <HelpRow label="Ctrl+T" description="Toggle task list" theme={theme} />
-                    <HelpRow label="Ctrl+E" description="Toggle full tool output" theme={theme} />
+                    <HelpRow
+                      label="Ctrl+O"
+                      description="Toggle detailed transcript"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="Ctrl+E"
+                      description="Expand current tool output"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="Click"
+                      description="Expand or collapse a tool summary"
+                      theme={theme}
+                    />
                     <HelpRow label="Ctrl+L" description="Redraw screen" theme={theme} />
                     <HelpRow label="Alt+M" description="Cycle permission mode" theme={theme} />
                     <HelpRow label="Alt+P" description="Open model picker" theme={theme} />
@@ -1348,14 +1439,16 @@ export function App({ config, session, redrawViewport }: AppProps) {
               mode={mode}
               onCycleMode={cycleMode}
               onInterrupt={cancel}
-              inputSuppressed={ownsModalInput(
-                pendingPermission,
-                pendingPlanApproval,
-                showModelPicker,
-                showSessionPicker,
-                pendingUserQuestion,
-                showEffortPicker,
-              )}
+              inputSuppressed={
+                ownsModalInput(
+                  pendingPermission,
+                  pendingPlanApproval,
+                  showModelPicker,
+                  showSessionPicker,
+                  pendingUserQuestion,
+                  showEffortPicker,
+                ) || transcriptMode === 'detailed'
+              }
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
               terminalWidth={termWidth}

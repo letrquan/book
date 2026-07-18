@@ -299,8 +299,7 @@ export interface UserQuestion {
 }
 
 export type UserQuestionSource =
-  | { kind: 'root'; traceId?: string }
-  | { kind: 'subagent'; agentPath: string[]; traceId?: string };
+  { kind: 'root'; traceId?: string } | { kind: 'subagent'; agentPath: string[]; traceId?: string };
 
 export interface UserQuestionRequest {
   id: string;

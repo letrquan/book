@@ -22,6 +22,8 @@ interface MarkdownBlockProps {
   terminalWidth?: number;
   /** While streaming, keep expensive final-pass decoration such as syntax highlighting disabled. */
   isStreaming?: boolean;
+  /** Remove the final block's bottom margin when another transcript turn follows immediately. */
+  trimTrailingMargin?: boolean;
 }
 
 type InlineStyle = {
