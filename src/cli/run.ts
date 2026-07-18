@@ -8,45 +8,8 @@ import { connectMcpServers } from '../mcp.js';
 import { exit } from './exit.js';
 import { join } from 'path';
 import { homedir } from 'os';
-import type { AgentConfig, Message } from '../types.js';
+import type { AgentConfig } from '../types.js';
 import { resolveSessionBootstrap } from '../session/resolve.js';
-
-interface CompatibleSessionBootstrap<TBoundary = unknown> {
-  history: Message[];
-  transcript?: Message[];
-  contextHistory?: Message[];
-  compactBoundaries?: TBoundary[];
-}
-
-/**
- * Bridge legacy single-history sessions to compact-v2's independent views.
- * `history` remains the compatibility alias for the provider-facing context;
- * the complete transcript is never used as that fallback because it may carry
- * local-only command output.
- */
-export function resolveHeadlessSessionProjections<TBoundary>(
-  bootstrap: CompatibleSessionBootstrap<TBoundary>,
-): {
-  history: Message[];
-  transcript: Message[];
-  contextHistory: Message[];
-  compactBoundaries: TBoundary[];
-} {
-  const contextHistory =
-    bootstrap.contextHistory ??
-    bootstrap.history.filter(
-      (message) =>
-        message.includeInContext !== false &&
-        (message as Message & { kind?: string }).kind !== 'local',
-    );
-
-  return {
-    history: contextHistory,
-    transcript: bootstrap.transcript ?? bootstrap.history,
-    contextHistory,
-    compactBoundaries: bootstrap.compactBoundaries ?? [],
-  };
-}
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
@@ -120,7 +83,6 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         forkSession: options.forkSession as boolean | undefined,
       });
 
-      const projections = resolveHeadlessSessionProjections(bootstrap);
       await runHeadless(config, registry, {
         prompt: typeof options.print === 'string' ? (options.print as string) : undefined,
         inputFormat: options.inputFormat as 'text' | 'stream-json',

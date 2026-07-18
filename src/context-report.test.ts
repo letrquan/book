@@ -38,7 +38,7 @@ describe('buildContextBreakdown', () => {
     expect(b.userMessages).toBe(1);
     expect(b.assistantMessages).toBe(1);
     expect(b.toolCalls).toBe(2);
-    expect(b.toolResults).toBe(0);
+    expect(b.toolResults).toBe(1);
     expect(b.estimatedTokens).toBeGreaterThan(0);
   });
 
@@ -71,28 +71,11 @@ describe('buildContextReport', () => {
       hasClaudeMdLoader: false,
     });
     expect(report).toContain('Context window breakdown');
-    expect(report).toContain('Visible transcript messages: 1');
-    expect(report).toContain('Active context messages: 1');
     expect(report).toContain('claude-sonnet-5');
     expect(report).toContain('100,000');
     expect(report).toContain('Slash commands  : 5');
     expect(report).toContain('Git/workspace   : branch, status, OS, date');
     expect(report).toContain('none found (Phase 1b loader active)');
-  });
-
-  it('reports separate visible transcript and active context counts', () => {
-    const active = [msg('user', 'recent prompt')];
-    const transcript = [msg('user', 'old prompt'), msg('assistant', 'old reply'), ...active];
-    const report = buildContextReport(active, {
-      model: 'claude-sonnet-5',
-      maxTokens: 100000,
-      commandCount: 5,
-      hasClaudeMdLoader: false,
-      transcriptMessages: transcript,
-    });
-
-    expect(report).toContain('Visible transcript messages: 3');
-    expect(report).toContain('Active context messages: 1');
   });
 
   it('reports when CLAUDE.md instructions are loaded', () => {

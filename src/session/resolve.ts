@@ -6,7 +6,6 @@ export type SessionStartSource = 'startup' | 'resume' | 'clear';
 export interface SessionBootstrap {
   sessionId: string;
   sessionName?: string;
-  /** Compatibility alias for contextHistory. */
   history: Message[];
   transcript?: Message[];
   contextHistory?: Message[];
@@ -75,25 +74,6 @@ export function persistHistory(
             },
     });
   }
-}
-
-function emptyBootstrap(
-  sessionId: string,
-  sessionName: string | undefined,
-  persisted: boolean,
-): SessionBootstrap {
-  const contextHistory: Message[] = [];
-  return {
-    sessionId,
-    sessionName,
-    history: contextHistory,
-    transcript: [],
-    contextHistory,
-    compactBoundaries: [],
-    source: 'startup',
-    persisted,
-    created: true,
-  };
 }
 
 export function resolveSessionBootstrap(

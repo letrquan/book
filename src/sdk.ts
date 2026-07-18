@@ -90,20 +90,11 @@ export async function* query(
     // Use a passthrough stdout to capture events.
     const events: QueryEvent[] = [];
 
-    // The SDK starts without a loaded transcript. Keep the legacy `history`
-    // alias while also initializing compact-v2's independent projections so
-    // provider-neutral query callers work with either HeadlessOptions shape.
-    const initialSessionProjections = {
-      history: [] as Message[],
-      transcript: [] as Message[],
-      contextHistory: [] as Message[],
-      compactBoundaries: [],
-    };
     const result = await runHeadless(config, registry, {
       prompt,
       inputFormat: 'text',
       outputFormat: 'stream-json',
-      ...initialSessionProjections,
+      history: [],
       mode: (options.permissionMode as HeadlessOptions['mode']) || 'default',
       maxTurns: options.maxTurns,
       persistSession: options.persistSession,

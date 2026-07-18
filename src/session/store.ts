@@ -34,218 +34,11 @@ function normalizeWorkspace(cwd: string): string {
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
-function clamp(value: number | undefined, fallback: number, max: number): number {
-  if (value === undefined || !Number.isFinite(value)) return fallback;
-  return Math.max(1, Math.min(max, Math.floor(value)));
-}
-
-function eventIdFor(record: SessionRecord, ordinal: number): string {
-  return record.eventId ?? `legacy-line-${ordinal}`;
-}
-
-function eventRef(eventId: string): string {
-  return `session://current/event/${eventId}`;
-}
-
-function isEventRecord(record: SessionRecord): boolean {
-  return record.type !== 'session_meta';
-}
-
-function hasDurableEventIdentity(record: SessionRecord): boolean {
-  return (
-    record.type === 'user' ||
-    record.type === 'assistant' ||
-    record.type === 'local' ||
-    record.type === 'compact'
-  );
-}
-
-function recordToolNames(record: SessionRecord): string[] | undefined {
-  const data = record.data as {
-    name?: unknown;
-    toolCalls?: Array<{ name?: unknown }>;
-  };
-  const names = new Set<string>();
-  if (typeof data?.name === 'string') names.add(data.name);
-  if (Array.isArray(data?.toolCalls)) {
-    for (const call of data.toolCalls) {
-      if (typeof call?.name === 'string') names.add(call.name);
-    }
-  }
-  return names.size > 0 ? [...names] : undefined;
-}
-
-function recordText(record: SessionRecord): string {
-  const data = record.data as {
-    content?: unknown;
-    contextContent?: unknown;
-    summary?: unknown;
-    error?: unknown;
-    output?: unknown;
-    toolCalls?: unknown;
-    toolResults?: unknown;
-  };
-  const parts: string[] = [];
-  if (typeof data?.content === 'string') parts.push(data.content);
-  if (typeof data?.contextContent === 'string' && data.contextContent !== data.content) {
-    parts.push(data.contextContent);
-  }
-  if (typeof data?.summary === 'string') parts.push(data.summary);
-  if (data?.toolCalls !== undefined) parts.push(JSON.stringify(data.toolCalls));
-  if (data?.toolResults !== undefined) parts.push(JSON.stringify(data.toolResults));
-  if (typeof data?.output === 'string') parts.push(data.output);
-  if (typeof data?.error === 'string') parts.push(data.error);
-  if (parts.length > 0) return parts.join('\n');
-  try {
-    return JSON.stringify(record.data) ?? '';
-  } catch {
-    return String(record.data ?? '');
-  }
-}
-
-function isMessageLike(value: unknown): value is Message {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<Message>;
-  return (
-    (candidate.role === 'user' || candidate.role === 'assistant') &&
-    typeof candidate.content === 'string'
-  );
-}
-
-function validCompactData(data: unknown): CompactRecordData | undefined {
-  if (!data || typeof data !== 'object') return undefined;
-  const compact = data as Partial<CompactRecordData> & Record<string, unknown>;
-  if (compact.version !== 1 && compact.version !== 2) return undefined;
-  if (compact.trigger !== 'manual' && compact.trigger !== 'auto') return undefined;
-  if (typeof compact.summary !== 'string') return undefined;
-  if (!Array.isArray(compact.replacementHistory) || compact.replacementHistory.length === 0) {
-    return undefined;
-  }
-  if (!compact.replacementHistory.every(isMessageLike)) return undefined;
-  if (
-    compact.version === 2 &&
-    (!Number.isInteger(compact.generation) ||
-      typeof compact.throughEventRef !== 'string' ||
-      !compact.stateAtCheckpoint ||
-      typeof compact.stateAtCheckpoint !== 'object' ||
-      !Array.isArray(compact.constraints) ||
-      !Array.isArray(compact.files) ||
-      !Array.isArray(compact.episodes) ||
-      !Array.isArray(compact.openThreads) ||
-      !compact.stats ||
-      typeof compact.stats !== 'object')
-  ) {
-    return undefined;
-  }
-  return compact as CompactRecordData;
-}
-
-function replayMessage(
-  message: Message,
-  fallbackId: string,
-  fallbackTimestamp: number,
-  checkpoint?: ConversationCheckpointV2,
-  checkpointMessage = false,
-): Message {
-  return {
-    id: typeof message.id === 'string' && message.id ? message.id : fallbackId,
-    role: message.role,
-    content: message.content,
-    contextContent: message.contextContent,
-    includeInContext: message.includeInContext ?? true,
-    kind: checkpointMessage ? 'checkpoint' : (message.kind ?? 'conversation'),
-    checkpoint: message.checkpoint ?? (checkpointMessage ? checkpoint : undefined),
-    toolCalls: message.toolCalls,
-    toolResults: message.toolResults,
-    nestedToolInvocations: message.nestedToolInvocations,
-    fileObservations: message.fileObservations,
-    timestamp: message.timestamp ?? fallbackTimestamp,
-  };
-}
-
-function compactCheckpoint(data: CompactRecordData): ConversationCheckpointV2 | undefined {
-  return data.version === 2 ? data : undefined;
-}
-
-function compactBoundary(
-  record: SessionRecord,
-  eventId: string,
-  data: CompactRecordData,
-  transcriptLength: number,
-  activeContextLength: number,
-  retainedContextLength: number,
-  priorBoundaryCount: number,
-): CompactBoundary {
-  const stored = data.boundary;
-  return {
-    id: stored?.id ?? eventId,
-    timestamp: stored?.timestamp ?? record.timestamp,
-    trigger: stored?.trigger ?? data.trigger,
-    afterTranscriptOrdinal: stored?.afterTranscriptOrdinal ?? transcriptLength,
-    preContextMessages: stored?.preContextMessages ?? data.preMessageCount ?? activeContextLength,
-    retainedContextMessages: stored?.retainedContextMessages ?? retainedContextLength,
-    preContextTokens: stored?.preContextTokens ?? data.preContextTokens,
-    estimatedPostTokens: stored?.estimatedPostTokens,
-    checkpointVersion: data.version,
-    generation:
-      stored?.generation ?? (data.version === 2 ? data.generation : priorBoundaryCount + 1),
-  };
-}
-
-function boundedEvents(
-  events: SessionHistoryEvent[],
-  maxEvents: number,
-  maxChars: number,
-): SessionHistoryEvent[] {
-  const bounded: SessionHistoryEvent[] = [];
-  let remaining = maxChars;
-  for (const event of events) {
-    if (bounded.length >= maxEvents || remaining <= 0) break;
-    const text = event.text.slice(0, remaining);
-    bounded.push({ ...event, text });
-    remaining -= text.length;
-  }
-  return bounded;
-}
-
-function parseSingleRef(ref: string): { eventId: string; toolCallId?: string } | undefined {
-  const prefix = 'session://current/event/';
-  if (!ref.startsWith(prefix)) return undefined;
-  const rest = ref.slice(prefix.length);
-  const marker = '/tool-result/';
-  const markerIndex = rest.indexOf(marker);
-  if (markerIndex < 0) return rest ? { eventId: rest } : undefined;
-  const eventId = rest.slice(0, markerIndex);
-  const toolCallId = rest.slice(markerIndex + marker.length);
-  return eventId && toolCallId ? { eventId, toolCallId } : undefined;
-}
-
-function parseRangeRef(ref: string): { first: string; last: string } | undefined {
-  const prefix = 'session://current/events/';
-  if (!ref.startsWith(prefix)) return undefined;
-  const separator = ref.slice(prefix.length).indexOf('..');
-  if (separator < 0) return undefined;
-  const rest = ref.slice(prefix.length);
-  const first = rest.slice(0, separator);
-  const last = rest.slice(separator + 2);
-  return first && last ? { first, last } : undefined;
-}
-
-function toolResultText(record: SessionRecord, toolCallId: string): string | undefined {
-  const data = record.data as {
-    toolResults?: Array<{ toolCallId?: unknown; output?: unknown; error?: unknown }>;
-  };
-  const result = data?.toolResults?.find((candidate) => candidate.toolCallId === toolCallId);
-  if (!result) return undefined;
-  const output = typeof result.output === 'string' ? result.output : '';
-  const error = typeof result.error === 'string' ? result.error : '';
-  return [output, error].filter(Boolean).join('\n');
-}
-
 /**
  * JSONL session persistence. Each session is one file under <root>/<id>.jsonl.
- * The append-only event stream is replayed into an immutable visible transcript
- * and a replaceable provider-facing context projection.
+ * The first line is a session_meta record; subsequent lines are event records
+ * (user / assistant / tool_call / tool_result / usage). load() replays the
+ * records into a Message[] history the agent loop can resume from.
  */
 export class SessionStore {
   constructor(private root: string) {
@@ -254,15 +47,6 @@ export class SessionStore {
 
   private path(id: string): string {
     return join(this.root, `${id}.jsonl`);
-  }
-
-  private records(id: string): SessionRecord[] {
-    const p = this.path(id);
-    if (!existsSync(p)) throw new Error(`Session not found: ${id}`);
-    return readFileSync(p, 'utf-8')
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as SessionRecord);
   }
 
   create(meta: { cwd: string; name?: string; id?: string }): string {
@@ -286,30 +70,7 @@ export class SessionStore {
   }
 
   append(id: string, record: SessionRecord): void {
-    const persisted =
-      record.eventId === undefined && hasDurableEventIdentity(record)
-        ? { ...record, eventId: crypto.randomUUID() }
-        : record;
-    appendFileSync(this.path(id), JSON.stringify(persisted) + '\n', 'utf-8');
-  }
-
-  /** Copy the ordered event stream without flattening compact or local records. */
-  copyEvents(sourceId: string, targetId: string): void {
-    const records = this.records(sourceId);
-    for (let index = 0; index < records.length; index++) {
-      const record = records[index];
-      if (!isEventRecord(record)) continue;
-      this.append(targetId, {
-        ...record,
-        eventId: record.eventId ?? `legacy-line-${index + 1}`,
-      });
-    }
-  }
-
-  fork(sourceId: string, meta: { cwd: string; name?: string; id?: string }): string {
-    const targetId = this.create(meta);
-    this.copyEvents(sourceId, targetId);
-    return targetId;
+    appendFileSync(this.path(id), JSON.stringify(record) + '\n', 'utf-8');
   }
 
   readRecords(id: string): SessionRecord[] {
@@ -363,10 +124,8 @@ export class SessionStore {
       const data = record.data as {
         kind?: string;
         name?: string;
-        role?: Message['role'];
         content?: string;
         contextContent?: string;
-        includeInContext?: boolean;
         complete?: boolean;
         toolCalls?: Message['toolCalls'];
         toolResults?: Message['toolResults'];

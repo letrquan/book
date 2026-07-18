@@ -261,13 +261,10 @@ export type CompactResult =
       throughEventRef?: string;
       preContextTokens?: number;
       preMessageCount: number;
-      retainedMessageCount: number;
-      estimatedPostTokens: number;
-      generation: number;
     }
   | {
       status: 'skipped';
-      reason: 'too-short' | 'blocked' | 'disabled' | 'no-prefix';
+      reason: 'too-short' | 'blocked' | 'disabled';
       message?: string;
     }
   | {
@@ -330,52 +327,6 @@ export interface FileMutationSummary {
   removedLines: number;
 }
 
-/** Exact coverage shown to the model while the fingerprint covers the whole file. */
-export type FileObservationCoverage =
-  | { kind: 'full' }
-  | { kind: 'lines'; startLine: number; endLine: number; totalLines: number }
-  | { kind: 'bytes'; startByte: number; endByte: number; totalBytes: number };
-
-/** Provider-neutral provenance for file contents observed or successfully mutated in this session. */
-export interface FileObservation {
-  workspaceIdentity: string;
-  path: string;
-  sha256: string;
-  sizeBytes: number;
-  coverage: FileObservationCoverage;
-  operation: 'read' | 'mention' | 'edit' | 'write' | 'create';
-  sourceRef: string;
-}
-
-/** Explicit session-loop state. The newest observation for a normalized path wins. */
-export interface FileObservationLedger {
-  remember(observation: FileObservation): void;
-  latest(path: string): FileObservation | undefined;
-  all(): FileObservation[];
-}
-
-export interface SessionHistoryEntry {
-  reference: string;
-  type: string;
-  text: string;
-  ordinal?: number;
-  timestamp?: number;
-  path?: string;
-  toolName?: string;
-}
-
-/** Narrow read-only host capability scoped to exactly one active persisted session. */
-export interface SessionHistoryCapability {
-  sessionId: string;
-  workspaceIdentity: string;
-  search(options: { query: string; limit: number }): Promise<SessionHistoryEntry[]>;
-  read(options: {
-    reference: string;
-    maxEvents: number;
-    maxOutputChars: number;
-  }): Promise<SessionHistoryEntry[]>;
-}
-
 export type BackgroundShellStatus =
   'running' | 'stopping' | 'exited' | 'failed' | 'killed' | 'timed_out';
 
@@ -414,8 +365,6 @@ export interface ToolResult {
   retryAttempt?: number;
   /** Structured metadata for Write/Edit/MultiEdit file changes. */
   fileMutation?: FileMutationSummary;
-  /** File fingerprints captured by this tool result. */
-  fileObservations?: FileObservation[];
   /** Legacy metadata: whether a file creation occurred. Prefer fileMutation.kind. */
   isCreate?: boolean;
   /** Stable persisted reference used by compact checkpoints and history retrieval. */
@@ -476,8 +425,6 @@ export interface ToolDefinition {
   parameters: Record<string, unknown>;
   /** When true, the tool is safe to retry once on transient failure (Read, Grep, WebFetch, etc.). */
   idempotent?: boolean;
-  /** Optional host-capability gate; unavailable tools are omitted from model-facing definitions. */
-  isAvailable?: (context: ToolContext) => boolean;
   execute: (args: Record<string, unknown>, context: ToolContext) => Promise<ToolResult>;
 }
 
@@ -496,10 +443,6 @@ export interface ToolContext {
   currentToolTraceId?: string;
   /** Observer for display-only tools invoked inside Task subagents. */
   nestedToolObserver?: NestedToolObserver;
-  /** Active persisted-session history, when the host can provide it safely. */
-  sessionHistory?: SessionHistoryCapability;
-  /** File observations shared across tool calls in this session loop. */
-  fileObservations?: FileObservationLedger;
   /** Agent todo list — written by TodoWrite, read by the loop for context injection. */
   todos?: Array<{ content: string; status: string; activeForm?: string }>;
   /** Agent task list — written by TaskCreate/TaskUpdate and shared across tool calls. */
@@ -648,73 +591,6 @@ export interface AgentLoopCallbacks {
 export type OutputFormat = 'text' | 'json' | 'stream-json';
 export type InputFormat = 'text' | 'stream-json';
 
-export type CheckpointStateStatus =
-  'in_progress' | 'completed' | 'blocked' | 'paused' | 'superseded';
-
-export interface CheckpointConstraintV2 {
-  exactText: string;
-  scope: 'session' | 'task' | 'path' | 'unknown';
-  status: 'active' | 'superseded';
-  pathPatterns?: string[];
-  sourceRef: string;
-  supersededBy?: string;
-}
-
-export interface CheckpointFileV2 {
-  path: string;
-  workspaceIdentity: string;
-  sha256: string;
-  sizeBytes: number;
-  symbols?: string[];
-  relevanceNote: string;
-  observations: string[];
-  sourceRefs: string[];
-}
-
-export interface CheckpointEpisodeV2 {
-  label: string;
-  status: 'completed' | 'paused' | 'blocked' | 'superseded';
-  outcome: string;
-  paths: string[];
-  sourceRange: string;
-}
-
-/** Provider-neutral structured summary of the compacted historical prefix. */
-export interface ConversationCheckpointV2 {
-  version: 2;
-  generation: number;
-  throughEventRef: string;
-  stateAtCheckpoint: {
-    taskSummary: string;
-    status: CheckpointStateStatus;
-    sourceRefs: string[];
-  };
-  constraints: CheckpointConstraintV2[];
-  files: CheckpointFileV2[];
-  episodes: CheckpointEpisodeV2[];
-  openThreads: string[];
-  stats: {
-    summarizedMessages: number;
-    retainedMessages: number;
-    estimatedPrefixTokens: number;
-    estimatedTailTokens: number;
-  };
-}
-
-export interface CompactBoundary {
-  id: string;
-  timestamp: number;
-  trigger: CompactTrigger;
-  /** Number of visible transcript messages preceding this boundary. */
-  afterTranscriptOrdinal: number;
-  preContextMessages: number;
-  retainedContextMessages: number;
-  preContextTokens?: number;
-  estimatedPostTokens?: number;
-  checkpointVersion: 1 | 2;
-  generation: number;
-}
-
 export interface SessionRecord {
   type:
     | 'user'
@@ -736,8 +612,6 @@ export interface CompactRecordDataV1 {
   trigger: CompactTrigger;
   summary: string;
   preContextTokens?: number;
-  preMessageCount?: number;
-  boundary?: CompactBoundary;
   /** Full post-compact history (summary message + any retained tail). */
   replacementHistory: Message[];
 }
@@ -850,7 +724,6 @@ export interface HeadlessOptions {
   prompt?: string;
   inputFormat: InputFormat;
   outputFormat: OutputFormat;
-  /** Compatibility alias for provider-facing context history. */
   history: Message[];
   transcript?: Message[];
   compactBoundaries?: CompactBoundary[];

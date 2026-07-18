@@ -13,8 +13,8 @@ import type {
   SessionMeta,
   SessionRecord,
   SessionStoreInterface,
-  CompactBoundary,
   CompactResult,
+  CompactRecordData,
   CompactTrigger,
   CompactBoundary,
 } from '../../types.js';
@@ -28,10 +28,6 @@ import {
 } from '../../agent/compact.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
 import { createDefaultRegistry } from '../../tools/registry.js';
-import {
-  createFileObservationLedger,
-  observationsFromMessages,
-} from '../../tools/file-observation.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types.js';
 import { makeMessage, removeTrailingEmptyAssistantPlaceholder } from './streaming-state.js';
@@ -53,8 +49,6 @@ import { observationKey } from '../../tools/file-provenance.js';
 import { selectSession, type SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';
 import { runSessionEnd, runSessionStart } from '../../session/lifecycle.js';
-import { buildCompactRecord } from '../../session/compact-record.js';
-import { createSessionHistoryCapability } from '../../tools/session-history.js';
 
 const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
@@ -209,9 +203,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // Resolve handles for pending interactive prompts (refs for idempotent settle).
   const pendingPermissionRef = useRef<PendingPermission | null>(pendingPermission);
   const pendingPlanApprovalRef = useRef<PendingPlanApproval | null>(pendingPlanApproval);
-  const fileObservationLedgerRef = useRef<FileObservationLedger>(
-    createFileObservationLedger(observationsFromMessages(initialContextHistory)),
-  );
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -445,7 +436,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         sessionId: opts.sessionId,
         focus: opts.focus,
       });
-      return built.boundary;
     },
     [session.store],
   );
@@ -482,12 +472,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         hasCommandContext: !!commandContext,
       });
 
-      const mentionExpansion = expandAtMentionsWithObservations(
-        userMessage,
+      const contextMessage = expandShellCommands(
+        expandAtMentions(userMessage, liveConfig.workspace),
         liveConfig.workspace,
-        `session://current/event/pending-user-${generation}`,
       );
-      const contextMessage = expandShellCommands(mentionExpansion.text, liveConfig.workspace);
 
       // Cross-turn auto-compact before appending the new user message.
       const contextLimit = resolveContextLimit(liveConfig);
@@ -709,7 +697,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                 trigger: 'auto',
                 sessionId: activeSessionId,
                 preContextTokens: usagePressureTokens(usage),
-                fileObservations: fileObservationLedgerRef.current.all(),
               });
               if (!stillCurrent()) return result;
               if (result.status === 'compacted') {
@@ -789,17 +776,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           mode,
           {
             signal: controller.signal,
-            userMessageId: userMsg.id,
-            fileObservations: userMsg.fileObservations,
-            fileObservationLedger: fileObservationLedgerRef.current,
-            sessionHistory:
-              session.store && activeSessionId
-                ? createSessionHistoryCapability(
-                    session.store,
-                    activeSessionId,
-                    liveConfig.workspace,
-                  )
-                : undefined,
             nestedToolObserver: {
               onToolCall: (invocation: NestedToolInvocation) => {
                 if (stillCurrent()) activeAccumulator?.addNestedToolCall(invocation);
@@ -820,9 +796,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           },
         );
         if (stillCurrent()) {
-          // The loop return is authoritative provider context. Optimistic messages
-          // remain append-only in the visible transcript.
-          contextHistoryRef.current = updatedHistory;
+          // Flush the UI accumulator, but keep its authoritative display state:
+          // nested tool traces are display-only and are not present in the loop's
+          // returned API history. Assistant turns are persisted via
+          // onAssistantMessageComplete (not final-history length slicing).
           activeAccumulator?.stop();
           contextHistoryRef.current = updatedHistory;
         }
@@ -935,7 +912,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           sessionId: activeSessionId,
           preContextTokens,
           signal: controller.signal,
-          fileObservations: fileObservationLedgerRef.current.all(),
         });
 
         if (!stillCurrent()) return;

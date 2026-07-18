@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { expandAtMentions, expandAtMentionsWithObservations } from './input-expansion.js';
+import { expandAtMentions } from './input-expansion.js';
 
 let dirs: string[] = [];
 
@@ -71,28 +71,6 @@ describe('expandAtMentions', () => {
     const result = expandAtMentions('Read @large.txt', ws);
 
     expect(result).toContain('File truncated at 20000 characters');
-  });
-
-  it('returns observations and hashes full content for truncated mentions', () => {
-    const ws = workspace();
-    writeFileSync(join(ws, 'large.txt'), 'x'.repeat(20_100));
-
-    const result = expandAtMentionsWithObservations(
-      'Read @large.txt',
-      ws,
-      'session://current/event/user-1',
-    );
-
-    expect(result.text).toContain('File truncated at 20000 characters');
-    expect(result.fileObservations).toHaveLength(1);
-    expect(result.fileObservations[0]).toMatchObject({
-      path: 'large.txt',
-      sizeBytes: 20_100,
-      operation: 'mention',
-      sourceRef: 'session://current/event/user-1',
-      coverage: { kind: 'bytes', startByte: 0, endByte: 20_000, totalBytes: 20_100 },
-    });
-    expect(result.fileObservations[0].sha256).toHaveLength(64);
   });
 
   it('does not rewrite emails or incidental @ text', () => {

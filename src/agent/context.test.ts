@@ -24,6 +24,12 @@ function systemPrefix(out: Awaited<ReturnType<typeof buildMessages>>): string {
   return content.cachedPrefix;
 }
 
+function systemSuffix(out: Awaited<ReturnType<typeof buildMessages>>): string {
+  const content = out[0].content;
+  if (!content || typeof content !== 'object') throw new Error('expected zoned system prompt');
+  return content.dynamicSuffix;
+}
+
 describe('buildMessages', () => {
   it('emits tool_calls on assistant messages and a tool role message per result', async () => {
     const tc = toolCall('call_1', 'read_file', { filePath: 'a.ts' });
@@ -261,14 +267,7 @@ describe('buildMessages', () => {
     expect(zones.cachedPrefix).toContain('You are Book');
     expect(zones.cachedPrefix).toContain('## Available tools');
     expect(zones.cachedPrefix).toContain('## Guardrails');
-    expect(zones.cachedPrefix).toContain('## Checkpoint and historical-data contract');
-    expect(zones.cachedPrefix).toContain('later exact user messages');
     expect(zones.cachedPrefix).not.toContain('## Current task list');
-    expect(zones.cachedPrefix).not.toContain('## Live workspace state');
-    expect(zones.cachedPrefix).not.toContain('- Git:');
-    expect(zones.cachedPrefix).not.toContain('- Current date:');
-    expect(zones.dynamicSuffix).toContain('## Live workspace state');
-    expect(zones.dynamicSuffix).toContain('- Current date:');
     expect(zones.dynamicSuffix).toContain('## Current task list');
     expect(zones.dynamicSuffix).toContain('[>] Write tests (now: Writing tests)');
   });

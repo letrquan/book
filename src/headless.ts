@@ -1,9 +1,12 @@
 import type {
   AgentConfig,
-  CompactBoundary,
+  CompactRecordData,
+  Message,
+  ToolCall,
+  ToolResult,
   HeadlessOptions,
   HeadlessResult,
-  Message,
+  Usage,
   SessionRecord,
   SessionStoreInterface,
   CompactBoundary,
@@ -63,9 +66,8 @@ export async function runHeadless(
     await runSessionStart(config, sessionId, opts.history.length > 0 ? 'resume' : 'startup', {
       onHookEvent: opts.includeHookEvents
         ? (event, payload) => {
-            if (opts.outputFormat === 'stream-json') {
+            if (opts.outputFormat === 'stream-json')
               emit({ type: 'hook_event', event, ...payload });
-            }
           }
         : undefined,
     });
@@ -95,24 +97,6 @@ export async function runHeadless(
   config.tasks ??= [];
   config.backgroundShells ??= { nextId: 1, shells: new Map() };
 
-  const commitCompactResult = async (
-    result: Extract<Awaited<ReturnType<typeof runCompact>>, { status: 'compacted' }>,
-  ): Promise<CompactBoundary> => {
-    const built = buildCompactRecord(result, {
-      afterTranscriptOrdinal: transcript.length,
-      generation: compactGeneration + 1,
-      estimatedPostTokens: result.estimatedPostTokens,
-      checkpoint: result.checkpoint,
-    });
-    // Durable append is the commit point. If this throws, provider context is unchanged.
-    if (store && sessionId) store.append(sessionId, built.record);
-    compactGeneration = built.boundary.generation;
-    contextHistory.length = 0;
-    contextHistory.push(...result.replacementHistory);
-    lastUsage = null;
-    return built.boundary;
-  };
-
   // Collect prompts: text input -> single prompt; stream-json -> read stdin.
   const prompts: string[] = [];
   if (opts.inputFormat === 'text') {
@@ -137,13 +121,7 @@ export async function runHeadless(
   }
 
   for (const prompt of prompts) {
-    const userMessageId = crypto.randomUUID();
-    const mentionExpansion = expandAtMentionsWithObservations(
-      prompt,
-      config.workspace,
-      `session://current/event/${userMessageId}`,
-    );
-    const expandedPrompt = mentionExpansion.text;
+    const expandedPrompt = expandAtMentions(prompt, config.workspace);
 
     // Cross-turn auto-compact before appending the new user message.
     const contextLimit = resolveContextLimit(config);
@@ -169,8 +147,6 @@ export async function runHeadless(
                 }
               }
             : undefined,
-          upcomingUserIntent: expandedPrompt,
-          fileObservations: fileObservationLedger.all(),
         });
         if (compactResult.status === 'compacted') {
           const timestamp = Date.now();
@@ -229,7 +205,7 @@ export async function runHeadless(
           }
         }
       } catch {
-        // Non-fatal. Preserve the existing context if compact or persistence fails.
+        // non-fatal
       }
     }
 
@@ -269,11 +245,6 @@ export async function runHeadless(
         },
       } satisfies SessionRecord);
     }
-    transcript.push(userMessage);
-    for (const observation of userMessage.fileObservations ?? []) {
-      fileObservationLedger.remember(observation);
-    }
-
     const updated = await runAgentLoop(
       {
         ...config,
@@ -351,7 +322,6 @@ export async function runHeadless(
                   }
                 }
               : undefined,
-            fileObservations: fileObservationLedger.all(),
           });
           if (result.status === 'compacted') {
             const timestamp = Date.now();
@@ -509,9 +479,8 @@ export async function runHeadless(
     await runSessionEnd(config, sessionId, 'completion', {
       onHookEvent: opts.includeHookEvents
         ? (event, payload) => {
-            if (opts.outputFormat === 'stream-json') {
+            if (opts.outputFormat === 'stream-json')
               emit({ type: 'hook_event', event, ...payload });
-            }
           }
         : undefined,
     });
@@ -522,8 +491,8 @@ export async function runHeadless(
 
 function lastAssistantText(history: Message[]): string {
   for (let i = history.length - 1; i >= 0; i--) {
-    const message = history[i];
-    if (message.role === 'assistant' && message.content) return message.content;
+    const m = history[i];
+    if (m.role === 'assistant' && m.content) return m.content;
   }
   return '';
 }
@@ -553,7 +522,7 @@ async function generatePromptSuggestions(
   history: Message[],
   signal?: AbortSignal,
 ): Promise<string[]> {
-  const { chatCompletionStream } = await import('./provider/index.js');
+  const { chatCompletionStream } = await import('./provider/openai-compatible.js');
   const { buildMessages } = await import('./agent/context.js');
 
   const suggestionMessages = await buildMessages(
@@ -589,14 +558,14 @@ async function generatePromptSuggestions(
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
       if (Array.isArray(parsed)) {
-        return parsed.filter((value) => typeof value === 'string' && value.length > 0).slice(0, 3);
+        return parsed.filter((s) => typeof s === 'string' && s.length > 0).slice(0, 3);
       }
     }
   } catch {
     // Fallback: try to extract quoted strings.
     const quoted = content.match(/"([^"]+)"/g);
     if (quoted) {
-      return quoted.map((value) => value.replace(/^"|"$/g, '')).slice(0, 3);
+      return quoted.map((s) => s.replace(/^"|"$/g, '')).slice(0, 3);
     }
   }
   return [];

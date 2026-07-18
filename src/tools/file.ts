@@ -34,9 +34,9 @@ async function countOccurrences(
 async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
-  const { filePath, relativePath } = resolved;
-  const offset = Math.max(1, Math.floor((args.offset as number) || 1));
-  const limit = Math.max(1, Math.floor((args.limit as number) || 2000));
+  const { filePath } = resolved;
+  const offset = (args.offset as number) || 1;
+  const limit = (args.limit as number) || 2000;
 
   let content: string;
   try {
@@ -95,11 +95,6 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
     }
   }
 
-  const freshnessError = staleMutationError(ctx, relativePath, existed ? oldContent : null);
-  if (freshnessError) {
-    return { toolCallId: '', success: false, output: '', error: freshnessError };
-  }
-
   const newContent = args.content as string;
   const { diff, stats } = await renderDiffWithStatsAsync(oldContent, newContent, 3, ctx.signal);
   throwIfAborted(ctx.signal);
@@ -124,7 +119,6 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
       addedLines: stats.addedLines,
       removedLines: stats.removedLines,
     },
-    fileObservations: [observation],
     isCreate: !existed,
     fileObservations: [observation],
   };
@@ -149,11 +143,6 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
         ? `File not found: ${args.filePath}`
         : `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
     };
-  }
-
-  const freshnessError = staleMutationError(ctx, relativePath, content);
-  if (freshnessError) {
-    return { toolCallId: '', success: false, output: '', error: freshnessError };
   }
 
   const oldStr = args.oldString as string;
@@ -244,10 +233,6 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
     };
   }
   const original = content;
-  const freshnessError = staleMutationError(ctx, relativePath, original);
-  if (freshnessError) {
-    return { toolCallId: '', success: false, output: '', error: freshnessError };
-  }
 
   for (let i = 0; i < edits.length; i++) {
     const edit = edits[i];

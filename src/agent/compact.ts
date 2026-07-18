@@ -10,12 +10,6 @@ import type {
 import { chatCompletionStream } from '../provider/index.js';
 import { runHooks } from '../hooks.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
-import { estimateMessagesTokens } from '../context-report.js';
-import {
-  checkpointEventRef,
-  renderCheckpointMessage,
-  validateCheckpointResponse,
-} from './checkpoint.js';
 import { createDebugLogger } from '../debug-log.js';
 
 const log = createDebugLogger('compact');
@@ -184,9 +178,6 @@ export interface RunCompactOptions {
   signal?: AbortSignal;
   onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
   minMessages?: number;
-  tailBudgetTokens?: number;
-  postCompactBudgetTokens?: number;
-  fileObservations?: readonly import('../types.js').FileObservation[];
 }
 
 export async function runCompact(
@@ -206,6 +197,7 @@ export async function runCompact(
   if (hookResult) return hookResult;
   if (options.signal?.aborted) {
     return { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' };
+  }
 
   const contextWindow = resolveContextLimit(config) ?? UNKNOWN_MANUAL_CONTEXT_WINDOW;
   const recentBudget = Math.min(RECENT_TAIL_MAX_TOKENS, contextWindow * RECENT_TAIL_FRACTION);
@@ -352,9 +344,6 @@ export async function runCompact(
     preContextTokens: preTokens,
     postContextTokens,
     preMessageCount,
-    retainedMessageCount: selected.tail.length,
-    estimatedPostTokens,
-    generation,
   };
 }
 

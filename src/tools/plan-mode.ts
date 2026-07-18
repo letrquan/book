@@ -2,8 +2,6 @@ import type { PermissionMode, ToolContext, ToolDefinition, ToolResult } from '..
 
 export const READ_ONLY_PLAN_TOOLS = new Set([
   'Read',
-  'SessionHistorySearch',
-  'SessionHistoryRead',
   'Glob',
   'Grep',
   'GitStatus',

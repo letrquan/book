@@ -15,8 +15,7 @@ import { WelcomeScreen } from './WelcomeScreen.js';
 import { AsciiBanner } from './AsciiBanner.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
-import { buildTranscriptItems, type TranscriptCompactBoundary } from './transcript-messages.js';
-import { CompactDiffCard } from './CompactDiffCard.js';
+import { mergeAssistantMessages } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');

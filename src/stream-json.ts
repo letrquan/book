@@ -8,21 +8,7 @@
 
 /** Known event types in the stream-json wire format. */
 export type StreamJsonEvent =
-  | {
-      type: 'system';
-      model?: string;
-      cwd?: string;
-      subtype?: 'compact_boundary' | string;
-      trigger?: 'manual' | 'auto';
-      pre_tokens?: number;
-      boundary_id?: string;
-      after_transcript_ordinal?: number;
-      pre_context_messages?: number;
-      retained_context_messages?: number;
-      estimated_post_tokens?: number;
-      checkpoint_version?: number;
-      generation?: number;
-    }
+  | { type: 'system'; model?: string; cwd?: string }
   | { type: 'session'; session_id?: string }
   | { type: 'assistant'; text?: string }
   | { type: 'tool_use'; tool_call?: unknown }

@@ -198,9 +198,6 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   }
   throwIfAborted(ctx.signal);
 
-  const freshnessError = staleMutationError(ctx, relativePath, original);
-  if (freshnessError) return fail(freshnessError);
-
   const parsed = parseNotebook(original);
   if ('result' in parsed) return parsed.result;
   const { notebook } = parsed;

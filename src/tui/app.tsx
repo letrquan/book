@@ -6,6 +6,7 @@ import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { StatusLine } from './components/StatusLine.js';
 import { WorkingIndicator } from './components/WorkingIndicator.js';
+import { CompactDiffCard } from './components/CompactDiffCard.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
@@ -125,6 +126,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
     isThinking,
     isCompacting,
     compactUi,
+    setCompactUi,
     streamingMessageId,
     error,
     currentTurn,
@@ -528,8 +530,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
         );
       } else if (value.startsWith('/context')) {
         addLocalMessage(
-          buildContextReport(contextHistory, {
-            transcriptMessages: messages,
+          buildContextReport(messages, {
             model: liveConfig.model,
             maxTokens: liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens,
             contextHistory,
@@ -1194,6 +1195,20 @@ export function App({ config, session, redrawViewport }: AppProps) {
             reducedMotion={motionDisabled}
             screenReader={screenReader}
           />
+
+          {compactUi && compactUi.phase !== 'working' ? (
+            <CompactDiffCard
+              state={compactUi}
+              terminalWidth={termWidth}
+              reducedMotion={motionDisabled}
+              screenReader={screenReader}
+              onSettled={() => {
+                if (compactUi.phase === 'diff') {
+                  setCompactUi({ ...compactUi, phase: 'done' });
+                }
+              }}
+            />
+          ) : null}
 
           {/* Input bar — above the status line. Command menu is built into InputBar. */}
           <Box flexDirection="column" flexShrink={0} width={termWidth}>

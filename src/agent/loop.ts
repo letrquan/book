@@ -10,9 +10,6 @@ import type {
   Usage,
   RetryPhase,
   PermissionMode,
-  FileObservation,
-  FileObservationLedger,
-  SessionHistoryCapability,
 } from '../types.js';
 import { chatCompletionStream } from '../provider/index.js';
 import { buildMessages } from './context.js';
@@ -28,11 +25,6 @@ import { createDebugLogger } from '../debug-log.js';
 import { maybeCaptureMemoryCandidate } from '../memory-autosave.js';
 import { READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
-import {
-  createFileObservationLedger,
-  observationsFromMessages,
-  rememberFileObservations,
-} from '../tools/file-observation.js';
 
 const log = createDebugLogger('agent');
 
@@ -85,6 +77,11 @@ export async function runAgentLoop(
   const effectiveConfig = options?.modelOverride
     ? { ...config, model: options.modelOverride }
     : config;
+
+  // Apply tool filtering from command frontmatter (allowed-tools).
+  const effectiveDefinitions = options?.allowedTools
+    ? registry.getDefinitions().filter((t) => options.allowedTools!.includes(t.name))
+    : undefined;
 
   // SessionStart hook — hosts with a multi-turn lifecycle (the TUI/headless
   // session wrapper) disable this and fire it at the actual session boundary.
@@ -168,12 +165,6 @@ export async function runAgentLoop(
   config.backgroundShells ??= { nextId: 1, shells: new Map() };
   config.fileObservationLedger ??= new Map();
   const initialMode = mode as PermissionMode;
-  const fileObservationLedger =
-    options?.fileObservationLedger ??
-    createFileObservationLedger([
-      ...observationsFromMessages(history),
-      ...(options?.fileObservations ?? []),
-    ]);
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
     env: process.env as Record<string, string>,
@@ -182,20 +173,12 @@ export async function runAgentLoop(
     agentConfig: config,
     signal,
     nestedToolObserver: options?.nestedToolObserver,
-    sessionHistory: options?.sessionHistory,
-    fileObservations: fileObservationLedger,
     todos: [],
     tasks: config.tasks,
     backgroundShells: config.backgroundShells,
     fileObservationLedger: config.fileObservationLedger,
     currentMode: initialMode,
   };
-  rememberFileObservations(toolContext, options?.fileObservations ?? []);
-
-  const availableDefinitions = registry.getDefinitions(toolContext);
-  const effectiveDefinitions = options?.allowedTools
-    ? availableDefinitions.filter((tool) => options.allowedTools!.includes(tool.name))
-    : availableDefinitions;
 
   let turn = 0;
   let approveAll: string[] = [];
@@ -245,7 +228,7 @@ export async function runAgentLoop(
     const messages = await buildMessages(
       effectiveConfig,
       newHistory,
-      effectiveDefinitions,
+      effectiveDefinitions ?? registry.getDefinitions(),
       toolContext.todos,
       options?.commands,
       signal,
@@ -253,24 +236,28 @@ export async function runAgentLoop(
     let assistantContent = '';
     const toolCalls: ToolCall[] = [];
     const nestedTraceIds: string[] = [];
-    const assistantMessageId = crypto.randomUUID();
     let turnUsage: Usage | null = null;
 
     // Buffer text during streaming so we can discard on retry.
     let textBuffer = '';
 
-    const stream = chatCompletionStream(effectiveConfig, messages, effectiveDefinitions, {
-      signal,
-      onRetry: (attempt, max, delayMs) => {
-        callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
+    const stream = chatCompletionStream(
+      effectiveConfig,
+      messages,
+      effectiveDefinitions ?? registry.getDefinitions(),
+      {
+        signal,
+        onRetry: (attempt, max, delayMs) => {
+          callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
+        },
+        onStreamStall: (countdownMs) => {
+          callbacks.onStreamStall?.(countdownMs);
+        },
+        onStreamResume: () => {
+          callbacks.onStreamResume?.();
+        },
       },
-      onStreamStall: (countdownMs) => {
-        callbacks.onStreamStall?.(countdownMs);
-      },
-      onStreamResume: () => {
-        callbacks.onStreamResume?.();
-      },
-    });
+    );
 
     let streamError: string | null = null;
     let streamDone = false;
@@ -327,7 +314,7 @@ export async function runAgentLoop(
       });
       if (assistantContent.length > 0 || toolCalls.length > 0) {
         newHistory.push({
-          id: assistantMessageId,
+          id: crypto.randomUUID(),
           role: 'assistant',
           content: assistantContent,
           includeInContext: true,
@@ -358,7 +345,7 @@ export async function runAgentLoop(
       });
       if (assistantContent.length > 0 || toolCalls.length > 0) {
         newHistory.push({
-          id: assistantMessageId,
+          id: crypto.randomUUID(),
           role: 'assistant',
           content: assistantContent,
           includeInContext: true,
@@ -395,9 +382,7 @@ export async function runAgentLoop(
         publishResult(cancelledResult);
         continue;
       }
-      toolContext.currentToolTraceId = nestedTraceId
-        ? nestedTraceId
-        : `session://current/event/${assistantMessageId}/tool-result/${call.id}`;
+      toolContext.currentToolTraceId = nestedTraceId ?? call.id;
       const canonName = canonicalToolName(call.name);
 
       // PreToolUse hook — can block the tool before execution.
@@ -583,9 +568,6 @@ export async function runAgentLoop(
       { onHookEvent: callbacks.onHookEvent },
     ).catch((err) => console.warn('Stop hook failed:', err));
 
-    const assistantFileObservations = toolResults.flatMap(
-      (result) => result.fileObservations ?? [],
-    );
     const assistantMessage: Message = {
       id: options?.assistantMessageId?.(turn) ?? crypto.randomUUID(),
       role: 'assistant',

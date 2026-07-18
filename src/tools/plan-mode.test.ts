@@ -57,8 +57,6 @@ describe('plan mode tools', () => {
   it('classifies expected read-only and mutating tools for plan mode', () => {
     for (const name of [
       'Read',
-      'SessionHistorySearch',
-      'SessionHistoryRead',
       'Glob',
       'Grep',
       'GitStatus',

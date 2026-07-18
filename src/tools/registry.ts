@@ -9,7 +9,6 @@ import { taskTool } from './task-tool.js';
 import { taskTools } from './tasks.js';
 import { planModeTools } from './plan-mode.js';
 import { notebookTools } from './notebook.js';
-import { createSessionHistoryTools } from './session-history.js';
 import { TOOL_ALIASES } from './aliases.js';
 import { createSessionHistoryTools, type SessionHistoryCapability } from './session-history.js';
 
@@ -142,11 +141,8 @@ export function createRegistry() {
       return tools.get(TOOL_ALIASES[name] ?? name);
     },
 
-    getDefinitions(context?: ToolContext): ToolDefinition[] {
-      const definitions = Array.from(tools.values());
-      return context
-        ? definitions.filter((tool) => !tool.isAvailable || tool.isAvailable(context))
-        : definitions.filter((tool) => !tool.isAvailable);
+    getDefinitions(): ToolDefinition[] {
+      return Array.from(tools.values());
     },
 
     async execute(
@@ -155,12 +151,12 @@ export function createRegistry() {
       maxRetries: number = 0,
     ): Promise<ToolResult> {
       const tool = tools.get(TOOL_ALIASES[call.name] ?? call.name);
-      if (!tool || (tool.isAvailable && !tool.isAvailable(context))) {
+      if (!tool) {
         return {
           toolCallId: call.id,
           success: false,
           output: '',
-          error: `Unknown or unavailable tool: ${call.name}`,
+          error: `Unknown tool: ${call.name}`,
         };
       }
 
@@ -228,7 +224,6 @@ export function createDefaultRegistry(capabilities?: {
     ...taskTools,
     ...planModeTools,
     ...notebookTools,
-    ...createSessionHistoryTools(),
   ]);
   if (capabilities?.sessionHistory) {
     registry.registerAll(createSessionHistoryTools(capabilities.sessionHistory));

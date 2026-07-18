@@ -69,25 +69,6 @@ describe('runAgentLoop streaming render callbacks', () => {
     ]);
   });
 
-  it('preserves a host-assigned user event id', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response(textStream('ok'), { status: 200 })),
-    );
-
-    const result = await runAgentLoop(
-      config,
-      createRegistry(),
-      'hi',
-      [],
-      noopCallbacks(),
-      'default',
-      { userMessageId: 'persisted-user-id' },
-    );
-
-    expect(result[0].id).toBe('persisted-user-id');
-  });
-
   it('keeps tool calls and results attached to the assistant turn that produced them', async () => {
     let fetchCalls = 0;
     vi.stubGlobal(
@@ -152,54 +133,6 @@ describe('runAgentLoop streaming render callbacks', () => {
     const firstAssistant = result.find((m) => m.role === 'assistant' && m.toolCalls?.length);
     expect(firstAssistant?.toolCalls?.[0].id).toBe('tool_1');
     expect(firstAssistant?.toolResults?.[0].toolCallId).toBe('tool_1');
-  });
-
-  it('grounds file observations in the persisted assistant event id', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        async () =>
-          new Response(
-            toolCallStream([{ id: 'read_1', name: 'Read', arguments: '{"filePath":"a.txt"}' }]),
-            { status: 200 },
-          ),
-      ),
-    );
-    const registry = createRegistry();
-    registry.register({
-      name: 'Read',
-      description: 'Read',
-      parameters: { type: 'object', properties: {} },
-      execute: async (_args, ctx) => ({
-        toolCallId: '',
-        success: true,
-        output: 'contents',
-        fileObservations: [
-          {
-            workspaceIdentity: 'workspace',
-            path: 'a.txt',
-            sha256: 'hash',
-            sizeBytes: 8,
-            coverage: { kind: 'full' },
-            operation: 'read',
-            sourceRef: ctx.currentToolTraceId!,
-          },
-        ],
-      }),
-    });
-
-    const result = await runAgentLoop(
-      defaultConfig({ maxTurns: 1 }),
-      registry,
-      'read',
-      [],
-      noopCallbacks(),
-      'auto',
-    );
-    const assistant = result.find((message) => message.role === 'assistant');
-    const sourceRef = assistant?.fileObservations?.[0].sourceRef;
-
-    expect(sourceRef).toBe(`session://current/event/${assistant?.id}/tool-result/read_1`);
   });
 });
 
