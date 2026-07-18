@@ -251,7 +251,14 @@ export type CompactResult =
       trigger: CompactTrigger;
       replacementHistory: Message[];
       summary: string;
+      compactId: string;
+      generation: number;
       checkpoint: ConversationCheckpointV2;
+      checkpointVersion: 2;
+      summarizedCount: number;
+      retainedCount: number;
+      postContextTokens: number;
+      throughEventRef?: string;
       preContextTokens?: number;
       preMessageCount: number;
       retainedMessageCount: number;
@@ -271,9 +278,7 @@ export type CompactResult =
         | 'aborted'
         | 'unexpected-stream'
         | 'invalid-checkpoint'
-        | 'ungrounded-checkpoint'
-        | 'oversized-tail'
-        | 'post-compact-overflow';
+        | 'budget-overflow';
       error: string;
     };
 
@@ -413,6 +418,25 @@ export interface ToolResult {
   fileObservations?: FileObservation[];
   /** Legacy metadata: whether a file creation occurred. Prefer fileMutation.kind. */
   isCreate?: boolean;
+  /** Stable persisted reference used by compact checkpoints and history retrieval. */
+  eventRef?: string;
+  /** File provenance captured by successful file operations. */
+  fileObservations?: FileObservation[];
+}
+
+export type FileObservationOperation =
+  'read' | 'mention' | 'edit' | 'write' | 'create' | 'notebook-read';
+
+export interface FileObservation {
+  path: string;
+  workspaceId: string;
+  sha256: string;
+  byteSize: number;
+  lineStart?: number;
+  lineEnd?: number;
+  operation: FileObservationOperation;
+  sourceRef: string;
+  timestamp: number;
 }
 
 export interface Message {
@@ -424,16 +448,25 @@ export interface Message {
   contextContent?: string;
   /** Whether this message is included in provider and compaction context. */
   includeInContext: boolean;
-  /** Distinguishes ordinary chat, provider checkpoints, and transcript-only rows. */
   kind?: 'conversation' | 'checkpoint' | 'local';
-  /** Structured checkpoint data when kind is `checkpoint`. */
-  checkpoint?: ConversationCheckpointV2;
   toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
   /** UI-only subagent activity. Never serialized as provider tool calls. */
   nestedToolInvocations?: NestedToolInvocation[];
-  /** File fingerprints introduced by input expansion or retained metadata. */
   fileObservations?: FileObservation[];
+  timestamp: number;
+}
+
+export interface CompactBoundary {
+  id: string;
+  trigger: CompactTrigger;
+  transcriptOrdinal: number;
+  preContextCount: number;
+  postContextCount: number;
+  preContextTokens?: number;
+  postContextTokens?: number;
+  generation: number;
+  checkpointVersion: 1 | 2;
   timestamp: number;
 }
 
@@ -473,6 +506,8 @@ export interface ToolContext {
   tasks?: AgentTask[];
   /** Background shells started by Bash(run_in_background), shared across tool calls. */
   backgroundShells?: BackgroundShellStore;
+  /** Runtime-only newest file observation per workspace/path. */
+  fileObservationLedger?: Map<string, FileObservation>;
   /** Live permission mode for the active agent loop; tools may update this. */
   currentMode?: PermissionMode;
   /** Mode to restore after a tool-initiated plan-mode session exits. */
@@ -547,6 +582,8 @@ export interface AgentConfig {
   tasks?: AgentTask[];
   /** Runtime-only background shells shared across agent-loop invocations in a session. */
   backgroundShells?: BackgroundShellStore;
+  /** Runtime-only newest file observation per workspace/path. */
+  fileObservationLedger?: Map<string, FileObservation>;
 }
 
 export interface ProviderStreamEvent {
@@ -555,6 +592,14 @@ export interface ProviderStreamEvent {
   toolCall?: ToolCall;
   error?: string;
   usage?: Usage;
+}
+
+export interface ProviderStreamOptions {
+  signal?: AbortSignal;
+  onRetry?: (attempt: number, max: number, delayMs: number) => void;
+  onStreamStall?: (countdownMs: number) => void;
+  onStreamResume?: () => void;
+  maxOutputTokens?: number;
 }
 
 export interface AgentLoopCallbacks {
@@ -680,13 +725,12 @@ export interface SessionRecord {
     | 'usage'
     | 'session_meta'
     | 'compact';
-  /** Persisted event identity. Legacy records derive one from their JSONL ordinal. */
   eventId?: string;
   timestamp: number;
   data: unknown;
 }
 
-/** Legacy payload stored in a SessionRecord of type `compact`. */
+/** Payload stored in a SessionRecord of type `compact`. */
 export interface CompactRecordDataV1 {
   version: 1;
   trigger: CompactTrigger;
@@ -698,14 +742,63 @@ export interface CompactRecordDataV1 {
   replacementHistory: Message[];
 }
 
-/** Reference-aware compact payload; checkpoint fields are stored alongside legacy fields. */
-export interface CompactRecordDataV2 extends ConversationCheckpointV2 {
+export interface CheckpointSourceRef {
+  eventRef: string;
+  quote?: string;
+  toolResultRef?: string;
+}
+
+export interface ConversationCheckpointV2 {
+  version: 2;
+  generation: number;
+  state: {
+    summary: string;
+    status: 'active' | 'blocked' | 'complete' | 'unknown';
+  };
+  constraints: Array<{
+    text: string;
+    scope: 'global' | 'workspace' | 'task' | 'unknown';
+    sources: CheckpointSourceRef[];
+  }>;
+  files: Array<{
+    path: string;
+    summary: string;
+    sources: CheckpointSourceRef[];
+    observation?: FileObservation;
+  }>;
+  episodes: Array<{
+    task: string;
+    outcome: string;
+    status: 'complete' | 'partial' | 'failed' | 'unknown';
+    sources: CheckpointSourceRef[];
+  }>;
+  openThreads: Array<{
+    text: string;
+    sources: CheckpointSourceRef[];
+  }>;
+  statistics: {
+    summarizedMessages: number;
+    retainedMessages: number;
+    preTokens: number;
+    postTokens: number;
+  };
+}
+
+export interface CompactRecordDataV2 {
+  version: 2;
+  compactId: string;
+  generation: number;
   trigger: CompactTrigger;
+  focus?: string;
+  checkpoint: ConversationCheckpointV2;
   summary: string;
-  preContextTokens?: number;
-  preMessageCount?: number;
-  boundary?: CompactBoundary;
   replacementHistory: Message[];
+  boundary: CompactBoundary;
+  throughEventRef?: string;
+  summarizedCount: number;
+  retainedCount: number;
+  preContextTokens?: number;
+  postContextTokens?: number;
 }
 
 export type CompactRecordData = CompactRecordDataV1 | CompactRecordDataV2;
@@ -720,40 +813,19 @@ export interface SessionMeta {
 }
 
 export interface LoadedSession {
-  /** Full visible conversation, including transcript-only local rows. */
   transcript: Message[];
-  /** Active provider-facing projection after replaying compact records. */
   contextHistory: Message[];
-  /** Compatibility alias for contextHistory. */
-  history: Message[];
   compactBoundaries: CompactBoundary[];
   meta: SessionMeta;
+  /** @deprecated Use contextHistory. */
+  history: Message[];
 }
 
-export interface SessionHistoryEvent {
-  eventId: string;
+export interface SessionHistorySearchResult {
   ref: string;
-  /** One-based JSONL record ordinal, including the session header. */
-  ordinal: number;
-  type: SessionRecord['type'];
+  role: Message['role'];
+  preview: string;
   timestamp: number;
-  data: unknown;
-  text: string;
-  toolNames?: string[];
-}
-
-export interface SessionEventReadOptions {
-  refs?: string[];
-  startOrdinal?: number;
-  limit?: number;
-  maxChars?: number;
-}
-
-export interface SessionEventSearchOptions {
-  query: string;
-  limit?: number;
-  previewChars?: number;
-  maxChars?: number;
 }
 
 /** Minimal interface for SessionStore, defined here to avoid circular imports. */
@@ -763,9 +835,10 @@ export interface SessionStoreInterface {
   patchMeta(id: string, patch: { name?: string }): void;
   touch(id: string): void;
   load(id: string): LoadedSession;
-  copyEvents(sourceId: string, targetId: string): void;
-  readEvents(id: string, options?: SessionEventReadOptions): SessionHistoryEvent[];
-  searchEvents(id: string, options: SessionEventSearchOptions): SessionHistoryEvent[];
+  readRecords?(id: string): SessionRecord[];
+  fork?(sourceId: string, meta: { cwd: string; name?: string; id?: string }): string;
+  searchCurrent?(id: string, query: string, limit?: number): SessionHistorySearchResult[];
+  readCurrent?(id: string, refs: string[]): Array<{ ref: string; content: string }>;
   list(): SessionMeta[];
   findByName(name: string): SessionMeta | undefined;
   findById(id: string): SessionMeta | undefined;
@@ -779,10 +852,7 @@ export interface HeadlessOptions {
   outputFormat: OutputFormat;
   /** Compatibility alias for provider-facing context history. */
   history: Message[];
-  /** Full visible transcript, when the host supports split projections. */
   transcript?: Message[];
-  /** Active provider-facing history. */
-  contextHistory?: Message[];
   compactBoundaries?: CompactBoundary[];
   mode: PermissionMode;
   maxTurns?: number;
@@ -809,6 +879,8 @@ export interface HeadlessOptions {
 
 export interface HeadlessResult {
   messages: Message[];
+  transcript?: Message[];
+  compactBoundaries?: CompactBoundary[];
   usage: Usage | null;
   costUsd?: number;
   sessionId?: string;

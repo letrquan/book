@@ -81,11 +81,12 @@ describe('ChatPanel Ink rendering', () => {
     expect(output.match(/answer marker/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('renders a durable compact boundary inline without showing checkpoint summary content', () => {
+  it('renders compact boundaries inline without hiding transcript messages', () => {
     const messages = [
-      msg('u1', 'user', 'before boundary'),
-      msg('a1', 'assistant', 'answer before'),
-      msg('u2', 'user', 'after boundary'),
+      msg('u1', 'user', 'before compact'),
+      msg('a1', 'assistant', 'first answer'),
+      msg('u2', 'user', 'after compact'),
+      msg('a2', 'assistant', 'second answer'),
     ];
     const view = render(
       withTheme(
@@ -93,68 +94,29 @@ describe('ChatPanel Ink rendering', () => {
           messages={messages}
           compactBoundaries={[
             {
-              id: 'compact-1',
-              timestamp: 2,
+              id: 'c1',
               trigger: 'manual',
-              afterTranscriptOrdinal: 2,
-              preContextMessages: 2,
-              retainedContextMessages: 1,
-              checkpointVersion: 1,
-              generation: 1,
+              transcriptOrdinal: 2,
+              preContextCount: 8,
+              postContextCount: 3,
+              preContextTokens: 10_300,
+              postContextTokens: 3_800,
+              generation: 2,
+              checkpointVersion: 2,
+              timestamp: 2,
             },
           ]}
           terminalWidth={80}
           reducedMotion
-          screenReader
         />,
       ),
     );
 
     const output = frame(view.lastFrame);
-    expect(output.indexOf('answer before')).toBeLessThan(output.indexOf('Context compacted'));
-    expect(output.indexOf('Context compacted')).toBeLessThan(output.indexOf('after boundary'));
-    expect(output).toContain('full transcript retained');
-    expect(output).not.toContain('Compacted summary of earlier conversation');
-  });
-
-  it('does not merge assistant rows across a compact boundary', () => {
-    const messages: Message[] = [
-      msg('a1', 'assistant', 'before marker'),
-      {
-        ...msg('a2', 'assistant', ''),
-        toolCalls: [{ id: 'read-after', name: 'Read', arguments: { filePath: 'src/a.ts' } }],
-        toolResults: [{ toolCallId: 'read-after', success: true, output: 'done' }],
-      },
-    ];
-    const view = render(
-      withTheme(
-        <ChatPanel
-          messages={messages}
-          compactBoundaries={[
-            {
-              id: 'compact-1',
-              timestamp: 2,
-              trigger: 'auto',
-              afterTranscriptOrdinal: 1,
-              preContextMessages: 2,
-              retainedContextMessages: 1,
-              checkpointVersion: 1,
-              generation: 1,
-            },
-          ]}
-          terminalWidth={100}
-          expandedToolCallId="read-after"
-          reducedMotion
-          screenReader
-        />,
-      ),
-    );
-
-    const output = frame(view.lastFrame);
-    expect(output.indexOf('before marker')).toBeLessThan(output.indexOf('Context compacted'));
-    expect(output.indexOf('Context compacted')).toBeLessThan(
-      output.indexOf('[OK] Read file src/a.ts'),
-    );
+    expect(output).toContain('before compact');
+    expect(output).toContain('after compact');
+    expect(output).toContain('Context compacted · full transcript retained');
+    expect(output).not.toContain('Historical conversation checkpoint');
   });
 
   it('renders a submitted user message, assistant placeholder, then streamed text without overwriting older messages', () => {

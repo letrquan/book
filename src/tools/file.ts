@@ -4,12 +4,7 @@ import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
-import {
-  createTextFileObservation,
-  rememberFileObservations,
-  staleMutationError,
-  toolObservationSource,
-} from './file-observation.js';
+import { observeFile, requireFreshObservation } from './file-provenance.js';
 
 const GLOB_OUTPUT_LIMIT = 1000;
 const PATH_YIELD_INTERVAL = 128;
@@ -65,19 +60,10 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
     output.push(`${index + 1}: ${lines[index]}`);
     if ((index - offset + 2) % LINE_YIELD_INTERVAL === 0) await yieldToEventLoop(ctx.signal);
   }
-  const coverage =
-    offset === 1 && end === lines.length
-      ? ({ kind: 'full' } as const)
-      : ({ kind: 'lines', startLine: offset, endLine: end, totalLines: lines.length } as const);
-  const observation = createTextFileObservation({
-    workspaceRoot: ctx.workspaceRoot,
-    path: relativePath,
-    content,
-    coverage,
-    operation: 'read',
-    sourceRef: toolObservationSource(ctx),
+  const observation = await observeFile(ctx, filePath, 'read', {
+    lineStart: offset,
+    lineEnd: end,
   });
-  rememberFileObservations(ctx, [observation]);
   return {
     toolCallId: '',
     success: true,
@@ -90,6 +76,8 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath, relativePath } = resolved;
+  const stale = await requireFreshObservation(ctx, filePath, relativePath);
+  if (stale) return { toolCallId: '', success: false, output: '', error: stale };
   let existed = true;
   let oldContent = '';
   try {
@@ -125,14 +113,7 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
       error: `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
-  const observation = createTextFileObservation({
-    workspaceRoot: ctx.workspaceRoot,
-    path: relativePath,
-    content: newContent,
-    operation: existed ? 'write' : 'create',
-    sourceRef: toolObservationSource(ctx),
-  });
-  rememberFileObservations(ctx, [observation]);
+  const observation = await observeFile(ctx, filePath, existed ? 'write' : 'create');
   return {
     toolCallId: '',
     success: true,
@@ -145,6 +126,7 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
     },
     fileObservations: [observation],
     isCreate: !existed,
+    fileObservations: [observation],
   };
 }
 
@@ -152,6 +134,8 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath, relativePath } = resolved;
+  const stale = await requireFreshObservation(ctx, filePath, relativePath);
+  if (stale) return { toolCallId: '', success: false, output: '', error: stale };
 
   let content: string;
   try {
@@ -210,14 +194,7 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
       error: `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
-  const observation = createTextFileObservation({
-    workspaceRoot: ctx.workspaceRoot,
-    path: relativePath,
-    content: newContent,
-    operation: 'edit',
-    sourceRef: toolObservationSource(ctx),
-  });
-  rememberFileObservations(ctx, [observation]);
+  const observation = await observeFile(ctx, filePath, 'edit');
   return {
     toolCallId: '',
     success: true,
@@ -236,6 +213,8 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath, relativePath } = resolved;
+  const stale = await requireFreshObservation(ctx, filePath, relativePath);
+  if (stale) return { toolCallId: '', success: false, output: '', error: stale };
   const edits =
     (args.edits as Array<{
       oldString: string;
@@ -309,14 +288,7 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
       error: `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
-  const observation = createTextFileObservation({
-    workspaceRoot: ctx.workspaceRoot,
-    path: relativePath,
-    content,
-    operation: 'edit',
-    sourceRef: toolObservationSource(ctx),
-  });
-  rememberFileObservations(ctx, [observation]);
+  const observation = await observeFile(ctx, filePath, 'edit');
   return {
     toolCallId: '',
     success: true,

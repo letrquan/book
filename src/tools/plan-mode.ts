@@ -16,6 +16,8 @@ export const READ_ONLY_PLAN_TOOLS = new Set([
   'TaskList',
   'TaskGet',
   'BashOutput',
+  'SessionHistorySearch',
+  'SessionHistoryRead',
   'EnterPlanMode',
   'ExitPlanMode',
 ]);

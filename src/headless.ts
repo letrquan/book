@@ -5,8 +5,8 @@ import type {
   HeadlessResult,
   Message,
   SessionRecord,
-  ToolCall,
-  Usage,
+  SessionStoreInterface,
+  CompactBoundary,
 } from './types.js';
 import { runAgentLoop } from './agent/loop.js';
 import {
@@ -17,27 +17,10 @@ import {
   usagePressureTokens,
 } from './agent/compact.js';
 import type { ToolRegistry } from './tools/registry.js';
-import { expandAtMentionsWithObservations } from './tui/input-expansion.js';
+import { collectAtMentionObservations, expandAtMentions } from './tui/input-expansion.js';
+import { observationKey } from './tools/file-provenance.js';
 import { runSessionEnd, runSessionStart } from './session/lifecycle.js';
-import { buildCompactRecord } from './session/compact-record.js';
-import { createFileObservationLedger, observationsFromMessages } from './tools/file-observation.js';
-import { createSessionHistoryCapability } from './tools/session-history.js';
-
-function emitCompactBoundary(emit: (value: unknown) => void, boundary: CompactBoundary): void {
-  emit({
-    type: 'system',
-    subtype: 'compact_boundary',
-    trigger: boundary.trigger,
-    pre_tokens: boundary.preContextTokens,
-    boundary_id: boundary.id,
-    after_transcript_ordinal: boundary.afterTranscriptOrdinal,
-    pre_context_messages: boundary.preContextMessages,
-    retained_context_messages: boundary.retainedContextMessages,
-    estimated_post_tokens: boundary.estimatedPostTokens,
-    checkpoint_version: boundary.checkpointVersion,
-    generation: boundary.generation,
-  });
-}
+import { createSessionHistoryTools } from './tools/session-history.js';
 
 export async function runHeadless(
   config: AgentConfig,
@@ -70,6 +53,11 @@ export async function runHeadless(
   if (sessionCreated && sessionId && opts.outputFormat === 'stream-json') {
     emit({ type: 'session', session_id: sessionId });
   }
+  if (store && sessionId) {
+    registry.registerAll(
+      createSessionHistoryTools({ store, sessionId: () => sessionId as string }),
+    );
+  }
 
   if (sessionId) {
     await runSessionStart(config, sessionId, opts.history.length > 0 ? 'resume' : 'startup', {
@@ -90,19 +78,20 @@ export async function runHeadless(
     'deny';
 
   let lastUsage: Usage | null = null;
+  let lastHostCompactAttemptKey: string | null = null;
+  const contextHistory: Message[] = [...opts.history];
   const transcript: Message[] = [...(opts.transcript ?? opts.history)];
-  const contextHistory: Message[] = [...(opts.contextHistory ?? opts.history)];
-  let compactGeneration = (opts.compactBoundaries ?? []).reduce(
-    (max, boundary) => Math.max(max, boundary.generation),
-    0,
-  );
-  const fileObservationLedger = createFileObservationLedger(
-    observationsFromMessages([...transcript, ...contextHistory]),
-  );
-  const sessionHistory =
-    store && sessionId
-      ? createSessionHistoryCapability(store, sessionId, config.workspace)
-      : undefined;
+  const compactBoundaries: CompactBoundary[] = [...(opts.compactBoundaries ?? [])];
+  config.fileObservationLedger ??= new Map();
+  for (const message of transcript) {
+    for (const observation of message.fileObservations ?? []) {
+      const key = observationKey(observation.workspaceId, observation.path);
+      const current = config.fileObservationLedger.get(key);
+      if (!current || current.timestamp <= observation.timestamp) {
+        config.fileObservationLedger.set(key, observation);
+      }
+    }
+  }
   config.tasks ??= [];
   config.backgroundShells ??= { nextId: 1, shells: new Map() };
 
@@ -158,17 +147,21 @@ export async function runHeadless(
 
     // Cross-turn auto-compact before appending the new user message.
     const contextLimit = resolveContextLimit(config);
+    const hostCompactAttemptKey = `${usagePressureTokens(lastUsage)}:${contextHistory.length}`;
     if (
       config.autoCompactEnabled !== false &&
       contextLimit != null &&
-      shouldCompact(lastUsage, contextLimit)
+      shouldCompact(lastUsage, contextLimit) &&
+      lastHostCompactAttemptKey !== hostCompactAttemptKey
     ) {
+      lastHostCompactAttemptKey = hostCompactAttemptKey;
       try {
         const compactResult = await runCompact(config, contextHistory, {
           trigger: 'auto',
           sessionId,
           preContextTokens: usagePressureTokens(lastUsage),
           signal: opts.signal,
+          upcomingUserIntent: prompt,
           onHookEvent: opts.includeHookEvents
             ? (event, payload) => {
                 if (opts.outputFormat === 'stream-json') {
@@ -180,7 +173,35 @@ export async function runHeadless(
           fileObservations: fileObservationLedger.all(),
         });
         if (compactResult.status === 'compacted') {
-          const boundary = await commitCompactResult(compactResult);
+          const timestamp = Date.now();
+          const boundary = makeBoundary(compactResult, transcript.length, timestamp);
+          if (store && sessionId) {
+            const data: CompactRecordData = {
+              version: 2,
+              compactId: compactResult.compactId,
+              generation: compactResult.generation,
+              trigger: compactResult.trigger,
+              checkpoint: compactResult.checkpoint,
+              summary: compactResult.summary,
+              preContextTokens: compactResult.preContextTokens,
+              postContextTokens: compactResult.postContextTokens,
+              replacementHistory: compactResult.replacementHistory,
+              boundary,
+              throughEventRef: compactResult.throughEventRef,
+              summarizedCount: compactResult.summarizedCount,
+              retainedCount: compactResult.retainedCount,
+            };
+            store.append(sessionId, {
+              type: 'compact',
+              eventId: compactResult.compactId,
+              timestamp,
+              data,
+            } satisfies SessionRecord);
+          }
+          contextHistory.length = 0;
+          contextHistory.push(...compactResult.replacementHistory);
+          compactBoundaries.push(boundary);
+          lastUsage = null;
           await runPostCompactHooks(config, {
             trigger: 'auto',
             sessionId,
@@ -192,7 +213,20 @@ export async function runHeadless(
                 }
               : undefined,
           });
-          if (opts.outputFormat === 'stream-json') emitCompactBoundary(emit, boundary);
+          if (opts.outputFormat === 'stream-json') {
+            emit({
+              type: 'system',
+              subtype: 'compact_boundary',
+              trigger: 'auto',
+              pre_tokens: compactResult.preContextTokens,
+              compact_id: compactResult.compactId,
+              generation: compactResult.generation,
+              pre_messages: compactResult.preMessageCount,
+              post_messages: compactResult.replacementHistory.length,
+              post_tokens: compactResult.postContextTokens,
+              checkpoint_version: 2,
+            });
+          }
         }
       } catch {
         // Non-fatal. Preserve the existing context if compact or persistence fails.
@@ -200,26 +234,37 @@ export async function runHeadless(
     }
 
     const userMessage: Message = {
-      id: userMessageId,
+      id: crypto.randomUUID(),
       role: 'user',
       content: prompt,
       contextContent: expandedPrompt === prompt ? undefined : expandedPrompt,
       includeInContext: true,
       kind: 'conversation',
-      fileObservations:
-        mentionExpansion.fileObservations.length > 0
-          ? mentionExpansion.fileObservations
-          : undefined,
       timestamp: Date.now(),
     };
+    userMessage.fileObservations = collectAtMentionObservations(
+      prompt,
+      config.workspace,
+      userMessage.id,
+    );
+    config.fileObservationLedger ??= new Map();
+    for (const observation of userMessage.fileObservations) {
+      config.fileObservationLedger.set(
+        observationKey(observation.workspaceId, observation.path),
+        observation,
+      );
+    }
+    transcript.push(userMessage);
     if (store && sessionId) {
       store.append(sessionId, {
         type: 'user',
         eventId: userMessage.id,
         timestamp: userMessage.timestamp,
         data: {
+          id: userMessage.id,
           content: prompt,
-          contextContent: userMessage.contextContent,
+          contextContent: expandedPrompt === prompt ? undefined : expandedPrompt,
+          kind: 'conversation',
           fileObservations: userMessage.fileObservations,
         },
       } satisfies SessionRecord);
@@ -289,8 +334,9 @@ export async function runHeadless(
               }
             }
           : undefined,
-        onUsage: (usage) => {
-          lastUsage = usage;
+        onUsage: (u) => {
+          lastUsage = u;
+          lastHostCompactAttemptKey = null;
         },
         onCompact: async (history, usage) => {
           const result = await runCompact(config, history, {
@@ -308,7 +354,32 @@ export async function runHeadless(
             fileObservations: fileObservationLedger.all(),
           });
           if (result.status === 'compacted') {
-            const boundary = await commitCompactResult(result);
+            const timestamp = Date.now();
+            const boundary = makeBoundary(result, transcript.length, timestamp);
+            if (store && sessionId) {
+              const data: CompactRecordData = {
+                version: 2,
+                compactId: result.compactId,
+                generation: result.generation,
+                trigger: result.trigger,
+                checkpoint: result.checkpoint,
+                summary: result.summary,
+                preContextTokens: result.preContextTokens,
+                postContextTokens: result.postContextTokens,
+                replacementHistory: result.replacementHistory,
+                boundary,
+                throughEventRef: result.throughEventRef,
+                summarizedCount: result.summarizedCount,
+                retainedCount: result.retainedCount,
+              };
+              store.append(sessionId, {
+                type: 'compact',
+                eventId: result.compactId,
+                timestamp,
+                data,
+              } satisfies SessionRecord);
+            }
+            compactBoundaries.push(boundary);
             await runPostCompactHooks(config, {
               trigger: 'auto',
               sessionId,
@@ -320,7 +391,21 @@ export async function runHeadless(
                   }
                 : undefined,
             });
-            if (opts.outputFormat === 'stream-json') emitCompactBoundary(emit, boundary);
+            if (opts.outputFormat === 'stream-json') {
+              emit({
+                type: 'system',
+                subtype: 'compact_boundary',
+                trigger: 'auto',
+                pre_tokens: result.preContextTokens,
+                compact_id: result.compactId,
+                generation: result.generation,
+                pre_messages: result.preMessageCount,
+                post_messages: result.replacementHistory.length,
+                post_tokens: result.postContextTokens,
+                checkpoint_version: 2,
+              });
+            }
+            lastUsage = null;
           }
           return result;
         },
@@ -332,8 +417,10 @@ export async function runHeadless(
               eventId: message.id,
               timestamp: message.timestamp,
               data: {
+                id: message.id,
                 complete: true,
                 content: message.content,
+                kind: message.kind ?? 'conversation',
                 toolCalls: message.toolCalls,
                 toolResults: message.toolResults,
                 fileObservations: message.fileObservations,
@@ -346,21 +433,24 @@ export async function runHeadless(
       {
         signal: opts.signal,
         displayMessage: prompt,
-        userMessageId,
-        fileObservations: userMessage.fileObservations,
-        fileObservationLedger,
-        sessionHistory,
+        userMessageId: userMessage.id,
+        userMessageTimestamp: userMessage.timestamp,
+        userFileObservations: userMessage.fileObservations,
         manageSessionHooks: sessionId ? false : undefined,
       },
     );
-    // Completed assistant turns append through onAssistantMessageComplete; the
-    // complete loop return replaces provider context (including mid-loop compact).
+    const priorIds = new Set(transcript.map((message) => message.id));
+    transcript.push(
+      ...updated.filter((message) => !priorIds.has(message.id) && message.role === 'assistant'),
+    );
     contextHistory.length = 0;
     contextHistory.push(...updated);
   }
 
   const result: HeadlessResult = {
-    messages: transcript,
+    messages: contextHistory,
+    transcript,
+    compactBoundaries,
     usage: lastUsage,
     sessionId,
   };
@@ -397,7 +487,7 @@ export async function runHeadless(
   } else if (opts.outputFormat === 'json') {
     emit({
       result: {
-        messages: transcript,
+        messages: contextHistory,
         usage: lastUsage,
         structured: result.structured,
         structuredError: result.structuredError,
@@ -407,7 +497,7 @@ export async function runHeadless(
     emit({
       type: 'result',
       result: {
-        messages: transcript,
+        messages: contextHistory,
         usage: lastUsage,
         structured: result.structured,
         structuredError: result.structuredError,
@@ -436,6 +526,25 @@ function lastAssistantText(history: Message[]): string {
     if (message.role === 'assistant' && message.content) return message.content;
   }
   return '';
+}
+
+function makeBoundary(
+  result: Extract<Awaited<ReturnType<typeof runCompact>>, { status: 'compacted' }>,
+  transcriptOrdinal: number,
+  timestamp: number,
+): CompactBoundary {
+  return {
+    id: result.compactId,
+    trigger: result.trigger,
+    transcriptOrdinal,
+    preContextCount: result.preMessageCount,
+    postContextCount: result.replacementHistory.length,
+    preContextTokens: result.preContextTokens,
+    postContextTokens: result.postContextTokens,
+    generation: result.generation,
+    checkpointVersion: 2,
+    timestamp,
+  };
 }
 
 async function generatePromptSuggestions(

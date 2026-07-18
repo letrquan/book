@@ -298,6 +298,7 @@ export async function* chatCompletionStream(
     onRetry?: (attempt: number, max: number, delayMs: number) => void;
     onStreamStall?: (countdownMs: number) => void;
     onStreamResume?: () => void;
+    maxOutputTokens?: number;
   },
 ): AsyncGenerator<ProviderStreamEvent> {
   const retry = config.retry;
@@ -311,8 +312,8 @@ export async function* chatCompletionStream(
     // Request token usage in the final SSE chunk so we can track cost.
     stream_options: { include_usage: true },
   };
-  if (config.maxTokensExplicit || config.modelInfo?.maxOutputTokens) {
-    body.max_tokens = config.maxTokens;
+  if (options?.maxOutputTokens || config.maxTokensExplicit || config.modelInfo?.maxOutputTokens) {
+    body.max_tokens = options?.maxOutputTokens ?? config.maxTokens;
   }
 
   if (tools.length > 0) {

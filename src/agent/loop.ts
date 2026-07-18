@@ -63,14 +63,12 @@ export async function runAgentLoop(
     modelOverride?: string;
     /** User-facing text to retain in history when userMessage is expanded context. */
     displayMessage?: string;
-    /** Host-assigned identity for the persisted current user event. */
+    /** Stable host-assigned identity for the user event. */
     userMessageId?: string;
-    /** File fingerprints introduced by current-turn input expansion. */
-    fileObservations?: FileObservation[];
-    /** Active persisted-session history capability supplied by the host. */
-    sessionHistory?: SessionHistoryCapability;
-    /** Existing explicit ledger to reuse across loop invocations. */
-    fileObservationLedger?: FileObservationLedger;
+    userMessageTimestamp?: number;
+    userFileObservations?: Message['fileObservations'];
+    /** Host identity for each streamed assistant turn. */
+    assistantMessageId?: (turn: number) => string | undefined;
     /** True when this loop is a subagent (Task tool) invocation — skips memory auto-capture. */
     isSubagent?: boolean;
     /** Display-only observer for tools invoked by this subagent. */
@@ -138,11 +136,9 @@ export async function runAgentLoop(
     content: displayPrompt,
     contextContent: effectivePrompt === displayPrompt ? undefined : effectivePrompt,
     includeInContext: true,
-    fileObservations:
-      options?.fileObservations && options.fileObservations.length > 0
-        ? options.fileObservations
-        : undefined,
-    timestamp: Date.now(),
+    kind: 'conversation',
+    fileObservations: options?.userFileObservations,
+    timestamp: options?.userMessageTimestamp ?? Date.now(),
   });
 
   if (!options?.isSubagent) {
@@ -170,6 +166,7 @@ export async function runAgentLoop(
 
   config.tasks ??= [];
   config.backgroundShells ??= { nextId: 1, shells: new Map() };
+  config.fileObservationLedger ??= new Map();
   const initialMode = mode as PermissionMode;
   const fileObservationLedger =
     options?.fileObservationLedger ??
@@ -190,6 +187,7 @@ export async function runAgentLoop(
     todos: [],
     tasks: config.tasks,
     backgroundShells: config.backgroundShells,
+    fileObservationLedger: config.fileObservationLedger,
     currentMode: initialMode,
   };
   rememberFileObservations(toolContext, options?.fileObservations ?? []);
@@ -589,14 +587,14 @@ export async function runAgentLoop(
       (result) => result.fileObservations ?? [],
     );
     const assistantMessage: Message = {
-      id: assistantMessageId,
+      id: options?.assistantMessageId?.(turn) ?? crypto.randomUUID(),
       role: 'assistant',
       content: assistantContent,
       includeInContext: true,
+      kind: 'conversation',
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       toolResults: toolResults.length > 0 ? toolResults : undefined,
-      fileObservations:
-        assistantFileObservations.length > 0 ? assistantFileObservations : undefined,
+      fileObservations: toolResults.flatMap((result) => result.fileObservations ?? []),
       timestamp: Date.now(),
     };
     newHistory.push(assistantMessage);

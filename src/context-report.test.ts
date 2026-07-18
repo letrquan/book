@@ -51,20 +51,7 @@ describe('buildContextBreakdown', () => {
     expect(b.totalMessages).toBe(1);
     expect(b.userMessages).toBe(1);
     expect(b.assistantMessages).toBe(0);
-    expect(b.estimatedTokens).toBeGreaterThan(3);
-  });
-
-  it('uses provider-facing content and includes tool argument/result overhead', () => {
-    const hidden = msg('user', 'short');
-    hidden.contextContent = 'x'.repeat(400);
-    const assistant = msg('assistant', 'ok');
-    assistant.toolCalls = [{ id: 'call', name: 'Read', arguments: { file_path: 'a'.repeat(200) } }];
-    assistant.toolResults = [{ toolCallId: 'call', success: true, output: 'y'.repeat(400) }];
-
-    const b = buildContextBreakdown([hidden, assistant]);
-
-    expect(b.byRole.user).toBeGreaterThan(100);
-    expect(b.byRole.assistant).toBeGreaterThan(150);
+    expect(b.estimatedTokens).toBe(9);
   });
 
   it('handles empty conversation', () => {

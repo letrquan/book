@@ -122,8 +122,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
     messages,
     contextHistory,
     compactBoundaries,
-    animatedBoundaryId,
-    settleAnimatedBoundary,
     isThinking,
     isCompacting,
     compactUi,
@@ -534,6 +532,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
             transcriptMessages: messages,
             model: liveConfig.model,
             maxTokens: liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens,
+            contextHistory,
+            compactBoundaries,
             skillCount: skills.length,
             commandCount: commands.length,
             subagentCount: discoverAgents(config.workspace).length,
@@ -772,8 +772,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
               <ChatPanel
                 messages={messages}
                 compactBoundaries={compactBoundaries}
-                animatedBoundaryId={animatedBoundaryId}
-                onBoundarySettled={settleAnimatedBoundary}
                 streamingMessageId={streamingMessageId}
                 pendingPermission={pendingPermission}
                 expandedToolCallId={expandedToolId}

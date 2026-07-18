@@ -449,6 +449,7 @@ export async function* chatCompletionStream(
     onRetry?: (attempt: number, max: number, delayMs: number) => void;
     onStreamStall?: (countdownMs: number) => void;
     onStreamResume?: () => void;
+    maxOutputTokens?: number;
   },
 ): AsyncGenerator<ProviderStreamEvent> {
   const retry = config.retry;
@@ -462,7 +463,7 @@ export async function* chatCompletionStream(
 
   const body: Record<string, unknown> = {
     model: config.model,
-    max_tokens: config.maxTokens,
+    max_tokens: options?.maxOutputTokens ?? config.maxTokens,
     messages: anthropicMessages,
     stream: true,
     stream_options: { include_usage: true },

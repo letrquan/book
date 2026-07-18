@@ -11,26 +11,23 @@ import { join, normalize, resolve } from 'path';
 import type {
   CompactBoundary,
   CompactRecordData,
-  ConversationCheckpointV2,
   LoadedSession,
   Message,
-  SessionEventReadOptions,
-  SessionEventSearchOptions,
-  SessionHistoryEvent,
+  SessionHistorySearchResult,
   SessionMeta,
   SessionRecord,
 } from '../types.js';
+import { createDebugLogger } from '../debug-log.js';
 
 export type { SessionMeta } from '../types.js';
 
-const READ_EVENTS_DEFAULT_LIMIT = 20;
-const READ_EVENTS_MAX_LIMIT = 100;
-const READ_EVENTS_DEFAULT_CHARS = 20_000;
-const READ_EVENTS_MAX_CHARS = 100_000;
-const SEARCH_EVENTS_DEFAULT_LIMIT = 10;
-const SEARCH_EVENTS_MAX_LIMIT = 50;
-const SEARCH_PREVIEW_DEFAULT_CHARS = 500;
-const SEARCH_PREVIEW_MAX_CHARS = 2_000;
+const log = createDebugLogger('session:store');
+const SEARCH_LIMIT_DEFAULT = 10;
+const SEARCH_LIMIT_MAX = 20;
+const SEARCH_PREVIEW_CHARS = 400;
+const READ_REF_LIMIT = 8;
+const READ_TOTAL_CHARS = 16_000;
+const TOOL_RESULT_PREVIEW_CHARS = 4_000;
 
 function normalizeWorkspace(cwd: string): string {
   const normalized = normalize(resolve(cwd));
@@ -315,6 +312,15 @@ export class SessionStore {
     return targetId;
   }
 
+  readRecords(id: string): SessionRecord[] {
+    const p = this.path(id);
+    if (!existsSync(p)) throw new Error(`Session not found: ${id}`);
+    return readFileSync(p, 'utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as SessionRecord);
+  }
+
   patchMeta(id: string, patch: { name?: string }): void {
     this.append(id, {
       type: 'session_meta',
@@ -332,7 +338,8 @@ export class SessionStore {
   }
 
   load(id: string): LoadedSession {
-    const records = this.records(id);
+    const records = this.readRecords(id);
+
     const metaRec = records.find(
       (record) => (record.data as { kind?: string })?.kind === 'session_meta',
     );
@@ -349,11 +356,10 @@ export class SessionStore {
     const transcript: Message[] = [];
     const contextHistory: Message[] = [];
     const compactBoundaries: CompactBoundary[] = [];
-    let conversationCount = 0;
-
-    for (let index = 0; index < records.length; index++) {
-      const record = records[index];
-      const eventId = eventIdFor(record, index + 1);
+    let count = 0;
+    for (let lineIndex = 0; lineIndex < records.length; lineIndex++) {
+      const record = records[lineIndex];
+      const eventId = record.eventId ?? `legacy-line-${lineIndex + 1}`;
       const data = record.data as {
         kind?: string;
         name?: string;
@@ -364,6 +370,13 @@ export class SessionStore {
         complete?: boolean;
         toolCalls?: Message['toolCalls'];
         toolResults?: Message['toolResults'];
+        version?: number;
+        replacementHistory?: Message[];
+        summary?: string;
+        trigger?: string;
+        preContextTokens?: number;
+        id?: string;
+        includeInContext?: boolean;
         fileObservations?: Message['fileObservations'];
       };
 
@@ -373,191 +386,200 @@ export class SessionStore {
       }
       if (data.kind === 'session_meta' || data.kind === 'session_touch') continue;
 
+      // Atomic compact boundary: replace only provider context after validation.
       if (record.type === 'compact') {
-        const compactData = validCompactData(record.data);
-        if (!compactData) continue;
-        const replacement = compactData.replacementHistory;
-        const checkpoint = compactCheckpoint(compactData);
-        const replayed = replacement.map((message, replacementIndex) =>
-          replayMessage(
-            message,
-            `${eventId}-replacement-${replacementIndex + 1}`,
-            record.timestamp,
-            checkpoint,
-            compactData.version === 2 && replacementIndex === 0,
-          ),
+        const compactData = data as unknown as CompactRecordData;
+        if (!isValidCompactRecord(compactData)) {
+          log.warn('ignoring malformed compact record', { id, eventId });
+          continue;
+        }
+        const replacement = compactData.replacementHistory.map((msg, index) =>
+          restoreMessage(msg, `${eventId}-replacement-${index + 1}`, record.timestamp),
         );
-        compactBoundaries.push(
-          compactBoundary(
-            record,
-            eventId,
-            compactData,
-            transcript.length,
-            contextHistory.length,
-            replayed.length,
-            compactBoundaries.length,
-          ),
-        );
+        const boundary =
+          compactData.version === 2
+            ? { ...compactData.boundary, transcriptOrdinal: transcript.length }
+            : synthesizeV1Boundary(
+                eventId,
+                record.timestamp,
+                transcript.length,
+                contextHistory.length,
+                replacement.length,
+                compactData.preContextTokens,
+                compactBoundaries.length + 1,
+                compactData.trigger,
+              );
         contextHistory.length = 0;
-        contextHistory.push(...replayed);
+        contextHistory.push(...replacement);
+        compactBoundaries.push(boundary);
         continue;
       }
 
-      const local =
-        record.type === 'local' || data.kind === 'local' || data.includeInContext === false;
-      if (record.type === 'local' || record.type === 'user' || record.type === 'assistant') {
-        const role = record.type === 'user' ? 'user' : (data.role ?? 'assistant');
-        if (record.type === 'assistant' && !local && !data.complete) {
-          const lastTranscript = transcript[transcript.length - 1];
-          const lastContext = contextHistory[contextHistory.length - 1];
-          if (lastTranscript?.role === 'assistant' && lastTranscript === lastContext) {
-            lastTranscript.content += data.content ?? '';
-            continue;
-          }
-        }
-
+      if (record.type === 'user') {
+        count++;
         const message: Message = {
-          id: eventId,
-          role,
+          id: data.id ?? eventId,
+          role: 'user',
           content: data.content ?? '',
           contextContent: data.contextContent,
-          includeInContext: !local,
-          kind: local ? 'local' : 'conversation',
-          toolCalls: data.toolCalls,
-          toolResults: data.toolResults,
+          includeInContext: data.includeInContext ?? true,
+          kind: (data.kind as Message['kind']) ?? 'conversation',
           fileObservations: data.fileObservations,
           timestamp: record.timestamp,
         };
         transcript.push(message);
-        if (!local) {
-          conversationCount++;
-          contextHistory.push(message);
+        if (message.includeInContext) contextHistory.push(message);
+      } else if (record.type === 'local') {
+        count++;
+        transcript.push({
+          id: data.id ?? eventId,
+          role: 'assistant',
+          content: data.content ?? '',
+          includeInContext: false,
+          kind: 'local',
+          timestamp: record.timestamp,
+        });
+      } else if (record.type === 'assistant') {
+        if (data.complete) {
+          count++;
+          const message: Message = {
+            id: data.id ?? eventId,
+            role: 'assistant',
+            content: data.content ?? '',
+            contextContent: data.contextContent,
+            includeInContext: data.includeInContext ?? true,
+            kind: (data.kind as Message['kind']) ?? 'conversation',
+            toolCalls: data.toolCalls,
+            toolResults: data.toolResults,
+            fileObservations: data.fileObservations,
+            timestamp: record.timestamp,
+          };
+          transcript.push(message);
+          if (message.includeInContext) contextHistory.push(message);
+        } else {
+          const last = transcript[transcript.length - 1];
+          if (last?.role === 'assistant') {
+            last.content += data.content ?? '';
+            const contextLast = contextHistory[contextHistory.length - 1];
+            if (contextLast?.id === last.id && contextLast !== last) {
+              contextLast.content = last.content;
+            }
+          } else {
+            count++;
+            const message: Message = {
+              id: data.id ?? eventId,
+              role: 'assistant',
+              content: data.content ?? '',
+              includeInContext: true,
+              kind: 'conversation',
+              timestamp: record.timestamp,
+            };
+            transcript.push(message);
+            contextHistory.push(message);
+          }
         }
       }
     }
 
     if (records.length) meta.updatedAt = records[records.length - 1].timestamp;
-    meta.messageCount = conversationCount;
-    return {
-      transcript,
-      contextHistory,
-      history: contextHistory,
-      compactBoundaries,
-      meta,
-    };
+    meta.messageCount = count;
+    return { transcript, contextHistory, compactBoundaries, meta, history: contextHistory };
   }
 
-  readEvents(id: string, options: SessionEventReadOptions = {}): SessionHistoryEvent[] {
-    const records = this.records(id);
-    const events: SessionHistoryEvent[] = [];
-    const recordsByEventId = new Map<string, SessionRecord>();
-
-    for (let index = 0; index < records.length; index++) {
-      const record = records[index];
-      if (!isEventRecord(record)) continue;
-      const ordinal = index + 1;
-      const eventId = eventIdFor(record, ordinal);
-      recordsByEventId.set(eventId, record);
-      events.push({
-        eventId,
-        ref: eventRef(eventId),
-        ordinal,
-        type: record.type,
-        timestamp: record.timestamp,
-        data: record.data,
-        text: recordText(record),
-        toolNames: recordToolNames(record),
-      });
-    }
-
-    let selected: SessionHistoryEvent[];
-    if (options.refs && options.refs.length > 0) {
-      const byId = new Map(events.map((event) => [event.eventId, event]));
-      selected = [];
-      const seen = new Set<string>();
-      for (const ref of options.refs) {
-        const range = parseRangeRef(ref);
-        if (range) {
-          const firstIndex = events.findIndex((event) => event.eventId === range.first);
-          const lastIndex = events.findIndex((event) => event.eventId === range.last);
-          if (firstIndex < 0 || lastIndex < firstIndex) continue;
-          for (const event of events.slice(firstIndex, lastIndex + 1)) {
-            if (!seen.has(event.ref)) {
-              selected.push(event);
-              seen.add(event.ref);
-            }
-          }
-          continue;
-        }
-
-        const parsed = parseSingleRef(ref);
-        if (!parsed) continue;
-        const event = byId.get(parsed.eventId);
-        if (!event) continue;
-        if (parsed.toolCallId) {
-          const record = recordsByEventId.get(parsed.eventId);
-          const text = record && toolResultText(record, parsed.toolCallId);
-          if (text === undefined || seen.has(ref)) continue;
-          selected.push({ ...event, ref, text });
-          seen.add(ref);
-        } else if (!seen.has(event.ref)) {
-          selected.push(event);
-          seen.add(event.ref);
-        }
+  fork(sourceId: string, meta: { cwd: string; name?: string; id?: string }): string {
+    const targetId = this.create(meta);
+    for (const record of this.readRecords(sourceId)) {
+      const kind = (record.data as { kind?: string })?.kind;
+      if (kind === 'session_meta' || kind === 'session_meta_patch' || kind === 'session_touch') {
+        continue;
       }
-    } else {
-      const startOrdinal = Math.max(1, Math.floor(options.startOrdinal ?? 1));
-      selected = events.filter((event) => event.ordinal >= startOrdinal);
+      this.append(targetId, record);
     }
-
-    return boundedEvents(
-      selected,
-      clamp(options.limit, READ_EVENTS_DEFAULT_LIMIT, READ_EVENTS_MAX_LIMIT),
-      clamp(options.maxChars, READ_EVENTS_DEFAULT_CHARS, READ_EVENTS_MAX_CHARS),
-    );
+    this.touch(targetId);
+    return targetId;
   }
 
-  searchEvents(id: string, options: SessionEventSearchOptions): SessionHistoryEvent[] {
-    const query = options.query.trim().toLocaleLowerCase();
-    if (!query) return [];
-    const limit = clamp(options.limit, SEARCH_EVENTS_DEFAULT_LIMIT, SEARCH_EVENTS_MAX_LIMIT);
-    const previewChars = clamp(
-      options.previewChars,
-      SEARCH_PREVIEW_DEFAULT_CHARS,
-      SEARCH_PREVIEW_MAX_CHARS,
-    );
-    const maxChars = clamp(
-      options.maxChars,
-      Math.min(READ_EVENTS_DEFAULT_CHARS, limit * previewChars),
-      READ_EVENTS_MAX_CHARS,
-    );
-    const matches: SessionHistoryEvent[] = [];
-    const records = this.records(id);
-    for (let index = 0; index < records.length && matches.length < limit; index++) {
-      const record = records[index];
-      if (!isEventRecord(record)) continue;
-      const ordinal = index + 1;
-      const eventId = eventIdFor(record, ordinal);
-      const ref = eventRef(eventId);
-      const text = recordText(record);
-      const toolNames = recordToolNames(record);
-      const haystack = [record.type, ref, text, ...(toolNames ?? [])]
-        .join('\n')
-        .toLocaleLowerCase();
-      if (!haystack.includes(query)) continue;
-      matches.push({
-        eventId,
-        ref,
-        ordinal,
-        type: record.type,
+  searchCurrent(
+    id: string,
+    query: string,
+    limit = SEARCH_LIMIT_DEFAULT,
+  ): SessionHistorySearchResult[] {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return [];
+    const capped = Math.max(1, Math.min(SEARCH_LIMIT_MAX, limit));
+    const results: SessionHistorySearchResult[] = [];
+    for (const [index, record] of this.readRecords(id).entries()) {
+      if (!['user', 'assistant', 'local'].includes(record.type)) continue;
+      const eventId = record.eventId ?? `legacy-line-${index + 1}`;
+      const data = record.data as {
+        content?: string;
+        contextContent?: string;
+        toolCalls?: Message['toolCalls'];
+        toolResults?: Message['toolResults'];
+      };
+      const haystack = [
+        data.content ?? '',
+        data.contextContent ?? '',
+        ...(data.toolCalls ?? []).flatMap((call) => [call.name, JSON.stringify(call.arguments)]),
+        ...(data.toolResults ?? []).map((result) => result.output),
+      ].join('\n');
+      if (!haystack.toLowerCase().includes(needle)) continue;
+      results.push({
+        ref: `session://current/event/${eventId}`,
+        role: record.type === 'user' ? 'user' : 'assistant',
+        preview: clipPreview(haystack, SEARCH_PREVIEW_CHARS),
         timestamp: record.timestamp,
-        data: record.data,
-        text:
-          text.length > previewChars ? `${text.slice(0, Math.max(0, previewChars - 1))}…` : text,
-        toolNames,
       });
+      if (results.length >= capped) break;
     }
-    return boundedEvents(matches, limit, maxChars);
+    return results;
+  }
+
+  readCurrent(id: string, refs: string[]): Array<{ ref: string; content: string }> {
+    if (refs.length > READ_REF_LIMIT)
+      throw new Error(`At most ${READ_REF_LIMIT} references per call.`);
+    const records = this.readRecords(id);
+    const byId = new Map(
+      records.map((record, index) => [record.eventId ?? `legacy-line-${index + 1}`, record]),
+    );
+    const output: Array<{ ref: string; content: string }> = [];
+    let remaining = READ_TOTAL_CHARS;
+    for (const ref of refs) {
+      const parsed = parseCurrentSessionRef(ref);
+      const record = byId.get(parsed.eventId);
+      if (!record) throw new Error(`Unknown session history reference: ${ref}`);
+      const data = record.data as {
+        content?: string;
+        contextContent?: string;
+        toolCalls?: Message['toolCalls'];
+        toolResults?: Message['toolResults'];
+      };
+      let content: string;
+      if (parsed.toolCallId) {
+        const result = data.toolResults?.find((item) => item.toolCallId === parsed.toolCallId);
+        if (!result) throw new Error(`Unknown tool-result reference: ${ref}`);
+        content = clipHeadTail(result.output ?? result.error ?? '', TOOL_RESULT_PREVIEW_CHARS);
+      } else {
+        content = JSON.stringify(
+          {
+            role: record.type,
+            content: data.contextContent ?? data.content ?? '',
+            toolCalls: data.toolCalls,
+            toolResults: data.toolResults?.map((result) => ({
+              ...result,
+              output: clipHeadTail(result.output ?? '', TOOL_RESULT_PREVIEW_CHARS),
+            })),
+          },
+          null,
+          2,
+        );
+      }
+      content = content.slice(0, remaining);
+      output.push({ ref, content });
+      remaining -= content.length;
+      if (remaining <= 0) break;
+    }
+    return output;
   }
 
   list(): SessionMeta[] {
@@ -608,6 +630,72 @@ export class SessionStore {
     }
     return removed;
   }
+}
+
+function restoreMessage(message: Message, fallbackId: string, timestamp: number): Message {
+  return {
+    ...message,
+    id: message.id || fallbackId,
+    content: message.content ?? '',
+    includeInContext: message.includeInContext ?? true,
+    kind: message.kind ?? (message.includeInContext === false ? 'local' : 'conversation'),
+    timestamp: message.timestamp ?? timestamp,
+  };
+}
+
+function isValidCompactRecord(data: CompactRecordData): boolean {
+  if (data?.version !== 1 && data?.version !== 2) return false;
+  if (!Array.isArray(data.replacementHistory) || data.replacementHistory.length === 0) return false;
+  if (data.version === 2) {
+    return (
+      !!data.compactId && !!data.checkpoint && data.checkpoint.version === 2 && !!data.boundary
+    );
+  }
+  return typeof data.summary === 'string';
+}
+
+function synthesizeV1Boundary(
+  id: string,
+  timestamp: number,
+  transcriptOrdinal: number,
+  preContextCount: number,
+  postContextCount: number,
+  preContextTokens: number | undefined,
+  generation: number,
+  trigger: CompactBoundary['trigger'],
+): CompactBoundary {
+  return {
+    id,
+    trigger,
+    transcriptOrdinal,
+    preContextCount,
+    postContextCount,
+    preContextTokens,
+    generation,
+    checkpointVersion: 1,
+    timestamp,
+  };
+}
+
+function clipPreview(value: string, max: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1)}...`;
+}
+
+function clipHeadTail(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const half = Math.floor((max - 40) / 2);
+  return `${value.slice(0, half)}\n[... output clipped ...]\n${value.slice(-half)}`;
+}
+
+function parseCurrentSessionRef(ref: string): { eventId: string; toolCallId?: string } {
+  const eventMatch = /^session:\/\/current\/event\/([^/]+)$/.exec(ref);
+  if (eventMatch) return { eventId: eventMatch[1] };
+  const toolMatch = /^session:\/\/current\/tool-result\/([^/]+)\/([^/]+)$/.exec(ref);
+  if (toolMatch) return { eventId: toolMatch[1], toolCallId: toolMatch[2] };
+  throw new Error(
+    'References must use session://current/event/... or session://current/tool-result/...',
+  );
 }
 
 export { normalizeWorkspace };

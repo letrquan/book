@@ -20,6 +20,7 @@ const ctx: ToolContext = { workspaceRoot: '', env: {} };
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'book-file-'));
   ctx.workspaceRoot = dir;
+  ctx.fileObservationLedger = new Map();
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -264,6 +265,28 @@ describe('write_file', () => {
 });
 
 describe('edit_file', () => {
+  it('blocks a stale mutation until an explicit reread refreshes provenance', async () => {
+    const path = join(dir, 'stale.txt');
+    writeFileSync(path, 'original');
+    const observed = await read.execute({ filePath: 'stale.txt' }, ctx);
+    expect(observed.fileObservations?.[0].sha256).toMatch(/^[a-f0-9]{64}$/);
+
+    writeFileSync(path, 'changed externally');
+    const blocked = await edit.execute(
+      { filePath: 'stale.txt', oldString: 'changed', newString: 'updated' },
+      ctx,
+    );
+    expect(blocked.success).toBe(false);
+    expect(blocked.error).toMatch(/^SKIPPED:.*Read/);
+
+    await read.execute({ filePath: 'stale.txt' }, ctx);
+    const allowed = await edit.execute(
+      { filePath: 'stale.txt', oldString: 'changed', newString: 'updated' },
+      ctx,
+    );
+    expect(allowed.success).toBe(true);
+    expect(readFileSync(path, 'utf-8')).toBe('updated externally');
+  });
   it('replaces the single occurrence when oldString is unique', async () => {
     writeFileSync(join(dir, 'a.txt'), 'foo bar baz');
     const r = await edit.execute({ filePath: 'a.txt', oldString: 'bar', newString: 'qux' }, ctx);
