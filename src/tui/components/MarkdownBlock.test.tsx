@@ -33,6 +33,29 @@ describe('MarkdownBlock', () => {
     const view = render(withTheme(React.createElement(MarkdownBlock, { content: 'Hello world' })));
     const output = frame(view.lastFrame);
     expect(output).toContain('Hello world');
+    expect(output.split('\n')).toEqual(['Hello world']);
+  });
+
+  it('adds one semantic row between paragraphs without trailing space', () => {
+    const view = render(
+      withTheme(
+        React.createElement(MarkdownBlock, { content: 'First paragraph\n\nSecond paragraph' }),
+      ),
+    );
+    const output = frame(view.lastFrame);
+
+    expect(output.split('\n')).toEqual(['First paragraph', '', 'Second paragraph']);
+  });
+
+  it('places heading bodies directly under their heading chrome', () => {
+    const view = render(
+      withTheme(React.createElement(MarkdownBlock, { content: '## Compact heading\n\nBody text' })),
+    );
+    const lines = frame(view.lastFrame).split('\n');
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('Compact heading');
+    expect(lines[1]).toBe('Body text');
   });
 
   it('renders bold text', () => {

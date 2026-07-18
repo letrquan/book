@@ -45,7 +45,7 @@ describe('ChatPanel Ink rendering', () => {
     );
 
     const output = frame(view.lastFrame);
-    expect(output).toContain('BOOK');
+    expect(output).toContain('██████');
     expect(output).toContain('Your coding workspace, indexed.');
     expect(output).toContain('/init');
   });
@@ -139,7 +139,7 @@ describe('ChatPanel Ink rendering', () => {
       ),
     );
 
-    expect(frame(view.lastFrame)).toContain('██████');
+    expect(frame(view.lastFrame)).not.toContain('██████');
     expect(frame(view.lastFrame)).not.toContain('Your coding workspace, indexed.');
     expect(frame(view.lastFrame)).toContain('older question');
     expect(frame(view.lastFrame)).toContain('older answer');
@@ -164,6 +164,24 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('older answer');
     expect(output).toContain('new question');
     expect(output).toContain('streamed reply');
+  });
+
+  it('keeps the original padded user-message band separate from agent output', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[msg('u1', 'user', 'compact request'), msg('a1', 'assistant', 'compact reply')]}
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).not.toContain('██████');
+    expect(output).toContain('compact request');
+    expect(output).toContain('compact reply');
+    expect(output.split('\n')).toEqual(['', '  compact request', '', '', '  compact reply']);
   });
 
   it('keeps wrapped content mounted exactly once when streaming completes', () => {
@@ -755,7 +773,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('I will update it.');
     expect(output).toContain('Done.');
     expect(output).toContain('Update(src/a.ts)');
-    expect(output).toContain('Added 1 line, removed 1 line');
+    expect(output).toContain('+1 -1');
     expect(output).toContain('-old line');
     expect(output).toContain('+new line');
   });
@@ -846,5 +864,31 @@ describe('ChatPanel Ink rendering', () => {
     expect(textIdx).toBeLessThan(globIdx);
     expect(globIdx).toBeLessThan(readIdx);
     expect(readIdx).toBeLessThan(grepIdx);
+  });
+
+  it('renders structured local command output as a panel instead of markdown text', () => {
+    const message: Message = {
+      ...msg('local-usage', 'assistant', 'Session usage plain fallback'),
+      includeInContext: false,
+      localCommand: {
+        kind: 'usage',
+        model: 'claude-sonnet-5',
+        currentTurn: 2,
+        messageCount: 5,
+        turnDurationMs: 1200,
+        usage: { promptTokens: 1000, completionTokens: 250, totalTokens: 1250 },
+        rate: { inputPerMillion: 3, outputPerMillion: 15 },
+        estimatedCostUsd: 0.00675,
+      },
+    };
+
+    const view = render(
+      withTheme(<ChatPanel messages={[message]} terminalWidth={80} reducedMotion />),
+    );
+    const output = frame(view.lastFrame);
+
+    expect(output).toContain('/usage / SESSION TELEMETRY');
+    expect(output).toContain('input 1,000');
+    expect(output).not.toContain('Session usage plain fallback');
   });
 });

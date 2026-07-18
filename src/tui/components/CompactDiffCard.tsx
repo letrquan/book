@@ -45,13 +45,13 @@ export function CompactDiffCard({
   }, [playDiff, motionDisabled, onSettled]);
 
   if (state.phase === 'working') {
-    return null; // WorkingIndicator owns the busy spinner
+    return null; // StatusLine owns the busy state.
   }
 
   if (state.phase === 'skipped' || state.phase === 'error') {
     const color = state.phase === 'error' ? theme.error : theme.subtle;
     return (
-      <Box flexDirection="column" marginY={1} width={width} paddingX={1}>
+      <Box flexDirection="column" width={width} paddingX={1}>
         <Text color={color}>{truncateDisplay(state.message ?? '', contentWidth)}</Text>
       </Box>
     );
@@ -66,7 +66,7 @@ export function CompactDiffCard({
 
   if (narrow) {
     return (
-      <Box flexDirection="column" marginY={1} width={width} paddingX={1}>
+      <Box flexDirection="column" width={width} paddingX={1}>
         <Text>
           <Text color={theme.diffRemoved}>−{pre} msgs</Text>
           <Text color={theme.subtle}> → </Text>
@@ -84,7 +84,6 @@ export function CompactDiffCard({
   return (
     <Box
       flexDirection="column"
-      marginY={1}
       width={width}
       borderStyle="single"
       borderColor={theme.subtle}
@@ -105,7 +104,7 @@ export function CompactDiffCard({
         </Text>
       )}
       {show(4) && (
-        <Box flexDirection="column" marginTop={1}>
+        <Box flexDirection="column">
           <Text color={theme.success}>{state.message ?? 'Conversation compacted'}</Text>
           {metrics && <Text color={theme.subtle}>{truncateDisplay(metrics, contentWidth)}</Text>}
         </Box>

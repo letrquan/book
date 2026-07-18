@@ -62,6 +62,7 @@ describe('ModelPicker', () => {
     expect(view.lastFrame()).toContain('Custom  gateway');
     expect(view.lastFrame()).toContain('Add BYOK provider');
     expect(view.lastFrame()).toContain('Alt+A add BYOK');
+    expect(view.lastFrame()?.split('\n').length).toBeLessThanOrEqual(8);
   });
 
   it('distinguishes save-default and session-only selections', () => {

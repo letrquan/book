@@ -12,6 +12,23 @@ import {
   truncateDisplay,
   wordWrap,
 } from './word-wrap.js';
+import type { TuiDensity } from '../density.js';
+
+export function markdownBlockGap(
+  previous: string | undefined,
+  next: string,
+  density: TuiDensity,
+): 0 | 1 {
+  if (!previous) return 0;
+  if (previous === 'heading') return 0;
+  if (next === 'heading') return density === 'compact' ? 1 : 0;
+  if (previous === 'paragraph' && next === 'paragraph') return 1;
+
+  const major = new Set(['code', 'table', 'blockquote', 'hr']);
+  if (major.has(previous) || major.has(next)) return density === 'compact' ? 1 : 0;
+
+  return 0;
+}
 
 export type TableAlign = 'left' | 'right' | 'center' | null | undefined;
 

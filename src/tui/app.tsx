@@ -1,5 +1,5 @@
 import { Box, Text, useInput, useStdout, useApp } from 'ink';
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { ChatPanel } from './components/ChatPanel.js';
@@ -29,10 +29,11 @@ import type { AgentConfig, CommandContext, SessionStoreInterface } from '../type
 import type { SessionBootstrap } from '../session/resolve.js';
 import { DEFAULT_THEME } from '../types.js';
 import { useTheme } from './theme.js';
+import { DensityContext, resolveTuiDensity } from './density.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
 import { discoverSkills } from '../skills.js';
 import { runGit } from '../tools/git.js';
-import { costReport, usageReport } from '../pricing.js';
+import { costReport, PRICING, usageReport } from '../pricing.js';
 import { buildInitPrompt } from '../commands/init-prompt.js';
 import {
   buildReviewPrompt,
@@ -48,7 +49,7 @@ import {
   listMemoryCandidates,
   loadMemoryContext,
 } from '../memory-store.js';
-import { buildContextReport } from '../context-report.js';
+import { buildContextBreakdown, buildContextReport } from '../context-report.js';
 import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
@@ -232,6 +233,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
   const isTiny = termWidth < 42 || termHeight < 12;
   const maxCommandMenuRows = Math.max(2, Math.min(isTiny ? 3 : 8, Math.floor(termHeight / 3)));
   const compactStatus = isNarrow || isTiny;
+  const density = resolveTuiDensity(termHeight);
   const reducedMotion = Boolean(config.accessibility?.reducedMotion);
   // Keep the whole live region quiescent while the terminal viewport belongs
   // to the user reviewing a plan. Any animation repaint can snap scrollback.
@@ -407,23 +409,29 @@ export function App({ config, session, redrawViewport }: AppProps) {
       } else if (value.startsWith('/config')) {
         const arg = value.slice('/config'.length).trim();
         if (!arg) {
-          addLocalMessage(
-            JSON.stringify(
-              redactSettingsForDisplay({
-                ...liveConfig.settings,
-                model: liveConfig.modelSelection ?? liveConfig.model,
-                baseUrl: liveConfig.baseUrl,
-                workspace: liveConfig.workspace,
-                maxTurns: liveConfig.maxTurns,
-                maxTokens: liveConfig.maxTokens,
-                effort: liveConfig.effort,
-                activeProvider: liveConfig.provider,
-                modelInfo: liveConfig.modelInfo,
-              }),
-              null,
-              2,
-            ),
-          );
+          const snapshot = redactSettingsForDisplay({
+            ...liveConfig.settings,
+            model: liveConfig.modelSelection ?? liveConfig.model,
+            baseUrl: liveConfig.baseUrl,
+            workspace: liveConfig.workspace,
+            maxTurns: liveConfig.maxTurns,
+            maxTokens: liveConfig.maxTokens,
+            effort: liveConfig.effort,
+            activeProvider: liveConfig.provider,
+            modelInfo: liveConfig.modelInfo,
+          }) as Record<string, unknown>;
+          addLocalMessage(JSON.stringify(snapshot, null, 2), {
+            kind: 'config',
+            snapshot,
+            runtime: {
+              model: liveConfig.modelSelection ?? liveConfig.model,
+              provider: liveConfig.provider ?? 'auto',
+              effort: liveConfig.effort,
+              mode,
+              maxTokens: liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens,
+              workspace: liveConfig.workspace,
+            },
+          });
         } else if (arg === '--help') {
           addLocalMessage(
             'Settable keys (dot-separated):\n' +
@@ -521,29 +529,63 @@ export function App({ config, session, redrawViewport }: AppProps) {
       } else if (value.startsWith('/cost')) {
         addLocalMessage(costReport(liveConfig.model, usage));
       } else if (value.startsWith('/usage') || value.startsWith('/stats')) {
+        const rate = PRICING[liveConfig.model];
+        const estimatedCostUsd =
+          usage && rate
+            ? (usage.promptTokens * rate.in + usage.completionTokens * rate.out) / 1_000_000
+            : undefined;
         addLocalMessage(
           usageReport(liveConfig.model, usage, {
             currentTurn,
             messageCount: messages.length,
             turnDurationMs,
           }),
+          {
+            kind: 'usage',
+            model: liveConfig.model,
+            currentTurn,
+            messageCount: messages.length,
+            turnDurationMs,
+            usage,
+            rate: rate ? { inputPerMillion: rate.in, outputPerMillion: rate.out } : undefined,
+            estimatedCostUsd,
+          },
         );
       } else if (value.startsWith('/context')) {
-        addLocalMessage(
-          buildContextReport(messages, {
-            model: liveConfig.model,
-            maxTokens: liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens,
-            contextHistory,
-            compactBoundaries,
-            skillCount: skills.length,
-            commandCount: commands.length,
-            subagentCount: discoverAgents(config.workspace).length,
-            hasMemoryIndex: Boolean(
-              liveConfig.memoryContext?.indexLoaded ?? getMemoryIndex(config.workspace).indexFile,
-            ),
-            hasClaudeMdLoader: discoverClaudeMd(config.workspace).length > 0,
-          }),
-        );
+        const ambient = {
+          model: liveConfig.model,
+          maxTokens: liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens,
+          contextHistory,
+          compactBoundaries,
+          skillCount: skills.length,
+          commandCount: commands.length,
+          subagentCount: discoverAgents(config.workspace).length,
+          hasMemoryIndex: Boolean(
+            liveConfig.memoryContext?.indexLoaded ?? getMemoryIndex(config.workspace).indexFile,
+          ),
+          hasClaudeMdLoader: discoverClaudeMd(config.workspace).length > 0,
+        };
+        const breakdown = buildContextBreakdown(contextHistory);
+        addLocalMessage(buildContextReport(messages, ambient), {
+          kind: 'context',
+          model: ambient.model,
+          maxTokens: ambient.maxTokens,
+          estimatedTokens: breakdown.estimatedTokens,
+          totalMessages: breakdown.totalMessages,
+          userMessages: breakdown.userMessages,
+          assistantMessages: breakdown.assistantMessages,
+          toolCalls: breakdown.toolCalls,
+          toolResults: breakdown.toolResults,
+          userTokens: breakdown.byRole.user,
+          assistantTokens: breakdown.byRole.assistant,
+          ambient: {
+            commandCount: ambient.commandCount,
+            skillCount: ambient.skillCount,
+            subagentCount: ambient.subagentCount,
+            hasMemoryIndex: ambient.hasMemoryIndex,
+            hasClaudeMdLoader: ambient.hasClaudeMdLoader,
+          },
+        });
       } else if (value.startsWith('/skills')) {
         setShowSkills((s) => !s);
       } else if (value.startsWith('/init')) {
@@ -750,7 +792,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
   const pickerOwnsTranscript = showModelPicker || showSessionPicker;
 
   return (
-    <ThemeContext.Provider value={currentTheme}>
+    <AppProviders theme={currentTheme} density={density}>
       <ErrorBoundary>
         <Box
           flexDirection="column"
@@ -801,12 +843,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
                   borderStyle="single"
                   borderColor={theme.subtle}
                   paddingX={1}
-                  marginTop={1}
                 >
                   <Text bold color={theme.brand}>
                     Slash Commands
                   </Text>
-                  <Box flexDirection="column" marginTop={1}>
+                  <Box flexDirection="column">
                     <HelpRow label="/help" description="Toggle this help" theme={theme} />
                     <HelpRow
                       label="/clear [name]"
@@ -903,12 +944,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
                   borderStyle="single"
                   borderColor={theme.subtle}
                   paddingX={1}
-                  marginTop={1}
                 >
                   <Text bold color={theme.brand}>
                     Session Status
                   </Text>
-                  <Box flexDirection="column" marginTop={1}>
+                  <Box flexDirection="column">
                     <HelpRow
                       label="Model"
                       description={liveConfig.modelSelection ?? liveConfig.model}
@@ -951,12 +991,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
                   borderStyle="single"
                   borderColor={theme.subtle}
                   paddingX={1}
-                  marginTop={1}
                 >
                   <Text bold color={theme.brand}>
                     Permission Mode
                   </Text>
-                  <Box flexDirection="column" marginTop={1}>
+                  <Box flexDirection="column">
                     <HelpRow label="Current Mode" description={mode} theme={theme} />
                     <HelpRow
                       label="Modes"
@@ -965,7 +1004,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
                     />
                     <HelpRow label="Switch" description="Alt+M or Shift+Tab" theme={theme} />
                   </Box>
-                  <Box marginTop={1} flexDirection="column">
+                  <Box flexDirection="column">
                     <Text color={theme.subtle} dimColor>
                       Permission rules (add via the "Always allow" option at tool prompts):
                     </Text>
@@ -1029,12 +1068,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
                   borderStyle="single"
                   borderColor={theme.subtle}
                   paddingX={1}
-                  marginTop={1}
                 >
                   <Text bold color={theme.brand}>
                     Skills ({skills.length})
                   </Text>
-                  <Box flexDirection="column" marginTop={1}>
+                  <Box flexDirection="column">
                     {skills.length === 0 ? (
                       <Text color={theme.subtle} dimColor>
                         (none discovered in .book/skills/ or ~/.book/skills/)
@@ -1061,12 +1099,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
                   borderStyle="single"
                   borderColor={theme.subtle}
                   paddingX={1}
-                  marginTop={1}
                 >
                   <Text bold color={theme.brand}>
                     Keyboard Shortcuts
                   </Text>
-                  <Box flexDirection="column" marginTop={1}>
+                  <Box flexDirection="column">
                     <HelpRow
                       label="Esc"
                       description="Cancel permission / abort stream"
@@ -1179,6 +1216,20 @@ export function App({ config, session, redrawViewport }: AppProps) {
             ) : null}
           </Box>
 
+          {compactUi && compactUi.phase !== 'working' ? (
+            <CompactDiffCard
+              state={compactUi}
+              terminalWidth={termWidth}
+              reducedMotion={motionDisabled}
+              screenReader={screenReader}
+              onSettled={() => {
+                if (compactUi.phase === 'diff') {
+                  setCompactUi({ ...compactUi, phase: 'done' });
+                }
+              }}
+            />
+          ) : null}
+
           <WorkingIndicator
             isThinking={isThinking}
             isCompacting={isCompacting}
@@ -1195,20 +1246,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
             reducedMotion={motionDisabled}
             screenReader={screenReader}
           />
-
-          {compactUi && compactUi.phase !== 'working' ? (
-            <CompactDiffCard
-              state={compactUi}
-              terminalWidth={termWidth}
-              reducedMotion={motionDisabled}
-              screenReader={screenReader}
-              onSettled={() => {
-                if (compactUi.phase === 'diff') {
-                  setCompactUi({ ...compactUi, phase: 'done' });
-                }
-              }}
-            />
-          ) : null}
 
           {/* Input bar — above the status line. Command menu is built into InputBar. */}
           <Box flexDirection="column" flexShrink={0} width={termWidth}>
@@ -1252,6 +1289,22 @@ export function App({ config, session, redrawViewport }: AppProps) {
           </Box>
         </Box>
       </ErrorBoundary>
+    </AppProviders>
+  );
+}
+
+function AppProviders({
+  theme,
+  density,
+  children,
+}: {
+  theme: ThemeTokens;
+  density: ReturnType<typeof resolveTuiDensity>;
+  children: ReactNode;
+}) {
+  return (
+    <ThemeContext.Provider value={theme}>
+      <DensityContext.Provider value={density}>{children}</DensityContext.Provider>
     </ThemeContext.Provider>
   );
 }

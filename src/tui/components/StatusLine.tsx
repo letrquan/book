@@ -120,16 +120,20 @@ export function StatusLine({
         : `tok ${usagePercent}%`;
 
     const segments: Array<{ text: string; color?: string }> = [
-      { text: truncateDisplay(model, modelBudget), color: rowColor },
-      { text: tokenSegment, color: rowColor },
+      { text: modeLabel(mode), color: modeColor },
     ];
 
-    if (tokenCount > 0 && !compact && width >= 64) {
-      segments.push({ text: `$${costEstimate.toFixed(3)}`, color: rowColor });
+    if (usageNearLimit) {
+      segments.push({
+        text: `ctx ${usagePercent}%`,
+        color: usageCritical ? theme.error : theme.warning,
+      });
     }
 
-    // Mode segment gets its own dedicated color.
-    segments.push({ text: modeLabel(mode), color: modeColor });
+    segments.push(
+      { text: truncateDisplay(model, modelBudget), color: rowColor },
+      { text: tokenSegment, color: rowColor },
+    );
 
     if (taskCount > 0) {
       segments.push({
@@ -138,8 +142,8 @@ export function StatusLine({
       });
     }
 
-    if (usageNearLimit && (compact || width < 58)) {
-      segments.push({ text: `ctx ${usagePercent}%`, color: rowColor });
+    if (tokenCount > 0 && !compact && width >= 64) {
+      segments.push({ text: `$${costEstimate.toFixed(3)}`, color: rowColor });
     }
 
     return buildColoredSegments(segments, contentWidth);
@@ -155,6 +159,8 @@ export function StatusLine({
     model,
     rowColor,
     taskCount,
+    theme.error,
+    theme.warning,
     tokenCount,
     usageFraction,
     usageNearLimit,
@@ -162,34 +168,13 @@ export function StatusLine({
     width,
   ]);
 
-  const warning =
-    usageNearLimit && !compact && width >= 58
-      ? truncateDisplay(
-          `⚠ ${usageCritical ? 'Context nearly full' : 'Approaching context limit'} — type /compact to summarize older turns`,
-          contentWidth,
-        )
-      : null;
-
   return (
-    <Box
-      flexDirection="column"
-      paddingX={1}
-      width={width}
-      borderStyle="single"
-      borderTop
-      borderBottom={false}
-      borderLeft={false}
-      borderRight={false}
-      borderColor={theme.subtle}
-    >
-      <Box flexDirection="row" flexWrap="nowrap">
-        {coloredRuns.map((run, i) => (
-          <Text key={i} color={run.color}>
-            {run.text}
-          </Text>
-        ))}
-      </Box>
-      {warning ? <Text color={usageCritical ? theme.error : theme.warning}>{warning}</Text> : null}
+    <Box paddingX={1} width={width} flexDirection="row" flexWrap="nowrap">
+      {coloredRuns.map((run, i) => (
+        <Text key={i} color={run.color}>
+          {run.text}
+        </Text>
+      ))}
     </Box>
   );
 }

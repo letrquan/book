@@ -16,6 +16,7 @@ import type {
   CompactResult,
   CompactRecordData,
   CompactTrigger,
+  LocalCommandDisplay,
   CompactBoundary,
 } from '../../types.js';
 import { runAgentLoop } from '../../agent/loop.js';
@@ -1017,7 +1018,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // send(), this never invokes runAgentLoop — used by /diff /config /cost
   // /init-pre /memory-noop to show output instantly.
   const addLocalMessage = useCallback(
-    (text: string) => {
+    (text: string, localCommand?: LocalCommandDisplay) => {
       if (sendInFlightRef.current || isThinking) {
         uiLog.event('local-message:blocked', {
           reason: sendInFlightRef.current ? 'in-flight' : 'is-thinking',
@@ -1025,8 +1026,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         });
         return; // don't clobber a streaming turn
       }
-      uiLog.event('local-message:added', { preview: text.slice(0, 40) });
-      const msg = { ...makeMessage('assistant', text, undefined, false), kind: 'local' as const };
+      uiLog.event('local-message:added', {
+        preview: text.slice(0, 40),
+        presentation: localCommand?.kind ?? 'text',
+      });
+      const msg = {
+        ...makeMessage('assistant', text, undefined, false),
+        kind: 'local' as const,
+        localCommand,
+      };
       if (session.store) {
         session.store.append(sessionIdRef.current, {
           type: 'local',

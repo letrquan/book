@@ -93,7 +93,6 @@ export function PlanApprovalDetails({ plan, screenReader = false }: PlanApproval
   return (
     <Box
       marginLeft={2}
-      marginY={1}
       flexDirection="column"
       borderStyle="round"
       borderColor={theme.planMode}

@@ -38,8 +38,6 @@ export function WelcomeScreen({
   workspace,
   model = 'model',
   mode = 'default',
-  commandCount = 0,
-  skillCount = 0,
   reducedMotion = false,
   screenReader = false,
   animate = true,
@@ -50,7 +48,7 @@ export function WelcomeScreen({
   const compact = width < 64 || height < 18;
   const tiny = width < 42 || height < 12;
   const motionDisabled = reducedMotion || screenReader || !animate;
-  const reveal = useStaggeredReveal(tiny ? 3 : compact ? 5 : 8, animate, 110, motionDisabled);
+  const reveal = useStaggeredReveal(tiny ? 3 : compact ? 4 : 3, animate, 110, motionDisabled);
   const tagline = useTypewriter(
     'Your coding workspace, indexed.',
     18,
@@ -123,14 +121,6 @@ export function WelcomeScreen({
           <Text color={theme.brand}>@file</Text>
           <Text color={theme.subtle}> context</Text>
         </WelcomeLine>
-        <WelcomeLine visible={reveal >= 4}>
-          <Text color={theme.subtle} dimColor>
-            {truncateDisplay(
-              `Index ready: ${commandCount} commands · ${skillCount} skills`,
-              contentWidth,
-            )}
-          </Text>
-        </WelcomeLine>
       </Box>
     );
   }
@@ -138,9 +128,6 @@ export function WelcomeScreen({
   return (
     <Box flexDirection="column" paddingX={1} width={width}>
       <AsciiBanner />
-      <Text color={theme.brand} bold>
-        BOOK
-      </Text>
       <WelcomeLine visible={reveal >= 1}>
         <Text color={spinner.color}>{spinner.frame} </Text>
         <Text color={theme.text}>{truncateDisplay(tagline || ' ', contentWidth - 2)}</Text>
@@ -154,28 +141,10 @@ export function WelcomeScreen({
         </Text>
       </WelcomeLine>
       <WelcomeLine visible={reveal >= 3}>
-        <Text color={theme.brand}>Open a page</Text>
-      </WelcomeLine>
-      <WelcomeLine visible={reveal >= 4}>
         <Text color={theme.brand}> /init</Text>
         <Text color={theme.subtle}> project memory </Text>
         <Text color={theme.brand}>/skills</Text>
-        <Text color={theme.subtle}> workflows </Text>
-        <Text color={theme.brand}>/review</Text>
-        <Text color={theme.subtle}> current diff</Text>
-      </WelcomeLine>
-      <WelcomeLine visible={reveal >= 5}>
-        <Text color={theme.subtle}>
-          Ctrl+/ shortcuts · Shift+Tab mode · @file context · !cmd shell
-        </Text>
-      </WelcomeLine>
-      <WelcomeLine visible={reveal >= 6}>
-        <Text color={theme.subtle} dimColor>
-          {truncateDisplay(
-            `Index ready: ${commandCount} commands · ${skillCount} skills`,
-            contentWidth,
-          )}
-        </Text>
+        <Text color={theme.subtle}> workflows · Ctrl+/ shortcuts</Text>
       </WelcomeLine>
     </Box>
   );

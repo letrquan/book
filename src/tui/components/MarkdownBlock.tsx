@@ -2,6 +2,7 @@ import { Text, Box } from 'ink';
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { marked, Tokens, Token } from 'marked';
 import { useTheme } from '../theme.js';
+import { useDensity } from '../density.js';
 import { wordWrap } from './word-wrap.js';
 import { highlightCode, type StyledLine } from './syntax-highlight.js';
 import {
@@ -9,6 +10,7 @@ import {
   layoutHeadingChrome,
   layoutHorizontalRule,
   layoutTable,
+  markdownBlockGap,
   nestedContentWidth,
   sliceStyledLine,
 } from './markdown-layout.js';
@@ -391,7 +393,7 @@ function renderBlockToken(
       const chrome = layoutHeadingChrome(text, t.depth, terminalWidth);
       if (t.depth === 1) {
         return (
-          <Box key={`h-${index}`} flexDirection="column" marginTop={1} marginBottom={1}>
+          <Box key={`h-${index}`} flexDirection="column">
             <Text bold color={theme.mdHeadingH1}>
               {chrome.prefix}
               {chrome.text}
@@ -402,7 +404,7 @@ function renderBlockToken(
       }
       if (t.depth === 2) {
         return (
-          <Box key={`h-${index}`} flexDirection="column" marginTop={1} marginBottom={1}>
+          <Box key={`h-${index}`} flexDirection="column">
             <Text bold color={theme.mdHeadingH2}>
               {chrome.prefix}
               {chrome.text}
@@ -412,7 +414,7 @@ function renderBlockToken(
         );
       }
       return (
-        <Box key={`h-${index}`} flexDirection="column" marginTop={1} marginBottom={1}>
+        <Box key={`h-${index}`} flexDirection="column">
           <Text bold={t.depth <= 4} color={theme.mdHeading} dimColor={t.depth >= 5}>
             {chrome.prefix}
             {chrome.text}
@@ -431,7 +433,7 @@ function renderBlockToken(
       if (terminalWidth) {
         const wrappedLines = wrappedInlineRuns(runs, terminalWidth);
         return (
-          <Box key={`p-${index}`} flexDirection="column" flexGrow={1} marginBottom={1}>
+          <Box key={`p-${index}`} flexDirection="column" flexGrow={1}>
             {wrappedLines.map((lineRuns, li) => (
               <Box key={`pw-${index}-${li}`} flexDirection="row">
                 <InlineRuns runs={lineRuns} />
@@ -441,7 +443,7 @@ function renderBlockToken(
         );
       }
       return (
-        <Box key={`p-${index}`} flexDirection="row" flexGrow={1} marginBottom={1}>
+        <Box key={`p-${index}`} flexDirection="row" flexGrow={1}>
           <InlineRuns runs={runs} />
         </Box>
       );
@@ -479,7 +481,7 @@ function renderBlockToken(
       return (
         <Box key={`code-${index}`} flexDirection="column" {...boxProps}>
           {layout.langLabel ? (
-            <Box marginBottom={1}>
+            <Box>
               <Text color={theme.mdCodeBorder} dimColor>
                 {layout.langLabel}
               </Text>
@@ -633,7 +635,7 @@ function renderBlockToken(
 
       if (layout.mode === 'stacked') {
         return (
-          <Box key={`table-${index}`} flexDirection="column" marginBottom={1}>
+          <Box key={`table-${index}`} flexDirection="column">
             {layout.lines.map((line, li) => (
               <Text key={`table-${index}-s${li}`} color={theme.text}>
                 {line}
@@ -644,7 +646,7 @@ function renderBlockToken(
       }
 
       return (
-        <Box key={`table-${index}`} flexDirection="column" marginBottom={1}>
+        <Box key={`table-${index}`} flexDirection="column">
           <Text color={theme.mdTableBorder}>{layout.top}</Text>
           {layout.headerRows.map((row, ri) =>
             renderTableCells(row, `tr-${index}-h${ri}`, theme, true),
@@ -687,23 +689,33 @@ function renderBlockToken(
  */
 export function MarkdownBlock({ content, terminalWidth, isStreaming = false }: MarkdownBlockProps) {
   const theme = useTheme();
+  const density = useDensity();
 
   const parsedContent = useThrottledValue(content, 60);
   const effectiveContent = parsedContent || content;
 
   if (!effectiveContent) return null;
 
-  const tokens = useMemo(() => marked.lexer(effectiveContent), [effectiveContent]);
+  const tokens = useMemo(
+    () => marked.lexer(effectiveContent).filter((token) => token.type !== 'space'),
+    [effectiveContent],
+  );
 
   return (
     <Box flexDirection="column">
-      {tokens.map((token, i) =>
-        renderBlockToken(token, theme, i, terminalWidth, {
-          depth: 0,
-          isStreaming,
-          blockquoteDepth: 0,
-        }),
-      )}
+      {tokens.map((token, i) => {
+        const gap = markdownBlockGap(tokens[i - 1]?.type, token.type, density);
+        return (
+          <React.Fragment key={`block-${i}`}>
+            {gap > 0 ? <Box height={gap} /> : null}
+            {renderBlockToken(token, theme, i, terminalWidth, {
+              depth: 0,
+              isStreaming,
+              blockquoteDepth: 0,
+            })}
+          </React.Fragment>
+        );
+      })}
     </Box>
   );
 }

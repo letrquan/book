@@ -6,9 +6,26 @@ import {
   layoutHeadingChrome,
   layoutHorizontalRule,
   layoutTable,
+  markdownBlockGap,
   nestedContentWidth,
   sliceStyledLine,
 } from './markdown-layout.js';
+
+describe('markdownBlockGap', () => {
+  it('uses adjacency instead of trailing margins', () => {
+    expect(markdownBlockGap(undefined, 'paragraph', 'compact')).toBe(0);
+    expect(markdownBlockGap('paragraph', 'paragraph', 'compact')).toBe(1);
+    expect(markdownBlockGap('heading', 'paragraph', 'compact')).toBe(0);
+    expect(markdownBlockGap('paragraph', 'heading', 'compact')).toBe(1);
+    expect(markdownBlockGap('code', 'paragraph', 'compact')).toBe(1);
+  });
+
+  it('removes optional major gaps in tight mode', () => {
+    expect(markdownBlockGap('paragraph', 'heading', 'tight')).toBe(0);
+    expect(markdownBlockGap('code', 'paragraph', 'tight')).toBe(0);
+    expect(markdownBlockGap('paragraph', 'paragraph', 'tight')).toBe(1);
+  });
+});
 
 function maxLineWidth(text: string): number {
   return Math.max(0, ...text.split('\n').map((line) => displayWidth(line)));

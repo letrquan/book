@@ -54,7 +54,6 @@ function parseMentionSegments(content: string): Array<{ text: string; isMention:
     } else {
       let end = afterAt;
       while (end < content.length && !/\s/.test(content[end])) end++;
-      const rawPath = content.slice(afterAt, end);
       // Strip trailing punctuation
       let cleanEnd = end;
       while (cleanEnd > afterAt && /[.,;:!?)]/.test(content[cleanEnd - 1])) cleanEnd--;

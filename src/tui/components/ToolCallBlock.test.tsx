@@ -138,7 +138,8 @@ describe('ToolCallBlock', () => {
 
     const rendered = frame(view.lastFrame);
     expect(rendered).toContain('Update(src/tui/components/Diff.tsx)');
-    expect(rendered).toContain('Added 2 lines, removed 1 line');
+    expect(rendered).toContain('+2 -1');
+    expect(rendered.split('\n')).toHaveLength(1);
   });
 
   it('renders a bounded expanded file diff preview', () => {
@@ -234,7 +235,8 @@ describe('ToolCallBlock', () => {
 
     const rendered = frame(view.lastFrame);
     expect(rendered).toContain('Update(analysis.ipynb)');
-    expect(rendered).toContain('Added 1 line, removed 1 line');
+    expect(rendered).toContain('+1 -1');
+    expect(rendered.split('\n')).toHaveLength(1);
   });
 
   it('renders a custom Create(filePath) block when a file is created', () => {
@@ -262,7 +264,8 @@ describe('ToolCallBlock', () => {
 
     const rendered = frame(view.lastFrame);
     expect(rendered).toContain('Create(src/new-file.txt)');
-    expect(rendered).toContain('Added 2 lines');
+    expect(rendered).toContain('+2');
+    expect(rendered.split('\n')).toHaveLength(1);
   });
 
   it('renders error messages below the custom file edit block on failure', () => {
@@ -337,6 +340,7 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
+    expect(rendered.split('\n')[1]?.trim()).not.toBe('│');
     for (const line of rendered.split('\n')) {
       expect(displayWidth(line), JSON.stringify(line)).toBeLessThanOrEqual(width);
     }

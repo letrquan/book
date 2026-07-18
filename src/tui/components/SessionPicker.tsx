@@ -2,6 +2,7 @@ import { Box, Text, useInput } from 'ink';
 import { useMemo, useState } from 'react';
 import type { SessionMeta } from '../../types.js';
 import { useTheme } from '../theme.js';
+import { useDensityMetrics } from '../density.js';
 
 interface SessionPickerProps {
   sessions: SessionMeta[];
@@ -27,6 +28,7 @@ export function SessionPicker({
   onCancel,
 }: SessionPickerProps) {
   const theme = useTheme();
+  const density = useDensityMetrics();
   const choices = useMemo(
     () => sessions.filter((session) => session.id !== currentSessionId),
     [currentSessionId, sessions],
@@ -45,13 +47,7 @@ export function SessionPicker({
   );
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="single"
-      borderColor={theme.subtle}
-      paddingX={1}
-      marginY={1}
-    >
+    <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1}>
       <Text bold color={theme.brand}>
         Resume conversation
       </Text>
@@ -65,9 +61,11 @@ export function SessionPicker({
           </Text>
         ))
       )}
-      <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter resume · Esc cancel
-      </Text>
+      {density.showOptionalHelp ? (
+        <Text color={theme.subtle} dimColor>
+          ↑↓ select · Enter resume · Esc cancel
+        </Text>
+      ) : null}
     </Box>
   );
 }
