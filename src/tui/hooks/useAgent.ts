@@ -182,6 +182,10 @@ export type CompactUiState = {
   preMessages?: number;
   preContextTokens?: number;
   message?: string;
+  degraded?: boolean;
+  warning?: string;
+  strategy?: Extract<CompactResult, { status: 'compacted' }>['strategy'];
+  modelCalls?: number;
 };
 
 function buildObservationLedger(messages: Message[]) {
@@ -495,6 +499,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           throughEventRef: result.throughEventRef,
           summarizedCount: result.summarizedCount,
           retainedCount: result.retainedCount,
+          strategy: result.strategy,
+          modelCalls: result.modelCalls,
+          degraded: result.degraded,
+          warning: result.warning,
         };
         session.store.append(opts.sessionId, {
           type: 'compact',
@@ -584,7 +592,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               trigger: 'auto',
               preMessages: autoResult.preMessageCount,
               preContextTokens: autoResult.preContextTokens,
-              message: 'Conversation compacted',
+              message: autoResult.degraded
+                ? 'Conversation compacted with reduced fidelity'
+                : 'Conversation compacted',
+              degraded: autoResult.degraded,
+              warning: autoResult.warning,
+              strategy: autoResult.strategy,
+              modelCalls: autoResult.modelCalls,
             });
           } else if (stillCurrent()) {
             setCompactUi(null);
@@ -799,7 +813,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                   trigger: 'auto',
                   preMessages: result.preMessageCount,
                   preContextTokens: result.preContextTokens,
-                  message: 'Conversation compacted',
+                  message: result.degraded
+                    ? 'Conversation compacted with reduced fidelity'
+                    : 'Conversation compacted',
+                  degraded: result.degraded,
+                  warning: result.warning,
+                  strategy: result.strategy,
+                  modelCalls: result.modelCalls,
                 });
               }
               return result;
@@ -1043,7 +1063,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           trigger: 'manual',
           preMessages: result.preMessageCount,
           preContextTokens: result.preContextTokens,
-          message: 'Conversation compacted',
+          message: result.degraded
+            ? 'Conversation compacted with reduced fidelity'
+            : 'Conversation compacted',
+          degraded: result.degraded,
+          warning: result.warning,
+          strategy: result.strategy,
+          modelCalls: result.modelCalls,
         });
       } catch (e) {
         if (stillCurrent()) {

@@ -165,6 +165,10 @@ export async function runHeadless(
               throughEventRef: compactResult.throughEventRef,
               summarizedCount: compactResult.summarizedCount,
               retainedCount: compactResult.retainedCount,
+              strategy: compactResult.strategy,
+              modelCalls: compactResult.modelCalls,
+              degraded: compactResult.degraded,
+              warning: compactResult.warning,
             };
             store.append(sessionId, {
               type: 'compact',
@@ -200,6 +204,12 @@ export async function runHeadless(
               post_messages: compactResult.replacementHistory.length,
               post_tokens: compactResult.postContextTokens,
               checkpoint_version: 2,
+              strategy: compactResult.strategy,
+              model_calls: compactResult.modelCalls,
+              degraded: compactResult.degraded,
+              coverage_status: compactResult.checkpoint.coverage?.status ?? 'complete',
+              coverage: compactResult.checkpoint.coverage,
+              warning: compactResult.warning,
             });
           }
         }
@@ -369,6 +379,10 @@ export async function runHeadless(
                 throughEventRef: result.throughEventRef,
                 summarizedCount: result.summarizedCount,
                 retainedCount: result.retainedCount,
+                strategy: result.strategy,
+                modelCalls: result.modelCalls,
+                degraded: result.degraded,
+                warning: result.warning,
               };
               store.append(sessionId, {
                 type: 'compact',
@@ -401,6 +415,12 @@ export async function runHeadless(
                 post_messages: result.replacementHistory.length,
                 post_tokens: result.postContextTokens,
                 checkpoint_version: 2,
+                strategy: result.strategy,
+                model_calls: result.modelCalls,
+                degraded: result.degraded,
+                coverage_status: result.checkpoint.coverage?.status ?? 'complete',
+                coverage: result.checkpoint.coverage,
+                warning: result.warning,
               });
             }
             lastUsage = null;

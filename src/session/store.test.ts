@@ -224,6 +224,79 @@ describe('SessionStore', () => {
     expect(loaded.history.map((message) => message.includeInContext)).toEqual([false, true]);
   });
 
+  it('round-trips degraded V2 compact metadata without rewriting old checkpoints', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    const checkpoint = {
+      version: 2 as const,
+      generation: 2,
+      state: { summary: 'Reduced fidelity', status: 'unknown' as const },
+      constraints: [],
+      files: [],
+      episodes: [],
+      openThreads: [],
+      statistics: { summarizedMessages: 4, retainedMessages: 0, preTokens: 900, postTokens: 100 },
+      coverage: {
+        status: 'degraded' as const,
+        reasons: ['pass-limit' as const],
+        processedMessages: 3,
+        omittedMessages: 1,
+        partiallyProcessedMessages: 0,
+      },
+    };
+    s.append(id, {
+      type: 'compact',
+      eventId: 'compact-2',
+      timestamp: 3,
+      data: {
+        version: 2,
+        compactId: 'compact-2',
+        generation: 2,
+        trigger: 'auto',
+        checkpoint,
+        summary: 'Reduced fidelity',
+        replacementHistory: [
+          {
+            id: 'checkpoint-2',
+            role: 'user',
+            content: JSON.stringify(checkpoint),
+            includeInContext: true,
+            kind: 'checkpoint',
+            timestamp: 3,
+          },
+        ],
+        boundary: {
+          id: 'compact-2',
+          trigger: 'auto',
+          transcriptOrdinal: 0,
+          preContextCount: 4,
+          postContextCount: 1,
+          preContextTokens: 900,
+          postContextTokens: 100,
+          generation: 2,
+          checkpointVersion: 2,
+          timestamp: 3,
+        },
+        summarizedCount: 4,
+        retainedCount: 0,
+        strategy: 'multi-pass',
+        modelCalls: 15,
+        degraded: true,
+        warning: 'Exact history remains searchable.',
+      },
+    });
+
+    const records = s.readRecords(id);
+    const compact = records.at(-1)?.data as Record<string, unknown>;
+    expect(compact).toMatchObject({
+      strategy: 'multi-pass',
+      modelCalls: 15,
+      degraded: true,
+      warning: 'Exact history remains searchable.',
+    });
+    expect(s.load(id).contextHistory[0].kind).toBe('checkpoint');
+  });
+
   it('preserves hidden context content for resumed user messages', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj' });

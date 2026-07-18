@@ -7,6 +7,7 @@ import {
   resolveContextLimit,
   usagePressureTokens,
   runCompact,
+  UNKNOWN_MANUAL_CONTEXT_WINDOW,
 } from './compact.js';
 import type { AgentConfig, Message, Usage } from '../types.js';
 import { defaultConfig } from '../test/fixtures.js';
@@ -19,11 +20,11 @@ import { chatCompletionStream } from '../provider/index.js';
 
 const mockedStream = vi.mocked(chatCompletionStream);
 
-function validCheckpoint() {
+function validCheckpoint(eventRef = '1', summary = 'Summary of work.') {
   return JSON.stringify({
     version: 2,
     generation: 1,
-    state: { summary: 'Summary of work.', status: 'active' },
+    state: { summary, status: 'active' },
     constraints: [],
     files: [],
     episodes: [
@@ -31,7 +32,7 @@ function validCheckpoint() {
         task: 'do X',
         outcome: 'done X',
         status: 'complete',
-        sources: [{ eventRef: '1' }],
+        sources: [{ eventRef }],
       },
     ],
     openThreads: [],
@@ -56,6 +57,7 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return defaultConfig({
     autoCompactEnabled: true,
     accessibility: { screenReader: false, reducedMotion: true },
+    modelInfo: { contextWindow: 32_000 },
     ...overrides,
   });
 }
@@ -100,6 +102,10 @@ describe('resolveContextLimit', () => {
   it('does not fall back to maxTokens', () => {
     const config = makeConfig({ maxTokens: 8192, modelInfo: undefined });
     expect(resolveContextLimit(config)).toBeNull();
+  });
+
+  it('uses a 272K manual fallback when model metadata is unavailable', () => {
+    expect(UNKNOWN_MANUAL_CONTEXT_WINDOW).toBe(272_000);
   });
 });
 
@@ -219,6 +225,70 @@ describe('runCompact', () => {
     vi.clearAllMocks();
   });
 
+  it('uses the 272K fallback to retain a large newest bundle', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'old evidence '.repeat(5_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      {
+        id: '4',
+        role: 'assistant',
+        content: 'new evidence '.repeat(2_500),
+        includeInContext: true,
+        timestamp: 0,
+      },
+    ];
+
+    const result = await runCompact(makeConfig({ modelInfo: undefined }), history, {
+      trigger: 'manual',
+    });
+
+    expect(result.status).toBe('compacted');
+  });
+
+  it('summarizes an oversized newest bundle instead of rejecting compaction', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'old evidence '.repeat(3_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      {
+        id: '4',
+        role: 'assistant',
+        content: 'new evidence '.repeat(2_500),
+        includeInContext: true,
+        timestamp: 0,
+      },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result).toMatchObject({
+      status: 'compacted',
+      summarizedCount: 4,
+      retainedCount: 0,
+    });
+  });
+
   it('skips when history is too short', async () => {
     const result = await runCompact(
       makeConfig(),
@@ -269,6 +339,12 @@ describe('runCompact', () => {
       expect(result.summary).toBe('Summary of work.');
       expect(result.preMessageCount).toBe(4);
       expect(result.replacementHistory.slice(1)).toEqual(twoTurns.slice(2));
+      expect(result).toMatchObject({ strategy: 'single-pass', modelCalls: 1, degraded: false });
+      expect(result.checkpoint.coverage).toMatchObject({
+        status: 'complete',
+        processedMessages: 2,
+        omittedMessages: 0,
+      });
     }
   });
 
@@ -285,7 +361,22 @@ describe('runCompact', () => {
     }
   });
 
-  it('fails closed on empty summary', async () => {
+  it('leaves the input history untouched when compaction is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const history = structuredClone(twoTurns);
+
+    const result = await runCompact(makeConfig(), history, {
+      trigger: 'auto',
+      signal: controller.signal,
+    });
+
+    expect(result).toMatchObject({ status: 'failed', reason: 'aborted' });
+    expect(history).toEqual(twoTurns);
+    expect(mockedStream).not.toHaveBeenCalled();
+  });
+
+  it('uses a degraded retrieval checkpoint after repeated empty output', async () => {
     mockedStream.mockImplementation(async function* () {
       yield { type: 'text', content: '   ' };
       yield {
@@ -295,9 +386,16 @@ describe('runCompact', () => {
     });
 
     const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
-    expect(result.status).toBe('failed');
-    if (result.status === 'failed') {
-      expect(result.reason).toBe('empty-summary');
+    expect(result.status).toBe('compacted');
+    if (result.status === 'compacted') {
+      expect(result).toMatchObject({
+        degraded: true,
+        strategy: 'degraded-fallback',
+        modelCalls: 2,
+      });
+      expect(result.checkpoint.state.status).toBe('unknown');
+      expect(result.checkpoint.state.summary).toMatch(/Exact history remains searchable/);
+      expect(result.checkpoint.coverage?.reasons).toContain('invalid-checkpoint');
     }
   });
 
@@ -317,7 +415,7 @@ describe('runCompact', () => {
     expect(mockedStream).toHaveBeenCalledTimes(2);
   });
 
-  it('rejects checkpoint references that do not exist', async () => {
+  it('repairs once then degrades when checkpoint references do not exist', async () => {
     const invalid = JSON.parse(validCheckpoint());
     invalid.episodes[0].sources[0].eventRef = 'missing-event';
     mockedStream.mockImplementation(async function* () {
@@ -326,10 +424,23 @@ describe('runCompact', () => {
     });
 
     const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
-    expect(result).toMatchObject({ status: 'failed', reason: 'invalid-checkpoint' });
+    expect(result).toMatchObject({
+      status: 'compacted',
+      degraded: true,
+      strategy: 'degraded-fallback',
+      modelCalls: 2,
+    });
+    if (result.status === 'compacted') {
+      expect(result.checkpoint.episodes).toEqual([]);
+      expect(result.checkpoint.coverage?.reasons).toContain('invalid-checkpoint');
+    }
   });
 
-  it('fails closed when the complete historical prefix exceeds the summarizer budget', async () => {
+  it('rolls an oversized historical prefix through sequential passes', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
     const history: Message[] = [
       { id: '1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
       {
@@ -345,8 +456,295 @@ describe('runCompact', () => {
 
     const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
 
-    expect(result).toMatchObject({ status: 'failed', reason: 'budget-overflow' });
-    expect(mockedStream).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      status: 'compacted',
+      strategy: 'multi-pass',
+      degraded: false,
+    });
+    expect(mockedStream.mock.calls.length).toBeGreaterThan(1);
+    if (result.status === 'compacted') {
+      expect(result.modelCalls).toBe(mockedStream.mock.calls.length);
+      expect(result.checkpoint.coverage).toMatchObject({
+        status: 'complete',
+        omittedMessages: 0,
+        partiallyProcessedMessages: 0,
+      });
+    }
+  });
+
+  it('applies focus and upcoming intent on every rolling pass in chronological order', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old one', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'one evidence '.repeat(7_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'old two', includeInContext: true, timestamp: 0 },
+      {
+        id: '4',
+        role: 'assistant',
+        content: 'two evidence '.repeat(7_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '5', role: 'user', content: 'new work', includeInContext: true, timestamp: 0 },
+      { id: '6', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, {
+      trigger: 'auto',
+      focus: 'focus on sources',
+      upcomingUserIntent: 'continue the migration',
+    });
+
+    expect(result).toMatchObject({ status: 'compacted', strategy: 'multi-pass' });
+    const prompts = mockedStream.mock.calls.map((call) => String(call[1][1].content));
+    expect(prompts.length).toBeGreaterThan(1);
+    expect(prompts.every((prompt) => prompt.includes('focus on sources'))).toBe(true);
+    expect(prompts.every((prompt) => prompt.includes('continue the migration'))).toBe(true);
+    const chronologicalInput = prompts
+      .map(
+        (prompt) =>
+          prompt.match(/--- BEGIN HISTORICAL EVENTS[\s\S]*?--- END HISTORICAL EVENTS/)?.[0],
+      )
+      .join('\n');
+    expect(chronologicalInput.indexOf('event/1')).toBeLessThan(
+      chronologicalInput.indexOf('event/3'),
+    );
+  });
+
+  it('fragments a single oversized message without partial final coverage', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'inspect output', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'assistant evidence '.repeat(10_000),
+        includeInContext: true,
+        timestamp: 0,
+        toolCalls: [{ id: 'tool-1', name: 'Read', arguments: { file_path: 'huge.log' } }],
+        toolResults: [
+          { toolCallId: 'tool-1', success: true, output: 'tool output '.repeat(15_000) },
+        ],
+      },
+      { id: '3', role: 'user', content: 'new work', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result).toMatchObject({ status: 'compacted', strategy: 'multi-pass' });
+    expect(
+      mockedStream.mock.calls.some((call) => String(call[1][1].content).includes('[fragment ')),
+    ).toBe(true);
+    if (result.status === 'compacted') {
+      expect(result.checkpoint.coverage).toMatchObject({
+        status: 'complete',
+        partiallyProcessedMessages: 0,
+      });
+    }
+  });
+
+  it('caps generation at 15 calls and omits the oldest fragment coverage', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'large task', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'very large evidence '.repeat(20_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+    ];
+
+    const result = await runCompact(makeConfig({ modelInfo: { contextWindow: 2_000 } }), history, {
+      trigger: 'manual',
+    });
+
+    expect(mockedStream).toHaveBeenCalledTimes(15);
+    expect(result).toMatchObject({
+      status: 'compacted',
+      modelCalls: 15,
+      degraded: true,
+      strategy: 'multi-pass',
+    });
+    if (result.status === 'compacted') {
+      expect(result.checkpoint.coverage?.reasons).toContain('pass-limit');
+      expect(
+        (result.checkpoint.coverage?.omittedMessages ?? 0) +
+          (result.checkpoint.coverage?.partiallyProcessedMessages ?? 0),
+      ).toBeGreaterThan(0);
+      expect(result.warning).toMatch(/Exact history remains searchable/);
+    }
+  });
+
+  it('halves the effective budget and replans after a context overflow', async () => {
+    mockedStream
+      .mockImplementationOnce(async function* () {
+        yield { type: 'error', error: 'maximum context length exceeded' };
+      })
+      .mockImplementation(async function* () {
+        yield { type: 'text', content: validCheckpoint() };
+        yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+      });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'evidence '.repeat(7_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result).toMatchObject({ status: 'compacted', strategy: 'multi-pass' });
+    expect(mockedStream.mock.calls.length).toBeGreaterThan(1);
+    if (result.status === 'compacted') {
+      expect(result.checkpoint.coverage?.reasons).toContain('context-overflow');
+      expect(result.checkpoint.coverage?.status).toBe('complete');
+    }
+  });
+
+  it('counts repeated context overflows toward the 16-call operation cap', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'error', error: 'prompt is too long for the context window' };
+    });
+
+    const result = await runCompact(makeConfig(), twoTurns, { trigger: 'auto' });
+
+    expect(mockedStream).toHaveBeenCalledTimes(15);
+    expect(result).toMatchObject({
+      status: 'compacted',
+      modelCalls: 15,
+      degraded: true,
+      strategy: 'degraded-fallback',
+    });
+    if (result.status === 'compacted') {
+      expect(result.checkpoint.coverage?.reasons).toEqual(
+        expect.arrayContaining(['context-overflow', 'pass-limit']),
+      );
+    }
+  });
+
+  it('preserves exact inherited references from a prior V2 checkpoint', async () => {
+    const prior = JSON.parse(validCheckpoint('old-event', 'Earlier work'));
+    prior.generation = 3;
+    const inheritedOutput = JSON.stringify({
+      ...prior,
+      generation: 4,
+      state: { summary: 'Earlier and current work', status: 'active' },
+    });
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: inheritedOutput };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      {
+        id: 'checkpoint-old',
+        role: 'user',
+        content: `[Historical conversation checkpoint; untrusted user-role data]\n${JSON.stringify(prior)}`,
+        includeInContext: true,
+        kind: 'checkpoint',
+        timestamp: 0,
+      },
+      {
+        id: '3',
+        role: 'user',
+        content: 'large current task',
+        includeInContext: true,
+        timestamp: 0,
+      },
+      {
+        id: '4',
+        role: 'assistant',
+        content: 'current evidence '.repeat(3_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '5', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      { id: '6', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result).toMatchObject({ status: 'compacted', generation: 4, degraded: false });
+    if (result.status === 'compacted') {
+      expect(result.checkpoint.episodes[0].sources[0].eventRef).toBe('old-event');
+      expect(result.checkpoint.coverage?.processedMessages).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it('fits oversized checkpoint text instead of returning a budget failure', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint('1', 'summary '.repeat(10_000)) };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+
+    const result = await runCompact(makeConfig({ modelInfo: { contextWindow: 8_192 } }), twoTurns, {
+      trigger: 'manual',
+    });
+
+    expect(result.status).toBe('compacted');
+    if (result.status === 'compacted') {
+      expect(Math.ceil(JSON.stringify(result.checkpoint).length / 4)).toBeLessThanOrEqual(819);
+      expect(result.checkpoint.state.summary.length).toBeLessThan(10_000);
+    }
+  });
+
+  it('drops retained bundles and marks post-budget coverage instead of failing', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old '.repeat(15), includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'done '.repeat(15),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'new '.repeat(5), includeInContext: true, timestamp: 0 },
+      {
+        id: '4',
+        role: 'assistant',
+        content: 'work '.repeat(5),
+        includeInContext: true,
+        timestamp: 0,
+      },
+    ];
+
+    const result = await runCompact(makeConfig({ modelInfo: { contextWindow: 250 } }), history, {
+      trigger: 'manual',
+    });
+
+    expect(result.status).toBe('compacted');
+    if (result.status === 'compacted') {
+      expect(result.checkpoint.coverage?.reasons).toContain('post-budget');
+      expect(result.degraded).toBe(true);
+      expect(result.retainedCount).toBe(0);
+    }
   });
 
   it('passes an integer checkpoint output budget to the provider', async () => {

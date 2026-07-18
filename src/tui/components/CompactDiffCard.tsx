@@ -71,8 +71,13 @@ export function CompactDiffCard({
           <Text color={theme.diffRemoved}>−{pre} msgs</Text>
           <Text color={theme.subtle}> → </Text>
           <Text color={theme.diffAdded}>+summary</Text>
-          <Text color={theme.success}> · Conversation compacted</Text>
+          <Text color={state.degraded ? theme.warning : theme.success}>
+            {state.degraded ? ' · Compacted with reduced fidelity' : ' · Conversation compacted'}
+          </Text>
         </Text>
+        {state.degraded && state.warning && (
+          <Text color={theme.warning}>{truncateDisplay(state.warning, contentWidth)}</Text>
+        )}
       </Box>
     );
   }
@@ -86,7 +91,7 @@ export function CompactDiffCard({
       flexDirection="column"
       width={width}
       borderStyle="single"
-      borderColor={theme.subtle}
+      borderColor={state.degraded ? theme.warning : theme.subtle}
       paddingX={1}
     >
       <Text color={theme.subtle} bold>
@@ -105,7 +110,12 @@ export function CompactDiffCard({
       )}
       {show(4) && (
         <Box flexDirection="column">
-          <Text color={theme.success}>{state.message ?? 'Conversation compacted'}</Text>
+          <Text color={state.degraded ? theme.warning : theme.success}>
+            {state.message ?? 'Conversation compacted'}
+          </Text>
+          {state.degraded && state.warning && (
+            <Text color={theme.warning}>{truncateDisplay(state.warning, contentWidth)}</Text>
+          )}
           {metrics && <Text color={theme.subtle}>{truncateDisplay(metrics, contentWidth)}</Text>}
         </Box>
       )}

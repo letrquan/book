@@ -261,6 +261,10 @@ export type CompactResult =
       throughEventRef?: string;
       preContextTokens?: number;
       preMessageCount: number;
+      strategy?: 'single-pass' | 'multi-pass' | 'degraded-fallback';
+      modelCalls?: number;
+      degraded?: boolean;
+      warning?: string;
     }
   | {
       status: 'skipped';
@@ -718,6 +722,19 @@ export interface CheckpointSourceRef {
   toolResultRef?: string;
 }
 
+export type CompactCoverageReason =
+  'pass-limit' | 'context-overflow' | 'invalid-checkpoint' | 'post-budget';
+
+export interface ConversationCheckpointCoverage {
+  status: 'complete' | 'degraded';
+  reasons: CompactCoverageReason[];
+  processedMessages: number;
+  omittedMessages: number;
+  partiallyProcessedMessages: number;
+  firstProcessedEventRef?: string;
+  lastProcessedEventRef?: string;
+}
+
 export interface ConversationCheckpointV2 {
   version: 2;
   generation: number;
@@ -752,6 +769,8 @@ export interface ConversationCheckpointV2 {
     preTokens: number;
     postTokens: number;
   };
+  /** Missing on older V2 checkpoints, which are treated as complete. */
+  coverage?: ConversationCheckpointCoverage;
 }
 
 export interface CompactRecordDataV2 {
@@ -769,6 +788,10 @@ export interface CompactRecordDataV2 {
   retainedCount: number;
   preContextTokens?: number;
   postContextTokens?: number;
+  strategy?: 'single-pass' | 'multi-pass' | 'degraded-fallback';
+  modelCalls?: number;
+  degraded?: boolean;
+  warning?: string;
 }
 
 export type CompactRecordData = CompactRecordDataV1 | CompactRecordDataV2;
