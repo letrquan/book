@@ -316,6 +316,94 @@ describe('Vietnamese character support', () => {
     expect(normalizeInput('Ơ')).toBe('Ơ'); // Ơ
     expect(normalizeInput('Ư')).toBe('Ư'); // Ư
   });
+
+  it('normalizes decomposed Vietnamese as it is typed and submits NFC text', async () => {
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value)));
+    await tick();
+
+    // IMEs may emit the base letter and combining marks as separate input events.
+    for (const chunk of [
+      'To',
+      '\u0302',
+      'i đang ho',
+      '\u0323',
+      'c tie',
+      '\u0302',
+      '\u0301',
+      'ng Vie',
+      '\u0323',
+      '\u0302',
+      't',
+    ]) {
+      view.stdin.write(chunk);
+      await tick(20);
+    }
+
+    expect(stripAnsi(view.lastFrame())).toContain('Tôi đang học tiếng Việt');
+
+    view.stdin.write('\r');
+    await tick(20);
+
+    expect(submitted).toEqual(['Tôi đang học tiếng Việt']);
+  });
+
+  it('deletes a composed Vietnamese letter with one Backspace', async () => {
+    const view = render(inputBar(() => {}));
+    await tick();
+
+    for (const chunk of ['a', '\u0306', '\u0301']) {
+      view.stdin.write(chunk);
+      await tick(20);
+    }
+    expect(stripAnsi(view.lastFrame())).toContain('ắ');
+
+    view.stdin.write('\x7f');
+    await tick(20);
+
+    expect(stripAnsi(view.lastFrame())).not.toContain('ắ');
+    expect(stripAnsi(view.lastFrame())).not.toContain('ă');
+  });
+
+  it('applies a Vietnamese IME backspace and replacement chunk atomically', async () => {
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value)));
+    await tick();
+
+    view.stdin.write('lo');
+    await tick(20);
+    view.stdin.write('\x7fô');
+    await tick(20);
+    view.stdin.write('i');
+    await tick(20);
+    view.stdin.write('\x7f\x7fỗi');
+    await tick(20);
+
+    expect(stripAnsi(view.lastFrame())).toContain('lỗi');
+    expect(stripAnsi(view.lastFrame())).not.toContain('\x7f');
+
+    view.stdin.write('\r');
+    await tick(20);
+
+    expect(submitted).toEqual(['lỗi']);
+  });
+
+  it('does not lose rapid separate IME backspace events between renders', async () => {
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value)));
+    await tick();
+
+    view.stdin.write('lôi');
+    await tick(20);
+    view.stdin.write('\x7f');
+    view.stdin.write('\x7f');
+    view.stdin.write('ỗi');
+    await tick(20);
+    view.stdin.write('\r');
+    await tick(20);
+
+    expect(submitted).toEqual(['lỗi']);
+  });
 });
 
 describe('InputBar command menu', () => {

@@ -1,5 +1,4 @@
 import { Box, Text } from 'ink';
-import TextInput from 'ink-text-input';
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useInput } from 'ink';
 import { useTimedFlash, usePulse } from '../hooks/useAnimation.js';
@@ -23,6 +22,7 @@ import {
 } from '../../commands/filter.js';
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
+import { InputBox } from './InputBox.js';
 
 const uiLog = createUiDebugLogger('tui:inputbar');
 const FILE_MENTION_DEBOUNCE_MS = 40;
@@ -40,7 +40,7 @@ interface InputBarProps {
   /**
    * True when a higher-priority modal (permission prompt) owns the keyboard.
    * Ink's `useInput` fans every keypress to ALL registered handlers regardless
-   * of focus, so InputBar must silence BOTH its own `useInput` and TextInput's
+   * of focus, so InputBar must silence BOTH its own `useInput` and InputBox's
    * (via `focus`) while a modal is up — otherwise Enter/Tab/Esc double-fire and
    * the user confirming a permission accidentally interrupts the stream.
    */
@@ -71,7 +71,7 @@ function normalizeInput(value: string): string {
 }
 
 /**
- * Strip SGR mouse escape sequences that leak through from ink-text-input.
+ * Strip SGR mouse escape sequences before they can become prompt text.
  */
 function stripMouseSequences(val: string): string {
   return val.replace(/\[<[0-9;]*[Mm]/g, '');
@@ -239,9 +239,7 @@ export function InputBar({
     // handler on every keypress, so Enter/Tab/Esc would double-fire.
     if (inputSuppressed) return;
     // Filter out Alt/Meta-modified keys — they're shortcuts, not text input.
-    // ink-text-input has its own useInput listener and can still append the
-    // printable part of an Alt chord (Alt+P → "p"). Restore this handler's
-    // pre-event value after all listeners in the current input turn finish.
+    // Preserve the editor value while the parent handles Alt/Meta shortcuts.
     if (key.meta) {
       const preservedValue = value;
       queueMicrotask(() => setValue(preservedValue));
@@ -293,7 +291,7 @@ export function InputBar({
         uiLog.event('input:Up', { action: 'menu-prev-item' });
         return;
       }
-      // Enter is resolved in handleSubmit, where TextInput passes the current value.
+      // Enter is resolved in handleSubmit, where InputBox passes the current value.
       if (key.return) return;
       // Character keys update the filter via onChange — stay visible so the
       // user can continue typing the command name. The menu is dismissed by
@@ -340,8 +338,8 @@ export function InputBar({
       uiLog.event('input:Tab', { action: 'accept-suggestion' });
       return;
     }
-    // Ctrl+J / Shift+Enter insert a newline without submitting. ink-text-input
-    // does not expose cursor position, so append at the end of the prompt.
+    // Ctrl+J / Shift+Enter insert a newline without submitting. InputBox does
+    // not expose cursor position to the parent, so append at the end of the prompt.
     if ((key.ctrl && (_input === 'j' || _input === '\n')) || (key.shift && key.return)) {
       setValue(value + '\n');
       setMenuVisible(false);
@@ -354,8 +352,7 @@ export function InputBar({
       return;
     }
     // Forward Ctrl-based shortcuts to the parent App. As with Alt chords,
-    // restore the pre-event value when consumed because ink-text-input has its
-    // own listener and otherwise inserts printable Ctrl bytes (Ctrl+L → "l").
+    // restore the pre-event value when consumed to keep shortcut routing defensive.
     if (key.ctrl && onGlobalShortcut) {
       if (onGlobalShortcut(_input, key)) {
         const preservedValue = value;
@@ -382,7 +379,7 @@ export function InputBar({
   });
 
   const safeOnChange = useCallback((val: string) => {
-    const clean = stripMouseSequences(val);
+    const clean = normalizeInput(stripMouseSequences(val));
     setValue(clean);
 
     // Detect / at start for command menu.
@@ -554,14 +551,14 @@ export function InputBar({
       <Box borderStyle="single" borderColor={theme.subtle} paddingX={1} width={width}>
         <Text color={promptColor}>{'> '}</Text>
         <Box width={inputWidth} flexShrink={1}>
-          <TextInput
+          <InputBox
             value={value}
             onChange={safeOnChange}
             onSubmit={handleSubmit}
             placeholder={placeholder}
             // Stay focused while disabled so Enter can route to the interrupt
             // path; only yield to a modal (permission prompt). `focus` here maps
-            // to TextInput's internal `useInput` isActive — see inputSuppressed.
+            // to InputBox's internal `useInput` isActive — see inputSuppressed.
             focus={!inputSuppressed}
           />
         </Box>
