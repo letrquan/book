@@ -57,7 +57,7 @@ export function buildColoredSegments(
 export function StatusLine({
   model,
   tokenCount,
-  maxTokens = 128000,
+  maxTokens = 272_000,
   mode,
   taskCount,
   activeTaskCount,

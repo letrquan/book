@@ -45,6 +45,17 @@ describe('loadConfig retry defaults', () => {
   });
 });
 
+describe('loadConfig model defaults', () => {
+  it('uses the product default 272k context budget when none is configured', () => {
+    const config = loadConfig(workspace, { noSettings: true });
+
+    expect(config.model).toBe('gpt-4o');
+    expect(config.maxTokens).toBe(272_000);
+    expect(config.defaultMaxTokens).toBe(272_000);
+    expect(config.maxTokensExplicit).toBe(false);
+  });
+});
+
 describe('loadConfig retry — env var overrides', () => {
   it('overrides retry.maxAttempts from BOOK_RETRY_MAX_ATTEMPTS', () => {
     process.env.BOOK_RETRY_MAX_ATTEMPTS = '5';

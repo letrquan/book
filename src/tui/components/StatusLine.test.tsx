@@ -31,6 +31,26 @@ describe('buildColoredSegments', () => {
 });
 
 describe('StatusLine', () => {
+  it('uses the product default 272k fallback budget', () => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="gpt-4o"
+          tokenCount={136_000}
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain('tokens 136.0k/272k');
+    expect(output).toContain('50%');
+  });
+
   it('renders full status on wide terminals', () => {
     const view = render(
       withTheme(

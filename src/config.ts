@@ -129,7 +129,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
   const defaultApiKey = process.env.BOOK_API_KEY || '';
   const defaultBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl || DEFAULT_OPENAI_BASE_URL;
-  const defaultMaxTokens = envMaxTokens ?? settings.maxTokens ?? legacy?.maxTokens ?? 128000;
+  const defaultMaxTokens = envMaxTokens ?? settings.maxTokens ?? legacy?.maxTokens ?? 272_000;
   const defaultEffort = validateEffort(process.env.BOOK_EFFORT) || settings.effort || 'high';
   const defaultProvider = validateProvider(process.env.BOOK_PROVIDER) || 'auto';
 
