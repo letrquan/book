@@ -166,7 +166,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('streamed reply');
   });
 
-  it('renders role labels, an inset user card, and open assistant output', () => {
+  it('renders an inset user card and open assistant output without visible role labels', () => {
     const view = render(
       withTheme(
         <ChatPanel
@@ -179,8 +179,8 @@ describe('ChatPanel Ink rendering', () => {
 
     const output = frame(view.lastFrame);
     expect(output).not.toContain('╭ BOOK');
-    expect(output).toContain('You');
-    expect(output).toContain('Book');
+    expect(output).not.toContain('You');
+    expect(output).not.toContain('Book');
     expect(output).toContain('│ compact request');
     expect(output).toContain('compact request');
     expect(output).toContain('compact reply');
@@ -203,8 +203,8 @@ describe('ChatPanel Ink rendering', () => {
     const questionLine = lines.findIndex((line) => line.includes('QUESTION_SPACING_MARKER'));
     const answerLine = lines.findIndex((line) => line.includes('ANSWER_SPACING_MARKER'));
 
-    // One gap plus the Book role label separates the card from assistant prose.
-    expect(answerLine - questionLine).toBe(3);
+    // A single gap separates the card from assistant prose.
+    expect(answerLine - questionLine).toBe(2);
   });
 
   it('keeps the timestamp transition into the next user turn compact', () => {
@@ -225,8 +225,8 @@ describe('ChatPanel Ink rendering', () => {
     const answerLine = lines.findIndex((line) => line.includes('FIRST_ANSWER_MARKER'));
     const nextQuestionLine = lines.findIndex((line) => line.includes('SECOND_QUESTION_MARKER'));
 
-    // One turn gap plus the next You role label.
-    expect(nextQuestionLine - answerLine).toBe(3);
+    // A single turn gap separates assistant prose from the next user card.
+    expect(nextQuestionLine - answerLine).toBe(2);
   });
 
   it('keeps wrapped content mounted exactly once when streaming completes', () => {

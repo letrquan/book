@@ -27,24 +27,6 @@ function formatTurnTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function RoleLabel({ role, timestamp }: { role: 'user' | 'assistant'; timestamp: number }) {
-  const theme = useTheme();
-  const label = formatTurnTime(timestamp);
-  return (
-    <Box paddingLeft={2}>
-      <Text color={role === 'user' ? theme.userAccent : theme.assistantAccent} bold>
-        {role === 'user' ? 'You' : 'Book'}
-      </Text>
-      {label ? (
-        <Text color={theme.subtle} dimColor>
-          {' '}
-          · {label}
-        </Text>
-      ) : null}
-    </Box>
-  );
-}
-
 function ScreenReaderRoleLabel({
   role,
   timestamp,
@@ -56,7 +38,7 @@ function ScreenReaderRoleLabel({
   return (
     <Box>
       <Text>
-        {role === 'user' ? 'You' : 'Book'}
+        {role === 'user' ? 'User' : 'Assistant'}
         {label ? ` at ${label}` : ''}
       </Text>
     </Box>
@@ -182,9 +164,7 @@ export function ChatPanel({
             >
               {screenReader ? (
                 <ScreenReaderRoleLabel role="user" timestamp={message.timestamp} />
-              ) : (
-                <RoleLabel role="user" timestamp={message.timestamp} />
-              )}
+              ) : null}
               <UserMessage
                 content={message.content}
                 terminalWidth={terminalWidth}
@@ -209,9 +189,7 @@ export function ChatPanel({
           >
             {screenReader ? (
               <ScreenReaderRoleLabel role="assistant" timestamp={message.timestamp} />
-            ) : (
-              <RoleLabel role="assistant" timestamp={message.timestamp} />
-            )}
+            ) : null}
             <AgentMessage
               message={message}
               isStreaming={isStreaming}
