@@ -13,11 +13,13 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Redesigned the interactive TUI with matched quiet-editorial dark/light themes, a compact BOOK bookplate, inset user cards, open assistant typography, tree-style tool activity, a floating rounded composer, and softer picker/approval surfaces.
 - Compaction now replaces only active model context. The append-only transcript and chronological compact boundaries remain visible, scrollable, and resumable.
 - `/context` reports visible transcript size separately from active provider context.
 
 ### Fixed
 
+- Make `/theme` open a keyboard picker, apply the full app palette, persist the selection, resolve terminal auto mode correctly, and report invalid custom themes.
 - Keep local slash-command output visible and resumable in the TUI without adding it to provider or compaction context.
 - Keep the latest completed `Write`/`Edit`/`MultiEdit`/`NotebookEdit` diff visible as a bounded Claude Code-style preview, with line-background and inline word-level highlighting.
 

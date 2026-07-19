@@ -14,6 +14,7 @@ import { UserMessage } from './UserMessage.js';
 import { WelcomeScreen } from './WelcomeScreen.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
+import { useDensity } from '../density.js';
 import { mergeAssistantMessages } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
 import type { TranscriptMode } from '../tool-presentation.js';
@@ -26,21 +27,19 @@ function formatTurnTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function TurnSeparator({
+function ScreenReaderRoleLabel({
+  role,
   timestamp,
-  terminalWidth,
 }: {
+  role: 'user' | 'assistant';
   timestamp: number;
-  terminalWidth?: number;
 }) {
-  const theme = useTheme();
   const label = formatTurnTime(timestamp);
-  const width = Math.max(20, Math.min(terminalWidth ?? 60, 80));
-  const suffix = '─'.repeat(Math.max(5, width - label.length - 4));
   return (
     <Box>
-      <Text color={theme.mdTurnSeparator} dimColor>
-        ── {label} {suffix}
+      <Text>
+        {role === 'user' ? 'User' : 'Assistant'}
+        {label ? ` at ${label}` : ''}
       </Text>
     </Box>
   );
@@ -116,6 +115,7 @@ export function ChatPanel({
   retryMax = 0,
   retryCountdownMs = 0,
 }: ChatPanelProps) {
+  const density = useDensity();
   useDebugMount(uiLog, { model, mode, commandCount, skillCount });
   const timeline = useMemo(
     () => buildTimeline(messages, compactBoundaries, streamingMessageId),
@@ -157,11 +157,19 @@ export function ChatPanel({
         const previous = timeline[index - 1];
         if (message.role === 'user') {
           return (
-            <Box key={message.id} flexDirection="column">
-              {index > 0 ? (
-                <TurnSeparator timestamp={message.timestamp} terminalWidth={terminalWidth} />
+            <Box
+              key={message.id}
+              flexDirection="column"
+              marginTop={index > 0 && density !== 'tight' ? 1 : 0}
+            >
+              {screenReader ? (
+                <ScreenReaderRoleLabel role="user" timestamp={message.timestamp} />
               ) : null}
-              <UserMessage content={message.content} terminalWidth={terminalWidth} />
+              <UserMessage
+                content={message.content}
+                terminalWidth={terminalWidth}
+                screenReader={screenReader}
+              />
             </Box>
           );
         }
@@ -173,8 +181,15 @@ export function ChatPanel({
           <Box
             key={message.id}
             flexDirection="column"
-            marginTop={previous && 'role' in previous && previous.role === 'user' ? 1 : 0}
+            marginTop={
+              previous && 'role' in previous && previous.role === 'user' && density !== 'tight'
+                ? 1
+                : 0
+            }
           >
+            {screenReader ? (
+              <ScreenReaderRoleLabel role="assistant" timestamp={message.timestamp} />
+            ) : null}
             <AgentMessage
               message={message}
               isStreaming={isStreaming}

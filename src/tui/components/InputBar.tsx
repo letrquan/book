@@ -7,6 +7,7 @@ import { CommandMenu } from './CommandMenu.js';
 import { FileMentionMenu } from './FileMentionMenu.js';
 import type { PermissionMode, SlashCommand } from '../../types.js';
 import { modeColorToken } from '../mode-style.js';
+import { floatingFrameMetrics } from './chrome.js';
 import {
   findActiveFileMention,
   getFileMentionCandidates,
@@ -509,8 +510,9 @@ export function InputBar({
   const promptPulse = usePulse(!disabled && !inputSuppressed && !motionDisabled, 700);
   const submitFlash = useTimedFlash(submitFlashKey, 220, motionDisabled);
 
-  const width = Math.max(20, Math.floor(terminalWidth));
-  const editorWidth = Math.max(8, width - 4);
+  const outerWidth = Math.max(20, Math.floor(terminalWidth));
+  const frame = floatingFrameMetrics(outerWidth);
+  const editorWidth = Math.max(8, frame.width - 4);
   const inputWidth = Math.max(1, editorWidth - 2);
   const promptColor =
     submitFlash || (promptPulse && !compact) ? theme.brandShimmer : baseBorderColor;
@@ -524,13 +526,13 @@ export function InputBar({
   const fileSelIdx = Math.max(0, Math.min(fileSelected, fileCandidates.length - 1));
 
   return (
-    <Box flexDirection="column" width={width}>
+    <Box flexDirection="column" width={outerWidth}>
       <CommandMenu
         items={filteredCmds}
         filterText={menuFilter}
         selectedIndex={selIdx}
         visible={menuVisible}
-        terminalWidth={width}
+        terminalWidth={outerWidth}
         maxRows={maxMenuRows}
         compact={compact}
         reducedMotion={reducedMotion}
@@ -541,15 +543,21 @@ export function InputBar({
         filterText={fileMention?.query ?? ''}
         selectedIndex={fileSelIdx}
         visible={fileMenuVisible && !menuVisible}
-        terminalWidth={width}
+        terminalWidth={outerWidth}
         maxRows={maxMenuRows}
         compact={compact}
         reducedMotion={reducedMotion}
         screenReader={screenReader}
       />
 
-      <Box borderStyle="single" borderColor={theme.subtle} paddingX={1} width={width}>
-        <Text color={promptColor}>{'> '}</Text>
+      <Box
+        borderStyle="round"
+        borderColor={baseBorderColor}
+        paddingX={1}
+        width={frame.width}
+        marginX={frame.marginX}
+      >
+        <Text color={promptColor}>{screenReader ? '> ' : '› '}</Text>
         <Box width={inputWidth} flexShrink={1}>
           <InputBox
             value={value}

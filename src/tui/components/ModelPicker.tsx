@@ -248,7 +248,7 @@ export function ModelPicker({
   ].slice(windowStart, windowStart + maxVisibleModels);
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
       <Text bold color={theme.brand}>
         Switch model
       </Text>
@@ -261,8 +261,8 @@ export function ModelPicker({
             return (
               <Text
                 key="add-byok"
-                backgroundColor={isSelected ? theme.brand : undefined}
-                color={isSelected ? theme.inverseText : theme.brand}
+                backgroundColor={isSelected ? theme.surfaceActive : undefined}
+                color={isSelected ? theme.selectionText : theme.brand}
                 bold={isSelected}
               >
                 {isSelected ? '❯' : ' '} + Add BYOK provider…
@@ -274,8 +274,8 @@ export function ModelPicker({
           return (
             <Text
               key={option.id}
-              backgroundColor={isSelected ? theme.brand : undefined}
-              color={isSelected ? theme.inverseText : isCurrent ? theme.brand : theme.subtle}
+              backgroundColor={isSelected ? theme.surfaceActive : undefined}
+              color={isSelected ? theme.selectionText : isCurrent ? theme.brand : theme.subtle}
               bold={isSelected || isCurrent}
             >
               {isSelected ? '❯' : ' '} {option.label}

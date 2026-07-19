@@ -37,7 +37,7 @@ describe('WorkingIndicator', () => {
     expect(stripAnsi(view.lastFrame()).trim()).toBe('');
   });
 
-  it('shows an opencode-style thinking line while busy', () => {
+  it('shows a quiet thinking line while busy', () => {
     const view = render(
       withTheme(<WorkingIndicator isThinking messages={[]} terminalWidth={80} reducedMotion />),
     );

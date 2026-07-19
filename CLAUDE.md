@@ -128,11 +128,12 @@ src/
       word-wrap.ts            Display-width wrapping
       AgentTodoList.tsx       Agent todo list (TodoWrite)
       TaskList.tsx            User task list
-      AsciiBanner.tsx         ASCII "BOOK" banner
-      WelcomeScreen.tsx       Startup welcome
+      Bookplate.tsx           Compact editorial BOOK mark
+      WelcomeScreen.tsx       Responsive startup welcome
       Spinner.tsx / WorkingIndicator.tsx
       Diff.tsx                Diff rendering
       ModelPicker.tsx         Model + effort picker
+      ThemePicker.tsx         /theme palette picker
       ByokWizard.tsx          BYOK provider setup
       SessionPicker.tsx       /resume session picker
       ErrorBoundary.tsx       React error boundary for TUI

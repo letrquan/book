@@ -59,13 +59,7 @@ export function EffortPicker({ current, availableLevels, onSelect, onCancel }: E
   });
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="single"
-      borderColor={theme.subtle}
-      paddingX={1}
-      marginY={1}
-    >
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
       <Text bold color={theme.brand}>
         Set effort level
       </Text>
@@ -77,8 +71,8 @@ export function EffortPicker({ current, availableLevels, onSelect, onCancel }: E
           return (
             <Text
               key={level}
-              backgroundColor={isSelected ? theme.brand : undefined}
-              color={isSelected ? theme.inverseText : isCurrent ? theme.brand : theme.text}
+              backgroundColor={isSelected ? theme.surfaceActive : undefined}
+              color={isSelected ? theme.selectionText : isCurrent ? theme.brand : theme.text}
               bold={isSelected || isCurrent}
             >
               {isSelected ? '❯' : ' '} {level.padEnd(6)} {DESCRIPTIONS[level]}

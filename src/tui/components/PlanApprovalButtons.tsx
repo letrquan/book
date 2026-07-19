@@ -99,10 +99,10 @@ export function PlanApprovalDetails({ plan, screenReader = false }: PlanApproval
       paddingX={1}
     >
       <Box>
-        <Text color={theme.planMode}>📋 </Text>
         <Text bold color={theme.planMode}>
-          Plan Approval
+          Plan
         </Text>
+        <Text color={theme.subtle}> · approval</Text>
         {stepCount > 0 ? (
           <Text color={theme.subtle}>
             {' '}
@@ -110,9 +110,6 @@ export function PlanApprovalDetails({ plan, screenReader = false }: PlanApproval
           </Text>
         ) : null}
       </Box>
-      <Text color={theme.planMode} dimColor>
-        {'─'.repeat(40)}
-      </Text>
       <Box flexDirection="column" paddingLeft={1}>
         {lines.map((line, index) => (
           <PlanLine key={index} line={line} tag={classifyLine(line)} theme={theme} />
@@ -176,8 +173,8 @@ export function PlanApprovalActions({
           return (
             <Box key={button.value} marginRight={2}>
               <Text
-                backgroundColor={active ? color : undefined}
-                color={active ? theme.inverseText : color}
+                backgroundColor={active ? theme.surfaceActive : undefined}
+                color={active ? theme.selectionText : color}
                 bold={active}
               >
                 {active ? '▸ ' : '  '}

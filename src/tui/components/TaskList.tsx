@@ -14,7 +14,7 @@ export function TaskList({ tasks }: TaskListProps) {
   const visible = tasks.slice(0, 5);
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.brand} paddingX={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
       <Text color={theme.brand} bold>
         Tasks ({tasks.length})
       </Text>
@@ -25,7 +25,7 @@ export function TaskList({ tasks }: TaskListProps) {
         const indicator = STATUS_INDICATORS[task.status];
         return (
           <Box key={task.id}>
-            <Text color={indicator.color}>{indicator.icon} </Text>
+            <Text color={theme[indicator.colorToken]}>{indicator.icon} </Text>
             <Text
               color={task.status === 'completed' ? theme.subtle : theme.text}
               strikethrough={task.status === 'completed'}

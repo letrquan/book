@@ -1,10 +1,11 @@
-import { Box, Text } from 'ink';
+import { Text } from 'ink';
 import { useMemo } from 'react';
 import { usePulse } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import type { FileMentionCandidate } from '../file-mentions.js';
 import { truncateDisplay } from './word-wrap.js';
 import { getCommandMenuWindow } from './CommandMenu.js';
+import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
 
 interface FileMentionMenuProps {
   items: FileMentionCandidate[];
@@ -57,7 +58,8 @@ export function FileMentionMenu({
   const shimmer = usePulse(visible && !reducedMotion && !screenReader, 360);
 
   const width = Math.max(20, Math.floor(terminalWidth));
-  const contentWidth = Math.max(8, width - 4);
+  const frame = floatingFrameMetrics(width);
+  const contentWidth = Math.max(8, frame.width - 4);
   const safeMaxRows = Math.max(1, Math.floor(maxRows));
   const selIdx = Math.max(0, Math.min(selectedIndex, items.length - 1));
   const window = useMemo(
@@ -74,16 +76,8 @@ export function FileMentionMenu({
     : 'Files';
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="single"
-      borderColor={theme.subtle}
-      paddingX={1}
-      width={width}
-    >
-      <Text bold color={theme.brand}>
-        {title}
-      </Text>
+    <SoftPanel width={frame.width} marginX={frame.marginX}>
+      <PanelTitle>{title}</PanelTitle>
 
       {items.length === 0 ? (
         <Text color={theme.subtle} dimColor>
@@ -94,13 +88,13 @@ export function FileMentionMenu({
           const globalIndex = window.start + index;
           const isSelected = globalIndex === selIdx;
           return (
-            <Text
+            <SelectionRow
               key={`${item.kind}-${item.path}-${globalIndex}`}
-              color={isSelected ? theme.brand : theme.text}
-              bold={isSelected}
+              selected={isSelected}
+              width={contentWidth}
             >
               {formatFileRow(item, isSelected, contentWidth, compact, shimmer, screenReader)}
-            </Text>
+            </SelectionRow>
           );
         })
       )}
@@ -110,6 +104,6 @@ export function FileMentionMenu({
           {truncateDisplay(`… ${hiddenTotal} more, type to filter`, contentWidth)}
         </Text>
       ) : null}
-    </Box>
+    </SoftPanel>
   );
 }

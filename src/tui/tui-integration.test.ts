@@ -38,14 +38,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function typeAndWait(session: TuiSession, text: string): Promise<void> {
-  let typed = '';
-  for (const ch of text) {
-    typed += ch;
-    session.sendKey(ch);
-    const output = await session.waitFor(`> ${typed}`, 5000);
-    expect(output).toContain(`> ${typed}`);
-  }
+async function submitInteractive(session: TuiSession, text: string): Promise<void> {
+  session.sendKey(text);
+  const output = await session.waitFor(`› ${text}`, 5000);
+  expect(output).toContain(`› ${text}`);
+  session.sendKey('\r');
 }
 
 // ---------------------------------------------------------------------------
@@ -180,8 +177,7 @@ afterEach(async () => {
 describe('TUI slash commands', () => {
   it('/help shows the help panel with slash commands list', async () => {
     session = await startAndWait();
-    await typeAndWait(session, '/help');
-    session.sendKey('\r');
+    await submitInteractive(session, '/help');
     await sleep(300);
     session.sendKey(keys.ctrlHome);
     const output = await session.waitFor('Slash Commands', 5000);
@@ -195,11 +191,9 @@ describe('TUI slash commands', () => {
 
   it('/help toggle hides the help panel', async () => {
     session = await startAndWait();
-    await typeAndWait(session, '/help');
-    session.sendKey('\r');
+    await submitInteractive(session, '/help');
     await session.waitFor('Slash Commands', 5000);
-    await typeAndWait(session, '/help');
-    session.sendKey('\r');
+    await submitInteractive(session, '/help');
     await sleep(500);
     const output = session.read();
     expect(output.length).toBeGreaterThan(0);
@@ -207,7 +201,7 @@ describe('TUI slash commands', () => {
 
   it('/clear clears the conversation', async () => {
     session = await startAndWait();
-    session.submit('/clear');
+    await submitInteractive(session, '/clear');
     await sleep(500);
     const output = session.read();
     expect(output).toContain('Ask me anything');
@@ -215,23 +209,21 @@ describe('TUI slash commands', () => {
 
   it('/theme dark shows dark theme', async () => {
     session = await startAndWait();
-    session.submit('/theme dark');
-    await sleep(500);
-    const output = session.read();
-    expect(output).toContain('Ask me anything');
+    await submitInteractive(session, '/theme dark');
+    const output = await session.waitFor('Switched to dark theme', 5000);
+    expect(output).toContain('saved as default');
   }, 20_000);
 
   it('/theme light shows light theme', async () => {
     session = await startAndWait();
-    session.submit('/theme light');
-    await sleep(500);
-    const output = session.read();
-    expect(output).toContain('Ask me anything');
+    await submitInteractive(session, '/theme light');
+    const output = await session.waitFor('Switched to light theme', 5000);
+    expect(output).toContain('saved as default');
   }, 20_000);
 
   it('/exit exits the TUI gracefully', async () => {
     session = await startAndWait();
-    session.submit('/exit');
+    await submitInteractive(session, '/exit');
     await sleep(1500);
     expect(true).toBe(true);
   }, 20_000);
@@ -246,7 +238,7 @@ describe('TUI keyboard input', () => {
     session = await startAndWait();
     const output = session.read();
     expect(output).toContain('Ask me anything');
-    expect(output).toContain('tokens');
+    expect(output).toContain('ctx');
   }, 20_000);
 
   it('clears the visible viewport before redrawing after resize', async () => {
@@ -375,11 +367,11 @@ describe.skipIf(!HAS_API_KEY)('TUI streaming with API', () => {
     expect(output).toContain('HELLO_TUI_TEST');
   }, 50_000);
 
-  it('renders tool calls with [OK] badges', async () => {
+  it('renders successful tool calls in the activity tree', async () => {
     session = await startAndWait();
     session.submit('Read the first line of package.json using the Read tool');
-    const output = await session.waitFor(/\[OK\]/, 30_000);
-    expect(output).toContain('[OK]');
+    const output = await session.waitFor(/✓/, 30_000);
+    expect(output).toContain('✓');
     expect(output).toContain('Read');
   }, 50_000);
 
@@ -387,7 +379,7 @@ describe.skipIf(!HAS_API_KEY)('TUI streaming with API', () => {
     session = await startAndWait();
     session.submit('Say exactly: FIRST_MESSAGE');
     await session.waitFor('FIRST_MESSAGE', 30_000);
-    session.submit('/clear');
+    await submitInteractive(session, '/clear');
     await sleep(500);
     session.submit('Say exactly: SECOND_MESSAGE');
     const output = await session.waitFor('SECOND_MESSAGE', 30_000);

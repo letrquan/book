@@ -124,6 +124,25 @@ Legacy `.bookrc.json` is still supported but deprecated. Use `--no-settings` to 
 }
 ```
 
+### Themes
+
+Use `/theme` to open the keyboard theme picker, or switch directly with `/theme dark`, `/theme light`, or `/theme auto`. The selection is applied immediately and saved to `.book/settings.local.json` for the next launch. The built-in themes use a matched quiet-editorial palette with warm text, muted sage branding, terracotta user accents, and low-contrast surfaces.
+
+Project themes can override any token in `.book/themes/<name>.json`. They appear automatically in the picker and can also be activated with `/theme <name>`. Theme files are partial and inherit unspecified values from the dark default:
+
+```json
+{
+  "brand": "#AFC19D",
+  "userAccent": "#D3A17E",
+  "surface": "#20221D",
+  "surfaceActive": "#30362B",
+  "border": "#4B4D45",
+  "selectionText": "#F3EEE4",
+  "assistantAccent": "#AFC19D",
+  "toolRail": "#6B7164"
+}
+```
+
 ### Environment variables
 
 | Variable | Purpose |

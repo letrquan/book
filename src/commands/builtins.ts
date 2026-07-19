@@ -32,7 +32,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: 'exit', description: 'Exit book' },
   { name: 'help', description: 'Toggle help' },
   { name: 'task', description: 'Add a task' },
-  { name: 'theme', description: 'Switch theme' },
+  { name: 'theme', description: 'Switch color theme', argumentHint: '[dark|light|auto|name]' },
   { name: 'model', description: 'Switch AI model' },
   {
     name: 'effort',

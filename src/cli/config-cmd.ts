@@ -49,6 +49,7 @@ export async function runConfigCommand(
       'autoCompactEnabled',
       'defaultMode',
       'effort',
+      'theme',
       'provider',
       'permissions',
       'sandbox',

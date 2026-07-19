@@ -66,7 +66,7 @@ describe('CommandPanel', () => {
     ]);
   });
 
-  it('renders usage as an instrument panel with a stacked token chart', () => {
+  it('renders usage as a soft editorial panel with token traffic', () => {
     const view = render(
       withTheme(
         <CommandPanel
@@ -79,8 +79,8 @@ describe('CommandPanel', () => {
     );
 
     const output = stripAnsi(view.lastFrame());
-    expect(output).toContain('/usage / SESSION TELEMETRY');
-    expect(output).toContain('● READY');
+    expect(output).toContain('/usage · Session telemetry');
+    expect(output).toContain('ready');
     expect(output).toContain('token traffic');
     expect(output).toContain('input 10,000');
     expect(output).toContain('output 2,000');
@@ -122,10 +122,10 @@ describe('CommandPanel', () => {
 
     const output = stripAnsi(view.lastFrame());
     expect(output).toContain(fallback);
-    expect(output).not.toContain('WINDOW MAP');
+    expect(output).not.toContain('Window map');
   });
 
-  it('runs a one-shot scan before settling on the ready state', () => {
+  it('runs a one-shot reading state before settling', () => {
     vi.useFakeTimers();
     const view = render(
       withTheme(
@@ -134,13 +134,13 @@ describe('CommandPanel', () => {
     );
 
     const initialFrames = view.frames.length;
-    expect(stripAnsi(view.lastFrame())).toContain('◐ SCAN');
+    expect(stripAnsi(view.lastFrame())).toContain('reading');
 
     act(() => {
       vi.advanceTimersByTime(700);
     });
 
-    expect(stripAnsi(view.lastFrame())).toContain('● READY');
+    expect(stripAnsi(view.lastFrame())).toContain('ready');
     expect(view.frames.length).toBeGreaterThan(initialFrames);
   });
 });

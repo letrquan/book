@@ -36,15 +36,15 @@ describe('WelcomeScreen', () => {
     );
 
     const output = stripAnsi(view.lastFrame());
-    expect(output).toContain('██████');
+    expect(output).toContain('╭ BOOK');
     expect(output).toContain('Your coding workspace, indexed.');
-    expect(output).toContain('/init');
+    expect(output).toContain('/help');
     expect(output).toContain('/skills');
     expect(output).toContain('Ctrl+/ shortcuts');
-    expect(lines(output)).toHaveLength(9);
+    expect(lines(output)).toHaveLength(4);
   });
 
-  it('keeps the compact welcome to four rows', () => {
+  it('keeps the compact welcome to three rows', () => {
     const view = render(
       withTheme(
         <WelcomeScreen
@@ -57,7 +57,7 @@ describe('WelcomeScreen', () => {
     );
 
     const output = stripAnsi(view.lastFrame());
-    expect(lines(output)).toHaveLength(4);
+    expect(lines(output)).toHaveLength(3);
     expect(output).toContain('BOOK');
     expect(output).toContain('/skills');
   });
@@ -70,6 +70,7 @@ describe('WelcomeScreen', () => {
     const output = stripAnsi(view.lastFrame());
     expect(output).toContain('BOOK');
     expect(output).toContain('Ask anything, or type /help');
+    expect(lines(output)).toHaveLength(2);
     for (const line of lines(output)) {
       expect(displayWidth(line)).toBeLessThanOrEqual(36);
     }

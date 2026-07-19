@@ -12,6 +12,7 @@ import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
 import { ModelPicker } from './components/ModelPicker.js';
 import { EffortPicker } from './components/EffortPicker.js';
+import { ThemePicker } from './components/ThemePicker.js';
 import { SessionPicker } from './components/SessionPicker.js';
 import { TranscriptView } from './components/TranscriptView.js';
 import { PermissionButtons } from './components/PermissionButtons.js';
@@ -21,16 +22,14 @@ import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
 import {
   ThemeContext,
-  loadCustomTheme,
+  listCustomThemes,
+  resolveTheme,
   DARK_THEME,
-  LIGHT_THEME,
   type ThemeTokens,
-  type ThemeName,
+  type ResolvedTheme,
 } from './theme.js';
 import type { AgentConfig, CommandContext, SessionStoreInterface } from '../types.js';
 import type { SessionBootstrap } from '../session/resolve.js';
-import { DEFAULT_THEME } from '../types.js';
-import { useTheme } from './theme.js';
 import { DensityContext, resolveTuiDensity } from './density.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
 import { discoverSkills } from '../skills.js';
@@ -82,6 +81,7 @@ export function ownsModalInput(
   showSessionPicker = false,
   pendingUserQuestion?: unknown,
   showEffortPicker = false,
+  showThemePicker = false,
 ): boolean {
   return Boolean(
     pendingPermission ||
@@ -89,7 +89,8 @@ export function ownsModalInput(
     pendingUserQuestion ||
     showModelPicker ||
     showSessionPicker ||
-    showEffortPicker,
+    showEffortPicker ||
+    showThemePicker,
   );
 }
 
@@ -101,6 +102,7 @@ const SETTABLE_KEYS = [
   'autoCompactEnabled',
   'defaultMode',
   'effort',
+  'theme',
   'provider',
   'permissions',
   'sandbox',
@@ -109,6 +111,15 @@ const SETTABLE_KEYS = [
   'additionalDirectories',
   'env',
 ];
+
+type ApplyThemeResult = { ok: true; theme: ResolvedTheme } | { ok: false; error: string };
+
+function themeAppliedMessage(theme: ResolvedTheme): string {
+  if (theme.preference === 'auto') {
+    return `Theme set to auto (currently ${theme.resolvedName}) and saved as default.`;
+  }
+  return `Switched to ${theme.preference} theme (saved as default).`;
+}
 
 interface AppProps {
   config: AgentConfig;
@@ -206,11 +217,22 @@ export function App({ config, session, redrawViewport }: AppProps) {
   const [showSkills, setShowSkills] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showEffortPicker, setShowEffortPicker] = useState(false);
+  const [showThemePicker, setShowThemePicker] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [followRequestKey, setFollowRequestKey] = useState(0);
-  const [currentTheme, setCurrentTheme] = useState<ThemeTokens>(DEFAULT_THEME);
+  const [currentTheme, setCurrentTheme] = useState<ResolvedTheme>(
+    () =>
+      resolveTheme(config.workspace, config.settings.theme ?? 'dark') ?? {
+        preference: 'dark',
+        resolvedName: 'dark',
+        tokens: DARK_THEME,
+      },
+  );
+  const [customThemes, setCustomThemes] = useState<string[]>(() =>
+    listCustomThemes(config.workspace),
+  );
   const { tasks, addTask, updateTaskStatus, removeTask, clearTasks } = useTasks();
-  const theme = useTheme();
+  const theme = currentTheme.tokens;
   const { exit: exitApp } = useApp();
 
   // Discover slash commands on startup.
@@ -295,6 +317,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
   useDebugValueChange(uiLog, 'showSkills', showSkills, (v) => String(v));
   useDebugValueChange(uiLog, 'showModelPicker', showModelPicker, (v) => String(v));
   useDebugValueChange(uiLog, 'showEffortPicker', showEffortPicker, (v) => String(v));
+  useDebugValueChange(uiLog, 'showThemePicker', showThemePicker, (v) => String(v));
 
   useInput((input, key) => {
     // Modal prompts own the keyboard until they resolve. Let their own
@@ -308,6 +331,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
         showSessionPicker,
         pendingUserQuestion,
         showEffortPicker,
+        showThemePicker,
       )
     ) {
       if (key.escape) {
@@ -426,6 +450,28 @@ export function App({ config, session, redrawViewport }: AppProps) {
     [expandedToolId, screenReader, transcriptMode],
   );
 
+  const applyThemePreference = useCallback(
+    (preference: string): ApplyThemeResult => {
+      const resolved = resolveTheme(config.workspace, preference);
+      if (!resolved) {
+        return {
+          ok: false,
+          error: `Theme "${preference}" was not found. Choose dark, light, auto, or a theme from .book/themes.`,
+        };
+      }
+      const persisted = persistSettingLocal(config.workspace, 'theme', resolved.preference);
+      if (!persisted.ok) {
+        return {
+          ok: false,
+          error: `Could not save theme: ${persisted.error ?? 'unknown settings error'}`,
+        };
+      }
+      setCurrentTheme(resolved);
+      return { ok: true, theme: resolved };
+    },
+    [config.workspace],
+  );
+
   const handleSubmit = useCallback(
     (value: string) => {
       setFollowRequestKey((key) => key + 1);
@@ -471,23 +517,13 @@ export function App({ config, session, redrawViewport }: AppProps) {
         setShowHelp((s) => !s);
       } else if (value.startsWith('/task ')) {
         addTask({ subject: value.slice(6), status: 'pending' });
-      } else if (value.startsWith('/theme')) {
-        const themeName = (value.slice(7).trim() || 'dark') as ThemeName;
-        if (themeName === 'dark') {
-          setCurrentTheme(DARK_THEME);
-        } else if (themeName === 'light') {
-          setCurrentTheme(LIGHT_THEME);
-        } else if (themeName === 'auto') {
-          const colorFgBg = process.env.COLORFGBG || '';
-          const isLightBg = colorFgBg.includes('15;') || colorFgBg.includes('7;');
-          setCurrentTheme(isLightBg ? LIGHT_THEME : DARK_THEME);
+      } else if (commandName === 'theme') {
+        if (!commandArg) {
+          setCustomThemes(listCustomThemes(config.workspace));
+          setShowThemePicker(true);
         } else {
-          try {
-            const custom = loadCustomTheme(config.workspace, themeName);
-            if (custom) setCurrentTheme(custom);
-          } catch {
-            // ignore — keep current theme
-          }
+          const result = applyThemePreference(commandArg);
+          addLocalMessage(result.ok ? themeAppliedMessage(result.theme) : `✕ ${result.error}`);
         }
       } else if (value.startsWith('/model')) {
         const arg = value.slice('/model'.length).trim();
@@ -831,6 +867,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       stdout,
       isThinking,
       redrawViewport,
+      applyThemePreference,
     ],
   );
 
@@ -849,7 +886,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       // Ctrl+/ and Ctrl+E must be handled here (not only in the parent useInput)
       // because ink-text-input consumes some Ctrl key events before they reach
       // the parent handler.
-      if (showModelPicker || showEffortPicker) return true;
+      if (showModelPicker || showEffortPicker || showThemePicker) return true;
       if (key.ctrl && input === 'c') {
         if (pendingUserQuestion) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
@@ -915,6 +952,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       redrawViewport,
       showEffortPicker,
       showModelPicker,
+      showThemePicker,
       expandedToolId,
       focusedToolId,
     ],
@@ -923,10 +961,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
   // Track input changes for command menu filtering — now handled inside InputBar.
   // handleGlobalShortcut remains for Ctrl+/ keyboard shortcut reference.
 
-  const pickerOwnsTranscript = showModelPicker || showEffortPicker || showSessionPicker;
+  const pickerOwnsTranscript =
+    showModelPicker || showEffortPicker || showThemePicker || showSessionPicker;
 
   return (
-    <AppProviders theme={currentTheme} density={density}>
+    <AppProviders theme={currentTheme.tokens} density={density}>
       <ErrorBoundary>
         <Box
           flexDirection="column"
@@ -978,8 +1017,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
               {showHelp && (
                 <Box
                   flexDirection="column"
-                  borderStyle="single"
-                  borderColor={theme.subtle}
+                  borderStyle="round"
+                  borderColor={theme.border}
                   paddingX={1}
                 >
                   <Text bold color={theme.brand}>
@@ -1004,8 +1043,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
                     />
                     <HelpRow label="/task <subject>" description="Add a task" theme={theme} />
                     <HelpRow
-                      label="/theme [dark|light|auto]"
-                      description="Switch theme"
+                      label="/theme [dark|light|auto|name]"
+                      description="Choose and save a color theme"
                       theme={theme}
                     />
                     <HelpRow
@@ -1084,8 +1123,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
               {showStatus && (
                 <Box
                   flexDirection="column"
-                  borderStyle="single"
-                  borderColor={theme.subtle}
+                  borderStyle="round"
+                  borderColor={theme.border}
                   paddingX={1}
                 >
                   <Text bold color={theme.brand}>
@@ -1131,8 +1170,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
               {showPermissions && (
                 <Box
                   flexDirection="column"
-                  borderStyle="single"
-                  borderColor={theme.subtle}
+                  borderStyle="round"
+                  borderColor={theme.border}
                   paddingX={1}
                 >
                   <Text bold color={theme.brand}>
@@ -1208,8 +1247,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
               {showSkills && (
                 <Box
                   flexDirection="column"
-                  borderStyle="single"
-                  borderColor={theme.subtle}
+                  borderStyle="round"
+                  borderColor={theme.border}
                   paddingX={1}
                 >
                   <Text bold color={theme.brand}>
@@ -1239,8 +1278,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
               {showShortcuts && (
                 <Box
                   flexDirection="column"
-                  borderStyle="single"
-                  borderColor={theme.subtle}
+                  borderStyle="round"
+                  borderColor={theme.border}
                   paddingX={1}
                 >
                   <Text bold color={theme.brand}>
@@ -1396,6 +1435,20 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 onCancel={() => setShowEffortPicker(false)}
               />
             ) : null}
+            {showThemePicker ? (
+              <ThemePicker
+                current={currentTheme.preference}
+                customThemes={customThemes}
+                onSelect={(name) => {
+                  const result = applyThemePreference(name);
+                  if (!result.ok) return result;
+                  addLocalMessage(themeAppliedMessage(result.theme));
+                  setShowThemePicker(false);
+                  return { ok: true };
+                }}
+                onCancel={() => setShowThemePicker(false)}
+              />
+            ) : null}
           </Box>
 
           {compactUi && compactUi.phase !== 'working' ? (
@@ -1447,6 +1500,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
                   showSessionPicker,
                   pendingUserQuestion,
                   showEffortPicker,
+                  showThemePicker,
                 ) || transcriptMode === 'detailed'
               }
               onGlobalShortcut={handleGlobalShortcut}

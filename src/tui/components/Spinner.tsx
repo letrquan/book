@@ -12,7 +12,7 @@ export const SPINNER_TIPS = [
   'Alt+M to cycle permission modes',
   'Alt+P to open the model picker',
   'Use /compact when context is getting long',
-  '/theme dark|light|auto to switch themes',
+  'Use /theme to choose and save a color theme',
   'Ctrl+T to toggle the task list',
   'Sessions auto-save — use -c to resume',
   'Ctrl+J or Shift+Enter for multiline input',

@@ -68,9 +68,9 @@ export function CompactDiffCard({
     return (
       <Box flexDirection="column" width={width} paddingX={1}>
         <Text>
-          <Text color={theme.diffRemoved}>−{pre} msgs</Text>
+          <Text color={theme.error}>−{pre} msgs</Text>
           <Text color={theme.subtle}> → </Text>
-          <Text color={theme.diffAdded}>+summary</Text>
+          <Text color={theme.success}>+summary</Text>
           <Text color={state.degraded ? theme.warning : theme.success}>
             {state.degraded ? ' · Compacted with reduced fidelity' : ' · Conversation compacted'}
           </Text>
@@ -90,8 +90,8 @@ export function CompactDiffCard({
     <Box
       flexDirection="column"
       width={width}
-      borderStyle="single"
-      borderColor={state.degraded ? theme.warning : theme.subtle}
+      borderStyle="round"
+      borderColor={state.degraded ? theme.warning : theme.border}
       paddingX={1}
     >
       <Text color={theme.subtle} bold>
@@ -99,12 +99,12 @@ export function CompactDiffCard({
       </Text>
       {show(1) && <Text color={theme.subtle}>{truncateDisplay(hunk, contentWidth)}</Text>}
       {show(2) && (
-        <Text color={theme.diffRemoved}>
+        <Text color={theme.error}>
           {truncateDisplay('−  older conversation turns & tool dumps', contentWidth)}
         </Text>
       )}
       {show(3) && (
-        <Text color={theme.diffAdded}>
+        <Text color={theme.success}>
           {truncateDisplay('+  Structured summary (goals, files, tasks)', contentWidth)}
         </Text>
       )}

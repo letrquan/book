@@ -97,7 +97,11 @@ export function validateUserQuestionResponse(
     return 'response message must be a string';
   }
   if (candidate.action !== 'answer') return null;
-  if (!candidate.answers || typeof candidate.answers !== 'object' || Array.isArray(candidate.answers)) {
+  if (
+    !candidate.answers ||
+    typeof candidate.answers !== 'object' ||
+    Array.isArray(candidate.answers)
+  ) {
     return 'answer response must contain an answers object';
   }
 

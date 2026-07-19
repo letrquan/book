@@ -4,6 +4,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import type { UserQuestion, UserQuestionRequest, UserQuestionResponse } from '../../types.js';
 import { useTheme } from '../theme.js';
 import { truncateDisplay } from './word-wrap.js';
+import { floatingFrameMetrics } from './chrome.js';
 
 interface AskUserQuestionWizardProps {
   request: UserQuestionRequest;
@@ -43,9 +44,10 @@ export function AskUserQuestionWizard({
   screenReader = false,
 }: AskUserQuestionWizardProps) {
   const theme = useTheme();
-  const width = Math.max(28, terminalWidth);
-  const contentWidth = Math.max(20, width - 6);
-  const compact = width < 60;
+  const outerWidth = Math.max(20, Math.floor(terminalWidth));
+  const frame = floatingFrameMetrics(outerWidth);
+  const contentWidth = Math.max(14, frame.width - 4);
+  const compact = outerWidth < 60;
   const [questionIndex, setQuestionIndex] = useState(0);
   const [cursor, setCursor] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
@@ -194,25 +196,29 @@ export function AskUserQuestionWizard({
   });
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
-  const source = truncateDisplay(sourceLabel(request), compact ? contentWidth - 9 : contentWidth - 18);
+  const source = truncateDisplay(
+    sourceLabel(request),
+    compact ? contentWidth - 9 : contentWidth - 18,
+  );
   const progress = `${questionIndex + 1} of ${request.questions.length}`;
   const queueText = queueLength > 1 ? ` · ${queueLength - 1} waiting` : '';
 
   return (
     <Box
-      width={width}
+      width={frame.width}
+      marginX={frame.marginX}
       flexDirection="column"
       borderStyle="round"
-      borderColor={theme.brand}
+      borderColor={theme.border}
       paddingX={1}
-      marginY={1}
     >
       <Box justifyContent="space-between">
         <Text bold color={theme.brand}>
           ? {source}
         </Text>
         <Text color={theme.subtle}>
-          {progress}{queueText}
+          {progress}
+          {queueText}
         </Text>
       </Box>
 
@@ -235,40 +241,58 @@ export function AskUserQuestionWizard({
             compact ? contentWidth - 5 : Math.max(16, contentWidth - option.label.length - 9),
           );
           return (
-            <Box key={option.label} paddingLeft={1} flexDirection={compact ? 'column' : 'row'}>
+            <Box
+              key={option.label}
+              paddingLeft={1}
+              flexDirection={compact ? 'column' : 'row'}
+              backgroundColor={active ? theme.surfaceActive : undefined}
+            >
               <Text
                 bold={active || checked}
-                color={active ? theme.brand : checked ? theme.success : theme.text}
+                color={active ? theme.selectionText : checked ? theme.success : theme.text}
               >
                 {active ? '›' : ' '} {marker} {index + 1}. {option.label}
               </Text>
-              <Text color={theme.subtle}>
+              <Text color={active ? theme.selectionText : theme.subtle}>
                 {compact ? `     ${description}` : ` — ${description}`}
               </Text>
             </Box>
           );
         })}
 
-        <Box paddingLeft={1}>
+        <Box
+          paddingLeft={1}
+          backgroundColor={cursor === question.options.length ? theme.surfaceActive : undefined}
+        >
           <Text
             bold={cursor === question.options.length || Boolean(customAnswer)}
             color={
               cursor === question.options.length
-                ? theme.brand
+                ? theme.selectionText
                 : customAnswer
                   ? theme.success
                   : theme.text
             }
           >
             {cursor === question.options.length ? '›' : ' '} {customAnswer ? '■' : '+'} Other
-            {customAnswer ? `: ${truncateDisplay(customAnswer, Math.max(8, contentWidth - 14))}` : '…'}
+            {customAnswer
+              ? `: ${truncateDisplay(customAnswer, Math.max(8, contentWidth - 14))}`
+              : '…'}
           </Text>
         </Box>
       </Box>
 
       {otherMode ? (
-        <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor={theme.subtle} paddingX={1}>
-          <Text bold color={theme.brand}>Your answer</Text>
+        <Box
+          flexDirection="column"
+          marginTop={1}
+          borderStyle="round"
+          borderColor={theme.border}
+          paddingX={1}
+        >
+          <Text bold color={theme.brand}>
+            Your answer
+          </Text>
           <Box>
             <Text color={theme.brand}>› </Text>
             <TextInput
@@ -291,7 +315,9 @@ export function AskUserQuestionWizard({
               }}
             />
           </Box>
-          <Text color={theme.subtle} dimColor>Enter use answer · Esc return to choices</Text>
+          <Text color={theme.subtle} dimColor>
+            Enter use answer · Esc return to choices
+          </Text>
         </Box>
       ) : null}
 
