@@ -91,11 +91,7 @@ describe('AskUserQuestionWizard', () => {
   it('fits the card to narrow terminals and exposes Other as a real row', () => {
     const view = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>
-        <AskUserQuestionWizard
-          request={request}
-          terminalWidth={42}
-          onResolve={() => {}}
-        />
+        <AskUserQuestionWizard request={request} terminalWidth={42} onResolve={() => {}} />
       </ThemeContext.Provider>,
     );
     const output = stripAnsi(view.lastFrame());

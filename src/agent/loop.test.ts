@@ -695,9 +695,7 @@ describe('runAgentLoop AskUserQuestion', () => {
       vi.fn(
         async () =>
           new Response(
-            toolCallStream([
-              { id: 'ask_1', name: 'AskUserQuestion', arguments: argumentsJson },
-            ]),
+            toolCallStream([{ id: 'ask_1', name: 'AskUserQuestion', arguments: argumentsJson }]),
             { status: 200 },
           ),
       ),
@@ -734,9 +732,7 @@ describe('runAgentLoop AskUserQuestion', () => {
       vi.fn(
         async () =>
           new Response(
-            toolCallStream([
-              { id: 'ask_1', name: 'AskUserQuestion', arguments: argumentsJson },
-            ]),
+            toolCallStream([{ id: 'ask_1', name: 'AskUserQuestion', arguments: argumentsJson }]),
             { status: 200 },
           ),
       ),

@@ -1,9 +1,4 @@
-import type {
-  AgentConfig,
-  Message,
-  NestedToolObserver,
-  UserQuestionHandler,
-} from './types.js';
+import type { AgentConfig, Message, NestedToolObserver, UserQuestionHandler } from './types.js';
 import { runAgentLoop } from './agent/loop.js';
 import { applyModelDefaults, resolveModelProviderConfig } from './config.js';
 import { createRegistry } from './tools/registry.js';
