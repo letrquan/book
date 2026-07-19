@@ -133,6 +133,7 @@ src/
       Spinner.tsx / WorkingIndicator.tsx
       Diff.tsx                Diff rendering
       ModelPicker.tsx         Model + effort picker
+      ThemePicker.tsx         /theme palette picker
       ByokWizard.tsx          BYOK provider setup
       SessionPicker.tsx       /resume session picker
       ErrorBoundary.tsx       React error boundary for TUI

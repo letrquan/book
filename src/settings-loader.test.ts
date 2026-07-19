@@ -37,10 +37,14 @@ describe('loadSettingsFile', () => {
   });
 
   it('loads a valid settings file', () => {
-    writeFileSync(join(dir, 'good.json'), JSON.stringify({ model: 'gpt-4o', maxTurns: 10 }));
+    writeFileSync(
+      join(dir, 'good.json'),
+      JSON.stringify({ model: 'gpt-4o', maxTurns: 10, theme: 'paper-ink' }),
+    );
     const result = loadSettingsFile(join(dir, 'good.json'));
     expect(result?.model).toBe('gpt-4o');
     expect(result?.maxTurns).toBe(10);
+    expect(result?.theme).toBe('paper-ink');
   });
 
   it('keeps compact provider registry metadata', () => {

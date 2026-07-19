@@ -1,7 +1,7 @@
 import { createContext, useContext } from 'react';
 import type { ThemeTokens } from '../types.js';
 import { DEFAULT_THEME } from '../types.js';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 
 /** Quiet editorial dark theme. This is the same as DEFAULT_THEME. */
@@ -101,6 +101,14 @@ export const LIGHT_THEME: ThemeTokens = {
  */
 export type ThemeName = 'dark' | 'light' | 'auto';
 
+export interface ResolvedTheme {
+  preference: string;
+  resolvedName: string;
+  tokens: ThemeTokens;
+}
+
+const CUSTOM_THEME_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 /**
  * React context for theme tokens.
  * Components that render colors read from this instead of hardcoded strings,
@@ -115,11 +123,32 @@ export function useTheme(): ThemeTokens {
   return useContext(ThemeContext);
 }
 
+/** Detect whether COLORFGBG reports a light terminal background. */
+export function hasLightTerminalBackground(colorFgBg = process.env.COLORFGBG ?? ''): boolean {
+  const background = Number(colorFgBg.split(';').at(-1));
+  return background === 7 || background === 15;
+}
+
+/** List safe custom theme names from .book/themes. */
+export function listCustomThemes(workspace: string): string[] {
+  const themesDir = join(workspace, '.book', 'themes');
+  try {
+    return readdirSync(themesDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => entry.name.slice(0, -'.json'.length))
+      .filter((name) => CUSTOM_THEME_NAME.test(name))
+      .sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Try to load a custom theme from .book/themes/<name>.json.
  * Returns the loaded theme tokens, or null if not found.
  */
 export function loadCustomTheme(workspace: string, name: string): ThemeTokens | null {
+  if (!CUSTOM_THEME_NAME.test(name)) return null;
   const themePath = join(workspace, '.book', 'themes', `${name}.json`);
   if (!existsSync(themePath)) return null;
   try {
@@ -129,6 +158,33 @@ export function loadCustomTheme(workspace: string, name: string): ThemeTokens | 
   } catch {
     return null;
   }
+}
+
+/** Resolve a built-in, automatic, or project theme preference into tokens. */
+export function resolveTheme(
+  workspace: string,
+  preference: string,
+  colorFgBg = process.env.COLORFGBG ?? '',
+): ResolvedTheme | null {
+  const requested = preference.trim();
+  const builtin = requested.toLowerCase();
+  if (builtin === 'dark') {
+    return { preference: 'dark', resolvedName: 'dark', tokens: DARK_THEME };
+  }
+  if (builtin === 'light') {
+    return { preference: 'light', resolvedName: 'light', tokens: LIGHT_THEME };
+  }
+  if (builtin === 'auto') {
+    const isLight = hasLightTerminalBackground(colorFgBg);
+    return {
+      preference: 'auto',
+      resolvedName: isLight ? 'light' : 'dark',
+      tokens: isLight ? LIGHT_THEME : DARK_THEME,
+    };
+  }
+  if (!requested) return null;
+  const custom = loadCustomTheme(workspace, requested);
+  return custom ? { preference: requested, resolvedName: requested, tokens: custom } : null;
 }
 
 export { DEFAULT_THEME };

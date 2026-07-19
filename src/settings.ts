@@ -139,6 +139,8 @@ export const bookSettingsSchema = z.object({
   maxTurns: z.number().int().min(1).optional(),
   maxTokens: z.number().int().min(1000).optional(),
   effort: effortLevelSchema.optional(),
+  /** TUI color theme: dark, light, auto, or a custom theme filename. */
+  theme: z.string().min(1).optional(),
   autoCompactEnabled: z.boolean().optional(),
   defaultMode: z
     .enum(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'])
@@ -166,6 +168,7 @@ export type ResolvedSettings = Required<
     | 'maxTurns'
     | 'maxTokens'
     | 'effort'
+    | 'theme'
     | 'autoCompactEnabled'
     | 'defaultMode'
     | 'disableBypassPermissionsMode'
@@ -177,6 +180,7 @@ export type ResolvedSettings = Required<
     | 'maxTurns'
     | 'maxTokens'
     | 'effort'
+    | 'theme'
     | 'autoCompactEnabled'
     | 'defaultMode'
     | 'disableBypassPermissionsMode'

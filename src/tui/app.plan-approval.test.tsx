@@ -8,6 +8,9 @@ const useAgentMock = vi.fn();
 const useTasksMock = vi.fn();
 const discoverCommandsMock = vi.fn((_workspace: string) => []);
 const discoverSkillsMock = vi.fn((_workspace: string) => []);
+const persistSettingLocalMock = vi.fn((_workspace: string, _key: string, _value: unknown) => ({
+  ok: true,
+}));
 
 vi.mock('./hooks/useAgent.js', () => ({
   useAgent: (...args: unknown[]) => useAgentMock(...args),
@@ -24,6 +27,10 @@ vi.mock('../commands/loader.js', () => ({
 
 vi.mock('../skills.js', () => ({
   discoverSkills: (workspace: string) => discoverSkillsMock(workspace),
+}));
+
+vi.mock('./persist.js', () => ({
+  persistSettingLocal: (...args: [string, string, unknown]) => persistSettingLocalMock(...args),
 }));
 
 function config(): AgentConfig {
@@ -126,6 +133,7 @@ function stripAnsi(value: string | undefined): string {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe('App session commands', () => {
@@ -279,6 +287,94 @@ describe('App effort command', () => {
   });
 });
 
+describe('App theme command', () => {
+  const submit = async (view: ReturnType<typeof render>, value: string) => {
+    view.stdin.write(value);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+  };
+
+  function renderIdle(appConfig = config()) {
+    const agentState = {
+      ...pendingAgentState(),
+      isThinking: false,
+      pendingPlanApproval: null,
+      liveConfig: appConfig,
+    };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+    return { agentState, view: render(<App config={appConfig} session={testSession} />) };
+  }
+
+  it('opens a dedicated picker with the current theme highlighted', async () => {
+    const appConfig = config();
+    appConfig.settings.theme = 'light';
+    const { view } = renderIdle(appConfig);
+
+    await submit(view, '/theme');
+    const frame = stripAnsi(view.lastFrame());
+
+    expect(frame).toContain('Choose theme');
+    expect(frame).toMatch(/› light\s+Soft parchment/);
+    expect(frame).toContain('(current)');
+  });
+
+  it('selects and persists a theme from the picker', async () => {
+    const { agentState, view } = renderIdle();
+
+    await submit(view, '/theme');
+    view.stdin.write('\x1b[B');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    expect(persistSettingLocalMock).toHaveBeenCalledWith('/tmp/book', 'theme', 'light');
+    expect(agentState.addLocalMessage).toHaveBeenCalledWith(
+      'Switched to light theme (saved as default).',
+    );
+    expect(stripAnsi(view.lastFrame())).not.toContain('Choose theme');
+  });
+
+  it('applies direct arguments and reports auto resolution', async () => {
+    vi.stubEnv('COLORFGBG', '0;15');
+    const { agentState, view } = renderIdle();
+
+    await submit(view, '/theme AUTO');
+
+    expect(persistSettingLocalMock).toHaveBeenCalledWith('/tmp/book', 'theme', 'auto');
+    expect(agentState.addLocalMessage).toHaveBeenCalledWith(
+      'Theme set to auto (currently light) and saved as default.',
+    );
+  });
+
+  it('reports missing themes instead of failing silently', async () => {
+    const { agentState, view } = renderIdle();
+
+    await submit(view, '/theme missing-theme');
+
+    expect(persistSettingLocalMock).not.toHaveBeenCalled();
+    expect(agentState.addLocalMessage).toHaveBeenCalledWith(
+      '✕ Theme "missing-theme" was not found. Choose dark, light, auto, or a theme from .book/themes.',
+    );
+  });
+
+  it('dispatches only the exact /theme command', async () => {
+    const { agentState, view } = renderIdle();
+
+    await submit(view, '/themes light');
+
+    expect(persistSettingLocalMock).not.toHaveBeenCalled();
+    expect(agentState.send).toHaveBeenCalledWith('/themes light');
+  });
+});
+
 describe('App plan approval keyboard ownership', () => {
   it('does not open the model picker while plan approval owns input', () => {
     const agentState = pendingAgentState();
@@ -324,5 +420,6 @@ describe('App plan approval keyboard ownership', () => {
     expect(ownsModalInput(null, null, false, false, true)).toBe(true);
     expect(ownsModalInput(null, null, false)).toBe(false);
     expect(ownsModalInput(null, null, false, false, { request: {} })).toBe(true);
+    expect(ownsModalInput(null, null, false, false, null, false, true)).toBe(true);
   });
 });

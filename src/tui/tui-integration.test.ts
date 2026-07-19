@@ -210,17 +210,15 @@ describe('TUI slash commands', () => {
   it('/theme dark shows dark theme', async () => {
     session = await startAndWait();
     await submitInteractive(session, '/theme dark');
-    await sleep(500);
-    const output = session.read();
-    expect(output).toContain('Ask me anything');
+    const output = await session.waitFor('Switched to dark theme', 5000);
+    expect(output).toContain('saved as default');
   }, 20_000);
 
   it('/theme light shows light theme', async () => {
     session = await startAndWait();
     await submitInteractive(session, '/theme light');
-    await sleep(500);
-    const output = session.read();
-    expect(output).toContain('Ask me anything');
+    const output = await session.waitFor('Switched to light theme', 5000);
+    expect(output).toContain('saved as default');
   }, 20_000);
 
   it('/exit exits the TUI gracefully', async () => {
