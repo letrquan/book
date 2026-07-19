@@ -126,4 +126,97 @@ describe('WorkingIndicator', () => {
     expect(view.lastFrame()).not.toBe(initialFrame);
     expect(view.frames.length).toBeGreaterThan(initialWriteCount);
   });
+
+  it('caps active compact progress below 100% until compaction succeeds', () => {
+    vi.useFakeTimers();
+    const view = render(
+      withTheme(
+        <WorkingIndicator
+          isThinking={false}
+          isCompacting
+          compactTrigger="manual"
+          messages={[]}
+          terminalWidth={80}
+        />,
+      ),
+    );
+
+    expect(stripAnsi(view.lastFrame())).toContain('Compacting');
+    expect(stripAnsi(view.lastFrame())).toContain('0%');
+    expect(stripAnsi(view.lastFrame())).toContain('Esc to cancel');
+
+    act(() => {
+      vi.advanceTimersByTime(1_200);
+    });
+    expect(stripAnsi(view.lastFrame())).toContain('50%');
+
+    act(() => {
+      vi.advanceTimersByTime(1_200);
+    });
+    const pending = stripAnsi(view.lastFrame());
+    expect(pending).toContain('95%');
+    expect(pending).not.toContain('100%');
+
+    view.rerender(
+      withTheme(
+        <WorkingIndicator
+          isThinking={false}
+          compactTrigger="manual"
+          compactComplete
+          messages={[]}
+          terminalWidth={80}
+        />,
+      ),
+    );
+
+    const completed = stripAnsi(view.lastFrame());
+    expect(completed).toContain('Compacted');
+    expect(completed).toContain('100%');
+    expect(completed).toContain('████████████████████████');
+    expect(completed).not.toContain('Esc to cancel');
+  });
+
+  it('keeps compact progress on one row in narrow terminals', () => {
+    vi.useFakeTimers();
+    const view = render(
+      withTheme(
+        <WorkingIndicator
+          isThinking={false}
+          isCompacting
+          compactTrigger="manual"
+          messages={[]}
+          terminalWidth={20}
+        />,
+      ),
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(1_200);
+    });
+
+    const output = stripAnsi(view.lastFrame());
+    expect(output.trim()).toContain('Compact');
+    expect(output).toContain('50%');
+    expect(output.trim().split('\n')).toHaveLength(1);
+  });
+
+  it('does not show completion when compacting stops without success', () => {
+    vi.useFakeTimers();
+    const view = render(
+      withTheme(
+        <WorkingIndicator isThinking={false} isCompacting messages={[]} terminalWidth={80} />,
+      ),
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(2_400);
+    });
+    expect(stripAnsi(view.lastFrame())).toContain('95%');
+
+    view.rerender(
+      withTheme(<WorkingIndicator isThinking={false} messages={[]} terminalWidth={80} />),
+    );
+
+    expect(stripAnsi(view.lastFrame()).trim()).toBe('');
+  });
 });

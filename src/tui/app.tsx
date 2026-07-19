@@ -1469,6 +1469,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
             isThinking={isThinking}
             isCompacting={isCompacting}
             compactTrigger={compactUi?.trigger}
+            compactComplete={compactUi?.phase === 'diff'}
             messages={messages}
             streamingMessageId={streamingMessageId}
             pendingPermission={pendingPermission}

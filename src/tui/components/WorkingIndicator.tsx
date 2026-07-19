@@ -7,10 +7,10 @@ import type {
   ToolCall,
   UserQuestionRequest,
 } from '../../types.js';
-import { useGradientSpinner } from '../hooks/useAnimation.js';
+import { useAnimatedProgress, useGradientSpinner } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { floatingFrameMetrics } from './chrome.js';
-import { truncateDisplay } from './word-wrap.js';
+import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 interface PendingPermission {
   toolCall: ToolCall;
@@ -32,6 +32,8 @@ interface WorkingIndicatorProps {
   isCompacting?: boolean;
   /** Auto vs manual compact busy label. */
   compactTrigger?: 'manual' | 'auto';
+  /** True only after compaction has completed successfully. */
+  compactComplete?: boolean;
   messages: Message[];
   streamingMessageId?: string | null;
   pendingPermission?: PendingPermission | null;
@@ -113,6 +115,7 @@ export function WorkingIndicator({
   isThinking,
   isCompacting = false,
   compactTrigger,
+  compactComplete = false,
   messages,
   streamingMessageId,
   pendingPermission,
@@ -147,13 +150,64 @@ export function WorkingIndicator({
   const horizontalInset = frame.marginX + 1;
   const contentWidth = Math.max(8, width - horizontalInset * 2);
   const motionDisabled = reducedMotion || screenReader;
+  const showCompactProgress =
+    (isCompacting || compactComplete) && retryPhase === 'none' && !motionDisabled;
+  const compactProgress = useAnimatedProgress(isCompacting, 2_400, motionDisabled);
   const spinner = useGradientSpinner(
-    Boolean(label) && !motionDisabled && !pendingPlanApproval && !pendingUserQuestion,
+    Boolean(label) &&
+      !showCompactProgress &&
+      !motionDisabled &&
+      !pendingPlanApproval &&
+      !pendingUserQuestion,
     'dots',
     motionDisabled,
   );
 
-  if (!label) return null;
+  if (!label && !showCompactProgress) return null;
+  if (showCompactProgress) {
+    const displayProgress = compactComplete ? 100 : compactProgress;
+    const compactLabel = compactComplete
+      ? width < 30
+        ? 'Done'
+        : 'Compacted'
+      : compactTrigger === 'auto'
+        ? width < 36
+          ? 'Auto'
+          : 'Auto-compacting'
+        : width < 30
+          ? 'Compact'
+          : 'Compacting';
+    const percent = `${String(displayProgress).padStart(3, ' ')}%`;
+    const hint = isCompacting && !compactComplete && width >= 52 ? ' · Esc to cancel' : '';
+    const barWidth = Math.max(
+      1,
+      Math.min(
+        24,
+        contentWidth - displayWidth(compactLabel) - displayWidth(percent) - displayWidth(hint) - 2,
+      ),
+    );
+    const filled = Math.min(barWidth, Math.round((displayProgress / 100) * barWidth));
+    const progressColor = compactComplete ? theme.success : theme.brand;
+
+    return (
+      <Box paddingX={horizontalInset} width={width} flexDirection="row" flexWrap="nowrap">
+        <Text color={theme.subtle} dimColor>
+          {compactLabel}{' '}
+        </Text>
+        <Text color={progressColor}>{'█'.repeat(filled)}</Text>
+        <Text color={theme.subtle} dimColor>
+          {'░'.repeat(barWidth - filled)}
+        </Text>
+        <Text color={compactComplete ? theme.success : theme.brandShimmer}> {percent}</Text>
+        {hint ? (
+          <Text color={theme.subtle} dimColor>
+            {hint}
+          </Text>
+        ) : null}
+      </Box>
+    );
+  }
+
   const hint = pendingPlanApproval
     ? ' · Esc to reject'
     : pendingUserQuestion

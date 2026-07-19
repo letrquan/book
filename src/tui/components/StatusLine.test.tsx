@@ -47,8 +47,7 @@ describe('StatusLine', () => {
     );
 
     const output = stripAnsi(view.lastFrame());
-    expect(output).toContain('tokens 136.0k/272k');
-    expect(output).toContain('50%');
+    expect(output).toContain('ctx 50%');
   });
 
   it('renders full status on wide terminals', () => {

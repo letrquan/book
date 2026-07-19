@@ -166,3 +166,34 @@ export function usePulse(active: boolean, interval = 500): boolean {
 
   return on;
 }
+
+/** Time-based pending progress; callers must render 100% from a real completion signal. */
+export function useAnimatedProgress(
+  active: boolean,
+  durationMs = 2_400,
+  reducedMotion = false,
+  maximum = 95,
+): number {
+  const [progress, setProgress] = useState(0);
+
+  useEffect(() => {
+    setProgress(0);
+    if (!active || reducedMotion) return;
+
+    const startedAt = Date.now();
+    const safeDuration = Math.max(1, durationMs);
+    const safeMaximum = Math.max(0, Math.min(99, maximum));
+    const timer = setInterval(() => {
+      const next = Math.min(
+        safeMaximum,
+        Math.floor(((Date.now() - startedAt) / safeDuration) * 100),
+      );
+      setProgress(next);
+      if (next >= safeMaximum) clearInterval(timer);
+    }, 80);
+
+    return () => clearInterval(timer);
+  }, [active, durationMs, maximum, reducedMotion]);
+
+  return progress;
+}
