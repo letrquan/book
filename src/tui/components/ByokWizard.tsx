@@ -331,7 +331,7 @@ export function ByokWizard({
   const showOptionalHelp = !compact && density.showOptionalHelp;
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
       <Box justifyContent="space-between">
         <Text bold color={theme.brand}>
           Add BYOK provider
@@ -417,9 +417,13 @@ export function ByokWizard({
                 return (
                   <Text
                     key={model.id}
-                    color={absoluteIndex === modelCursor ? theme.brand : theme.subtle}
+                    backgroundColor={
+                      absoluteIndex === modelCursor ? theme.surfaceActive : undefined
+                    }
+                    color={absoluteIndex === modelCursor ? theme.selectionText : theme.subtle}
+                    bold={absoluteIndex === modelCursor}
                   >
-                    {absoluteIndex === modelCursor ? '❯' : ' '}{' '}
+                    {absoluteIndex === modelCursor ? '›' : ' '}{' '}
                     {selectedIds.includes(model.id) ? '◉' : '○'} {model.label ?? model.id}
                     {model.label && model.label !== model.id ? `  ${model.id}` : ''}
                   </Text>

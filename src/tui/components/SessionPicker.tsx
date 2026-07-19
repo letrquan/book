@@ -47,19 +47,27 @@ export function SessionPicker({
   );
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor={theme.subtle} paddingX={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
       <Text bold color={theme.brand}>
         Resume conversation
       </Text>
       {choices.length === 0 ? (
         <Text color={theme.subtle}>(no other sessions in this workspace)</Text>
       ) : (
-        choices.slice(0, 12).map((session, index) => (
-          <Text key={session.id} color={index === selected ? theme.brand : theme.subtle}>
-            {index === selected ? '❯' : ' '} {session.name ?? session.id.slice(0, 8)} ·{' '}
-            {formatAge(session.updatedAt)} · {session.messageCount} messages
-          </Text>
-        ))
+        choices.slice(0, 12).map((session, index) => {
+          const isSelected = index === selected;
+          return (
+            <Text
+              key={session.id}
+              backgroundColor={isSelected ? theme.surfaceActive : undefined}
+              color={isSelected ? theme.selectionText : theme.subtle}
+              bold={isSelected}
+            >
+              {isSelected ? '›' : ' '} {session.name ?? session.id.slice(0, 8)} ·{' '}
+              {formatAge(session.updatedAt)} · {session.messageCount} messages
+            </Text>
+          );
+        })
       )}
       {density.showOptionalHelp ? (
         <Text color={theme.subtle} dimColor>

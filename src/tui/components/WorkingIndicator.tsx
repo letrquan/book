@@ -9,6 +9,7 @@ import type {
 } from '../../types.js';
 import { useGradientSpinner } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
+import { floatingFrameMetrics } from './chrome.js';
 import { truncateDisplay } from './word-wrap.js';
 
 interface PendingPermission {
@@ -142,7 +143,9 @@ export function WorkingIndicator({
   });
 
   const width = Math.max(20, Math.floor(terminalWidth));
-  const contentWidth = Math.max(8, width - 2);
+  const frame = floatingFrameMetrics(width);
+  const horizontalInset = frame.marginX + 1;
+  const contentWidth = Math.max(8, width - horizontalInset * 2);
   const motionDisabled = reducedMotion || screenReader;
   const spinner = useGradientSpinner(
     Boolean(label) && !motionDisabled && !pendingPlanApproval && !pendingUserQuestion,
@@ -155,15 +158,15 @@ export function WorkingIndicator({
     ? ' · Esc to reject'
     : pendingUserQuestion
       ? ' · answer the question above'
-    : pendingPermission
-      ? ' · Esc to deny'
-      : isThinking || isCompacting
-        ? ' · Esc to cancel'
-        : '';
+      : pendingPermission
+        ? ' · Esc to deny'
+        : isThinking || isCompacting
+          ? ' · Esc to cancel'
+          : '';
   const text = truncateDisplay(`${label}${hint}`, Math.max(1, contentWidth - 2));
 
   return (
-    <Box paddingX={1} width={width}>
+    <Box paddingX={horizontalInset} width={width}>
       <Text color={spinner.color}>{spinner.frame} </Text>
       <Text color={retryPhase !== 'none' ? theme.warning : theme.subtle} dimColor>
         {text}

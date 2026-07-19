@@ -6,6 +6,7 @@ import type { PermissionMode } from '../../types.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
 import { modeColorToken, modeLabel } from '../mode-style.js';
+import { floatingFrameMetrics } from './chrome.js';
 
 const renderLog = createRenderDebugLogger('tui:statusline');
 
@@ -22,13 +23,6 @@ interface StatusLineProps {
   screenReader?: boolean;
 }
 
-function usageMeter(fraction: number, width: number): string {
-  const safeWidth = Math.max(0, width);
-  if (safeWidth === 0) return '';
-  const filled = Math.min(safeWidth, Math.round(fraction * safeWidth));
-  return '█'.repeat(filled) + '░'.repeat(safeWidth - filled);
-}
-
 /**
  * Pack colored status segments from left to right, skipping an oversized
  * segment so that later short, higher-value segments can still be shown.
@@ -41,7 +35,7 @@ export function buildColoredSegments(
   let totalWidth = 0;
 
   for (const segment of segments) {
-    const separator = result.length === 0 ? '' : ' │ ';
+    const separator = result.length === 0 ? '' : ' · ';
     const candidateWidth = totalWidth + displayWidth(separator) + displayWidth(segment.text);
     if (candidateWidth > maxWidth) continue;
 
@@ -74,7 +68,9 @@ export function StatusLine({
 }: StatusLineProps) {
   const theme = useTheme();
   const width = Math.max(20, Math.floor(terminalWidth));
-  const contentWidth = Math.max(8, width - 2);
+  const frame = floatingFrameMetrics(width);
+  const horizontalInset = frame.marginX + 1;
+  const contentWidth = Math.max(8, width - horizontalInset * 2);
 
   const usageFraction = maxTokens > 0 ? tokenCount / maxTokens : 0;
   const usagePercent = Math.round(usageFraction * 100);
@@ -85,13 +81,10 @@ export function StatusLine({
   const modeFlash = useTimedFlash(mode, 260, motionDisabled);
 
   const costEstimate = tokenCount > 0 ? (tokenCount / 1_000_000) * 5 : 0;
-  const meterWidth = compact || width < 54 ? 0 : width < 78 ? 5 : 8;
-
   renderLog.event('render', {
     width,
     contentWidth,
     compact,
-    meterWidth,
     usagePercent,
     tokenCount,
     mode,
@@ -99,51 +92,37 @@ export function StatusLine({
     activeTaskCount,
   });
 
-  const rowColor =
+  const modeColor = theme[modeColorToken(mode)] as string;
+  const activeModeColor = modeFlash ? theme.brandShimmer : modeColor;
+  const contextColor =
     usageCritical && usageBlink
       ? theme.usageMeterCritical
-      : modeFlash
-        ? theme.brandShimmer
-        : theme.text;
-
-  const modeColor = theme[modeColorToken(mode)] as string;
+      : usageCritical
+        ? theme.error
+        : usageNearLimit
+          ? theme.warning
+          : theme.subtle;
 
   const coloredRuns = useMemo(() => {
     const modelBudget = width < 44 ? 10 : width < 72 ? 18 : 30;
-    const tokenText =
-      maxTokens > 0
-        ? `${(tokenCount / 1000).toFixed(1)}k/${(maxTokens / 1000).toFixed(0)}k`
-        : `${(tokenCount / 1000).toFixed(1)}k/?`;
-    const tokenSegment =
-      meterWidth > 0
-        ? `tokens ${tokenText} ${usageMeter(usageFraction, meterWidth)} ${usagePercent}%`
-        : `tok ${usagePercent}%`;
-
     const segments: Array<{ text: string; color?: string }> = [
-      { text: modeLabel(mode), color: modeColor },
+      { text: modeLabel(mode), color: activeModeColor },
     ];
-
-    if (usageNearLimit) {
-      segments.push({
-        text: `ctx ${usagePercent}%`,
-        color: usageCritical ? theme.error : theme.warning,
-      });
-    }
-
-    segments.push(
-      { text: truncateDisplay(model, modelBudget), color: rowColor },
-      { text: tokenSegment, color: rowColor },
-    );
+    segments.push({ text: truncateDisplay(model, modelBudget), color: theme.subtle });
+    segments.push({
+      text: `ctx ${usagePercent}%`,
+      color: contextColor,
+    });
 
     if (taskCount > 0) {
       segments.push({
         text: `tasks ${activeTaskCount > 0 ? `${activeTaskCount}/` : ''}${taskCount}`,
-        color: rowColor,
+        color: theme.subtle,
       });
     }
 
     if (tokenCount > 0 && !compact && width >= 64) {
-      segments.push({ text: `$${costEstimate.toFixed(3)}`, color: rowColor });
+      segments.push({ text: `$${costEstimate.toFixed(3)}`, color: theme.subtle });
     }
 
     return buildColoredSegments(segments, contentWidth);
@@ -153,23 +132,18 @@ export function StatusLine({
     contentWidth,
     costEstimate,
     maxTokens,
-    meterWidth,
     mode,
-    modeColor,
+    activeModeColor,
+    contextColor,
     model,
-    rowColor,
     taskCount,
-    theme.error,
-    theme.warning,
     tokenCount,
-    usageFraction,
-    usageNearLimit,
     usagePercent,
     width,
   ]);
 
   return (
-    <Box paddingX={1} width={width} flexDirection="row" flexWrap="nowrap">
+    <Box paddingX={horizontalInset} width={width} flexDirection="row" flexWrap="nowrap">
       {coloredRuns.map((run, i) => (
         <Text key={i} color={run.color}>
           {run.text}

@@ -15,22 +15,20 @@ function withTheme(children: React.ReactElement): React.ReactElement {
 afterEach(() => cleanup());
 
 describe('UserMessage', () => {
-  it('restores the original vertical and horizontal padding', () => {
+  it('renders a one-row inset card with an accent rail', () => {
     const view = render(withTheme(<UserMessage content="compact request" terminalWidth={40} />));
     const lines = stripAnsi(view.lastFrame()).split('\n');
 
-    expect(lines).toHaveLength(3);
-    expect(lines[0].trim()).toBe('');
-    expect(lines[1]).toContain('  compact request');
-    expect(displayWidth(lines[1])).toBeLessThanOrEqual(40);
-    expect(lines[2].trim()).toBe('');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('│ compact request');
+    expect(displayWidth(lines[0])).toBeLessThanOrEqual(40);
   });
 
   it('keeps file mentions on the compact row', () => {
     const view = render(withTheme(<UserMessage content="check @src/app.ts" terminalWidth={40} />));
     const output = stripAnsi(view.lastFrame());
 
-    expect(output.split('\n')).toHaveLength(3);
+    expect(output.split('\n')).toHaveLength(1);
     expect(output).toContain('@src/app.ts');
   });
 });

@@ -181,7 +181,7 @@ export function PermissionButtons({
     <Box
       marginLeft={2}
       flexDirection="column"
-      borderStyle="single"
+      borderStyle="round"
       borderColor={
         risk === 'shell' ? theme.error : risk === 'write' ? theme.warning : theme.permission
       }
@@ -209,8 +209,8 @@ export function PermissionButtons({
           return (
             <Box key={btn.label} marginRight={1}>
               <Text
-                backgroundColor={isSelected ? btnColor : undefined}
-                color={isSelected ? theme.inverseText : btnColor}
+                backgroundColor={isSelected ? theme.surfaceActive : undefined}
+                color={isSelected ? theme.selectionText : btnColor}
                 bold={isSelected}
               >
                 [{label}]

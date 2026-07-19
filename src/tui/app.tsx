@@ -978,8 +978,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
               {showHelp && (
                 <Box
                   flexDirection="column"
-                  borderStyle="single"
-                  borderColor={theme.subtle}
+                  borderStyle="round"
+                  borderColor={theme.border}
                   paddingX={1}
                 >
                   <Text bold color={theme.brand}>
@@ -1084,8 +1084,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
               {showStatus && (
                 <Box
                   flexDirection="column"
-                  borderStyle="single"
-                  borderColor={theme.subtle}
+                  borderStyle="round"
+                  borderColor={theme.border}
                   paddingX={1}
                 >
                   <Text bold color={theme.brand}>
@@ -1131,8 +1131,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
               {showPermissions && (
                 <Box
                   flexDirection="column"
-                  borderStyle="single"
-                  borderColor={theme.subtle}
+                  borderStyle="round"
+                  borderColor={theme.border}
                   paddingX={1}
                 >
                   <Text bold color={theme.brand}>
@@ -1208,8 +1208,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
               {showSkills && (
                 <Box
                   flexDirection="column"
-                  borderStyle="single"
-                  borderColor={theme.subtle}
+                  borderStyle="round"
+                  borderColor={theme.border}
                   paddingX={1}
                 >
                   <Text bold color={theme.brand}>
@@ -1239,8 +1239,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
               {showShortcuts && (
                 <Box
                   flexDirection="column"
-                  borderStyle="single"
-                  borderColor={theme.subtle}
+                  borderStyle="round"
+                  borderColor={theme.border}
                   paddingX={1}
                 >
                   <Text bold color={theme.brand}>

@@ -69,10 +69,10 @@ describe('InputBar editor box', () => {
     const lines = stripAnsi(view.lastFrame()).split('\n');
 
     expect(lines).toHaveLength(3);
-    expect(lines[0]).toMatch(/^┌─+┐$/);
-    expect(lines[1]).toMatch(/^│ > /);
-    expect(lines[1]).toMatch(/│$/);
-    expect(lines[2]).toMatch(/^└─+┘$/);
+    expect(lines[0]).toMatch(/^\s?╭─+╮\s?$/);
+    expect(lines[1]).toMatch(/^\s?│ › /);
+    expect(lines[1]).toMatch(/│\s?$/);
+    expect(lines[2]).toMatch(/^\s?╰─+╯\s?$/);
     expectFrameWithinWidth(view.lastFrame(), width);
   });
 
@@ -88,10 +88,10 @@ describe('InputBar editor box', () => {
     view.rerender(inputBar(() => {}, { terminalWidth: 28, compact: true }));
 
     const lines = stripAnsi(view.lastFrame()).split('\n');
-    expect(lines[0]).toMatch(/^┌─+┐$/);
-    expect(lines[1]).toMatch(/^│ > /);
+    expect(lines[0]).toMatch(/^╭─+╮$/);
+    expect(lines[1]).toMatch(/^│ › /);
     expect(lines[1]).toMatch(/│$/);
-    expect(lines[2]).toMatch(/^└─+┘$/);
+    expect(lines[2]).toMatch(/^╰─+╯$/);
     expectFrameWithinWidth(view.lastFrame(), 28);
   });
 
@@ -112,8 +112,8 @@ describe('InputBar editor box', () => {
     view.rerender(inputBar(() => {}, { terminalWidth: 28, commands, compact: true }));
 
     const lines = stripAnsi(view.lastFrame()).split('\n').filter(Boolean);
-    expect(lines.filter((line) => /^┌─+┐$/.test(line))).toHaveLength(2);
-    expect(lines.filter((line) => /^└─+┘$/.test(line))).toHaveLength(2);
+    expect(lines.filter((line) => /^╭─+╮$/.test(line))).toHaveLength(2);
+    expect(lines.filter((line) => /^╰─+╯$/.test(line))).toHaveLength(2);
     expectFrameWithinWidth(view.lastFrame(), 28);
   });
 });
@@ -130,10 +130,10 @@ describe('InputBar mode border colors', () => {
     });
   });
 
-  it('prompt marker is always "> "', () => {
-    const prompt = '> ';
-    expect(prompt).toBe('> ');
-    expect(prompt.length).toBe(2); // ">" + space
+  it('uses the softer visual prompt marker', () => {
+    const prompt = '› ';
+    expect(prompt).toBe('› ');
+    expect(prompt.length).toBe(2);
   });
 });
 

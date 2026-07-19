@@ -26,7 +26,7 @@ describe('buildColoredSegments', () => {
       34,
     );
 
-    expect(runs.map((run) => run.text).join('')).toBe('xxxxxxxxxx │ tok 50% │ tasks 1/3');
+    expect(runs.map((run) => run.text).join('')).toBe('xxxxxxxxxx · tok 50% · tasks 1/3');
   });
 });
 
@@ -49,7 +49,7 @@ describe('StatusLine', () => {
 
     const output = stripAnsi(view.lastFrame());
     expect(output).toContain('claude-sonnet-5');
-    expect(output).toContain('tokens 12.0k/128k');
+    expect(output).toContain('ctx 9%');
     expect(output).toContain('default');
     expect(output).toContain('tasks 1/3');
     expect(output.split('\n')).toHaveLength(1);

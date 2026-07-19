@@ -1,6 +1,7 @@
 import { Component } from 'react';
 import { Box, Text } from 'ink';
 import { createUiDebugLogger } from '../../debug-log.js';
+import { ThemeContext } from '../theme.js';
 
 const uiLog = createUiDebugLogger('tui:errorboundary');
 
@@ -46,13 +47,17 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   render() {
     if (this.state.hasError) {
       return (
-        <Box flexDirection="column" borderStyle="round" borderColor="red" padding={1}>
-          <Text bold color="red">
-            Something went wrong
-          </Text>
-          <Text color="gray">{this.state.error?.message ?? 'Unknown error'}</Text>
-          <Text color="gray">Restart Book to recover.</Text>
-        </Box>
+        <ThemeContext.Consumer>
+          {(theme) => (
+            <Box flexDirection="column" borderStyle="round" borderColor={theme.error} padding={1}>
+              <Text bold color={theme.error}>
+                Something went wrong
+              </Text>
+              <Text color={theme.subtle}>{this.state.error?.message ?? 'Unknown error'}</Text>
+              <Text color={theme.subtle}>Restart Book to recover.</Text>
+            </Box>
+          )}
+        </ThemeContext.Consumer>
       );
     }
 

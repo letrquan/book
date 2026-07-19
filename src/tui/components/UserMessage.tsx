@@ -5,6 +5,7 @@ import { useTheme } from '../theme.js';
 interface UserMessageProps {
   content: string;
   terminalWidth?: number;
+  screenReader?: boolean;
 }
 
 /**
@@ -85,18 +86,36 @@ function parseMentionSegments(content: string): Array<{ text: string; isMention:
 }
 
 /**
- * User message block — rendered with a subtle background that spans
- * the available terminal width to visually distinguish user messages.
- * @mentions are highlighted in the brand color (like Claude Code).
+ * User message card with an inset paper tint and a warm accent rail.
+ * @mentions keep the brand color for quick scanning.
  */
-function UserMessageInner({ content, terminalWidth = 80 }: UserMessageProps) {
+function UserMessageInner({ content, terminalWidth = 80, screenReader = false }: UserMessageProps) {
   const theme = useTheme();
   const width = Math.max(20, Math.floor(terminalWidth));
+  const cardWidth = Math.max(18, width - 2);
   const segments = parseMentionSegments(content);
 
+  if (screenReader) {
+    return (
+      <Box width={width}>
+        <Text wrap="wrap">{content}</Text>
+      </Box>
+    );
+  }
+
   return (
-    <Box width={width} paddingX={2} paddingY={1} backgroundColor={theme.userBg}>
-      <Box width={Math.max(1, width - 4)}>
+    <Box
+      width={cardWidth}
+      marginX={1}
+      paddingX={1}
+      borderStyle="single"
+      borderColor={theme.userAccent}
+      borderTop={false}
+      borderRight={false}
+      borderBottom={false}
+      backgroundColor={theme.userBg}
+    >
+      <Box width={Math.max(1, cardWidth - 3)}>
         <Text wrap="wrap">
           {segments.map((seg, i) =>
             seg.isMention ? (

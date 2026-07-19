@@ -16,13 +16,13 @@ export function AgentTodoList({ todos }: AgentTodoListProps) {
   return (
     <Box flexDirection="column" marginY={0} paddingLeft={2}>
       <Text color={theme.brand} bold>
-        ▶ Plan ({done}/{todos.length})
+        Plan <Text color={theme.toolRail}>·</Text> {done}/{todos.length}
       </Text>
       {visible.map((t, i) => {
         const ind = STATUS_INDICATORS[t.status];
         return (
           <Box key={i}>
-            <Text color={ind.color}>{ind.icon} </Text>
+            <Text color={theme[ind.colorToken]}>{ind.icon} </Text>
             <Text
               color={t.status === 'completed' ? theme.subtle : theme.text}
               strikethrough={t.status === 'completed'}

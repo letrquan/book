@@ -32,6 +32,8 @@ interface ToolCallBlockProps {
   showAllToolOutput?: boolean;
   /** Available terminal width, including this block's outer indentation. */
   terminalWidth?: number;
+  /** Tree-rail position within the current group. */
+  railPosition?: 'middle' | 'last';
 }
 
 /** Compatibility export used by existing consumers and tests. */
@@ -74,10 +76,11 @@ function statusColor(status: ToolPresentationStatus, theme: ReturnType<typeof us
 }
 
 function statusSymbol(status: ToolPresentationStatus): string {
-  if (status === 'success') return '●';
-  if (status === 'failure') return '●';
-  if (status === 'skipped') return '○';
-  return '○';
+  if (status === 'success') return '✓';
+  if (status === 'failure') return '×';
+  if (status === 'skipped') return '–';
+  if (status === 'pending') return '?';
+  return '◌';
 }
 
 function stringifyArg(value: unknown): string {
@@ -160,6 +163,7 @@ function ToolCallBlockInner({
   screenReader = false,
   showAllToolOutput = false,
   terminalWidth = 80,
+  railPosition = 'last',
 }: ToolCallBlockProps) {
   const theme = useTheme();
   const registry = useToolRowInteractionRegistry();
@@ -176,8 +180,9 @@ function ToolCallBlockInner({
   const inlineError =
     result?.error && !result.error.startsWith('SKIPPED') ? result.error : undefined;
   const elapsedSuffix = elapsed ? ` · ${elapsed}` : '';
-  const togglePrefix = presentation.hasHiddenContent ? (isExpanded ? '▼ ' : '▶ ') : '  ';
-  const iconPrefixWidth = displayWidth(`${togglePrefix}○ `);
+  const railPrefix = railPosition === 'last' ? '╰ ' : '├ ';
+  const togglePrefix = presentation.hasHiddenContent ? (isExpanded ? '⌄ ' : '› ') : '  ';
+  const iconPrefixWidth = displayWidth(`${railPrefix}${togglePrefix}○ `);
   const summaryWidth = Math.max(4, blockWidth - iconPrefixWidth);
   const summary = inlineError
     ? (() => {
@@ -210,6 +215,7 @@ function ToolCallBlockInner({
   return (
     <Box flexDirection="column" marginLeft={2}>
       <Box ref={summaryRef} height={1}>
+        <Text color={theme.toolRail}>{railPrefix}</Text>
         <Text color={theme.subtle}>{togglePrefix}</Text>
         {isRunning ? (
           <>
@@ -222,16 +228,20 @@ function ToolCallBlockInner({
             <Text> </Text>
           </>
         ) : (
-          <Text color={statusColor(presentation.status, theme)} bold>
+          <Text color={statusColor(presentation.status, theme)}>
             {statusSymbol(presentation.status)}{' '}
           </Text>
         )}
-        <Text color={presentation.status === 'failure' ? theme.error : theme.text} bold>
-          {summary}
-        </Text>
+        <Text color={presentation.status === 'failure' ? theme.error : theme.text}>{summary}</Text>
       </Box>
       {isExpanded && presentation.showArguments && Object.keys(args).length > 0 ? (
-        <Box marginLeft={4} flexDirection="column">
+        <Box
+          marginLeft={4}
+          flexDirection="column"
+          borderLeft
+          borderLeftColor={theme.toolRail}
+          paddingLeft={1}
+        >
           {Object.entries(args).map(([key, value]) => {
             const prefix = `${key}: `;
             return (
@@ -302,7 +312,7 @@ function OutputBlock({
   terminalWidth: number;
 }) {
   // A two-column indent plus the border/padding rail live inside the budget.
-  const contentWidth = Math.max(8, Math.floor(terminalWidth) - 4);
+  const contentWidth = Math.max(8, Math.floor(terminalWidth) - 6);
   const footerWidth = contentWidth;
   const display = useMemo(
     () =>
@@ -327,8 +337,10 @@ function OutputBlock({
         marginLeft={2}
         flexDirection="column"
         borderLeft
-        borderLeftColor={theme.subtle}
+        borderLeftColor={theme.toolRail}
         paddingLeft={1}
+        paddingRight={1}
+        backgroundColor={theme.surface}
       >
         <MarkdownBlock content={display.lines.join('\n')} terminalWidth={contentWidth} />
         {display.footer ? (
@@ -345,8 +357,10 @@ function OutputBlock({
       marginLeft={2}
       flexDirection="column"
       borderLeft
-      borderLeftColor={theme.subtle}
+      borderLeftColor={theme.toolRail}
       paddingLeft={1}
+      paddingRight={1}
+      backgroundColor={theme.surface}
     >
       {display.lines.map((line, index) => (
         <Box key={index}>

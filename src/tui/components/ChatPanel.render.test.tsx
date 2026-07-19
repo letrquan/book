@@ -45,9 +45,9 @@ describe('ChatPanel Ink rendering', () => {
     );
 
     const output = frame(view.lastFrame);
-    expect(output).toContain('██████');
+    expect(output).toContain('╭ BOOK');
     expect(output).toContain('Your coding workspace, indexed.');
-    expect(output).toContain('/init');
+    expect(output).toContain('/help');
   });
 
   it('re-emits completed Static history when the viewport epoch changes', () => {
@@ -139,7 +139,7 @@ describe('ChatPanel Ink rendering', () => {
       ),
     );
 
-    expect(frame(view.lastFrame)).not.toContain('██████');
+    expect(frame(view.lastFrame)).not.toContain('╭ BOOK');
     expect(frame(view.lastFrame)).not.toContain('Your coding workspace, indexed.');
     expect(frame(view.lastFrame)).toContain('older question');
     expect(frame(view.lastFrame)).toContain('older answer');
@@ -166,7 +166,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('streamed reply');
   });
 
-  it('keeps the original padded user-message band separate from agent output', () => {
+  it('renders role labels, an inset user card, and open assistant output', () => {
     const view = render(
       withTheme(
         <ChatPanel
@@ -178,10 +178,12 @@ describe('ChatPanel Ink rendering', () => {
     );
 
     const output = frame(view.lastFrame);
-    expect(output).not.toContain('██████');
+    expect(output).not.toContain('╭ BOOK');
+    expect(output).toContain('You');
+    expect(output).toContain('Book');
+    expect(output).toContain('│ compact request');
     expect(output).toContain('compact request');
     expect(output).toContain('compact reply');
-    expect(output.split('\n')).toEqual(['', '  compact request', '', '', '  compact reply']);
   });
 
   it('keeps the user-to-assistant transition compact', () => {
@@ -201,7 +203,7 @@ describe('ChatPanel Ink rendering', () => {
     const questionLine = lines.findIndex((line) => line.includes('QUESTION_SPACING_MARKER'));
     const answerLine = lines.findIndex((line) => line.includes('ANSWER_SPACING_MARKER'));
 
-    // Preserve main's restored separation between the padded user band and agent output.
+    // One gap plus the Book role label separates the card from assistant prose.
     expect(answerLine - questionLine).toBe(3);
   });
 
@@ -223,7 +225,7 @@ describe('ChatPanel Ink rendering', () => {
     const answerLine = lines.findIndex((line) => line.includes('FIRST_ANSWER_MARKER'));
     const nextQuestionLine = lines.findIndex((line) => line.includes('SECOND_QUESTION_MARKER'));
 
-    // One divider row plus the next bubble's top padding; no margin-only rows.
+    // One turn gap plus the next You role label.
     expect(nextQuestionLine - answerLine).toBe(3);
   });
 
@@ -1019,7 +1021,7 @@ describe('ChatPanel Ink rendering', () => {
     );
     const output = frame(view.lastFrame);
 
-    expect(output).toContain('/usage / SESSION TELEMETRY');
+    expect(output).toContain('/usage · Session telemetry');
     expect(output).toContain('input 1,000');
     expect(output).not.toContain('Session usage plain fallback');
   });

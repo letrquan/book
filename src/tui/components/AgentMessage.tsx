@@ -112,7 +112,8 @@ function NestedToolRows({
       ? groupConsecutiveMcpCalls(invocations)
       : invocations.map((invocation) => ({ kind: 'tool' as const, invocation }));
 
-  return rows.map((row) => {
+  return rows.map((row, index) => {
+    const railPosition = index === rows.length - 1 ? 'last' : 'middle';
     if (row.kind === 'mcp-group') {
       return (
         <Box key={row.id} marginLeft={screenReader ? 2 : depth * 2}>
@@ -132,6 +133,7 @@ function NestedToolRows({
             screenReader={screenReader}
             showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(row.id)}
             terminalWidth={terminalWidth ? Math.max(12, terminalWidth - depth * 2) : undefined}
+            railPosition={railPosition}
           />
         </Box>
       );
@@ -160,6 +162,7 @@ function NestedToolRows({
           screenReader={screenReader}
           showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(invocation.traceId)}
           terminalWidth={terminalWidth ? Math.max(12, terminalWidth - depth * 2) : undefined}
+          railPosition={railPosition}
         />
         <NestedToolRows
           childrenByParent={childrenByParent}
@@ -456,6 +459,7 @@ export function AgentMessageInner({
 
       {/* Every invocation gets its own row. Task subagent tools stay display-only and nest below it. */}
       {topLevelInvocations.map((row, index) => {
+        const railPosition = index === topLevelInvocations.length - 1 ? 'last' : 'middle';
         if (row.kind === 'mcp-group') {
           return (
             <ToolCallBlock
@@ -475,6 +479,7 @@ export function AgentMessageInner({
               screenReader={screenReader}
               showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(row.id)}
               terminalWidth={terminalWidth}
+              railPosition={railPosition}
             />
           );
         }
@@ -502,6 +507,7 @@ export function AgentMessageInner({
               screenReader={screenReader}
               showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(tc.id)}
               terminalWidth={terminalWidth}
+              railPosition={railPosition}
             />
             {childrenByParent.has(tc.id) ? (
               <NestedToolRows

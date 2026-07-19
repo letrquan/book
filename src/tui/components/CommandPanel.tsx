@@ -125,8 +125,8 @@ function ScanRail({ width, progress }: { width: number; progress: number }) {
 
   return (
     <Box flexWrap="nowrap">
-      <Text color={theme.brand}>{'━'.repeat(head)}</Text>
-      <Text color={progress >= 1 ? theme.success : theme.brandShimmer}>◆</Text>
+      <Text color={theme.brand}>{'─'.repeat(head)}</Text>
+      <Text color={progress >= 1 ? theme.success : theme.brandShimmer}>•</Text>
       <Text color={theme.subtle} dimColor>
         {'─'.repeat(Math.max(0, safeWidth - head - 1))}
       </Text>
@@ -154,10 +154,10 @@ function PanelHeader({
     <Box flexDirection="column">
       <Box justifyContent="space-between" flexWrap="nowrap">
         <Text bold color={theme.brand}>
-          ◇ {command} / {title}
+          {command} <Text color={theme.toolRail}>·</Text> <Text color={theme.text}>{title}</Text>
         </Text>
         <Text color={ready ? theme.success : theme.brandShimmer}>
-          {ready ? '● READY' : '◐ SCAN'}
+          {ready ? 'ready' : 'reading'}
         </Text>
       </Box>
       <Text color={theme.subtle} dimColor>
@@ -235,9 +235,9 @@ function Meter({
 
   return (
     <Box flexWrap="nowrap">
-      <Text color={color}>{'█'.repeat(filled)}</Text>
+      <Text color={color}>{'•'.repeat(filled)}</Text>
       <Text color={theme.subtle} dimColor>
-        {'░'.repeat(Math.max(0, safeWidth - filled))}
+        {'·'.repeat(Math.max(0, safeWidth - filled))}
       </Text>
     </Box>
   );
@@ -270,10 +270,10 @@ function StackedUsageMeter({
 
   return (
     <Box flexWrap="nowrap">
-      <Text color={theme.brand}>{'█'.repeat(promptFilled)}</Text>
-      <Text color={theme.success}>{'▓'.repeat(completionFilled)}</Text>
+      <Text color={theme.brand}>{'•'.repeat(promptFilled)}</Text>
+      <Text color={theme.success}>{'•'.repeat(completionFilled)}</Text>
       <Text color={theme.subtle} dimColor>
-        {'░'.repeat(remainder)}
+        {'·'.repeat(remainder)}
       </Text>
     </Box>
   );
@@ -321,10 +321,10 @@ function ConfigPanelBody({
   const barWidth = Math.max(8, Math.min(narrow ? 16 : 28, contentWidth - 18));
   const progress = revealProgress(step, 2);
   const metrics: Metric[] = [
-    { label: 'MODEL', value: data.runtime.model, color: theme.brand },
-    { label: 'PROVIDER', value: data.runtime.provider },
-    { label: 'MODE', value: data.runtime.mode },
-    { label: 'BUDGET', value: compactNumber(data.runtime.maxTokens) },
+    { label: 'Model', value: data.runtime.model, color: theme.brand },
+    { label: 'Provider', value: data.runtime.provider },
+    { label: 'Mode', value: data.runtime.mode },
+    { label: 'Budget', value: compactNumber(data.runtime.maxTokens) },
   ];
 
   return (
@@ -403,10 +403,10 @@ function ContextPanelBody({
   const roleTotal = Math.max(1, data.userTokens + data.assistantTokens);
   const meterWidth = Math.max(8, contentWidth - (narrow ? 18 : 24));
   const metrics: Metric[] = [
-    { label: 'WINDOW', value: compactNumber(data.maxTokens), color: theme.brand },
-    { label: 'ESTIMATE', value: compactNumber(data.estimatedTokens) },
-    { label: 'MESSAGES', value: String(data.totalMessages) },
-    { label: 'TOOLS', value: `${data.toolCalls}/${data.toolResults}` },
+    { label: 'Window', value: compactNumber(data.maxTokens), color: theme.brand },
+    { label: 'Estimate', value: compactNumber(data.estimatedTokens) },
+    { label: 'Messages', value: String(data.totalMessages) },
+    { label: 'Tools', value: `${data.toolCalls}/${data.toolResults}` },
   ];
   const ambient = [
     `commands ${data.ambient.commandCount}`,
@@ -489,11 +489,11 @@ function UsagePanelBody({
   const theme = useTheme();
   const usage = data.usage;
   const metrics: Metric[] = [
-    { label: 'TURN', value: String(data.currentTurn), color: theme.brand },
-    { label: 'MESSAGES', value: String(data.messageCount) },
-    { label: 'LATENCY', value: formatDuration(data.turnDurationMs) },
+    { label: 'Turn', value: String(data.currentTurn), color: theme.brand },
+    { label: 'Messages', value: String(data.messageCount) },
+    { label: 'Latency', value: formatDuration(data.turnDurationMs) },
     {
-      label: 'EST. COST',
+      label: 'Est. cost',
       value: data.estimatedCostUsd === undefined ? '—' : `$${data.estimatedCostUsd.toFixed(4)}`,
       color: data.estimatedCostUsd === undefined ? theme.subtle : theme.success,
     },
@@ -524,8 +524,8 @@ function UsagePanelBody({
               progress={revealProgress(step, 2)}
             />
             <Box flexDirection={narrow ? 'column' : 'row'} justifyContent="space-between">
-              <Text color={theme.brand}>█ input {usage.promptTokens.toLocaleString()}</Text>
-              <Text color={theme.success}>▓ output {usage.completionTokens.toLocaleString()}</Text>
+              <Text color={theme.brand}>• input {usage.promptTokens.toLocaleString()}</Text>
+              <Text color={theme.success}>• output {usage.completionTokens.toLocaleString()}</Text>
               {usage.cacheReadInputTokens ? (
                 <Text color={theme.subtle}>
                   cache {usage.cacheReadInputTokens.toLocaleString()}
@@ -583,18 +583,18 @@ export function CommandPanel({
     display.kind === 'config'
       ? {
           command: '/config',
-          title: 'RUNTIME MAP',
+          title: 'Runtime map',
           subtitle: `${display.runtime.provider} · ${display.runtime.workspace}`,
         }
       : display.kind === 'context'
         ? {
             command: '/context',
-            title: 'WINDOW MAP',
+            title: 'Window map',
             subtitle: `${display.model} · estimated conversation load before ambient injection`,
           }
         : {
             command: '/usage',
-            title: 'SESSION TELEMETRY',
+            title: 'Session telemetry',
             subtitle: `${display.model} · cumulative provider-reported activity`,
           };
 
@@ -604,7 +604,7 @@ export function CommandPanel({
       width={panelWidth}
       flexDirection="column"
       borderStyle="round"
-      borderColor={theme.subtle}
+      borderColor={theme.border}
       paddingX={1}
     >
       <PanelHeader {...header} contentWidth={contentWidth} step={step} />
