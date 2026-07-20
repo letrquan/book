@@ -1289,7 +1289,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 </Box>
               )}
               {pendingPlanApproval ? (
-                <PlanApprovalDetails plan={pendingPlanApproval.plan} screenReader={screenReader} />
+                <PlanApprovalDetails
+                  plan={pendingPlanApproval.plan}
+                  screenReader={screenReader}
+                  terminalWidth={termWidth}
+                />
               ) : null}
               {showShortcuts && (
                 <Box
@@ -1367,6 +1371,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 plan={pendingPlanApproval.plan}
                 onResolve={resolvePlanApproval}
                 screenReader={screenReader}
+                terminalWidth={termWidth}
               />
             ) : null}
             {pendingUserQuestion ? (

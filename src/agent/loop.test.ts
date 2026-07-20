@@ -1002,4 +1002,55 @@ describe('runAgentLoop plan mode', () => {
     expect(results[0].success).toBe(false);
     expect(results[0].error).toMatch(/Plan was not approved/);
   });
+
+  it('returns plan adjustment feedback to the agent and stays in plan mode', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              { id: 'exit_1', name: 'ExitPlanMode', arguments: '{"plan":"Do it."}' },
+            ]),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const registry = createRegistry();
+    registry.register({
+      name: 'ExitPlanMode',
+      description: 'Exit plan mode',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, ctx) => {
+        ctx.previousMode = 'default';
+        ctx.pendingPlanApproval = { plan: 'Do it.' };
+        return { toolCallId: '', success: true, output: 'submitted' };
+      },
+    });
+
+    const modes: string[] = [];
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'plan',
+      [],
+      noopCallbacks({
+        onModeChange: (newMode: string) => modes.push(newMode),
+        onPlanApprovalRequired: async () => ({
+          decision: 'revise',
+          feedback: 'Keep the migration backward compatible.',
+        }),
+        onToolResult: (result: ToolResult) => results.push(result),
+      }),
+      'plan',
+    );
+
+    expect(modes).toEqual([]);
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toContain('The user requested changes to the plan');
+    expect(results[0].error).toContain('Keep the migration backward compatible.');
+    expect(results[0].error).toContain('call ExitPlanMode again');
+  });
 });

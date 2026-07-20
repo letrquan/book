@@ -42,6 +42,45 @@ describe('PlanApprovalButtons', () => {
     expect(onResolve).toHaveBeenCalledWith('approve');
   });
 
+  it('collects feedback when the user requests plan adjustments', async () => {
+    const onResolve = vi.fn();
+    const view = render(
+      withTheme(<PlanApprovalButtons plan="Review the proposed changes." onResolve={onResolve} />),
+    );
+
+    view.stdin.write('e');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stripAnsi(view.lastFrame())).toContain('Request plan adjustments');
+
+    view.stdin.write('Keep the migration backward compatible.');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(onResolve).toHaveBeenCalledOnce();
+    expect(onResolve).toHaveBeenCalledWith({
+      decision: 'revise',
+      feedback: 'Keep the migration backward compatible.',
+    });
+  });
+
+  it('renders markdown tables inside the proposed plan', () => {
+    const view = render(
+      withTheme(
+        <PlanApprovalButtons
+          plan={'| Agent | Work |\n|---|---|\n| **Book** | Review |'}
+          terminalWidth={40}
+          onResolve={vi.fn()}
+        />,
+      ),
+    );
+
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain('┌');
+    expect(output).toContain('Book');
+    expect(output).not.toContain('**Book**');
+  });
+
   it('strips indented heading markers and counts only top-level steps', () => {
     const view = render(
       withTheme(

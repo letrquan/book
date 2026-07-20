@@ -5,6 +5,7 @@ import React from 'react';
 import { ThemeContext } from '../theme.js';
 import { DEFAULT_THEME } from '../../types.js';
 import { MarkdownBlock, useThrottledValue, wrapParagraphLines } from './MarkdownBlock.js';
+import { displayWidth } from './word-wrap.js';
 
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
@@ -235,6 +236,29 @@ describe('MarkdownBlock', () => {
     expect(output).toContain('42');
     expect(output).toContain('bar');
     expect(output).toContain('99');
+  });
+
+  it('keeps exact-width table rows aligned and renders inline markdown as cell text', () => {
+    const width = 30;
+    const view = render(
+      withTheme(
+        React.createElement(MarkdownBlock, {
+          content:
+            '| Agent | Status |\n|---|---|\n| **book-agent** | `ready` |\n| [reviewer](https://example.com) | waiting |',
+          terminalWidth: width,
+        }),
+      ),
+    );
+    const output = frame(view.lastFrame);
+    const lines = output.split('\n');
+
+    expect(output).toContain('book-agent');
+    expect(output).toContain('ready');
+    expect(output).not.toContain('**book-agent**');
+    expect(output).not.toContain('`ready`');
+    expect(lines.every((line) => displayWidth(line) <= width)).toBe(true);
+    const borderedLines = lines.filter((line) => /^[┌├└│]/.test(line));
+    expect(new Set(borderedLines.map(displayWidth)).size).toBe(1);
   });
 
   it('renders mixed content: heading + code + list + paragraph', () => {

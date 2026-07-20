@@ -310,7 +310,7 @@ export type CompactResult =
     };
 
 export type PermissionResult = 'allow' | 'deny' | 'always';
-export type PlanApprovalResult = 'approve' | 'reject';
+export type PlanApprovalResult = 'approve' | 'reject' | { decision: 'revise'; feedback: string };
 
 export interface UserQuestionOption {
   label: string;
