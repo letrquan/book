@@ -209,7 +209,7 @@ export function WorkingIndicator({
   }
 
   const hint = pendingPlanApproval
-    ? ' · Esc to reject'
+    ? ' · choose approve, adjust, or reject above'
     : pendingUserQuestion
       ? ' · answer the question above'
       : pendingPermission

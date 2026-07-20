@@ -542,7 +542,9 @@ export async function runAgentLoop(
           result.success = false;
           result.output = '';
           result.error =
-            'SKIPPED: Plan was not approved. Revise the plan and call ExitPlanMode again.';
+            approval === 'reject'
+              ? 'SKIPPED: Plan was not approved. Revise the plan and call ExitPlanMode again.'
+              : `SKIPPED: The user requested changes to the plan.\n\nFeedback: ${approval.feedback}\n\nRevise the plan using this feedback and call ExitPlanMode again.`;
         }
 
         const modeAfterApproval = toolContext.currentMode ?? effectiveMode;

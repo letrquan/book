@@ -99,7 +99,7 @@ describe('WorkingIndicator', () => {
     const initialFrame = view.lastFrame();
     const initialWriteCount = view.frames.length;
     expect(stripAnsi(initialFrame)).toContain('Waiting for plan approval');
-    expect(stripAnsi(initialFrame)).toContain('Esc to reject');
+    expect(stripAnsi(initialFrame)).toContain('approve, adjust, or reject');
     expect(stripAnsi(initialFrame)).not.toContain('Esc to cancel');
 
     act(() => {

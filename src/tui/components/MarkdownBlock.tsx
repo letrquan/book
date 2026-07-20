@@ -371,7 +371,7 @@ function renderTableCells(
           <Text bold={bold} color={theme.text}>
             {cell}
           </Text>
-          <Text color={theme.mdTableBorder}> │ </Text>
+          <Text color={theme.mdTableBorder}>{ci === cells.length - 1 ? ' │' : ' │ '}</Text>
         </React.Fragment>
       ))}
     </Box>
@@ -629,8 +629,8 @@ function renderBlockToken(
       if (t.header.length === 0 && t.rows.length === 0) return null;
 
       const layout = layoutTable({
-        header: t.header.map((cell) => ({ text: cell.text })),
-        rows: t.rows.map((row) => row.map((cell) => ({ text: cell.text }))),
+        header: t.header.map((cell) => ({ text: plainTextFromTokens(cell.tokens) })),
+        rows: t.rows.map((row) => row.map((cell) => ({ text: plainTextFromTokens(cell.tokens) }))),
         align: t.align ?? [],
         terminalWidth: terminalWidth ?? 80,
       });
