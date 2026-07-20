@@ -7,7 +7,7 @@ import {
   resolveContextLimit,
   usagePressureTokens,
   runCompact,
-  UNKNOWN_MANUAL_CONTEXT_WINDOW,
+  DEFAULT_CONTEXT_WINDOW,
 } from './compact.js';
 import type { AgentConfig, Message, Usage } from '../types.js';
 import { defaultConfig } from '../test/fixtures.js';
@@ -99,13 +99,30 @@ describe('resolveContextLimit', () => {
     expect(resolveContextLimit(config)).toBe(200000);
   });
 
-  it('does not fall back to maxTokens', () => {
+  it('uses the 272K default instead of the output-token limit', () => {
     const config = makeConfig({ maxTokens: 8192, modelInfo: undefined });
-    expect(resolveContextLimit(config)).toBeNull();
+    expect(resolveContextLimit(config)).toBe(DEFAULT_CONTEXT_WINDOW);
   });
 
-  it('uses a 272K manual fallback when model metadata is unavailable', () => {
-    expect(UNKNOWN_MANUAL_CONTEXT_WINDOW).toBe(272_000);
+  it('defaults unknown model context windows to 272K', () => {
+    expect(DEFAULT_CONTEXT_WINDOW).toBe(272_000);
+  });
+
+  it('auto-compacts unknown models at 80% of the 272K default', () => {
+    const contextLimit = resolveContextLimit(makeConfig({ modelInfo: undefined }));
+    const below: Usage = {
+      promptTokens: 217_599,
+      completionTokens: 0,
+      totalTokens: 217_599,
+    };
+    const atThreshold: Usage = {
+      promptTokens: 217_600,
+      completionTokens: 0,
+      totalTokens: 217_600,
+    };
+
+    expect(shouldCompact(below, contextLimit)).toBe(false);
+    expect(shouldCompact(atThreshold, contextLimit)).toBe(true);
   });
 });
 

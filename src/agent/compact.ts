@@ -18,7 +18,7 @@ import { createDebugLogger } from '../debug-log.js';
 const log = createDebugLogger('compact');
 
 export const DEFAULT_COMPACT_THRESHOLD = 0.8;
-export const UNKNOWN_MANUAL_CONTEXT_WINDOW = 272_000;
+export const DEFAULT_CONTEXT_WINDOW = 272_000;
 const DESIRED_CONTEXT_FRACTION = 0.5;
 const RECENT_TAIL_MAX_TOKENS = 20_000;
 const RECENT_TAIL_FRACTION = 0.2;
@@ -156,9 +156,9 @@ type GenerateResult =
       result: Extract<CompactResult, { status: 'failed' }>;
     };
 
-export function resolveContextLimit(config: AgentConfig): number | null {
+export function resolveContextLimit(config: AgentConfig): number {
   const window = config.modelInfo?.contextWindow;
-  return typeof window === 'number' && window > 0 ? window : null;
+  return typeof window === 'number' && window > 0 ? window : DEFAULT_CONTEXT_WINDOW;
 }
 
 export function usagePressureTokens(usage: Usage | null | undefined): number {
@@ -267,7 +267,7 @@ export async function runCompact(
     return { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' };
   }
 
-  const contextWindow = resolveContextLimit(config) ?? UNKNOWN_MANUAL_CONTEXT_WINDOW;
+  const contextWindow = resolveContextLimit(config);
   const recentBudget = Math.min(RECENT_TAIL_MAX_TOKENS, contextWindow * RECENT_TAIL_FRACTION);
   const checkpointBudget = Math.max(
     1,
