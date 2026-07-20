@@ -169,7 +169,7 @@ description: Check for spelling errors
 Run a spell check on the codebase and fix any issues found.
 ```
 
-Built-ins include session controls (`/clear`, `/resume`, `/compact`), config (`/model`, `/effort [low|medium|high|xhigh|max]`, `/config`, `/permissions`, `/theme`), inspection (`/status`, `/cost`, `/usage`, `/context`, `/diff`, `/skills`, `/memory`), and agent prompts (`/init`, `/review`, `/security-review`). `/effort` opens a picker when called without an argument and saves successful selections to `.book/settings.local.json`.
+Built-ins include session controls (`/clear`, `/resume`, `/compact`), config (`/model`, `/effort [low|medium|high|xhigh|max]`, `/config`, `/permissions`, `/theme`), inspection (`/status`, `/cost`, `/usage`, `/context`, `/diff`, `/skills`, `/memory`), and agent prompts (`/init`, `/review`, `/security-review`). `/model` switches models and manages workspace-local BYOK providers; select one of their models and press `Alt+D` to remove the provider, its credentials, and its saved model catalog from `.book/settings.local.json`. `/effort` opens a picker when called without an argument and saves successful selections to `.book/settings.local.json`.
 
 ## SDK Usage
 

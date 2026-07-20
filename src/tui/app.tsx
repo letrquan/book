@@ -10,7 +10,7 @@ import { CompactDiffCard } from './components/CompactDiffCard.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
 import { AgentTodoList } from './components/AgentTodoList.js';
-import { ModelPicker } from './components/ModelPicker.js';
+import { ModelPicker, type ProviderRemovalResult } from './components/ModelPicker.js';
 import { EffortPicker } from './components/EffortPicker.js';
 import { ThemePicker } from './components/ThemePicker.js';
 import { SessionPicker } from './components/SessionPicker.js';
@@ -121,6 +121,19 @@ function themeAppliedMessage(theme: ResolvedTheme): string {
   return `Switched to ${theme.preference} theme (saved as default).`;
 }
 
+export function providerRemovalMessage(
+  result: Extract<ProviderRemovalResult, { ok: true }>,
+): string {
+  if (result.inheritedProviderRevealed) {
+    return `Removed the local ${result.providerId} override; the inherited ${result.providerId} provider remains configured.`;
+  }
+  if (result.switched) {
+    return `Removed local BYOK provider ${result.providerId} and switched to ${result.activeModel}.`;
+  }
+  const models = `${result.removedModelCount} model${result.removedModelCount === 1 ? '' : 's'}`;
+  return `Removed local BYOK provider ${result.providerId} and its ${models}.`;
+}
+
 interface AppProps {
   config: AgentConfig;
   session: SessionBootstrap & { store?: SessionStoreInterface };
@@ -175,6 +188,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
     pendingUserQuestionCount,
     agentTodos,
     liveConfig,
+    localProviderIds,
+    localProviderModelCounts,
     sessionId,
     sessionName,
     send,
@@ -192,6 +207,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
     addLocalMessage,
     setModel,
     upsertProviderAndSelect,
+    removeProvider,
     setEffort,
     setMemoryAutoSave,
     refreshMemoryContext,
@@ -1049,7 +1065,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
                     />
                     <HelpRow
                       label="/model [name]"
-                      description="Switch model or add a BYOK provider"
+                      description="Switch models and manage BYOK providers"
                       theme={theme}
                     />
                     <HelpRow
@@ -1412,6 +1428,15 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 }}
                 onPickEffort={(level) => setEffort(level)}
                 onSaveProvider={upsertProviderAndSelect}
+                removableProviderIds={localProviderIds}
+                removableProviderModelCounts={localProviderModelCounts}
+                onRemoveProvider={(providerId) => {
+                  const result = removeProvider(providerId);
+                  if (!result.ok) return result;
+                  addLocalMessage(providerRemovalMessage(result));
+                  setShowModelPicker(false);
+                  return result;
+                }}
                 onProviderSaved={(request) => {
                   addLocalMessage(
                     `Added ${request.providerId} with ${request.models.length} model${request.models.length === 1 ? '' : 's'}; using ${request.providerId}/${request.activeModelId}.`,

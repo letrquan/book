@@ -5,13 +5,17 @@ import type {
   PlanApprovalResult,
   ToolCall,
   UserQuestionRequest,
+  AgentConfig,
 } from '../../types.js';
 import {
   cancelUserQuestionRequests,
   settlePermissionRequest,
   settlePlanApprovalRequest,
   settleUserQuestionRequest,
+  resolveConfigAfterProviderRemoval,
 } from './useAgent.js';
+import { DEFAULT_SETTINGS, type ResolvedSettings } from '../../settings.js';
+import { defaultConfig } from '../../test/fixtures.js';
 
 // Simulate the retry state machine from useAgent.
 // This is a pure-function test of the state transitions without React rendering.
@@ -354,5 +358,144 @@ describe('permission / plan approval settlement', () => {
       expect(settlePlanApprovalRequest(pendingRef, setPending, 'reject', via)).toBe(false);
       expect(resolve).toHaveBeenCalledTimes(1);
     }
+  });
+});
+
+describe('provider removal runtime resolution', () => {
+  function settings(overrides: Partial<ResolvedSettings> = {}): ResolvedSettings {
+    return {
+      ...structuredClone(DEFAULT_SETTINGS),
+      ...overrides,
+      provider: overrides.provider ?? {},
+    };
+  }
+
+  function activeGateway(overrides: Partial<AgentConfig> = {}): AgentConfig {
+    return defaultConfig({
+      apiKey: 'local-key',
+      baseUrl: 'https://local.test/v1',
+      model: 'local-model',
+      modelSelection: 'gateway/local-model',
+      provider: 'openai',
+      defaultApiKey: 'default-key',
+      defaultBaseUrl: 'https://default.test/v1',
+      defaultProvider: 'auto',
+      defaultMaxTokens: 12000,
+      defaultEffort: 'high',
+      maxTokensExplicit: false,
+      effortExplicit: false,
+      settings: settings({
+        model: 'gateway/local-model',
+        provider: {
+          gateway: {
+            type: 'openai',
+            apiKey: 'local-key',
+            models: { 'local-model': {} },
+          },
+        },
+      }),
+      ...overrides,
+    });
+  }
+
+  it('switches an active removed provider to the newly resolved project default', () => {
+    const result = resolveConfigAfterProviderRemoval(
+      activeGateway(),
+      settings({ model: 'project-model' }),
+      'gateway',
+    );
+
+    expect(result.activeModel).toBe('project-model');
+    expect(result.switched).toBe(true);
+    expect(result.config.model).toBe('project-model');
+    expect(result.config.apiKey).toBe('default-key');
+    expect(result.config.baseUrl).toBe('https://default.test/v1');
+    expect(result.config.provider).toBe('auto');
+  });
+
+  it('uses the resolved user-global default when it is the next configured layer', () => {
+    const result = resolveConfigAfterProviderRemoval(
+      activeGateway(),
+      settings({ model: 'user-global-model' }),
+      'gateway',
+    );
+
+    expect(result.activeModel).toBe('user-global-model');
+    expect(result.switched).toBe(true);
+  });
+
+  it('falls back to gpt-4o when no configured model remains', () => {
+    const result = resolveConfigAfterProviderRemoval(activeGateway(), settings(), 'gateway');
+
+    expect(result.activeModel).toBe('gpt-4o');
+    expect(result.config.model).toBe('gpt-4o');
+    expect(result.switched).toBe(true);
+  });
+
+  it('ignores a stale resolved default that references the missing provider', () => {
+    const result = resolveConfigAfterProviderRemoval(
+      activeGateway(),
+      settings({ model: 'gateway/missing' }),
+      'gateway',
+    );
+
+    expect(result.activeModel).toBe('gpt-4o');
+  });
+
+  it('preserves a non-active session-only model while updating settings', () => {
+    const current = activeGateway({
+      model: 'session-model',
+      modelSelection: 'session-model',
+      settings: settings({
+        model: 'gateway/local-model',
+        provider: {
+          gateway: { type: 'openai', models: { 'local-model': {} } },
+        },
+      }),
+    });
+    const nextSettings = settings({ model: 'project-model' });
+
+    const result = resolveConfigAfterProviderRemoval(current, nextSettings, 'gateway');
+
+    expect(result.activeModel).toBe('session-model');
+    expect(result.switched).toBe(false);
+    expect(result.config.settings).toBe(nextSettings);
+  });
+
+  it('reveals an inherited provider and resolves all fallback model defaults', () => {
+    const nextSettings = settings({
+      model: 'gateway/inherited-model',
+      provider: {
+        gateway: {
+          type: 'anthropic',
+          baseURL: 'https://inherited.test/v1',
+          apiKey: 'inherited-key',
+          models: {
+            'inherited-model': {
+              label: 'Inherited',
+              maxOutputTokens: 4096,
+              effort: { default: 'low', levels: ['low', 'high'] },
+            },
+          },
+        },
+      },
+    });
+
+    const result = resolveConfigAfterProviderRemoval(activeGateway(), nextSettings, 'gateway');
+
+    expect(result.inheritedProviderRevealed).toBe(true);
+    expect(result.activeModel).toBe('gateway/inherited-model');
+    expect(result.config).toEqual(
+      expect.objectContaining({
+        apiKey: 'inherited-key',
+        baseUrl: 'https://inherited.test/v1',
+        provider: 'anthropic',
+        model: 'inherited-model',
+        modelSelection: 'gateway/inherited-model',
+        maxTokens: 4096,
+        effort: 'low',
+      }),
+    );
+    expect(result.config.modelInfo?.label).toBe('Inherited');
   });
 });

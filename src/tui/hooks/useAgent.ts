@@ -37,12 +37,16 @@ import { makeMessage, removeTrailingEmptyAssistantPlaceholder } from './streamin
 import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-log.js';
 import { loadMemoryContext } from '../../memory-store.js';
 import {
+  readSettingsLocal,
+  removeProviderLocal,
   persistSettingLocal,
   persistSettingsLocal,
   persistPermissionRuleLocal,
 } from '../persist.js';
-import { providerConfigSchema } from '../../settings.js';
+import { DEFAULT_SETTINGS, providerConfigSchema, type ResolvedSettings } from '../../settings.js';
+import { resolveSettings } from '../../settings-loader.js';
 import { providerConfigFromDraft, type ProviderSaveRequest } from '../model-options.js';
+import type { ProviderRemovalResult } from '../components/ModelPicker.js';
 import { updateEffortLevel } from '../effort.js';
 import {
   collectAtMentionObservations,
@@ -175,6 +179,71 @@ export interface UseAgentSessionOptions extends SessionBootstrap {
   store?: SessionStoreInterface;
 }
 
+function providerIdFromSelection(selection: string): string | undefined {
+  const slash = selection.indexOf('/');
+  return slash > 0 ? selection.slice(0, slash) : undefined;
+}
+
+function readLocalProviderOwnership(workspace: string): {
+  ids: Set<string>;
+  modelCounts: Map<string, number>;
+} {
+  const local = readSettingsLocal(workspace);
+  const provider = local.provider;
+  if (typeof provider !== 'object' || provider === null || Array.isArray(provider)) {
+    return { ids: new Set(), modelCounts: new Map() };
+  }
+  const registry = provider as Record<string, unknown>;
+  const ids = new Set(Object.keys(registry));
+  const modelCounts = new Map<string, number>();
+  for (const providerId of ids) {
+    const entry = registry[providerId];
+    const models =
+      typeof entry === 'object' && entry !== null && !Array.isArray(entry)
+        ? (entry as Record<string, unknown>).models
+        : undefined;
+    modelCounts.set(
+      providerId,
+      typeof models === 'object' && models !== null && !Array.isArray(models)
+        ? Object.keys(models).length
+        : 0,
+    );
+  }
+  return { ids, modelCounts };
+}
+
+export function resolveConfigAfterProviderRemoval(
+  current: AgentConfig,
+  settings: ResolvedSettings,
+  providerId: string,
+): {
+  config: AgentConfig;
+  activeModel: string;
+  switched: boolean;
+  inheritedProviderRevealed: boolean;
+} {
+  const currentSelection = current.modelSelection ?? current.model;
+  const configuredDefault = settings.model;
+  const defaultIsStale =
+    configuredDefault !== undefined &&
+    providerIdFromSelection(configuredDefault) === providerId &&
+    !settings.provider[providerId];
+  const effectiveDefault = !configuredDefault || defaultIsStale ? 'gpt-4o' : configuredDefault;
+  const activeProviderRemoved = providerIdFromSelection(currentSelection) === providerId;
+  const nextSelection = activeProviderRemoved ? effectiveDefault : currentSelection;
+  const next = applyModelDefaults(
+    resolveModelProviderConfig({ ...current, settings }, nextSelection),
+  );
+  const activeModel = next.modelSelection ?? next.model;
+
+  return {
+    config: next,
+    activeModel,
+    switched: activeProviderRemoved && activeModel !== currentSelection,
+    inheritedProviderRevealed: Boolean(settings.provider[providerId]),
+  };
+}
+
 /** UI-only compact status — never appended to provider history. */
 export type CompactUiState = {
   phase: 'working' | 'diff' | 'done' | 'error' | 'skipped';
@@ -224,6 +293,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     ...config,
     fileObservationLedger: buildObservationLedger(initialTranscript),
   }));
+  const [localProviderOwnership, setLocalProviderOwnership] = useState(() =>
+    readLocalProviderOwnership(config.workspace),
+  );
   const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
   const [pendingPlanApproval, setPendingPlanApproval] = useState<PendingPlanApproval | null>(null);
   const [pendingUserQuestions, setPendingUserQuestions] = useState<PendingUserQuestion[]>([]);
@@ -249,6 +321,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const lifecycleStartedRef = useRef(false);
   const lifecycleEndedRef = useRef(false);
   const liveConfigRef = useRef(liveConfig);
+  const localProviderOwnershipRef = useRef(localProviderOwnership);
   const turnStartRef = useRef(Date.now());
   // Countdown timer ref for retry countdown.
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -273,6 +346,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   useEffect(() => {
     liveConfigRef.current = liveConfig;
   }, [liveConfig]);
+
+  useEffect(() => {
+    localProviderOwnershipRef.current = localProviderOwnership;
+  }, [localProviderOwnership]);
 
   const settlePermission = useCallback((result: PermissionResult, via: string) => {
     return settlePermissionRequest(pendingPermissionRef, setPendingPermission, result, via);
@@ -1238,9 +1315,67 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           ? applyModelDefaults(resolveModelProviderConfig(withProvider, selection))
           : withProvider;
       });
+      const nextLocalProviderOwnership = {
+        ids: new Set(localProviderOwnershipRef.current.ids).add(providerId),
+        modelCounts: new Map(localProviderOwnershipRef.current.modelCounts).set(
+          providerId,
+          Object.keys(savedProvider.models).length,
+        ),
+      };
+      localProviderOwnershipRef.current = nextLocalProviderOwnership;
+      setLocalProviderOwnership(nextLocalProviderOwnership);
       return { ok: true };
     },
     [config.workspace],
+  );
+
+  const removeProvider = useCallback(
+    (providerId: string): ProviderRemovalResult => {
+      if (!localProviderOwnershipRef.current.ids.has(providerId)) {
+        return { ok: false, error: 'Only workspace-local BYOK providers can be removed.' };
+      }
+
+      const persisted = removeProviderLocal(config.workspace, providerId);
+      if (!persisted.ok) return { ok: false, error: persisted.error };
+
+      let resolvedSettings: ResolvedSettings;
+      let resolvedRuntime: ReturnType<typeof resolveConfigAfterProviderRemoval>;
+      try {
+        resolvedSettings = config.settingsContext?.noSettings
+          ? structuredClone(DEFAULT_SETTINGS)
+          : resolveSettings(config.workspace, config.settingsContext?.overridePath);
+        resolvedRuntime = resolveConfigAfterProviderRemoval(
+          liveConfigRef.current,
+          resolvedSettings,
+          providerId,
+        );
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+
+      liveConfigRef.current = resolvedRuntime.config;
+      setLiveConfig(resolvedRuntime.config);
+      const nextLocalProviderIds = new Set(localProviderOwnershipRef.current.ids);
+      const nextLocalProviderModelCounts = new Map(localProviderOwnershipRef.current.modelCounts);
+      nextLocalProviderIds.delete(providerId);
+      nextLocalProviderModelCounts.delete(providerId);
+      const nextLocalProviderOwnership = {
+        ids: nextLocalProviderIds,
+        modelCounts: nextLocalProviderModelCounts,
+      };
+      localProviderOwnershipRef.current = nextLocalProviderOwnership;
+      setLocalProviderOwnership(nextLocalProviderOwnership);
+
+      return {
+        ok: true,
+        providerId,
+        removedModelCount: persisted.removedModelCount,
+        activeModel: resolvedRuntime.activeModel,
+        switched: resolvedRuntime.switched,
+        inheritedProviderRevealed: resolvedRuntime.inheritedProviderRevealed,
+      };
+    },
+    [config.settingsContext?.noSettings, config.settingsContext?.overridePath, config.workspace],
   );
 
   const setEffort = useCallback(
@@ -1319,6 +1454,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     retryMax,
     retryCountdownMs,
     liveConfig,
+    localProviderIds: localProviderOwnership.ids,
+    localProviderModelCounts: localProviderOwnership.modelCounts,
     sessionId,
     sessionName,
     send,
@@ -1337,6 +1474,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     addLocalMessage,
     setModel,
     upsertProviderAndSelect,
+    removeProvider,
     setEffort,
     setMemoryAutoSave,
 

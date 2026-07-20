@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
-import { App, ownsModalInput } from './app.js';
+import { App, ownsModalInput, providerRemovalMessage } from './app.js';
 import type { AgentConfig } from '../types.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
 
@@ -97,6 +97,8 @@ function pendingAgentState() {
     pendingPlanApproval: { plan: 'Review this plan.', resolve: vi.fn() },
     agentTodos: [],
     liveConfig: config(),
+    localProviderIds: new Set<string>(),
+    localProviderModelCounts: new Map<string, number>(),
     sessionId: 'session-test',
     sessionName: undefined,
     send: vi.fn(),
@@ -115,6 +117,8 @@ function pendingAgentState() {
     cycleMode: vi.fn(),
     addLocalMessage: vi.fn(),
     setModel: vi.fn(),
+    upsertProviderAndSelect: vi.fn(() => ({ ok: true })),
+    removeProvider: vi.fn(() => ({ ok: false, error: 'not local' })),
     setEffort: vi.fn(() => ({ ok: true })),
     setMemoryAutoSave: vi.fn(),
     refreshMemoryContext: vi.fn(),
@@ -178,6 +182,52 @@ describe('App session commands', () => {
 
     expect(agentState.startNewConversation).not.toHaveBeenCalled();
     expect(agentState.send).toHaveBeenCalledWith('/newline value');
+  });
+});
+
+describe('provider removal transcript messages', () => {
+  it('reports non-active removal with the model count', () => {
+    expect(
+      providerRemovalMessage({
+        ok: true,
+        providerId: 'gateway',
+        removedModelCount: 3,
+        activeModel: 'project-model',
+        switched: false,
+        inheritedProviderRevealed: false,
+      }),
+    ).toBe('Removed local BYOK provider gateway and its 3 models.');
+  });
+
+  it.each([
+    ['project-model', 'Removed local BYOK provider gateway and switched to project-model.'],
+    ['gpt-4o', 'Removed local BYOK provider gateway and switched to gpt-4o.'],
+  ])('reports an active-provider switch to %s', (activeModel, expected) => {
+    expect(
+      providerRemovalMessage({
+        ok: true,
+        providerId: 'gateway',
+        removedModelCount: 3,
+        activeModel,
+        switched: true,
+        inheritedProviderRevealed: false,
+      }),
+    ).toBe(expected);
+  });
+
+  it('reports when an inherited provider is revealed', () => {
+    expect(
+      providerRemovalMessage({
+        ok: true,
+        providerId: 'gateway',
+        removedModelCount: 3,
+        activeModel: 'gateway/inherited',
+        switched: false,
+        inheritedProviderRevealed: true,
+      }),
+    ).toBe(
+      'Removed the local gateway override; the inherited gateway provider remains configured.',
+    );
   });
 });
 

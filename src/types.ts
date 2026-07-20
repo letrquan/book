@@ -634,6 +634,11 @@ export interface AgentConfig {
   };
   /** Resolved layered settings (permissions, sandbox, etc.). */
   settings: ResolvedSettings;
+  /** Settings-layer context retained for live TUI re-resolution. */
+  settingsContext?: {
+    overridePath?: string;
+    noSettings?: boolean;
+  };
   /** Retry configuration (from settings.json + env vars). */
   retry: RetryConfig;
   /** Thinking effort level (Anthropic adaptive thinking / output_config.effort). */

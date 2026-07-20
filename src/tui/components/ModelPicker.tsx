@@ -10,6 +10,20 @@ import { EFFORT_LEVELS, type EffortLevel, type EffortResult } from '../effort.js
 import { ByokWizard } from './ByokWizard.js';
 import { useDensityMetrics } from '../density.js';
 
+export type ProviderRemovalResult =
+  | {
+      ok: true;
+      providerId: string;
+      removedModelCount: number;
+      activeModel: string;
+      switched: boolean;
+      inheritedProviderRevealed: boolean;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
 interface ModelPickerProps {
   options: ModelPickerOption[];
   currentModel: string;
@@ -26,9 +40,14 @@ interface ModelPickerProps {
   onPick: (model: string, saveDefault: boolean) => { ok: boolean; error?: string } | void;
   onPickEffort: (level: EffortLevel) => EffortResult;
   onSaveProvider: (request: ProviderSaveRequest) => { ok: boolean; error?: string };
+  removableProviderIds: ReadonlySet<string>;
+  removableProviderModelCounts?: ReadonlyMap<string, number>;
+  onRemoveProvider: (providerId: string) => ProviderRemovalResult;
   onProviderSaved?: (request: ProviderSaveRequest) => void;
   onCancel: () => void;
 }
+
+const EMPTY_PROVIDER_IDS: ReadonlySet<string> = new Set();
 
 export function ModelPicker({
   options,
@@ -46,6 +65,9 @@ export function ModelPicker({
   onPick,
   onPickEffort,
   onSaveProvider,
+  removableProviderIds = EMPTY_PROVIDER_IDS,
+  removableProviderModelCounts,
+  onRemoveProvider,
   onProviderSaved,
   onCancel,
 }: ModelPickerProps) {
@@ -56,8 +78,14 @@ export function ModelPicker({
   const [onEffort, setOnEffort] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
   const [refreshing, setRefreshing] = useState<string>();
+  const [removal, setRemoval] = useState<{
+    providerId: string;
+    modelCount: number;
+    active: boolean;
+  }>();
   const [error, setError] = useState<string>();
   const pickedRef = useRef(false);
+  const removalInFlightRef = useRef(false);
   const filteredOptions = useMemo(() => {
     const query = filter.trim().toLowerCase();
     if (!query) return options;
@@ -136,6 +164,33 @@ export function ModelPicker({
   useInput(
     (input, key) => {
       if (showWizard) return;
+      if (removal) {
+        if (key.escape || input.toLowerCase() === 'n') {
+          removalInFlightRef.current = false;
+          setRemoval(undefined);
+          setError(undefined);
+          return;
+        }
+        if (key.return || input.toLowerCase() === 'y') {
+          if (removalInFlightRef.current) return;
+          removalInFlightRef.current = true;
+          let result: ProviderRemovalResult;
+          try {
+            result = onRemoveProvider(removal.providerId);
+          } catch (caught) {
+            result = {
+              ok: false,
+              error: caught instanceof Error ? caught.message : 'Could not remove the provider.',
+            };
+          }
+          if (!result.ok) {
+            removalInFlightRef.current = false;
+            setError(result.error);
+          }
+          return;
+        }
+        return;
+      }
       if (key.escape) {
         if (filter) {
           setFilter('');
@@ -211,6 +266,25 @@ export function ModelPicker({
         if (providerId && !refreshing) void refreshProvider(providerId);
         return;
       }
+      if (key.meta && input === 'd' && selected !== addIndex) {
+        const option = filteredOptions[selected];
+        const providerId = option?.providerId;
+        if (!providerId) return;
+        if (!removableProviderIds.has(providerId)) {
+          setError('Only workspace-local BYOK providers can be removed.');
+          return;
+        }
+        const provider = providers[providerId];
+        setRemoval({
+          providerId,
+          modelCount:
+            removableProviderModelCounts?.get(providerId) ??
+            (provider ? Object.keys(provider.models).length : 0),
+          active: currentModel.startsWith(`${providerId}/`),
+        });
+        setError(undefined);
+        return;
+      }
       if (input && !key.ctrl && !key.meta) {
         setFilter((value) => value + input);
         setSelected(0);
@@ -236,6 +310,31 @@ export function ModelPicker({
     );
   }
 
+  if (removal) {
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
+        <Text bold color={theme.error}>
+          Remove BYOK provider?
+        </Text>
+        <Text>
+          Provider: <Text bold>{removal.providerId}</Text>
+        </Text>
+        <Text>Models: {removal.modelCount}</Text>
+        <Text>Settings: .book/settings.local.json</Text>
+        <Text color={theme.warning ?? theme.subtle}>Removes credentials and all saved models.</Text>
+        <Text color={theme.subtle}>
+          {removal.active
+            ? 'Active provider: switches to next configured default.'
+            : 'Active model: remains unchanged.'}
+        </Text>
+        <Text color={theme.subtle} dimColor>
+          Enter or Y remove · N or Esc cancel
+        </Text>
+        {error && <Text color={theme.error}>✕ {error}</Text>}
+      </Box>
+    );
+  }
+
   const effortIndex = currentEffort ? effortLevels.indexOf(currentEffort) : -1;
   const displayedEffort = effortIndex >= 0 ? effortLevels[effortIndex] : effortLevels[0];
   const windowStart = Math.max(
@@ -246,6 +345,10 @@ export function ModelPicker({
     ...filteredOptions.map((option) => ({ type: 'model' as const, option })),
     { type: 'add' as const },
   ].slice(windowStart, windowStart + maxVisibleModels);
+  const selectedOption = selected === addIndex ? undefined : filteredOptions[selected];
+  const selectedProviderRemovable = Boolean(
+    selectedOption?.providerId && removableProviderIds.has(selectedOption.providerId),
+  );
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
@@ -288,8 +391,12 @@ export function ModelPicker({
       <Box flexDirection="column">
         <Text color={theme.subtle} dimColor>
           {compact || !density.showOptionalHelp
-            ? '↑↓ select · Enter save · Alt+S session · Esc cancel'
-            : 'Type filter · ↑↓ select · Enter save · Alt+A add BYOK · Alt+S session · Esc cancel'}
+            ? selectedProviderRemovable
+              ? '↑↓ select · Enter save · Alt+D remove · Esc cancel'
+              : '↑↓ select · Enter save · Alt+S session · Esc cancel'
+            : selectedProviderRemovable
+              ? 'Type filter · ↑↓ select · Enter save · Alt+A add BYOK · Alt+D remove provider · Alt+S session · Esc cancel'
+              : 'Type filter · ↑↓ select · Enter save · Alt+A add BYOK · Alt+S session · Esc cancel'}
         </Text>
         {refreshing && <Text color={theme.brand}>Refreshing {refreshing} models…</Text>}
         {onEffort && (

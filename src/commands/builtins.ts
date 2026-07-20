@@ -33,7 +33,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: 'help', description: 'Toggle help' },
   { name: 'task', description: 'Add a task' },
   { name: 'theme', description: 'Switch color theme', argumentHint: '[dark|light|auto|name]' },
-  { name: 'model', description: 'Switch AI model' },
+  { name: 'model', description: 'Switch models and manage BYOK providers' },
   {
     name: 'effort',
     description: 'Set thinking effort',

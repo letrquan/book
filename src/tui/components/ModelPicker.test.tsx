@@ -12,6 +12,14 @@ function withTheme(children: React.ReactElement): React.ReactElement {
 function renderPicker(overrides: Partial<React.ComponentProps<typeof ModelPicker>> = {}) {
   const onPick = vi.fn(() => ({ ok: true }));
   const onSaveProvider = vi.fn(() => ({ ok: true }));
+  const onRemoveProvider = vi.fn((providerId: string) => ({
+    ok: true as const,
+    providerId,
+    removedModelCount: 1,
+    activeModel: 'built-in',
+    switched: false,
+    inheritedProviderRevealed: false,
+  }));
   const view = render(
     withTheme(
       <ModelPicker
@@ -41,12 +49,14 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof ModelPicker
         onPick={onPick}
         onPickEffort={vi.fn(() => ({ ok: true }))}
         onSaveProvider={onSaveProvider}
+        removableProviderIds={new Set(['gateway'])}
+        onRemoveProvider={onRemoveProvider}
         onCancel={vi.fn()}
         {...overrides}
       />,
     ),
   );
-  return { view, onPick, onSaveProvider };
+  return { view, onPick, onSaveProvider, onRemoveProvider };
 }
 
 async function write(view: ReturnType<typeof render>, value: string) {
@@ -130,5 +140,103 @@ describe('ModelPicker', () => {
     await write(view, '\x1b[C');
 
     expect(onPickEffort).toHaveBeenCalledWith('high');
+  });
+
+  it('opens provider-level confirmation for a workspace-local BYOK row', async () => {
+    const { view } = renderPicker({
+      currentModel: 'gateway/custom',
+      removableProviderModelCounts: new Map([['gateway', 3]]),
+      providers: {
+        gateway: {
+          type: 'openai',
+          models: { custom: {}, second: {}, third: {}, inherited: {} },
+        },
+      },
+    });
+
+    await write(view, '\x1b[B');
+    await write(view, '\x1bd');
+
+    const frame = view.lastFrame();
+    expect(frame).toContain('Remove BYOK provider?');
+    expect(frame).toContain('Provider: gateway');
+    expect(frame).toContain('Models: 3');
+    expect(frame).toContain('.book/settings.local.json');
+    expect(frame).toContain('Removes credentials and all saved models.');
+    expect(frame).toContain('Active provider: switches to next configured default.');
+    expect(frame).not.toContain('Filter:');
+  });
+
+  it.each(['\x1b', 'n'])('cancels confirmation with %j without removing', async (key) => {
+    const { view, onRemoveProvider } = renderPicker();
+    await write(view, '\x1b[B');
+    await write(view, '\x1bd');
+    await write(view, key);
+
+    expect(onRemoveProvider).not.toHaveBeenCalled();
+    expect(view.lastFrame()).toContain('Switch model');
+    expect(view.lastFrame()).toContain('Custom  gateway');
+  });
+
+  it.each(['\r', 'y'])('confirms removal exactly once with %j', async (key) => {
+    const { view, onRemoveProvider } = renderPicker();
+    await write(view, '\x1b[B');
+    await write(view, '\x1bd');
+    await write(view, key);
+    await write(view, key);
+
+    expect(onRemoveProvider).toHaveBeenCalledTimes(1);
+    expect(onRemoveProvider).toHaveBeenCalledWith('gateway');
+  });
+
+  it('keeps confirmation open with an inline error after removal fails', async () => {
+    const onRemoveProvider = vi.fn(() => ({ ok: false as const, error: 'settings are read-only' }));
+    const { view } = renderPicker({ onRemoveProvider });
+    await write(view, '\x1b[B');
+    await write(view, '\x1bd');
+    await write(view, '\r');
+
+    expect(view.lastFrame()).toContain('Remove BYOK provider?');
+    expect(view.lastFrame()).toContain('settings are read-only');
+  });
+
+  it('does nothing destructive on a built-in model', async () => {
+    const { view, onRemoveProvider } = renderPicker();
+    await write(view, '\x1bd');
+
+    expect(onRemoveProvider).not.toHaveBeenCalled();
+    expect(view.lastFrame()).toContain('Filter: (type to filter)');
+    expect(view.lastFrame()).not.toContain('Remove BYOK provider?');
+  });
+
+  it('explains that inherited custom providers are read-only', async () => {
+    const { view, onRemoveProvider } = renderPicker({ removableProviderIds: new Set() });
+    await write(view, '\x1b[B');
+    await write(view, '\x1bd');
+
+    expect(onRemoveProvider).not.toHaveBeenCalled();
+    expect(view.lastFrame()).toContain('Only workspace-local BYOK providers can be removed.');
+  });
+
+  it('restores the same filter and selected row after cancellation', async () => {
+    const { view } = renderPicker();
+    await write(view, 'gateway');
+    await write(view, '\x1bd');
+    await write(view, 'n');
+
+    const frame = view.lastFrame();
+    expect(frame).toContain('Filter: gateway');
+    expect(frame).toContain('❯ Custom  gateway');
+  });
+
+  it('shows wide and compact removal shortcuts only for removable rows', async () => {
+    const wide = renderPicker();
+    await write(wide.view, '\x1b[B');
+    expect(wide.view.lastFrame()).toContain('Alt+D remove provider');
+    cleanup();
+
+    const compact = renderPicker({ compact: true });
+    await write(compact.view, '\x1b[B');
+    expect(compact.view.lastFrame()).toContain('Alt+D remove');
   });
 });

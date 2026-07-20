@@ -2,11 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { resolveSettings } from '../settings-loader.js';
 import {
   persistSettingLocal,
   persistSettingsLocal,
   persistPermissionRuleLocal,
   readSettingsLocal,
+  removeProviderLocal,
 } from './persist.js';
 
 let dir: string;
@@ -95,5 +97,146 @@ describe('persistPermissionRuleLocal', () => {
     expect(perms.deny).toEqual(['Bash(rm -rf)']);
     expect(perms.ask).toEqual(['WebFetch']);
     expect(perms.allow).toBeUndefined();
+  });
+});
+
+describe('removeProviderLocal', () => {
+  function writeLocal(settings: Record<string, unknown>): string {
+    persistSettingsLocal(dir, settings);
+    return join(dir, '.book', 'settings.local.json');
+  }
+
+  it('removes the complete provider while preserving siblings and unrelated settings', () => {
+    const localPath = writeLocal({
+      model: 'gateway/custom',
+      maxTurns: 42,
+      theme: 'light',
+      provider: {
+        gateway: {
+          type: 'openai',
+          baseURL: 'https://gateway.test/v1',
+          apiKey: 'top-secret',
+          models: {
+            custom: { label: 'Custom', maxOutputTokens: 8192 },
+            second: { contextWindow: 128000 },
+          },
+        },
+        other: {
+          type: 'anthropic',
+          apiKey: 'other-secret',
+          models: { model: { label: 'Other' } },
+        },
+      },
+    });
+
+    expect(removeProviderLocal(dir, 'gateway')).toEqual({
+      ok: true,
+      providerId: 'gateway',
+      removedModelCount: 2,
+      localDefaultCleared: true,
+      localProviderExisted: true,
+    });
+    expect(readSettingsLocal(dir)).toEqual({
+      maxTurns: 42,
+      theme: 'light',
+      provider: {
+        other: {
+          type: 'anthropic',
+          apiKey: 'other-secret',
+          models: { model: { label: 'Other' } },
+        },
+      },
+    });
+    const serialized = readFileSync(localPath, 'utf-8');
+    expect(serialized).not.toContain('top-secret');
+    expect(serialized).not.toContain('Custom');
+    expect(serialized.endsWith('\n')).toBe(true);
+  });
+
+  it('prunes the provider registry when the last local provider is removed', () => {
+    writeLocal({ provider: { gateway: { type: 'openai', models: { custom: {} } } } });
+
+    expect(removeProviderLocal(dir, 'gateway').ok).toBe(true);
+    expect(readSettingsLocal(dir)).toEqual({});
+  });
+
+  it('keeps a local model selection that references another provider', () => {
+    writeLocal({
+      model: 'other/model',
+      provider: {
+        gateway: { type: 'openai', models: { custom: {} } },
+        other: { type: 'openai', models: { model: {} } },
+      },
+    });
+
+    const result = removeProviderLocal(dir, 'gateway');
+    expect(result.ok && result.localDefaultCleared).toBe(false);
+    expect(readSettingsLocal(dir).model).toBe('other/model');
+  });
+
+  it('rejects a missing local provider without rewriting the file', () => {
+    const localPath = writeLocal({
+      model: 'project-model',
+      provider: { other: { type: 'openai', models: { model: {} } } },
+    });
+    const before = readFileSync(localPath, 'utf-8');
+
+    const result = removeProviderLocal(dir, 'gateway');
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: false,
+        localProviderExisted: false,
+        error: expect.stringContaining('not configured'),
+      }),
+    );
+    expect(readFileSync(localPath, 'utf-8')).toBe(before);
+  });
+
+  it('returns an error for an invalid workspace and does not throw', () => {
+    const badWorkspace = join(dir, 'not-a-directory');
+    writeFileSync(badWorkspace, 'not a directory');
+
+    expect(removeProviderLocal(badWorkspace, 'gateway')).toEqual(
+      expect.objectContaining({ ok: false, localProviderExisted: false }),
+    );
+  });
+
+  it('reveals a lower-layer provider and removes stale local selection on restart', () => {
+    writeLocal({
+      model: 'gateway/local',
+      provider: {
+        gateway: {
+          type: 'openai',
+          apiKey: 'local-key',
+          models: { local: { label: 'Local' } },
+        },
+      },
+    });
+    writeFileSync(
+      join(dir, '.book', 'settings.json'),
+      JSON.stringify(
+        {
+          model: 'project-model',
+          provider: {
+            gateway: {
+              type: 'openai',
+              apiKey: 'project-key',
+              models: { inherited: { label: 'Inherited' } },
+            },
+          },
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+
+    expect(removeProviderLocal(dir, 'gateway').ok).toBe(true);
+    const restarted = resolveSettings(dir);
+
+    expect(restarted.model).toBe('project-model');
+    expect(restarted.provider.gateway.apiKey).toBe('project-key');
+    expect(restarted.provider.gateway.models).toEqual({ inherited: { label: 'Inherited' } });
+    expect(readSettingsLocal(dir)).toEqual({});
   });
 });

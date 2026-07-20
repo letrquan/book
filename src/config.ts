@@ -155,6 +155,10 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     animation: legacy?.animation || { typewriterSpeed: 3, spinnerStyle: 'braille' },
     accessibility: legacy?.accessibility || { screenReader: false, reducedMotion: false },
     settings,
+    settingsContext: {
+      overridePath: settingsOverridePath,
+      noSettings,
+    },
     retry,
     memoryContext,
     effort: defaultEffort,
