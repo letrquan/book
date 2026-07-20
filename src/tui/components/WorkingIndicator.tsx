@@ -1,4 +1,5 @@
 import { Box, Text } from 'ink';
+import { useEffect, useState } from 'react';
 import type {
   Message,
   PermissionResult,
@@ -9,6 +10,7 @@ import type {
 } from '../../types.js';
 import { useAnimatedProgress, useGradientSpinner } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
+import { deriveWorkingActivity } from '../working-activity.js';
 import { floatingFrameMetrics } from './chrome.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 
@@ -48,67 +50,37 @@ interface WorkingIndicatorProps {
   screenReader?: boolean;
 }
 
-function retryText(
-  phase: RetryPhase,
-  attempt: number,
-  max: number,
-  countdownMs: number,
-): string | null {
-  if (phase === 'none') return null;
+function useElapsedSeconds(active: boolean, disabled: boolean): number {
+  const [seconds, setSeconds] = useState(0);
 
-  const countdown = Math.max(0, Math.ceil(countdownMs / 1000));
-  const attemptText = max > 0 ? `attempt ${attempt}/${max}` : `attempt ${attempt}`;
+  useEffect(() => {
+    setSeconds(0);
+    if (!active || disabled) return;
 
-  if (phase === 'stalled') {
-    return `Waiting for API response · retrying in ${countdown}s`;
-  }
-  if (phase === 'tool') {
-    return `Waiting for tool response · retrying in ${countdown}s`;
-  }
-  if (phase === 'watchdog') {
-    return `Retrying watchdog · ${attemptText}`;
-  }
-  return `Retrying in ${countdown}s · ${attemptText}`;
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      setSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [active, disabled]);
+
+  return seconds;
 }
 
-function hasPendingToolResult(message: Message | undefined): boolean {
-  if (!message?.toolCalls?.length) return false;
-  const completed = new Set((message.toolResults ?? []).map((result) => result.toolCallId));
-  return message.toolCalls.some((call) => !completed.has(call.id));
-}
+function fitActivityLine(
+  label: string,
+  elapsed: string,
+  hint: string,
+  maxWidth: number,
+): { label: string; suffix: string } {
+  let suffix = `${elapsed}${hint}`;
+  const minimumLabelWidth = Math.min(8, maxWidth);
 
-function workingText({
-  isThinking,
-  isCompacting,
-  compactTrigger,
-  messages,
-  streamingMessageId,
-  pendingPermission,
-  pendingPlanApproval,
-  pendingUserQuestion,
-  retryPhase = 'none',
-  retryAttempt = 0,
-  retryMax = 0,
-  retryCountdownMs = 0,
-}: Omit<WorkingIndicatorProps, 'terminalWidth' | 'reducedMotion' | 'screenReader'>): string | null {
-  const retry = retryText(retryPhase, retryAttempt, retryMax, retryCountdownMs);
-  if (retry) return retry;
-  if (isCompacting) {
-    return compactTrigger === 'auto' ? 'Auto-compacting…' : 'Compacting…';
-  }
-  if (!isThinking) return null;
-  if (pendingPlanApproval) return 'Waiting for plan approval';
-  if (pendingUserQuestion) return 'Waiting for your answer';
-  if (pendingPermission) return 'Waiting for permission';
+  if (displayWidth(suffix) > maxWidth - minimumLabelWidth) suffix = hint;
+  if (displayWidth(suffix) > maxWidth - minimumLabelWidth) suffix = '';
 
-  const activeMessage = streamingMessageId
-    ? messages.find((message) => message.id === streamingMessageId)
-    : undefined;
-
-  if (hasPendingToolResult(activeMessage)) return 'Waiting for tool response';
-  if (activeMessage?.toolCalls?.length && !activeMessage.content) return 'Building tool call';
-  if (activeMessage?.content) return 'Generating';
-  return 'Thinking';
+  const labelWidth = Math.max(1, maxWidth - displayWidth(suffix));
+  return { label: truncateDisplay(label, labelWidth), suffix };
 }
 
 export function WorkingIndicator({
@@ -130,40 +102,45 @@ export function WorkingIndicator({
   screenReader = false,
 }: WorkingIndicatorProps) {
   const theme = useTheme();
-  const label = workingText({
+  const motionDisabled = reducedMotion || screenReader;
+  const shouldTrackElapsed =
+    isThinking &&
+    !isCompacting &&
+    retryPhase === 'none' &&
+    !pendingPermission &&
+    !pendingPlanApproval &&
+    !pendingUserQuestion;
+  const elapsedSeconds = useElapsedSeconds(shouldTrackElapsed, motionDisabled);
+  const activity = deriveWorkingActivity({
     isThinking,
     isCompacting,
     compactTrigger,
     messages,
     streamingMessageId,
-    pendingPermission,
-    pendingPlanApproval,
-    pendingUserQuestion,
+    pendingPermission: Boolean(pendingPermission),
+    pendingPlanApproval: Boolean(pendingPlanApproval),
+    pendingUserQuestion: Boolean(pendingUserQuestion),
     retryPhase,
     retryAttempt,
     retryMax,
     retryCountdownMs,
+    elapsedSeconds,
   });
 
   const width = Math.max(20, Math.floor(terminalWidth));
   const frame = floatingFrameMetrics(width);
   const horizontalInset = frame.marginX + 1;
   const contentWidth = Math.max(8, width - horizontalInset * 2);
-  const motionDisabled = reducedMotion || screenReader;
   const showCompactProgress =
     (isCompacting || compactComplete) && retryPhase === 'none' && !motionDisabled;
   const compactProgress = useAnimatedProgress(isCompacting, 2_400, motionDisabled);
   const spinner = useGradientSpinner(
-    Boolean(label) &&
-      !showCompactProgress &&
-      !motionDisabled &&
-      !pendingPlanApproval &&
-      !pendingUserQuestion,
+    Boolean(activity) && !showCompactProgress && !motionDisabled && !activity?.blocked,
     'dots',
     motionDisabled,
   );
 
-  if (!label && !showCompactProgress) return null;
+  if (!activity && !showCompactProgress) return null;
   if (showCompactProgress) {
     const displayProgress = compactComplete ? 100 : compactProgress;
     const compactLabel = compactComplete
@@ -217,14 +194,33 @@ export function WorkingIndicator({
         : isThinking || isCompacting
           ? ' · Esc to cancel'
           : '';
-  const text = truncateDisplay(`${label}${hint}`, Math.max(1, contentWidth - 2));
+  const elapsed = shouldTrackElapsed && !motionDisabled ? ` · ${elapsedSeconds}s` : '';
+  const line = fitActivityLine(activity?.label ?? '', elapsed, hint, Math.max(1, contentWidth - 2));
+  const indicator = activity?.blocked ? '◇' : spinner.frame;
+  const indicatorColor =
+    activity?.tone === 'warning'
+      ? theme.warning
+      : activity?.tone === 'waiting'
+        ? theme.permission
+        : spinner.color;
+  const labelColor =
+    activity?.tone === 'warning'
+      ? theme.warning
+      : activity?.tone === 'waiting'
+        ? theme.permission
+        : theme.text;
 
   return (
     <Box paddingX={horizontalInset} width={width}>
-      <Text color={spinner.color}>{spinner.frame} </Text>
-      <Text color={retryPhase !== 'none' ? theme.warning : theme.subtle} dimColor>
-        {text}
+      <Text color={indicatorColor}>{indicator} </Text>
+      <Text color={labelColor} dimColor={activity?.tone !== 'normal'}>
+        {line.label}
       </Text>
+      {line.suffix ? (
+        <Text color={activity?.tone === 'warning' ? theme.warning : theme.subtle} dimColor>
+          {line.suffix}
+        </Text>
+      ) : null}
     </Box>
   );
 }
