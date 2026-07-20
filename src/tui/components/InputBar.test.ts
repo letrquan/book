@@ -431,6 +431,36 @@ describe('InputBar command menu', () => {
 
     expect(stripAnsi(view.lastFrame())).toContain('/effort [low|medium|high|xhigh|max]');
   });
+
+  it('includes /rewind in slash-command autocomplete', async () => {
+    const view = render(inputBar(() => {}));
+    await tick();
+
+    view.stdin.write('/rew');
+    await tick(20);
+
+    expect(stripAnsi(view.lastFrame())).toContain('/rewind');
+  });
+
+  it('restores a keyed rewind draft and submits the displayed prompt', async () => {
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value)));
+    await tick();
+    view.stdin.write('temporary draft');
+    await tick(20);
+
+    view.rerender(
+      inputBar((value) => submitted.push(value), {
+        draftRestore: { key: 1, value: 'restored prompt' },
+      }),
+    );
+    await tick(20);
+
+    expect(stripAnsi(view.lastFrame())).toContain('restored prompt');
+    view.stdin.write('\r');
+    await tick(20);
+    expect(submitted).toEqual(['restored prompt']);
+  });
 });
 
 describe('InputBar @ file mention menu', () => {

@@ -18,6 +18,11 @@ import type {
   CompactTrigger,
   LocalCommandDisplay,
   CompactBoundary,
+  RewindAction,
+  RewindRecordData,
+  RewindSnapshotStoreInterface,
+  RewindTarget,
+  TurnCheckpointRecordData,
   UserQuestionRequest,
   UserQuestionResponse,
 } from '../../types.js';
@@ -177,6 +182,8 @@ export function cancelUserQuestionRequests(
 
 export interface UseAgentSessionOptions extends SessionBootstrap {
   store?: SessionStoreInterface;
+  timelineStore?: SessionStoreInterface;
+  snapshotStore?: RewindSnapshotStoreInterface;
 }
 
 function providerIdFromSelection(selection: string): string | undefined {
@@ -276,8 +283,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const [compactBoundaries, setCompactBoundaries] = useState<CompactBoundary[]>(
     session.compactBoundaries ?? [],
   );
+  const [rewindTargets, setRewindTargets] = useState<RewindTarget[]>(session.rewindTargets ?? []);
   const [isThinking, setIsThinking] = useState(false);
   const [isCompacting, setIsCompacting] = useState(false);
+  const [isRewinding, setIsRewinding] = useState(false);
   const [compactUi, setCompactUi] = useState<CompactUiState | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -330,7 +339,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // Synchronous single-flight lock for send()/compact(). isThinking is UI-only
   // and may lag a render; this ref is the authoritative gate.
   const sendInFlightRef = useRef(false);
-  const operationInFlightRef = useRef<'send' | 'compact' | null>(null);
+  const operationInFlightRef = useRef<'send' | 'compact' | 'rewind' | null>(null);
   const compactAbortRef = useRef<AbortController | null>(null);
   const hostUsageRef = useRef<Usage | null>(null);
   const lastHostCompactAttemptRef = useRef<string | null>(null);
@@ -338,6 +347,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const pendingPermissionRef = useRef<PendingPermission | null>(pendingPermission);
   const pendingPlanApprovalRef = useRef<PendingPlanApproval | null>(pendingPlanApproval);
   const pendingUserQuestionsRef = useRef<PendingUserQuestion[]>(pendingUserQuestions);
+  const timelineStore = session.timelineStore ?? session.store;
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -437,6 +447,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       transcript: Message[],
       contextHistory: Message[] = transcript,
       boundaries: CompactBoundary[] = [],
+      targets: RewindTarget[] = [],
     ) => {
       sessionGenerationRef.current++;
       settlePermission('deny', 'session-reset');
@@ -457,6 +468,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setSessionName(nextName);
       setMessages(transcript);
       setCompactBoundaries(boundaries);
+      setRewindTargets(targets);
       setIsThinking(false);
       setStreamingMessageId(null);
       setError(null);
@@ -502,12 +514,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
       const nextId = session.store
         ? session.store.create({ cwd: liveConfig.workspace })
-        : crypto.randomUUID();
+        : timelineStore
+          ? timelineStore.create({ cwd: liveConfig.workspace })
+          : crypto.randomUUID();
+      if (session.store && timelineStore && timelineStore !== session.store) {
+        timelineStore.create({ id: nextId, cwd: liveConfig.workspace });
+      }
       lifecycleEndedRef.current = false;
       resetConversationState(nextId, undefined, []);
       await runSessionStart(liveConfigRef.current, nextId, 'clear');
     },
-    [endCurrentSession, liveConfig.workspace, resetConversationState, session.store],
+    [endCurrentSession, liveConfig.workspace, resetConversationState, session.store, timelineStore],
   );
 
   const resumeConversation = useCallback(
@@ -530,6 +547,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         loaded.transcript,
         loaded.contextHistory,
         loaded.compactBoundaries,
+        loaded.rewindTargets,
       );
       await runSessionStart(liveConfigRef.current, selected.id, 'resume');
     },
@@ -560,7 +578,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         checkpointVersion: 2,
         timestamp,
       };
-      if (session.store) {
+      if (timelineStore) {
         const data: CompactRecordData = {
           version: 2,
           compactId: result.compactId,
@@ -581,7 +599,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           degraded: result.degraded,
           warning: result.warning,
         };
-        session.store.append(opts.sessionId, {
+        timelineStore.append(opts.sessionId, {
           type: 'compact',
           eventId: result.compactId,
           timestamp,
@@ -598,7 +616,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         focus: opts.focus,
       });
     },
-    [session.store],
+    [timelineStore],
   );
 
   const send = useCallback(
@@ -632,11 +650,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         mode,
         hasCommandContext: !!commandContext,
       });
-
-      const contextMessage = expandShellCommands(
-        expandAtMentions(userMessage, liveConfig.workspace),
-        liveConfig.workspace,
-      );
 
       // Cross-turn auto-compact before appending the new user message.
       const contextLimit = resolveContextLimit(liveConfig);
@@ -695,27 +708,69 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       // assistant message that we will stream into. Prior messages are never
       // touched, so they stay visible (scrolled above) while the reply streams.
       const history = contextHistoryRef.current;
-      const userMsg = makeMessage(
-        'user',
-        userMessage,
-        contextMessage === userMessage ? undefined : contextMessage,
-        true,
-      );
+      const userMsg = makeMessage('user', userMessage, undefined, true);
       userMsg.kind = 'conversation';
-      userMsg.fileObservations = collectAtMentionObservations(
-        userMessage,
-        liveConfig.workspace,
-        userMsg.id,
-      );
-      liveConfig.fileObservationLedger ??= new Map();
-      for (const observation of userMsg.fileObservations) {
-        liveConfig.fileObservationLedger.set(
-          observationKey(observation.workspaceId, observation.path),
-          observation,
+      const checkpointId = crypto.randomUUID();
+      const checkpointTimestamp = Date.now();
+      const capture = session.snapshotStore?.capture() ?? {
+        ok: false as const,
+        reason: 'Filesystem checkpoint storage is unavailable.',
+      };
+      const checkpoint = capture.ok
+        ? {
+            snapshotId: capture.manifest.id,
+            gitHead: capture.manifest.gitHead,
+            entryCount: capture.manifest.entries.length,
+            logicalBytes: capture.manifest.logicalBytes,
+          }
+        : {
+            gitHead: capture.gitHead,
+            codeUnavailableReason: capture.reason,
+          };
+      const rewindTarget: RewindTarget = {
+        id: checkpointId,
+        userEventId: userMsg.id,
+        prompt: userMessage,
+        timestamp: checkpointTimestamp,
+        ...checkpoint,
+        codeAvailable: capture.ok,
+      };
+
+      let contextMessage: string;
+      try {
+        timelineStore?.append(activeSessionId, {
+          type: 'turn_checkpoint',
+          eventId: checkpointId,
+          timestamp: checkpointTimestamp,
+          data: {
+            version: 1,
+            checkpointId,
+            userEventId: userMsg.id,
+            prompt: userMessage,
+            checkpoint,
+          } satisfies TurnCheckpointRecordData,
+        } satisfies SessionRecord);
+
+        // Expansion happens after the checkpoint so !cmd and @file side effects
+        // belong to the turn being rewound.
+        contextMessage = expandShellCommands(
+          expandAtMentions(userMessage, liveConfig.workspace),
+          liveConfig.workspace,
         );
-      }
-      if (session.store) {
-        session.store.append(activeSessionId, {
+        userMsg.contextContent = contextMessage === userMessage ? undefined : contextMessage;
+        userMsg.fileObservations = collectAtMentionObservations(
+          userMessage,
+          liveConfig.workspace,
+          userMsg.id,
+        );
+        liveConfig.fileObservationLedger ??= new Map();
+        for (const observation of userMsg.fileObservations) {
+          liveConfig.fileObservationLedger.set(
+            observationKey(observation.workspaceId, observation.path),
+            observation,
+          );
+        }
+        timelineStore?.append(activeSessionId, {
           type: 'user',
           eventId: userMsg.id,
           timestamp: userMsg.timestamp,
@@ -727,6 +782,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             fileObservations: userMsg.fileObservations,
           },
         } satisfies SessionRecord);
+        setRewindTargets((current) => [rewindTarget, ...current]);
+      } catch (preflightError) {
+        if (stillCurrent()) {
+          setError(
+            preflightError instanceof Error ? preflightError.message : String(preflightError),
+          );
+          sendInFlightRef.current = false;
+          if (operationInFlightRef.current === 'send') operationInFlightRef.current = null;
+        }
+        return;
       }
       const placeholder = makeMessage('assistant', '', undefined, true);
       streamingIdRef.current = placeholder.id;
@@ -752,16 +817,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       activeAccumulator.start();
       uiLog.event('accumulator:started', { flushIntervalMs: 16 });
 
-      const registry = createDefaultRegistry(
-        session.store
+      const registry = createDefaultRegistry({
+        agents: liveConfig.settings.agents.mode !== 'off',
+        ...(timelineStore
           ? {
               sessionHistory: {
-                store: session.store,
+                store: timelineStore,
                 sessionId: () => sessionIdRef.current,
               },
             }
-          : undefined,
-      );
+          : {}),
+      });
       const controller = new AbortController();
       abortRef.current = controller;
 
@@ -902,8 +968,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               return result;
             },
             onAssistantMessageComplete: (message) => {
-              if (!stillCurrent() || !session.store) return;
-              session.store.append(activeSessionId, {
+              if (!stillCurrent() || !timelineStore) return;
+              timelineStore.append(activeSessionId, {
                 type: 'assistant',
                 eventId: message.id,
                 timestamp: message.timestamp,
@@ -962,6 +1028,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             onPersistPermissionRule: (rule: string) => {
               persistPermissionRule(rule);
             },
+            onAgentEvent: () => {},
           },
           mode,
           {
@@ -983,6 +1050,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             allowedTools: commandContext?.allowedTools,
             modelOverride: commandContext?.modelOverride,
             commands: commandContext ? [commandContext.command] : undefined,
+            parentSessionId: activeSessionId,
           },
         );
         if (stillCurrent()) {
@@ -1026,8 +1094,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       mode,
       clearCountdown,
       finalizeStreamingMessages,
-      session.store,
+      timelineStore,
       commitCompactResult,
+      session.snapshotStore,
     ],
   );
 
@@ -1168,6 +1237,117 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [commitCompactResult],
   );
 
+  const getRewindTargets = useCallback((): RewindTarget[] => {
+    const currentGitHead = session.snapshotStore?.getCurrentGitHead();
+    return rewindTargets.map((target) => {
+      if (target.codeUnavailableReason) return { ...target, codeAvailable: false };
+      const manifest = target.snapshotId
+        ? session.snapshotStore?.getManifest(target.snapshotId)
+        : undefined;
+      const availability = !session.snapshotStore
+        ? { available: false, reason: 'Filesystem checkpoint storage is unavailable.' }
+        : !manifest
+          ? session.snapshotStore.getAvailability(target.snapshotId, target.gitHead)
+          : currentGitHead !== target.gitHead
+            ? {
+                available: false,
+                reason: 'Git HEAD changed since this prompt; rewind never moves HEAD or the index.',
+              }
+            : { available: true };
+      return {
+        ...target,
+        codeAvailable: availability.available,
+        codeUnavailableReason: availability.available ? undefined : availability.reason,
+      };
+    });
+  }, [rewindTargets, session.snapshotStore]);
+
+  const rewind = useCallback(
+    async (
+      targetId: string,
+      action: RewindAction,
+    ): Promise<{ ok: true; restoredPrompt?: string } | { ok: false; error: string }> => {
+      if (sendInFlightRef.current || operationInFlightRef.current) {
+        return { ok: false, error: 'Rewind is unavailable while another operation is active.' };
+      }
+      if (!timelineStore) {
+        return { ok: false, error: 'Rewind timeline storage is unavailable.' };
+      }
+      const target = getRewindTargets().find((candidate) => candidate.id === targetId);
+      if (!target) return { ok: false, error: 'The selected rewind target is no longer active.' };
+      if ((action === 'code' || action === 'both') && !target.codeAvailable) {
+        return {
+          ok: false,
+          error: target.codeUnavailableReason ?? 'Code rewind is unavailable for this prompt.',
+        };
+      }
+
+      operationInFlightRef.current = 'rewind';
+      setIsRewinding(true);
+      const activeSessionId = sessionIdRef.current;
+      let safetySnapshotId: string | undefined;
+      try {
+        if (action === 'code' || action === 'both') {
+          const restored = session.snapshotStore?.restore(target.snapshotId!);
+          if (!restored)
+            return { ok: false, error: 'Filesystem checkpoint storage is unavailable.' };
+          if (!restored.ok) {
+            return {
+              ok: false,
+              error: restored.rollbackError
+                ? `${restored.error} Rollback also failed: ${restored.rollbackError}`
+                : restored.error,
+            };
+          }
+          safetySnapshotId = restored.safetySnapshotId;
+        }
+
+        timelineStore.append(activeSessionId, {
+          type: 'rewind',
+          eventId: crypto.randomUUID(),
+          timestamp: Date.now(),
+          data: {
+            version: 1,
+            action,
+            targetId: target.id,
+            targetUserEventId: target.userEventId,
+          } satisfies RewindRecordData,
+        } satisfies SessionRecord);
+
+        if (action === 'conversation' || action === 'both') {
+          const loaded = timelineStore.load(activeSessionId);
+          resetConversationState(
+            activeSessionId,
+            sessionName,
+            loaded.transcript,
+            loaded.contextHistory,
+            loaded.compactBoundaries,
+            loaded.rewindTargets,
+          );
+        }
+        if (safetySnapshotId) session.snapshotStore?.discardManifest(safetySnapshotId);
+        return {
+          ok: true,
+          ...(action === 'code' ? {} : { restoredPrompt: target.prompt }),
+        };
+      } catch (rewindError) {
+        let rollbackMessage = '';
+        if (safetySnapshotId) {
+          const rollback = session.snapshotStore?.rollback(safetySnapshotId);
+          if (rollback && !rollback.ok) rollbackMessage = ` Rollback failed: ${rollback.error}`;
+        }
+        return {
+          ok: false,
+          error: `${rewindError instanceof Error ? rewindError.message : String(rewindError)}${rollbackMessage}`,
+        };
+      } finally {
+        if (operationInFlightRef.current === 'rewind') operationInFlightRef.current = null;
+        setIsRewinding(false);
+      }
+    },
+    [getRewindTargets, resetConversationState, session.snapshotStore, sessionName, timelineStore],
+  );
+
   const clear = useCallback(() => {
     // Abort + stop accumulator BEFORE wiping message state so no late flush
     // can resurrect content into a cleared conversation.
@@ -1182,6 +1362,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     contextHistoryRef.current = [];
     setMessages([]);
     setCompactBoundaries([]);
+    setRewindTargets([]);
     setError(null);
     setCurrentTurn(0);
     setUsage(null);
@@ -1240,8 +1421,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         kind: 'local' as const,
         localCommand,
       };
-      if (session.store) {
-        session.store.append(sessionIdRef.current, {
+      if (timelineStore) {
+        timelineStore.append(sessionIdRef.current, {
           type: 'local',
           eventId: msg.id,
           timestamp: msg.timestamp,
@@ -1254,7 +1435,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         return next;
       });
     },
-    [isThinking, session.store],
+    [isThinking, timelineStore],
   );
 
   // Switch the active model for the rest of the session, optionally persisting
@@ -1435,6 +1616,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     contextHistory: contextHistoryRef.current,
     isThinking,
     isCompacting,
+    isRewinding,
     compactUi,
     setCompactUi,
     streamingMessageId,
@@ -1470,6 +1652,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     resolveUserQuestion,
     cancel,
     compact,
+    rewind,
+    getRewindTargets,
     cycleMode,
     addLocalMessage,
     setModel,

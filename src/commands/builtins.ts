@@ -29,9 +29,16 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
     description: 'Summarize older turns',
     argumentHint: '[focus instructions]',
   },
+  { name: 'rewind', description: 'Restore conversation, workspace code, or both' },
   { name: 'exit', description: 'Exit book' },
   { name: 'help', description: 'Toggle help' },
   { name: 'task', description: 'Add a task' },
+  { name: 'agents', description: 'List managed agents' },
+  {
+    name: 'agent',
+    description: 'Inspect or control a managed agent',
+    argumentHint: '<id>|send <id> <message>|stop <id>|apply <id>',
+  },
   { name: 'theme', description: 'Switch color theme', argumentHint: '[dark|light|auto|name]' },
   { name: 'model', description: 'Switch models and manage BYOK providers' },
   {

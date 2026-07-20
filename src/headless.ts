@@ -254,13 +254,14 @@ export async function runHeadless(
         },
       } satisfies SessionRecord);
     }
+    const loopConfig: AgentConfig = {
+      ...config,
+      maxTurns: opts.maxTurns ?? config.maxTurns,
+      tasks: config.tasks,
+      backgroundShells: config.backgroundShells,
+    };
     const updated = await runAgentLoop(
-      {
-        ...config,
-        maxTurns: opts.maxTurns ?? config.maxTurns,
-        tasks: config.tasks,
-        backgroundShells: config.backgroundShells,
-      },
+      loopConfig,
       registry,
       expandedPrompt,
       contextHistory,
@@ -335,6 +336,9 @@ export async function runHeadless(
             emit({ type: 'user_question_result', request_id: request.id, response });
           }
           return response;
+        },
+        onAgentEvent: (event) => {
+          if (opts.outputFormat === 'stream-json') emit(event);
         },
         onHookEvent: opts.includeHookEvents
           ? (event, payload) => {
@@ -455,8 +459,10 @@ export async function runHeadless(
         userMessageTimestamp: userMessage.timestamp,
         userFileObservations: userMessage.fileObservations,
         manageSessionHooks: sessionId ? false : undefined,
+        parentSessionId: sessionId,
       },
     );
+    config.agentManager ??= loopConfig.agentManager;
     const priorIds = new Set(transcript.map((message) => message.id));
     transcript.push(
       ...updated.filter((message) => !priorIds.has(message.id) && message.role === 'assistant'),

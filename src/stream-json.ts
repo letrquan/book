@@ -15,6 +15,10 @@ export type StreamJsonEvent =
   | { type: 'tool_result'; tool_result?: unknown }
   | { type: 'user_question'; request?: unknown; status?: 'pending' | 'unavailable' }
   | { type: 'user_question_result'; request_id?: string; response?: unknown }
+  | { type: 'agent_start' | 'agent_update' | 'agent_result'; agent?: unknown }
+  | { type: 'agent_question'; agentId?: string; request?: unknown }
+  | { type: 'evidence_update'; evidence?: unknown }
+  | { type: 'agent_apply'; agentId?: string; evidenceId?: string; status?: string }
   | { type: 'error'; error?: string }
   | { type: 'result'; result?: unknown }
   | { type: 'done' };

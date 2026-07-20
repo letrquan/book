@@ -1,8 +1,10 @@
 import type { AgentConfig, Message, NestedToolObserver, UserQuestionHandler } from './types.js';
 import { runAgentLoop } from './agent/loop.js';
 import { applyModelDefaults, resolveModelProviderConfig } from './config.js';
-import { createRegistry } from './tools/registry.js';
+import { createDefaultRegistry } from './tools/registry.js';
 import type { SubagentDef } from './subagent-discovery.js';
+import { createCapabilityRegistry } from './agents/capabilities.js';
+import { runCompact, usagePressureTokens } from './agent/compact.js';
 
 export { discoverAgents, type SubagentDef } from './subagent-discovery.js';
 
@@ -11,7 +13,8 @@ export { discoverAgents, type SubagentDef } from './subagent-discovery.js';
  *
  * The subagent starts with an empty history, sees only its own system prompt
  * (the agent body), and can only use tools in its allowedTools list. When
- * allowedTools is empty, all tools are available.
+ * Missing or empty allowedTools denies all tools; `*` explicitly inherits all
+ * non-lifecycle parent tools.
  *
  * @returns The final assistant message content, or an error string.
  */
@@ -19,7 +22,7 @@ export async function runSubagent(
   def: SubagentDef,
   prompt: string,
   config: AgentConfig,
-  fullRegistry = createRegistry(),
+  fullRegistry = createDefaultRegistry(),
   options?: {
     signal?: AbortSignal;
     parentToolTraceId?: string;
@@ -28,23 +31,13 @@ export async function runSubagent(
     agentPath?: string[];
   },
 ): Promise<{ content: string; error?: string }> {
-  // Build the subagent's restricted registry if tools are specified.
-  let registry = fullRegistry;
-  if (def.allowedTools.length > 0) {
-    const allowed = new Set(def.allowedTools.map((t) => t.split('(')[0].trim()));
-    registry = createRegistry();
-    for (const tool of fullRegistry.getDefinitions()) {
-      if (allowed.has(tool.name) || tool.name === 'AskUserQuestion') {
-        registry.register(tool);
-      }
-    }
-  }
+  const registry = createCapabilityRegistry(fullRegistry, def.allowedTools);
 
   // Build a subagent-specific config with overrides.
   const baseConfig: AgentConfig = {
     ...config,
     maxTurns: def.maxTurns,
-    autoCompactEnabled: false, // subagents are short-lived, no compaction needed
+    autoCompactEnabled: true,
   };
   const subConfig = applyModelDefaults(
     def.model ? resolveModelProviderConfig(baseConfig, def.model) : baseConfig,
@@ -60,7 +53,7 @@ export async function runSubagent(
     const updatedHistory = await runAgentLoop(
       subConfig,
       registry,
-      `${def.body}\n\n## Task\n${prompt}`,
+      prompt,
       history,
       {
         onText: (text) => {
@@ -75,6 +68,12 @@ export async function runSubagent(
         onDone: () => {},
         onPermissionRequired: async () => 'deny',
         onUsage: () => {},
+        onCompact: (compactHistory, usage) =>
+          runCompact(subConfig, compactHistory, {
+            trigger: 'auto',
+            preContextTokens: usagePressureTokens(usage),
+            signal: options?.signal,
+          }),
         onUserQuestionRequired: options?.onUserQuestionRequired,
       },
       'bypassPermissions', // subagents run with bypass to avoid interactive prompts
@@ -85,6 +84,8 @@ export async function runSubagent(
         nestedToolObserver: options?.nestedToolObserver,
         parentToolTraceId: options?.parentToolTraceId,
         agentPath: options?.agentPath,
+        systemPromptAppend: def.body,
+        hideAgents: true,
       },
     );
 

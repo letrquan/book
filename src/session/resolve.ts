@@ -1,4 +1,10 @@
-import type { CompactBoundary, Message, SessionMeta, SessionStoreInterface } from '../types.js';
+import type {
+  CompactBoundary,
+  Message,
+  RewindTarget,
+  SessionMeta,
+  SessionStoreInterface,
+} from '../types.js';
 import { normalizeWorkspace } from './store.js';
 
 export type SessionStartSource = 'startup' | 'resume' | 'clear';
@@ -10,6 +16,8 @@ export interface SessionBootstrap {
   transcript?: Message[];
   contextHistory?: Message[];
   compactBoundaries?: CompactBoundary[];
+  rewindTargets?: RewindTarget[];
+  activeEventIds?: string[];
   source: SessionStartSource;
   persisted: boolean;
   created: boolean;
@@ -91,6 +99,8 @@ export function resolveSessionBootstrap(
       transcript: [],
       contextHistory: [],
       compactBoundaries: [],
+      rewindTargets: [],
+      activeEventIds: [],
       source: 'startup',
       persisted: false,
       created: true,
@@ -117,6 +127,8 @@ export function resolveSessionBootstrap(
         transcript: [],
         contextHistory: [],
         compactBoundaries: [],
+        rewindTargets: [],
+        activeEventIds: [],
         source: 'startup',
         persisted: true,
         created: true,
@@ -140,6 +152,8 @@ export function resolveSessionBootstrap(
         transcript: loaded.transcript,
         contextHistory: loaded.contextHistory,
         compactBoundaries: loaded.compactBoundaries,
+        rewindTargets: loaded.rewindTargets,
+        activeEventIds: loaded.activeEventIds,
         source: 'resume',
         persisted: true,
         created: true,
@@ -153,6 +167,8 @@ export function resolveSessionBootstrap(
       transcript: loaded.transcript,
       contextHistory: loaded.contextHistory,
       compactBoundaries: loaded.compactBoundaries,
+      rewindTargets: loaded.rewindTargets,
+      activeEventIds: loaded.activeEventIds,
       source: 'resume',
       persisted: true,
       created: false,
@@ -167,6 +183,8 @@ export function resolveSessionBootstrap(
     transcript: [],
     contextHistory: [],
     compactBoundaries: [],
+    rewindTargets: [],
+    activeEventIds: [],
     source: 'startup',
     persisted: true,
     created: true,

@@ -62,6 +62,8 @@ interface InputBarProps {
   ) => boolean;
   /** Commands for the autocomplete menu (from discoverCommands). */
   commands?: SlashCommand[];
+  /** Keyed request used by conversation rewind to restore a prior prompt draft. */
+  draftRestore?: { key: number; value: string };
 }
 
 /**
@@ -137,6 +139,7 @@ export function InputBar({
   compact = false,
   reducedMotion = false,
   screenReader = false,
+  draftRestore,
 }: InputBarProps) {
   const theme = useTheme();
   useDebugMount(uiLog, { compact, screenReader, commandsLen: commands.length });
@@ -210,6 +213,18 @@ export function InputBar({
   fileMentionRef.current = fileMention;
   fileSelectedRef.current = fileSelected;
   fileCandidatesRef.current = fileCandidates;
+
+  useEffect(() => {
+    if (!draftRestore) return;
+    setValue(normalizeInput(draftRestore.value));
+    setHistoryIndex(-1);
+    setMenuVisible(false);
+    setMenuSelected(0);
+    setFileMenuVisible(false);
+    setFileMention(null);
+    setFileCandidates([]);
+    setFileSelected(0);
+  }, [draftRestore?.key]);
 
   const acceptSelectedFileMention = useCallback(
     (currentValue: string, trigger: 'Tab' | 'Enter'): boolean => {

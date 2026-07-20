@@ -75,6 +75,14 @@ export async function runAgentLoop(
     parentToolTraceId?: string;
     /** Nested agent names from the root agent to this loop. */
     agentPath?: string[];
+    /** Extra managed-agent identity and policy appended to the system prompt. */
+    systemPromptAppend?: string;
+    /** Hide delegation discovery from child agents. */
+    hideAgents?: boolean;
+    /** Managed child identity and parent-session attribution. */
+    agentId?: string;
+    agentRole?: import('../agents/types.js').AgentRole;
+    parentSessionId?: string;
   },
 ): Promise<Message[]> {
   const signal = options?.signal;
@@ -188,6 +196,13 @@ export async function runAgentLoop(
     currentMode: initialMode,
     userQuestionHandler: callbacks.onUserQuestionRequired,
     agentPath: options?.agentPath ?? [],
+    availableTools: registry.getDefinitions(),
+    agentManager: config.agentManager,
+    agentId: options?.agentId,
+    agentRole: options?.agentRole,
+    parentSessionId: options?.parentSessionId,
+    onAgentEvent: callbacks.onAgentEvent,
+    onHookEvent: callbacks.onHookEvent,
   };
 
   let turn = 0;
@@ -242,6 +257,7 @@ export async function runAgentLoop(
       toolContext.todos,
       options?.commands,
       signal,
+      { append: options?.systemPromptAppend, hideAgents: options?.hideAgents },
     );
     let assistantContent = '';
     const toolCalls: ToolCall[] = [];
@@ -422,7 +438,9 @@ export async function runAgentLoop(
       effectiveMode = toolContext.currentMode ?? effectiveMode;
       const planReadOnly = effectiveMode === 'plan' && READ_ONLY_PLAN_TOOLS.has(canonName);
       const isUserQuestion = canonName === 'AskUserQuestion';
-      const autoSafeTool = canonName === 'EnterPlanMode' || planReadOnly || isUserQuestion;
+      const managedLifecycle = canonName.startsWith('Agent') && canonName !== 'AgentApply';
+      const autoSafeTool =
+        canonName === 'EnterPlanMode' || planReadOnly || isUserQuestion || managedLifecycle;
 
       if (isUserQuestion && effectiveMode === 'dontAsk') {
         const blockedResult: ToolResult = {

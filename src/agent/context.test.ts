@@ -31,6 +31,14 @@ function systemSuffix(out: Awaited<ReturnType<typeof buildMessages>>): string {
 }
 
 describe('buildMessages', () => {
+  it('keeps the --agents off control free of managed-agent routing and profiles', async () => {
+    const offConfig = defaultConfig();
+    offConfig.settings.agents.mode = 'off';
+    const prompt = await buildSystemPrompt(offConfig, [], undefined, []);
+    expect(prompt).not.toContain('Managed delegation');
+    expect(prompt).not.toContain('**explorer**');
+  });
+
   it('emits tool_calls on assistant messages and a tool role message per result', async () => {
     const tc = toolCall('call_1', 'read_file', { filePath: 'a.ts' });
     const tr = toolResult('call_1', '1: hi');

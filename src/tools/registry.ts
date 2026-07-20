@@ -12,6 +12,8 @@ import { notebookTools } from './notebook.js';
 import { TOOL_ALIASES } from './aliases.js';
 import { createSessionHistoryTools, type SessionHistoryCapability } from './session-history.js';
 import { askUserQuestionTools } from './ask-user-question.js';
+import { agentLifecycleTools, evidenceTools } from './agent-tools.js';
+import { checkTools } from '../agents/check.js';
 
 async function executeWithTimeout(
   tool: ToolDefinition,
@@ -212,6 +214,7 @@ export function createRegistry() {
 
 export function createDefaultRegistry(capabilities?: {
   sessionHistory?: SessionHistoryCapability;
+  agents?: boolean;
 }): ReturnType<typeof createRegistry> {
   const registry = createRegistry();
   registry.registerAll([
@@ -221,12 +224,14 @@ export function createDefaultRegistry(capabilities?: {
     ...todoTools,
     ...webTools,
     ...skillsTool,
-    ...taskTool,
     ...taskTools,
     ...planModeTools,
     ...askUserQuestionTools,
     ...notebookTools,
   ]);
+  if (capabilities?.agents !== false) {
+    registry.registerAll([...agentLifecycleTools, ...evidenceTools, ...taskTool, ...checkTools]);
+  }
   if (capabilities?.sessionHistory) {
     registry.registerAll(createSessionHistoryTools(capabilities.sessionHistory));
   }

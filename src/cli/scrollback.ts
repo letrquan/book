@@ -38,7 +38,8 @@ export async function runScrollbackSession(
   options: ScrollbackOptions,
 ): Promise<Message[]> {
   const output = options.output ?? process.stdout;
-  const registry = options.registry ?? createDefaultRegistry();
+  const registry =
+    options.registry ?? createDefaultRegistry({ agents: config.settings.agents.mode !== 'off' });
   const runLoop = options.runLoop ?? runAgentLoop;
   const history: Message[] = [];
   const toolCalls = new Map<string, ToolCall>();

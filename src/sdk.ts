@@ -17,12 +17,15 @@ import type {
   UserQuestionHandler,
   UserQuestionRequest,
   UserQuestionResponse,
+  AgentConfig,
 } from './types.js';
 import type { HeadlessOptions, HeadlessResult } from './types.js';
 import { loadConfig, type LoadConfigOptions } from './config.js';
 import { runHeadless } from './headless.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { connectMcpServers, disconnectMcpServers } from './mcp.js';
+import type { AgentRecord, AgentRuntimeEvent, EvidenceItem } from './agents/types.js';
+import { AgentManager, getOrCreateAgentManager } from './agents/manager.js';
 
 /** Events emitted by the query() async iterable. */
 export type QueryEvent =
@@ -33,6 +36,11 @@ export type QueryEvent =
   | { type: 'tool_result'; toolResult: ToolResult }
   | { type: 'user_question'; request: UserQuestionRequest; status: 'pending' | 'unavailable' }
   | { type: 'user_question_result'; requestId: string; response: UserQuestionResponse }
+  | { type: 'agent_start'; agent: AgentRecord }
+  | { type: 'agent_update'; agent: AgentRecord }
+  | { type: 'agent_result'; agent: AgentRecord }
+  | Extract<AgentRuntimeEvent, { type: 'agent_question' | 'agent_apply' }>
+  | { type: 'evidence_update'; evidence: EvidenceItem }
   | { type: 'error'; error: string }
   | { type: 'result'; messages: Message[]; usage: Usage | null; sessionId?: string }
   | { type: 'done' };
@@ -57,6 +65,8 @@ export interface QueryOptions {
   sessionId?: string;
   /** Handle structured questions from the root agent or Task subagents. */
   onUserQuestionRequired?: UserQuestionHandler;
+  /** Override the configured managed-agent mode. */
+  agents?: 'adaptive' | 'manual' | 'off';
 }
 
 /**
@@ -82,10 +92,11 @@ export async function* query(
   });
   if (options.model) config.model = options.model;
   if (options.maxTurns) config.maxTurns = options.maxTurns;
+  if (options.agents) config.settings.agents.mode = options.agents;
 
   // Connect MCP servers.
   const mcp = await connectMcpServers(config.workspace);
-  const registry = createDefaultRegistry();
+  const registry = createDefaultRegistry({ agents: config.settings.agents.mode !== 'off' });
   if (mcp.tools.length > 0) registry.registerAll(mcp.tools);
 
   let usage: Usage | null = null;
@@ -131,6 +142,18 @@ export async function* query(
                 requestId: parsed.request_id as string,
                 response: parsed.response as UserQuestionResponse,
               });
+            } else if (
+              parsed.type === 'agent_start' ||
+              parsed.type === 'agent_update' ||
+              parsed.type === 'agent_result'
+            ) {
+              events.push({ type: parsed.type, agent: parsed.agent as AgentRecord });
+            } else if (parsed.type === 'agent_question') {
+              events.push(parsed as Extract<AgentRuntimeEvent, { type: 'agent_question' }>);
+            } else if (parsed.type === 'evidence_update') {
+              events.push({ type: 'evidence_update', evidence: parsed.evidence as EvidenceItem });
+            } else if (parsed.type === 'agent_apply') {
+              events.push(parsed as Extract<AgentRuntimeEvent, { type: 'agent_apply' }>);
             } else if (parsed.type === 'error') {
               events.push({ type: 'error', error: parsed.error as string });
             } else if (parsed.type === 'result') {
@@ -167,6 +190,25 @@ export async function* query(
  * The session can be resumed later via query({ sessionId }).
  */
 export { loadConfig, type LoadConfigOptions };
+export { AgentManager };
+export function createAgentManager(config: AgentConfig): AgentManager {
+  return getOrCreateAgentManager(config, createDefaultRegistry({ agents: true }).getDefinitions());
+}
+export { runPairedEvaluation, evaluateSuccess } from './agents/evaluation.js';
+export type {
+  EvaluationFixture,
+  EvaluationMetric,
+  EvaluationRunResult,
+} from './agents/evaluation.js';
+export type {
+  AgentPlanRecord,
+  AgentApplyResult,
+  AgentRecord,
+  AgentRuntimeEvent,
+  AgentSnapshot,
+  AgentSpawnRequest,
+  EvidenceItem,
+} from './agents/types.js';
 export type {
   UserQuestion,
   UserQuestionOption,

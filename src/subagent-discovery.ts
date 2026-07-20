@@ -12,7 +12,7 @@ export interface SubagentDef {
   name: string;
   /** Human-readable description. */
   description: string;
-  /** Restrict which tools this subagent can use. Empty = all tools. */
+  /** Strict capability rules. Empty denies all tools; `*` explicitly inherits. */
   allowedTools: string[];
   /** Override model for this subagent (optional). */
   model?: string;
@@ -21,7 +21,7 @@ export interface SubagentDef {
   /** The raw Markdown body — injected as the subagent's system prompt. */
   body: string;
   /** Source directory. */
-  source: 'user' | 'project';
+  source: 'user' | 'project' | 'builtin';
 }
 
 /**

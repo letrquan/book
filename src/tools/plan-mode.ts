@@ -19,6 +19,13 @@ export const READ_ONLY_PLAN_TOOLS = new Set([
   'EnterPlanMode',
   'ExitPlanMode',
   'AskUserQuestion',
+  'AgentList',
+  'AgentGet',
+  'AgentWait',
+  'AgentPlan',
+  'AgentSpawn',
+  'AgentSend',
+  'AgentStop',
 ]);
 
 function ok(output: string): ToolResult {

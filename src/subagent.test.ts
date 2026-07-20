@@ -75,7 +75,7 @@ describe('discoverAgents', () => {
     expect(result[0].maxTurns).toBeUndefined();
   });
 
-  it('defaults allowedTools to empty array (all tools)', () => {
+  it('defaults allowedTools to the empty deny-all policy', () => {
     const agentsDir = join(dir, '.book', 'agents');
     mkdirSync(agentsDir, { recursive: true });
     writeFileSync(
@@ -226,7 +226,7 @@ describe('runSubagent', () => {
       answers: { [request.questions[0].question]: 'Deep' },
     }));
     const result = await runSubagent(
-      def,
+      { ...def, allowedTools: ['Read', 'AskUserQuestion'] },
       'Ask first.',
       defaultConfig({ maxTurns: 5 }),
       createDefaultRegistry(),
@@ -262,14 +262,13 @@ describe('runSubagent', () => {
     expect(filtered.every((t) => t.name === 'Read')).toBe(true);
   });
 
-  it('allows all tools when allowedTools is empty', async () => {
-    const registry = createDefaultRegistry();
+  it('denies all tools when allowedTools is empty', () => {
     const unrestrictedDef: SubagentDef = {
       ...def,
       allowedTools: [],
     };
 
-    // Empty allowedTools means all tools pass through.
+    // Empty allowedTools is the strict deny-all default.
     const allowed = new Set(unrestrictedDef.allowedTools);
     expect(allowed.size).toBe(0);
   });

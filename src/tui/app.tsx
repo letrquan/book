@@ -14,6 +14,7 @@ import { ModelPicker, type ProviderRemovalResult } from './components/ModelPicke
 import { EffortPicker } from './components/EffortPicker.js';
 import { ThemePicker } from './components/ThemePicker.js';
 import { SessionPicker } from './components/SessionPicker.js';
+import { RewindPicker } from './components/RewindPicker.js';
 import { TranscriptView } from './components/TranscriptView.js';
 import { PermissionButtons } from './components/PermissionButtons.js';
 import { PlanApprovalActions, PlanApprovalDetails } from './components/PlanApprovalButtons.js';
@@ -28,7 +29,12 @@ import {
   type ThemeTokens,
   type ResolvedTheme,
 } from './theme.js';
-import type { AgentConfig, CommandContext, SessionStoreInterface } from '../types.js';
+import type {
+  AgentConfig,
+  CommandContext,
+  RewindSnapshotStoreInterface,
+  SessionStoreInterface,
+} from '../types.js';
 import type { SessionBootstrap } from '../session/resolve.js';
 import { DensityContext, resolveTuiDensity } from './density.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
@@ -58,6 +64,8 @@ import { persistSettingLocal } from './persist.js';
 import { buildModelOptions } from './model-options.js';
 import { redactSettingValue, redactSettingsForDisplay } from '../settings-redaction.js';
 import { createUiDebugLogger } from '../debug-log.js';
+import { createDefaultRegistry } from '../tools/registry.js';
+import { getOrCreateAgentManager } from '../agents/manager.js';
 import { selectExpandedToolId } from './tool-traces.js';
 import {
   getTranscriptShortcutAction,
@@ -82,6 +90,7 @@ export function ownsModalInput(
   pendingUserQuestion?: unknown,
   showEffortPicker = false,
   showThemePicker = false,
+  showRewindPicker = false,
 ): boolean {
   return Boolean(
     pendingPermission ||
@@ -90,7 +99,8 @@ export function ownsModalInput(
     showModelPicker ||
     showSessionPicker ||
     showEffortPicker ||
-    showThemePicker,
+    showThemePicker ||
+    showRewindPicker,
   );
 }
 
@@ -136,7 +146,11 @@ export function providerRemovalMessage(
 
 interface AppProps {
   config: AgentConfig;
-  session: SessionBootstrap & { store?: SessionStoreInterface };
+  session: SessionBootstrap & {
+    store?: SessionStoreInterface;
+    timelineStore?: SessionStoreInterface;
+    snapshotStore?: RewindSnapshotStoreInterface;
+  };
   redrawViewport?: () => void;
 }
 
@@ -174,6 +188,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
     compactBoundaries,
     isThinking,
     isCompacting,
+    isRewinding,
     compactUi,
     setCompactUi,
     streamingMessageId,
@@ -203,6 +218,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
     resolveUserQuestion,
     cancel,
     compact,
+    rewind,
+    getRewindTargets,
     cycleMode,
     addLocalMessage,
     setModel,
@@ -235,6 +252,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
   const [showEffortPicker, setShowEffortPicker] = useState(false);
   const [showThemePicker, setShowThemePicker] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
+  const [showRewindPicker, setShowRewindPicker] = useState(false);
+  const [draftRestore, setDraftRestore] = useState<{ key: number; value: string }>();
   const [followRequestKey, setFollowRequestKey] = useState(0);
   const [currentTheme, setCurrentTheme] = useState<ResolvedTheme>(
     () =>
@@ -348,6 +367,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
         pendingUserQuestion,
         showEffortPicker,
         showThemePicker,
+        showRewindPicker,
       )
     ) {
       if (key.escape) {
@@ -512,6 +532,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
         setShowHelp(false);
         setShowStatus(false);
         setShowSessionPicker(false);
+        setShowRewindPicker(false);
         void startNewConversation(commandArg || undefined).catch((err) => {
           addLocalMessage(`✕ ${err instanceof Error ? err.message : String(err)}`);
         });
@@ -527,10 +548,76 @@ export function App({ config, session, redrawViewport }: AppProps) {
         }
       } else if (commandName === 'compact') {
         void compact(commandArg || undefined);
+      } else if (commandName === 'rewind') {
+        if (commandArg) addLocalMessage('Usage: /rewind');
+        else setShowRewindPicker(true);
       } else if (value.startsWith('/exit')) {
         void endCurrentSession('exit').finally(exitApp);
       } else if (value.startsWith('/help')) {
         setShowHelp((s) => !s);
+      } else if (commandName === 'agents') {
+        const manager = getOrCreateAgentManager(
+          liveConfig,
+          createDefaultRegistry({ agents: true }).getDefinitions(),
+        );
+        void manager
+          .list()
+          .then((records) => {
+            addLocalMessage(
+              records.length === 0
+                ? 'No managed agents for this repository.'
+                : records
+                    .map(
+                      (record) =>
+                        `${record.id}  ${record.role}/${record.name}  ${record.status}  apply:${record.applicationStatus}`,
+                    )
+                    .join('\n'),
+            );
+          })
+          .catch((error) =>
+            addLocalMessage(`✕ ${error instanceof Error ? error.message : String(error)}`),
+          );
+      } else if (commandName === 'agent') {
+        const manager = getOrCreateAgentManager(
+          liveConfig,
+          createDefaultRegistry({ agents: true }).getDefinitions(),
+        );
+        const [actionOrId, id, ...rest] = commandArg.split(/\s+/).filter(Boolean);
+        const reportError = (error: unknown) =>
+          addLocalMessage(`✕ ${error instanceof Error ? error.message : String(error)}`);
+        if (!actionOrId) {
+          addLocalMessage(
+            'Usage: /agent <id> | /agent send <id> <message> | /agent stop <id> | /agent apply <id> [evidence-id]',
+          );
+        } else if (actionOrId === 'send' && id) {
+          void manager
+            .send(id, rest.join(' '))
+            .then((record) => addLocalMessage(JSON.stringify(record, null, 2)))
+            .catch(reportError);
+        } else if (actionOrId === 'stop' && id) {
+          void manager
+            .stop(id)
+            .then((record) => addLocalMessage(JSON.stringify(record, null, 2)))
+            .catch(reportError);
+        } else if (actionOrId === 'apply' && id) {
+          if (mode === 'plan') {
+            addLocalMessage('✕ Agent apply is unavailable in plan mode.');
+          } else {
+            void manager
+              .apply(id, rest[0])
+              .then((result) => addLocalMessage(JSON.stringify(result, null, 2)))
+              .catch(reportError);
+          }
+        } else {
+          void manager
+            .get(actionOrId)
+            .then((record) =>
+              addLocalMessage(
+                record ? JSON.stringify(record, null, 2) : `✕ Agent ${actionOrId} was not found.`,
+              ),
+            )
+            .catch(reportError);
+        }
       } else if (value.startsWith('/task ')) {
         addTask({ subject: value.slice(6), status: 'pending' });
       } else if (commandName === 'theme') {
@@ -902,7 +989,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       // Ctrl+/ and Ctrl+E must be handled here (not only in the parent useInput)
       // because ink-text-input consumes some Ctrl key events before they reach
       // the parent handler.
-      if (showModelPicker || showEffortPicker || showThemePicker) return true;
+      if (showModelPicker || showEffortPicker || showThemePicker || showRewindPicker) return true;
       if (key.ctrl && input === 'c') {
         if (pendingUserQuestion) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
@@ -969,6 +1056,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       showEffortPicker,
       showModelPicker,
       showThemePicker,
+      showRewindPicker,
       expandedToolId,
       focusedToolId,
     ],
@@ -978,7 +1066,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
   // handleGlobalShortcut remains for Ctrl+/ keyboard shortcut reference.
 
   const pickerOwnsTranscript =
-    showModelPicker || showEffortPicker || showThemePicker || showSessionPicker;
+    showModelPicker || showEffortPicker || showThemePicker || showSessionPicker || showRewindPicker;
 
   return (
     <AppProviders theme={currentTheme.tokens} density={density}>
@@ -1055,6 +1143,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
                     <HelpRow
                       label="/compact [focus]"
                       description="Summarize conversation (optional focus)"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/rewind"
+                      description="Restore conversation, code, or both"
                       theme={theme}
                     />
                     <HelpRow label="/task <subject>" description="Add a task" theme={theme} />
@@ -1398,6 +1491,27 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 onCancel={() => setShowSessionPicker(false)}
               />
             ) : null}
+            {showRewindPicker ? (
+              <RewindPicker
+                targets={getRewindTargets()}
+                isRewinding={isRewinding}
+                onAction={async (target, action) => {
+                  const result = await rewind(target.id, action);
+                  if (!result.ok) return result;
+                  if (action === 'conversation' || action === 'both') clearTasks();
+                  if (result.restoredPrompt !== undefined) {
+                    setDraftRestore((current) => ({
+                      key: (current?.key ?? 0) + 1,
+                      value: result.restoredPrompt!,
+                    }));
+                  }
+                  setShowRewindPicker(false);
+                  setFollowRequestKey((key) => key + 1);
+                  return { ok: true };
+                }}
+                onCancel={() => setShowRewindPicker(false)}
+              />
+            ) : null}
             {showModelPicker ? (
               <ModelPicker
                 options={modelOptions}
@@ -1519,7 +1633,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
             <InputBar
               key={sessionId}
               onSubmit={handleSubmit}
-              disabled={isThinking || isCompacting}
+              disabled={isThinking || isCompacting || isRewinding}
               mode={mode}
               onCycleMode={cycleMode}
               onInterrupt={cancel}
@@ -1532,6 +1646,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
                   pendingUserQuestion,
                   showEffortPicker,
                   showThemePicker,
+                  showRewindPicker,
                 ) || transcriptMode === 'detailed'
               }
               onGlobalShortcut={handleGlobalShortcut}
@@ -1541,6 +1656,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
               compact={isNarrow || isTiny}
               reducedMotion={motionDisabled}
               screenReader={screenReader}
+              draftRestore={draftRestore}
             />
           </Box>
 

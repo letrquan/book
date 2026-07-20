@@ -19,6 +19,7 @@ import { BUILTIN_COMMANDS } from '../commands/builtins.js';
 import { discoverClaudeMd, renderClaudeMd } from '../claude-md.js';
 import { discoverAgents, type SubagentDef } from '../subagent-discovery.js';
 import { runGit } from '../tools/git.js';
+import { withBuiltInAgents } from '../agents/profiles.js';
 
 function compactList(
   title: string,
@@ -115,6 +116,33 @@ function generateAgentListing(agents: SubagentDef[], budgetChars = 1024): string
   );
 }
 
+function agentRoutingSection(config: AgentConfig): string {
+  if (config.settings.agents.mode === 'off') return '';
+  if (!isInGitWorktree(config.workspace)) {
+    return [
+      '## Managed delegation',
+      'This workspace is not a Git worktree, so adaptive routing must remain single-agent.',
+      'Do not call AgentSpawn unless the user first initializes and commits the repository.',
+    ].join('\n');
+  }
+  if (config.settings.agents.mode === 'manual') {
+    return [
+      '## Managed delegation',
+      `Mode: manual; concurrency: ${config.settings.agents.maxConcurrent}; depth: ${config.settings.agents.maxDepth}.`,
+      'Use managed agents only when the user explicitly requests delegation. Record an AgentPlan before spawning.',
+      'Patch work remains isolated and requires a distinct validator pass before AgentApply.',
+    ].join('\n');
+  }
+  return [
+    '## Managed delegation',
+    `Mode: ${config.settings.agents.mode}; concurrency: ${config.settings.agents.maxConcurrent}; depth: ${config.settings.agents.maxDepth}.`,
+    'Before spawning, call AgentPlan with task shape, issue quality, topology, rationale, and budget.',
+    'Keep sequential or tool-dependent work single-agent. Use parallel_research for decomposable research, explore_then_patch for ambiguous implementation, and patch_validate for clear implementation.',
+    'For patch_validate, a validator may plan concurrently; after the patch candidate exists, pass its evidence ID through AgentSpawn or AgentSend before requesting the final verdict.',
+    'Patch work remains isolated and cannot be applied until a distinct validator passes the exact candidate commit.',
+  ].join('\n');
+}
+
 function generateToolListing(tools: ToolDefinition[], budgetChars = 2048): string {
   return compactList(
     'Available tools',
@@ -148,6 +176,7 @@ export async function buildSystemPromptZones(
   commands?: SlashCommand[],
   tools: ToolDefinition[] = [],
   signal?: AbortSignal,
+  overrides?: { append?: string; hideAgents?: boolean },
 ): Promise<SystemPromptZones> {
   const skills = discoverSkills(config.workspace);
   const cmdList = mergeCommands(commands ?? discoverCommands(config.workspace));
@@ -166,9 +195,13 @@ export async function buildSystemPromptZones(
     ].join('\n'),
     generateSkillListing(skills, 1536),
     generateCommandListing(cmdList, 1536),
-    generateAgentListing(discoverAgents(config.workspace), 1024),
+    overrides?.hideAgents || config.settings.agents.mode === 'off'
+      ? ''
+      : generateAgentListing(withBuiltInAgents(discoverAgents(config.workspace)), 1536),
+    overrides?.hideAgents ? '' : agentRoutingSection(config),
     generateToolListing(tools, 2048),
     memorySection(config),
+    overrides?.append ?? '',
     [
       '## Guardrails',
       'Be concise and direct. Write code when asked. Explain only when asked.',
@@ -188,8 +221,9 @@ export async function buildSystemPrompt(
   commands?: SlashCommand[],
   tools: ToolDefinition[] = [],
   signal?: AbortSignal,
+  overrides?: { append?: string; hideAgents?: boolean },
 ): Promise<string> {
-  const zones = await buildSystemPromptZones(config, todos, commands, tools, signal);
+  const zones = await buildSystemPromptZones(config, todos, commands, tools, signal, overrides);
   return [zones.cachedPrefix, zones.dynamicSuffix].filter(Boolean).join('\n\n');
 }
 
@@ -200,12 +234,20 @@ export async function buildMessages(
   todos?: Array<{ content: string; status: string; activeForm?: string }>,
   commands?: SlashCommand[],
   signal?: AbortSignal,
+  systemOverrides?: { append?: string; hideAgents?: boolean },
 ): Promise<ProviderMessage[]> {
   const messages: ProviderMessage[] = [];
 
   messages.push({
     role: 'system',
-    content: await buildSystemPromptZones(config, todos ?? [], commands, tools, signal),
+    content: await buildSystemPromptZones(
+      config,
+      todos ?? [],
+      commands,
+      tools,
+      signal,
+      systemOverrides,
+    ),
   });
 
   for (const msg of history) {

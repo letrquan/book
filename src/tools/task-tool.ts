@@ -1,6 +1,5 @@
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
-import { discoverAgents, runSubagent } from '../subagent.js';
-import { createDefaultRegistry } from './registry.js';
+import { getOrCreateAgentManager } from '../agents/manager.js';
 
 async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const agentName = args.agent as string;
@@ -23,20 +22,7 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
     };
   }
 
-  const agents = discoverAgents(ctx.workspaceRoot);
-  const agent = agents.find((a) => a.name === agentName);
-
-  if (!agent) {
-    const available = agents.map((a) => `  - **${a.name}**: ${a.description}`).join('\n');
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `Subagent not found: "${agentName}".\nAvailable agents:\n${available || '  (none)'}`,
-    };
-  }
-
-  if (!ctx.agentConfig) {
+  if (!ctx.agentConfig || !ctx.availableTools) {
     return {
       toolCallId: '',
       success: false,
@@ -46,36 +32,54 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
     };
   }
 
-  const registry = createDefaultRegistry();
-  const { content, error } = await runSubagent(agent, prompt, ctx.agentConfig, registry, {
-    signal: ctx.signal,
-    parentToolTraceId: ctx.currentToolTraceId,
-    nestedToolObserver: ctx.nestedToolObserver,
-    onUserQuestionRequired: ctx.userQuestionHandler,
-    agentPath: [...(ctx.agentPath ?? []), agent.name],
-  });
-
-  if (error) {
+  if (ctx.agentId) {
     return {
       toolCallId: '',
       success: false,
-      output: content || '',
-      error: `Subagent failed: ${error}`,
+      output: '',
+      error: 'Task is unavailable inside managed child agents.',
     };
   }
 
-  return {
-    toolCallId: '',
-    success: true,
-    output: `## Subagent result: ${agent.name}\n\n${content || '(no output)'}`,
-  };
+  try {
+    const manager = getOrCreateAgentManager(ctx.agentConfig, ctx.availableTools, {
+      eventSink: ctx.onAgentEvent,
+      hookEventSink: ctx.onHookEvent,
+    });
+    const spawned = await manager.spawn({
+      agent: agentName,
+      prompt,
+      parentSessionId: ctx.parentSessionId,
+    });
+    const completed = await manager.wait(spawned.id);
+    if (completed.status !== 'completed') {
+      return {
+        toolCallId: '',
+        success: false,
+        output: completed.result ?? '',
+        error: completed.error ?? `Subagent ended with status ${completed.status}`,
+      };
+    }
+    return {
+      toolCallId: '',
+      success: true,
+      output: `## Subagent result: ${completed.name}\n\n${completed.result || '(no output)'}`,
+    };
+  } catch (error) {
+    return {
+      toolCallId: '',
+      success: false,
+      output: '',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 export const taskTool: ToolDefinition[] = [
   {
     name: 'Task',
     description:
-      'Launch a subagent to handle a bounded subtask with isolated context. The subagent has its own tool allowlist and turn budget. Returns only the final result to the model; hosts may display its internal tool activity without adding it to the main conversation. Use this for focused investigations, code review, or multi-step work that should not pollute the main conversation.',
+      'Deprecated synchronous adapter for AgentSpawn followed by AgentWait. Prefer the managed agent lifecycle tools.',
     parameters: {
       type: 'object',
       properties: {

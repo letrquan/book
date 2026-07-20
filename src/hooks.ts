@@ -24,6 +24,12 @@ export interface HookContext {
   trigger?: 'manual' | 'auto';
   /** For PreCompact/PostCompact: optional focus instructions from /compact. */
   focus?: string;
+  agentId?: string;
+  agentRole?: string;
+  parentSessionId?: string;
+  worktree?: string;
+  status?: string;
+  stopReason?: string;
 }
 
 /** Result of running a single hook. */
@@ -64,6 +70,12 @@ export async function runHooks(
     reason: ctx.reason ?? null,
     trigger: ctx.trigger ?? null,
     focus: ctx.focus ?? null,
+    agentId: ctx.agentId ?? null,
+    agentRole: ctx.agentRole ?? null,
+    parentSessionId: ctx.parentSessionId ?? null,
+    worktree: ctx.worktree ?? null,
+    status: ctx.status ?? null,
+    stopReason: ctx.stopReason ?? null,
   });
 
   const results: HookResult[] = [];
@@ -168,6 +180,12 @@ async function runSingleHook(
     reason: ctx.reason,
     trigger: ctx.trigger,
     focus: ctx.focus,
+    agent_id: ctx.agentId,
+    agent_role: ctx.agentRole,
+    parent_session_id: ctx.parentSessionId,
+    worktree: ctx.worktree,
+    status: ctx.status,
+    stop_reason: ctx.stopReason,
   });
 
   return new Promise<HookResult>((resolve) => {
@@ -184,6 +202,7 @@ async function runSingleHook(
           ...entry.env,
           BOOK_WORKSPACE: ctx.workspace,
           ...(ctx.sessionId ? { BOOK_SESSION_ID: ctx.sessionId } : {}),
+          ...(ctx.agentId ? { BOOK_AGENT_ID: ctx.agentId } : {}),
         },
         timeout: HOOK_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,

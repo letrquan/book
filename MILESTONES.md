@@ -129,6 +129,7 @@ The STUB commands now do the real thing locally (no longer delegate to the agent
 | `/compact`         | ✅ v2 — compacts provider context to a grounded checkpoint plus an exact recent tail; the full transcript remains scrollable       | Compacts provider context without deleting transcript       |
 | `/clear`           | ✅ real — saves the previous conversation, optionally names it, and starts a fresh persisted session (`/new` and `/reset` aliases) | Starts a new conversation without deleting the previous one |
 | `/resume`          | ✅ real — interactive current-workspace picker or direct id/name/unique-prefix selection; restores tool-bearing history            | Resumes a previous session                                  |
+| `/rewind`          | ✅ real — restores conversation, code, or both to immediately before a selected active user prompt                                 | Rewinds conversation and/or workspace files                 |
 | `/help`            | exists                                                                                                                             | OK                                                          |
 | `/status`          | exists                                                                                                                             | OK                                                          |
 | `/theme`           | exists                                                                                                                             | OK                                                          |
@@ -151,7 +152,6 @@ The STUB commands now do the real thing locally (no longer delegate to the agent
 - `/mcp` — manage MCP servers interactively **(needs interactive MCP manager)**
 - `/add-dir` — add additional working directories **(blocked on 1g: `--add-dir` flag)**
 - `/ide` — connect to IDE extension **(Phase 3)**
-- `/rewind` — roll back to checkpoint **(needs checkpoint/restore infra)**
 
 > `/memory` is fully wired now that 1d's auto-write + approval flow have landed — candidates are captured to `.inbox/` and surface in `/memory inbox` for review, `/memory approve|discard` commits them. `/usage` tracks the active model only; a per-model breakdown across a multi-model session is deferred (needs accounting plumbing in Phase 2/3).
 >

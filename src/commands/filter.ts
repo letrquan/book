@@ -91,7 +91,11 @@ export function getCommandsForEmptyQuery(commands: SlashCommand[]): CommandItem[
       category: 'builtin',
     });
   }
-  builtins.sort((a, b) => a.name.localeCompare(b.name));
+  builtins.sort((a, b) => {
+    if (a.name === 'clear') return -1;
+    if (b.name === 'clear') return 1;
+    return a.name.localeCompare(b.name);
+  });
   result.push(...builtins);
 
   // 3. User commands (alphabetical, excluding recently used)

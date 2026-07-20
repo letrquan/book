@@ -6,10 +6,19 @@ import { createDefaultRegistry } from '../tools/registry.js';
 import { SessionStore } from '../session/store.js';
 import { connectMcpServers } from '../mcp.js';
 import { exit } from './exit.js';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { homedir } from 'os';
-import type { AgentConfig } from '../types.js';
+import type {
+  AgentConfig,
+  RewindSnapshotStoreInterface,
+  TurnCheckpointRecordData,
+} from '../types.js';
 import { resolveSessionBootstrap } from '../session/resolve.js';
+import {
+  createRewindSnapshotStore,
+  createUnavailableRewindSnapshotStore,
+} from '../rewind/snapshot-store.js';
+import { createEphemeralRewindEnvironment } from '../rewind/environment.js';
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
@@ -18,6 +27,23 @@ const ENABLE_SGR_MOUSE = '\x1b[?1006h';
 const DISABLE_SGR_MOUSE = '\x1b[?1006l';
 const DISABLE_MOUSE_TRACKING = '\x1b[?1000l';
 const EXIT_ALT_SCREEN = '\x1b[?1049l';
+
+function collectSnapshotReferences(store: SessionStore, cwd: string): Set<string> {
+  const ids = new Set<string>();
+  for (const session of store.list().filter((meta) => meta.cwd === normalizeCwd(cwd))) {
+    for (const record of store.readRecords(session.id)) {
+      if (record.type !== 'turn_checkpoint') continue;
+      const snapshotId = (record.data as TurnCheckpointRecordData)?.checkpoint?.snapshotId;
+      if (snapshotId) ids.add(snapshotId);
+    }
+  }
+  return ids;
+}
+
+function normalizeCwd(cwd: string): string {
+  const normalized = resolve(cwd);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
 
 export function enterInteractiveScreen(
   stdout: Pick<NodeJS.WriteStream, 'isTTY' | 'write'> = process.stdout,
@@ -47,6 +73,13 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     }) as AgentConfig;
     if (options.effort) config.effort = options.effort as AgentConfig['effort'];
     if (options.maxTurns) config.maxTurns = parseInt(options.maxTurns as string, 10);
+    if (options.agents) {
+      const agentsMode = String(options.agents);
+      if (!['adaptive', 'manual', 'off'].includes(agentsMode)) {
+        throw new Error('--agents must be adaptive, manual, or off');
+      }
+      config.settings.agents.mode = agentsMode as 'adaptive' | 'manual' | 'off';
+    }
     if (options.provider) {
       const VALID_PROVIDERS = new Set(['anthropic', 'openai', 'auto']);
       const raw = String(options.provider).trim().toLowerCase();
@@ -59,7 +92,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     if (options.print !== undefined) {
       // Connect MCP servers and merge their tools into the registry.
       const mcp = await connectMcpServers(config.workspace);
-      const registry = createDefaultRegistry();
+      const registry = createDefaultRegistry({ agents: config.settings.agents.mode !== 'off' });
       if (mcp.tools.length > 0) {
         registry.registerAll(mcp.tools);
       }
@@ -122,6 +155,22 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       ? new SessionStore(SESSION_ROOT)
       : undefined;
     sessionStore?.cleanup(30);
+    const ephemeralRewind = sessionStore
+      ? undefined
+      : createEphemeralRewindEnvironment(config.workspace);
+    const timelineStore = sessionStore ?? ephemeralRewind!.timelineStore;
+    let snapshotStore: RewindSnapshotStoreInterface = sessionStore
+      ? createRewindSnapshotStore(config.workspace)
+      : ephemeralRewind!.snapshotStore;
+    if (sessionStore) {
+      try {
+        snapshotStore.cleanup(collectSnapshotReferences(sessionStore, config.workspace), 30);
+      } catch (error) {
+        snapshotStore = createUnavailableRewindSnapshotStore(
+          `Code rewind unavailable: snapshot cleanup failed (${error instanceof Error ? error.message : String(error)}).`,
+        );
+      }
+    }
     const bootstrap = resolveSessionBootstrap(sessionStore, {
       cwd: config.workspace,
       resume: options.resume as string | undefined,
@@ -130,6 +179,13 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       sessionName: options.name as string | undefined,
       forkSession: options.forkSession as boolean | undefined,
     });
+    if (!sessionStore) {
+      timelineStore.create({
+        id: bootstrap.sessionId,
+        cwd: config.workspace,
+        name: bootstrap.sessionName,
+      });
+    }
 
     const { App } = await import('../tui/app.js');
     let app: ReturnType<typeof render> | undefined;
@@ -145,7 +201,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         createElement(App, {
           config,
           redrawViewport,
-          session: { ...bootstrap, store: sessionStore },
+          session: { ...bootstrap, store: sessionStore, timelineStore, snapshotStore },
         }),
         {
           exitOnCtrlC: false,
@@ -156,6 +212,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     } finally {
       app?.cleanup();
       restoreScreen();
+      ephemeralRewind?.dispose();
     }
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));

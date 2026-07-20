@@ -64,6 +64,8 @@ export const HOOK_EVENTS = [
   'Stop',
   'PreCompact',
   'PostCompact',
+  'SubagentStart',
+  'SubagentStop',
 ] as const;
 
 export type HookEvent = (typeof HOOK_EVENTS)[number];
@@ -126,6 +128,17 @@ export const memorySettingsSchema = z.object({
   requireApproval: z.boolean().default(true),
 });
 
+export const agentSettingsSchema = z.object({
+  mode: z.enum(['adaptive', 'manual', 'off']).default('adaptive'),
+  maxConcurrent: z.number().int().min(1).max(16).default(3),
+  maxDepth: z.literal(1).default(1),
+  persist: z.boolean().default(true),
+  includeUntrackedInSnapshot: z.boolean().default(true),
+  telemetry: z.boolean().default(true),
+  retentionDays: z.number().int().min(1).max(3650).default(30),
+  checks: z.record(z.union([z.string().min(1), z.array(z.string().min(1)).min(1)])).default({}),
+});
+
 export type ProviderModelConfig = z.infer<typeof providerModelSchema>;
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;
 
@@ -154,6 +167,7 @@ export const bookSettingsSchema = z.object({
   hooks: hooksSchema.default({}),
   retry: retrySettingsSchema.default({}),
   memory: memorySettingsSchema.default({}),
+  agents: agentSettingsSchema.default({}),
 });
 
 export type BookSettings = z.infer<typeof bookSettingsSchema>;
@@ -209,6 +223,8 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     Stop: [],
     PreCompact: [],
     PostCompact: [],
+    SubagentStart: [],
+    SubagentStop: [],
   },
   additionalDirectories: [],
   env: {},
@@ -227,5 +243,15 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     enabled: true,
     autoSave: true,
     requireApproval: true,
+  },
+  agents: {
+    mode: 'adaptive',
+    maxConcurrent: 3,
+    maxDepth: 1,
+    persist: true,
+    includeUntrackedInSnapshot: true,
+    telemetry: true,
+    retentionDays: 30,
+    checks: {},
   },
 };

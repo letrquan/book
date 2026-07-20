@@ -33,6 +33,7 @@ program
   .option('--include-hook-events', 'Emit hook lifecycle events in stream-json output')
   .option('--include-partial-messages', 'Emit partial assistant text deltas in stream-json output')
   .option('--prompt-suggestions', 'Ask model for follow-up prompt suggestions after completion')
+  .option('--agents <mode>', 'Managed agents: adaptive, manual, off')
   .option('--scrollback', 'Use terminal-native scrollback instead of the full-screen TUI')
   .option('--settings <path>', 'Path to an ad-hoc settings file (overrides all scopes)')
   .option('--no-settings', 'Skip all settings.json layers (use defaults + legacy .bookrc.json)')

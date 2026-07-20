@@ -112,6 +112,9 @@ function pendingAgentState() {
     cancel: vi.fn(),
     compact: vi.fn(),
     isCompacting: false,
+    isRewinding: false,
+    rewind: vi.fn(async () => ({ ok: true })),
+    getRewindTargets: vi.fn(() => []),
     compactUi: null,
     setCompactUi: vi.fn(),
     cycleMode: vi.fn(),
@@ -182,6 +185,30 @@ describe('App session commands', () => {
 
     expect(agentState.startNewConversation).not.toHaveBeenCalled();
     expect(agentState.send).toHaveBeenCalledWith('/newline value');
+  });
+
+  it('opens /rewind only without arguments and lists it in help', async () => {
+    const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+    const view = render(<App config={config()} session={testSession} />);
+
+    await submit(view, '/rewind now');
+    expect(agentState.addLocalMessage).toHaveBeenCalledWith('Usage: /rewind');
+
+    await submit(view, '/rewind');
+    expect(stripAnsi(view.lastFrame())).toContain('no user prompts to rewind');
+
+    view.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    await submit(view, '/help');
+    expect(view.frames.map(stripAnsi).join('\n')).toContain('/rewind');
   });
 });
 

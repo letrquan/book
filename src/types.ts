@@ -580,6 +580,19 @@ export interface ToolContext {
   userQuestionHandler?: UserQuestionHandler;
   /** Nested agent names from the root agent to this loop. */
   agentPath?: string[];
+  /** Active definitions used to derive a child's capability intersection. */
+  availableTools?: ToolDefinition[];
+  /** Managed-agent runtime shared by the parent session. */
+  agentManager?: import('./agents/manager.js').AgentManager;
+  /** Identity set only inside a managed child. */
+  agentId?: string;
+  agentRole?: import('./agents/types.js').AgentRole;
+  /** Parent session attribution for managed agents and hooks. */
+  parentSessionId?: string;
+  /** Host sink for managed-agent lifecycle and evidence events. */
+  onAgentEvent?: (event: import('./agents/types.js').AgentRuntimeEvent) => void;
+  /** Host sink used by lifecycle hooks started from managed-agent tools. */
+  onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
 }
 
 export interface SystemPromptZones {
@@ -655,6 +668,8 @@ export interface AgentConfig {
   backgroundShells?: BackgroundShellStore;
   /** Runtime-only newest file observation per workspace/path. */
   fileObservationLedger?: Map<string, FileObservation>;
+  /** Runtime-only managed-agent service, lazily created by agent tools. */
+  agentManager?: import('./agents/manager.js').AgentManager;
 }
 
 export interface ProviderStreamEvent {
@@ -716,10 +731,93 @@ export interface AgentLoopCallbacks {
   onPersistPermissionRule?: (rule: string) => void;
   /** Called when a hook lifecycle event fires (for --include-hook-events in stream-json mode). */
   onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
+  /** Called for managed-agent lifecycle, evidence, and application events. */
+  onAgentEvent?: (event: import('./agents/types.js').AgentRuntimeEvent) => void;
 }
 
 export type OutputFormat = 'text' | 'json' | 'stream-json';
 export type InputFormat = 'text' | 'stream-json';
+
+export type RewindAction = 'conversation' | 'code' | 'both';
+
+export interface RewindCheckpointMetadata {
+  snapshotId?: string;
+  gitHead?: string;
+  entryCount?: number;
+  logicalBytes?: number;
+  codeUnavailableReason?: string;
+}
+
+export interface TurnCheckpointRecordData {
+  version: 1;
+  checkpointId: string;
+  userEventId: string;
+  prompt: string;
+  checkpoint: RewindCheckpointMetadata;
+}
+
+export interface RewindRecordData {
+  version: 1;
+  action: RewindAction;
+  targetId: string;
+  targetUserEventId: string;
+}
+
+export interface RewindTarget extends RewindCheckpointMetadata {
+  id: string;
+  userEventId: string;
+  prompt: string;
+  timestamp: number;
+  codeAvailable: boolean;
+}
+
+export interface RewindSnapshotEntry {
+  path: string;
+  kind: 'file' | 'symlink';
+  blobHash: string;
+  byteSize: number;
+  mode: number;
+}
+
+export interface RewindSnapshotManifest {
+  version: 1;
+  id: string;
+  workspace: string;
+  createdAt: number;
+  gitHead?: string;
+  ignorePatterns: string[];
+  entries: RewindSnapshotEntry[];
+  logicalBytes: number;
+}
+
+export type RewindSnapshotCaptureResult =
+  { ok: true; manifest: RewindSnapshotManifest } | { ok: false; reason: string; gitHead?: string };
+
+export type RewindRestoreResult =
+  { ok: true; safetySnapshotId: string } | { ok: false; error: string; rollbackError?: string };
+
+export interface RewindSnapshotStoreInterface {
+  capture(ignorePatterns?: string[]): RewindSnapshotCaptureResult;
+  getCurrentGitHead(): string | undefined;
+  getManifest(id: string): RewindSnapshotManifest | undefined;
+  getAvailability(
+    id: string | undefined,
+    expectedGitHead?: string,
+  ): {
+    available: boolean;
+    reason?: string;
+  };
+  restore(id: string): RewindRestoreResult;
+  rollback(safetySnapshotId: string): { ok: true } | { ok: false; error: string };
+  discardManifest(id: string): void;
+  cleanup(
+    referencedSnapshotIds: Set<string>,
+    days: number,
+  ): {
+    manifests: number;
+    blobs: number;
+  };
+}
 
 export interface SessionRecord {
   type:
@@ -730,7 +828,9 @@ export interface SessionRecord {
     | 'tool_result'
     | 'usage'
     | 'session_meta'
-    | 'compact';
+    | 'compact'
+    | 'turn_checkpoint'
+    | 'rewind';
   eventId?: string;
   timestamp: number;
   data: unknown;
@@ -839,6 +939,8 @@ export interface LoadedSession {
   transcript: Message[];
   contextHistory: Message[];
   compactBoundaries: CompactBoundary[];
+  rewindTargets: RewindTarget[];
+  activeEventIds: string[];
   meta: SessionMeta;
   /** @deprecated Use contextHistory. */
   history: Message[];
@@ -862,6 +964,7 @@ export interface SessionStoreInterface {
   fork?(sourceId: string, meta: { cwd: string; name?: string; id?: string }): string;
   searchCurrent?(id: string, query: string, limit?: number): SessionHistorySearchResult[];
   readCurrent?(id: string, refs: string[]): Array<{ ref: string; content: string }>;
+  listRewindTargets?(id: string): RewindTarget[];
   list(): SessionMeta[];
   findByName(name: string): SessionMeta | undefined;
   findById(id: string): SessionMeta | undefined;

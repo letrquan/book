@@ -13,9 +13,12 @@ import type {
   CompactRecordData,
   LoadedSession,
   Message,
+  RewindRecordData,
+  RewindTarget,
   SessionHistorySearchResult,
   SessionMeta,
   SessionRecord,
+  TurnCheckpointRecordData,
 } from '../types.js';
 import { createDebugLogger } from '../debug-log.js';
 
@@ -28,6 +31,21 @@ const SEARCH_PREVIEW_CHARS = 400;
 const READ_REF_LIMIT = 8;
 const READ_TOTAL_CHARS = 16_000;
 const TOOL_RESULT_PREVIEW_CHARS = 4_000;
+
+interface ReplayLink<T> {
+  value: T;
+  previous?: ReplayLink<T>;
+}
+
+function appendReplayLink<T>(previous: ReplayLink<T> | undefined, value: T): ReplayLink<T> {
+  return { value, previous };
+}
+
+function replayLinkValues<T>(tail: ReplayLink<T> | undefined): T[] {
+  const values: T[] = [];
+  for (let current = tail; current; current = current.previous) values.push(current.value);
+  return values.reverse();
+}
 
 function normalizeWorkspace(cwd: string): string {
   const normalized = normalize(resolve(cwd));
@@ -76,10 +94,16 @@ export class SessionStore {
   readRecords(id: string): SessionRecord[] {
     const p = this.path(id);
     if (!existsSync(p)) throw new Error(`Session not found: ${id}`);
-    return readFileSync(p, 'utf-8')
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as SessionRecord);
+    const records: SessionRecord[] = [];
+    for (const [index, line] of readFileSync(p, 'utf-8').split('\n').entries()) {
+      if (!line) continue;
+      try {
+        records.push(JSON.parse(line) as SessionRecord);
+      } catch {
+        log.warn('ignoring corrupt session record', { id, line: index + 1 });
+      }
+    }
+    return records;
   }
 
   patchMeta(id: string, patch: { name?: string }): void {
@@ -114,9 +138,24 @@ export class SessionStore {
       ...(storedMeta?.name === undefined ? {} : { name: storedMeta.name }),
     };
 
-    const transcript: Message[] = [];
-    const contextHistory: Message[] = [];
-    const compactBoundaries: CompactBoundary[] = [];
+    let transcript: Message[] = [];
+    let contextHistory: Message[] = [];
+    let compactBoundaries: CompactBoundary[] = [];
+    let activeEventTail: ReplayLink<string> | undefined;
+    let activeTargetTail: ReplayLink<string> | undefined;
+    const targets = new Map<string, RewindTarget>();
+    const targetStates = new Map<
+      string,
+      {
+        transcript: Message[];
+        contextHistory: Message[];
+        compactBoundaries: CompactBoundary[];
+        activeEventTail?: ReplayLink<string>;
+        activeTargetTail?: ReplayLink<string>;
+        count: number;
+      }
+    >();
+    const checkpointByUserEventId = new Map<string, string>();
     let count = 0;
     for (let lineIndex = 0; lineIndex < records.length; lineIndex++) {
       const record = records[lineIndex];
@@ -145,6 +184,68 @@ export class SessionStore {
       }
       if (data.kind === 'session_meta' || data.kind === 'session_touch') continue;
 
+      if (record.type === 'turn_checkpoint') {
+        const checkpoint = record.data as TurnCheckpointRecordData;
+        if (
+          checkpoint?.version !== 1 ||
+          !checkpoint.checkpointId ||
+          !checkpoint.userEventId ||
+          typeof checkpoint.prompt !== 'string'
+        ) {
+          log.warn('ignoring malformed turn checkpoint', { id, eventId });
+          continue;
+        }
+        const target: RewindTarget = {
+          id: checkpoint.checkpointId,
+          userEventId: checkpoint.userEventId,
+          prompt: checkpoint.prompt,
+          timestamp: record.timestamp,
+          ...checkpoint.checkpoint,
+          codeAvailable: Boolean(
+            checkpoint.checkpoint.snapshotId && !checkpoint.checkpoint.codeUnavailableReason,
+          ),
+        };
+        targets.set(target.id, target);
+        targetStates.set(target.id, {
+          transcript,
+          contextHistory,
+          compactBoundaries,
+          activeEventTail,
+          activeTargetTail,
+          count,
+        });
+        checkpointByUserEventId.set(checkpoint.userEventId, target.id);
+        continue;
+      }
+
+      if (record.type === 'rewind') {
+        const rewind = record.data as RewindRecordData;
+        const rewindTarget = targets.get(rewind?.targetId);
+        if (
+          rewind?.version !== 1 ||
+          !['conversation', 'code', 'both'].includes(rewind.action) ||
+          rewindTarget?.userEventId !== rewind.targetUserEventId ||
+          !replayLinkValues(activeTargetTail).includes(rewind.targetId)
+        ) {
+          log.warn('ignoring malformed or inactive rewind record', { id, eventId });
+          continue;
+        }
+        if (rewind.action === 'conversation' || rewind.action === 'both') {
+          const state = targetStates.get(rewind.targetId);
+          if (!state) {
+            log.warn('ignoring rewind with unknown target', { id, eventId });
+            continue;
+          }
+          transcript = state.transcript;
+          contextHistory = state.contextHistory;
+          compactBoundaries = state.compactBoundaries;
+          activeEventTail = state.activeEventTail;
+          activeTargetTail = state.activeTargetTail;
+          count = state.count;
+        }
+        continue;
+      }
+
       // Atomic compact boundary: replace only provider context after validation.
       if (record.type === 'compact') {
         const compactData = data as unknown as CompactRecordData;
@@ -168,13 +269,34 @@ export class SessionStore {
                 compactBoundaries.length + 1,
                 compactData.trigger,
               );
-        contextHistory.length = 0;
-        contextHistory.push(...replacement);
-        compactBoundaries.push(boundary);
+        contextHistory = replacement;
+        compactBoundaries = [...compactBoundaries, boundary];
+        activeEventTail = appendReplayLink(activeEventTail, eventId);
         continue;
       }
 
       if (record.type === 'user') {
+        let targetId = checkpointByUserEventId.get(eventId);
+        if (!targetId) {
+          targetId = `user:${eventId}`;
+          const legacyTarget: RewindTarget = {
+            id: targetId,
+            userEventId: eventId,
+            prompt: data.content ?? '',
+            timestamp: record.timestamp,
+            codeAvailable: false,
+            codeUnavailableReason: 'No filesystem checkpoint was captured for this turn.',
+          };
+          targets.set(targetId, legacyTarget);
+          targetStates.set(targetId, {
+            transcript,
+            contextHistory,
+            compactBoundaries,
+            activeEventTail,
+            activeTargetTail,
+            count,
+          });
+        }
         count++;
         const message: Message = {
           id: data.id ?? eventId,
@@ -186,18 +308,24 @@ export class SessionStore {
           fileObservations: data.fileObservations,
           timestamp: record.timestamp,
         };
-        transcript.push(message);
-        if (message.includeInContext) contextHistory.push(message);
+        transcript = [...transcript, message];
+        if (message.includeInContext) contextHistory = [...contextHistory, message];
+        activeEventTail = appendReplayLink(activeEventTail, eventId);
+        activeTargetTail = appendReplayLink(activeTargetTail, targetId);
       } else if (record.type === 'local') {
         count++;
-        transcript.push({
-          id: data.id ?? eventId,
-          role: 'assistant',
-          content: data.content ?? '',
-          includeInContext: false,
-          kind: 'local',
-          timestamp: record.timestamp,
-        });
+        transcript = [
+          ...transcript,
+          {
+            id: data.id ?? eventId,
+            role: 'assistant',
+            content: data.content ?? '',
+            includeInContext: false,
+            kind: 'local',
+            timestamp: record.timestamp,
+          },
+        ];
+        activeEventTail = appendReplayLink(activeEventTail, eventId);
       } else if (record.type === 'assistant') {
         if (data.complete) {
           count++;
@@ -213,15 +341,17 @@ export class SessionStore {
             fileObservations: data.fileObservations,
             timestamp: record.timestamp,
           };
-          transcript.push(message);
-          if (message.includeInContext) contextHistory.push(message);
+          transcript = [...transcript, message];
+          if (message.includeInContext) contextHistory = [...contextHistory, message];
+          activeEventTail = appendReplayLink(activeEventTail, eventId);
         } else {
           const last = transcript[transcript.length - 1];
           if (last?.role === 'assistant') {
-            last.content += data.content ?? '';
+            const updated = { ...last, content: last.content + (data.content ?? '') };
+            transcript = [...transcript.slice(0, -1), updated];
             const contextLast = contextHistory[contextHistory.length - 1];
-            if (contextLast?.id === last.id && contextLast !== last) {
-              contextLast.content = last.content;
+            if (contextLast?.id === last.id) {
+              contextHistory = [...contextHistory.slice(0, -1), updated];
             }
           } else {
             count++;
@@ -233,16 +363,31 @@ export class SessionStore {
               kind: 'conversation',
               timestamp: record.timestamp,
             };
-            transcript.push(message);
-            contextHistory.push(message);
+            transcript = [...transcript, message];
+            contextHistory = [...contextHistory, message];
           }
+          activeEventTail = appendReplayLink(activeEventTail, eventId);
         }
       }
     }
 
     if (records.length) meta.updatedAt = records[records.length - 1].timestamp;
     meta.messageCount = count;
-    return { transcript, contextHistory, compactBoundaries, meta, history: contextHistory };
+    const activeTargetIds = replayLinkValues(activeTargetTail);
+    const activeEventIds = replayLinkValues(activeEventTail);
+    const rewindTargets = activeTargetIds
+      .map((targetId) => targets.get(targetId))
+      .filter((target): target is RewindTarget => Boolean(target))
+      .reverse();
+    return {
+      transcript,
+      contextHistory,
+      compactBoundaries,
+      rewindTargets,
+      activeEventIds,
+      meta,
+      history: contextHistory,
+    };
   }
 
   fork(sourceId: string, meta: { cwd: string; name?: string; id?: string }): string {
@@ -267,9 +412,11 @@ export class SessionStore {
     if (!needle) return [];
     const capped = Math.max(1, Math.min(SEARCH_LIMIT_MAX, limit));
     const results: SessionHistorySearchResult[] = [];
+    const activeEventIds = new Set(this.load(id).activeEventIds);
     for (const [index, record] of this.readRecords(id).entries()) {
       if (!['user', 'assistant', 'local'].includes(record.type)) continue;
       const eventId = record.eventId ?? `legacy-line-${index + 1}`;
+      if (!activeEventIds.has(eventId)) continue;
       const data = record.data as {
         content?: string;
         contextContent?: string;
@@ -298,8 +445,11 @@ export class SessionStore {
     if (refs.length > READ_REF_LIMIT)
       throw new Error(`At most ${READ_REF_LIMIT} references per call.`);
     const records = this.readRecords(id);
+    const activeEventIds = new Set(this.load(id).activeEventIds);
     const byId = new Map(
-      records.map((record, index) => [record.eventId ?? `legacy-line-${index + 1}`, record]),
+      records
+        .map((record, index) => [record.eventId ?? `legacy-line-${index + 1}`, record] as const)
+        .filter(([eventId]) => activeEventIds.has(eventId)),
     );
     const output: Array<{ ref: string; content: string }> = [];
     let remaining = READ_TOTAL_CHARS;
@@ -353,6 +503,10 @@ export class SessionStore {
       }
     }
     return metas.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  listRewindTargets(id: string): RewindTarget[] {
+    return this.load(id).rewindTargets;
   }
 
   mostRecentInCwd(cwd: string): SessionMeta | undefined {
