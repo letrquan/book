@@ -280,6 +280,18 @@ describe('buildMessages', () => {
     expect(zones.dynamicSuffix).toContain('[>] Write tests (now: Writing tests)');
   });
 
+  it('encodes the core agent workflow and evidence-based completion rules', async () => {
+    const zones = await buildSystemPromptZones(config, [], [], []);
+
+    expect(zones.cachedPrefix).toContain('Work as an agent, not a chatbot');
+    expect(zones.cachedPrefix).toContain('Act directly when the task is small and clear');
+    expect(zones.cachedPrefix).toContain('Solve root causes rather than suppressing symptoms');
+    expect(zones.cachedPrefix).toContain('Do not claim success without evidence');
+    expect(zones.cachedPrefix).toContain(
+      'Do not create commits, push branches, open pull requests',
+    );
+  });
+
   it('keeps the flat system prompt compatibility helper', async () => {
     const prompt = await buildSystemPrompt(
       config,
