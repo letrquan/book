@@ -710,34 +710,91 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const history = contextHistoryRef.current;
       const userMsg = makeMessage('user', userMessage, undefined, true);
       userMsg.kind = 'conversation';
+      const placeholder = makeMessage('assistant', '', undefined, true);
+      streamingIdRef.current = placeholder.id;
+      setStreamingMessageId(placeholder.id);
+      setIsThinking(true);
+      setError(null);
+      setCurrentTurn(0);
+      setUsage(null);
+      setRetryPhase('none');
+      setRetryAttempt(0);
+      setRetryMax(0);
+      setRetryCountdownMs(0);
+      setMessages((prev) => {
+        const next = [...prev, userMsg, placeholder];
+        messagesRef.current = next;
+        return next;
+      });
+      const removeOptimisticMessages = () => {
+        setMessages((prev) => {
+          const next = prev.filter(
+            (message) => message.id !== userMsg.id && message.id !== placeholder.id,
+          );
+          messagesRef.current = next;
+          return next;
+        });
+      };
+
+      // Snapshot capture walks the workspace. Keep it off the render-critical
+      // path so the first cold capture cannot freeze the input or spinner.
+      const controller = new AbortController();
+      abortRef.current = controller;
       const checkpointId = crypto.randomUUID();
       const checkpointTimestamp = Date.now();
-      const capture = session.snapshotStore?.capture() ?? {
-        ok: false as const,
-        reason: 'Filesystem checkpoint storage is unavailable.',
-      };
-      const checkpoint = capture.ok
-        ? {
-            snapshotId: capture.manifest.id,
-            gitHead: capture.manifest.gitHead,
-            entryCount: capture.manifest.entries.length,
-            logicalBytes: capture.manifest.logicalBytes,
-          }
-        : {
-            gitHead: capture.gitHead,
-            codeUnavailableReason: capture.reason,
-          };
-      const rewindTarget: RewindTarget = {
-        id: checkpointId,
-        userEventId: userMsg.id,
-        prompt: userMessage,
-        timestamp: checkpointTimestamp,
-        ...checkpoint,
-        codeAvailable: capture.ok,
-      };
 
       let contextMessage: string;
       try {
+        const capture = session.snapshotStore
+          ? session.snapshotStore.captureAsync
+            ? await session.snapshotStore.captureAsync()
+            : await new Promise<ReturnType<RewindSnapshotStoreInterface['capture']>>(
+                (resolve, reject) => {
+                  setTimeout(() => {
+                    try {
+                      resolve(session.snapshotStore!.capture());
+                    } catch (error) {
+                      reject(error);
+                    }
+                  }, 0);
+                },
+              )
+          : {
+              ok: false as const,
+              reason: 'Filesystem checkpoint storage is unavailable.',
+            };
+        if (!stillCurrent()) return;
+        if (controller.signal.aborted) {
+          setIsThinking(false);
+          streamingIdRef.current = null;
+          setStreamingMessageId(null);
+          abortRef.current = null;
+          removeOptimisticMessages();
+          sendInFlightRef.current = false;
+          if (operationInFlightRef.current === 'send') operationInFlightRef.current = null;
+          return;
+        }
+
+        const checkpoint = capture.ok
+          ? {
+              snapshotId: capture.manifest.id,
+              gitHead: capture.manifest.gitHead,
+              entryCount: capture.manifest.entries.length,
+              logicalBytes: capture.manifest.logicalBytes,
+            }
+          : {
+              gitHead: capture.gitHead,
+              codeUnavailableReason: capture.reason,
+            };
+        const rewindTarget: RewindTarget = {
+          id: checkpointId,
+          userEventId: userMsg.id,
+          prompt: userMessage,
+          timestamp: checkpointTimestamp,
+          ...checkpoint,
+          codeAvailable: capture.ok,
+        };
+
         timelineStore?.append(activeSessionId, {
           type: 'turn_checkpoint',
           eventId: checkpointId,
@@ -788,27 +845,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           setError(
             preflightError instanceof Error ? preflightError.message : String(preflightError),
           );
+          setIsThinking(false);
+          streamingIdRef.current = null;
+          setStreamingMessageId(null);
+          abortRef.current = null;
+          removeOptimisticMessages();
           sendInFlightRef.current = false;
           if (operationInFlightRef.current === 'send') operationInFlightRef.current = null;
         }
         return;
       }
-      const placeholder = makeMessage('assistant', '', undefined, true);
-      streamingIdRef.current = placeholder.id;
-      setStreamingMessageId(placeholder.id);
-      setIsThinking(true);
-      setError(null);
-      setCurrentTurn(0);
-      setUsage(null);
-      setRetryPhase('none');
-      setRetryAttempt(0);
-      setRetryMax(0);
-      setRetryCountdownMs(0);
-      setMessages((prev) => {
-        const next = [...prev, userMsg, placeholder];
-        messagesRef.current = next;
-        return next;
-      });
 
       // Create and start the batched message accumulator.
       // All streaming callbacks push to this queue; it flushes at ~60fps.
@@ -828,9 +874,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             }
           : {}),
       });
-      const controller = new AbortController();
-      abortRef.current = controller;
-
       try {
         // `history` (pre-user state) is passed as context; the loop pushes its
         // own copy of the user message for API context. We ignore the loop's

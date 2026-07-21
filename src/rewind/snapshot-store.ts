@@ -12,7 +12,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'fs';
-import { execFileSync } from 'child_process';
+import { lstat, mkdir, readFile, readdir, readlink, rename, rm, writeFile } from 'fs/promises';
+import { execFile, execFileSync } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
@@ -93,6 +94,10 @@ class UnavailableRewindSnapshotStore implements RewindSnapshotStoreInterface {
     return { ok: false, reason: this.reason };
   }
 
+  async captureAsync(): Promise<RewindSnapshotCaptureResult> {
+    return this.capture();
+  }
+
   getCurrentGitHead(): string | undefined {
     return undefined;
   }
@@ -147,6 +152,19 @@ function readCustomIgnorePatterns(workspace: string): string[] {
     .filter((line) => line.length > 0 && !line.startsWith('#'));
 }
 
+async function readCustomIgnorePatternsAsync(workspace: string): Promise<string[]> {
+  const path = join(workspace, '.book', 'rewindignore');
+  try {
+    return (await readFile(path, 'utf-8'))
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('#'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
 function expandNegatedParents(patterns: string[]): string[] {
   const expanded: string[] = [];
   for (const pattern of patterns) {
@@ -171,6 +189,21 @@ function gitHead(workspace: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function gitHeadAsync(workspace: string): Promise<string | undefined> {
+  return new Promise((resolveHead) => {
+    execFile(
+      'git',
+      ['rev-parse', '--verify', 'HEAD'],
+      {
+        cwd: workspace,
+        encoding: 'utf-8',
+        windowsHide: true,
+      },
+      (error, stdout) => resolveHead(error ? undefined : stdout.trim()),
+    );
+  });
 }
 
 function assertSafeRelativePath(path: string): void {
@@ -243,6 +276,49 @@ function walkIncludedEntries(
   return entries;
 }
 
+async function walkIncludedEntriesAsync(
+  workspace: string,
+  patterns: string[],
+  maxEntries = Number.POSITIVE_INFINITY,
+): Promise<WalkedEntry[]> {
+  const matcher = ignore().add(patterns);
+  const hasNegations = patterns.some((pattern) => pattern.startsWith('!'));
+  const entries: WalkedEntry[] = [];
+
+  const visit = async (directory: string, prefix: string): Promise<void> => {
+    const children = (await readdir(directory, { withFileTypes: true })).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+    for (const child of children) {
+      if (child.name === '.git') continue;
+      const path = prefix ? `${prefix}/${child.name}` : child.name;
+      const absolutePath = join(directory, child.name);
+      const stat = await lstat(absolutePath);
+      if (stat.isDirectory()) {
+        if (!matcher.ignores(`${path}/`) || hasNegations) await visit(absolutePath, path);
+        continue;
+      }
+      if (matcher.ignores(path)) continue;
+      if (!stat.isFile() && !stat.isSymbolicLink()) continue;
+      entries.push({
+        path,
+        absolutePath,
+        kind: stat.isSymbolicLink() ? 'symlink' : 'file',
+        byteSize: stat.isSymbolicLink()
+          ? Buffer.byteLength(await readlink(absolutePath, { encoding: 'utf-8' }))
+          : stat.size,
+        mode: stat.mode,
+      });
+      if (entries.length > maxEntries) {
+        throw new Error(`Code rewind unavailable: checkpoint exceeds ${maxEntries} entries.`);
+      }
+    }
+  };
+
+  await visit(workspace, '');
+  return entries;
+}
+
 function writeAtomic(path: string, contents: Buffer | string): void {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = join(dirname(path), `.book-rewind-${randomUUID()}.tmp`);
@@ -251,6 +327,26 @@ function writeAtomic(path: string, contents: Buffer | string): void {
     renameSync(temporary, path);
   } finally {
     if (pathExists(temporary)) unlinkSync(temporary);
+  }
+}
+
+async function writeAtomicAsync(path: string, contents: Buffer | string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const temporary = join(dirname(path), `.book-rewind-${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, contents);
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
+async function pathExistsAsync(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -334,6 +430,82 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
         logicalBytes,
       };
       writeAtomic(join(this.manifestsRoot, `${manifest.id}.json`), JSON.stringify(manifest));
+      return { ok: true, manifest };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : String(error),
+        gitHead: head,
+      };
+    }
+  }
+
+  async captureAsync(ignorePatterns?: string[]): Promise<RewindSnapshotCaptureResult> {
+    let head: string | undefined;
+    try {
+      const [resolvedHead, customIgnorePatterns] = await Promise.all([
+        gitHeadAsync(this.workspace),
+        ignorePatterns ? Promise.resolve([]) : readCustomIgnorePatternsAsync(this.workspace),
+      ]);
+      head = resolvedHead;
+      const patterns =
+        ignorePatterns ??
+        expandNegatedParents([...DEFAULT_IGNORE_PATTERNS, ...customIgnorePatterns]);
+      const walked = await walkIncludedEntriesAsync(
+        this.workspace,
+        patterns,
+        this.limits.maxEntries,
+      );
+
+      let logicalBytes = 0;
+      const entries: RewindSnapshotEntry[] = [];
+      for (const entry of walked) {
+        if (entry.byteSize > this.limits.maxFileBytes) {
+          throw new Error(
+            `Code rewind unavailable: ${entry.path} exceeds the ${this.limits.maxFileBytes}-byte per-file limit.`,
+          );
+        }
+        const contents =
+          entry.kind === 'symlink'
+            ? Buffer.from(await readlink(entry.absolutePath, { encoding: 'utf-8' }), 'utf-8')
+            : await readFile(entry.absolutePath);
+        if (contents.byteLength > this.limits.maxFileBytes) {
+          throw new Error(
+            `Code rewind unavailable: ${entry.path} exceeds the ${this.limits.maxFileBytes}-byte per-file limit.`,
+          );
+        }
+        logicalBytes += contents.byteLength;
+        if (logicalBytes > this.limits.maxLogicalBytes) {
+          throw new Error(
+            `Code rewind unavailable: checkpoint exceeds ${this.limits.maxLogicalBytes} bytes of file content.`,
+          );
+        }
+        const blobHash = sha256(contents);
+        const blobPath = join(this.blobsRoot, blobHash);
+        if (!(await pathExistsAsync(blobPath))) await writeAtomicAsync(blobPath, contents);
+        entries.push({
+          path: entry.path.replaceAll('\\', '/'),
+          kind: entry.kind,
+          blobHash,
+          byteSize: contents.byteLength,
+          mode: entry.mode,
+        });
+      }
+
+      const manifest: RewindSnapshotManifest = {
+        version: 1,
+        id: randomUUID(),
+        workspace: normalizeWorkspace(this.workspace),
+        createdAt: Date.now(),
+        gitHead: head,
+        ignorePatterns: patterns,
+        entries,
+        logicalBytes,
+      };
+      await writeAtomicAsync(
+        join(this.manifestsRoot, `${manifest.id}.json`),
+        JSON.stringify(manifest),
+      );
       return { ok: true, manifest };
     } catch (error) {
       return {
