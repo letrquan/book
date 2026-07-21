@@ -11,7 +11,7 @@ import { runCompact, usagePressureTokens } from '../agent/compact.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../config.js';
 import { runHooks } from '../hooks.js';
 import { discoverAgents } from '../subagent-discovery.js';
-import { createRegistry } from '../tools/registry.js';
+import { createRegistry } from '../tools/registry-core.js';
 import { createCapabilityRegistry, describeCapabilities } from './capabilities.js';
 import {
   applyVerifiedCandidate,

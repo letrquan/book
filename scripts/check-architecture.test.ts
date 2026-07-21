@@ -18,4 +18,21 @@ describe('checkArchitecture', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('rejects every import cycle without an exception ledger', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      writeFileSync(join(dir, 'first.ts'), "import './second.js';\n");
+      writeFileSync(join(dir, 'second.ts'), "import './first.js';\n");
+
+      expect(checkArchitecture(dir)).toEqual([
+        expect.objectContaining({
+          kind: 'cycle',
+          detail: 'Import cycle: first.ts -> second.ts -> first.ts',
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

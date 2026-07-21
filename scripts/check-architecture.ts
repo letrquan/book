@@ -10,15 +10,6 @@ interface Violation {
 }
 
 const IMPORT_PATTERN = /(?:import|export)\s+(type\s+)?(?:[^'";]+?\s+from\s+)?['"]([^'"]+)['"]/g;
-const ALLOWED_CYCLE_MEMBERS = new Set([
-  'agent/loop.ts',
-  'agents/capabilities.ts',
-  'agents/manager.ts',
-  'tools/registry.ts',
-  'tools/task-tool.ts',
-  'tools/agent-tools.ts',
-]);
-
 function sourceFiles(root: string): string[] {
   const files: string[] = [];
   const visit = (directory: string) => {
@@ -88,12 +79,8 @@ export function checkArchitecture(srcRoot: string): Violation[] {
       const start = stack.indexOf(node);
       const cycle = [...stack.slice(start), node];
       const members = new Set(cycle);
-      const allowed =
-        members.has('agents/manager.ts') &&
-        members.has('tools/registry.ts') &&
-        [...members].every((member) => ALLOWED_CYCLE_MEMBERS.has(member));
       const key = [...members].sort().join('|');
-      if (!allowed && !reported.has(key)) {
+      if (!reported.has(key)) {
         reported.add(key);
         violations.push({
           kind: 'cycle',
@@ -120,7 +107,6 @@ const currentFile = fileURLToPath(import.meta.url);
 if (process.argv[1] && resolve(process.argv[1]) === currentFile) {
   const root = resolve(process.argv[2] ?? 'src');
   const violations = checkArchitecture(root);
-  console.log('Temporary cycle exception: registry/agent-manager/task composition');
   if (violations.length > 0) {
     for (const violation of violations) {
       console.error(

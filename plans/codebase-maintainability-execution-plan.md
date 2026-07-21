@@ -18,7 +18,7 @@ not complete and should continue as separate changes rather than being collapsed
 | Planned work | Status | Current result |
 | --- | --- | --- |
 | PR 1: Test taxonomy and aggregate scripts | Partial | Added unit, contract, and integration configs; `npm test` remains the aggregate; `npm run check` is available. Process-heavy tests run with one worker, and the Windows/Node 24 integration tier now completes without ConPTY helper failures. The unit suite also remains on one worker because parallel TUI tests were flaky. |
-| PR 2: Architecture checks | Partial | Added cycle/layer/entry-point checks and a failing fixture test. The non-TUI import from `tui/` was removed. One registry/agent-manager/task cycle exception remains. |
+| PR 2: Architecture checks | Complete | Added cycle/layer/entry-point checks and a failing fixture test. The non-TUI import from `tui/` and the registry/agent-manager/task cycle are removed; no exception ledger remains. |
 | PR 3: Characterization fixtures | Complete | Added reusable MCP stdio, scripted-provider, temporary `SessionStore`, and async event collector fixtures. Contract coverage is offline and deterministic across SDK, headless, MCP, and PTY paths. |
 | PR 4: Settings repository core | Complete | Added schema-backed key metadata, distinct document read states, cloned dot-path mutations, complete validation, atomic sibling-file replacement, structured diagnostics, malformed-file preservation, and secret-redacted mutation metadata. |
 | PR 5: Settings merge policies | Complete | Added explicit array policies, normalized/deduplicated `additionalDirectories`, permission/hook accumulation, replacement for unregistered arrays, and injectable resolution paths. |
@@ -30,12 +30,12 @@ not complete and should continue as separate changes rather than being collapsed
 | PR 12: Exact command contract | Partial | Slash input is parsed once into an exact name and raw arguments; prefix collisions are prevented. Typed effects, availability, collision policy, and registry-wide handler contracts remain. |
 | PRs 13-14: Handler migration | Not started | Slash-command business logic still resides in `src/tui/app.tsx`. |
 | Milestone 5: Shared `AgentSession` | Not started | TUI, headless, and SDK still have separate lifecycle ownership. |
-| PR 15: Break boundary violations | Partial | Input expansion and file-mention discovery moved to `src/input/`; the TUI-layer exception is gone. The registry/agent-manager/task cycle still needs removal. |
+| PR 15: Break boundary violations | Complete | Input expansion and file-mention discovery live in `src/input/`. Registry mechanics are split from default tool composition, manager/capability code depends on the core, and all architecture exceptions are removed. |
 | PRs 16-20 | Not started | Session runtime ownership, provider port/transport, type-hub split, non-blocking interaction work, and package/release checks remain. |
 
 ### Current Verification
 
-- `npm run check` passes: formatting, lint, typecheck, architecture checks, 1,037 unit tests,
+- `npm run check` passes: formatting, lint, typecheck, architecture checks, 1,038 unit tests,
   and 20 contract tests.
 - `npm run build` passes.
 - Lint still reports 33 warnings; warning elimination and `--max-warnings 0` remain PR 11 work.
@@ -46,13 +46,12 @@ not complete and should continue as separate changes rather than being collapsed
 - Settings CLI integration now asserts exact resolved values through `book config get` without
   starting the agent runtime or making provider requests. The config subcommand honors root
   `--settings` and `--no-settings` flags.
-- The only architecture exception is the registry/agent-manager/task composition cycle.
+- Architecture checks enforce all known boundaries with no cycle or layer exceptions.
 
 ### Next Recommended Sequence
 
-1. Remove the registry/agent-manager/task cycle and architecture exception.
-2. Finish the typed command registry and migrate handlers out of `src/tui/app.tsx`.
-3. Extract the shared `AgentSession` service in the milestone order described below.
+1. Finish the typed command registry and migrate handlers out of `src/tui/app.tsx`.
+2. Extract the shared `AgentSession` service in the milestone order described below.
 
 ## Executive Direction
 
