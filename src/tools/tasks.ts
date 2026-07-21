@@ -5,16 +5,17 @@ import type {
   ToolDefinition,
   ToolResult,
 } from '../types.js';
+import { toolFailure, toolSuccess } from './result.js';
 
 const ACTIVE_STATUSES = new Set<AgentTaskStatus>(['pending', 'in_progress', 'completed']);
 const ALL_STATUSES = new Set<AgentTaskStatus>(['pending', 'in_progress', 'completed', 'deleted']);
 
 function fail(error: string): ToolResult {
-  return { toolCallId: '', success: false, output: '', error };
+  return toolFailure(error);
 }
 
 function ok(output: string): ToolResult {
-  return { toolCallId: '', success: true, output };
+  return toolSuccess(output);
 }
 
 function tasks(ctx: ToolContext): AgentTask[] {
@@ -348,7 +349,11 @@ export const taskTools: ToolDefinition[] = [
           description: 'Present-continuous form shown while in progress',
         },
         owner: { type: 'string', description: 'Optional owner/agent identifier' },
-        metadata: { type: 'object', description: 'Arbitrary task metadata' },
+        metadata: {
+          type: 'object',
+          description: 'Arbitrary task metadata',
+          additionalProperties: true,
+        },
         addBlockedBy: {
           type: 'array',
           items: { type: 'string' },
@@ -400,7 +405,11 @@ export const taskTools: ToolDefinition[] = [
           description: 'Present-continuous form shown while in progress',
         },
         owner: { type: 'string', description: 'Optional owner/agent identifier' },
-        metadata: { type: 'object', description: 'Metadata to merge; null values remove keys' },
+        metadata: {
+          type: 'object',
+          description: 'Metadata to merge; null values remove keys',
+          additionalProperties: true,
+        },
         addBlockedBy: {
           type: 'array',
           items: { type: 'string' },

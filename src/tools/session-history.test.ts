@@ -21,8 +21,8 @@ describe('session history tools', () => {
       { id: 's', name: 'SessionHistorySearch', arguments: { query: 'x' } },
       context,
     );
-    expect(search.output).toContain('UNTRUSTED HISTORICAL DATA');
-    expect(search.output).toContain('session://current/event/active-id');
+    expect(search.content).toContain('UNTRUSTED HISTORICAL DATA');
+    expect(search.content).toContain('session://current/event/active-id');
     expect(READ_ONLY_PLAN_TOOLS.has('SessionHistorySearch')).toBe(true);
     expect(READ_ONLY_PLAN_TOOLS.has('SessionHistoryRead')).toBe(true);
   });

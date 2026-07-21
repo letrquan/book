@@ -1,15 +1,16 @@
 import type { ToolCall, ToolDefinition, ToolResult } from '../types.js';
 import { canonicalToolName } from '../tools/aliases.js';
-import { globToRegex } from '../tools/glob-regex.js';
-import { getPrimaryArg } from '../tools/primary-arg.js';
+import { toolFailure } from '../tools/result.js';
 import { createRegistry, type ToolRegistry } from '../tools/registry.js';
+import {
+  isToolCallAllowed,
+  isToolDefinitionAllowed,
+  parseCapabilityRule,
+  parseCapabilityRules,
+  type CapabilityRule,
+} from '../tools/capability-rules.js';
 
-export interface CapabilityRule {
-  raw: string;
-  tool: string;
-  pattern?: string;
-  wildcard: boolean;
-}
+export { isToolCallAllowed, parseCapabilityRule, parseCapabilityRules, type CapabilityRule };
 
 const CHILD_LIFECYCLE_TOOLS = new Set([
   'AgentPlan',
@@ -23,52 +24,13 @@ const CHILD_LIFECYCLE_TOOLS = new Set([
   'Task',
 ]);
 
-function isImplicitlyExcluded(name: string): boolean {
-  return name === 'AskUserQuestion' || name.startsWith('mcp__') || CHILD_LIFECYCLE_TOOLS.has(name);
-}
-
-export function parseCapabilityRule(rawRule: string): CapabilityRule {
-  const raw = rawRule.trim();
-  if (!raw) throw new Error('Capability rules must not be empty');
-  if (raw === '*') return { raw, tool: '*', wildcard: true };
-
-  const open = raw.indexOf('(');
-  if (open === -1) {
-    return { raw, tool: canonicalToolName(raw), wildcard: false };
-  }
-  if (!raw.endsWith(')') || open === 0) {
-    throw new Error(`Invalid capability rule: ${rawRule}`);
-  }
-  const tool = canonicalToolName(raw.slice(0, open).trim());
-  const pattern = raw.slice(open + 1, -1).trim();
-  if (!tool || !pattern) throw new Error(`Invalid capability rule: ${rawRule}`);
-  return { raw, tool, pattern, wildcard: false };
-}
-
-export function parseCapabilityRules(rules: string[]): CapabilityRule[] {
-  return rules.map(parseCapabilityRule);
-}
-
-export function isToolCallAllowed(rules: CapabilityRule[], call: ToolCall): boolean {
-  const canonical = canonicalToolName(call.name);
-  const primary = getPrimaryArg(call.arguments).replace(/^\.\//, '');
-
-  return rules.some((rule) => {
-    if (rule.wildcard) return !isImplicitlyExcluded(canonical);
-    if (rule.tool !== canonical) return false;
-    if (rule.pattern === undefined) return true;
-    const normalizedPattern = rule.pattern.replace(/^\.\//, '');
-    return globToRegex(normalizedPattern).test(primary);
-  });
-}
+const CHILD_WILDCARD_EXCLUSIONS = new Set(['AskUserQuestion', ...CHILD_LIFECYCLE_TOOLS]);
 
 function denied(call: ToolCall): ToolResult {
-  return {
-    toolCallId: call.id,
-    success: false,
-    output: '',
-    error: `Capability denied: ${canonicalToolName(call.name)} is outside this agent's tool policy`,
-  };
+  return toolFailure(
+    `Capability denied: ${canonicalToolName(call.name)} is outside this agent's tool policy`,
+    { toolCallId: call.id, code: 'capability_denied', status: 'blocked' },
+  );
 }
 
 /**
@@ -82,9 +44,17 @@ export function createCapabilityRegistry(parent: ToolRegistry, rawRules: string[
 
   for (const definition of parent.getDefinitions()) {
     const canonical = canonicalToolName(definition.name);
-    const explicitlyNamed = rules.some((rule) => !rule.wildcard && rule.tool === canonical);
-    const wildcardNamed = rules.some((rule) => rule.wildcard) && !isImplicitlyExcluded(canonical);
-    if (!explicitlyNamed && !wildcardNamed) continue;
+    if (
+      canonical !== 'ToolSearch' &&
+      !isToolDefinitionAllowed(
+        rules,
+        definition,
+        definition.name.startsWith('mcp__')
+          ? new Set([...CHILD_WILDCARD_EXCLUSIONS, definition.name])
+          : CHILD_WILDCARD_EXCLUSIONS,
+      )
+    )
+      continue;
     if (CHILD_LIFECYCLE_TOOLS.has(canonical)) continue;
 
     const wrapped: ToolDefinition = {
@@ -95,7 +65,11 @@ export function createCapabilityRegistry(parent: ToolRegistry, rawRules: string[
           name: canonical,
           arguments: args,
         };
-        if (!isToolCallAllowed(rules, call)) return denied(call);
+        if (
+          canonical !== 'ToolSearch' &&
+          !isToolCallAllowed(rules, call, CHILD_WILDCARD_EXCLUSIONS)
+        )
+          return denied(call);
         return definition.execute(args, context);
       },
     };

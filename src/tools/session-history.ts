@@ -1,12 +1,13 @@
 import type { SessionStoreInterface, ToolDefinition, ToolResult } from '../types.js';
+import { toolFailure, toolSuccess } from './result.js';
 
 export interface SessionHistoryCapability {
   store: SessionStoreInterface;
   sessionId: () => string;
 }
 
-const ok = (output: string): ToolResult => ({ toolCallId: '', success: true, output });
-const fail = (error: string): ToolResult => ({ toolCallId: '', success: false, output: '', error });
+const ok = (output: string): ToolResult => toolSuccess(output);
+const fail = (error: string): ToolResult => toolFailure(error);
 
 export function createSessionHistoryTools(capability: SessionHistoryCapability): ToolDefinition[] {
   return [

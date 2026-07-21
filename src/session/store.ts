@@ -21,6 +21,7 @@ import type {
   TurnCheckpointRecordData,
 } from '../types.js';
 import { createDebugLogger } from '../debug-log.js';
+import { normalizeToolResult } from '../tools/result.js';
 
 export type { SessionMeta } from '../types.js';
 
@@ -36,6 +37,8 @@ interface ReplayLink<T> {
   value: T;
   previous?: ReplayLink<T>;
 }
+
+type PersistedToolResult = Parameters<typeof normalizeToolResult>[0];
 
 function appendReplayLink<T>(previous: ReplayLink<T> | undefined, value: T): ReplayLink<T> {
   return { value, previous };
@@ -167,7 +170,7 @@ export class SessionStore {
         contextContent?: string;
         complete?: boolean;
         toolCalls?: Message['toolCalls'];
-        toolResults?: Message['toolResults'];
+        toolResults?: PersistedToolResult[];
         version?: number;
         replacementHistory?: Message[];
         summary?: string;
@@ -337,7 +340,7 @@ export class SessionStore {
             includeInContext: data.includeInContext ?? true,
             kind: (data.kind as Message['kind']) ?? 'conversation',
             toolCalls: data.toolCalls,
-            toolResults: data.toolResults,
+            toolResults: normalizePersistedToolResults(data.toolResults),
             fileObservations: data.fileObservations,
             timestamp: record.timestamp,
           };
@@ -421,13 +424,14 @@ export class SessionStore {
         content?: string;
         contextContent?: string;
         toolCalls?: Message['toolCalls'];
-        toolResults?: Message['toolResults'];
+        toolResults?: PersistedToolResult[];
       };
+      const toolResults = normalizePersistedToolResults(data.toolResults);
       const haystack = [
         data.content ?? '',
         data.contextContent ?? '',
         ...(data.toolCalls ?? []).flatMap((call) => [call.name, JSON.stringify(call.arguments)]),
-        ...(data.toolResults ?? []).map((result) => result.output),
+        ...(toolResults ?? []).map((result) => result.content),
       ].join('\n');
       if (!haystack.toLowerCase().includes(needle)) continue;
       results.push({
@@ -461,22 +465,26 @@ export class SessionStore {
         content?: string;
         contextContent?: string;
         toolCalls?: Message['toolCalls'];
-        toolResults?: Message['toolResults'];
+        toolResults?: PersistedToolResult[];
       };
+      const toolResults = normalizePersistedToolResults(data.toolResults);
       let content: string;
       if (parsed.toolCallId) {
-        const result = data.toolResults?.find((item) => item.toolCallId === parsed.toolCallId);
+        const result = toolResults?.find((item) => item.toolCallId === parsed.toolCallId);
         if (!result) throw new Error(`Unknown tool-result reference: ${ref}`);
-        content = clipHeadTail(result.output ?? result.error ?? '', TOOL_RESULT_PREVIEW_CHARS);
+        content = clipHeadTail(
+          result.content || result.structuredError?.message || '',
+          TOOL_RESULT_PREVIEW_CHARS,
+        );
       } else {
         content = JSON.stringify(
           {
             role: record.type,
             content: data.contextContent ?? data.content ?? '',
             toolCalls: data.toolCalls,
-            toolResults: data.toolResults?.map((result) => ({
+            toolResults: toolResults?.map((result) => ({
               ...result,
-              output: clipHeadTail(result.output ?? '', TOOL_RESULT_PREVIEW_CHARS),
+              content: clipHeadTail(result.content, TOOL_RESULT_PREVIEW_CHARS),
             })),
           },
           null,
@@ -552,8 +560,15 @@ function restoreMessage(message: Message, fallbackId: string, timestamp: number)
     content: message.content ?? '',
     includeInContext: message.includeInContext ?? true,
     kind: message.kind ?? (message.includeInContext === false ? 'local' : 'conversation'),
+    toolResults: normalizePersistedToolResults(message.toolResults),
     timestamp: message.timestamp ?? timestamp,
   };
+}
+
+function normalizePersistedToolResults(
+  results: PersistedToolResult[] | undefined,
+): Message['toolResults'] {
+  return results?.map((result) => normalizeToolResult(result));
 }
 
 function isValidCompactRecord(data: CompactRecordData): boolean {

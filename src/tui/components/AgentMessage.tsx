@@ -6,7 +6,7 @@ import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { CommandPanel } from './CommandPanel.js';
 import { useTheme } from '../theme.js';
-import type { Message, ToolCall, PermissionResult, RetryPhase } from '../../types.js';
+import type { Message, ToolCall, ToolResult, PermissionResult, RetryPhase } from '../../types.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
 import {
   countNestedToolInvocations,
@@ -59,20 +59,29 @@ const NO_EXPANSION_OVERRIDES = new Map<string, boolean>();
 function aggregateMcpResult(
   id: string,
   invocations: readonly PresentableToolInvocation<ToolCall>[],
-) {
+): ToolResult {
   const output = invocations
     .map((invocation) => {
       const result = invocation.result;
-      const body = result?.output || result?.error || '(no output)';
+      const body = result?.content || result?.structuredError?.message || '(no output)';
       return `${invocation.name}\n${body}`;
     })
     .join('\n\n');
   const durations = invocations.flatMap((invocation) =>
-    invocation.result?.durationMs === undefined ? [] : [invocation.result.durationMs],
+    invocation.result?.metrics?.durationMs === undefined
+      ? []
+      : [invocation.result.metrics.durationMs],
   );
   const durationMs =
     durations.length > 0 ? durations.reduce((total, value) => total + value, 0) : undefined;
-  return { toolCallId: id, success: true, output, durationMs };
+  const result: ToolResult = {
+    version: 2,
+    toolCallId: id,
+    status: 'success',
+    content: output,
+  };
+  if (durationMs !== undefined) result.metrics = { durationMs };
+  return result;
 }
 
 function NestedToolRows({

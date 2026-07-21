@@ -190,7 +190,11 @@ export async function* query(
  * The session can be resumed later via query({ sessionId }).
  */
 export { loadConfig, type LoadConfigOptions };
+export type { ToolDiscoverySettings } from './settings.js';
 export { AgentManager };
+export { createDefaultRegistry, createRegistry } from './tools/registry.js';
+export { createToolSurface } from './tools/catalog.js';
+export { toolFailure, toolSuccess } from './tools/result.js';
 export function createAgentManager(config: AgentConfig): AgentManager {
   return getOrCreateAgentManager(config, createDefaultRegistry({ agents: true }).getDefinitions());
 }
@@ -210,6 +214,19 @@ export type {
   EvidenceItem,
 } from './agents/types.js';
 export type {
+  JsonSchemaObject,
+  ToolCatalogMetadata,
+  ToolCategory,
+  ToolDefinition,
+  ToolDiscoveryContext,
+  ToolEffect,
+  ToolPolicy,
+  ToolResult,
+  ToolResultArtifacts,
+  ToolResultError,
+  ToolResultPresentation,
+  ToolResultStatus,
+  ToolSearchMatch,
   UserQuestion,
   UserQuestionOption,
   UserQuestionRequest,

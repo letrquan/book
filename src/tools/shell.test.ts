@@ -37,8 +37,8 @@ function nodeCommand(name: string, source: string): string {
 }
 
 function shellIdFrom(result: ToolResult): string {
-  const match = result.output.match(/shell_\d+/);
-  if (!match) throw new Error(`No shell ID in output: ${result.output}`);
+  const match = result.content.match(/shell_\d+/);
+  if (!match) throw new Error(`No shell ID in output: ${result.content}`);
   return match[0];
 }
 
@@ -52,10 +52,10 @@ async function waitForOutput(
   let last: ToolResult | undefined;
   while (Date.now() - start < timeoutMs) {
     last = await bashOutput.execute({ shell_id: shellId }, c);
-    if (last.output.match(pattern)) return last;
+    if (last.content.match(pattern)) return last;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  throw new Error(`Timed out waiting for ${pattern}; last output: ${last?.output}`);
+  throw new Error(`Timed out waiting for ${pattern}; last output: ${last?.content}`);
 }
 
 beforeEach(() => {
@@ -81,8 +81,8 @@ describe('Bash shell tools', () => {
 
     const result = await bash.execute({ command }, c);
 
-    expect(result.success).toBe(true);
-    expect(result.output).toContain('foreground-ok');
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('foreground-ok');
     expect(c.backgroundShells).toBeUndefined();
   });
 
@@ -97,9 +97,9 @@ describe('Bash shell tools', () => {
     const result = await bash.execute({ command, run_in_background: true }, c);
 
     expect(Date.now() - startedAt).toBeLessThan(1_000);
-    expect(result.success).toBe(true);
-    expect(result.output).toMatch(/Started background shell shell_\d+/);
-    expect(result.output).toMatch(/BashOutput/);
+    expect(result.status).toBe('success');
+    expect(result.content).toMatch(/Started background shell shell_\d+/);
+    expect(result.content).toMatch(/BashOutput/);
     expect(c.backgroundShells?.shells.get(shellIdFrom(result))?.status).toBe('running');
   });
 
@@ -113,20 +113,20 @@ describe('Bash shell tools', () => {
     const shellId = shellIdFrom(start);
 
     const first = await waitForOutput(c, shellId, /once/);
-    expect(first.success).toBe(true);
-    expect(first.output).toContain('once');
+    expect(first.status).toBe('success');
+    expect(first.content).toContain('once');
 
     const terminal = await waitForOutput(
       c,
       shellId,
       /Shell shell_\d+: exited|Shell shell_\d+: failed/,
     );
-    expect(terminal.success).toBe(true);
-    expect(terminal.output).toMatch(/Shell shell_\d+: exited pid=\d+ exit=0/);
+    expect(terminal.status).toBe('success');
+    expect(terminal.content).toMatch(/Shell shell_\d+: exited pid=\d+ exit=0/);
 
     const empty = await bashOutput.execute({ shell_id: shellId }, c);
-    expect(empty.success).toBe(true);
-    expect(empty.output).toContain('(no new output)');
+    expect(empty.status).toBe('success');
+    expect(empty.content).toContain('(no new output)');
   });
 
   it('kills a running background shell after the process exits', async () => {
@@ -142,11 +142,11 @@ describe('Bash shell tools', () => {
     const killed = await killShell.execute({ shell_id: shellId }, c);
     const output = await bashOutput.execute({ shell_id: shellId }, c);
 
-    expect(killed.success).toBe(true);
-    expect(killed.output).toContain(`Killed shell ${shellId}`);
+    expect(killed.status).toBe('success');
+    expect(killed.content).toContain(`Killed shell ${shellId}`);
     expect(c.backgroundShells?.shells.get(shellId)?.status).toBe('killed');
     expect(c.backgroundShells?.shells.get(shellId)?.finishedAt).toBeDefined();
-    expect(output.output).toMatch(/Shell shell_\d+: killed/);
+    expect(output.content).toMatch(/Shell shell_\d+: killed/);
   });
 
   it('fails clearly for unknown shell IDs', async () => {
@@ -155,10 +155,10 @@ describe('Bash shell tools', () => {
     const output = await bashOutput.execute({ shell_id: 'shell_missing' }, c);
     const killed = await killShell.execute({ shell_id: 'shell_missing' }, c);
 
-    expect(output.success).toBe(false);
-    expect(output.error).toMatch(/not found/i);
-    expect(killed.success).toBe(false);
-    expect(killed.error).toMatch(/not found/i);
+    expect(output.status).toBe('error');
+    expect(output.structuredError?.message).toMatch(/not found/i);
+    expect(killed.status).toBe('error');
+    expect(killed.structuredError?.message).toMatch(/not found/i);
   });
 
   it('shares configured background shell state across contexts', async () => {
@@ -172,8 +172,8 @@ describe('Bash shell tools', () => {
     const shellId = shellIdFrom(start);
     const output = await waitForOutput(second, shellId, /shared-ready/);
 
-    expect(output.success).toBe(true);
-    expect(output.output).toContain('shared-ready');
+    expect(output.status).toBe('success');
+    expect(output.content).toContain('shared-ready');
   });
 
   it('times out background shells only when timeout is explicitly supplied', async () => {
@@ -188,7 +188,7 @@ describe('Bash shell tools', () => {
 
     const terminal = await waitForOutput(c, shellId, /Shell shell_\d+: timed_out/);
 
-    expect(terminal.success).toBe(true);
+    expect(terminal.status).toBe('success');
     expect(c.backgroundShells?.shells.get(shellId)?.status).toBe('timed_out');
   });
 
@@ -201,8 +201,8 @@ describe('Bash shell tools', () => {
       c,
     );
 
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/ENOENT|no such file|directory/i);
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toMatch(/ENOENT|no such file|directory/i);
     expect(c.backgroundShells?.shells.size ?? 0).toBe(0);
   });
 

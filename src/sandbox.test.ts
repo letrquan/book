@@ -65,9 +65,9 @@ describe('Bash tool integration with sandbox', () => {
       { id: 'c1', name: 'Bash', arguments: { command: 'echo hello' } },
       ctx,
     );
-    expect(result.success).toBe(true);
-    expect(result.output).toContain('hello');
-    expect(result.output).not.toContain('[sandboxed]');
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('hello');
+    expect(result.content).not.toContain('[sandboxed]');
   });
 
   it('marks output as [sandboxed] when sandbox is enabled and available', async () => {
@@ -87,8 +87,8 @@ describe('Bash tool integration with sandbox', () => {
       { id: 'c1', name: 'Bash', arguments: { command: 'echo hello' } },
       ctx,
     );
-    expect(result.success).toBe(true);
-    expect(result.output).toContain('[sandboxed]');
-    expect(result.output).toContain('hello');
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('[sandboxed]');
+    expect(result.content).toContain('hello');
   });
 });

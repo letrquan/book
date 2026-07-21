@@ -10,6 +10,7 @@ import type {
 import { runAgentLoop } from '../agent/loop.js';
 import { createDefaultRegistry, type ToolRegistry } from '../tools/registry.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
+import { toolResultErrorMessage, toolResultSucceeded } from '../tools/result.js';
 
 export interface ScrollbackOptions {
   mode: PermissionMode;
@@ -26,10 +27,11 @@ export function formatToolCall(call: ToolCall): string {
 }
 
 export function formatToolResult(result: ToolResult, call?: ToolCall): string {
-  const label = result.success ? '[OK]' : '[ERR]';
+  const success = toolResultSucceeded(result);
+  const label = success ? '[OK]' : '[ERR]';
   const name = call?.name ?? 'tool';
   const primary = call ? getPrimaryArg(call.arguments) : '';
-  const detail = result.success ? result.output : (result.error ?? '');
+  const detail = success ? result.content : (toolResultErrorMessage(result) ?? '');
   return `${label} ${name}${primary ? ` ${primary}` : ''}${detail ? `\n${detail.trimEnd()}` : ''}\n`;
 }
 

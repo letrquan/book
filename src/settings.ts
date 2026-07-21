@@ -139,6 +139,16 @@ export const agentSettingsSchema = z.object({
   checks: z.record(z.union([z.string().min(1), z.array(z.string().min(1)).min(1)])).default({}),
 });
 
+export const toolDiscoverySettingsSchema = z.object({
+  mode: z.enum(['auto', 'eager', 'deferred']).default('auto'),
+  eagerToolCount: z.number().int().min(1).max(100).default(10),
+  schemaTokenBudget: z.number().int().min(1000).max(100000).default(8000),
+  maxLoadedTools: z.number().int().min(1).max(100).default(15),
+  searchLimit: z.number().int().min(1).max(5).default(5),
+});
+
+export type ToolDiscoverySettings = z.infer<typeof toolDiscoverySettingsSchema>;
+
 export type ProviderModelConfig = z.infer<typeof providerModelSchema>;
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;
 
@@ -168,6 +178,7 @@ export const bookSettingsSchema = z.object({
   retry: retrySettingsSchema.default({}),
   memory: memorySettingsSchema.default({}),
   agents: agentSettingsSchema.default({}),
+  toolDiscovery: toolDiscoverySettingsSchema.default({}),
 });
 
 export type BookSettings = z.infer<typeof bookSettingsSchema>;
@@ -253,5 +264,12 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     telemetry: true,
     retentionDays: 30,
     checks: {},
+  },
+  toolDiscovery: {
+    mode: 'auto',
+    eagerToolCount: 10,
+    schemaTokenBudget: 8000,
+    maxLoadedTools: 15,
+    searchLimit: 5,
   },
 };

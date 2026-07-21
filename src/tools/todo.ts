@@ -1,4 +1,5 @@
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import { toolFailure, toolSuccess } from './result.js';
 
 export type TodoStatus = 'pending' | 'in_progress' | 'completed';
 
@@ -15,12 +16,7 @@ function isTodoList(value: unknown): value is Todo[] {
 async function todoWrite(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const todos = args.todos;
   if (!isTodoList(todos)) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: 'todos must be an array',
-    };
+    return toolFailure('todos must be an array');
   }
 
   const validStatuses = new Set(['pending', 'in_progress', 'completed']);
@@ -28,21 +24,13 @@ async function todoWrite(args: Record<string, unknown>, ctx: ToolContext): Promi
   for (let i = 0; i < todos.length; i++) {
     const t = todos[i] as unknown as Record<string, unknown>;
     if (typeof t.content !== 'string' || t.content.length === 0) {
-      return {
-        toolCallId: '',
-        success: false,
-        output: '',
-        error: `Todo ${i + 1}: missing or empty 'content'`,
-      };
+      return toolFailure(`Todo ${i + 1}: missing or empty 'content'`);
     }
     const status = t.status as string;
     if (!validStatuses.has(status)) {
-      return {
-        toolCallId: '',
-        success: false,
-        output: '',
-        error: `Todo ${i + 1}: invalid status '${status}' (must be pending, in_progress, or completed)`,
-      };
+      return toolFailure(
+        `Todo ${i + 1}: invalid status '${status}' (must be pending, in_progress, or completed)`,
+      );
     }
     parsed.push({
       content: t.content,
@@ -54,12 +42,9 @@ async function todoWrite(args: Record<string, unknown>, ctx: ToolContext): Promi
   // Enforce at most one in_progress todo.
   const inProgress = parsed.filter((t) => t.status === 'in_progress');
   if (inProgress.length > 1) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `Only one todo may be in_progress at a time (got ${inProgress.length}). Mark the others pending or completed first.`,
-    };
+    return toolFailure(
+      `Only one todo may be in_progress at a time (got ${inProgress.length}). Mark the others pending or completed first.`,
+    );
   }
 
   // Write todos into ToolContext (eliminates module-level mutable state).
@@ -74,11 +59,7 @@ async function todoWrite(args: Record<string, unknown>, ctx: ToolContext): Promi
         .join('\n')
     : '  (no todos)';
 
-  return {
-    toolCallId: '',
-    success: true,
-    output: `Todos updated (${parsed.length}).\n${summary}`,
-  };
+  return toolSuccess(`Todos updated (${parsed.length}).\n${summary}`, { data: parsed });
 }
 
 export const todoTools: ToolDefinition[] = [

@@ -18,7 +18,7 @@ describe('plan mode tools', () => {
 
     const result = await tool('EnterPlanMode').execute({}, context);
 
-    expect(result.success).toBe(true);
+    expect(result.status).toBe('success');
     expect(context.currentMode).toBe('plan');
     expect(context.previousMode).toBe('default');
   });
@@ -28,7 +28,7 @@ describe('plan mode tools', () => {
 
     const result = await tool('EnterPlanMode').execute({}, context);
 
-    expect(result.success).toBe(true);
+    expect(result.status).toBe('success');
     expect(context.currentMode).toBe('plan');
     expect(context.previousMode).toBe('accept-edits');
   });
@@ -38,8 +38,8 @@ describe('plan mode tools', () => {
 
     const result = await tool('ExitPlanMode').execute({ plan: '   ' }, context);
 
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/plan must be/);
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toMatch(/plan must be/);
     expect(context.pendingPlanApproval).toBeUndefined();
   });
 
@@ -48,7 +48,7 @@ describe('plan mode tools', () => {
 
     const result = await tool('ExitPlanMode').execute({ plan: 'Do the thing.' }, context);
 
-    expect(result.success).toBe(true);
+    expect(result.status).toBe('success');
     expect(context.currentMode).toBe('plan');
     expect(context.previousMode).toBe('default');
     expect(context.pendingPlanApproval).toEqual({ plan: 'Do the thing.' });

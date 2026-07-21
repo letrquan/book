@@ -2,6 +2,7 @@ import { exec } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types.js';
+import { toolFailure, toolSuccess } from '../tools/result.js';
 
 function configuredChecks(ctx: ToolContext): Record<string, string> {
   const result: Record<string, string> = {};
@@ -25,7 +26,7 @@ function configuredChecks(ctx: ToolContext): Record<string, string> {
 }
 
 function fail(error: string): ToolResult {
-  return { toolCallId: '', success: false, output: '', error };
+  return toolFailure(error);
 }
 
 async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
@@ -44,7 +45,7 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
       {
         cwd: ctx.workspaceRoot,
         env: { ...process.env, ...ctx.env },
-        timeout: typeof args.timeout === 'number' ? args.timeout : 120_000,
+        timeout: 120_000,
         maxBuffer: 10 * 1024 * 1024,
       },
       (error, stdout, stderr) => {
@@ -52,7 +53,7 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
           resolve(fail(stderr || stdout || error.message));
           return;
         }
-        resolve({ toolCallId: '', success: true, output: stdout || stderr || '(no output)' });
+        resolve(toolSuccess(stdout || stderr || '(no output)'));
       },
     );
   });
@@ -67,7 +68,6 @@ export const checkTools: ToolDefinition[] = [
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Configured check name, such as test or typecheck' },
-        timeout: { type: 'number', description: 'Optional timeout in milliseconds' },
       },
       required: ['name'],
     },

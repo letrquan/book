@@ -404,14 +404,21 @@ describe('SessionStore', () => {
     const assistant = s.load(id).history[0];
     expect(assistant.toolCalls?.[0].name).toBe('Edit');
     expect(assistant.toolResults?.[0]).toMatchObject({
-      output: diff,
-      fileMutation: {
-        kind: 'update',
-        filePath: 'a.ts',
-        addedLines: 1,
-        removedLines: 1,
+      version: 2,
+      status: 'success',
+      content: diff,
+      artifacts: {
+        fileMutation: {
+          kind: 'update',
+          filePath: 'a.ts',
+          addedLines: 1,
+          removedLines: 1,
+        },
       },
     });
+    expect(assistant.toolResults?.[0]).not.toHaveProperty('success');
+    expect(assistant.toolResults?.[0]).not.toHaveProperty('output');
+    expect(assistant.toolResults?.[0]).not.toHaveProperty('fileMutation');
   });
 
   it('touches a session without adding a message', () => {

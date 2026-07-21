@@ -1,5 +1,6 @@
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { discoverSkills } from '../skills.js';
+import { toolFailure, toolSuccess } from './result.js';
 
 /**
  * InvokeSkill tool — allows the model to invoke a loaded skill by name.
@@ -11,12 +12,7 @@ async function invokeSkill(args: Record<string, unknown>, ctx: ToolContext): Pro
   const extraContext = (args.context as string) ?? '';
 
   if (!skillName) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: "Missing required 'skill' argument",
-    };
+    return toolFailure("Missing required 'skill' argument");
   }
 
   const skills = discoverSkills(ctx.workspaceRoot);
@@ -24,16 +20,15 @@ async function invokeSkill(args: Record<string, unknown>, ctx: ToolContext): Pro
 
   if (!skill) {
     const available = skills.map((s) => `  - **${s.name}**: ${s.description}`).join('\n');
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `Skill not found: "${skillName}".\nAvailable skills:\n${available || '  (none)'}`,
-    };
+    return toolFailure(
+      `Skill not found: "${skillName}".\nAvailable skills:\n${available || '  (none)'}`,
+      { code: 'skill_not_found' },
+    );
   }
 
   // Increment invocation count for budget tracking.
   skill.invocationCount++;
+  if (skill.allowedTools) ctx.toolDiscovery?.restrict(skill.allowedTools);
 
   // Build the skill output.
   let output = `# Invoking skill: ${skill.name}\n\n`;
@@ -47,11 +42,7 @@ async function invokeSkill(args: Record<string, unknown>, ctx: ToolContext): Pro
     output += `\n\n## Context\n${extraContext}`;
   }
 
-  return {
-    toolCallId: '',
-    success: true,
-    output,
-  };
+  return toolSuccess(output, { data: { skill: skill.name } });
 }
 
 export const skillsTool: ToolDefinition[] = [

@@ -70,7 +70,7 @@ export function groupConsecutiveMcpCalls<TCall>(
   for (let index = 0; index < invocations.length;) {
     const current = invocations[index];
     const mcp = parseMcpToolName(current.name);
-    if (!mcp || !current.result?.success) {
+    if (!mcp || current.result?.status !== 'success') {
       groups.push({ kind: 'tool', invocation: current });
       index++;
       continue;
@@ -81,7 +81,7 @@ export function groupConsecutiveMcpCalls<TCall>(
     while (nextIndex < invocations.length) {
       const next = invocations[nextIndex];
       const nextMcp = parseMcpToolName(next.name);
-      if (!nextMcp || nextMcp.server !== mcp.server || !next.result?.success) break;
+      if (!nextMcp || nextMcp.server !== mcp.server || next.result?.status !== 'success') break;
       consecutive.push(next);
       nextIndex++;
     }
@@ -157,17 +157,17 @@ function countNonEmptyOutputLines(output: string | undefined): number {
 }
 
 function outputSizeMetadata(result: ToolResult | undefined): string | undefined {
-  if (!result?.output) return undefined;
-  const bytes = Buffer.byteLength(result.output, 'utf8');
-  const lines = countOutputLines(result.output);
+  if (!result?.content) return undefined;
+  const bytes = Buffer.byteLength(result.content, 'utf8');
+  const lines = countOutputLines(result.content);
   return `${lines} ${lines === 1 ? 'line' : 'lines'}, ${formatByteSize(bytes)}`;
 }
 
 function statusFor(result: ToolResult | undefined, isPending: boolean): ToolPresentationStatus {
   if (isPending) return 'pending';
   if (!result) return 'running';
-  if (result.error?.startsWith('SKIPPED')) return 'skipped';
-  return result.success ? 'success' : 'failure';
+  if (result.status === 'blocked') return 'skipped';
+  return result.status === 'success' ? 'success' : 'failure';
 }
 
 function resultStatusMetadata(status: ToolPresentationStatus): string | undefined {
@@ -184,26 +184,26 @@ function fileMutationPresentation(
   status: ToolPresentationStatus,
 ): Pick<ToolPresentation, 'title' | 'target' | 'metadata' | 'previewType' | 'filePath'> {
   const filePath =
-    result?.fileMutation?.filePath ??
+    result?.artifacts?.fileMutation?.filePath ??
     stringArg(args, 'filePath', 'file_path', 'notebook_path', 'path') ??
     getPrimaryArg(args);
-  const action = result?.fileMutation?.kind === 'create' || result?.isCreate ? 'Create' : 'Update';
+  const action = result?.artifacts?.fileMutation?.kind === 'create' ? 'Create' : 'Update';
   const metadata: string[] = [];
   const mutation =
-    result?.fileMutation ??
-    (result?.success && /^@@/m.test(result.output)
+    result?.artifacts?.fileMutation ??
+    (result?.status === 'success' && /^@@/m.test(result.content)
       ? {
-          kind: result.isCreate ? ('create' as const) : ('update' as const),
+          kind: 'update' as const,
           filePath,
-          addedLines: result.output
+          addedLines: result.content
             .split('\n')
             .filter((line) => line.startsWith('+') && !line.startsWith('+++')).length,
-          removedLines: result.output
+          removedLines: result.content
             .split('\n')
             .filter((line) => line.startsWith('-') && !line.startsWith('---')).length,
         }
       : undefined);
-  if (result?.success && mutation) {
+  if (result?.status === 'success' && mutation) {
     if (mutation.addedLines > 0) metadata.push(`+${mutation.addedLines}`);
     if (mutation.removedLines > 0) metadata.push(`-${mutation.removedLines}`);
     if (mutation.addedLines === 0 && mutation.removedLines === 0) metadata.push('no changes');
@@ -211,7 +211,7 @@ function fileMutationPresentation(
     const statusLabel = resultStatusMetadata(status);
     if (statusLabel) metadata.push(statusLabel);
   }
-  const previewType = result?.success && /^@@/m.test(result.output) ? 'diff' : 'none';
+  const previewType = result?.status === 'success' && /^@@/m.test(result.content) ? 'diff' : 'none';
   return {
     title: action,
     target: filePath,
@@ -222,8 +222,8 @@ function fileMutationPresentation(
 }
 
 function readMetadata(args: Record<string, unknown>, result: ToolResult | undefined): string[] {
-  if (!result?.success) return [];
-  const lineCount = countOutputLines(result.output);
+  if (result?.status !== 'success') return [];
+  const lineCount = countOutputLines(result.content);
   const offset = Number(args.offset ?? 0);
   const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 1;
   const end = Math.max(start, start + Math.max(0, lineCount - 1));
@@ -254,9 +254,50 @@ export function deriveToolPresentation(
   let title = LABELS[canonicalName] ?? canonicalName;
   let target = primary || undefined;
   let metadata: string[] = [];
-  let previewType: ToolPreviewType = result?.output ? 'text' : 'none';
+  let previewType: ToolPreviewType = result?.content ? 'text' : 'none';
   const showArguments = !isFileMutatingTool(canonicalName);
   let filePath: string | undefined;
+
+  if (result?.version === 2 && result.presentation) {
+    const structured = result.presentation;
+    target = structured.target ?? target;
+    metadata = [...(structured.metadata ?? [])];
+    previewType =
+      structured.kind === 'diff'
+        ? 'diff'
+        : structured.kind === 'markdown' || structured.kind === 'search'
+          ? 'markdown'
+          : structured.details
+            ? 'text'
+            : 'none';
+    const mutation = result.artifacts?.fileMutation;
+    if (mutation) {
+      title = mutation.kind === 'create' ? 'Create' : 'Update';
+      filePath = mutation.filePath;
+      target = mutation.filePath;
+    }
+    const statusMetadata = resultStatusMetadata(status);
+    if (statusMetadata && !metadata.includes(statusMetadata)) metadata.unshift(statusMetadata);
+    const duration = formatDuration(result.metrics?.durationMs);
+    if (duration) metadata.push(duration);
+    const retryAttempt = result.metrics?.retryAttempt;
+    if (retryAttempt && retryAttempt > 1) metadata.push(`attempt ${retryAttempt}`);
+    const hasDetails =
+      (showArguments && Object.keys(args).length > 0) || Boolean(structured.details);
+    return {
+      canonicalName,
+      status,
+      title,
+      target,
+      metadata,
+      summary: structured.summary || `${title}${target ? `(${target})` : ''}`,
+      previewType,
+      showArguments,
+      hasDetails,
+      hasHiddenContent: hasDetails,
+      filePath,
+    };
+  }
 
   if (isFileMutatingTool(canonicalName)) {
     const mutation = fileMutationPresentation(canonicalName, args, result, status);
@@ -270,28 +311,28 @@ export function deriveToolPresentation(
     metadata = readMetadata(args, result);
   } else if (canonicalName === 'Glob') {
     target = stringArg(args, 'pattern') ?? target;
-    if (result?.success) {
-      const files = /^(?:No files found|No matches found)$/i.test(result.output.trim())
+    if (result?.status === 'success') {
+      const files = /^(?:No files found|No matches found)$/i.test(result.content.trim())
         ? 0
-        : countNonEmptyOutputLines(result.output.replace(/\n\.\.\. \(truncated[\s\S]*$/, ''));
+        : countNonEmptyOutputLines(result.content.replace(/\n\.\.\. \(truncated[\s\S]*$/, ''));
       metadata = [`${files} ${files === 1 ? 'file' : 'files'}`];
     }
   } else if (canonicalName === 'Grep') {
     target = stringArg(args, 'pattern') ?? target;
-    if (result?.success) {
+    if (result?.status === 'success') {
       const outputMode = stringArg(args, 'output_mode') ?? 'content';
-      if (/^No matches found$/i.test(result.output.trim())) metadata = ['0 matches'];
+      if (/^No matches found$/i.test(result.content.trim())) metadata = ['0 matches'];
       else if (outputMode === 'files_with_matches') {
-        const files = countNonEmptyOutputLines(result.output);
+        const files = countNonEmptyOutputLines(result.content);
         metadata = [`${files} ${files === 1 ? 'file' : 'files'}`];
       } else if (outputMode === 'count') {
-        const matches = result.output.split('\n').reduce((total, line) => {
+        const matches = result.content.split('\n').reduce((total, line) => {
           const count = /:(\d+)\s*$/.exec(line)?.[1];
           return total + (count ? Number(count) : 0);
         }, 0);
         metadata = [`${matches} ${matches === 1 ? 'match' : 'matches'}`];
       } else {
-        const contentLines = result.output.split('\n');
+        const contentLines = result.content.split('\n');
         const structuredMatches = contentLines.filter((line) => /:\d+:/.test(line)).length;
         const matches = structuredMatches || contentLines.filter((line) => line.trim()).length;
         metadata = [`${matches} ${matches === 1 ? 'match' : 'matches'}`];
@@ -299,10 +340,10 @@ export function deriveToolPresentation(
     }
   } else if (canonicalName === 'WebFetch') {
     target = domainFor(stringArg(args, 'url'));
-    previewType = result?.output ? 'markdown' : 'none';
+    previewType = result?.content ? 'markdown' : 'none';
   } else if (canonicalName === 'WebSearch') {
     target = stringArg(args, 'query') ?? target;
-    previewType = result?.output ? 'markdown' : 'none';
+    previewType = result?.content ? 'markdown' : 'none';
   } else if (canonicalName === 'Task') {
     target = stringArg(args, 'agent', 'subject', 'description', 'prompt') ?? target;
     if ((options.nestedActivityCount ?? 0) > 0) {
@@ -316,7 +357,7 @@ export function deriveToolPresentation(
         ? `Called ${mcp.server} ${groupCount} times`
         : `Called ${mcp.server}`;
     target = groupCount > 1 ? undefined : mcp.tool;
-    previewType = result?.output ? 'markdown' : 'none';
+    previewType = result?.content ? 'markdown' : 'none';
   } else if (
     canonicalName === 'Bash' ||
     canonicalName.startsWith('Git') ||
@@ -328,15 +369,15 @@ export function deriveToolPresentation(
 
   const statusMetadata = resultStatusMetadata(status);
   if (statusMetadata && !metadata.includes(statusMetadata)) metadata.unshift(statusMetadata);
-  const duration = formatDuration(result?.durationMs);
+  const duration = formatDuration(result?.metrics?.durationMs);
   if (duration) metadata.push(duration);
-  if (result?.retryAttempt && result.retryAttempt > 1)
-    metadata.push(`attempt ${result.retryAttempt}`);
+  if (result?.metrics?.retryAttempt && result.metrics.retryAttempt > 1)
+    metadata.push(`attempt ${result.metrics.retryAttempt}`);
 
   const targetText = target ? `(${target})` : '';
   const metadataText = metadata.length > 0 ? ` · ${metadata.join(' ')}` : '';
   const summary = `${title}${targetText}${metadataText}`;
-  const hasDetails = (showArguments && Object.keys(args).length > 0) || Boolean(result?.output);
+  const hasDetails = (showArguments && Object.keys(args).length > 0) || Boolean(result?.content);
 
   return {
     canonicalName,

@@ -17,8 +17,8 @@ describe('TodoWrite', () => {
       },
       ctx,
     );
-    expect(r.success).toBe(true);
-    expect(r.output).toMatch(/Todos updated/);
+    expect(r.status).toBe('success');
+    expect(r.content).toMatch(/Todos updated/);
   });
 
   it('rejects more than one in_progress todo', async () => {
@@ -31,8 +31,8 @@ describe('TodoWrite', () => {
       },
       ctx,
     );
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/one todo may be in_progress/i);
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/one todo may be in_progress/i);
   });
 
   it('rejects an invalid status', async () => {
@@ -42,12 +42,12 @@ describe('TodoWrite', () => {
       },
       ctx,
     );
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/status/i);
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/status/i);
   });
 
   it('accepts an empty list (clears todos)', async () => {
     const r = await todoWrite.execute({ todos: [] }, ctx);
-    expect(r.success).toBe(true);
+    expect(r.status).toBe('success');
   });
 });

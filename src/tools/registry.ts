@@ -14,6 +14,32 @@ import { createSessionHistoryTools, type SessionHistoryCapability } from './sess
 import { askUserQuestionTools } from './ask-user-question.js';
 import { agentLifecycleTools, evidenceTools } from './agent-tools.js';
 import { checkTools } from '../agents/check.js';
+import { normalizeToolDefinition } from './catalog.js';
+import { toolSearchTools } from './tool-search.js';
+import { validateToolArguments } from './schema.js';
+import { enrichToolResultPresentation, normalizeToolResult, toolFailure } from './result.js';
+
+const TOOL_ARGUMENT_ALIASES: Record<string, Record<string, string>> = {
+  Bash: { runInBackground: 'run_in_background' },
+  BashOutput: { shellId: 'shell_id' },
+  KillShell: { shellId: 'shell_id' },
+  TaskGet: { task_id: 'taskId' },
+  TaskUpdate: { task_id: 'taskId' },
+  TaskStop: { task_id: 'taskId' },
+};
+
+function normalizeToolArguments(
+  toolName: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const normalized = { ...args };
+  for (const [alias, canonical] of Object.entries(TOOL_ARGUMENT_ALIASES[toolName] ?? {})) {
+    if (!(canonical in normalized) && alias in normalized)
+      normalized[canonical] = normalized[alias];
+    delete normalized[alias];
+  }
+  return normalized;
+}
 
 async function executeWithTimeout(
   tool: ToolDefinition,
@@ -70,7 +96,12 @@ async function executeWithTimeout(
         controller.abort(new Error(timeoutError));
         resolve({
           kind: 'timeout',
-          result: { toolCallId: call.id, success: false, output: '', error: timeoutError },
+          result: toolFailure(timeoutError, {
+            toolCallId: call.id,
+            code: 'tool_timeout',
+            status: 'timed_out',
+            retryable: tool.idempotent === true,
+          }),
         });
       }, timeoutMs);
     });
@@ -86,7 +117,11 @@ async function executeWithTimeout(
             controller.abort(parentSignal.reason);
             resolve({
               kind: 'cancelled',
-              result: { toolCallId: call.id, success: false, output: '', error: cancelledError },
+              result: toolFailure(cancelledError, {
+                toolCallId: call.id,
+                code: 'cancelled',
+                status: 'cancelled',
+              }),
             });
           };
           if (parentSignal.aborted) {
@@ -115,12 +150,14 @@ async function executeWithTimeout(
             ? cancelledError
             : `${tool.name} finished before its nested tool completed`;
       for (const [traceId, toolCallId] of pendingNestedCalls) {
-        parentObserver.onToolResult(traceId, {
-          toolCallId,
-          success: false,
-          output: '',
-          error,
-        });
+        parentObserver.onToolResult(
+          traceId,
+          toolFailure(error, {
+            toolCallId,
+            code: outcome === 'timeout' ? 'tool_timeout' : 'cancelled',
+            status: outcome === 'timeout' ? 'timed_out' : 'cancelled',
+          }),
+        );
       }
     }
   }
@@ -131,13 +168,12 @@ export function createRegistry() {
 
   return {
     register(tool: ToolDefinition): void {
-      tools.set(tool.name, tool);
+      const normalized = normalizeToolDefinition(tool);
+      tools.set(normalized.name, normalized);
     },
 
     registerAll(toolList: ToolDefinition[]): void {
-      for (const t of toolList) {
-        tools.set(t.name, t);
-      }
+      for (const t of toolList) this.register(t);
     },
 
     getTool(name: string): ToolDefinition | undefined {
@@ -155,17 +191,42 @@ export function createRegistry() {
     ): Promise<ToolResult> {
       const tool = tools.get(TOOL_ALIASES[call.name] ?? call.name);
       if (!tool) {
-        return {
+        return toolFailure(`Unknown tool: ${call.name}`, {
           toolCallId: call.id,
-          success: false,
-          output: '',
-          error: `Unknown tool: ${call.name}`,
-        };
+          code: 'unknown_tool',
+          remediation: 'Call ToolSearch or use a provider-visible tool name.',
+        });
+      }
+
+      const normalizedCall: ToolCall = {
+        ...call,
+        name: tool.name,
+        arguments: normalizeToolArguments(tool.name, call.arguments),
+      };
+
+      if (context.toolDiscovery && !context.toolDiscovery.canExecute(normalizedCall)) {
+        return toolFailure(`Tool "${call.name}" is not active for this turn.`, {
+          toolCallId: call.id,
+          code: 'tool_not_active',
+          status: 'blocked',
+          remediation: 'Call ToolSearch to discover it or use an authorized active tool.',
+        });
+      }
+
+      const providerArguments = { ...normalizedCall.arguments };
+      delete providerArguments.timeout;
+      const validationErrors = validateToolArguments(providerArguments, tool.inputSchema!);
+      if (validationErrors.length > 0) {
+        return toolFailure(`Invalid arguments for ${tool.name}: ${validationErrors.join('; ')}`, {
+          toolCallId: call.id,
+          code: 'invalid_arguments',
+          remediation: 'Correct the named arguments and retry the tool call.',
+        });
       }
 
       // Default tool timeout: 120s, falling back to per-tool or explicit timeout.
       const toolTimeoutMs =
-        (call.arguments.timeout as number) ??
+        (normalizedCall.arguments.timeout as number) ??
         (context.env?.BOOK_TOOL_TIMEOUT_MS ? Number(context.env.BOOK_TOOL_TIMEOUT_MS) : 120_000);
 
       // Only retry idempotent tools.
@@ -175,29 +236,34 @@ export function createRegistry() {
 
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-          const result = await executeWithTimeout(tool, call, context, toolTimeoutMs);
+          const result = enrichToolResultPresentation(
+            normalizeToolResult(
+              await executeWithTimeout(tool, normalizedCall, context, toolTimeoutMs),
+            ),
+            tool.name,
+            normalizedCall.arguments,
+          );
 
-          if (result.success) {
+          if (result.status === 'success') {
             if (attempt > 0) {
-              result.retryAttempt = attempt + 1;
+              result.metrics = { ...result.metrics, retryAttempt: attempt + 1 };
             }
             return result;
           }
 
           // Don't retry on SKIPPED results (permission/hook blocks).
-          if (result.error?.startsWith('SKIPPED')) {
+          if (result.status === 'blocked') {
             return result;
           }
 
           lastResult = result;
           // Fall through to retry if attempts remain.
         } catch (e) {
-          lastResult = {
+          lastResult = toolFailure(e instanceof Error ? e.message : String(e), {
             toolCallId: call.id,
-            success: false,
-            output: '',
-            error: e instanceof Error ? e.message : String(e),
-          };
+            code: 'tool_exception',
+            retryable: tool.idempotent === true,
+          });
           // Fall through to retry if attempts remain.
         }
 
@@ -218,6 +284,7 @@ export function createDefaultRegistry(capabilities?: {
 }): ReturnType<typeof createRegistry> {
   const registry = createRegistry();
   registry.registerAll([
+    ...toolSearchTools,
     ...fileTools,
     ...shellTools,
     ...gitTools,

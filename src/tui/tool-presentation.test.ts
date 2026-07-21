@@ -8,8 +8,26 @@ import {
   shouldExpandTool,
 } from './tool-presentation.js';
 
-function result(overrides: Partial<ToolResult> = {}): ToolResult {
-  return { toolCallId: 'call', success: true, output: '', ...overrides };
+type ResultOverrides = Partial<ToolResult> & {
+  success?: boolean;
+  output?: string;
+  error?: string;
+  durationMs?: number;
+  fileMutation?: NonNullable<ToolResult['artifacts']>['fileMutation'];
+};
+
+function result(overrides: ResultOverrides = {}): ToolResult {
+  const { success = true, output = '', error, durationMs, fileMutation, ...v2 } = overrides;
+  return {
+    version: 2,
+    toolCallId: 'call',
+    status: success ? 'success' : 'error',
+    content: output,
+    ...(error ? { structuredError: { code: 'test_error', message: error, retryable: false } } : {}),
+    ...(durationMs === undefined ? {} : { metrics: { durationMs } }),
+    ...(fileMutation ? { artifacts: { fileMutation } } : {}),
+    ...v2,
+  };
 }
 
 describe('deriveToolPresentation', () => {

@@ -71,10 +71,13 @@ describe('NotebookEdit', () => {
       ctx,
     );
 
-    expect(result.success).toBe(true);
-    expect(result.output).toMatch(/^-    "# Heading"$/m);
-    expect(result.output).toMatch(/^\+    "# Updated\\n",$/m);
-    expect(result.fileMutation).toMatchObject({ kind: 'update', filePath: 'test.ipynb' });
+    expect(result.status).toBe('success');
+    expect(result.content).toMatch(/^-    "# Heading"$/m);
+    expect(result.content).toMatch(/^\+    "# Updated\\n",$/m);
+    expect(result.artifacts?.fileMutation).toMatchObject({
+      kind: 'update',
+      filePath: 'test.ipynb',
+    });
 
     const updated = readNotebook();
     expect(updated.cells[0]).toEqual((original.cells as unknown[])[0]);
@@ -97,7 +100,7 @@ describe('NotebookEdit', () => {
       ctx,
     );
 
-    expect(result.success).toBe(true);
+    expect(result.status).toBe('success');
     expect(readNotebook().cells[0].source).toBe('');
   });
 
@@ -113,7 +116,7 @@ describe('NotebookEdit', () => {
       ctx,
     );
 
-    expect(result.success).toBe(true);
+    expect(result.status).toBe('success');
     expect(readNotebook().cells[0].source).toEqual(['first line\n', 'second line\n']);
   });
 
@@ -125,7 +128,7 @@ describe('NotebookEdit', () => {
       ctx,
     );
 
-    expect(result.success).toBe(true);
+    expect(result.status).toBe('success');
     const cells = readNotebook().cells;
     expect(cells).toHaveLength(2);
     expect(cells[0]).toMatchObject({
@@ -154,7 +157,7 @@ describe('NotebookEdit', () => {
       ctx,
     );
 
-    expect(result.success).toBe(true);
+    expect(result.status).toBe('success');
     const cells = readNotebook().cells;
     expect(cells.map((cell) => cell.id)).toEqual(['first', expect.any(String), 'second']);
     expect(cells[1]).toMatchObject({
@@ -179,7 +182,7 @@ describe('NotebookEdit', () => {
       ctx,
     );
 
-    expect(result.success).toBe(true);
+    expect(result.status).toBe('success');
     expect(readNotebook().cells.map((cell) => cell.id)).toEqual(['first', 'last']);
   });
 
@@ -242,7 +245,7 @@ describe('NotebookEdit', () => {
       ctx,
     );
 
-    expect(result.success).toBe(true);
+    expect(result.status).toBe('success');
     const raw = readFileSync(join(dir, 'styled.ipynb'), 'utf-8');
     expect(raw).toContain('\r\n  "cells"');
     expect(raw).not.toContain('\n "cells"');
@@ -308,8 +311,8 @@ describe('NotebookEdit', () => {
 
     const result = await edit.execute(args, ctx);
 
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(error);
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toMatch(error);
     expect(readFileSync(path, 'utf-8')).toBe(before);
   });
 
@@ -341,8 +344,8 @@ describe('NotebookEdit', () => {
       ctx,
     );
 
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/not unique/);
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toMatch(/not unique/);
     expect(readFileSync(path, 'utf-8')).toBe(before);
   });
 
@@ -355,8 +358,8 @@ describe('NotebookEdit', () => {
         { notebook_path: outside, new_source: 'x', edit_mode: 'insert' },
         ctx,
       );
-      expect(result.success).toBe(false);
-      expect(result.error).toMatch(/outside workspace/);
+      expect(result.status).toBe('error');
+      expect(result.structuredError?.message).toMatch(/outside workspace/);
     } finally {
       rmSync(outside, { force: true });
     }
@@ -367,23 +370,23 @@ describe('NotebookEdit', () => {
       { notebook_path: 'missing.ipynb', new_source: 'x', edit_mode: 'insert' },
       ctx,
     );
-    expect(missing.success).toBe(false);
-    expect(missing.error).toMatch(/not found/);
+    expect(missing.status).toBe('error');
+    expect(missing.structuredError?.message).toMatch(/not found/);
 
     writeFileSync(join(dir, 'bad.ipynb'), '{ nope', 'utf-8');
     const malformed = await edit.execute(
       { notebook_path: 'bad.ipynb', new_source: 'x', edit_mode: 'insert' },
       ctx,
     );
-    expect(malformed.success).toBe(false);
-    expect(malformed.error).toMatch(/Invalid notebook JSON/);
+    expect(malformed.status).toBe('error');
+    expect(malformed.structuredError?.message).toMatch(/Invalid notebook JSON/);
 
     writeFileSync(join(dir, 'shape.ipynb'), JSON.stringify({ metadata: {} }), 'utf-8');
     const invalid = await edit.execute(
       { notebook_path: 'shape.ipynb', new_source: 'x', edit_mode: 'insert' },
       ctx,
     );
-    expect(invalid.success).toBe(false);
-    expect(invalid.error).toMatch(/nbformat/);
+    expect(invalid.status).toBe('error');
+    expect(invalid.structuredError?.message).toMatch(/nbformat/);
   });
 });

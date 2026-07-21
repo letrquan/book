@@ -6,6 +6,7 @@ import { buildMessages, buildSystemPrompt, buildSystemPromptZones } from './cont
 import { getProjectMemoryDir } from '../memory-store.js';
 import type { ToolDefinition } from '../types.js';
 import { userMsg, assistantMsg, toolCall, toolResult, defaultConfig } from '../test/fixtures.js';
+import { toolSuccess } from '../tools/result.js';
 
 const config = defaultConfig();
 
@@ -14,7 +15,7 @@ function tool(name: string, description: string): ToolDefinition {
     name,
     description,
     parameters: { type: 'object', properties: {}, required: [] },
-    execute: async () => ({ toolCallId: '', success: true, output: '' }),
+    execute: async () => toolSuccess(''),
   };
 }
 

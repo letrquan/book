@@ -6,22 +6,16 @@ import type {
   EvidenceReference,
   IssueQuality,
 } from '../agents/types.js';
+import { toolFailure, toolSuccess } from './result.js';
 
 function ok(output: unknown): ToolResult {
-  return {
-    toolCallId: '',
-    success: true,
-    output: typeof output === 'string' ? output : JSON.stringify(output, null, 2),
-  };
+  return toolSuccess(typeof output === 'string' ? output : JSON.stringify(output, null, 2), {
+    data: output,
+  });
 }
 
 function fail(error: unknown): ToolResult {
-  return {
-    toolCallId: '',
-    success: false,
-    output: '',
-    error: error instanceof Error ? error.message : String(error),
-  };
+  return toolFailure(error instanceof Error ? error.message : String(error));
 }
 
 function manager(ctx: ToolContext) {

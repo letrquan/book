@@ -3,7 +3,7 @@ import { render, cleanup } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { ChatPanel } from './ChatPanel.js';
 import { AgentMessage } from './AgentMessage.js';
-import type { Message, ToolCall } from '../../types.js';
+import type { FileMutationSummary, Message, ToolCall, ToolResult } from '../../types.js';
 
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
@@ -19,6 +19,30 @@ function withTheme(children: React.ReactElement): React.ReactElement {
 
 function msg(id: string, role: 'user' | 'assistant', content: string): Message {
   return { id, role, content, includeInContext: true, timestamp: 1 };
+}
+
+function successResult(
+  toolCallId: string,
+  content: string,
+  fileMutation?: FileMutationSummary,
+): ToolResult {
+  return {
+    version: 2,
+    toolCallId,
+    status: 'success',
+    content,
+    ...(fileMutation ? { artifacts: { fileMutation } } : {}),
+  };
+}
+
+function failureResult(toolCallId: string, message: string, content = ''): ToolResult {
+  return {
+    version: 2,
+    toolCallId,
+    status: 'error',
+    content,
+    structuredError: { code: 'test_error', message, retryable: false },
+  };
 }
 
 afterEach(() => {
@@ -319,7 +343,7 @@ describe('ChatPanel Ink rendering', () => {
       {
         ...msg('a2', 'assistant', '   \n\t'),
         toolCalls: [{ id: 'call-ws', name: 'Glob', arguments: { pattern: '*.ts' } }],
-        toolResults: [{ toolCallId: 'call-ws', success: true, output: 'src/index.ts' }],
+        toolResults: [successResult('call-ws', 'src/index.ts')],
       },
     ];
 
@@ -377,9 +401,9 @@ describe('ChatPanel Ink rendering', () => {
           { id: 'read-3', name: 'Read', arguments: { filePath: 'src/c.ts' } },
         ],
         toolResults: [
-          { toolCallId: 'read-1', success: true, output: 'a' },
-          { toolCallId: 'read-2', success: true, output: 'b' },
-          { toolCallId: 'read-3', success: true, output: 'c' },
+          successResult('read-1', 'a'),
+          successResult('read-2', 'b'),
+          successResult('read-3', 'c'),
         ],
       },
     ];
@@ -406,9 +430,7 @@ describe('ChatPanel Ink rendering', () => {
     const initial = {
       ...msg('a1', 'assistant', ''),
       toolCalls,
-      toolResults: [
-        { toolCallId: 'call-stable', success: false, output: '', error: 'still running' },
-      ],
+      toolResults: [failureResult('call-stable', 'still running')],
     };
     const view = render(
       withTheme(<AgentMessage message={initial} isStreaming reducedMotion screenReader />),
@@ -417,7 +439,7 @@ describe('ChatPanel Ink rendering', () => {
 
     const completed: Message = {
       ...initial,
-      toolResults: [{ toolCallId: 'call-stable', success: true, output: 'passed' }],
+      toolResults: [successResult('call-stable', 'passed')],
     };
     view.rerender(
       withTheme(<AgentMessage message={completed} isStreaming reducedMotion screenReader />),
@@ -438,7 +460,7 @@ describe('ChatPanel Ink rendering', () => {
           traceId: 'task-root/1-1:duplicate',
           parentTraceId: 'task-root',
           call: { id: 'duplicate', name: 'Read', arguments: { filePath: 'src/a.ts' } },
-          result: { toolCallId: 'duplicate', success: true, output: 'a' },
+          result: successResult('duplicate', 'a'),
         },
         {
           traceId: 'task-root/1-2:nested-task',
@@ -453,7 +475,7 @@ describe('ChatPanel Ink rendering', () => {
           traceId: 'task-root/1-2:nested-task/1-1:duplicate',
           parentTraceId: 'task-root/1-2:nested-task',
           call: { id: 'duplicate', name: 'Read', arguments: { filePath: 'src/b.ts' } },
-          result: { toolCallId: 'duplicate', success: false, output: '', error: 'missing' },
+          result: failureResult('duplicate', 'missing'),
         },
       ],
     };
@@ -481,7 +503,7 @@ describe('ChatPanel Ink rendering', () => {
           traceId: 'host/child',
           parentTraceId: 'host',
           call: { id: 'child', name: 'Read', arguments: { filePath: 'src/child.ts' } },
-          result: { toolCallId: 'child', success: true, output: 'done' },
+          result: successResult('child', 'done'),
         },
       ],
     };
@@ -499,7 +521,7 @@ describe('ChatPanel Ink rendering', () => {
       {
         ...msg('a1', 'assistant', 'I will inspect it.'),
         toolCalls: [{ id: 'call-1', name: 'Read', arguments: { filePath: 'src/a.ts' } }],
-        toolResults: [{ toolCallId: 'call-1', success: true, output: 'file contents' }],
+        toolResults: [successResult('call-1', 'file contents')],
       },
       msg('a2', 'assistant', 'The file looks good.'),
     ];
@@ -650,7 +672,7 @@ describe('ChatPanel Ink rendering', () => {
       {
         ...msg('a2', 'assistant', ''),
         toolCalls: [{ id: 'call-merged', name: 'Glob', arguments: { pattern: '*.ts' } }],
-        toolResults: [{ toolCallId: 'call-merged', success: true, output: 'src/index.ts' }],
+        toolResults: [successResult('call-merged', 'src/index.ts')],
       },
     ];
 
@@ -738,7 +760,7 @@ describe('ChatPanel Ink rendering', () => {
       {
         ...msg('a1', 'assistant', 'I will run it.'),
         toolCalls: [{ id: 'call-1', name: 'Bash', arguments: { command: 'seq 8' } }],
-        toolResults: [{ toolCallId: 'call-1', success: true, output: longOutput }],
+        toolResults: [successResult('call-1', longOutput)],
       },
     ];
 
@@ -768,7 +790,7 @@ describe('ChatPanel Ink rendering', () => {
       {
         ...msg('a1', 'assistant', 'I will run it.'),
         toolCalls: [{ id: 'call-1', name: 'Bash', arguments: { command: 'seq 8' } }],
-        toolResults: [{ toolCallId: 'call-1', success: true, output: longOutput }],
+        toolResults: [successResult('call-1', longOutput)],
       },
     ];
 
@@ -797,8 +819,8 @@ describe('ChatPanel Ink rendering', () => {
         { id: 'bash', name: 'Bash', arguments: { command: 'npm test' } },
       ],
       toolResults: [
-        { toolCallId: 'read', success: true, output: 'READ_RESULT_MARKER' },
-        { toolCallId: 'bash', success: true, output: 'BASH_RESULT_MARKER' },
+        successResult('read', 'READ_RESULT_MARKER'),
+        successResult('bash', 'BASH_RESULT_MARKER'),
       ],
     };
     const view = render(
@@ -844,10 +866,7 @@ describe('ChatPanel Ink rendering', () => {
         { id: 'mcp-1', name: 'mcp__slack__search', arguments: { query: 'release' } },
         { id: 'mcp-2', name: 'mcp__slack__post', arguments: { channel: 'eng' } },
       ],
-      toolResults: [
-        { toolCallId: 'mcp-1', success: true, output: 'found' },
-        { toolCallId: 'mcp-2', success: true, output: 'posted' },
-      ],
+      toolResults: [successResult('mcp-1', 'found'), successResult('mcp-2', 'posted')],
     };
     const view = render(
       withTheme(
@@ -883,17 +902,12 @@ describe('ChatPanel Ink rendering', () => {
         ...msg('a1', 'assistant', 'I will update it.'),
         toolCalls: [{ id: 'call-1', name: 'Edit', arguments: { filePath: 'src/a.ts' } }],
         toolResults: [
-          {
-            toolCallId: 'call-1',
-            success: true,
-            output: diffOutput,
-            fileMutation: {
-              kind: 'update',
-              filePath: 'src/a.ts',
-              addedLines: 1,
-              removedLines: 1,
-            },
-          },
+          successResult('call-1', diffOutput, {
+            kind: 'update',
+            filePath: 'src/a.ts',
+            addedLines: 1,
+            removedLines: 1,
+          }),
         ],
       },
       msg('a2', 'assistant', 'Done.'),
@@ -918,23 +932,18 @@ describe('ChatPanel Ink rendering', () => {
         ...msg('a1', 'assistant', 'Editing the first file.'),
         toolCalls: [{ id: 'edit', name: 'Edit', arguments: { filePath: 'src/a.ts' } }],
         toolResults: [
-          {
-            toolCallId: 'edit',
-            success: true,
-            output: '@@ -1 +1 @@\n-old marker\n+new marker',
-            fileMutation: {
-              kind: 'update',
-              filePath: 'src/a.ts',
-              addedLines: 1,
-              removedLines: 1,
-            },
-          },
+          successResult('edit', '@@ -1 +1 @@\n-old marker\n+new marker', {
+            kind: 'update',
+            filePath: 'src/a.ts',
+            addedLines: 1,
+            removedLines: 1,
+          }),
         ],
       },
       {
         ...msg('a2', 'assistant', ''),
         toolCalls: [{ id: 'read', name: 'Read', arguments: { filePath: 'src/b.ts' } }],
-        toolResults: [{ toolCallId: 'read', success: true, output: 'contents' }],
+        toolResults: [successResult('read', 'contents')],
       },
     ];
 
@@ -954,19 +963,19 @@ describe('ChatPanel Ink rendering', () => {
       {
         ...msg('a1', 'assistant', 'I will explore the project.'),
         toolCalls: [{ id: 'call-1', name: 'Glob', arguments: { pattern: '*.ts' } }],
-        toolResults: [{ toolCallId: 'call-1', success: true, output: 'src/index.ts' }],
+        toolResults: [successResult('call-1', 'src/index.ts')],
       },
       // Tool-call-only turn — no content, just tool calls/results.
       {
         ...msg('a2', 'assistant', ''),
         toolCalls: [{ id: 'call-2', name: 'Read', arguments: { filePath: 'src/index.ts' } }],
-        toolResults: [{ toolCallId: 'call-2', success: true, output: 'file contents' }],
+        toolResults: [successResult('call-2', 'file contents')],
       },
       // Another tool-call-only turn.
       {
         ...msg('a3', 'assistant', ''),
         toolCalls: [{ id: 'call-3', name: 'Grep', arguments: { pattern: 'export' } }],
-        toolResults: [{ toolCallId: 'call-3', success: true, output: '1 match' }],
+        toolResults: [successResult('call-3', '1 match')],
       },
     ];
 

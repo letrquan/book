@@ -6,13 +6,21 @@ import {
   isToolCallAllowed,
   parseCapabilityRules,
 } from './capabilities.js';
+import { toolSuccess } from '../tools/result.js';
+import { toolSearchTools } from '../tools/tool-search.js';
 
 function tool(name: string): ToolDefinition {
   return {
     name,
     description: name,
-    parameters: { type: 'object', properties: {} },
-    execute: vi.fn(async () => ({ toolCallId: '', success: true, output: 'ok' })),
+    parameters: {
+      type: 'object',
+      properties: {
+        filePath: { type: 'string' },
+        command: { type: 'string' },
+      },
+    },
+    execute: vi.fn(async () => toolSuccess('ok')),
   };
 }
 
@@ -55,10 +63,14 @@ describe('managed agent capabilities', () => {
       arguments: { command: 'git push origin main' },
     };
 
-    expect((await registry.execute(allowedRead, context)).success).toBe(true);
-    expect((await registry.execute(deniedRead, context)).error).toContain('Capability denied');
-    expect((await registry.execute(allowedBash, context)).success).toBe(true);
-    expect((await registry.execute(deniedBash, context)).error).toContain('Capability denied');
+    expect((await registry.execute(allowedRead, context)).status).toBe('success');
+    expect((await registry.execute(deniedRead, context)).structuredError?.message).toContain(
+      'Capability denied',
+    );
+    expect((await registry.execute(allowedBash, context)).status).toBe('success');
+    expect((await registry.execute(deniedBash, context)).structuredError?.message).toContain(
+      'Capability denied',
+    );
   });
 
   it('does not expose recursive, question, or MCP lifecycle tools through wildcard inheritance', () => {
@@ -85,5 +97,28 @@ describe('managed agent capabilities', () => {
     expect(isToolCallAllowed(rules, { id: '2', name: 'mcp__github__search', arguments: {} })).toBe(
       true,
     );
+  });
+
+  it('allows ToolSearch to inspect only the already-restricted child catalog', async () => {
+    const parent = createRegistry();
+    parent.registerAll([...toolSearchTools, tool('Read')]);
+    const registry = createCapabilityRegistry(parent, ['Read']);
+    const result = await registry.execute(
+      { id: 'search', name: 'ToolSearch', arguments: { query: 'git history' } },
+      {
+        ...context,
+        toolDiscovery: {
+          search: () => [],
+          activate: () => [],
+          restrict: () => {},
+          canExecute: () => true,
+          activeDefinitions: () => [],
+          catalogSummary: () => '',
+        },
+      },
+    );
+
+    expect(result.status).toBe('success');
+    expect(result.structuredError?.code).not.toBe('capability_denied');
   });
 });

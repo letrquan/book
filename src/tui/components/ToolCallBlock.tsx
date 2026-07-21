@@ -39,8 +39,8 @@ interface ToolCallBlockProps {
 /** Compatibility export used by existing consumers and tests. */
 function getResultLabel(result?: ToolResult): { label: string; color: string } {
   if (!result) return { label: '', color: 'gray' };
-  if (result.error?.startsWith('SKIPPED')) return { label: '[SKIPPED]', color: 'yellow' };
-  if (!result.success) return { label: '[ERR]', color: 'red' };
+  if (result.status === 'blocked') return { label: '[SKIPPED]', color: 'yellow' };
+  if (result.status !== 'success') return { label: '[ERR]', color: 'red' };
   return { label: '[OK]', color: 'green' };
 }
 
@@ -142,9 +142,9 @@ function ScreenReaderTool({
           {key}: {stringifyArg(value)}
         </Text>
       ))}
-      {result?.output ? <Text>{result.output}</Text> : null}
-      {result?.error && !result.error.startsWith('SKIPPED') ? (
-        <Text>Error: {result.error}</Text>
+      {result?.content ? <Text>{result.content}</Text> : null}
+      {result?.structuredError && result.status !== 'blocked' ? (
+        <Text>Error: {result.structuredError.message}</Text>
       ) : null}
     </Box>
   );
@@ -177,8 +177,7 @@ function ToolCallBlockInner({
   const isRunning = presentation.status === 'running';
   const runningElapsedMs = useRunningElapsed(isRunning);
   const elapsed = isRunning ? formatDuration(runningElapsedMs) : undefined;
-  const inlineError =
-    result?.error && !result.error.startsWith('SKIPPED') ? result.error : undefined;
+  const inlineError = result?.status !== 'blocked' ? result?.structuredError?.message : undefined;
   const elapsedSuffix = elapsed ? ` · ${elapsed}` : '';
   const railPrefix = railPosition === 'last' ? '╰ ' : '├ ';
   const togglePrefix = presentation.hasHiddenContent ? (isExpanded ? '⌄ ' : '› ') : '  ';
@@ -263,15 +262,15 @@ function ToolCallBlockInner({
 
       {isExpanded && result && isDiffOutput(name, result) ? (
         <DiffBlock
-          output={result.output}
+          output={result.content}
           filePath={presentation.filePath}
           collapsed={!showAllToolOutput}
           terminalWidth={blockWidth}
         />
-      ) : isExpanded && result?.output ? (
+      ) : isExpanded && result?.content ? (
         <OutputBlock
-          output={result.output}
-          success={result.success}
+          output={result.content}
+          success={result.status === 'success'}
           theme={theme}
           showAllToolOutput={showAllToolOutput}
           toolName={presentation.canonicalName}

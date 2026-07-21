@@ -5,6 +5,7 @@ import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
 import { observeFile, requireFreshObservation } from './file-provenance.js';
+import { toolFailure, toolSuccess } from './result.js';
 
 const GLOB_OUTPUT_LIMIT = 1000;
 const PATH_YIELD_INTERVAL = 128;
@@ -42,14 +43,11 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   try {
     content = await readTextFile(filePath, 'utf-8');
   } catch (error) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: isMissingFile(error)
+    return toolFailure(
+      isMissingFile(error)
         ? `File not found: ${args.filePath}`
         : `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    );
   }
 
   throwIfAborted(ctx.signal);
@@ -64,12 +62,9 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
     lineStart: offset,
     lineEnd: end,
   });
-  return {
-    toolCallId: '',
-    success: true,
-    output: output.join('\n'),
-    fileObservations: [observation],
-  };
+  return toolSuccess(output.join('\n'), {
+    artifacts: { fileObservations: [observation] },
+  });
 }
 
 async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
@@ -77,7 +72,7 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath, relativePath } = resolved;
   const stale = await requireFreshObservation(ctx, filePath, relativePath);
-  if (stale) return { toolCallId: '', success: false, output: '', error: stale };
+  if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
   let existed = true;
   let oldContent = '';
   try {
@@ -86,12 +81,9 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
     if (isMissingFile(error)) {
       existed = false;
     } else {
-      return {
-        toolCallId: '',
-        success: false,
-        output: '',
-        error: `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
-      };
+      return toolFailure(
+        `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
@@ -101,27 +93,22 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
   try {
     await writeTextFile(filePath, newContent, 'utf-8');
   } catch (error) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    return toolFailure(
+      `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   const observation = await observeFile(ctx, filePath, existed ? 'write' : 'create');
-  return {
-    toolCallId: '',
-    success: true,
-    output: diff || 'File written successfully',
-    fileMutation: {
-      kind: existed ? 'update' : 'create',
-      filePath: relativePath,
-      addedLines: stats.addedLines,
-      removedLines: stats.removedLines,
+  return toolSuccess(diff || 'File written successfully', {
+    artifacts: {
+      fileMutation: {
+        kind: existed ? 'update' : 'create',
+        filePath: relativePath,
+        addedLines: stats.addedLines,
+        removedLines: stats.removedLines,
+      },
+      fileObservations: [observation],
     },
-    isCreate: !existed,
-    fileObservations: [observation],
-  };
+  });
 }
 
 async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
@@ -129,20 +116,17 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath, relativePath } = resolved;
   const stale = await requireFreshObservation(ctx, filePath, relativePath);
-  if (stale) return { toolCallId: '', success: false, output: '', error: stale };
+  if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
 
   let content: string;
   try {
     content = await readTextFile(filePath, 'utf-8');
   } catch (error) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: isMissingFile(error)
+    return toolFailure(
+      isMissingFile(error)
         ? `File not found: ${args.filePath}`
         : `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    );
   }
 
   const oldStr = args.oldString as string;
@@ -150,22 +134,15 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   const replaceAll = (args.replaceAll as boolean) ?? false;
 
   if (!content.includes(oldStr)) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: 'oldString not found in file',
-    };
+    return toolFailure('oldString not found in file', { code: 'text_not_found' });
   }
 
   const occurrences = await countOccurrences(content, oldStr, ctx.signal);
   if (occurrences > 1 && !replaceAll) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `oldString matches ${occurrences} times; set replaceAll: true to replace all, or make oldString more specific`,
-    };
+    return toolFailure(
+      `oldString matches ${occurrences} times; set replaceAll: true to replace all, or make oldString more specific`,
+      { code: 'ambiguous_text_match' },
+    );
   }
 
   const newContent = replaceAll
@@ -176,26 +153,22 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   try {
     await writeTextFile(filePath, newContent, 'utf-8');
   } catch (error) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    return toolFailure(
+      `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   const observation = await observeFile(ctx, filePath, 'edit');
-  return {
-    toolCallId: '',
-    success: true,
-    output: diff || 'File edited successfully (no textual change)',
-    fileMutation: {
-      kind: 'update',
-      filePath: relativePath,
-      addedLines: stats.addedLines,
-      removedLines: stats.removedLines,
+  return toolSuccess(diff || 'File edited successfully (no textual change)', {
+    artifacts: {
+      fileMutation: {
+        kind: 'update',
+        filePath: relativePath,
+        addedLines: stats.addedLines,
+        removedLines: stats.removedLines,
+      },
+      fileObservations: [observation],
     },
-    fileObservations: [observation],
-  };
+  });
 }
 
 async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
@@ -203,7 +176,7 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
   const { filePath, relativePath } = resolved;
   const stale = await requireFreshObservation(ctx, filePath, relativePath);
-  if (stale) return { toolCallId: '', success: false, output: '', error: stale };
+  if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
   const edits =
     (args.edits as Array<{
       oldString: string;
@@ -211,50 +184,38 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
       replaceAll?: boolean;
     }>) ?? [];
   if (edits.length === 0) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: 'No edits provided',
-    };
+    return toolFailure('No edits provided');
   }
 
   let content: string;
   try {
     content = await readTextFile(filePath, 'utf-8');
   } catch (error) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: isMissingFile(error)
+    return toolFailure(
+      isMissingFile(error)
         ? `File not found: ${args.filePath}`
         : `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    );
   }
   const original = content;
 
   for (let i = 0; i < edits.length; i++) {
     const edit = edits[i];
     if (!content.includes(edit.oldString)) {
-      return {
-        toolCallId: '',
-        success: false,
-        output: '',
-        error: `Edit ${i + 1}: oldString not found (no changes applied — MultiEdit is atomic)`,
-      };
+      return toolFailure(
+        `Edit ${i + 1}: oldString not found (no changes applied — MultiEdit is atomic)`,
+        { code: 'text_not_found' },
+      );
     }
     if (edit.replaceAll) {
       content = content.split(edit.oldString).join(edit.newString);
     } else {
       const occurrences = await countOccurrences(content, edit.oldString, ctx.signal);
       if (occurrences > 1) {
-        return {
-          toolCallId: '',
-          success: false,
-          output: '',
-          error: `Edit ${i + 1}: oldString matches ${occurrences} times; set replaceAll: true or be more specific (no changes applied — MultiEdit is atomic)`,
-        };
+        return toolFailure(
+          `Edit ${i + 1}: oldString matches ${occurrences} times; set replaceAll: true or be more specific (no changes applied — MultiEdit is atomic)`,
+          { code: 'ambiguous_text_match' },
+        );
       }
       content = content.replace(edit.oldString, edit.newString);
     }
@@ -266,26 +227,22 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
   try {
     await writeTextFile(filePath, content, 'utf-8');
   } catch (error) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    return toolFailure(
+      `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   const observation = await observeFile(ctx, filePath, 'edit');
-  return {
-    toolCallId: '',
-    success: true,
-    output: diff || 'File edited successfully (no textual change)',
-    fileMutation: {
-      kind: 'update',
-      filePath: relativePath,
-      addedLines: stats.addedLines,
-      removedLines: stats.removedLines,
+  return toolSuccess(diff || 'File edited successfully (no textual change)', {
+    artifacts: {
+      fileMutation: {
+        kind: 'update',
+        filePath: relativePath,
+        addedLines: stats.addedLines,
+        removedLines: stats.removedLines,
+      },
+      fileObservations: [observation],
     },
-    fileObservations: [observation],
-  };
+  });
 }
 
 async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
@@ -315,11 +272,14 @@ async function globSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
   }
 
   if (output.length === 0) {
-    return { toolCallId: '', success: true, output: 'No files found' };
+    return toolSuccess('No files found', { data: { files: [] } });
   }
 
   const suffix = truncated ? `\n... (truncated at ${GLOB_OUTPUT_LIMIT} files; refine pattern)` : '';
-  return { toolCallId: '', success: true, output: output.join('\n') + suffix };
+  return toolSuccess(output.join('\n') + suffix, {
+    data: { files: output },
+    pagination: { truncated, omittedItems: truncated ? files.length - output.length : 0 },
+  });
 }
 
 interface GrepMatch {
@@ -345,12 +305,7 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
   try {
     regex = new RegExp(pattern, multiline ? 'gms' : 'g');
   } catch {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `Invalid regex: ${pattern}`,
-    };
+    return toolFailure(`Invalid regex: ${pattern}`, { code: 'invalid_regex' });
   }
 
   const files = await fg(includePattern, {
@@ -432,24 +387,27 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
     await yieldToEventLoop(ctx.signal);
   }
 
+  const serializedMatches = Object.fromEntries(
+    Array.from(matchesByFile.entries()).map(([file, result]) => [
+      file,
+      { matches: result.matches },
+    ]),
+  );
+
   if (outputMode === 'count') {
     const lines = Array.from(matchesByFile.entries()).map(
       ([file, result]) => `${file}:${result.matches.length}`,
     );
-    return {
-      toolCallId: '',
-      success: true,
-      output: lines.join('\n') || 'No matches found',
-    };
+    return toolSuccess(lines.join('\n') || 'No matches found', {
+      data: { mode: outputMode, matches: serializedMatches },
+    });
   }
 
   if (outputMode === 'files_with_matches') {
     const matchedFiles = Array.from(matchesByFile.keys());
-    return {
-      toolCallId: '',
-      success: true,
-      output: matchedFiles.join('\n') || 'No matches found',
-    };
+    return toolSuccess(matchedFiles.join('\n') || 'No matches found', {
+      data: { mode: outputMode, files: matchedFiles },
+    });
   }
 
   const output: string[] = [];
@@ -469,11 +427,10 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
     if (output.length >= headLimit) break;
     await yieldToEventLoop(ctx.signal);
   }
-  return {
-    toolCallId: '',
-    success: true,
-    output: output.join('\n') || 'No matches found',
-  };
+  return toolSuccess(output.join('\n') || 'No matches found', {
+    data: { mode: outputMode, totalMatches, matches: serializedMatches },
+    pagination: { truncated: totalMatches >= headLimit },
+  });
 }
 
 export const fileTools: ToolDefinition[] = [

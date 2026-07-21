@@ -415,23 +415,114 @@ export interface BackgroundShellStore {
   shells: Map<string, BackgroundShellRecord>;
 }
 
-export interface ToolResult {
-  toolCallId: string;
-  success: boolean;
-  output: string;
-  error?: string;
-  /** Duration of the tool execution in milliseconds. */
-  durationMs?: number;
-  /** Which attempt succeeded (1 = first try, 2+ = retried). Only set on success after a retry. */
-  retryAttempt?: number;
-  /** Structured metadata for Write/Edit/MultiEdit file changes. */
+export type ToolResultStatus = 'success' | 'error' | 'blocked' | 'cancelled' | 'timed_out';
+
+export interface ToolResultError {
+  code: string;
+  message: string;
+  retryable: boolean;
+  remediation?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface ToolResultPresentation {
+  kind: 'text' | 'markdown' | 'diff' | 'file' | 'command' | 'search' | 'task' | 'agent';
+  summary: string;
+  details?: string;
+  metadata?: string[];
+  target?: string;
+}
+
+export interface ToolResultArtifacts {
   fileMutation?: FileMutationSummary;
-  /** Legacy metadata: whether a file creation occurred. Prefer fileMutation.kind. */
-  isCreate?: boolean;
-  /** Stable persisted reference used by compact checkpoints and history retrieval. */
-  eventRef?: string;
-  /** File provenance captured by successful file operations. */
   fileObservations?: FileObservation[];
+  eventRef?: string;
+}
+
+/** V2 result contract shared by runtime, persistence, SDK, and TUI. */
+export interface ToolResult<TData = unknown> {
+  version: 2;
+  toolCallId: string;
+  status: ToolResultStatus;
+  /** Concise provider-facing content. */
+  content: string;
+  /** Machine-readable payload for consumers that should not parse content. */
+  data?: TData;
+  structuredError?: ToolResultError;
+  presentation?: ToolResultPresentation;
+  metrics?: {
+    durationMs?: number;
+    retryAttempt?: number;
+  };
+  artifacts?: ToolResultArtifacts;
+  pagination?: {
+    cursor?: string;
+    nextCursor?: string;
+    truncated?: boolean;
+    omittedItems?: number;
+    omittedBytes?: number;
+  };
+}
+
+/** JSON-schema subset accepted by provider tool definitions. */
+export interface JsonSchemaObject extends Record<string, unknown> {
+  type?: 'object' | 'array' | 'string' | 'number' | 'integer' | 'boolean' | 'null';
+  title?: string;
+  description?: string;
+  properties?: Record<string, JsonSchemaObject>;
+  required?: string[];
+  additionalProperties?: boolean | JsonSchemaObject;
+  items?: JsonSchemaObject;
+  enum?: Array<string | number | boolean | null>;
+  const?: string | number | boolean | null;
+  minimum?: number;
+  maximum?: number;
+  minLength?: number;
+  maxLength?: number;
+  minItems?: number;
+  maxItems?: number;
+  oneOf?: JsonSchemaObject[];
+  anyOf?: JsonSchemaObject[];
+}
+
+export type ToolCategory =
+  | 'filesystem'
+  | 'shell'
+  | 'git'
+  | 'web'
+  | 'planning'
+  | 'tasks'
+  | 'skills'
+  | 'agents'
+  | 'evidence'
+  | 'session'
+  | 'notebook'
+  | 'mcp'
+  | 'other';
+
+export type ToolEffect = 'read' | 'write' | 'execute' | 'network' | 'delegate' | 'interactive';
+
+export interface ToolCatalogMetadata {
+  /** Search terms in addition to the canonical tool name. */
+  aliases?: string[];
+  keywords?: string[];
+  category?: ToolCategory;
+  namespace?: string;
+  /** Tool is always available in the practical core, normally deferred, or runtime-gated. */
+  exposure?: 'core' | 'deferred' | 'runtime';
+  /** Agent roles allowed to discover and invoke this definition. */
+  roles?: Array<'root' | 'child'>;
+  effects?: ToolEffect[];
+  /** Optional runtime predicate for stateful tools such as background shells. */
+  available?: (context: ToolContext) => boolean;
+  /** Short catalog summary; descriptions remain the full provider-facing guidance. */
+  summary?: string;
+}
+
+export interface ToolPolicy {
+  idempotent?: boolean;
+  concurrency?: 'parallel' | 'serial';
+  requiresPermission?: boolean;
 }
 
 export type FileObservationOperation =
@@ -540,6 +631,10 @@ export interface ToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+  /** Typed provider schema. `parameters` remains accepted while tools migrate. */
+  inputSchema?: JsonSchemaObject;
+  catalog?: ToolCatalogMetadata;
+  policy?: ToolPolicy;
   /** When true, the tool is safe to retry once on transient failure (Read, Grep, WebFetch, etc.). */
   idempotent?: boolean;
   execute: (args: Record<string, unknown>, context: ToolContext) => Promise<ToolResult>;
@@ -593,6 +688,43 @@ export interface ToolContext {
   onAgentEvent?: (event: import('./agents/types.js').AgentRuntimeEvent) => void;
   /** Host sink used by lifecycle hooks started from managed-agent tools. */
   onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
+  /** Per-session capability/discovery controller installed by the agent loop. */
+  toolDiscovery?: ToolDiscoveryContext;
+}
+
+export interface ToolSearchMatch {
+  name: string;
+  description: string;
+  summary: string;
+  category: ToolCategory;
+  namespace?: string;
+  loaded: boolean;
+}
+
+export interface ToolDiscoveryContext {
+  /** Return authorized catalog matches without exposing their full schemas. */
+  search(
+    query: string,
+    category?: ToolCategory,
+    namespace?: string,
+    limit?: number,
+  ): ToolSearchMatch[];
+  /** Activate selected definitions for the next provider request. */
+  activate(names: string[]): string[];
+  /** Intersect the current surface with an additional command/skill capability policy. */
+  restrict(rules: string[]): void;
+  /** Whether a tool is currently visible and executable for this turn. */
+  canExecute(call: ToolCall): boolean;
+  /** Definitions to send to the provider for the current request. */
+  activeDefinitions(): ToolDefinition[];
+  /** Compact catalog text used by the system prompt. */
+  catalogSummary(): string;
+}
+
+export interface ToolDiscoveryState {
+  /** Monotonic access counter used for deterministic LRU eviction. */
+  clock: number;
+  loaded: Map<string, number>;
 }
 
 export interface SystemPromptZones {
@@ -670,6 +802,8 @@ export interface AgentConfig {
   fileObservationLedger?: Map<string, FileObservation>;
   /** Runtime-only managed-agent service, lazily created by agent tools. */
   agentManager?: import('./agents/manager.js').AgentManager;
+  /** Runtime-only discovered definitions retained across turns in this session. */
+  toolDiscoveryState?: ToolDiscoveryState;
 }
 
 export interface ProviderStreamEvent {

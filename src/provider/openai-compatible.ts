@@ -322,7 +322,7 @@ export async function* chatCompletionStream(
       function: {
         name: t.name,
         description: t.description,
-        parameters: t.parameters,
+        parameters: t.inputSchema ?? t.parameters,
       },
     }));
   }

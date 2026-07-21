@@ -1,4 +1,5 @@
 import type { PermissionMode, ToolContext, ToolDefinition, ToolResult } from '../types.js';
+import { toolFailure, toolSuccess } from './result.js';
 
 export const READ_ONLY_PLAN_TOOLS = new Set([
   'Read',
@@ -16,6 +17,7 @@ export const READ_ONLY_PLAN_TOOLS = new Set([
   'BashOutput',
   'SessionHistorySearch',
   'SessionHistoryRead',
+  'ToolSearch',
   'EnterPlanMode',
   'ExitPlanMode',
   'AskUserQuestion',
@@ -29,11 +31,11 @@ export const READ_ONLY_PLAN_TOOLS = new Set([
 ]);
 
 function ok(output: string): ToolResult {
-  return { toolCallId: '', success: true, output };
+  return toolSuccess(output);
 }
 
 function fail(error: string): ToolResult {
-  return { toolCallId: '', success: false, output: '', error };
+  return toolFailure(error);
 }
 
 function currentMode(ctx: ToolContext): PermissionMode {

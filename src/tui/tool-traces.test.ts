@@ -21,8 +21,22 @@ function assistant(overrides: Partial<Message>): Message {
   };
 }
 
-function result(toolCallId: string, overrides: Partial<ToolResult> = {}): ToolResult {
-  return { toolCallId, success: true, output: '', ...overrides };
+type ResultOverrides = Partial<ToolResult> & {
+  success?: boolean;
+  output?: string;
+  error?: string;
+};
+
+function result(toolCallId: string, overrides: ResultOverrides = {}): ToolResult {
+  const { success = true, output = '', error, ...v2 } = overrides;
+  return {
+    version: 2,
+    toolCallId,
+    status: success ? 'success' : error?.startsWith('SKIPPED') ? 'blocked' : 'error',
+    content: output,
+    ...(error ? { structuredError: { code: 'test_error', message: error, retryable: false } } : {}),
+    ...v2,
+  };
 }
 
 function nested(
