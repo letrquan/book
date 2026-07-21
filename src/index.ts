@@ -62,7 +62,11 @@ program
   .argument('[key]', 'Dot-separated key path (e.g. permissions.deny)')
   .argument('[value]', 'Value to set (JSON-parsed)')
   .action(async (action, key, value, options) => {
-    await runConfigCommand(options.workspace, action, key, value);
+    const rootSettings = program.opts().settings as string | false | undefined;
+    await runConfigCommand(options.workspace, action, key, value, {
+      settingsOverridePath: typeof rootSettings === 'string' ? rootSettings : undefined,
+      noSettings: rootSettings === false,
+    });
   });
 
 // ---- main (interactive / headless) ----

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, normalize } from 'path';
 import { resolveSettings, mergeSettings, loadSettingsFile } from './settings-loader.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from './settings.js';
 
@@ -93,7 +93,7 @@ describe('mergeSettings', () => {
     expect(result.permissions.deny).toEqual(['Read(./.env)', 'Bash(curl *)']);
   });
 
-  it('nested objects merge recursively', () => {
+  it('nested objects merge recursively while explicitly supplied arrays replace', () => {
     const base = structuredClone(DEFAULT_SETTINGS);
     base.sandbox.filesystem.denyWrite = ['/etc'];
     const result = mergeSettings(base, {
@@ -108,7 +108,7 @@ describe('mergeSettings', () => {
       },
     });
     expect(result.sandbox.enabled).toBe(true);
-    expect(result.sandbox.filesystem.denyWrite).toEqual(['/etc']);
+    expect(result.sandbox.filesystem.denyWrite).toEqual([]);
     expect(result.sandbox.filesystem.allowWrite).toEqual(['/tmp']);
   });
 
@@ -211,7 +211,49 @@ describe('resolveSettings — layered merging', () => {
     );
 
     const result = resolveSettings(dir);
-    expect(result.additionalDirectories).toEqual(['../shared', '../private']);
+    expect(result.additionalDirectories).toEqual([normalize('../shared'), normalize('../private')]);
+  });
+
+  it('normalizes and deduplicates additionalDirectories across scopes', () => {
+    const projectSettingsDir = join(dir, '.book');
+    mkdirSync(projectSettingsDir, { recursive: true });
+    writeFileSync(
+      join(projectSettingsDir, 'settings.json'),
+      JSON.stringify({ additionalDirectories: ['../shared', '../shared/.'] }),
+    );
+    writeFileSync(
+      join(projectSettingsDir, 'settings.local.json'),
+      JSON.stringify({ additionalDirectories: ['../shared'] }),
+    );
+
+    expect(resolveSettings(dir).additionalDirectories).toEqual([normalize('../shared')]);
+  });
+
+  it('replaces unregistered arrays instead of concatenating them', () => {
+    const base = structuredClone(DEFAULT_SETTINGS);
+    base.sandbox.excludedCommands = ['first'];
+    const result = mergeSettings(base, {
+      sandbox: { ...base.sandbox, excludedCommands: ['second'] },
+    });
+    expect(result.sandbox.excludedCommands).toEqual(['second']);
+  });
+
+  it('accepts injectable user and settings paths', () => {
+    const userPath = join(userDir, 'user.json');
+    const projectPath = join(dir, 'project.json');
+    const localPath = join(dir, 'local.json');
+    writeFileSync(userPath, JSON.stringify({ model: 'user', additionalDirectories: ['../one'] }));
+    writeFileSync(projectPath, JSON.stringify({ model: 'project' }));
+    writeFileSync(localPath, JSON.stringify({ maxTurns: 12 }));
+
+    const result = resolveSettings(dir, undefined, {
+      userSettingsPath: userPath,
+      projectSettingsPath: projectPath,
+      localSettingsPath: localPath,
+    });
+    expect(result.model).toBe('project');
+    expect(result.maxTurns).toBe(12);
+    expect(result.additionalDirectories).toEqual([normalize('../one')]);
   });
 
   it('rejects malformed settings files with clear error', () => {

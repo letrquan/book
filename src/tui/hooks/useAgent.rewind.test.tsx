@@ -20,7 +20,7 @@ vi.mock('../../agent/compact.js', () => ({
   runPostCompactHooks: vi.fn(async () => {}),
 }));
 
-vi.mock('../input-expansion.js', () => ({
+vi.mock('../../input/input-expansion.js', () => ({
   expandAtMentions: (value: string) => {
     callOrder.push('expand-at');
     return value;

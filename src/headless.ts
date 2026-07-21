@@ -19,10 +19,11 @@ import {
   usagePressureTokens,
 } from './agent/compact.js';
 import type { ToolRegistry } from './tools/registry.js';
-import { collectAtMentionObservations, expandAtMentions } from './tui/input-expansion.js';
+import { collectAtMentionObservations, expandAtMentions } from './input/input-expansion.js';
 import { observationKey } from './tools/file-provenance.js';
 import { runSessionEnd, runSessionStart } from './session/lifecycle.js';
 import { createSessionHistoryTools } from './tools/session-history.js';
+import { createStreamParser, type StreamJsonDiagnostic } from './stream-json.js';
 
 export async function runHeadless(
   config: AgentConfig,
@@ -31,6 +32,9 @@ export async function runHeadless(
 ): Promise<HeadlessResult> {
   const stdout = opts.stdout ?? process.stdout;
   const emit = (obj: unknown) => {
+    if (obj && typeof obj === 'object' && 'type' in obj) {
+      opts.onEvent?.(obj as import('./stream-json.js').StreamJsonEvent);
+    }
     stdout.write(JSON.stringify(obj) + '\n');
   };
 
@@ -105,18 +109,21 @@ export async function runHeadless(
   } else {
     // stream-json input: newline-delimited {type:'user', content} from stdin.
     const stream = opts.stdin ?? process.stdin;
+    const diagnostics: StreamJsonDiagnostic[] = [];
+    const parser = createStreamParser(
+      (event) => {
+        if (event.type === 'user') prompts.push(event.content);
+      },
+      {
+        maxBufferedLineBytes: opts.maxInputLineBytes,
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      },
+    );
     for await (const chunk of stream) {
-      const line = chunk.toString().trim();
-      if (!line) continue;
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed.type === 'user' && typeof parsed.content === 'string') {
-          prompts.push(parsed.content);
-        }
-      } catch {
-        // skip unparseable lines
-      }
+      parser.feed(chunk as string | Buffer);
     }
+    parser.flush();
+    if (diagnostics.length > 0) throw new Error(diagnostics[0]?.message);
     if (opts.prompt) prompts.unshift(opts.prompt);
   }
 

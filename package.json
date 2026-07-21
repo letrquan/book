@@ -52,13 +52,18 @@
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
-    "test": "vitest run",
+    "test": "npm run test:unit && npm run test:contract && npm run test:integration",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:contract": "vitest run --config vitest.contract.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "bench:ui": "tsx src/tui/__benchmarks__/ui.bench.tsx",
     "lint": "eslint src/ --ext .ts,.tsx",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx}\""
+    "format:check": "prettier --check \"{src,scripts}/**/*.{ts,tsx}\" \"*.config.ts\"",
+    "architecture:check": "tsx scripts/check-architecture.ts",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run architecture:check && npm run test:unit && npm run test:contract"
   },
   "dependencies": {
     "chalk": "^5.4.0",

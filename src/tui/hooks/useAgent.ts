@@ -57,7 +57,7 @@ import {
   collectAtMentionObservations,
   expandAtMentions,
   expandShellCommands,
-} from '../input-expansion.js';
+} from '../../input/input-expansion.js';
 import { observationKey } from '../../tools/file-provenance.js';
 import { selectSession, type SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';

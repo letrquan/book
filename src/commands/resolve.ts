@@ -1,6 +1,21 @@
 import { execSync } from 'child_process';
 import type { SlashCommand } from '../types.js';
 
+export interface ParsedSlashInput {
+  name: string;
+  rawArguments: string;
+}
+
+/** Parse slash input once; command identity is always an exact token match. */
+export function parseSlashInput(value: string): ParsedSlashInput | null {
+  if (!value.startsWith('/')) return null;
+  const body = value.slice(1);
+  const separator = body.search(/\s/);
+  return separator === -1
+    ? { name: body, rawArguments: '' }
+    : { name: body.slice(0, separator), rawArguments: body.slice(separator + 1).trim() };
+}
+
 /**
  * Parse raw argument string with shell-style quoting.
  *

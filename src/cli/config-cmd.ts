@@ -1,15 +1,29 @@
 import { exit } from './exit.js';
-import { getNestedValue, setNestedValue } from './utils.js';
+import { getNestedValue } from './utils.js';
 import { redactSettingValue, redactSettingsForDisplay } from '../settings-redaction.js';
+import { DEFAULT_SETTINGS } from '../settings.js';
+import {
+  formatSettingsDiagnostics,
+  SETTINGS_TOP_LEVEL_KEYS,
+  SettingsRepository,
+} from '../settings-repository.js';
+
+export interface ConfigCommandSettingsOptions {
+  settingsOverridePath?: string;
+  noSettings?: boolean;
+}
 
 export async function runConfigCommand(
   workspace: string,
   action: string | undefined,
   key: string | undefined,
   value: string | undefined,
+  settingsOptions: ConfigCommandSettingsOptions = {},
 ): Promise<void> {
   const { resolveSettings } = await import('../settings-loader.js');
-  const settings = resolveSettings(workspace);
+  const settings = settingsOptions.noSettings
+    ? structuredClone(DEFAULT_SETTINGS)
+    : resolveSettings(workspace, settingsOptions.settingsOverridePath);
 
   if (!action || action === 'list') {
     console.log('Resolved settings:');
@@ -36,46 +50,21 @@ export async function runConfigCommand(
       console.error('Usage: book config set <key> <value>');
       exit(1);
     }
-    const parts = key.split('.');
+    const parts = key.split('.').filter(Boolean);
     if (parts.length === 0) {
       console.error('Invalid key. Use dot-separated path: e.g. permissions.deny');
       exit(1);
     }
     const topKey = parts[0];
-    const validKeys = [
-      'model',
-      'maxTurns',
-      'maxTokens',
-      'autoCompactEnabled',
-      'defaultMode',
-      'effort',
-      'theme',
-      'provider',
-      'permissions',
-      'sandbox',
-      'hooks',
-      'additionalDirectories',
-      'env',
-    ];
-    if (!validKeys.includes(topKey)) {
-      console.error('Unknown top-level key: ' + topKey + '. Valid keys: ' + validKeys.join(', '));
+    if (!SETTINGS_TOP_LEVEL_KEYS.includes(topKey)) {
+      console.error(
+        'Unknown top-level key: ' + topKey + '. Valid keys: ' + SETTINGS_TOP_LEVEL_KEYS.join(', '),
+      );
       exit(1);
     }
 
-    const { writeFileSync, existsSync, readFileSync, mkdirSync } = await import('fs');
     const { join } = await import('path');
-    const localDir = join(workspace, '.book');
-    const localPath = join(localDir, 'settings.local.json');
-    mkdirSync(localDir, { recursive: true });
-
-    let existing: Record<string, unknown> = {};
-    if (existsSync(localPath)) {
-      try {
-        existing = JSON.parse(readFileSync(localPath, 'utf-8'));
-      } catch {
-        existing = {};
-      }
-    }
+    const localPath = join(workspace, '.book', 'settings.local.json');
 
     let parsedValue: unknown;
     try {
@@ -84,15 +73,18 @@ export async function runConfigCommand(
       parsedValue = value;
     }
 
-    setNestedValue(existing, key, parsedValue);
-    writeFileSync(localPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+    const result = new SettingsRepository(localPath).set({ [key]: parsedValue });
+    if (!result.ok) {
+      console.error(formatSettingsDiagnostics(result.diagnostics));
+      exit(1);
+    }
     console.log(
       'Set ' +
         key +
         ' = ' +
         JSON.stringify(redactSettingValue(key, parsedValue)) +
         ' in ' +
-        localPath,
+        result.path,
     );
     return;
   }

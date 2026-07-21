@@ -70,6 +70,15 @@ describe('resolveSessionBootstrap', () => {
     expect(result.persisted).toBe(false);
     expect(result.sessionId).toMatch(/^[0-9a-f-]{36}$/);
   });
+
+  it('preserves an explicit ephemeral id when persistence is disabled', () => {
+    const result = resolveSessionBootstrap(undefined, {
+      cwd: '/proj',
+      sessionId: 'ephemeral-session',
+    });
+    expect(result.sessionId).toBe('ephemeral-session');
+    expect(result.persisted).toBe(false);
+  });
 });
 
 describe('selectSession', () => {

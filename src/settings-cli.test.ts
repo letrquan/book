@@ -1,22 +1,30 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { execSync } from 'child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 /**
  * CLI-level smoke tests for --settings and --no-settings flags.
- * Uses the built CLI via `node dist/index.js` when available; falls back
- * to tsx when not. These tests focus on the flag wiring, not the full
- * agent loop (which needs a provider).
+ * Runs the source CLI through tsx and reads settings through `book config`,
+ * keeping the contract offline and independent of the agent runtime.
  */
-const RUNNER = 'npx tsx src/index.ts';
-const ENV = {
-  ...process.env,
-  BOOK_API_KEY: 'test-key',
-  BOOK_BASE_URL: 'http://localhost:20128/v1',
-  BOOK_MODEL: 'test-model',
-};
+function isolatedEnv() {
+  const env = { ...process.env };
+  delete env.BOOK_API_KEY;
+  delete env.BOOK_BASE_URL;
+  delete env.BOOK_MODEL;
+  delete env.BOOK_PROVIDER;
+  return { ...env, HOME: dir, USERPROFILE: dir };
+}
+
+function runCli(args: string[]): string {
+  return execFileSync(process.execPath, ['--import', 'tsx', 'src/index.ts', ...args], {
+    env: isolatedEnv(),
+    encoding: 'utf8',
+    timeout: 15_000,
+  });
+}
 
 let dir: string;
 afterEach(() => {
@@ -24,7 +32,7 @@ afterEach(() => {
 });
 
 describe('CLI --settings flag', () => {
-  it('loads model from an ad-hoc --settings file (overrides project)', () => {
+  it('reports the ad-hoc model over the project model', () => {
     dir = mkdtempSync(join(tmpdir(), 'book-cli-'));
     const projectSettings = join(dir, '.book');
     mkdirSync(projectSettings, { recursive: true });
@@ -36,26 +44,20 @@ describe('CLI --settings flag', () => {
     const overridePath = join(dir, 'override.json');
     writeFileSync(overridePath, JSON.stringify({ model: 'override-model' }));
 
-    // -p with a prompt that just echoes — we use bash to test settings load.
-    // Since no provider is running, this will fail at the network call,
-    // but the config loading happens first. We check the error output
-    // does not mention a settings-load failure.
-    let stderr = '';
-    try {
-      execSync(`${RUNNER} -w "${dir}" --settings "${overridePath}" -p "hi" --output-format json`, {
-        env: ENV,
-        encoding: 'utf-8',
-        timeout: 15000,
-      });
-    } catch (e: any) {
-      stderr = e.stderr ?? e.message ?? '';
-    }
-    // The CLI should have gotten past config loading; the failure should
-    // be a network/provider error, not a settings error.
-    expect(stderr).not.toMatch(/Invalid settings|Invalid JSON in settings/);
+    const stdout = runCli([
+      '--settings',
+      overridePath,
+      'config',
+      '--workspace',
+      dir,
+      'get',
+      'model',
+    ]);
+
+    expect(stdout.trim()).toBe('"override-model"');
   }, 20000);
 
-  it('--no-settings skips settings.json layers without error', () => {
+  it('--no-settings reports defaults instead of the project model', () => {
     dir = mkdtempSync(join(tmpdir(), 'book-cli-'));
     const projectSettings = join(dir, '.book');
     mkdirSync(projectSettings, { recursive: true });
@@ -64,16 +66,8 @@ describe('CLI --settings flag', () => {
       JSON.stringify({ model: 'should-be-ignored' }),
     );
 
-    let stderr = '';
-    try {
-      execSync(`${RUNNER} -w "${dir}" --no-settings -p "hi" --output-format json`, {
-        env: ENV,
-        encoding: 'utf-8',
-        timeout: 15000,
-      });
-    } catch (e: any) {
-      stderr = e.stderr ?? e.message ?? '';
-    }
-    expect(stderr).not.toMatch(/Invalid settings|Invalid JSON in settings/);
+    const stdout = runCli(['--no-settings', 'config', '--workspace', dir, 'get', 'model']);
+
+    expect(stdout.trim()).toBe('Key model is not set (no value).');
   }, 20000);
 });

@@ -14,7 +14,7 @@ import {
   replaceActiveFileMention,
   type ActiveFileMention,
   type FileMentionCandidate,
-} from '../file-mentions.js';
+} from '../../input/file-mentions.js';
 import { recordCommandUse } from '../../commands/recent.js';
 import {
   getCommandsForEmptyQuery,

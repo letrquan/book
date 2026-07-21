@@ -99,6 +99,15 @@ Settings are loaded in priority order (later wins):
 
 Legacy `.bookrc.json` is still supported but deprecated. Use `--no-settings` to skip all `settings.json` layers (defaults + legacy only).
 
+Scalar values use the highest-priority layer. Permission rules, hook lists, and
+`additionalDirectories` accumulate in layer order; directory entries are normalized and
+deduplicated. Other arrays are replaced by the highest-priority layer that defines them.
+
+`book config set` and TUI preference changes validate the complete local document before writing.
+Writes use an atomic sibling-file replacement, and malformed or non-object
+`.book/settings.local.json` files are never overwritten. The reported error includes the file and
+invalid setting path; provider secrets are redacted.
+
 ### Example `.book/settings.json`
 
 ```json
@@ -239,7 +248,11 @@ For direct lifecycle control, create a manager with `createAgentManager(loadConf
 
 ```bash
 npm run typecheck    # TypeScript check
-npm test             # Run tests (vitest run)
+npm test             # Build, then run unit + contract + integration suites
+npm run test:unit    # Deterministic unit suite
+npm run test:contract
+npm run test:integration # Isolated PTY/process suite (one worker)
+npm run check        # Format, lint, types, architecture, unit, and contract checks
 npm run test:watch   # Watch mode
 npm run test:coverage
 npm run build        # tsup → dist/

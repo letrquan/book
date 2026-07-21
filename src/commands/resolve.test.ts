@@ -1,11 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseArgs,
+  parseSlashInput,
   resolveVariables,
   resolveShellInjection,
   resolveCommandBody,
 } from './resolve.js';
 import type { SlashCommand } from '../types.js';
+
+describe('parseSlashInput', () => {
+  it('uses exact command identity and preserves raw arguments', () => {
+    expect(parseSlashInput('/model openai/gpt-5')).toEqual({
+      name: 'model',
+      rawArguments: 'openai/gpt-5',
+    });
+    expect(parseSlashInput('/modeling')).toEqual({ name: 'modeling', rawArguments: '' });
+    expect(parseSlashInput('model')).toBeNull();
+  });
+});
 
 describe('parseArgs', () => {
   it('splits on whitespace', () => {

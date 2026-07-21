@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'child_process';
 import type { ProviderModelConfig, ResolvedSettings } from './settings.js';
 import type { LoadedMemoryContext } from './memory-store.js';
+import type { StreamJsonEvent } from './stream-json.js';
 
 export type PermissionMode =
   'default' | 'auto' | 'plan' | 'accept-edits' | 'dontAsk' | 'bypassPermissions';
@@ -1121,6 +1122,10 @@ export interface HeadlessOptions {
   signal?: AbortSignal;
   stdout?: { write: (s: string) => boolean };
   stdin?: NodeJS.ReadableStream;
+  /** Maximum accepted stream-json input record size. */
+  maxInputLineBytes?: number;
+  /** Direct runtime event bridge used by embedding hosts before output encoding. */
+  onEvent?: (event: StreamJsonEvent) => void;
   jsonSchema?: Record<string, unknown>;
   sessionStore?: SessionStoreInterface;
   sessionId?: string;

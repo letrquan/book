@@ -93,7 +93,7 @@ export function resolveSessionBootstrap(
       throw new Error('Session persistence is disabled; /resume and --continue are unavailable.');
     }
     return {
-      sessionId: crypto.randomUUID(),
+      sessionId: options.sessionId ?? crypto.randomUUID(),
       sessionName: options.sessionName,
       history: [],
       transcript: [],

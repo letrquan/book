@@ -6,6 +6,7 @@ import { runHeadless } from './headless.js';
 import { SessionStore } from './session/store.js';
 import { createDefaultRegistry, createRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
+import { createRepeatingScriptedProvider, sseResponse } from './test/scripted-provider.js';
 import type { AgentConfig, UserQuestionRequest } from './types.js';
 import { toolSuccess } from './tools/result.js';
 
@@ -57,16 +58,16 @@ function freshConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
 }
 
 beforeEach(() => {
-  // Fake provider: yields one text chunk then [DONE] with usage.
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () =>
-      sse([
-        textDelta('Hello!'),
-        'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
-      ]),
-    ),
+  const provider = createRepeatingScriptedProvider(() =>
+    sseResponse([
+      JSON.stringify({ choices: [{ delta: { content: 'Hello!' } }] }),
+      JSON.stringify({
+        choices: [],
+        usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+      }),
+    ]),
   );
+  vi.stubGlobal('fetch', provider.fetch);
 });
 
 describe('runHeadless — text output', () => {

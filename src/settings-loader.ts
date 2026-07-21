@@ -1,5 +1,5 @@
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, existsSync } from 'fs';
+import { join, normalize } from 'path';
 import { homedir } from 'os';
 import {
   bookSettingsSchema,
@@ -7,40 +7,82 @@ import {
   type BookSettings,
   type ResolvedSettings,
 } from './settings.js';
+import { SettingsRepository } from './settings-repository.js';
 
 /**
  * Deep-merge two settings objects. For arrays, concatenate (used for
  * permission rules and additionalDirectories). For objects, merge recursively.
  * For scalars, the override wins.
  */
-function mergeSettings(base: ResolvedSettings, override: Partial<BookSettings>): ResolvedSettings {
-  const result = structuredClone(base) as Record<string, unknown>;
+const CONCATENATED_ARRAY_PATHS = new Set([
+  'permissions.allow',
+  'permissions.ask',
+  'permissions.deny',
+  ...[
+    'SessionStart',
+    'SessionEnd',
+    'UserPromptSubmit',
+    'PreToolUse',
+    'PostToolUse',
+    'Stop',
+    'PreCompact',
+    'PostCompact',
+    'SubagentStart',
+    'SubagentStop',
+  ].map((event) => `hooks.${event}`),
+]);
+
+function mergeObject(
+  base: Record<string, unknown>,
+  override: Record<string, unknown>,
+  prefix = '',
+): Record<string, unknown> {
+  const result = structuredClone(base);
 
   for (const [key, value] of Object.entries(override)) {
     if (value === undefined) continue;
-
+    const path = prefix ? `${prefix}.${key}` : key;
     const existing = result[key];
 
-    if (Array.isArray(value) && Array.isArray(existing)) {
-      // Arrays concatenate (permission rules, additionalDirectories).
-      result[key] = [...existing, ...value];
+    if (Array.isArray(value)) {
+      if (path === 'additionalDirectories') {
+        const combined = [...(Array.isArray(existing) ? existing : []), ...value].map((entry) =>
+          normalize(String(entry)),
+        );
+        result[key] = [...new Set(combined)];
+      } else if (CONCATENATED_ARRAY_PATHS.has(path)) {
+        result[key] = [...(Array.isArray(existing) ? existing : []), ...value];
+      } else {
+        result[key] = structuredClone(value);
+      }
     } else if (
       typeof value === 'object' &&
       value !== null &&
-      !Array.isArray(value) &&
       typeof existing === 'object' &&
       existing !== null &&
       !Array.isArray(existing)
     ) {
-      // Nested objects merge recursively.
-      result[key] = mergeSettings(existing as ResolvedSettings, value as Partial<BookSettings>);
+      result[key] = mergeObject(
+        existing as Record<string, unknown>,
+        value as Record<string, unknown>,
+        path,
+      );
     } else {
-      // Scalars override.
       result[key] = value;
     }
   }
 
-  return result as ResolvedSettings;
+  return result;
+}
+
+export function mergeSettings(
+  base: ResolvedSettings,
+  override: Partial<BookSettings>,
+): ResolvedSettings {
+  return mergeObject(
+    base as unknown as Record<string, unknown>,
+    override as Record<string, unknown>,
+  ) as unknown as ResolvedSettings;
 }
 
 /**
@@ -58,12 +100,11 @@ function loadSettingsFile(path: string): BookSettings | null {
       `Invalid JSON in settings file: ${path}\n${e instanceof Error ? e.message : String(e)}`,
     );
   }
-  try {
-    return bookSettingsSchema.parse(parsed);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`Invalid settings in ${path}:\n${msg}`);
-  }
+  const result = bookSettingsSchema.safeParse(parsed);
+  if (!result.success) throw new Error(`Invalid settings in ${path}:\n${result.error.message}`);
+  // Resolution owns defaults. Returning the source document preserves the distinction
+  // between an omitted field and a field explicitly set to an empty collection.
+  return parsed as BookSettings;
 }
 
 /**
@@ -74,21 +115,33 @@ function loadSettingsFile(path: string): BookSettings | null {
  * @param overridePath - Optional path to an ad-hoc settings file (--settings flag)
  * @returns Fully resolved settings with all defaults filled
  */
-export function resolveSettings(workspace: string, overridePath?: string): ResolvedSettings {
+export interface SettingsResolutionPaths {
+  home?: string;
+  userSettingsPath?: string;
+  projectSettingsPath?: string;
+  localSettingsPath?: string;
+}
+
+export function resolveSettings(
+  workspace: string,
+  overridePath?: string,
+  paths: SettingsResolutionPaths = {},
+): ResolvedSettings {
   let resolved = structuredClone(DEFAULT_SETTINGS);
 
   // Layer 1: User settings (~/.book/settings.json)
-  const userPath = join(homedir(), '.book', 'settings.json');
+  const userPath =
+    paths.userSettingsPath ?? join(paths.home ?? homedir(), '.book', 'settings.json');
   const user = loadSettingsFile(userPath);
   if (user) resolved = mergeSettings(resolved, user);
 
   // Layer 2: Project settings (<workspace>/.book/settings.json)
-  const projectPath = join(workspace, '.book', 'settings.json');
+  const projectPath = paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json');
   const project = loadSettingsFile(projectPath);
   if (project) resolved = mergeSettings(resolved, project);
 
   // Layer 3: Local settings (<workspace>/.book/settings.local.json)
-  const localPath = join(workspace, '.book', 'settings.local.json');
+  const localPath = paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json');
   const local = loadSettingsFile(localPath);
   if (local) resolved = mergeSettings(resolved, local);
 
@@ -98,10 +151,10 @@ export function resolveSettings(workspace: string, overridePath?: string): Resol
     if (override) resolved = mergeSettings(resolved, override);
   }
 
-  return resolved;
+  return bookSettingsSchema.parse(resolved) as ResolvedSettings;
 }
 
-export { mergeSettings, loadSettingsFile };
+export { loadSettingsFile };
 
 /**
  * Migrate rules from the legacy ~/.book/permissions.json into the local
@@ -130,38 +183,24 @@ export function migrateLegacyPermissions(workspace: string, home = homedir()): b
 
   const localDir = join(workspace, '.book');
   const localPath = join(localDir, 'settings.local.json');
-  mkdirSync(localDir, { recursive: true });
-
-  // Read existing local settings (if any).
-  let existing: Record<string, unknown> = {};
-  if (existsSync(localPath)) {
-    try {
-      existing = JSON.parse(readFileSync(localPath, 'utf-8'));
-    } catch {
-      existing = {};
+  const result = new SettingsRepository(localPath).update((existing) => {
+    const permissions = (existing.permissions ?? {}) as {
+      allow?: string[];
+      ask?: string[];
+      deny?: string[];
+    };
+    for (const key of ['allow', 'ask', 'deny'] as const) {
+      if (!Array.isArray(permissions[key])) permissions[key] = [];
     }
-  }
 
-  const permissions = (existing.permissions ?? {}) as {
-    allow?: string[];
-    ask?: string[];
-    deny?: string[];
-  };
-  for (const key of ['allow', 'ask', 'deny'] as const) {
-    if (!Array.isArray(permissions[key])) permissions[key] = [];
-  }
-
-  // Convert each legacy rule to a Tool(specifier) string.
-  for (const rule of legacyRules) {
-    const specifier = rule.pattern ? `${rule.toolName}(${rule.pattern})` : rule.toolName;
-    const effect = rule.effect as 'allow' | 'ask' | 'deny';
-    if (!permissions[effect]!.includes(specifier)) {
-      permissions[effect]!.push(specifier);
+    for (const rule of legacyRules) {
+      const specifier = rule.pattern ? `${rule.toolName}(${rule.pattern})` : rule.toolName;
+      const effect = rule.effect as 'allow' | 'ask' | 'deny';
+      if (!permissions[effect]!.includes(specifier)) permissions[effect]!.push(specifier);
     }
-  }
-
-  existing.permissions = permissions;
-  writeFileSync(localPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+    existing.permissions = permissions;
+  });
+  if (!result.ok) return false;
 
   console.warn(
     `⚠  Migrated ${legacyRules.length} permission rule(s) from ~/.book/permissions.json to ${localPath}. ` +

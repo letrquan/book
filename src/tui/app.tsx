@@ -38,6 +38,7 @@ import type {
 import type { SessionBootstrap } from '../session/resolve.js';
 import { DensityContext, resolveTuiDensity } from './density.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
+import { parseSlashInput } from '../commands/resolve.js';
 import { discoverSkills } from '../skills.js';
 import { runGit } from '../tools/git.js';
 import { costReport, PRICING, usageReport } from '../pricing.js';
@@ -512,21 +513,19 @@ export function App({ config, session, redrawViewport }: AppProps) {
     (value: string) => {
       setFollowRequestKey((key) => key + 1);
       // Coarse slash-command dispatch trace (one event per submit).
-      if (value.startsWith('/')) {
-        const spaceIdx = value.indexOf(' ');
-        const cmdName = spaceIdx === -1 ? value.slice(1) : value.slice(1, spaceIdx);
+      const parsedSlash = parseSlashInput(value);
+      if (parsedSlash) {
         uiLog.event('slash:dispatch', {
-          command: cmdName,
-          hasArg: spaceIdx !== -1,
+          command: parsedSlash.name,
+          hasArg: parsedSlash.rawArguments.length > 0,
           disabled: isThinking,
         });
       } else {
         uiLog.event('submit:text', { len: value.length, disabled: isThinking });
       }
       // Slash commands: built-in first, then custom.
-      const firstSpace = value.indexOf(' ');
-      const commandName = firstSpace === -1 ? value.slice(1) : value.slice(1, firstSpace);
-      const commandArg = firstSpace === -1 ? '' : value.slice(firstSpace + 1).trim();
+      const commandName = parsedSlash?.name ?? '';
+      const commandArg = parsedSlash?.rawArguments ?? '';
       if (commandName === 'clear' || commandName === 'new' || commandName === 'reset') {
         clearTasks();
         setShowHelp(false);
@@ -551,9 +550,9 @@ export function App({ config, session, redrawViewport }: AppProps) {
       } else if (commandName === 'rewind') {
         if (commandArg) addLocalMessage('Usage: /rewind');
         else setShowRewindPicker(true);
-      } else if (value.startsWith('/exit')) {
+      } else if (commandName === 'exit') {
         void endCurrentSession('exit').finally(exitApp);
-      } else if (value.startsWith('/help')) {
+      } else if (commandName === 'help') {
         setShowHelp((s) => !s);
       } else if (commandName === 'agents') {
         const manager = getOrCreateAgentManager(
@@ -618,8 +617,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
             )
             .catch(reportError);
         }
-      } else if (value.startsWith('/task ')) {
-        addTask({ subject: value.slice(6), status: 'pending' });
+      } else if (commandName === 'task' && commandArg) {
+        addTask({ subject: commandArg, status: 'pending' });
       } else if (commandName === 'theme') {
         if (!commandArg) {
           setCustomThemes(listCustomThemes(config.workspace));
@@ -658,8 +657,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
             );
           }
         }
-      } else if (value.startsWith('/config')) {
-        const arg = value.slice('/config'.length).trim();
+      } else if (commandName === 'config') {
+        const arg = commandArg;
         if (!arg) {
           const snapshot = redactSettingsForDisplay({
             ...liveConfig.settings,
@@ -709,7 +708,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
         } else {
           addLocalMessage('Usage: /config [key=value] or /config --help');
         }
-      } else if (value.startsWith('/diff')) {
+      } else if (commandName === 'diff') {
         void runGit(['diff'], {
           workspaceRoot: config.workspace,
           env: process.env as Record<string, string>,
@@ -718,10 +717,10 @@ export function App({ config, session, redrawViewport }: AppProps) {
             result.error ? `✕ ${result.error}` : result.output.trim() || '(no changes)',
           );
         });
-      } else if (value.startsWith('/status')) {
+      } else if (commandName === 'status') {
         setShowStatus((s) => !s);
-      } else if (value === '/memory' || value.startsWith('/memory ')) {
-        const arg = value.slice('/memory'.length).trim();
+      } else if (commandName === 'memory') {
+        const arg = commandArg;
 
         if (!arg || arg === 'status') {
           // Respect the enabled gate: when memory loading is disabled, don't
@@ -776,11 +775,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
             'Usage: /memory [status|inbox|approve <n|file>|discard <n|file>|on|off|path]',
           );
         }
-      } else if (value.startsWith('/permissions')) {
+      } else if (commandName === 'permissions') {
         setShowPermissions((s) => !s);
-      } else if (value.startsWith('/cost')) {
+      } else if (commandName === 'cost') {
         addLocalMessage(costReport(liveConfig.model, usage));
-      } else if (value.startsWith('/usage') || value.startsWith('/stats')) {
+      } else if (commandName === 'usage' || commandName === 'stats') {
         const rate = PRICING[liveConfig.model];
         const estimatedCostUsd =
           usage && rate
@@ -803,7 +802,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
             estimatedCostUsd,
           },
         );
-      } else if (value.startsWith('/context')) {
+      } else if (commandName === 'context') {
         const ambient = {
           model: liveConfig.model,
           maxTokens: liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens,
@@ -838,9 +837,9 @@ export function App({ config, session, redrawViewport }: AppProps) {
             hasClaudeMdLoader: ambient.hasClaudeMdLoader,
           },
         });
-      } else if (value.startsWith('/skills')) {
+      } else if (commandName === 'skills') {
         setShowSkills((s) => !s);
-      } else if (value.startsWith('/init')) {
+      } else if (commandName === 'init') {
         const promptBody = buildInitPrompt(config.workspace);
         const initCmd = {
           name: 'init',
@@ -854,11 +853,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
           allowedTools: ['Read', 'Glob', 'Grep', 'Write'],
         };
         send(promptBody, ctx);
-      } else if (value.startsWith('/reload-skills')) {
+      } else if (commandName === 'reload-skills') {
         // Force re-discovery of commands and skills on next render.
         addLocalMessage('Commands and skills have been reloaded.');
-      } else if (value.startsWith('/export')) {
-        const filename = value.slice('/export'.length).trim() || 'conversation.txt';
+      } else if (commandName === 'export') {
+        const filename = commandArg || 'conversation.txt';
         try {
           const text = messages.map((m) => `${m.role}:\n${m.content}`).join('\n\n---\n\n');
           writeFileSync(join(config.workspace, filename), text, 'utf-8');
@@ -868,8 +867,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
         } catch (e) {
           addLocalMessage(`✕ export failed: ${e instanceof Error ? e.message : String(e)}`);
         }
-      } else if (value.startsWith('/review')) {
-        const arg = value.slice('/review'.length).trim();
+      } else if (commandName === 'review') {
+        const arg = commandArg;
         const promptBody = buildReviewPrompt(arg);
         const ctx: CommandContext = {
           command: {
@@ -882,8 +881,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
           allowedTools: [...REVIEW_TOOLS],
         };
         send(promptBody, ctx);
-      } else if (value.startsWith('/security-review')) {
-        const arg = value.slice('/security-review'.length).trim();
+      } else if (commandName === 'security-review') {
+        const arg = commandArg;
         const promptBody = buildSecurityReviewPrompt(arg);
         const ctx: CommandContext = {
           command: {
@@ -896,10 +895,10 @@ export function App({ config, session, redrawViewport }: AppProps) {
           allowedTools: [...SECURITY_REVIEW_TOOLS],
         };
         send(promptBody, ctx);
-      } else if (value.startsWith('/release-notes')) {
+      } else if (commandName === 'release-notes') {
         addLocalMessage(buildReleaseNotesReport(config.workspace));
-      } else if (value.startsWith('/feedback')) {
-        const note = value.slice('/feedback'.length).trim();
+      } else if (commandName === 'feedback') {
+        const note = commandArg;
         const lastUser = [...messages].reverse().find((m) => m.role === 'user');
         const r = writeFeedbackReport({
           workspace: config.workspace,
@@ -918,12 +917,9 @@ export function App({ config, session, redrawViewport }: AppProps) {
         );
       } else if (value.startsWith('/')) {
         // Custom slash command: /name [args]
-        const spaceIdx = value.indexOf(' ');
-        const cmdName = spaceIdx === -1 ? value.slice(1) : value.slice(1, spaceIdx);
-        const cmdArgs = spaceIdx === -1 ? '' : value.slice(spaceIdx + 1);
-        const cmd = commands.find((c) => c.name === cmdName);
+        const cmd = commands.find((c) => c.name === commandName);
         if (cmd) {
-          const { resolved } = resolveCommandBody(cmd, cmdArgs, {
+          const { resolved } = resolveCommandBody(cmd, commandArg, {
             sessionId,
             workspace: config.workspace,
             model: liveConfig.model,

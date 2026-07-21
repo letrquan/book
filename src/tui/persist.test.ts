@@ -75,6 +75,17 @@ describe('persistSettingLocal', () => {
     expect(r.ok).toBe(false);
     expect(typeof r.error).toBe('string');
   });
+
+  it('preserves malformed local settings instead of replacing them', () => {
+    const localPath = join(dir, '.book', 'settings.local.json');
+    expect(persistSettingLocal(dir, 'model', 'initial').ok).toBe(true);
+    writeFileSync(localPath, '{broken', 'utf-8');
+
+    const result = persistSettingLocal(dir, 'model', 'replacement');
+
+    expect(result.ok).toBe(false);
+    expect(readFileSync(localPath, 'utf-8')).toBe('{broken');
+  });
 });
 
 describe('persistPermissionRuleLocal', () => {
