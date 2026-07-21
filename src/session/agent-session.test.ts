@@ -137,6 +137,8 @@ describe('AgentSession', () => {
       createAgentSessionSnapshot(),
     );
     expect(events.map((event) => event.type)).toEqual([
+      'system',
+      'session',
       'text',
       'tool_use',
       'tool_result',
@@ -154,6 +156,7 @@ describe('AgentSession', () => {
       messages,
       usage: { totalTokens: 5 },
     });
+    expect(session.getSnapshot()).toEqual(snapshot);
   });
 
   it('emits one terminal error and done when the loop throws', async () => {
@@ -174,7 +177,12 @@ describe('AgentSession', () => {
         callbacks: { onEvent: (event) => events.push(event), onTurnStart: () => {} },
       }),
     ).rejects.toThrow('provider failed');
-    expect(events).toEqual([{ type: 'error', error: 'provider failed' }, { type: 'done' }]);
+    expect(events.map((event) => event.type)).toEqual(['system', 'session', 'error', 'done']);
+    expect(session.getSnapshot()).toMatchObject({
+      status: 'failed',
+      sessionId: 'session-1',
+      error: 'provider failed',
+    });
   });
 
   it('does not enqueue interactions for a stale host run', async () => {
@@ -233,6 +241,7 @@ describe('AgentSession', () => {
     expect(operation.signal?.aborted).toBe(true);
     await expect(permission).resolves.toBe('deny');
     expect(operation.isCurrent()).toBe(true);
-    operation.release();
+    expect(session.finishSend(operation)).toBe(true);
+    expect(session.finishSend(operation)).toBe(false);
   });
 });

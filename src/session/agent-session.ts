@@ -29,7 +29,12 @@ import {
   type AgentSessionOperation,
   type CancelOperationResult,
 } from './agent-session-operations.js';
-import type { AgentEvent } from './agent-events.js';
+import {
+  createAgentSessionSnapshot,
+  reduceAgentSessionSnapshot,
+  type AgentEvent,
+  type AgentSessionSnapshot,
+} from './agent-events.js';
 
 export type AgentLoopRunner = typeof runAgentLoop;
 type AgentLoopOptions = NonNullable<Parameters<AgentLoopRunner>[6]>;
@@ -87,11 +92,15 @@ export interface AgentSessionDependencies {
   runLoop?: AgentLoopRunner;
 }
 
+type AgentSessionListener = (snapshot: AgentSessionSnapshot) => void;
+
 /** Shared owner for agent-loop execution, interaction promises, and operation lifetime. */
 export class AgentSession {
   readonly interactions = new AgentInteractionController();
   readonly operations = new AgentSessionOperations();
   private readonly runLoop: AgentLoopRunner;
+  private snapshot = createAgentSessionSnapshot();
+  private readonly listeners = new Set<AgentSessionListener>();
 
   constructor(dependencies: AgentSessionDependencies = {}) {
     this.runLoop = dependencies.runLoop ?? runAgentLoop;
@@ -99,6 +108,19 @@ export class AgentSession {
 
   startSend(): AgentSessionOperation | null {
     return this.operations.tryStart('send', true);
+  }
+
+  finishSend(operation: AgentSessionOperation): boolean {
+    return operation.kind === 'send' && operation.release();
+  }
+
+  getSnapshot(): AgentSessionSnapshot {
+    return this.snapshot;
+  }
+
+  subscribe(listener: AgentSessionListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   cancel(via: string): AgentSessionCancelResult {
@@ -111,6 +133,7 @@ export class AgentSession {
   reset(via: string): void {
     this.interactions.cancelAll(via);
     this.operations.reset();
+    this.replaceSnapshot(createAgentSessionSnapshot());
   }
 
   async prepareSend(
@@ -195,7 +218,10 @@ export class AgentSession {
     const { callbacks } = request;
     let usage: Usage | null = null;
     let emittedError: string | undefined;
-    const emit = callbacks.onEvent;
+    this.replaceSnapshot(createAgentSessionSnapshot());
+    const emit = (event: AgentEvent) => this.emit(event, callbacks.onEvent);
+    emit({ type: 'system', model: request.config.model, cwd: request.config.workspace });
+    emit({ type: 'session', sessionId: request.sessionId });
 
     try {
       const messages = await this.runLoop(
@@ -257,6 +283,17 @@ export class AgentSession {
     } finally {
       emit({ type: 'done' });
     }
+  }
+
+  private emit(event: AgentEvent, hostListener: (event: AgentEvent) => void): void {
+    this.snapshot = reduceAgentSessionSnapshot(this.snapshot, event);
+    for (const listener of this.listeners) listener(this.snapshot);
+    hostListener(event);
+  }
+
+  private replaceSnapshot(snapshot: AgentSessionSnapshot): void {
+    this.snapshot = snapshot;
+    for (const listener of this.listeners) listener(snapshot);
   }
 }
 

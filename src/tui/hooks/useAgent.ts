@@ -623,7 +623,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             setStreamingMessageId(null);
             removeOptimisticMessages();
           }
-          operation.release();
+          agentSession.finishSend(operation);
           return;
         }
         contextMessage = prepared.contextMessage;
@@ -638,7 +638,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           setStreamingMessageId(null);
           removeOptimisticMessages();
         }
-        operation.release();
+        agentSession.finishSend(operation);
         return;
       }
 
@@ -874,7 +874,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           setRetryPhase('none');
           setRetryCountdownMs(0);
         }
-        operation.release();
+        agentSession.finishSend(operation);
         uiLog.event('send:finally', { durationMs: Date.now() - turnStartRef.current });
       }
     },
