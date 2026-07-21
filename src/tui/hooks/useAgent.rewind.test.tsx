@@ -151,6 +151,53 @@ afterEach(() => {
 });
 
 describe('useAgent rewind integration', () => {
+  it('renders the submitted message while an asynchronous snapshot is still pending', async () => {
+    const { config, timeline, sessionId } = fixture();
+    let finishCapture!: () => void;
+    const capturePending = new Promise<ReturnType<RewindSnapshotStoreInterface['capture']>>(
+      (resolve) => {
+        finishCapture = () =>
+          resolve({
+            ok: true,
+            manifest: {
+              version: 1,
+              id: 'snapshot-id',
+              workspace: '',
+              createdAt: Date.now(),
+              ignorePatterns: [],
+              entries: [],
+              logicalBytes: 0,
+            },
+          });
+      },
+    );
+    const snapshots = snapshotStore({ captureAsync: () => capturePending });
+    render(
+      <Harness
+        config={config}
+        session={{ ...bootstrap(timeline, sessionId), snapshotStore: snapshots }}
+      />,
+    );
+    await tick();
+
+    const sendPending = latest!.send('hello');
+    await tick();
+
+    expect(latest!.messages.map((message) => [message.role, message.content])).toEqual([
+      ['user', 'hello'],
+      ['assistant', ''],
+    ]);
+    expect(latest!.isThinking).toBe(true);
+    expect(
+      timeline
+        .readRecords(sessionId)
+        .filter((record) => record.type === 'turn_checkpoint' || record.type === 'user'),
+    ).toHaveLength(0);
+
+    finishCapture();
+    await sendPending;
+  });
+
   it('captures after pre-turn compaction and before @/! expansion', async () => {
     const { config, timeline, sessionId } = fixture();
     const append = timeline.append.bind(timeline);

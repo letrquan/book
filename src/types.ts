@@ -798,6 +798,7 @@ export type RewindRestoreResult =
 
 export interface RewindSnapshotStoreInterface {
   capture(ignorePatterns?: string[]): RewindSnapshotCaptureResult;
+  captureAsync?(ignorePatterns?: string[]): Promise<RewindSnapshotCaptureResult>;
   getCurrentGitHead(): string | undefined;
   getManifest(id: string): RewindSnapshotManifest | undefined;
   getAvailability(

@@ -65,6 +65,20 @@ describe('RewindSnapshotStore', () => {
     expect(JSON.stringify(result.manifest)).not.toContain('TOKEN=secret');
   });
 
+  it('captures asynchronously without changing rewind semantics', async () => {
+    const { workspace, store } = fixture();
+    writeFileSync(join(workspace, 'tracked.txt'), 'before');
+
+    const result = await store.captureAsync();
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.entries.map((entry) => entry.path)).toContain('tracked.txt');
+    writeFileSync(join(workspace, 'tracked.txt'), 'after');
+    expect(store.restore(result.manifest.id)).toMatchObject({ ok: true });
+    expect(readFileSync(join(workspace, 'tracked.txt'), 'utf-8')).toBe('before');
+  });
+
   it('allows .book/rewindignore negation to override default exclusions', () => {
     const { workspace, store } = fixture();
     mkdirSync(join(workspace, '.book'));
