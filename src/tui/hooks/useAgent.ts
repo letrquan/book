@@ -23,7 +23,6 @@ import type {
   RewindSnapshotStoreInterface,
   RewindTarget,
   TurnCheckpointRecordData,
-  UserQuestionRequest,
   UserQuestionResponse,
 } from '../../types.js';
 import { runAgentLoop } from '../../agent/loop.js';
@@ -62,123 +61,12 @@ import { observationKey } from '../../tools/file-provenance.js';
 import { selectSession, type SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';
 import { runSessionEnd, runSessionStart } from '../../session/lifecycle.js';
+import { AgentInteractionController } from '../../session/agent-interactions.js';
 
 const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
 import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
-
-type PendingPermission = {
-  toolCall: ToolCall;
-  resolve: (value: PermissionResult) => void;
-};
-
-type PendingPlanApproval = {
-  plan: string;
-  resolve: (value: PlanApprovalResult) => void;
-};
-
-export type PendingUserQuestion = {
-  request: UserQuestionRequest;
-  resolve: (value: UserQuestionResponse) => void;
-};
-
-/**
- * Idempotent permission settlement used by resolve/cancel/clear/unmount.
- * Exported for pure unit tests of the lifecycle contract.
- */
-export function settlePermissionRequest(
-  pendingRef: { current: PendingPermission | null },
-  setPending: (value: PendingPermission | null) => void,
-  result: PermissionResult,
-  via: string,
-): boolean {
-  const pending = pendingRef.current;
-  if (!pending) {
-    uiLog.event('permission:settled:noop', { reason: 'no-pending', result, via });
-    return false;
-  }
-  // Clear ref first so a re-entrant call cannot double-resolve.
-  pendingRef.current = null;
-  setPending(null);
-  uiLog.event('permission:settled', {
-    tool: pending.toolCall.name,
-    id: pending.toolCall.id,
-    result,
-    via,
-  });
-  pending.resolve(result);
-  return true;
-}
-
-/**
- * Idempotent plan-approval settlement used by resolve/cancel/clear/unmount.
- * Exported for pure unit tests of the lifecycle contract.
- */
-export function settlePlanApprovalRequest(
-  pendingRef: { current: PendingPlanApproval | null },
-  setPending: (value: PendingPlanApproval | null) => void,
-  result: PlanApprovalResult,
-  via: string,
-): boolean {
-  const pending = pendingRef.current;
-  if (!pending) {
-    uiLog.event('plan-approval:settled:noop', { reason: 'no-pending', result, via });
-    return false;
-  }
-  pendingRef.current = null;
-  setPending(null);
-  uiLog.event('plan-approval:settled', { result, via, len: pending.plan.length });
-  pending.resolve(result);
-  return true;
-}
-
-/** Settle one queued user question and promote the next request. */
-export function settleUserQuestionRequest(
-  pendingRef: { current: PendingUserQuestion[] },
-  setPending: (value: PendingUserQuestion[]) => void,
-  result: UserQuestionResponse,
-  via: string,
-  requestId?: string,
-): boolean {
-  const index = requestId
-    ? pendingRef.current.findIndex((entry) => entry.request.id === requestId)
-    : 0;
-  if (index < 0 || pendingRef.current.length === 0) {
-    uiLog.event('user-question:settled:noop', { reason: 'no-pending', via, requestId });
-    return false;
-  }
-
-  const next = [...pendingRef.current];
-  const [pending] = next.splice(index, 1);
-  pendingRef.current = next;
-  setPending(next);
-  uiLog.event('user-question:settled', {
-    id: pending.request.id,
-    action: result.action,
-    via,
-    remaining: next.length,
-  });
-  pending.resolve(result);
-  return true;
-}
-
-/** Cancel every queued request so nested agent loops cannot remain suspended. */
-export function cancelUserQuestionRequests(
-  pendingRef: { current: PendingUserQuestion[] },
-  setPending: (value: PendingUserQuestion[]) => void,
-  via: string,
-): number {
-  const pending = pendingRef.current;
-  if (pending.length === 0) return 0;
-  pendingRef.current = [];
-  setPending([]);
-  for (const entry of pending) {
-    entry.resolve({ action: 'cancel', message: `Question cancelled via ${via}.` });
-  }
-  uiLog.event('user-question:cancelled-all', { via, count: pending.length });
-  return pending.length;
-}
 
 export interface UseAgentSessionOptions extends SessionBootstrap {
   store?: SessionStoreInterface;
@@ -305,9 +193,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const [localProviderOwnership, setLocalProviderOwnership] = useState(() =>
     readLocalProviderOwnership(config.workspace),
   );
-  const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
-  const [pendingPlanApproval, setPendingPlanApproval] = useState<PendingPlanApproval | null>(null);
-  const [pendingUserQuestions, setPendingUserQuestions] = useState<PendingUserQuestion[]>([]);
+  const [interactions] = useState(() => new AgentInteractionController());
+  const [interactionSnapshot, setInteractionSnapshot] = useState(() => interactions.getSnapshot());
+  const { pendingPermission, pendingPlanApproval, pendingUserQuestions } = interactionSnapshot;
   const [turnDurationMs, setTurnDurationMs] = useState<number>(0);
   const [sessionId, setSessionId] = useState(session.sessionId);
   const [sessionName, setSessionName] = useState(session.sessionName);
@@ -343,11 +231,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const compactAbortRef = useRef<AbortController | null>(null);
   const hostUsageRef = useRef<Usage | null>(null);
   const lastHostCompactAttemptRef = useRef<string | null>(null);
-  // Resolve handles for pending interactive prompts (refs for idempotent settle).
-  const pendingPermissionRef = useRef<PendingPermission | null>(pendingPermission);
-  const pendingPlanApprovalRef = useRef<PendingPlanApproval | null>(pendingPlanApproval);
-  const pendingUserQuestionsRef = useRef<PendingUserQuestion[]>(pendingUserQuestions);
   const timelineStore = session.timelineStore ?? session.store;
+
+  useEffect(() => interactions.subscribe(setInteractionSnapshot), [interactions]);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -361,29 +247,25 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     localProviderOwnershipRef.current = localProviderOwnership;
   }, [localProviderOwnership]);
 
-  const settlePermission = useCallback((result: PermissionResult, via: string) => {
-    return settlePermissionRequest(pendingPermissionRef, setPendingPermission, result, via);
-  }, []);
+  const settlePermission = useCallback(
+    (result: PermissionResult, via: string) => {
+      return interactions.settlePermission(result, via);
+    },
+    [interactions],
+  );
 
-  const settlePlanApproval = useCallback((result: PlanApprovalResult, via: string) => {
-    return settlePlanApprovalRequest(pendingPlanApprovalRef, setPendingPlanApproval, result, via);
-  }, []);
+  const settlePlanApproval = useCallback(
+    (result: PlanApprovalResult, via: string) => {
+      return interactions.settlePlanApproval(result, via);
+    },
+    [interactions],
+  );
 
   const settleUserQuestion = useCallback(
     (result: UserQuestionResponse, via: string, requestId?: string) =>
-      settleUserQuestionRequest(
-        pendingUserQuestionsRef,
-        setPendingUserQuestions,
-        result,
-        via,
-        requestId,
-      ),
-    [],
+      interactions.settleUserQuestion(result, via, requestId),
+    [interactions],
   );
-
-  const cancelUserQuestions = useCallback((via: string) => {
-    return cancelUserQuestionRequests(pendingUserQuestionsRef, setPendingUserQuestions, via);
-  }, []);
 
   useEffect(() => {
     if (lifecycleStartedRef.current) return;
@@ -419,11 +301,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       abortRef.current?.abort();
       abortRef.current = null;
       // Deny/reject so agent-loop promises never hang after unmount.
-      settlePermissionRequest(pendingPermissionRef, () => {}, 'deny', 'unmount');
-      settlePlanApprovalRequest(pendingPlanApprovalRef, () => {}, 'reject', 'unmount');
-      cancelUserQuestionRequests(pendingUserQuestionsRef, () => {}, 'unmount');
+      interactions.cancelAll('unmount');
     };
-  }, []);
+  }, [interactions]);
 
   const clearCountdown = useCallback(() => {
     if (countdownRef.current) {
@@ -450,9 +330,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       targets: RewindTarget[] = [],
     ) => {
       sessionGenerationRef.current++;
-      settlePermission('deny', 'session-reset');
-      settlePlanApproval('reject', 'session-reset');
-      cancelUserQuestions('session-reset');
+      interactions.cancelAll('session-reset');
       accumulatorRef.current?.discard();
       accumulatorRef.current = null;
       abortRef.current?.abort();
@@ -492,7 +370,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           : undefined,
       }));
     },
-    [cancelUserQuestions, clearCountdown, settlePermission, settlePlanApproval],
+    [clearCountdown, interactions],
   );
 
   const endCurrentSession = useCallback(
@@ -936,15 +814,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             },
             onPermissionRequired: (toolCall: ToolCall): Promise<PermissionResult> => {
               if (!stillCurrent()) return Promise.resolve('deny');
-              return new Promise((resolve) => {
-                uiLog.event('permission:pending', {
-                  tool: toolCall.name,
-                  id: toolCall.id,
-                });
-                const entry: PendingPermission = { toolCall, resolve };
-                pendingPermissionRef.current = entry;
-                setPendingPermission(entry);
-              });
+              return interactions.requestPermission(toolCall);
             },
             onUsage: (u: Usage) => {
               if (!stillCurrent()) return;
@@ -957,29 +827,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             },
             onPlanApprovalRequired: (plan: string): Promise<PlanApprovalResult> => {
               if (!stillCurrent()) return Promise.resolve('reject');
-              return new Promise((resolve) => {
-                uiLog.event('plan-approval:pending', { len: plan.length });
-                const entry: PendingPlanApproval = { plan, resolve };
-                pendingPlanApprovalRef.current = entry;
-                setPendingPlanApproval(entry);
-              });
+              return interactions.requestPlanApproval(plan);
             },
             onUserQuestionRequired: (request): Promise<UserQuestionResponse> => {
               if (!stillCurrent()) {
                 return Promise.resolve({ action: 'cancel', message: 'Session changed.' });
               }
-              return new Promise((resolve) => {
-                const entry: PendingUserQuestion = { request, resolve };
-                const next = [...pendingUserQuestionsRef.current, entry];
-                pendingUserQuestionsRef.current = next;
-                setPendingUserQuestions(next);
-                uiLog.event('user-question:pending', {
-                  id: request.id,
-                  count: request.questions.length,
-                  queueLength: next.length,
-                  source: request.source.kind,
-                });
-              });
+              return interactions.requestUserQuestion(request);
             },
             onCompact: async (history, usage) => {
               if (!stillCurrent()) {
@@ -1141,6 +995,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       timelineStore,
       commitCompactResult,
       session.snapshotStore,
+      interactions,
     ],
   );
 
@@ -1177,16 +1032,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     const hadAccumulator = accumulatorRef.current !== null;
     const inFlight = sendInFlightRef.current;
     uiLog.event('cancel', { hadAbort, hadCompact, hadAccumulator, inFlight });
-    settlePermission('deny', 'cancel');
-    settlePlanApproval('reject', 'cancel');
-    cancelUserQuestions('cancel');
+    interactions.cancelAll('cancel');
     abortRef.current?.abort();
     compactAbortRef.current?.abort();
     // Do not null abortRef / release sendInFlightRef / stop accumulator here —
     // finally owns that so concurrent send cannot slip through mid-unwind.
     clearCountdown();
     setRetryPhase('none');
-  }, [cancelUserQuestions, clearCountdown, settlePermission, settlePlanApproval]);
+  }, [clearCountdown, interactions]);
 
   // Manually compact the conversation (summarize older turns).
   const compact = useCallback(
@@ -1399,9 +1252,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     accumulatorRef.current = null;
     abortRef.current?.abort();
     abortRef.current = null;
-    settlePermission('deny', 'clear');
-    settlePlanApproval('reject', 'clear');
-    cancelUserQuestions('clear');
+    interactions.cancelAll('clear');
     messagesRef.current = [];
     contextHistoryRef.current = [];
     setMessages([]);
@@ -1413,9 +1264,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     hostUsageRef.current = null;
     lastHostCompactAttemptRef.current = null;
     setAgentTodos([]);
-    setPendingPermission(null);
-    setPendingPlanApproval(null);
-    setPendingUserQuestions([]);
     streamingIdRef.current = null;
     setStreamingMessageId(null);
     // isThinking / sendInFlightRef are released by send()'s finally after abort.
@@ -1426,7 +1274,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     clearCountdown();
     setRetryPhase('none');
     setRetryCountdownMs(0);
-  }, [cancelUserQuestions, clearCountdown, settlePermission, settlePlanApproval]);
+  }, [clearCountdown, interactions]);
 
   const cycleMode = useCallback(() => {
     const modes: PermissionMode[] = [

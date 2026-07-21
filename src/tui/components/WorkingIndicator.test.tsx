@@ -169,7 +169,7 @@ describe('WorkingIndicator', () => {
         <WorkingIndicator
           isThinking
           messages={[]}
-          pendingPlanApproval={{ plan: 'Review the changes.', resolve: vi.fn() }}
+          pendingPlanApproval={{ plan: 'Review the changes.' }}
           terminalWidth={80}
         />,
       ),

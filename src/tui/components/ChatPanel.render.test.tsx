@@ -659,7 +659,7 @@ describe('ChatPanel Ink rendering', () => {
       withTheme(
         <ChatPanel
           messages={messages}
-          pendingPermission={{ toolCall, resolve: onResolve }}
+          pendingPermission={{ toolCall }}
           onResolvePermission={onResolve}
           expandedToolCallId="call-pending"
           terminalWidth={100}
@@ -709,7 +709,7 @@ describe('ChatPanel Ink rendering', () => {
         <ChatPanel
           messages={messages}
           streamingMessageId="a2"
-          pendingPermission={{ toolCall, resolve: onResolve }}
+          pendingPermission={{ toolCall }}
           onResolvePermission={onResolve}
           expandedToolCallId="call-streaming-pending"
           terminalWidth={100}

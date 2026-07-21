@@ -30,13 +30,13 @@ not complete and should continue as separate changes rather than being collapsed
 | PR 12: Exact command contract | Complete | Built-ins use one typed registry for exact names, explicit aliases, availability checks, collision policy, metadata, and execution. Registry-wide tests enforce unique names, aliases, metadata, and handlers. |
 | PR 13: Prompt/report handler migration | Complete | `/review`, `/security-review`, `/release-notes`, `/feedback`, `/export`, and `/init` execute outside `src/tui/app.tsx` and return typed prompt or local-message effects. |
 | PR 14: Settings/session/UI handler migration | Complete | Session lifecycle, modal, panel, config, memory, model, effort, and theme commands execute through typed handlers/effects. Config help uses schema-backed key metadata, and shared effort policy no longer lives under `tui/`. |
-| Milestone 5: Shared `AgentSession` | Partial | Added a stable public `AgentEvent` contract plus immutable session snapshot and reducer types. TUI, headless, and SDK still have separate lifecycle ownership, and pending interaction settlement remains in `useAgent`. |
+| Milestone 5: Shared `AgentSession` | Partial | Added a stable public `AgentEvent` contract plus immutable session snapshot/reducer types. A session-domain interaction controller now owns permission, plan-approval, and queued user-question promises with idempotent settlement; `useAgent` only subscribes to resolver-free interaction snapshots. Send, cancellation, cleanup, and host lifecycle ownership remain split. |
 | PR 15: Break boundary violations | Complete | Input expansion and file-mention discovery live in `src/input/`. Registry mechanics are split from default tool composition, manager/capability code depends on the core, and all architecture exceptions are removed. |
 | PRs 16-20 | Not started | Session runtime ownership, provider port/transport, type-hub split, non-blocking interaction work, and package/release checks remain. |
 
 ### Current Verification
 
-- `npm run check` passes: formatting, lint, typecheck, architecture checks, 1,053 unit tests,
+- `npm run check` passes: formatting, lint, typecheck, architecture checks, 1,052 unit tests,
   and 20 contract tests.
 - `npm run build` passes.
 - Lint still reports 33 warnings; warning elimination and `--max-warnings 0` remain PR 11 work.
@@ -51,8 +51,8 @@ not complete and should continue as separate changes rather than being collapsed
 
 ### Next Recommended Sequence
 
-1. Move pending permission, plan, and user-question settlement behind the shared event contract.
-2. Move send, cancellation, and cleanup ownership into `AgentSession`.
+1. Move send, cancellation, and cleanup ownership into `AgentSession`.
+2. Move compaction orchestration and boundary persistence behind the session contract.
 
 ## Executive Direction
 

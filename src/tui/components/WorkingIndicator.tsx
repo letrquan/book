@@ -1,32 +1,16 @@
 import { Box, Text } from 'ink';
 import { useEffect, useState } from 'react';
+import type { Message, RetryPhase } from '../../types.js';
 import type {
-  Message,
-  PermissionResult,
-  PlanApprovalResult,
-  RetryPhase,
-  ToolCall,
-  UserQuestionRequest,
-} from '../../types.js';
+  PendingPermissionRequest,
+  PendingPlanApprovalRequest,
+  PendingUserQuestionRequest,
+} from '../../session/agent-interactions.js';
 import { useAnimatedProgress, useGradientSpinner } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { deriveWorkingActivity } from '../working-activity.js';
 import { floatingFrameMetrics } from './chrome.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
-
-interface PendingPermission {
-  toolCall: ToolCall;
-  resolve: (value: PermissionResult) => void;
-}
-
-interface PendingPlanApproval {
-  plan: string;
-  resolve: (value: PlanApprovalResult) => void;
-}
-
-interface PendingUserQuestion {
-  request: UserQuestionRequest;
-}
 
 interface WorkingIndicatorProps {
   isThinking: boolean;
@@ -38,9 +22,9 @@ interface WorkingIndicatorProps {
   compactComplete?: boolean;
   messages: Message[];
   streamingMessageId?: string | null;
-  pendingPermission?: PendingPermission | null;
-  pendingPlanApproval?: PendingPlanApproval | null;
-  pendingUserQuestion?: PendingUserQuestion | null;
+  pendingPermission?: PendingPermissionRequest | null;
+  pendingPlanApproval?: PendingPlanApprovalRequest | null;
+  pendingUserQuestion?: PendingUserQuestionRequest | null;
   retryPhase?: RetryPhase;
   retryAttempt?: number;
   retryMax?: number;
