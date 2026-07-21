@@ -52,7 +52,7 @@ import { DEFAULT_SETTINGS, providerConfigSchema, type ResolvedSettings } from '.
 import { resolveSettings } from '../../settings-loader.js';
 import { providerConfigFromDraft, type ProviderSaveRequest } from '../model-options.js';
 import type { ProviderRemovalResult } from '../components/ModelPicker.js';
-import { updateEffortLevel } from '../effort.js';
+import { updateEffortLevel } from '../../commands/effort.js';
 import {
   collectAtMentionObservations,
   expandAtMentions,

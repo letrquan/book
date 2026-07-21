@@ -1,6 +1,6 @@
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import type { CommandContext, Message } from '../types.js';
+import type { AgentConfig, CommandContext, LocalCommandDisplay, Message } from '../types.js';
 import { buildInitPrompt } from './init-prompt.js';
 import {
   buildReviewPrompt,
@@ -10,6 +10,21 @@ import {
 } from './builtins-prompts.js';
 import { CommandRegistry, type CommandAlias, type CommandDefinition } from './registry.js';
 import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
+import { EFFORT_USAGE, isEffortLevel, type EffortLevel } from './effort.js';
+import { redactSettingValue, redactSettingsForDisplay } from '../settings-redaction.js';
+import {
+  formatSettingsDiagnostics,
+  SETTINGS_TOP_LEVEL_KEYS,
+  SettingsRepository,
+} from '../settings-repository.js';
+import { buildMemoryInboxReport, buildMemoryReport } from '../memory-display.js';
+import {
+  approveMemoryCandidate,
+  discardMemoryCandidate,
+  getProjectMemoryDir,
+  listMemoryCandidates,
+  loadMemoryContext,
+} from '../memory-store.js';
 
 export interface BuiltinCommand {
   name: string;
@@ -27,17 +42,29 @@ export interface BuiltinCommandContext {
   currentTurn: number;
   messages: Message[];
   lastError?: string | null;
+  effortUnavailableError?: string;
+  runtimeConfig: AgentConfig;
+  mode: string;
 }
 
 export type BuiltinCommandEffect =
   | { type: 'legacy'; commandName: string; rawArguments: string }
   | { type: 'send-prompt'; prompt: string; context: CommandContext }
-  | { type: 'local-message'; content: string }
+  | {
+      type: 'local-message';
+      content: string;
+      display?: LocalCommandDisplay;
+      refreshMemory?: boolean;
+    }
   | { type: 'start-new-conversation'; previousName?: string }
   | { type: 'resume-conversation'; session?: string }
   | { type: 'compact'; focus?: string }
   | { type: 'exit' }
-  | { type: 'show-modal'; modal: 'model' | 'rewind' }
+  | { type: 'show-modal'; modal: 'model' | 'rewind' | 'theme' | 'effort' }
+  | { type: 'set-theme'; preference: string }
+  | { type: 'set-model'; selection: string }
+  | { type: 'set-effort'; level: EffortLevel }
+  | { type: 'set-memory-auto-save'; enabled: boolean }
   | { type: 'toggle-panel'; panel: 'help' | 'status' | 'permissions' | 'skills' };
 
 export type BuiltinCommandDefinition = CommandDefinition<
@@ -76,6 +103,140 @@ function promptEffect(
       resolvedBody: prompt,
       allowedTools,
     },
+  };
+}
+
+function configCommandEffect(
+  rawArguments: string,
+  context: BuiltinCommandContext,
+): BuiltinCommandEffect {
+  const runtime = context.runtimeConfig;
+  if (!rawArguments) {
+    const snapshot = redactSettingsForDisplay({
+      ...runtime.settings,
+      model: runtime.modelSelection ?? runtime.model,
+      baseUrl: runtime.baseUrl,
+      workspace: runtime.workspace,
+      maxTurns: runtime.maxTurns,
+      maxTokens: runtime.maxTokens,
+      effort: runtime.effort,
+      activeProvider: runtime.provider,
+      modelInfo: runtime.modelInfo,
+    }) as Record<string, unknown>;
+    return {
+      type: 'local-message',
+      content: JSON.stringify(snapshot, null, 2),
+      display: {
+        kind: 'config',
+        snapshot,
+        runtime: {
+          model: runtime.modelSelection ?? runtime.model,
+          provider: runtime.provider ?? 'auto',
+          effort: runtime.effort,
+          mode: context.mode,
+          maxTokens: runtime.modelInfo?.contextWindow ?? runtime.maxTokens,
+          workspace: runtime.workspace,
+        },
+      },
+    };
+  }
+  if (rawArguments === '--help') {
+    return {
+      type: 'local-message',
+      content:
+        'Settable keys (dot-separated):\n' +
+        SETTINGS_TOP_LEVEL_KEYS.map((key) => `  ${key}`).join('\n') +
+        '\n\nUsage: /config <key>=<value>',
+    };
+  }
+  if (!rawArguments.includes('=')) {
+    return { type: 'local-message', content: 'Usage: /config [key=value] or /config --help' };
+  }
+
+  const separator = rawArguments.indexOf('=');
+  const key = rawArguments.slice(0, separator).trim();
+  const rawValue = rawArguments.slice(separator + 1).trim();
+  let value: unknown = rawValue;
+  try {
+    value = JSON.parse(rawValue);
+  } catch {
+    // Unquoted values are stored as strings.
+  }
+  const result = new SettingsRepository(
+    join(context.workspace, '.book', 'settings.local.json'),
+  ).set({ [key]: value });
+  return {
+    type: 'local-message',
+    content: result.ok
+      ? `Set ${key} = ${JSON.stringify(redactSettingValue(key, value))} in .book/settings.local.json (next session).`
+      : `✕ ${formatSettingsDiagnostics(result.diagnostics)}`,
+  };
+}
+
+function resolveMemoryCandidate(workspace: string, raw: string): string | undefined {
+  if (!raw) return undefined;
+  const candidates = listMemoryCandidates(workspace);
+  const index = Number(raw);
+  if (Number.isInteger(index) && index >= 1 && index <= candidates.length) {
+    return candidates[index - 1].name;
+  }
+  return raw;
+}
+
+function memoryCommandEffect(
+  rawArguments: string,
+  context: BuiltinCommandContext,
+): BuiltinCommandEffect {
+  if (!rawArguments || rawArguments === 'status') {
+    const loaded = context.runtimeConfig.settings.memory.enabled
+      ? (context.runtimeConfig.memoryContext ?? loadMemoryContext(context.workspace))
+      : undefined;
+    return {
+      type: 'local-message',
+      content: buildMemoryReport({
+        workspace: context.workspace,
+        settings: context.runtimeConfig.settings,
+        loaded,
+      }),
+    };
+  }
+  if (rawArguments === 'inbox') {
+    return {
+      type: 'local-message',
+      content: buildMemoryInboxReport({ workspace: context.workspace }),
+    };
+  }
+  if (rawArguments === 'path') {
+    return { type: 'local-message', content: getProjectMemoryDir(context.workspace) };
+  }
+  if (rawArguments === 'on' || rawArguments === 'auto-save on') {
+    return { type: 'set-memory-auto-save', enabled: true };
+  }
+  if (rawArguments === 'off' || rawArguments === 'auto-save off') {
+    return { type: 'set-memory-auto-save', enabled: false };
+  }
+  if (rawArguments.startsWith('approve ') || rawArguments.startsWith('discard ')) {
+    const approve = rawArguments.startsWith('approve ');
+    const target = resolveMemoryCandidate(
+      context.workspace,
+      rawArguments.slice(approve ? 'approve '.length : 'discard '.length).trim(),
+    );
+    const result = target
+      ? approve
+        ? approveMemoryCandidate(context.workspace, target)
+        : discardMemoryCandidate(context.workspace, target)
+      : { ok: false as const, error: 'Missing candidate id or filename.' };
+    return {
+      type: 'local-message',
+      content: result.ok
+        ? `${approve ? 'Approved' : 'Discarded'} memory candidate → ${result.path}`
+        : `✕ ${result.error}`,
+      refreshMemory: result.ok && approve,
+    };
+  }
+  return {
+    type: 'local-message',
+    content: 'Usage: /memory [status|inbox|approve <n|file>|discard <n|file>|on|off|path]',
   };
 }
 
@@ -144,8 +305,23 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   legacyCommand('agent', 'Inspect or control a managed agent', {
     argumentHint: '<id>|send <id> <message>|stop <id>|apply <id>',
   }),
-  legacyCommand('theme', 'Switch color theme', { argumentHint: '[dark|light|auto|name]' }),
-  legacyCommand('model', 'Switch models and manage BYOK providers'),
+  {
+    name: 'theme',
+    description: 'Switch color theme',
+    argumentHint: '[dark|light|auto|name]',
+    execute: ({ rawArguments }) =>
+      rawArguments
+        ? { type: 'set-theme', preference: rawArguments }
+        : { type: 'show-modal', modal: 'theme' },
+  },
+  {
+    name: 'model',
+    description: 'Switch models and manage BYOK providers',
+    execute: ({ rawArguments }) =>
+      rawArguments
+        ? { type: 'set-model', selection: rawArguments }
+        : { type: 'show-modal', modal: 'model' },
+  },
   {
     name: 'providers',
     description: 'Add or remove workspace BYOK providers',
@@ -154,19 +330,39 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
         ? { type: 'local-message', content: 'Usage: /providers' }
         : { type: 'show-modal', modal: 'model' },
   },
-  legacyCommand('effort', 'Set thinking effort', {
+  {
+    name: 'effort',
+    description: 'Set thinking effort',
     argumentHint: '[low|medium|high|xhigh|max]',
-  }),
-  legacyCommand('config', 'Show current configuration'),
+    execute: ({ rawArguments }, context) => {
+      if (!rawArguments) {
+        return context.effortUnavailableError
+          ? { type: 'local-message', content: `✕ ${context.effortUnavailableError}` }
+          : { type: 'show-modal', modal: 'effort' };
+      }
+      const normalized = rawArguments.toLowerCase();
+      return isEffortLevel(normalized)
+        ? { type: 'set-effort', level: normalized }
+        : { type: 'local-message', content: EFFORT_USAGE };
+    },
+  },
+  {
+    name: 'config',
+    description: 'Show current configuration',
+    execute: ({ rawArguments }, context) => configCommandEffect(rawArguments, context),
+  },
   legacyCommand('diff', 'Show git diff'),
   {
     name: 'status',
     description: 'Show session status',
     execute: () => ({ type: 'toggle-panel', panel: 'status' }),
   },
-  legacyCommand('memory', 'Manage auto-memory', {
+  {
+    name: 'memory',
+    description: 'Manage auto-memory',
     argumentHint: '[status|inbox|approve|discard|on|off|path]',
-  }),
+    execute: ({ rawArguments }, context) => memoryCommandEffect(rawArguments, context),
+  },
   {
     name: 'permissions',
     description: 'Manage permission rules',

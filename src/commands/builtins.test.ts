@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   BUILTIN_COMMAND_DEFINITIONS,
   BUILTIN_COMMANDS,
   createBuiltinCommandRegistry,
   type BuiltinCommandContext,
 } from './builtins.js';
+import { defaultConfig } from '../test/fixtures.js';
 
 function context(): BuiltinCommandContext {
   return {
@@ -14,6 +18,8 @@ function context(): BuiltinCommandContext {
     provider: 'test-provider',
     currentTurn: 2,
     messages: [],
+    runtimeConfig: defaultConfig(),
+    mode: 'default',
   };
 }
 
@@ -53,6 +59,70 @@ describe('built-in command contract', () => {
     expect(registry.execute('providers', 'unexpected', context())).toEqual({
       type: 'local-message',
       content: 'Usage: /providers',
+    });
+  });
+
+  it('normalizes settings command arguments before returning effects', () => {
+    const registry = createBuiltinCommandRegistry();
+    expect(registry.execute('theme', 'solarized', context())).toEqual({
+      type: 'set-theme',
+      preference: 'solarized',
+    });
+    expect(registry.execute('model', 'openai/gpt-5', context())).toEqual({
+      type: 'set-model',
+      selection: 'openai/gpt-5',
+    });
+    expect(registry.execute('effort', 'HIGH', context())).toEqual({
+      type: 'set-effort',
+      level: 'high',
+    });
+    expect(
+      registry.execute('effort', '', {
+        ...context(),
+        effortUnavailableError: 'Effort is unavailable.',
+      }),
+    ).toEqual({ type: 'local-message', content: '✕ Effort is unavailable.' });
+  });
+
+  it('renders and persists config commands with schema-backed metadata', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-command-config-'));
+    try {
+      const registry = createBuiltinCommandRegistry();
+      const commandContext = {
+        ...context(),
+        workspace,
+        runtimeConfig: defaultConfig({ workspace }),
+      };
+      const display = registry.execute('config', '', commandContext);
+      expect(display).toEqual(
+        expect.objectContaining({
+          type: 'local-message',
+          display: expect.objectContaining({ kind: 'config' }),
+        }),
+      );
+      expect(registry.execute('config', '--help', commandContext)).toEqual(
+        expect.objectContaining({ content: expect.stringContaining('  maxTurns') }),
+      );
+
+      const result = registry.execute('config', 'maxTurns=12', commandContext);
+      expect(result).toEqual(expect.objectContaining({ content: expect.stringContaining('12') }));
+      expect(
+        JSON.parse(readFileSync(join(workspace, '.book', 'settings.local.json'), 'utf-8')),
+      ).toEqual({ maxTurns: 12 });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('parses memory control commands into typed effects', () => {
+    const registry = createBuiltinCommandRegistry();
+    expect(registry.execute('memory', 'auto-save on', context())).toEqual({
+      type: 'set-memory-auto-save',
+      enabled: true,
+    });
+    expect(registry.execute('memory', 'unknown', context())).toEqual({
+      type: 'local-message',
+      content: 'Usage: /memory [status|inbox|approve <n|file>|discard <n|file>|on|off|path]',
     });
   });
 

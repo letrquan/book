@@ -45,20 +45,12 @@ import {
 import { discoverSkills } from '../skills.js';
 import { runGit } from '../tools/git.js';
 import { costReport, PRICING, usageReport } from '../pricing.js';
-import { buildMemoryInboxReport, buildMemoryReport, getMemoryIndex } from '../memory-display.js';
-import {
-  approveMemoryCandidate,
-  discardMemoryCandidate,
-  getProjectMemoryDir,
-  listMemoryCandidates,
-  loadMemoryContext,
-} from '../memory-store.js';
+import { getMemoryIndex } from '../memory-display.js';
 import { buildContextBreakdown, buildContextReport } from '../context-report.js';
 import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { persistSettingLocal } from './persist.js';
 import { buildModelOptions } from './model-options.js';
-import { redactSettingValue, redactSettingsForDisplay } from '../settings-redaction.js';
 import { createUiDebugLogger } from '../debug-log.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { getOrCreateAgentManager } from '../agents/manager.js';
@@ -69,12 +61,7 @@ import {
   type TranscriptMode,
 } from './tool-presentation.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
-import {
-  EFFORT_USAGE,
-  getAvailableEffortLevels,
-  getEffortUnavailableError,
-  isEffortLevel,
-} from './effort.js';
+import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
 
 const uiLog = createUiDebugLogger('tui:app');
 
@@ -99,24 +86,6 @@ export function ownsModalInput(
     showRewindPicker,
   );
 }
-
-/** Settable top-level settings keys (for /config --help). Mirrors cli/config-cmd.ts allowlist. */
-const SETTABLE_KEYS = [
-  'model',
-  'maxTurns',
-  'maxTokens',
-  'autoCompactEnabled',
-  'defaultMode',
-  'effort',
-  'theme',
-  'provider',
-  'permissions',
-  'sandbox',
-  'hooks',
-  'memory',
-  'additionalDirectories',
-  'env',
-];
 
 type ApplyThemeResult = { ok: true; theme: ResolvedTheme } | { ok: false; error: string };
 
@@ -531,6 +500,9 @@ export function App({ config, session, redrawViewport }: AppProps) {
           currentTurn,
           messages,
           lastError: error,
+          effortUnavailableError: getEffortUnavailableError(liveConfig),
+          runtimeConfig: liveConfig,
+          mode,
         };
         let effect: BuiltinCommandEffect | undefined;
         try {
@@ -550,7 +522,9 @@ export function App({ config, session, redrawViewport }: AppProps) {
           return;
         }
         if (effect?.type === 'local-message') {
-          addLocalMessage(effect.content);
+          if (effect.display) addLocalMessage(effect.content, effect.display);
+          else addLocalMessage(effect.content);
+          if (effect.refreshMemory) refreshMemoryContext();
           return;
         }
         if (effect?.type === 'start-new-conversation') {
@@ -586,7 +560,41 @@ export function App({ config, session, redrawViewport }: AppProps) {
         }
         if (effect?.type === 'show-modal') {
           if (effect.modal === 'model') setShowModelPicker(true);
-          else setShowRewindPicker(true);
+          else if (effect.modal === 'rewind') setShowRewindPicker(true);
+          else if (effect.modal === 'theme') {
+            setCustomThemes(listCustomThemes(config.workspace));
+            setShowThemePicker(true);
+          } else setShowEffortPicker(true);
+          return;
+        }
+        if (effect?.type === 'set-theme') {
+          const result = applyThemePreference(effect.preference);
+          addLocalMessage(result.ok ? themeAppliedMessage(result.theme) : `✕ ${result.error}`);
+          return;
+        }
+        if (effect?.type === 'set-model') {
+          const result = setModel(effect.selection);
+          addLocalMessage(
+            result.ok ? `Switched to ${effect.selection} (saved as default).` : `✕ ${result.error}`,
+          );
+          return;
+        }
+        if (effect?.type === 'set-effort') {
+          const result = setEffort(effect.level);
+          addLocalMessage(
+            result.ok
+              ? `Set effort level to ${effect.level} (saved as default).`
+              : `✕ ${result.error}`,
+          );
+          return;
+        }
+        if (effect?.type === 'set-memory-auto-save') {
+          setMemoryAutoSave(effect.enabled);
+          addLocalMessage(
+            effect.enabled
+              ? 'Memory auto-capture enabled. New candidates will still require approval.'
+              : 'Memory auto-capture disabled. Existing approved memory can still load.',
+          );
           return;
         }
         if (effect?.type === 'toggle-panel') {
@@ -666,92 +674,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
         }
       } else if (commandName === 'task' && commandArg) {
         addTask({ subject: commandArg, status: 'pending' });
-      } else if (commandName === 'theme') {
-        if (!commandArg) {
-          setCustomThemes(listCustomThemes(config.workspace));
-          setShowThemePicker(true);
-        } else {
-          const result = applyThemePreference(commandArg);
-          addLocalMessage(result.ok ? themeAppliedMessage(result.theme) : `✕ ${result.error}`);
-        }
-      } else if (commandName === 'model') {
-        if (commandArg) {
-          const result = setModel(commandArg);
-          addLocalMessage(
-            result.ok ? `Switched to ${commandArg} (saved as default).` : `✕ ${result.error}`,
-          );
-        } else {
-          setShowModelPicker(true);
-        }
-      } else if (commandName === 'effort') {
-        if (!commandArg) {
-          const unavailable = getEffortUnavailableError(liveConfig);
-          if (unavailable) addLocalMessage(`✕ ${unavailable}`);
-          else setShowEffortPicker(true);
-        } else {
-          const normalized = commandArg.toLowerCase();
-          if (!isEffortLevel(normalized)) {
-            addLocalMessage(EFFORT_USAGE);
-          } else {
-            const result = setEffort(normalized);
-            addLocalMessage(
-              result.ok
-                ? `Set effort level to ${normalized} (saved as default).`
-                : `✕ ${result.error}`,
-            );
-          }
-        }
-      } else if (commandName === 'config') {
-        const arg = commandArg;
-        if (!arg) {
-          const snapshot = redactSettingsForDisplay({
-            ...liveConfig.settings,
-            model: liveConfig.modelSelection ?? liveConfig.model,
-            baseUrl: liveConfig.baseUrl,
-            workspace: liveConfig.workspace,
-            maxTurns: liveConfig.maxTurns,
-            maxTokens: liveConfig.maxTokens,
-            effort: liveConfig.effort,
-            activeProvider: liveConfig.provider,
-            modelInfo: liveConfig.modelInfo,
-          }) as Record<string, unknown>;
-          addLocalMessage(JSON.stringify(snapshot, null, 2), {
-            kind: 'config',
-            snapshot,
-            runtime: {
-              model: liveConfig.modelSelection ?? liveConfig.model,
-              provider: liveConfig.provider ?? 'auto',
-              effort: liveConfig.effort,
-              mode,
-              maxTokens: liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens,
-              workspace: liveConfig.workspace,
-            },
-          });
-        } else if (arg === '--help') {
-          addLocalMessage(
-            'Settable keys (dot-separated):\n' +
-              SETTABLE_KEYS.map((k) => `  ${k}`).join('\n') +
-              '\n\nUsage: /config <key>=<value>',
-          );
-        } else if (arg.includes('=')) {
-          const eq = arg.indexOf('=');
-          const key = arg.slice(0, eq).trim();
-          const raw = arg.slice(eq + 1).trim();
-          let parsed: unknown = raw;
-          try {
-            parsed = JSON.parse(raw);
-          } catch {
-            /* keep as string */
-          }
-          const r = persistSettingLocal(config.workspace, key, parsed);
-          addLocalMessage(
-            r.ok
-              ? `Set ${key} = ${JSON.stringify(redactSettingValue(key, parsed))} in .book/settings.local.json (next session).`
-              : `✕ ${r.error}`,
-          );
-        } else {
-          addLocalMessage('Usage: /config [key=value] or /config --help');
-        }
       } else if (commandName === 'diff') {
         void runGit(['diff'], {
           workspaceRoot: config.workspace,
@@ -761,62 +683,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
             result.error ? `✕ ${result.error}` : result.output.trim() || '(no changes)',
           );
         });
-      } else if (commandName === 'memory') {
-        const arg = commandArg;
-
-        if (!arg || arg === 'status') {
-          // Respect the enabled gate: when memory loading is disabled, don't
-          // walk the disk just to render a status line.
-          const loaded = liveConfig.settings.memory.enabled
-            ? (liveConfig.memoryContext ?? loadMemoryContext(config.workspace))
-            : undefined;
-          addLocalMessage(
-            buildMemoryReport({
-              workspace: config.workspace,
-              settings: liveConfig.settings,
-              loaded,
-            }),
-          );
-        } else if (arg === 'inbox') {
-          addLocalMessage(buildMemoryInboxReport({ workspace: config.workspace }));
-        } else if (arg === 'path') {
-          addLocalMessage(getProjectMemoryDir(config.workspace));
-        } else if (arg === 'on' || arg === 'auto-save on') {
-          setMemoryAutoSave(true);
-          addLocalMessage(
-            'Memory auto-capture enabled. New candidates will still require approval.',
-          );
-        } else if (arg === 'off' || arg === 'auto-save off') {
-          setMemoryAutoSave(false);
-          addLocalMessage('Memory auto-capture disabled. Existing approved memory can still load.');
-        } else if (arg.startsWith('approve ') || arg.startsWith('discard ')) {
-          const action = arg.startsWith('approve ') ? 'approve ' : 'discard ';
-          const rest = arg.slice(action.length).trim();
-          const candidates = listMemoryCandidates(config.workspace);
-          const resolveCandidate = (raw: string): string | undefined => {
-            if (!raw) return undefined;
-            const idx = Number(raw);
-            if (Number.isInteger(idx) && idx >= 1 && idx <= candidates.length)
-              return candidates[idx - 1].name;
-            return raw;
-          };
-          const target = resolveCandidate(rest);
-          const r = target
-            ? action === 'approve '
-              ? approveMemoryCandidate(config.workspace, target)
-              : discardMemoryCandidate(config.workspace, target)
-            : { ok: false, error: 'Missing candidate id or filename.' };
-          addLocalMessage(
-            r.ok
-              ? `${action === 'approve ' ? 'Approved' : 'Discarded'} memory candidate → ${r.path}`
-              : `✕ ${r.error}`,
-          );
-          if (r.ok && action === 'approve ') refreshMemoryContext();
-        } else {
-          addLocalMessage(
-            'Usage: /memory [status|inbox|approve <n|file>|discard <n|file>|on|off|path]',
-          );
-        }
       } else if (commandName === 'cost') {
         addLocalMessage(costReport(liveConfig.model, usage));
       } else if (commandName === 'usage' || commandName === 'stats') {

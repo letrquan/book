@@ -1,7 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import { useEffect, useState } from 'react';
 import { useTheme } from '../theme.js';
-import type { EffortLevel, EffortResult } from '../effort.js';
+import type { EffortLevel, EffortResult } from '../../commands/effort.js';
 
 const DESCRIPTIONS: Record<EffortLevel, string> = {
   low: 'Fast responses with lighter reasoning',
