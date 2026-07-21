@@ -10,6 +10,7 @@ import {
   removeTrailingEmptyAssistantPlaceholder,
 } from './streaming-state.js';
 import type { Message } from '../../types.js';
+import { toolFailure, toolSuccess } from '../../tools/result.js';
 
 beforeEach(() => {
   vi.spyOn(crypto, 'randomUUID')
@@ -75,11 +76,11 @@ describe('streaming TUI message state helpers', () => {
       name: 'Read',
       arguments: { filePath: 'a.ts' },
     });
-    messages = appendToolResultToMessage(messages, 'assistant-1', {
-      toolCallId: 'call-1',
-      success: true,
-      output: 'contents',
-    });
+    messages = appendToolResultToMessage(
+      messages,
+      'assistant-1',
+      toolSuccess('contents', { toolCallId: 'call-1' }),
+    );
     messages = appendContentToMessage(messages, 'assistant-2', ' final');
 
     expect(messages[0].toolCalls?.map((tc) => tc.id)).toEqual(['call-1']);
@@ -105,21 +106,21 @@ describe('streaming TUI message state helpers', () => {
       name: 'Write',
       arguments: { filePath: 'c.ts' },
     });
-    messages = appendToolResultToMessage(messages, 'assistant-1', {
-      toolCallId: 'call-1',
-      success: true,
-      output: 'first',
-    });
-    messages = appendToolResultToMessage(messages, 'assistant-1', {
-      toolCallId: 'call-1',
-      success: true,
-      output: 'updated',
-    });
-    messages = appendToolResultToMessage(messages, 'assistant-1', {
-      toolCallId: 'call-2',
-      success: false,
-      output: 'err',
-    });
+    messages = appendToolResultToMessage(
+      messages,
+      'assistant-1',
+      toolSuccess('first', { toolCallId: 'call-1' }),
+    );
+    messages = appendToolResultToMessage(
+      messages,
+      'assistant-1',
+      toolSuccess('updated', { toolCallId: 'call-1' }),
+    );
+    messages = appendToolResultToMessage(
+      messages,
+      'assistant-1',
+      toolFailure('err', { toolCallId: 'call-2' }),
+    );
 
     expect(messages[0].toolCalls).toHaveLength(2);
     expect(messages[0].toolCalls?.[0]).toEqual({
@@ -129,32 +130,38 @@ describe('streaming TUI message state helpers', () => {
     });
     expect(messages[0].toolCalls?.[1].id).toBe('call-2');
     expect(messages[0].toolResults).toHaveLength(2);
-    expect(messages[0].toolResults?.[0].output).toBe('updated');
+    expect(messages[0].toolResults?.[0].content).toBe('updated');
     expect(messages[0].toolResults?.[1].toolCallId).toBe('call-2');
   });
 
   it('preserves file mutation diff metadata while upserting tool results', () => {
     const diff = '@@ -1 +1 @@\n-old\n+new';
     let messages = [msg('assistant-1', 'assistant', '')];
-    messages = appendToolResultToMessage(messages, 'assistant-1', {
-      toolCallId: 'edit',
-      success: true,
-      output: diff,
-      fileMutation: {
-        kind: 'update',
-        filePath: 'src/a.ts',
-        addedLines: 1,
-        removedLines: 1,
-      },
-    });
+    messages = appendToolResultToMessage(
+      messages,
+      'assistant-1',
+      toolSuccess(diff, {
+        toolCallId: 'edit',
+        artifacts: {
+          fileMutation: {
+            kind: 'update',
+            filePath: 'src/a.ts',
+            addedLines: 1,
+            removedLines: 1,
+          },
+        },
+      }),
+    );
 
     expect(messages[0].toolResults?.[0]).toMatchObject({
-      output: diff,
-      fileMutation: {
-        kind: 'update',
-        filePath: 'src/a.ts',
-        addedLines: 1,
-        removedLines: 1,
+      content: diff,
+      artifacts: {
+        fileMutation: {
+          kind: 'update',
+          filePath: 'src/a.ts',
+          addedLines: 1,
+          removedLines: 1,
+        },
       },
     });
   });
@@ -172,15 +179,16 @@ describe('streaming TUI message state helpers', () => {
       call: { id: 'duplicate', name: 'Read', arguments: { filePath: 'b.ts' } },
     });
     const before = messages[0].nestedToolInvocations;
-    messages = appendNestedToolResultToMessage(messages, 'assistant-1', 'task-b/1:duplicate', {
-      toolCallId: 'duplicate',
-      success: true,
-      output: 'b',
-    });
+    messages = appendNestedToolResultToMessage(
+      messages,
+      'assistant-1',
+      'task-b/1:duplicate',
+      toolSuccess('b', { toolCallId: 'duplicate' }),
+    );
 
     expect(messages[0].nestedToolInvocations).not.toBe(before);
     expect(messages[0].nestedToolInvocations?.[0].result).toBeUndefined();
-    expect(messages[0].nestedToolInvocations?.[1].result?.output).toBe('b');
+    expect(messages[0].nestedToolInvocations?.[1].result?.content).toBe('b');
   });
 
   it('upserts nested invocations by trace id and preserves existing results', () => {
@@ -190,11 +198,12 @@ describe('streaming TUI message state helpers', () => {
       parentTraceId: 'task',
       call: { id: 'read', name: 'Read', arguments: { filePath: 'a.ts' } },
     });
-    messages = appendNestedToolResultToMessage(messages, 'assistant-1', 'task/1:read', {
-      toolCallId: 'read',
-      success: true,
-      output: 'a',
-    });
+    messages = appendNestedToolResultToMessage(
+      messages,
+      'assistant-1',
+      'task/1:read',
+      toolSuccess('a', { toolCallId: 'read' }),
+    );
     // Re-emit the same invocation (e.g. retry/update) without a result payload.
     messages = appendNestedToolInvocationToMessage(messages, 'assistant-1', {
       traceId: 'task/1:read',
@@ -202,18 +211,19 @@ describe('streaming TUI message state helpers', () => {
       call: { id: 'read', name: 'Read', arguments: { filePath: 'a.ts', offset: 10 } },
     });
     // Re-emit result with new payload — replace in place.
-    messages = appendNestedToolResultToMessage(messages, 'assistant-1', 'task/1:read', {
-      toolCallId: 'read',
-      success: true,
-      output: 'a-updated',
-    });
+    messages = appendNestedToolResultToMessage(
+      messages,
+      'assistant-1',
+      'task/1:read',
+      toolSuccess('a-updated', { toolCallId: 'read' }),
+    );
 
     expect(messages[0].nestedToolInvocations).toHaveLength(1);
     expect(messages[0].nestedToolInvocations?.[0].call.arguments).toEqual({
       filePath: 'a.ts',
       offset: 10,
     });
-    expect(messages[0].nestedToolInvocations?.[0].result?.output).toBe('a-updated');
+    expect(messages[0].nestedToolInvocations?.[0].result?.content).toBe('a-updated');
   });
 
   it('detects totally-empty assistant placeholders and removes only a trailing one', () => {

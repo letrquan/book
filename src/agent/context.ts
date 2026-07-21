@@ -20,6 +20,7 @@ import { discoverClaudeMd, renderClaudeMd } from '../claude-md.js';
 import { discoverAgents, type SubagentDef } from '../subagent-discovery.js';
 import { runGit } from '../tools/git.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
+import { toolResultModelContent } from '../tools/result.js';
 
 function compactList(
   title: string,
@@ -205,7 +206,7 @@ export async function buildSystemPromptZones(
   commands?: SlashCommand[],
   tools: ToolDefinition[] = [],
   signal?: AbortSignal,
-  overrides?: { append?: string; hideAgents?: boolean },
+  overrides?: { append?: string; hideAgents?: boolean; toolCatalogSummary?: string },
 ): Promise<SystemPromptZones> {
   const skills = discoverSkills(config.workspace);
   const cmdList = mergeCommands(commands ?? discoverCommands(config.workspace));
@@ -230,6 +231,9 @@ export async function buildSystemPromptZones(
       : generateAgentListing(withBuiltInAgents(discoverAgents(config.workspace)), 1536),
     overrides?.hideAgents ? '' : agentRoutingSection(config),
     generateToolListing(tools, 2048),
+    overrides?.toolCatalogSummary
+      ? ['## Deferred tool catalog', overrides.toolCatalogSummary].join('\n')
+      : '',
     memorySection(config),
     overrides?.append ?? '',
     guardrailsSection(),
@@ -247,7 +251,7 @@ export async function buildSystemPrompt(
   commands?: SlashCommand[],
   tools: ToolDefinition[] = [],
   signal?: AbortSignal,
-  overrides?: { append?: string; hideAgents?: boolean },
+  overrides?: { append?: string; hideAgents?: boolean; toolCatalogSummary?: string },
 ): Promise<string> {
   const zones = await buildSystemPromptZones(config, todos, commands, tools, signal, overrides);
   return [zones.cachedPrefix, zones.dynamicSuffix].filter(Boolean).join('\n\n');
@@ -260,7 +264,7 @@ export async function buildMessages(
   todos?: Array<{ content: string; status: string; activeForm?: string }>,
   commands?: SlashCommand[],
   signal?: AbortSignal,
-  systemOverrides?: { append?: string; hideAgents?: boolean },
+  systemOverrides?: { append?: string; hideAgents?: boolean; toolCatalogSummary?: string },
 ): Promise<ProviderMessage[]> {
   const messages: ProviderMessage[] = [];
 
@@ -315,9 +319,7 @@ export async function buildMessages(
             messages.push({
               role: 'tool',
               tool_call_id: result.toolCallId,
-              content: result.success
-                ? result.output
-                : `ERROR: ${result.error ?? 'tool failed'}\n${result.output ?? ''}`,
+              content: toolResultModelContent(result),
             });
           }
         }

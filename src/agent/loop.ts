@@ -31,6 +31,15 @@ import {
   formatUserQuestionAnswers,
   validateUserQuestionResponse,
 } from '../tools/ask-user-question.js';
+import { createToolSurface } from '../tools/catalog.js';
+import {
+  enrichToolResultPresentation,
+  replaceToolResult,
+  toolFailure,
+  toolResultErrorMessage,
+  toolResultSucceeded,
+} from '../tools/result.js';
+import { toolSearchTools } from '../tools/tool-search.js';
 
 const log = createDebugLogger('agent');
 
@@ -88,16 +97,13 @@ export async function runAgentLoop(
   const signal = options?.signal;
   const newHistory = [...history];
   const retry = config.retry;
+  if (!options?.isSubagent) config.toolDiscoveryState ??= { clock: 0, loaded: new Map() };
+  if (!registry.getTool('ToolSearch')) registry.registerAll(toolSearchTools);
 
   // Apply model override from command frontmatter.
   const effectiveConfig = options?.modelOverride
     ? { ...config, model: options.modelOverride }
     : config;
-
-  // Apply tool filtering from command frontmatter (allowed-tools).
-  const effectiveDefinitions = options?.allowedTools
-    ? registry.getDefinitions().filter((t) => options.allowedTools!.includes(t.name))
-    : undefined;
 
   // SessionStart hook — hosts with a multi-turn lifecycle (the TUI/headless
   // session wrapper) disable this and fire it at the actual session boundary.
@@ -204,6 +210,14 @@ export async function runAgentLoop(
     onAgentEvent: callbacks.onAgentEvent,
     onHookEvent: callbacks.onHookEvent,
   };
+  const toolSurface = createToolSurface({
+    config: effectiveConfig,
+    context: toolContext,
+    definitions: registry.getDefinitions(),
+    capabilityRules: options?.allowedTools,
+    isSubagent: options?.isSubagent,
+  });
+  toolContext.toolDiscovery = toolSurface;
 
   let turn = 0;
   let approveAll: string[] = [];
@@ -250,14 +264,19 @@ export async function runAgentLoop(
     callbacks.onTurnStart(turn);
     log.debug('turn start', { turn, maxTurns: config.maxTurns, mode: effectiveMode });
 
+    const activeDefinitions = toolSurface.activeDefinitions();
     const messages = await buildMessages(
       effectiveConfig,
       newHistory,
-      effectiveDefinitions ?? registry.getDefinitions(),
+      activeDefinitions,
       toolContext.todos,
       options?.commands,
       signal,
-      { append: options?.systemPromptAppend, hideAgents: options?.hideAgents },
+      {
+        append: options?.systemPromptAppend,
+        hideAgents: options?.hideAgents,
+        toolCatalogSummary: toolSurface.catalogSummary(),
+      },
     );
     let assistantContent = '';
     const toolCalls: ToolCall[] = [];
@@ -267,23 +286,18 @@ export async function runAgentLoop(
     // Buffer text during streaming so we can discard on retry.
     let textBuffer = '';
 
-    const stream = chatCompletionStream(
-      effectiveConfig,
-      messages,
-      effectiveDefinitions ?? registry.getDefinitions(),
-      {
-        signal,
-        onRetry: (attempt, max, delayMs) => {
-          callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
-        },
-        onStreamStall: (countdownMs) => {
-          callbacks.onStreamStall?.(countdownMs);
-        },
-        onStreamResume: () => {
-          callbacks.onStreamResume?.();
-        },
+    const stream = chatCompletionStream(effectiveConfig, messages, activeDefinitions, {
+      signal,
+      onRetry: (attempt, max, delayMs) => {
+        callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
       },
-    );
+      onStreamStall: (countdownMs) => {
+        callbacks.onStreamStall?.(countdownMs);
+      },
+      onStreamResume: () => {
+        callbacks.onStreamResume?.();
+      },
+    });
 
     let streamError: string | null = null;
     let streamDone = false;
@@ -356,12 +370,11 @@ export async function runAgentLoop(
     // ended unexpectedly — keep what we have and finish.
     if (!streamDone && signal?.aborted) {
       const cancelledResults = toolCalls.map<ToolResult>((call, callIndex) => {
-        const result: ToolResult = {
+        const result = toolFailure('CANCELLED: Agent execution was interrupted', {
           toolCallId: call.id,
-          success: false,
-          output: '',
-          error: 'CANCELLED: Agent execution was interrupted',
-        };
+          code: 'cancelled',
+          status: 'cancelled',
+        });
         callbacks.onToolResult(result);
         const nestedTraceId = nestedTraceIds[callIndex];
         if (nestedTraceId && options?.nestedToolObserver) {
@@ -398,12 +411,11 @@ export async function runAgentLoop(
         }
       };
       if (signal?.aborted) {
-        const cancelledResult: ToolResult = {
+        const cancelledResult = toolFailure('CANCELLED: Agent execution was interrupted', {
           toolCallId: call.id,
-          success: false,
-          output: '',
-          error: 'CANCELLED: Agent execution was interrupted',
-        };
+          code: 'cancelled',
+          status: 'cancelled',
+        });
         toolResults.push(cancelledResult);
         publishResult(cancelledResult);
         continue;
@@ -425,12 +437,13 @@ export async function runAgentLoop(
       );
       const blocked = preHookResults.find((r) => r.action === 'block');
       if (blocked) {
-        toolResults.push({
-          toolCallId: call.id,
-          success: false,
-          output: '',
-          error: `SKIPPED: Blocked by hook${blocked.message ? `: ${blocked.message}` : ''}`,
-        });
+        toolResults.push(
+          toolFailure(`SKIPPED: Blocked by hook${blocked.message ? `: ${blocked.message}` : ''}`, {
+            toolCallId: call.id,
+            code: 'hook_blocked',
+            status: 'blocked',
+          }),
+        );
         publishResult(toolResults[toolResults.length - 1]);
         continue;
       }
@@ -440,15 +453,18 @@ export async function runAgentLoop(
       const isUserQuestion = canonName === 'AskUserQuestion';
       const managedLifecycle = canonName.startsWith('Agent') && canonName !== 'AgentApply';
       const autoSafeTool =
-        canonName === 'EnterPlanMode' || planReadOnly || isUserQuestion || managedLifecycle;
+        canonName === 'EnterPlanMode' ||
+        canonName === 'ToolSearch' ||
+        planReadOnly ||
+        isUserQuestion ||
+        managedLifecycle;
 
       if (isUserQuestion && effectiveMode === 'dontAsk') {
-        const blockedResult: ToolResult = {
+        const blockedResult = toolFailure('SKIPPED: User questions are disabled in dontAsk mode', {
           toolCallId: call.id,
-          success: false,
-          output: '',
-          error: 'SKIPPED: User questions are disabled in dontAsk mode',
-        };
+          code: 'user_questions_disabled',
+          status: 'blocked',
+        });
         toolResults.push(blockedResult);
         publishResult(blockedResult);
         continue;
@@ -482,12 +498,11 @@ export async function runAgentLoop(
 
           if (permission === 'deny') {
             log.debug('permission denied', { tool: canonName });
-            const deniedResult: ToolResult = {
+            const deniedResult = toolFailure('SKIPPED: Permission denied', {
               toolCallId: call.id,
-              success: false,
-              output: '',
-              error: 'SKIPPED: Permission denied',
-            };
+              code: 'permission_denied',
+              status: 'blocked',
+            });
             toolResults.push(deniedResult);
             publishResult(deniedResult);
             continue;
@@ -511,12 +526,14 @@ export async function runAgentLoop(
 
       if (effectiveMode === 'plan' && !READ_ONLY_PLAN_TOOLS.has(canonName)) {
         log.debug('plan mode blocked mutating tool', { tool: canonName });
-        const blockedResult: ToolResult = {
-          toolCallId: call.id,
-          success: false,
-          output: '',
-          error: `SKIPPED: Tool "${canonName}" is not allowed in plan mode. Call ExitPlanMode with your plan and wait for approval before making changes.`,
-        };
+        const blockedResult = toolFailure(
+          `SKIPPED: Tool "${canonName}" is not allowed in plan mode. Call ExitPlanMode with your plan and wait for approval before making changes.`,
+          {
+            toolCallId: call.id,
+            code: 'plan_mode_blocked',
+            status: 'blocked',
+          },
+        );
         toolResults.push(blockedResult);
         publishResult(blockedResult);
         continue;
@@ -524,14 +541,15 @@ export async function runAgentLoop(
 
       const toolStartMs = Date.now();
       log.debug('tool start', { name: canonName, id: call.id, args: Object.keys(call.arguments) });
-      const result = await registry.execute(call, toolContext, retry.toolRetries);
+      let result = await registry.execute(call, toolContext, retry.toolRetries);
       result.toolCallId = call.id;
-      result.durationMs = Date.now() - toolStartMs;
+      const durationMs = Date.now() - toolStartMs;
+      result.metrics = { ...result.metrics, durationMs };
       log.info('tool done', {
         name: canonName,
-        success: result.success,
-        durationMs: result.durationMs,
-        outputLen: result.output?.length ?? 0,
+        success: toolResultSucceeded(result),
+        durationMs,
+        outputLen: result.content.length,
       });
 
       const modeAfterTool = toolContext.currentMode ?? effectiveMode;
@@ -540,7 +558,7 @@ export async function runAgentLoop(
         callbacks.onModeChange?.(effectiveMode);
       }
 
-      if (result.success && toolContext.pendingPlanApproval) {
+      if (toolResultSucceeded(result) && toolContext.pendingPlanApproval) {
         const plan = toolContext.pendingPlanApproval.plan;
         const approval = callbacks.onPlanApprovalRequired
           ? await callbacks.onPlanApprovalRequired(plan)
@@ -553,16 +571,26 @@ export async function runAgentLoop(
           toolContext.currentMode = restoredMode;
           toolContext.previousMode = undefined;
           toolContext.pendingPlanApproval = undefined;
-          result.output = `${result.output}\n\nPlan approved. Exited plan mode; mode restored to ${restoredMode}.`;
+          result = replaceToolResult(result, {
+            content: `${result.content}\n\nPlan approved. Exited plan mode; mode restored to ${restoredMode}.`,
+          });
         } else {
           toolContext.currentMode = 'plan';
           toolContext.pendingPlanApproval = undefined;
-          result.success = false;
-          result.output = '';
-          result.error =
+          const message =
             approval === 'reject'
               ? 'SKIPPED: Plan was not approved. Revise the plan and call ExitPlanMode again.'
               : `SKIPPED: The user requested changes to the plan.\n\nFeedback: ${approval.feedback}\n\nRevise the plan using this feedback and call ExitPlanMode again.`;
+          result = replaceToolResult(result, {
+            status: 'blocked',
+            content: '',
+            error: {
+              code: 'plan_not_approved',
+              message,
+              retryable: false,
+              remediation: 'Revise the plan and call ExitPlanMode again.',
+            },
+          });
         }
 
         const modeAfterApproval = toolContext.currentMode ?? effectiveMode;
@@ -572,7 +600,7 @@ export async function runAgentLoop(
         }
       }
 
-      if (result.success && toolContext.pendingUserQuestion) {
+      if (toolResultSucceeded(result) && toolContext.pendingUserQuestion) {
         const agentPath = toolContext.agentPath ?? [];
         const request: UserQuestionRequest = {
           id: crypto.randomUUID(),
@@ -624,15 +652,31 @@ export async function runAgentLoop(
 
         const validationError = validateUserQuestionResponse(request, response);
         if (validationError) {
-          result.success = false;
-          result.output = '';
-          result.error = `Invalid user question response: ${validationError}`;
+          const message = `Invalid user question response: ${validationError}`;
+          result = replaceToolResult(result, {
+            status: 'error',
+            content: '',
+            error: {
+              code: 'invalid_user_question_response',
+              message,
+              retryable: false,
+            },
+          });
         } else if (response.action === 'answer') {
-          result.output = formatUserQuestionAnswers(request, response);
+          result = replaceToolResult(result, {
+            content: formatUserQuestionAnswers(request, response),
+          });
         } else {
-          result.success = false;
-          result.output = '';
-          result.error = `SKIPPED: User ${response.action === 'decline' ? 'declined' : 'cancelled'} the question${response.message ? `: ${response.message}` : ''}`;
+          const message = `SKIPPED: User ${response.action === 'decline' ? 'declined' : 'cancelled'} the question${response.message ? `: ${response.message}` : ''}`;
+          result = replaceToolResult(result, {
+            status: response.action === 'cancel' ? 'cancelled' : 'blocked',
+            content: '',
+            error: {
+              code: response.action === 'cancel' ? 'user_cancelled' : 'user_declined',
+              message,
+              retryable: false,
+            },
+          });
         }
       }
 
@@ -645,18 +689,21 @@ export async function runAgentLoop(
           event: 'PostToolUse',
           toolName: canonName,
           toolArgs: call.arguments,
-          toolOutput: result.success ? result.output : (result.error ?? ''),
+          toolOutput: toolResultSucceeded(result)
+            ? result.content
+            : (toolResultErrorMessage(result) ?? ''),
         },
         { onHookEvent: callbacks.onHookEvent },
       );
       for (const r of postHookResults) {
         if (r.action === 'modify' && r.modifiedOutput !== undefined) {
-          result.output = r.modifiedOutput;
+          result = replaceToolResult(result, { content: r.modifiedOutput });
         }
       }
 
-      toolResults.push(result);
-      publishResult(result);
+      const normalizedResult = enrichToolResultPresentation(result, canonName, call.arguments);
+      toolResults.push(normalizedResult);
+      publishResult(normalizedResult);
 
       // Sync the agent todo list after each tool execution.
       if (callbacks.onTodos && toolContext.todos) {
@@ -683,7 +730,7 @@ export async function runAgentLoop(
       kind: 'conversation',
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       toolResults: toolResults.length > 0 ? toolResults : undefined,
-      fileObservations: toolResults.flatMap((result) => result.fileObservations ?? []),
+      fileObservations: toolResults.flatMap((result) => result.artifacts?.fileObservations ?? []),
       timestamp: Date.now(),
     };
     newHistory.push(assistantMessage);

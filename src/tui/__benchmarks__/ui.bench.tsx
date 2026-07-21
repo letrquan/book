@@ -8,6 +8,7 @@ import { MarkdownBlock, wrapParagraphLines } from '../components/MarkdownBlock.j
 import { DiffBlock } from '../components/Diff.js';
 import { ToolCallBlock } from '../components/ToolCallBlock.js';
 import { wordWrap } from '../components/word-wrap.js';
+import { toolSuccess } from '../../tools/result.js';
 
 const TERMINAL_WIDTH = 80;
 let sink = 0;
@@ -109,7 +110,7 @@ bench
         <ToolCallBlock
           name="Bash"
           args={{ command: 'large-output' }}
-          result={{ toolCallId: 'bench-output', success: true, output: largeToolOutput }}
+          result={toolSuccess(largeToolOutput, { toolCallId: 'bench-output' })}
           isExpanded
           terminalWidth={TERMINAL_WIDTH}
           reducedMotion

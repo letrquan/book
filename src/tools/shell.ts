@@ -8,6 +8,7 @@ import type {
 } from '../types.js';
 import { createSandbox } from '../sandbox.js';
 import { globToRegex } from './glob-regex.js';
+import { toolFailure, toolSuccess } from './result.js';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_FOREGROUND_BUFFER = 1024 * 1024 * 10;
@@ -27,11 +28,11 @@ function matchesExcluded(command: string, patterns: string[]): boolean {
 }
 
 function ok(output: string): ToolResult {
-  return { toolCallId: '', success: true, output };
+  return toolSuccess(output);
 }
 
 function fail(error: string, output = ''): ToolResult {
-  return { toolCallId: '', success: false, output, error };
+  return toolFailure(error, { content: output });
 }
 
 function readString(
@@ -92,15 +93,9 @@ function buildEffectiveCommand(
   if (!command) return undefined;
 
   const workdir = readString(args, 'workdir') || ctx.workspaceRoot;
-  const dangerouslyDisableSandbox = readBoolean(
-    args,
-    'dangerouslyDisableSandbox',
-    'dangerouslyDisableSandbox',
-  );
-
   let effectiveCommand = command;
   let sandboxed = false;
-  if (ctx.sandbox?.enabled && !dangerouslyDisableSandbox) {
+  if (ctx.sandbox?.enabled) {
     if (!matchesExcluded(command, ctx.sandbox.excludedCommands ?? [])) {
       const sandbox = createSandbox(ctx.sandbox);
       if (sandbox) {
@@ -467,20 +462,9 @@ export const shellTools: ToolDefinition[] = [
       properties: {
         command: { type: 'string', description: 'The command to execute' },
         workdir: { type: 'string', description: 'Working directory for the command' },
-        timeout: {
-          type: 'number',
-          description:
-            'Timeout in milliseconds. Foreground commands default to 120000; background commands only time out when this is explicitly supplied.',
-        },
         run_in_background: {
           type: 'boolean',
           description: 'Start the command in the background and return a shell_id immediately',
-          default: false,
-        },
-        dangerouslyDisableSandbox: {
-          type: 'boolean',
-          description:
-            'Run outside the sandbox (requires allowUnsandboxedCommands). Use only when the sandbox breaks the command.',
           default: false,
         },
       },

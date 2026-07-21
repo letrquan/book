@@ -1,44 +1,29 @@
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { getOrCreateAgentManager } from '../agents/manager.js';
+import { toolFailure, toolSuccess } from './result.js';
 
 async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const agentName = args.agent as string;
   const prompt = args.prompt as string;
 
   if (!agentName) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: "Missing required 'agent' argument",
-    };
+    return toolFailure("Missing required 'agent' argument");
   }
   if (!prompt) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: "Missing required 'prompt' argument",
-    };
+    return toolFailure("Missing required 'prompt' argument");
   }
 
   if (!ctx.agentConfig || !ctx.availableTools) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error:
-        'Task tool requires an active agent session. Use from within a tool execution context.',
-    };
+    return toolFailure(
+      'Task tool requires an active agent session. Use from within a tool execution context.',
+    );
   }
 
   if (ctx.agentId) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: 'Task is unavailable inside managed child agents.',
-    };
+    return toolFailure('Task is unavailable inside managed child agents.', {
+      code: 'child_agent_unavailable',
+      status: 'blocked',
+    });
   }
 
   try {
@@ -53,25 +38,18 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
     });
     const completed = await manager.wait(spawned.id);
     if (completed.status !== 'completed') {
-      return {
-        toolCallId: '',
-        success: false,
-        output: completed.result ?? '',
-        error: completed.error ?? `Subagent ended with status ${completed.status}`,
-      };
+      return toolFailure(completed.error ?? `Subagent ended with status ${completed.status}`, {
+        content: completed.result ?? '',
+        code: 'subagent_failed',
+        data: completed,
+      });
     }
-    return {
-      toolCallId: '',
-      success: true,
-      output: `## Subagent result: ${completed.name}\n\n${completed.result || '(no output)'}`,
-    };
+    return toolSuccess(
+      `## Subagent result: ${completed.name}\n\n${completed.result || '(no output)'}`,
+      { data: completed },
+    );
   } catch (error) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: error instanceof Error ? error.message : String(error),
-    };
+    return toolFailure(error instanceof Error ? error.message : String(error));
   }
 }
 

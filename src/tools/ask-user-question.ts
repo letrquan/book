@@ -7,6 +7,7 @@ import type {
   UserQuestionRequest,
   UserQuestionResponse,
 } from '../types.js';
+import { toolFailure, toolSuccess } from './result.js';
 
 const optionSchema = z
   .object({
@@ -57,11 +58,11 @@ const requestSchema = z
   });
 
 function ok(output: string): ToolResult {
-  return { toolCallId: '', success: true, output };
+  return toolSuccess(output);
 }
 
 function fail(error: string): ToolResult {
-  return { toolCallId: '', success: false, output: '', error };
+  return toolFailure(error);
 }
 
 function validationMessage(error: z.ZodError): string {

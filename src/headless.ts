@@ -95,6 +95,7 @@ export async function runHeadless(
   }
   config.tasks ??= [];
   config.backgroundShells ??= { nextId: 1, shells: new Map() };
+  config.toolDiscoveryState ??= { clock: 0, loaded: new Map() };
 
   // Collect prompts: text input -> single prompt; stream-json -> read stdin.
   const prompts: string[] = [];

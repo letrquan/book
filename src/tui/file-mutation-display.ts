@@ -7,6 +7,6 @@ export function isRenderableFileMutationDiff(
   toolName: string,
   result: ToolResult | undefined,
 ): boolean {
-  if (!result?.success || !result.output) return false;
-  return isFileMutatingTool(canonicalToolName(toolName)) && isUnifiedDiffLike(result.output);
+  if (result?.status !== 'success' || !result.content) return false;
+  return isFileMutatingTool(canonicalToolName(toolName)) && isUnifiedDiffLike(result.content);
 }

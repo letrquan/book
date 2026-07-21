@@ -9,7 +9,7 @@ AI coding agent CLI with rich terminal UI. An open-source, provider-agnostic alt
 - **Project context**: walks the tree to load `CLAUDE.md` (user-global → project → local → `.claude/rules/*.md`), injects git status, platform info, and discovered skills, slash commands, and subagents into a two-zone system prompt (cacheable static prefix + dynamic per-turn suffix).
 - **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
 - **Sessions**: append-only JSONL persistence with `--resume`, `--continue`, `--session-id`, `--name`, `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, reference-aware `/compact`, and Claude-style `/rewind` for conversation, code, or both. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, and remembered file facts are freshness-checked before reuse.
-- **Tools**: file (`Read` / `Write` / `Edit` / `MultiEdit` / `Glob` / `Grep` / `NotebookEdit`), shell (`Bash` + `run_in_background`, `BashOutput`, `KillShell`), git, web, tasks, structured clarification, plan mode, skills, named project checks, managed agent lifecycle tools, and typed evidence review. The old synchronous `Task` tool remains as a deprecated spawn-plus-wait adapter.
+- **Tools**: a provider-neutral capability catalog keeps a practical core loaded and uses `ToolSearch` to activate up to five authorized git, web, session, skill, agent, notebook, or MCP definitions on the next model turn. File, shell, task, clarification, and plan tools stay immediately available when permitted. Existing names such as `Read`, `Bash`, and `AgentSpawn` remain stable.
 - **Slash commands**: built-ins including `/agents`, `/agent`, `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`.
 - **Permissions**: allow/ask/deny rule matching with six modes — `default`, `acceptEdits` (`accept-edits`), `plan`, `auto`, `dontAsk`, `bypassPermissions` — see `/permissions` or `--permission-mode`.
 - **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events.
@@ -120,6 +120,13 @@ Legacy `.bookrc.json` is still supported but deprecated. Use `--no-settings` to 
     "autoSave": true,
     "requireApproval": true
   },
+  "toolDiscovery": {
+    "mode": "auto",
+    "eagerToolCount": 10,
+    "schemaTokenBudget": 8000,
+    "maxLoadedTools": 15,
+    "searchLimit": 5
+  },
   "agents": {
     "mode": "adaptive",
     "maxConcurrent": 3,
@@ -135,6 +142,8 @@ Legacy `.bookrc.json` is still supported but deprecated. Use `--no-settings` to 
   }
 }
 ```
+
+`toolDiscovery.mode` accepts `auto`, `eager`, or `deferred`. Auto mode sends all authorized definitions only when there are at most ten and their schemas fit the configured budget; otherwise the provider receives the practical core plus `ToolSearch`. Search never returns tools outside the current command, skill, agent-role, permission-mode, or runtime-state capability intersection.
 
 ### Managed agents
 

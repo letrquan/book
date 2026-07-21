@@ -1,4 +1,5 @@
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import { toolFailure, toolSuccess } from './result.js';
 
 /** Very small HTML-to-text converter: strips scripts/styles/tags, keeps text. */
 function htmlToText(html: string): string {
@@ -35,12 +36,9 @@ async function webFetch(args: Record<string, unknown>, _ctx: ToolContext): Promi
   const prompt = (args.prompt as string) ?? 'Return the full content';
 
   if (!/^https?:\/\//i.test(url)) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `URL must use http or https scheme: ${url}`,
-    };
+    return toolFailure(`URL must use http or https scheme: ${url}`, {
+      code: 'invalid_url_scheme',
+    });
   }
 
   let resp: Response;
@@ -51,21 +49,18 @@ async function webFetch(args: Record<string, unknown>, _ctx: ToolContext): Promi
       signal: AbortSignal.timeout(30_000),
     });
   } catch (e) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `Fetch failed: ${e instanceof Error ? e.message : String(e)}`,
-    };
+    return toolFailure(`Fetch failed: ${e instanceof Error ? e.message : String(e)}`, {
+      code: 'fetch_failed',
+      retryable: true,
+    });
   }
 
   if (!resp.ok) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `HTTP ${resp.status} ${resp.statusText} for ${url}`,
-    };
+    return toolFailure(`HTTP ${resp.status} ${resp.statusText} for ${url}`, {
+      code: 'http_error',
+      retryable: resp.status >= 500,
+      details: { status: resp.status, url },
+    });
   }
 
   const contentType = resp.headers.get('content-type') ?? '';
@@ -76,28 +71,23 @@ async function webFetch(args: Record<string, unknown>, _ctx: ToolContext): Promi
   const MAX = 20000;
   const truncated = text.length > MAX ? text.slice(0, MAX) + '\n…(truncated)' : text;
 
-  return {
-    toolCallId: '',
-    success: true,
-    output: `Fetched ${url} (prompt: ${prompt}).\n\n${truncated}`,
-  };
+  return toolSuccess(`Fetched ${url} (prompt: ${prompt}).\n\n${truncated}`, {
+    data: { url, prompt, truncated: text.length > MAX },
+  });
 }
 
 async function webSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const query = args.query as string;
-  // Backend is chosen per-call, else env, else a global default — pluggable.
   const backend =
     (args.backend as string | undefined) ||
     ctx.env.BOOK_SEARCH_BACKEND ||
     process.env.BOOK_SEARCH_BACKEND;
 
   if (!backend) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: 'No search backend configured. Set BOOK_SEARCH_BACKEND or pass `backend`.',
-    };
+    return toolFailure(
+      'No search backend configured. Set BOOK_SEARCH_BACKEND in the host environment.',
+      { code: 'search_backend_unconfigured' },
+    );
   }
 
   let resp: Response;
@@ -107,21 +97,18 @@ async function webSearch(args: Record<string, unknown>, ctx: ToolContext): Promi
       signal: AbortSignal.timeout(20_000),
     });
   } catch (e) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `Search request failed: ${e instanceof Error ? e.message : String(e)}`,
-    };
+    return toolFailure(`Search request failed: ${e instanceof Error ? e.message : String(e)}`, {
+      code: 'search_request_failed',
+      retryable: true,
+    });
   }
 
   if (!resp.ok) {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: `Search backend returned ${resp.status}`,
-    };
+    return toolFailure(`Search backend returned ${resp.status}`, {
+      code: 'search_backend_error',
+      retryable: resp.status >= 500,
+      details: { status: resp.status },
+    });
   }
 
   try {
@@ -130,21 +117,18 @@ async function webSearch(args: Record<string, unknown>, ctx: ToolContext): Promi
     };
     const results = data.results ?? [];
     if (results.length === 0) {
-      return { toolCallId: '', success: true, output: `No results for: ${query}` };
+      return toolSuccess(`No results for: ${query}`, { data: { query, results } });
     }
     const out = results
       .map(
         (r, i) => `${i + 1}. ${r.title ?? '(untitled)'}\n   ${r.url ?? ''}\n   ${r.snippet ?? ''}`,
       )
       .join('\n\n');
-    return { toolCallId: '', success: true, output: `Search: ${query}\n\n${out}` };
+    return toolSuccess(`Search: ${query}\n\n${out}`, { data: { query, results } });
   } catch {
-    return {
-      toolCallId: '',
-      success: false,
-      output: '',
-      error: 'Search backend returned non-JSON or malformed response',
-    };
+    return toolFailure('Search backend returned non-JSON or malformed response', {
+      code: 'invalid_search_response',
+    });
   }
 }
 
@@ -171,12 +155,11 @@ export const webTools: ToolDefinition[] = [
     name: 'WebSearch',
     idempotent: true,
     description:
-      'Search the web via a configured backend. Set BOOK_SEARCH_BACKEND env or pass `backend`. Backend should return JSON {results:[{title,url,snippet}]}.',
+      'Search the web via the host-configured BOOK_SEARCH_BACKEND. Returns titles, URLs, and snippets without allowing the model to select the backend.',
     parameters: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search query' },
-        backend: { type: 'string', description: 'Override search backend URL for this call' },
       },
       required: ['query'],
     },

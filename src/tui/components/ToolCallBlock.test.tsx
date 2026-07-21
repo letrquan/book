@@ -4,6 +4,31 @@ import { act } from 'react';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
 import { displayWidth } from './word-wrap.js';
+import type { FileMutationSummary, ToolResult } from '../../types.js';
+
+function successResult(
+  toolCallId: string,
+  content: string,
+  fileMutation?: FileMutationSummary,
+): ToolResult {
+  return {
+    version: 2,
+    toolCallId,
+    status: 'success',
+    content,
+    ...(fileMutation ? { artifacts: { fileMutation } } : {}),
+  };
+}
+
+function failureResult(toolCallId: string, message: string, content = ''): ToolResult {
+  return {
+    version: 2,
+    toolCallId,
+    status: 'error',
+    content,
+    structuredError: { code: 'test_error', message, retryable: false },
+  };
+}
 
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
@@ -29,7 +54,12 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="Bash"
           args={{ command: 'npm test' }}
-          result={{ toolCallId: 'call-1', success: true, output: 'passed' }}
+          result={{
+            version: 2,
+            toolCallId: 'call-1',
+            status: 'success',
+            content: 'passed',
+          }}
           isExpanded={false}
           reducedMotion
         />,
@@ -61,7 +91,7 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="Bash"
           args={{ command: 'seq 8' }}
-          result={{ toolCallId: 'call-1', success: true, output }}
+          result={successResult('call-1', output)}
           isExpanded
           reducedMotion
         />,
@@ -85,7 +115,7 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="Bash"
           args={{ command: 'seq 8' }}
-          result={{ toolCallId: 'call-1', success: true, output }}
+          result={successResult('call-1', output)}
           isExpanded
           showAllToolOutput
           reducedMotion
@@ -105,7 +135,7 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="Read"
           args={{ filePath: 'src/a.ts' }}
-          result={{ toolCallId: 'call-1', success: true, output }}
+          result={successResult('call-1', output)}
           isExpanded
           screenReader
           reducedMotion
@@ -127,7 +157,7 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="Bash"
           args={{ command: longCommand }}
-          result={{ toolCallId: 'call-1', success: false, output: '', error: longError }}
+          result={failureResult('call-1', longError)}
           isExpanded
           reducedMotion
         />,
@@ -154,17 +184,12 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="Edit"
           args={{ filePath: 'src/tui/components/Diff.tsx' }}
-          result={{
-            toolCallId: 'call-1',
-            success: true,
-            output: diffOutput,
-            fileMutation: {
-              kind: 'update',
-              filePath: 'src/tui/components/Diff.tsx',
-              addedLines: 2,
-              removedLines: 1,
-            },
-          }}
+          result={successResult('call-1', diffOutput, {
+            kind: 'update',
+            filePath: 'src/tui/components/Diff.tsx',
+            addedLines: 2,
+            removedLines: 1,
+          })}
           isExpanded={false}
           reducedMotion
         />,
@@ -199,17 +224,12 @@ describe('ToolCallBlock', () => {
             newString: 'new 1',
             replaceAll: false,
           }}
-          result={{
-            toolCallId: 'call-diff',
-            success: true,
-            output,
-            fileMutation: {
-              kind: 'update',
-              filePath: 'src/a.ts',
-              addedLines: 3,
-              removedLines: 3,
-            },
-          }}
+          result={successResult('call-diff', output, {
+            kind: 'update',
+            filePath: 'src/a.ts',
+            addedLines: 3,
+            removedLines: 3,
+          })}
           isExpanded
           reducedMotion
         />,
@@ -243,7 +263,7 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="Edit"
           args={{ filePath: 'src/a.ts' }}
-          result={{ toolCallId: 'call-sr-diff', success: true, output }}
+          result={successResult('call-sr-diff', output)}
           isExpanded
           screenReader
           reducedMotion
@@ -263,17 +283,12 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="NotebookEdit"
           args={{ notebook_path: 'analysis.ipynb', cell_id: 'cell-1', new_source: 'x = 2' }}
-          result={{
-            toolCallId: 'call-notebook',
-            success: true,
-            output: '@@ -1,1 +1,1 @@\n- x = 1\n+ x = 2',
-            fileMutation: {
-              kind: 'update',
-              filePath: 'analysis.ipynb',
-              addedLines: 1,
-              removedLines: 1,
-            },
-          }}
+          result={successResult('call-notebook', '@@ -1,1 +1,1 @@\n- x = 1\n+ x = 2', {
+            kind: 'update',
+            filePath: 'analysis.ipynb',
+            addedLines: 1,
+            removedLines: 1,
+          })}
           isExpanded={false}
           reducedMotion
         />,
@@ -292,17 +307,12 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="Write"
           args={{ filePath: 'src/new-file.txt' }}
-          result={{
-            toolCallId: 'call-2',
-            success: true,
-            output: '@@ -1 +1 @@\n+first line\n+second line',
-            fileMutation: {
-              kind: 'create',
-              filePath: 'src/new-file.txt',
-              addedLines: 2,
-              removedLines: 0,
-            },
-          }}
+          result={successResult('call-2', '@@ -1 +1 @@\n+first line\n+second line', {
+            kind: 'create',
+            filePath: 'src/new-file.txt',
+            addedLines: 2,
+            removedLines: 0,
+          })}
           isExpanded={false}
           reducedMotion
         />,
@@ -321,12 +331,7 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="Edit"
           args={{ filePath: 'src/broken.ts' }}
-          result={{
-            toolCallId: 'call-3',
-            success: false,
-            output: '',
-            error: 'Failed to write file',
-          }}
+          result={failureResult('call-3', 'Failed to write file')}
           isExpanded={false}
           reducedMotion
         />,
@@ -344,7 +349,7 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="BashOutput"
           args={{ shell_id: 'shell_1' }}
-          result={{ toolCallId: 'call-4', success: true, output: 'ready' }}
+          result={successResult('call-4', 'ready')}
           isExpanded={false}
           reducedMotion
         />,
@@ -355,7 +360,7 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="KillShell"
           args={{ shell_id: 'shell_1' }}
-          result={{ toolCallId: 'call-5', success: true, output: 'Killed shell shell_1.' }}
+          result={successResult('call-5', 'Killed shell shell_1.')}
           isExpanded={false}
           reducedMotion
         />,
@@ -373,12 +378,11 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="Bash"
           args={{ command: `run-${'🙂'.repeat(50)}` }}
-          result={{
-            toolCallId: 'call-narrow',
-            success: false,
-            output: `result-${'界'.repeat(80)}`,
-            error: `error-${'🙂'.repeat(80)}`,
-          }}
+          result={failureResult(
+            'call-narrow',
+            `error-${'🙂'.repeat(80)}`,
+            `result-${'界'.repeat(80)}`,
+          )}
           isExpanded
           terminalWidth={width}
           reducedMotion
@@ -400,11 +404,10 @@ describe('ToolCallBlock', () => {
         <ToolCallBlock
           name="WebFetch"
           args={{ url: 'https://example.com' }}
-          result={{
-            toolCallId: 'call-markdown',
-            success: true,
-            output: `| Header | Value |\n|---|---|\n| ${'wide'.repeat(20)} | ${'🙂'.repeat(20)} |`,
-          }}
+          result={successResult(
+            'call-markdown',
+            `| Header | Value |\n|---|---|\n| ${'wide'.repeat(20)} | ${'🙂'.repeat(20)} |`,
+          )}
           isExpanded
           terminalWidth={width}
           reducedMotion

@@ -10,7 +10,7 @@ import {
   DEFAULT_CONTEXT_WINDOW,
 } from './compact.js';
 import type { AgentConfig, Message, Usage } from '../types.js';
-import { defaultConfig } from '../test/fixtures.js';
+import { defaultConfig, toolResult } from '../test/fixtures.js';
 
 vi.mock('../provider/index.js', () => ({
   chatCompletionStream: vi.fn(),
@@ -217,13 +217,7 @@ describe('buildCompactPrompt / serialize', () => {
         includeInContext: true,
         timestamp: 0,
         toolCalls: [{ id: 't1', name: 'Read', arguments: { file_path: 'a.ts' } }],
-        toolResults: [
-          {
-            toolCallId: 't1',
-            success: true,
-            output: 'file body here',
-          },
-        ],
+        toolResults: [toolResult('t1', 'file body here')],
       },
     ];
     const text = serializeHistoryForCompact(msgs);
@@ -551,9 +545,7 @@ describe('runCompact', () => {
         includeInContext: true,
         timestamp: 0,
         toolCalls: [{ id: 'tool-1', name: 'Read', arguments: { file_path: 'huge.log' } }],
-        toolResults: [
-          { toolCallId: 'tool-1', success: true, output: 'tool output '.repeat(15_000) },
-        ],
+        toolResults: [toolResult('tool-1', 'tool output '.repeat(15_000))],
       },
       { id: '3', role: 'user', content: 'new work', includeInContext: true, timestamp: 0 },
       { id: '4', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },

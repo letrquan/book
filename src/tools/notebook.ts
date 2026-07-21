@@ -6,6 +6,7 @@ import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
 import { observeFile, requireFreshObservation } from './file-provenance.js';
+import { toolFailure, toolSuccess } from './result.js';
 
 type CellType = 'code' | 'markdown';
 type EditMode = 'replace' | 'insert' | 'delete';
@@ -28,7 +29,7 @@ interface JsonStyle {
 }
 
 function fail(error: string): ToolResult {
-  return { toolCallId: '', success: false, output: '', error };
+  return toolFailure(error);
 }
 
 function sourceLines(source: string): string[] {
@@ -242,18 +243,17 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   }
 
   const observation = await observeFile(ctx, filePath, 'edit');
-  return {
-    toolCallId: '',
-    success: true,
-    output: diff || 'Notebook edited successfully (no textual change)',
-    fileMutation: {
-      kind: 'update',
-      filePath: relativePath,
-      addedLines: stats.addedLines,
-      removedLines: stats.removedLines,
+  return toolSuccess(diff || 'Notebook edited successfully (no textual change)', {
+    artifacts: {
+      fileMutation: {
+        kind: 'update',
+        filePath: relativePath,
+        addedLines: stats.addedLines,
+        removedLines: stats.removedLines,
+      },
+      fileObservations: [observation],
     },
-    fileObservations: [observation],
-  };
+  });
 }
 
 export const notebookTools: ToolDefinition[] = [

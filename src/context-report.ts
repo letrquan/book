@@ -53,7 +53,7 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
       // Tool result output is stored on the assistant message's toolResults (it
       // is echoed back as text content by the renderer), but the raw output
       // text contributes to tokens too — count it under assistant.
-      assistantTokens += estimateTokens(r.output) + 12;
+      assistantTokens += estimateTokens(r.content) + 12;
     }
   }
 

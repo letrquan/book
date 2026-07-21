@@ -2,7 +2,8 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { spawn, ChildProcess } from 'child_process';
-import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
+import type { ToolDefinition, ToolContext } from './types.js';
+import { toolFailure, toolSuccess } from './tools/result.js';
 
 /**
  * MCP server configuration as found in .mcp.json.
@@ -201,18 +202,12 @@ export async function connectMcpServers(
               name: tool.name,
               arguments: args,
             });
-            return {
-              toolCallId: '',
-              success: true,
-              output: JSON.stringify(result, null, 2),
-            };
+            return toolSuccess(JSON.stringify(result, null, 2), { data: result });
           } catch (e) {
-            return {
-              toolCallId: '',
-              success: false,
-              output: '',
-              error: `MCP tool ${prefixedName} failed: ${e instanceof Error ? e.message : String(e)}`,
-            };
+            return toolFailure(
+              `MCP tool ${prefixedName} failed: ${e instanceof Error ? e.message : String(e)}`,
+              { code: 'mcp_tool_failed' },
+            );
           }
         },
       });

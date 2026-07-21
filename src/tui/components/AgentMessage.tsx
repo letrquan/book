@@ -51,7 +51,6 @@ interface AgentMessageProps {
 }
 
 const NO_EXPANSION_OVERRIDES = new Map<string, boolean>();
-
 function NestedToolRows({
   childrenByParent,
   parentTraceId,
@@ -401,15 +400,12 @@ export function AgentMessageInner({
 
       {/* Every invocation gets its own row. Task subagent tools stay display-only and nest below it. */}
       {topLevelInvocations.map((invocation, index) => {
+        const marginTop = index === 0 ? (displayContent ? toolRowGap : 0) : toolRowGap;
         const tc = invocation.call;
         const result = invocation.result;
         const isPending = pendingPermission?.toolCall.id === tc.id;
         return (
-          <Box
-            key={tc.id || `tool-${index}`}
-            flexDirection="column"
-            marginTop={index === 0 ? (displayContent ? toolRowGap : 0) : toolRowGap}
-          >
+          <Box key={tc.id || `tool-${index}`} flexDirection="column" marginTop={marginTop}>
             <ToolCallBlock
               toolId={tc.id}
               name={tc.name}

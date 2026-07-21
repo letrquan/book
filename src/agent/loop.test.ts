@@ -4,6 +4,7 @@ import { createRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
 import type { ToolResult, UserQuestionRequest } from '../types.js';
 import { askUserQuestionTools } from '../tools/ask-user-question.js';
+import { toolSuccess } from '../tools/result.js';
 
 const config = defaultConfig();
 
@@ -106,7 +107,7 @@ describe('runAgentLoop streaming render callbacks', () => {
       name: 'Echo',
       description: 'Echo value',
       parameters: { type: 'object', properties: { value: { type: 'string' } } },
-      execute: async (args) => ({ toolCallId: '', success: true, output: String(args.value) }),
+      execute: async (args) => toolSuccess(String(args.value)),
     });
 
     const turns: Array<{ texts: string[]; calls: string[]; results: string[] }> = [];
@@ -121,8 +122,8 @@ describe('runAgentLoop streaming render callbacks', () => {
         },
         onText: (t: string) => turns[turns.length - 1].texts.push(t),
         onToolCall: (call: { id: string }) => turns[turns.length - 1].calls.push(call.id),
-        onToolResult: (toolResult: { toolCallId: string; output: string }) =>
-          turns[turns.length - 1].results.push(`${toolResult.toolCallId}:${toolResult.output}`),
+        onToolResult: (toolResult: ToolResult) =>
+          turns[turns.length - 1].results.push(`${toolResult.toolCallId}:${toolResult.content}`),
       }),
       'auto',
     );
@@ -231,9 +232,9 @@ describe('runAgentLoop abort', () => {
     );
 
     expect(results).toHaveLength(1);
-    expect(results[0].error).toMatch(/CANCELLED/);
+    expect(results[0].structuredError?.message).toMatch(/CANCELLED/);
     expect(nestedResults).toHaveLength(1);
-    expect(history.at(-1)?.toolResults?.[0].error).toMatch(/CANCELLED/);
+    expect(history.at(-1)?.toolResults?.[0].structuredError?.message).toMatch(/CANCELLED/);
   });
 
   it('keeps partial assistant content in returned history after abort', async () => {
@@ -389,8 +390,8 @@ describe('runAgentLoop error handling', () => {
       [],
       noopCallbacks({
         onPermissionRequired: async () => 'deny',
-        onToolResult: (r: { toolCallId: string; error?: string }) =>
-          results.push(`${r.toolCallId}:${r.error}`),
+        onToolResult: (r: ToolResult) =>
+          results.push(`${r.toolCallId}:${r.structuredError?.message}`),
       }),
     );
 
@@ -649,7 +650,7 @@ describe('runAgentLoop accept-edits mode', () => {
         parameters: { type: 'object', properties: {} },
         execute: async () => {
           executed = true;
-          return { toolCallId: '', success: true, output: 'ok' };
+          return toolSuccess('ok');
         },
       });
       let prompted = false;
@@ -722,8 +723,8 @@ describe('runAgentLoop AskUserQuestion', () => {
     );
 
     expect(prompted).not.toHaveBeenCalled();
-    expect(results[0]).toMatchObject({ success: true });
-    expect(results[0].output).toContain('Which database?: SQLite');
+    expect(results[0]).toMatchObject({ status: 'success' });
+    expect(results[0].content).toContain('Which database?: SQLite');
   });
 
   it('blocks questions in dontAsk mode before invoking the host', async () => {
@@ -755,7 +756,7 @@ describe('runAgentLoop AskUserQuestion', () => {
     );
 
     expect(handler).not.toHaveBeenCalled();
-    expect(results[0].error).toMatch(/disabled in dontAsk/);
+    expect(results[0].structuredError?.message).toMatch(/disabled in dontAsk/);
   });
 });
 
@@ -779,10 +780,14 @@ describe('runAgentLoop plan mode', () => {
     registry.register({
       name: 'Read',
       description: 'Read',
-      parameters: { type: 'object', properties: {} },
+      parameters: {
+        type: 'object',
+        properties: { filePath: { type: 'string' } },
+        required: ['filePath'],
+      },
       execute: async () => {
         executed = true;
-        return { toolCallId: '', success: true, output: 'read ok' };
+        return toolSuccess('read ok');
       },
     });
 
@@ -805,7 +810,7 @@ describe('runAgentLoop plan mode', () => {
 
     expect(prompted).toBe(false);
     expect(executed).toBe(true);
-    expect(results[0]).toMatchObject({ success: true, output: 'read ok' });
+    expect(results[0]).toMatchObject({ status: 'success', content: 'read ok' });
   });
 
   it('blocks mutating tools before execution in plan mode', async () => {
@@ -830,7 +835,7 @@ describe('runAgentLoop plan mode', () => {
       parameters: { type: 'object', properties: {} },
       execute: async () => {
         executed = true;
-        return { toolCallId: '', success: true, output: 'wrote' };
+        return toolSuccess('wrote');
       },
     });
 
@@ -845,8 +850,8 @@ describe('runAgentLoop plan mode', () => {
     );
 
     expect(executed).toBe(false);
-    expect(results[0].success).toBe(false);
-    expect(results[0].error).toMatch(/not allowed in plan mode/);
+    expect(results[0].status).toBe('blocked');
+    expect(results[0].structuredError?.message).toMatch(/not allowed in plan mode/);
   });
 
   it('EnterPlanMode changes mode and blocks later mutating calls in the same turn', async () => {
@@ -872,7 +877,7 @@ describe('runAgentLoop plan mode', () => {
       execute: async (_args, ctx) => {
         ctx.previousMode = ctx.currentMode;
         ctx.currentMode = 'plan';
-        return { toolCallId: '', success: true, output: 'entered' };
+        return toolSuccess('entered');
       },
     });
     let writeExecuted = false;
@@ -882,7 +887,7 @@ describe('runAgentLoop plan mode', () => {
       parameters: { type: 'object', properties: {} },
       execute: async () => {
         writeExecuted = true;
-        return { toolCallId: '', success: true, output: 'wrote' };
+        return toolSuccess('wrote');
       },
     });
 
@@ -902,8 +907,8 @@ describe('runAgentLoop plan mode', () => {
 
     expect(modes).toEqual(['plan']);
     expect(writeExecuted).toBe(false);
-    expect(results.map((r) => r.success)).toEqual([true, false]);
-    expect(results[1].error).toMatch(/not allowed in plan mode/);
+    expect(results.map((r) => r.status)).toEqual(['success', 'blocked']);
+    expect(results[1].structuredError?.message).toMatch(/not allowed in plan mode/);
   });
 
   it('ExitPlanMode requests approval and restores the previous mode when approved', async () => {
@@ -924,11 +929,15 @@ describe('runAgentLoop plan mode', () => {
     registry.register({
       name: 'ExitPlanMode',
       description: 'Exit plan mode',
-      parameters: { type: 'object', properties: {} },
+      parameters: {
+        type: 'object',
+        properties: { plan: { type: 'string' } },
+        required: ['plan'],
+      },
       execute: async (_args, ctx) => {
         ctx.previousMode = 'default';
         ctx.pendingPlanApproval = { plan: 'Do it.' };
-        return { toolCallId: '', success: true, output: 'submitted' };
+        return toolSuccess('submitted');
       },
     });
 
@@ -953,8 +962,8 @@ describe('runAgentLoop plan mode', () => {
 
     expect(plans).toEqual(['Do it.']);
     expect(modes).toEqual(['default']);
-    expect(results[0]).toMatchObject({ success: true });
-    expect(results[0].output).toMatch(/Plan approved/);
+    expect(results[0]).toMatchObject({ status: 'success' });
+    expect(results[0].content).toMatch(/Plan approved/);
   });
 
   it('ExitPlanMode keeps plan mode when approval is rejected', async () => {
@@ -975,11 +984,15 @@ describe('runAgentLoop plan mode', () => {
     registry.register({
       name: 'ExitPlanMode',
       description: 'Exit plan mode',
-      parameters: { type: 'object', properties: {} },
+      parameters: {
+        type: 'object',
+        properties: { plan: { type: 'string' } },
+        required: ['plan'],
+      },
       execute: async (_args, ctx) => {
         ctx.previousMode = 'default';
         ctx.pendingPlanApproval = { plan: 'Do it.' };
-        return { toolCallId: '', success: true, output: 'submitted' };
+        return toolSuccess('submitted');
       },
     });
 
@@ -999,8 +1012,8 @@ describe('runAgentLoop plan mode', () => {
     );
 
     expect(modes).toEqual([]);
-    expect(results[0].success).toBe(false);
-    expect(results[0].error).toMatch(/Plan was not approved/);
+    expect(results[0].status).toBe('blocked');
+    expect(results[0].structuredError?.message).toMatch(/Plan was not approved/);
   });
 
   it('returns plan adjustment feedback to the agent and stays in plan mode', async () => {
@@ -1021,11 +1034,15 @@ describe('runAgentLoop plan mode', () => {
     registry.register({
       name: 'ExitPlanMode',
       description: 'Exit plan mode',
-      parameters: { type: 'object', properties: {} },
+      parameters: {
+        type: 'object',
+        properties: { plan: { type: 'string' } },
+        required: ['plan'],
+      },
       execute: async (_args, ctx) => {
         ctx.previousMode = 'default';
         ctx.pendingPlanApproval = { plan: 'Do it.' };
-        return { toolCallId: '', success: true, output: 'submitted' };
+        return toolSuccess('submitted');
       },
     });
 
@@ -1048,9 +1065,11 @@ describe('runAgentLoop plan mode', () => {
     );
 
     expect(modes).toEqual([]);
-    expect(results[0].success).toBe(false);
-    expect(results[0].error).toContain('The user requested changes to the plan');
-    expect(results[0].error).toContain('Keep the migration backward compatible.');
-    expect(results[0].error).toContain('call ExitPlanMode again');
+    expect(results[0].status).toBe('blocked');
+    expect(results[0].structuredError?.message).toContain('The user requested changes to the plan');
+    expect(results[0].structuredError?.message).toContain(
+      'Keep the migration backward compatible.',
+    );
+    expect(results[0].structuredError?.message).toContain('call ExitPlanMode again');
   });
 });

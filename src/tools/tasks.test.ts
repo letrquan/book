@@ -24,8 +24,8 @@ describe('task management tools', () => {
     const c = ctx();
     const r = await taskCreate.execute({ subject: 'Read files', description: 'Inspect source' }, c);
 
-    expect(r.success).toBe(true);
-    expect(r.output).toMatch(/Created task #1/);
+    expect(r.status).toBe('success');
+    expect(r.content).toMatch(/Created task #1/);
     expect(c.tasks).toHaveLength(1);
     expect(c.tasks?.[0]).toMatchObject({
       id: '1',
@@ -45,16 +45,16 @@ describe('task management tools', () => {
     await taskCreate.execute({ subject: 'Persisted task' }, first);
     const listed = await taskList.execute({}, second);
 
-    expect(listed.success).toBe(true);
-    expect(listed.output).toContain('#1 Persisted task');
+    expect(listed.status).toBe('success');
+    expect(listed.content).toContain('#1 Persisted task');
     expect(agentConfig.tasks).toHaveLength(1);
   });
 
   it('rejects an empty subject', async () => {
     const r = await taskCreate.execute({ subject: '   ' }, ctx());
 
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/subject/i);
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/subject/i);
   });
 
   it('allows only one in_progress task', async () => {
@@ -62,8 +62,8 @@ describe('task management tools', () => {
     await taskCreate.execute({ subject: 'A', status: 'in_progress' }, c);
     const r = await taskCreate.execute({ subject: 'B', status: 'in_progress' }, c);
 
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/only one task may be in_progress/i);
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/only one task may be in_progress/i);
   });
 
   it('lists active tasks and filters deleted tasks', async () => {
@@ -74,10 +74,10 @@ describe('task management tools', () => {
 
     const r = await taskList.execute({}, c);
 
-    expect(r.success).toBe(true);
-    expect(r.output).not.toMatch(/#1 A/);
-    expect(r.output).toMatch(/#2 B/);
-    expect(r.output).toMatch(/completed 1/);
+    expect(r.status).toBe('success');
+    expect(r.content).not.toMatch(/#1 A/);
+    expect(r.content).toMatch(/#2 B/);
+    expect(r.content).toMatch(/completed 1/);
   });
 
   it('gets full task details and errors for missing IDs', async () => {
@@ -90,11 +90,11 @@ describe('task management tools', () => {
     const found = await taskGet.execute({ task_id: '1' }, c);
     const missing = await taskGet.execute({ taskId: '2' }, c);
 
-    expect(found.success).toBe(true);
-    expect(found.output).toMatch(/Task #1: A/);
-    expect(found.output).toMatch(/metadata: {"priority":"high"}/);
-    expect(missing.success).toBe(false);
-    expect(missing.error).toMatch(/not found/i);
+    expect(found.status).toBe('success');
+    expect(found.content).toMatch(/Task #1: A/);
+    expect(found.content).toMatch(/metadata: {"priority":"high"}/);
+    expect(missing.status).toBe('error');
+    expect(missing.structuredError?.message).toMatch(/not found/i);
   });
 
   it('updates fields, metadata, dependencies, and reciprocal links', async () => {
@@ -114,8 +114,8 @@ describe('task management tools', () => {
     );
     const remove = await taskUpdate.execute({ taskId: '2', metadata: { removeMe: null } }, c);
 
-    expect(r.success).toBe(true);
-    expect(remove.success).toBe(true);
+    expect(r.status).toBe('success');
+    expect(remove.status).toBe('success');
     expect(c.tasks?.[1]).toMatchObject({
       subject: 'Blocked task',
       status: 'pending',
@@ -133,8 +133,8 @@ describe('task management tools', () => {
 
     const r = await taskUpdate.execute({ taskId: '2', status: 'in_progress' }, c);
 
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/already in_progress/i);
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/already in_progress/i);
   });
 
   it('rejects setting a blocked task to in_progress', async () => {
@@ -144,8 +144,8 @@ describe('task management tools', () => {
 
     const r = await taskUpdate.execute({ taskId: '2', status: 'in_progress' }, c);
 
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/blocked by #1/i);
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/blocked by #1/i);
     expect(c.tasks?.[1].status).toBe('pending');
   });
 
@@ -158,8 +158,8 @@ describe('task management tools', () => {
       c,
     );
 
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/blocked by #1/i);
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/blocked by #1/i);
     expect(c.tasks).toHaveLength(1);
   });
 
@@ -170,8 +170,8 @@ describe('task management tools', () => {
 
     const r = await taskUpdate.execute({ taskId: '2', addBlockedBy: ['1'] }, c);
 
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/blocked by #1/i);
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/blocked by #1/i);
     expect(c.tasks?.[1].blockedBy).toEqual([]);
   });
 
@@ -183,7 +183,7 @@ describe('task management tools', () => {
     await taskUpdate.execute({ taskId: '1', status: 'completed' }, c);
     const r = await taskUpdate.execute({ taskId: '2', status: 'in_progress' }, c);
 
-    expect(r.success).toBe(true);
+    expect(r.status).toBe('success');
     expect(c.tasks?.[1].blockedBy).toEqual([]);
     expect(c.tasks?.[1].status).toBe('in_progress');
   });
@@ -195,9 +195,9 @@ describe('task management tools', () => {
     const deleted = await taskUpdate.execute({ taskId: '1', status: 'deleted' }, c);
     const found = await taskGet.execute({ taskId: '1' }, c);
 
-    expect(deleted.success).toBe(true);
+    expect(deleted.status).toBe('success');
     expect(c.tasks?.[0].status).toBe('deleted');
-    expect(found.success).toBe(false);
+    expect(found.status).toBe('error');
   });
 
   it('stops an in_progress task by returning it to pending', async () => {
@@ -206,15 +206,15 @@ describe('task management tools', () => {
 
     const r = await taskStop.execute({ taskId: '1' }, c);
 
-    expect(r.success).toBe(true);
-    expect(r.output).toMatch(/reset to pending/i);
+    expect(r.status).toBe('success');
+    expect(r.content).toMatch(/reset to pending/i);
     expect(c.tasks?.[0].status).toBe('pending');
   });
 
   it('errors when stopping a missing task', async () => {
     const r = await taskStop.execute({ taskId: 'missing' }, ctx());
 
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/not found/i);
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/not found/i);
   });
 });

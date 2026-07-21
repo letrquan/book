@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { TranscriptView } from './TranscriptView.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
+import { toolSuccess } from '../../tools/result.js';
 
 function Rows({ labels }: { labels: string[] }) {
   return (
@@ -93,7 +94,7 @@ describe('TranscriptView', () => {
             toolId="tool-1"
             name="Bash"
             args={{ command: 'npm test' }}
-            result={{ toolCallId: 'tool-1', success: true, output: 'passed' }}
+            result={toolSuccess('passed', { toolCallId: 'tool-1' })}
             isExpanded={false}
             terminalWidth={60}
             reducedMotion

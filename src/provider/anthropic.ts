@@ -383,7 +383,7 @@ export function convertTools(tools: ToolDefinition[]): AnthropicTool[] {
   return tools.map((t) => ({
     name: t.name,
     description: t.description,
-    input_schema: t.parameters,
+    input_schema: t.inputSchema ?? t.parameters,
   }));
 }
 

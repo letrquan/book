@@ -25,11 +25,11 @@ describe('WebFetch', () => {
     );
 
     const r = await fetchTool.execute({ url: 'https://example.com/', prompt: 'summarize' }, ctx);
-    expect(r.success).toBe(true);
-    expect(r.output).toMatch(/Hello World/);
-    expect(r.output).toMatch(/test page/);
+    expect(r.status).toBe('success');
+    expect(r.content).toMatch(/Hello World/);
+    expect(r.content).toMatch(/test page/);
     // script content should be stripped
-    expect(r.output).not.toMatch(/ignore me/);
+    expect(r.content).not.toMatch(/ignore me/);
   });
 
   it('fails on a non-2xx response', async () => {
@@ -38,14 +38,14 @@ describe('WebFetch', () => {
       vi.fn(async () => new Response('Not Found', { status: 404 })),
     );
     const r = await fetchTool.execute({ url: 'https://example.com/x', prompt: 'x' }, ctx);
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/404/);
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/404/);
   });
 
   it('rejects non-http(s) schemes', async () => {
     const r = await fetchTool.execute({ url: 'file:///etc/passwd', prompt: 'x' }, ctx);
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/http/i);
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/http/i);
   });
 });
 
@@ -71,15 +71,15 @@ describe('WebSearch', () => {
       { query: 'test query', backend: 'https://search.example.com/api' },
       ctx,
     );
-    expect(r.success).toBe(true);
-    expect(r.output).toMatch(/Result One/);
-    expect(r.output).toMatch(/Result Two/);
-    expect(r.output).toMatch(/https:\/\/a\.example\.com/);
+    expect(r.status).toBe('success');
+    expect(r.content).toMatch(/Result One/);
+    expect(r.content).toMatch(/Result Two/);
+    expect(r.content).toMatch(/https:\/\/a\.example\.com/);
   });
 
   it('returns an error if no backend is configured', async () => {
     const r = await searchTool.execute({ query: 'test query' }, ctx);
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/no search backend/i);
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/no search backend/i);
   });
 });

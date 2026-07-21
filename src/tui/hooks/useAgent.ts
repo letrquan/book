@@ -485,6 +485,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setLiveConfig((current) => ({
         ...current,
         tasks: [],
+        toolDiscoveryState: undefined,
         fileObservationLedger: buildObservationLedger(transcript),
         memoryContext: current.settings.memory.enabled
           ? loadMemoryContext(current.workspace)

@@ -185,7 +185,8 @@ describe('runSubagent', () => {
             parentTraceId: invocation.parentTraceId,
             name: invocation.call.name,
           }),
-        onToolResult: (traceId, result) => results.push({ traceId, success: result.success }),
+        onToolResult: (traceId, result) =>
+          results.push({ traceId, success: result.status === 'success' }),
       },
     });
 

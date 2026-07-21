@@ -1,6 +1,7 @@
 import { existsSync, realpathSync } from 'fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'path';
 import type { ToolResult } from '../types.js';
+import { toolFailure } from './result.js';
 
 function isOutside(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -43,10 +44,7 @@ export function resolveWorkspacePath(
 }
 
 export function pathOutsideWorkspaceResult(inputPath: unknown): ToolResult {
-  return {
-    toolCallId: '',
-    success: false,
-    output: '',
-    error: `Path outside workspace: ${inputPath}`,
-  };
+  return toolFailure(`Path outside workspace: ${inputPath}`, {
+    code: 'path_outside_workspace',
+  });
 }

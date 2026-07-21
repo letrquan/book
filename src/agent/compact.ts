@@ -13,6 +13,11 @@ import type {
 import { chatCompletionStream } from '../provider/index.js';
 import { runHooks } from '../hooks.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
+import {
+  toolResultErrorMessage,
+  toolResultModelContent,
+  toolResultSucceeded,
+} from '../tools/result.js';
 import { createDebugLogger } from '../debug-log.js';
 
 const log = createDebugLogger('compact');
@@ -186,7 +191,7 @@ export function estimateMessageTokens(message: Message): number {
       TOOL_OVERHEAD_TOKENS;
   }
   for (const result of message.toolResults ?? []) {
-    tokens += estimateTextTokens(result.output ?? result.error ?? '') + TOOL_OVERHEAD_TOKENS;
+    tokens += estimateTextTokens(toolResultModelContent(result)) + TOOL_OVERHEAD_TOKENS;
   }
   return tokens;
 }
@@ -715,16 +720,21 @@ function clipBundleToolResults(bundle: readonly Message[]): Message[] {
     return {
       ...message,
       toolResults: message.toolResults.map((result) => {
-        if (estimateTextTokens(result.output ?? '') <= RETAINED_TOOL_RESULT_MAX_TOKENS)
-          return result;
+        const content = result.content;
+        if (estimateTextTokens(content) <= RETAINED_TOOL_RESULT_MAX_TOKENS) return result;
         const maxChars = RETAINED_TOOL_RESULT_MAX_TOKENS * 4;
         const half = Math.floor((maxChars - 100) / 2);
         const ref =
-          result.eventRef ?? `session://current/tool-result/${message.id}/${result.toolCallId}`;
+          result.artifacts?.eventRef ??
+          `session://current/tool-result/${message.id}/${result.toolCallId}`;
+        const clipped = `${content.slice(0, half)}\n[... compacted tool output; retrieve ${ref} ...]\n${content.slice(-half)}`;
         return {
           ...result,
-          eventRef: ref,
-          output: `${result.output.slice(0, half)}\n[... compacted tool output; retrieve ${ref} ...]\n${result.output.slice(-half)}`,
+          content: clipped,
+          presentation: result.presentation
+            ? { ...result.presentation, details: clipped }
+            : result.presentation,
+          artifacts: { ...result.artifacts, eventRef: ref },
         };
       }),
     };
@@ -1041,7 +1051,7 @@ function validateCheckpoint(
       if (source.toolResultRef) {
         const matched = event.toolResults?.some(
           (result) =>
-            result.eventRef === source.toolResultRef ||
+            result.artifacts?.eventRef === source.toolResultRef ||
             `session://current/tool-result/${event.id}/${result.toolCallId}` ===
               source.toolResultRef,
         );
@@ -1099,9 +1109,10 @@ function serializeReferencedMessageBody(message: Message): string {
     );
     const result = message.toolResults?.find((item) => item.toolCallId === call.id);
     if (result) {
-      const ref = result.eventRef ?? `session://current/tool-result/${message.id}/${call.id}`;
+      const ref =
+        result.artifacts?.eventRef ?? `session://current/tool-result/${message.id}/${call.id}`;
       lines.push(
-        `  [tool-result:${ref}] ${result.success ? result.output : (result.error ?? result.output)}`,
+        `  [tool-result:${ref}] ${toolResultSucceeded(result) ? result.content : (toolResultErrorMessage(result) ?? result.content)}`,
       );
     }
   }

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createMessageAccumulator } from './message-accumulator.js';
-import type { MessageAccumulator } from './message-accumulator.js';
-import type { Message, ToolCall, ToolResult } from '../../types.js';
+import type { Message, ToolCall } from '../../types.js';
+import { toolSuccess } from '../../tools/result.js';
 
 function makeMsg(id: string, content: string): Message {
   return { id, role: 'assistant', content, includeInContext: true, timestamp: 1 };
@@ -66,27 +66,31 @@ describe('message-accumulator', () => {
     const { acc, getMessages } = createTestAccumulator();
     const diff = '@@ -1 +1 @@\n-old\n+new';
     acc.start();
-    acc.addToolResult({
-      toolCallId: 'edit',
-      success: true,
-      output: diff,
-      fileMutation: {
-        kind: 'update',
-        filePath: 'src/a.ts',
-        addedLines: 1,
-        removedLines: 1,
-      },
-    });
+    acc.addToolResult(
+      toolSuccess(diff, {
+        toolCallId: 'edit',
+        artifacts: {
+          fileMutation: {
+            kind: 'update',
+            filePath: 'src/a.ts',
+            addedLines: 1,
+            removedLines: 1,
+          },
+        },
+      }),
+    );
 
     vi.advanceTimersByTime(20);
 
     expect(getMessages()[0].toolResults?.[0]).toMatchObject({
-      output: diff,
-      fileMutation: {
-        kind: 'update',
-        filePath: 'src/a.ts',
-        addedLines: 1,
-        removedLines: 1,
+      content: diff,
+      artifacts: {
+        fileMutation: {
+          kind: 'update',
+          filePath: 'src/a.ts',
+          addedLines: 1,
+          removedLines: 1,
+        },
       },
     });
   });
@@ -121,11 +125,7 @@ describe('message-accumulator', () => {
       parentTraceId: 'task',
       call: { id: 'grep', name: 'Grep', arguments: { pattern: 'x' } },
     });
-    acc.addNestedToolResult('task/1:read', {
-      toolCallId: 'read',
-      success: true,
-      output: 'a',
-    });
+    acc.addNestedToolResult('task/1:read', toolSuccess('a', { toolCallId: 'read' }));
 
     vi.advanceTimersByTime(20);
 
@@ -133,7 +133,7 @@ describe('message-accumulator', () => {
       'task/1:read',
       'task/2:grep',
     ]);
-    expect(getMessages()[0].nestedToolInvocations?.[0].result?.output).toBe('a');
+    expect(getMessages()[0].nestedToolInvocations?.[0].result?.content).toBe('a');
     expect(getMessages()[0].nestedToolInvocations?.[1].result).toBeUndefined();
   });
 
@@ -242,7 +242,7 @@ describe('message-accumulator', () => {
 
     acc.addText('ignored');
     acc.addToolCall({ id: 'tc1', name: 'Read', arguments: {} });
-    acc.addToolResult({ toolCallId: 'tc1', success: true, output: 'ok' });
+    acc.addToolResult(toolSuccess('ok', { toolCallId: 'tc1' }));
 
     vi.advanceTimersByTime(20);
     expect(setMessages).toHaveBeenCalledTimes(callCount);
@@ -255,8 +255,8 @@ describe('message-accumulator', () => {
 
     acc.addToolCall({ id: 'tc1', name: 'Read', arguments: { filePath: 'a.ts' } });
     acc.addToolCall({ id: 'tc1', name: 'Read', arguments: { filePath: 'b.ts' } });
-    acc.addToolResult({ toolCallId: 'tc1', success: true, output: 'v1' });
-    acc.addToolResult({ toolCallId: 'tc1', success: true, output: 'v2' });
+    acc.addToolResult(toolSuccess('v1', { toolCallId: 'tc1' }));
+    acc.addToolResult(toolSuccess('v2', { toolCallId: 'tc1' }));
     acc.addNestedToolCall({
       traceId: 'task/1:read',
       parentTraceId: 'task',
@@ -267,16 +267,8 @@ describe('message-accumulator', () => {
       parentTraceId: 'task',
       call: { id: 'read', name: 'Read', arguments: { filePath: 'a.ts', offset: 2 } },
     });
-    acc.addNestedToolResult('task/1:read', {
-      toolCallId: 'read',
-      success: true,
-      output: 'nested-v1',
-    });
-    acc.addNestedToolResult('task/1:read', {
-      toolCallId: 'read',
-      success: true,
-      output: 'nested-v2',
-    });
+    acc.addNestedToolResult('task/1:read', toolSuccess('nested-v1', { toolCallId: 'read' }));
+    acc.addNestedToolResult('task/1:read', toolSuccess('nested-v2', { toolCallId: 'read' }));
 
     vi.advanceTimersByTime(20);
 
@@ -284,12 +276,12 @@ describe('message-accumulator', () => {
     expect(msg.toolCalls).toHaveLength(1);
     expect(msg.toolCalls?.[0].arguments).toEqual({ filePath: 'b.ts' });
     expect(msg.toolResults).toHaveLength(1);
-    expect(msg.toolResults?.[0].output).toBe('v2');
+    expect(msg.toolResults?.[0].content).toBe('v2');
     expect(msg.nestedToolInvocations).toHaveLength(1);
     expect(msg.nestedToolInvocations?.[0].call.arguments).toEqual({
       filePath: 'a.ts',
       offset: 2,
     });
-    expect(msg.nestedToolInvocations?.[0].result?.output).toBe('nested-v2');
+    expect(msg.nestedToolInvocations?.[0].result?.content).toBe('nested-v2');
   });
 });

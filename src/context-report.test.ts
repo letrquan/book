@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { estimateTokens, buildContextBreakdown, buildContextReport } from './context-report.js';
 import type { Message } from './types.js';
+import { toolSuccess } from './tools/result.js';
 
 function msg(role: 'user' | 'assistant', content: string, toolCalls = 0, toolResults = 0): Message {
   const m: Message = {
@@ -13,9 +14,8 @@ function msg(role: 'user' | 'assistant', content: string, toolCalls = 0, toolRes
   if (toolCalls)
     m.toolCalls = Array.from({ length: toolCalls }, () => ({ id: 't', name: 'Read' }) as never);
   if (toolResults)
-    m.toolResults = Array.from(
-      { length: toolResults },
-      () => ({ toolCallId: 'x', success: true, output: 'x'.repeat(40) }) as never,
+    m.toolResults = Array.from({ length: toolResults }, () =>
+      toolSuccess('x'.repeat(40), { toolCallId: 'x' }),
     );
   return m;
 }

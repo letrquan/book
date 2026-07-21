@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { ToolResult } from '../../types.js';
 
 /**
  * Tests for ChatPanel rendering.
@@ -13,7 +14,7 @@ interface TestMessage {
   content: string;
   timestamp: number;
   toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
-  toolResults?: Array<{ toolCallId: string; success: boolean; output: string; error?: string }>;
+  toolResults?: ToolResult[];
 }
 
 function makeMsg(id: string, role: 'user' | 'assistant', content: string): TestMessage {

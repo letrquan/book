@@ -4,9 +4,10 @@ import { tmpdir } from 'os';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { runHeadless } from './headless.js';
 import { SessionStore } from './session/store.js';
-import { createDefaultRegistry } from './tools/registry.js';
+import { createDefaultRegistry, createRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
 import type { AgentConfig, UserQuestionRequest } from './types.js';
+import { toolSuccess } from './tools/result.js';
 
 const config = defaultConfig({ baseUrl: 'http://localhost/v1' });
 let tempDirs: string[] = [];
@@ -421,6 +422,55 @@ describe('runHeadless — json-schema', () => {
 });
 
 describe('runHeadless — runtime stores', () => {
+  it('retains discovered tools across stream-json prompts', async () => {
+    const requestTools: string[][] = [];
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as {
+          tools?: Array<{ function: { name: string } }>;
+        };
+        requestTools.push(body.tools?.map((tool) => tool.function.name) ?? []);
+        fetchCalls++;
+        return fetchCalls === 1
+          ? sse([toolDelta('search-1', 'ToolSearch', { query: 'special capability 3' })])
+          : sse([textDelta('found')]);
+      }),
+    );
+
+    const registry = createRegistry();
+    for (let index = 0; index < 12; index++) {
+      registry.register({
+        name: `SpecialTool${index}`,
+        description: `Special capability ${index}`,
+        parameters: { type: 'object', properties: {} },
+        execute: async () => toolSuccess('special'),
+      });
+    }
+
+    const { Readable } = await import('stream');
+    const runtimeConfig = freshConfig({ maxTurns: 1 });
+    runtimeConfig.settings.toolDiscovery.mode = 'deferred';
+    const stdin = Readable.from([
+      JSON.stringify({ type: 'user', content: 'find the special tool' }) + '\n',
+      JSON.stringify({ type: 'user', content: 'use the discovered tool' }) + '\n',
+    ]);
+
+    await runHeadless(runtimeConfig, registry, {
+      inputFormat: 'stream-json',
+      outputFormat: 'json',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout: { write: () => true },
+      stdin,
+    });
+
+    expect(requestTools[0]).toContain('ToolSearch');
+    expect(requestTools[0]).not.toContain('SpecialTool3');
+    expect(requestTools[1]).toContain('SpecialTool3');
+  });
+
   it('shares task state across stream-json prompts', async () => {
     let fetchCalls = 0;
     vi.stubGlobal(
@@ -470,7 +520,7 @@ describe('runHeadless — runtime stores', () => {
       .map((line) => JSON.parse(line))
       .filter((event) => event.type === 'tool_result');
 
-    expect(toolResults.at(-1).tool_result.output).toContain('#1 Across prompts');
+    expect(toolResults.at(-1).tool_result.content).toContain('#1 Across prompts');
     expect(runtimeConfig.tasks).toHaveLength(1);
   });
 });

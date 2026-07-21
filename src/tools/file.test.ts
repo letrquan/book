@@ -34,16 +34,16 @@ describe('read_file', () => {
   it('reads a file by workspace-relative path', async () => {
     writeFileSync(join(dir, 'a.txt'), 'hello');
     const r = await read.execute({ filePath: 'a.txt' }, ctx);
-    expect(r.success).toBe(true);
-    expect(r.output).toContain('1: hello');
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('1: hello');
   });
 
   it('reads a file by absolute in-workspace path', async () => {
     const filePath = join(dir, 'a.txt');
     writeFileSync(filePath, 'hello absolute');
     const r = await read.execute({ filePath }, ctx);
-    expect(r.success).toBe(true);
-    expect(r.output).toContain('1: hello absolute');
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('1: hello absolute');
   });
 
   it('rejects a relative path outside the workspace', async () => {
@@ -52,8 +52,8 @@ describe('read_file', () => {
 
     try {
       const r = await read.execute({ filePath: '../outside-relative.txt' }, ctx);
-      expect(r.success).toBe(false);
-      expect(r.error).toMatch(/outside workspace/);
+      expect(r.status).toBe('error');
+      expect(r.structuredError?.message).toMatch(/outside workspace/);
     } finally {
       rmSync(outsidePath, { force: true });
     }
@@ -65,8 +65,8 @@ describe('read_file', () => {
 
     try {
       const r = await read.execute({ filePath: outsidePath }, ctx);
-      expect(r.success).toBe(false);
-      expect(r.error).toMatch(/outside workspace/);
+      expect(r.status).toBe('error');
+      expect(r.structuredError?.message).toMatch(/outside workspace/);
     } finally {
       rmSync(outsidePath, { force: true });
     }
@@ -84,7 +84,7 @@ describe('read_file', () => {
 
     try {
       const result = await read.execute({ filePath: 'large.txt', limit: 5_000 }, ctx);
-      expect(result.success).toBe(true);
+      expect(result.status).toBe('success');
       expect(timerFired).toBe(true);
     } finally {
       clearTimeout(timer);
@@ -96,8 +96,8 @@ describe('write_file', () => {
   it('returns create metadata for new files', async () => {
     const r = await write.execute({ filePath: 'new.txt', content: 'one\ntwo' }, ctx);
 
-    expect(r.success).toBe(true);
-    expect(r.fileMutation).toEqual({
+    expect(r.status).toBe('success');
+    expect(r.artifacts?.fileMutation).toEqual({
       kind: 'create',
       filePath: 'new.txt',
       addedLines: 2,
@@ -109,7 +109,7 @@ describe('write_file', () => {
     mkdirSync(join(dir, '..data'));
     const r = await write.execute({ filePath: '..data/new.txt', content: 'inside' }, ctx);
 
-    expect(r.success).toBe(true);
+    expect(r.status).toBe('success');
     expect(readFileSync(join(dir, '..data', 'new.txt'), 'utf-8')).toBe('inside');
   });
 
@@ -123,8 +123,8 @@ describe('write_file', () => {
       );
       const r = await write.execute({ filePath: 'linked/new.txt', content: 'escaped' }, ctx);
 
-      expect(r.success).toBe(false);
-      expect(r.error).toMatch(/outside workspace/);
+      expect(r.status).toBe('error');
+      expect(r.structuredError?.message).toMatch(/outside workspace/);
       expect(existsSync(join(outsideDir, 'new.txt'))).toBe(false);
     } finally {
       rmSync(outsideDir, { recursive: true, force: true });
@@ -142,7 +142,7 @@ describe('write_file', () => {
 
     const r = await write.execute({ filePath: 'linked-inside/new.txt', content: 'inside' }, ctx);
 
-    expect(r.success).toBe(true);
+    expect(r.status).toBe('success');
     expect(readFileSync(join(target, 'new.txt'), 'utf-8')).toBe('inside');
   });
 
@@ -150,8 +150,8 @@ describe('write_file', () => {
     writeFileSync(join(dir, 'a.txt'), 'old\nkeep');
     const r = await write.execute({ filePath: 'a.txt', content: 'new\nkeep\nextra' }, ctx);
 
-    expect(r.success).toBe(true);
-    expect(r.fileMutation).toEqual({
+    expect(r.status).toBe('success');
+    expect(r.artifacts?.fileMutation).toEqual({
       kind: 'update',
       filePath: 'a.txt',
       addedLines: 2,
@@ -179,9 +179,9 @@ describe('write_file', () => {
     const outsidePath = resolve(dir, '..', 'escape.txt');
     const r = await write.execute({ filePath: '../escape.txt', content: 'escaped' }, ctx);
 
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/outside workspace/);
-    expect(r.fileMutation).toBeUndefined();
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/outside workspace/);
+    expect(r.artifacts?.fileMutation).toBeUndefined();
     expect(existsSync(outsidePath)).toBe(false);
   });
 });
@@ -191,44 +191,44 @@ describe('edit_file', () => {
     const path = join(dir, 'stale.txt');
     writeFileSync(path, 'original');
     const observed = await read.execute({ filePath: 'stale.txt' }, ctx);
-    expect(observed.fileObservations?.[0].sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(observed.artifacts?.fileObservations?.[0].sha256).toMatch(/^[a-f0-9]{64}$/);
 
     writeFileSync(path, 'changed externally');
     const blocked = await edit.execute(
       { filePath: 'stale.txt', oldString: 'changed', newString: 'updated' },
       ctx,
     );
-    expect(blocked.success).toBe(false);
-    expect(blocked.error).toMatch(/^SKIPPED:.*Read/);
+    expect(blocked.status).toBe('error');
+    expect(blocked.structuredError?.message).toMatch(/^SKIPPED:.*Read/);
 
     await read.execute({ filePath: 'stale.txt' }, ctx);
     const allowed = await edit.execute(
       { filePath: 'stale.txt', oldString: 'changed', newString: 'updated' },
       ctx,
     );
-    expect(allowed.success).toBe(true);
+    expect(allowed.status).toBe('success');
     expect(readFileSync(path, 'utf-8')).toBe('updated externally');
   });
   it('replaces the single occurrence when oldString is unique', async () => {
     writeFileSync(join(dir, 'a.txt'), 'foo bar baz');
     const r = await edit.execute({ filePath: 'a.txt', oldString: 'bar', newString: 'qux' }, ctx);
-    expect(r.success).toBe(true);
-    expect(r.fileMutation).toEqual({
+    expect(r.status).toBe('success');
+    expect(r.artifacts?.fileMutation).toEqual({
       kind: 'update',
       filePath: 'a.txt',
       addedLines: 1,
       removedLines: 1,
     });
     const after = await read.execute({ filePath: 'a.txt' }, ctx);
-    expect(after.output).toContain('foo qux baz');
+    expect(after.content).toContain('foo qux baz');
   });
 
   it('fails when oldString is absent', async () => {
     writeFileSync(join(dir, 'a.txt'), 'hello');
     const r = await edit.execute({ filePath: 'a.txt', oldString: 'nope', newString: 'x' }, ctx);
-    expect(r.success).toBe(false);
-    expect(r.error).toMatch(/not found/);
-    expect(r.fileMutation).toBeUndefined();
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.message).toMatch(/not found/);
+    expect(r.artifacts?.fileMutation).toBeUndefined();
   });
 
   it('returns aggregate update metadata for MultiEdit', async () => {
@@ -244,8 +244,8 @@ describe('edit_file', () => {
       ctx,
     );
 
-    expect(r.success).toBe(true);
-    expect(r.fileMutation).toEqual({
+    expect(r.status).toBe('success');
+    expect(r.artifacts?.fileMutation).toEqual({
       kind: 'update',
       filePath: 'a.txt',
       addedLines: 2,
@@ -262,9 +262,9 @@ describe('glob', () => {
 
     const r = await glob.execute({ pattern: '**/*' }, ctx);
 
-    expect(r.success).toBe(true);
-    expect(r.output).toContain('truncated at 1000 files');
-    expect(r.output?.split('\n')).toHaveLength(1001);
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('truncated at 1000 files');
+    expect(r.content.split('\n')).toHaveLength(1001);
   });
 
   it('does not return out-of-workspace paths', async () => {
@@ -274,8 +274,8 @@ describe('glob', () => {
 
     try {
       const r = await glob.execute({ pattern: '../*.txt' }, ctx);
-      expect(r.success).toBe(true);
-      const output = r.output ?? '';
+      expect(r.status).toBe('success');
+      const output = r.content;
       expect(output).not.toContain('outside-glob.txt');
       output
         .split('\n')
@@ -292,23 +292,37 @@ describe('grep', () => {
     writeFileSync(join(dir, 'a.ts'), 'const x = 1;\nconst y = 2;');
     writeFileSync(join(dir, 'b.ts'), 'let z = 3;');
     const r = await grep.execute({ pattern: 'const', include: '*.ts' }, ctx);
-    expect(r.success).toBe(true);
-    expect(r.output).toContain('a.ts:1: const x = 1;');
-    expect(r.output).not.toContain('b.ts');
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('a.ts:1: const x = 1;');
+    expect(r.content).not.toContain('b.ts');
+  });
+
+  it('returns only match records in structured data, not complete matched files', async () => {
+    writeFileSync(join(dir, 'a.ts'), 'unrelated secret\nconst visible = 1;\nanother secret');
+    const result = await grep.execute({ pattern: 'const', include: '*.ts' }, ctx);
+    const data = result.data as {
+      matches: Record<string, { matches: Array<{ line: number; text: string }>; lines?: string[] }>;
+    };
+
+    expect(data.matches['a.ts']).toEqual({
+      matches: [{ line: 2, text: 'const visible = 1;' }],
+    });
+    expect(data.matches['a.ts']).not.toHaveProperty('lines');
+    expect(JSON.stringify(result.data)).not.toContain('unrelated secret');
   });
 
   it('matches files after workspace path normalization', async () => {
     writeFileSync(join(dir, 'a.ts'), 'const x = 1;');
     const r = await grep.execute({ pattern: 'const', include: '**/*.ts' }, ctx);
-    expect(r.success).toBe(true);
-    expect(r.output).toContain('a.ts:1: const x = 1;');
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('a.ts:1: const x = 1;');
   });
 
   it('reports no matches found', async () => {
     writeFileSync(join(dir, 'a.ts'), 'nothing here');
     const r = await grep.execute({ pattern: 'zzzzz', include: '*.ts' }, ctx);
-    expect(r.success).toBe(true);
-    expect(r.output).toMatch(/No matches/);
+    expect(r.status).toBe('success');
+    expect(r.content).toMatch(/No matches/);
   });
 
   it('preserves count, files-only, context, multiline, and limit behavior', async () => {
@@ -319,28 +333,28 @@ describe('grep', () => {
       { pattern: 'const', include: '*.ts', output_mode: 'count' },
       ctx,
     );
-    expect(count.output).toContain('a.ts:2');
-    expect(count.output).toContain('b.ts:1');
+    expect(count.content).toContain('a.ts:2');
+    expect(count.content).toContain('b.ts:1');
 
     const files = await grep.execute(
       { pattern: 'second', include: '*.ts', output_mode: 'files_with_matches' },
       ctx,
     );
-    expect(files.output).toBe('a.ts');
+    expect(files.content).toBe('a.ts');
 
     const context = await grep.execute({ pattern: 'first', include: '*.ts', A: 1, B: 1 }, ctx);
-    expect(context.output).toContain('a.ts:1- before');
-    expect(context.output).toContain('a.ts:2: const first = 1;');
-    expect(context.output).toContain('a.ts:3- after');
+    expect(context.content).toContain('a.ts:1- before');
+    expect(context.content).toContain('a.ts:2: const first = 1;');
+    expect(context.content).toContain('a.ts:3- after');
 
     const multiline = await grep.execute(
       { pattern: 'before\\nconst', include: '*.ts', multiline: true },
       ctx,
     );
-    expect(multiline.output).toContain('a.ts:1: before');
+    expect(multiline.content).toContain('a.ts:1: before');
 
     const limited = await grep.execute({ pattern: 'const', include: '*.ts', head_limit: 1 }, ctx);
-    expect(limited.output?.split('\n')).toHaveLength(1);
+    expect(limited.content.split('\n')).toHaveLength(1);
   });
 
   it('keeps timers responsive and observes abort during a broad scan', async () => {
@@ -354,7 +368,7 @@ describe('grep', () => {
     }, 0);
     try {
       const result = await grep.execute({ pattern: 'missing-token', include: '*.txt' }, ctx);
-      expect(result.success).toBe(true);
+      expect(result.status).toBe('success');
       expect(timerFired).toBe(true);
     } finally {
       clearTimeout(timer);

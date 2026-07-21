@@ -1,5 +1,6 @@
 import type { Message, ToolCall, ToolResult, AgentConfig } from '../types.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
+import { toolFailure, toolSuccess } from '../tools/result.js';
 
 export function defaultConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
@@ -51,6 +52,8 @@ export function toolCall(id: string, name: string, args: Record<string, unknown>
   return { id, name, arguments: args };
 }
 
-export function toolResult(toolCallId: string, output: string, success = true): ToolResult {
-  return { toolCallId, success, output, error: success ? undefined : 'err' };
+export function toolResult(toolCallId: string, content: string, success = true): ToolResult {
+  return success
+    ? toolSuccess(content, { toolCallId })
+    : toolFailure('err', { toolCallId, content });
 }

@@ -1,5 +1,6 @@
 import { execFile } from 'child_process';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import { toolFailure, toolSuccess } from './result.js';
 
 type ExecFile = typeof execFile;
 
@@ -37,30 +38,36 @@ export async function runGit(
   });
 }
 
+function gitResult(result: Awaited<ReturnType<typeof runGit>>): ToolResult {
+  return result.success
+    ? toolSuccess(result.output)
+    : toolFailure(result.error ?? 'Git command failed', { content: result.output });
+}
+
 async function gitStatus(_args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const result = await runGit(['status', '--short'], ctx);
-  return { toolCallId: '', ...result };
+  return gitResult(result);
 }
 
 async function gitDiff(_args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const result = await runGit(['diff'], ctx);
-  return { toolCallId: '', ...result };
+  return gitResult(result);
 }
 
 async function gitLog(_args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const result = await runGit(['log', '--oneline', '-20'], ctx);
-  return { toolCallId: '', ...result };
+  return gitResult(result);
 }
 
 async function gitCommit(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const message = args.message as string;
   const result = await runGit(['commit', '-m', message], ctx);
-  return { toolCallId: '', ...result };
+  return gitResult(result);
 }
 
 async function gitBranch(_args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const result = await runGit(['branch', '-a'], ctx);
-  return { toolCallId: '', ...result };
+  return gitResult(result);
 }
 
 export const gitTools: ToolDefinition[] = [
