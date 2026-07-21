@@ -32,8 +32,6 @@ interface ToolCallBlockProps {
   showAllToolOutput?: boolean;
   /** Available terminal width, including this block's outer indentation. */
   terminalWidth?: number;
-  /** Tree-rail position within the current group. */
-  railPosition?: 'middle' | 'last';
 }
 
 /** Compatibility export used by existing consumers and tests. */
@@ -163,7 +161,6 @@ function ToolCallBlockInner({
   screenReader = false,
   showAllToolOutput = false,
   terminalWidth = 80,
-  railPosition = 'last',
 }: ToolCallBlockProps) {
   const theme = useTheme();
   const registry = useToolRowInteractionRegistry();
@@ -180,9 +177,7 @@ function ToolCallBlockInner({
   const inlineError =
     result?.error && !result.error.startsWith('SKIPPED') ? result.error : undefined;
   const elapsedSuffix = elapsed ? ` · ${elapsed}` : '';
-  const railPrefix = railPosition === 'last' ? '╰ ' : '├ ';
-  const togglePrefix = presentation.hasHiddenContent ? (isExpanded ? '⌄ ' : '› ') : '  ';
-  const iconPrefixWidth = displayWidth(`${railPrefix}${togglePrefix}○ `);
+  const iconPrefixWidth = displayWidth('○ ');
   const summaryWidth = Math.max(4, blockWidth - iconPrefixWidth);
   const summary = inlineError
     ? (() => {
@@ -215,8 +210,6 @@ function ToolCallBlockInner({
   return (
     <Box flexDirection="column" marginLeft={2}>
       <Box ref={summaryRef} height={1}>
-        <Text color={theme.toolRail}>{railPrefix}</Text>
-        <Text color={theme.subtle}>{togglePrefix}</Text>
         {isRunning ? (
           <>
             <Spinner

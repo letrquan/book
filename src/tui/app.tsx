@@ -9,7 +9,7 @@ import { WorkingIndicator } from './components/WorkingIndicator.js';
 import { CompactDiffCard } from './components/CompactDiffCard.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
-import { AgentTodoList } from './components/AgentTodoList.js';
+import { AgentTodoList, shouldShowAgentPlan } from './components/AgentTodoList.js';
 import { ModelPicker, type ProviderRemovalResult } from './components/ModelPicker.js';
 import { EffortPicker } from './components/EffortPicker.js';
 import { ThemePicker } from './components/ThemePicker.js';
@@ -66,7 +66,7 @@ import { redactSettingValue, redactSettingsForDisplay } from '../settings-redact
 import { createUiDebugLogger } from '../debug-log.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { getOrCreateAgentManager } from '../agents/manager.js';
-import { selectExpandedToolId } from './tool-traces.js';
+import { selectExpandedToolId, selectLatestToolId } from './tool-traces.js';
 import {
   getTranscriptShortcutAction,
   shouldExpandTool,
@@ -455,9 +455,9 @@ export function App({ config, session, redrawViewport }: AppProps) {
     }
   }, [isThinking, messages.length, currentTurn]);
 
-  // Keep the latest running tool open. Once it completes, preserve the newest
-  // file mutation in the latest tool-bearing turn as a bounded diff preview.
+  // Compact mode automatically opens only the latest unfinished action.
   const expandedToolId = useMemo(() => selectExpandedToolId(messages), [messages]);
+  const showAgentPlan = shouldShowAgentPlan(agentTodos, showTasks);
 
   useEffect(() => {
     setTranscriptMode('compact');
@@ -1032,7 +1032,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
         return true;
       }
       if (transcriptAction === 'expand-output') {
-        const targetToolId = expandedToolId ?? focusedToolId;
+        const targetToolId = expandedToolId ?? focusedToolId ?? selectLatestToolId(messages);
         uiLog.event('input:Ctrl+E', { action: 'expand-current-tool', toolId: targetToolId });
         if (targetToolId) {
           setToolExpansionOverrides((current) => new Map(current).set(targetToolId, true));
@@ -1059,6 +1059,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       showRewindPicker,
       expandedToolId,
       focusedToolId,
+      messages,
     ],
   );
 
@@ -1114,7 +1115,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
                 retryMax={retryMax}
                 retryCountdownMs={retryCountdownMs}
               />
-              {agentTodos.length > 0 && <AgentTodoList todos={agentTodos} />}
+              {showAgentPlan && <AgentTodoList todos={agentTodos} />}
               {showTasks && (
                 <TaskList tasks={tasks} onUpdateStatus={updateTaskStatus} onRemove={removeTask} />
               )}

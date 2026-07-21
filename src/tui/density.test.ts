@@ -16,4 +16,9 @@ describe('TUI density', () => {
     expect(densityMetrics('compact').paragraphGap).toBe(1);
     expect(densityMetrics('tight').paragraphGap).toBe(1);
   });
+
+  it('adds one action row of breathing room only in compact density', () => {
+    expect(densityMetrics('compact').toolRowGap).toBe(1);
+    expect(densityMetrics('tight').toolRowGap).toBe(0);
+  });
 });

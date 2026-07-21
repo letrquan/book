@@ -23,6 +23,24 @@ afterEach(() => {
 });
 
 describe('ToolCallBlock', () => {
+  it('uses a single status marker without tree or disclosure decoration', () => {
+    const view = render(
+      withTheme(
+        <ToolCallBlock
+          name="Bash"
+          args={{ command: 'npm test' }}
+          result={{ toolCallId: 'call-1', success: true, output: 'passed' }}
+          isExpanded={false}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const rendered = frame(view.lastFrame);
+    expect(rendered.match(/✓/g)).toHaveLength(1);
+    expect(rendered).not.toMatch(/[╰├›⌄]/);
+  });
+
   it('updates elapsed time while a tool remains active', () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

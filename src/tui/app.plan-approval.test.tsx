@@ -258,6 +258,34 @@ describe('provider removal transcript messages', () => {
   });
 });
 
+describe('App agent plan visibility', () => {
+  it('reveals a completed agent plan together with the Ctrl+T task panel', async () => {
+    const agentState = {
+      ...pendingAgentState(),
+      isThinking: false,
+      pendingPlanApproval: null,
+      agentTodos: [{ content: 'Completed plan marker', status: 'completed' as const }],
+    };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    expect(stripAnsi(view.lastFrame())).not.toContain('Completed plan marker');
+
+    view.stdin.write('\x14');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(stripAnsi(view.lastFrame())).toContain('Completed plan marker');
+    expect(stripAnsi(view.lastFrame())).toContain('Tasks (0)');
+  });
+});
+
 describe('App effort command', () => {
   const submit = async (view: ReturnType<typeof render>, value: string) => {
     view.stdin.write(value);
