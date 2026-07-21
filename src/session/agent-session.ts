@@ -1,9 +1,13 @@
 import type { AgentRuntimeEvent } from '../agents/types.js';
 import { runAgentLoop } from '../agent/loop.js';
+import { runCompact, runPostCompactHooks, type RunCompactOptions } from '../agent/compact.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type {
   AgentConfig,
   AgentLoopCallbacks,
+  CompactBoundary,
+  CompactRecordData,
+  CompactResult,
   Message,
   PermissionMode,
   RewindSnapshotCaptureResult,
@@ -79,6 +83,25 @@ export interface AgentSessionPrepareSendRequest {
   isCurrent?: () => boolean;
 }
 
+export interface AgentSessionCompactRequest {
+  config: AgentConfig;
+  history: readonly Message[];
+  sessionId: string;
+  transcriptOrdinal: number;
+  options: Omit<RunCompactOptions, 'sessionId'>;
+  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+  isCurrent?: () => boolean;
+  onCommitted?: (
+    result: Extract<CompactResult, { status: 'compacted' }>,
+    boundary: CompactBoundary,
+  ) => void;
+}
+
+export interface AgentSessionCompactOutcome {
+  result: CompactResult;
+  boundary?: CompactBoundary;
+}
+
 export type AgentSessionPrepareSendResult =
   | { status: 'prepared'; contextMessage: string; rewindTarget: RewindTarget }
   | { status: 'cancelled' };
@@ -90,6 +113,8 @@ export interface AgentSessionCancelResult {
 
 export interface AgentSessionDependencies {
   runLoop?: AgentLoopRunner;
+  compactRunner?: typeof runCompact;
+  postCompactHooksRunner?: typeof runPostCompactHooks;
 }
 
 type AgentSessionListener = (snapshot: AgentSessionSnapshot) => void;
@@ -99,12 +124,16 @@ export class AgentSession {
   readonly interactions = new AgentInteractionController();
   readonly operations = new AgentSessionOperations();
   private readonly runLoop: AgentLoopRunner;
+  private readonly compactRunner: typeof runCompact;
+  private readonly postCompactHooksRunner: typeof runPostCompactHooks;
   private snapshot = createAgentSessionSnapshot();
   private readonly listeners = new Set<AgentSessionListener>();
   private runGeneration = 0;
 
   constructor(dependencies: AgentSessionDependencies = {}) {
     this.runLoop = dependencies.runLoop ?? runAgentLoop;
+    this.compactRunner = dependencies.compactRunner ?? runCompact;
+    this.postCompactHooksRunner = dependencies.postCompactHooksRunner ?? runPostCompactHooks;
   }
 
   startSend(): AgentSessionOperation | null {
@@ -214,6 +243,63 @@ export class AgentSession {
     } satisfies SessionRecord);
 
     return { status: 'prepared', contextMessage, rewindTarget };
+  }
+
+  async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {
+    const result = await this.compactRunner(request.config, request.history, {
+      ...request.options,
+      sessionId: request.sessionId,
+    });
+    if (result.status !== 'compacted') return { result };
+    if (request.isCurrent?.() === false) return { result };
+
+    const timestamp = Date.now();
+    const boundary: CompactBoundary = {
+      id: result.compactId,
+      trigger: result.trigger,
+      transcriptOrdinal: request.transcriptOrdinal,
+      preContextCount: result.preMessageCount,
+      postContextCount: result.replacementHistory.length,
+      preContextTokens: result.preContextTokens,
+      postContextTokens: result.postContextTokens,
+      generation: result.generation,
+      checkpointVersion: 2,
+      timestamp,
+    };
+    const data: CompactRecordData = {
+      version: 2,
+      compactId: result.compactId,
+      generation: result.generation,
+      trigger: result.trigger,
+      focus: request.options.focus,
+      checkpoint: result.checkpoint,
+      summary: result.summary,
+      preContextTokens: result.preContextTokens,
+      postContextTokens: result.postContextTokens,
+      replacementHistory: result.replacementHistory,
+      boundary,
+      throughEventRef: result.throughEventRef,
+      summarizedCount: result.summarizedCount,
+      retainedCount: result.retainedCount,
+      strategy: result.strategy,
+      modelCalls: result.modelCalls,
+      degraded: result.degraded,
+      warning: result.warning,
+    };
+    request.timelineStore?.append(request.sessionId, {
+      type: 'compact',
+      eventId: result.compactId,
+      timestamp,
+      data,
+    } satisfies SessionRecord);
+    request.onCommitted?.(result, boundary);
+    await this.postCompactHooksRunner(request.config, {
+      trigger: result.trigger,
+      sessionId: request.sessionId,
+      focus: request.options.focus,
+      onHookEvent: request.options.onHookEvent,
+    });
+    return { result, boundary };
   }
 
   async run(request: AgentSessionRunRequest): Promise<Message[]> {

@@ -13,7 +13,6 @@ import type {
   SessionRecord,
   SessionStoreInterface,
   CompactResult,
-  CompactRecordData,
   CompactTrigger,
   LocalCommandDisplay,
   CompactBoundary,
@@ -23,13 +22,7 @@ import type {
   RewindTarget,
   UserQuestionResponse,
 } from '../../types.js';
-import {
-  resolveContextLimit,
-  runCompact,
-  runPostCompactHooks,
-  shouldCompact,
-  usagePressureTokens,
-} from '../../agent/compact.js';
+import { resolveContextLimit, shouldCompact, usagePressureTokens } from '../../agent/compact.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
 import { createDefaultRegistry } from '../../tools/registry.js';
 import type { Todo } from '../../tools/todo.js';
@@ -444,63 +437,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     return session.store.list().filter((meta) => meta.cwd === cwd);
   }, [liveConfig.workspace, session.store]);
 
-  const commitCompactResult = useCallback(
-    async (
-      result: Extract<CompactResult, { status: 'compacted' }>,
-      opts: { focus?: string; sessionId: string },
-    ) => {
-      const timestamp = Date.now();
-      const boundary: CompactBoundary = {
-        id: result.compactId,
-        trigger: result.trigger,
-        transcriptOrdinal: messagesRef.current.length,
-        preContextCount: result.preMessageCount,
-        postContextCount: result.replacementHistory.length,
-        preContextTokens: result.preContextTokens,
-        postContextTokens: result.postContextTokens,
-        generation: result.generation,
-        checkpointVersion: 2,
-        timestamp,
-      };
-      if (timelineStore) {
-        const data: CompactRecordData = {
-          version: 2,
-          compactId: result.compactId,
-          generation: result.generation,
-          trigger: result.trigger,
-          focus: opts.focus,
-          checkpoint: result.checkpoint,
-          summary: result.summary,
-          preContextTokens: result.preContextTokens,
-          postContextTokens: result.postContextTokens,
-          replacementHistory: result.replacementHistory,
-          boundary,
-          throughEventRef: result.throughEventRef,
-          summarizedCount: result.summarizedCount,
-          retainedCount: result.retainedCount,
-          strategy: result.strategy,
-          modelCalls: result.modelCalls,
-          degraded: result.degraded,
-          warning: result.warning,
-        };
-        timelineStore.append(opts.sessionId, {
-          type: 'compact',
-          eventId: result.compactId,
-          timestamp,
-          data,
-        } satisfies SessionRecord);
-      }
+  const projectCompactResult = useCallback(
+    (result: Extract<CompactResult, { status: 'compacted' }>, boundary: CompactBoundary) => {
       contextHistoryRef.current = result.replacementHistory;
       setCompactBoundaries((current) => [...current, boundary]);
       setUsage(null);
       hostUsageRef.current = null;
-      await runPostCompactHooks(liveConfigRef.current, {
-        trigger: result.trigger,
-        sessionId: opts.sessionId,
-        focus: opts.focus,
-      });
     },
-    [timelineStore],
+    [],
   );
 
   const send = useCallback(
@@ -551,14 +495,22 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             preMessages: contextHistoryRef.current.length,
             preContextTokens: usagePressureTokens(hostUsageRef.current),
           });
-          const autoResult = await runCompact(liveConfig, contextHistoryRef.current, {
-            trigger: 'auto',
+          const autoOutcome = await agentSession.compact({
+            config: liveConfig,
+            history: contextHistoryRef.current,
             sessionId: activeSessionId,
-            preContextTokens: usagePressureTokens(hostUsageRef.current),
-            upcomingUserIntent: userMessage,
+            transcriptOrdinal: messagesRef.current.length,
+            timelineStore,
+            isCurrent: stillCurrent,
+            onCommitted: projectCompactResult,
+            options: {
+              trigger: 'auto',
+              preContextTokens: usagePressureTokens(hostUsageRef.current),
+              upcomingUserIntent: userMessage,
+            },
           });
-          if (stillCurrent() && autoResult.status === 'compacted') {
-            await commitCompactResult(autoResult, { sessionId: activeSessionId });
+          const autoResult = autoOutcome.result;
+          if (stillCurrent() && autoResult.status === 'compacted' && autoOutcome.boundary) {
             setCompactUi({
               phase: 'diff',
               trigger: 'auto',
@@ -751,14 +703,22 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               }
               // Flush display accumulator so it cannot overwrite a replacement.
               activeAccumulator?.stop();
-              const result = await runCompact(liveConfigRef.current, history, {
-                trigger: 'auto',
+              const outcome = await agentSession.compact({
+                config: liveConfigRef.current,
+                history,
                 sessionId: activeSessionId,
-                preContextTokens: usagePressureTokens(usage),
+                transcriptOrdinal: messagesRef.current.length,
+                timelineStore,
+                isCurrent: stillCurrent,
+                onCommitted: projectCompactResult,
+                options: {
+                  trigger: 'auto',
+                  preContextTokens: usagePressureTokens(usage),
+                },
               });
+              const result = outcome.result;
               if (!stillCurrent()) return result;
-              if (result.status === 'compacted') {
-                await commitCompactResult(result, { sessionId: activeSessionId });
+              if (result.status === 'compacted' && outcome.boundary) {
                 setCompactUi({
                   phase: 'diff',
                   trigger: 'auto',
@@ -889,7 +849,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       clearCountdown,
       finalizeStreamingMessages,
       timelineStore,
-      commitCompactResult,
+      projectCompactResult,
       session.snapshotStore,
       agentSession,
       operations,
@@ -966,13 +926,22 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       });
 
       try {
-        const result = await runCompact(liveConfigRef.current, contextHistoryRef.current, {
-          trigger: 'manual',
-          focus,
+        const outcome = await agentSession.compact({
+          config: liveConfigRef.current,
+          history: contextHistoryRef.current,
           sessionId: activeSessionId,
-          preContextTokens,
-          signal: operation.signal,
+          transcriptOrdinal: messagesRef.current.length,
+          timelineStore,
+          isCurrent: stillCurrent,
+          onCommitted: projectCompactResult,
+          options: {
+            trigger: 'manual',
+            focus,
+            preContextTokens,
+            signal: operation.signal,
+          },
         });
+        const result = outcome.result;
 
         if (!stillCurrent()) return;
 
@@ -995,7 +964,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           return;
         }
 
-        await commitCompactResult(result, { focus, sessionId: activeSessionId });
+        if (!outcome.boundary) return;
         if (!stillCurrent()) return;
         setCompactUi({
           phase: 'diff',
@@ -1024,7 +993,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         operation.release();
       }
     },
-    [commitCompactResult, operations],
+    [agentSession, operations, projectCompactResult, timelineStore],
   );
 
   const getRewindTargets = useCallback((): RewindTarget[] => {

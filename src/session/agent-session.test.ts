@@ -6,7 +6,56 @@ import { defaultConfig } from '../test/fixtures.js';
 import { toolSuccess } from '../tools/result.js';
 import type { AgentEvent, AgentSessionSnapshot } from './agent-events.js';
 import { createAgentSessionSnapshot, reduceAgentSessionSnapshot } from './agent-events.js';
-import type { Message, RewindSnapshotCaptureResult, SessionRecord } from '../types.js';
+import type {
+  CompactResult,
+  Message,
+  RewindSnapshotCaptureResult,
+  SessionRecord,
+} from '../types.js';
+
+function compactedResult(): Extract<CompactResult, { status: 'compacted' }> {
+  const replacementHistory: Message[] = [
+    {
+      id: 'checkpoint-1',
+      role: 'assistant',
+      content: 'summary',
+      kind: 'checkpoint',
+      includeInContext: true,
+      timestamp: 20,
+    },
+  ];
+  return {
+    status: 'compacted',
+    trigger: 'manual',
+    replacementHistory,
+    summary: 'summary',
+    compactId: 'compact-1',
+    generation: 1,
+    checkpoint: {
+      version: 2,
+      generation: 1,
+      state: { summary: 'summary', status: 'active' },
+      constraints: [],
+      files: [],
+      episodes: [],
+      openThreads: [],
+      statistics: {
+        summarizedMessages: 2,
+        retainedMessages: 0,
+        preTokens: 100,
+        postTokens: 10,
+      },
+    },
+    checkpointVersion: 2,
+    summarizedCount: 2,
+    retainedCount: 0,
+    postContextTokens: 10,
+    preContextTokens: 100,
+    preMessageCount: 2,
+    strategy: 'single-pass',
+    modelCalls: 1,
+  };
+}
 
 describe('AgentSession', () => {
   it('prepares checkpoint and user timeline records outside the host layer', async () => {
@@ -75,6 +124,104 @@ describe('AgentSession', () => {
 
     await expect(pending).resolves.toEqual({ status: 'cancelled' });
     expect(records).toEqual([]);
+  });
+
+  it('owns compaction boundary persistence and post-compact hooks', async () => {
+    const result = compactedResult();
+    const records: SessionRecord[] = [];
+    const postCompactCalls: unknown[] = [];
+    const compactOptions: unknown[] = [];
+    const commitOrder: string[] = [];
+    const session = new AgentSession({
+      compactRunner: async (_config, _history, options) => {
+        compactOptions.push(options);
+        return result;
+      },
+      postCompactHooksRunner: async (_config, options) => {
+        commitOrder.push('post-hook');
+        postCompactCalls.push(options);
+      },
+    });
+
+    const outcome = await session.compact({
+      config: defaultConfig(),
+      history: [],
+      sessionId: 'session-1',
+      transcriptOrdinal: 7,
+      options: { trigger: 'manual', focus: 'keep deployment details' },
+      timelineStore: {
+        append: (_id, record) => {
+          commitOrder.push('persist');
+          records.push(record);
+        },
+      },
+      onCommitted: () => commitOrder.push('project'),
+    });
+
+    expect(outcome).toMatchObject({
+      result,
+      boundary: {
+        id: 'compact-1',
+        trigger: 'manual',
+        transcriptOrdinal: 7,
+        preContextCount: 2,
+        postContextCount: 1,
+        preContextTokens: 100,
+        postContextTokens: 10,
+        generation: 1,
+        checkpointVersion: 2,
+      },
+    });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      type: 'compact',
+      eventId: 'compact-1',
+      data: {
+        version: 2,
+        compactId: 'compact-1',
+        focus: 'keep deployment details',
+        replacementHistory: result.replacementHistory,
+        boundary: outcome.boundary,
+      },
+    });
+    expect(postCompactCalls).toEqual([
+      {
+        trigger: 'manual',
+        sessionId: 'session-1',
+        focus: 'keep deployment details',
+        onHookEvent: undefined,
+      },
+    ]);
+    expect(compactOptions).toEqual([
+      { trigger: 'manual', focus: 'keep deployment details', sessionId: 'session-1' },
+    ]);
+    expect(commitOrder).toEqual(['persist', 'project', 'post-hook']);
+  });
+
+  it('does not commit compaction after the host becomes stale', async () => {
+    const records: SessionRecord[] = [];
+    let postCompactCalled = false;
+    const session = new AgentSession({
+      compactRunner: async () => compactedResult(),
+      postCompactHooksRunner: async () => {
+        postCompactCalled = true;
+      },
+    });
+
+    const outcome = await session.compact({
+      config: defaultConfig(),
+      history: [],
+      sessionId: 'session-1',
+      transcriptOrdinal: 0,
+      options: { trigger: 'auto' },
+      timelineStore: { append: (_id, record) => records.push(record) },
+      isCurrent: () => false,
+    });
+
+    expect(outcome.result.status).toBe('compacted');
+    expect(outcome).not.toHaveProperty('boundary');
+    expect(records).toEqual([]);
+    expect(postCompactCalled).toBe(false);
   });
 
   it('owns interaction settlement and emits one reducible run sequence', async () => {
