@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
+import { DensityContext, type TuiDensity } from '../density.js';
 import { ChatPanel } from './ChatPanel.js';
 import { AgentMessage } from './AgentMessage.js';
 import type { Message, ToolCall } from '../../types.js';
@@ -15,6 +16,10 @@ function frame(lastFrame: () => string | undefined): string {
 
 function withTheme(children: React.ReactElement): React.ReactElement {
   return <ThemeContext.Provider value={DEFAULT_THEME}>{children}</ThemeContext.Provider>;
+}
+
+function withDensity(children: React.ReactElement, density: TuiDensity): React.ReactElement {
+  return withTheme(<DensityContext.Provider value={density}>{children}</DensityContext.Provider>);
 }
 
 function msg(id: string, role: 'user' | 'assistant', content: string): Message {
@@ -397,6 +402,83 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).not.toContain('×3');
     expect(output.indexOf('src/a.ts')).toBeLessThan(output.indexOf('src/b.ts'));
     expect(output.indexOf('src/b.ts')).toBeLessThan(output.indexOf('src/c.ts'));
+  });
+
+  it('adds one blank row between narration and sibling actions in compact density', () => {
+    const message: Message = {
+      ...msg('a1', 'assistant', 'I will inspect both files.'),
+      toolCalls: [
+        { id: 'read-1', name: 'Read', arguments: { filePath: 'src/a.ts' } },
+        { id: 'read-2', name: 'Read', arguments: { filePath: 'src/b.ts' } },
+      ],
+      toolResults: [
+        { toolCallId: 'read-1', success: true, output: 'a' },
+        { toolCallId: 'read-2', success: true, output: 'b' },
+      ],
+    };
+    const view = render(
+      withDensity(<AgentMessage message={message} isStreaming={false} reducedMotion />, 'compact'),
+    );
+    const lines = frame(view.lastFrame).split('\n');
+    const narration = lines.findIndex((line) => line.includes('I will inspect both files.'));
+    const first = lines.findIndex((line) => line.includes('Read(src/a.ts)'));
+    const second = lines.findIndex((line) => line.includes('Read(src/b.ts)'));
+
+    expect(lines.slice(narration + 1, first)).toEqual(['']);
+    expect(lines.slice(first + 1, second)).toEqual(['']);
+  });
+
+  it('removes action gaps in tight density', () => {
+    const message: Message = {
+      ...msg('a1', 'assistant', 'Inspecting.'),
+      toolCalls: [
+        { id: 'read-1', name: 'Read', arguments: { filePath: 'src/a.ts' } },
+        { id: 'read-2', name: 'Read', arguments: { filePath: 'src/b.ts' } },
+      ],
+      toolResults: [
+        { toolCallId: 'read-1', success: true, output: 'a' },
+        { toolCallId: 'read-2', success: true, output: 'b' },
+      ],
+    };
+    const view = render(
+      withDensity(<AgentMessage message={message} isStreaming={false} reducedMotion />, 'tight'),
+    );
+    const lines = frame(view.lastFrame).split('\n');
+    const narration = lines.findIndex((line) => line.includes('Inspecting.'));
+    const first = lines.findIndex((line) => line.includes('Read(src/a.ts)'));
+    const second = lines.findIndex((line) => line.includes('Read(src/b.ts)'));
+
+    expect(first).toBe(narration + 1);
+    expect(second).toBe(first + 1);
+  });
+
+  it('applies the same sibling spacing to nested actions', () => {
+    const message: Message = {
+      ...msg('a1', 'assistant', ''),
+      toolCalls: [{ id: 'task', name: 'Task', arguments: { agent: 'explorer' } }],
+      nestedToolInvocations: [
+        {
+          traceId: 'task/read-a',
+          parentTraceId: 'task',
+          call: { id: 'read-a', name: 'Read', arguments: { filePath: 'src/a.ts' } },
+          result: { toolCallId: 'read-a', success: true, output: 'a' },
+        },
+        {
+          traceId: 'task/read-b',
+          parentTraceId: 'task',
+          call: { id: 'read-b', name: 'Read', arguments: { filePath: 'src/b.ts' } },
+          result: { toolCallId: 'read-b', success: true, output: 'b' },
+        },
+      ],
+    };
+    const view = render(
+      withDensity(<AgentMessage message={message} isStreaming={false} reducedMotion />, 'compact'),
+    );
+    const lines = frame(view.lastFrame).split('\n');
+    const first = lines.findIndex((line) => line.includes('Read(src/a.ts)'));
+    const second = lines.findIndex((line) => line.includes('Read(src/b.ts)'));
+
+    expect(lines.slice(first + 1, second)).toEqual(['']);
   });
 
   it('rerenders a tool result when array lengths stay unchanged', () => {
@@ -837,7 +919,60 @@ describe('ChatPanel Ink rendering', () => {
     expect(frame(view.lastFrame)).toContain('BASH_RESULT_MARKER');
   });
 
-  it('groups consecutive MCP calls by server only in compact mode', () => {
+  it('collapses a compact action when it completes and preserves manual expansion', () => {
+    const running: Message = {
+      ...msg('a1', 'assistant', ''),
+      toolCalls: [{ id: 'bash', name: 'Bash', arguments: { command: 'npm test' } }],
+    };
+    const view = render(
+      withTheme(
+        <AgentMessage
+          message={running}
+          isStreaming
+          transcriptMode="compact"
+          automaticToolCallId="bash"
+          reducedMotion
+        />,
+      ),
+    );
+    expect(frame(view.lastFrame)).toContain('command: npm test');
+
+    const completed: Message = {
+      ...running,
+      toolResults: [{ toolCallId: 'bash', success: true, output: 'PASSED_MARKER' }],
+    };
+    view.rerender(
+      withTheme(
+        <AgentMessage
+          message={completed}
+          isStreaming={false}
+          transcriptMode="compact"
+          automaticToolCallId={null}
+          reducedMotion
+        />,
+      ),
+    );
+    expect(frame(view.lastFrame)).toContain('Bash(npm test)');
+    expect(frame(view.lastFrame)).not.toContain('command: npm test');
+    expect(frame(view.lastFrame)).not.toContain('PASSED_MARKER');
+
+    view.rerender(
+      withTheme(
+        <AgentMessage
+          message={completed}
+          isStreaming={false}
+          transcriptMode="compact"
+          automaticToolCallId={null}
+          toolExpansionOverrides={new Map([['bash', true]])}
+          reducedMotion
+        />,
+      ),
+    );
+    expect(frame(view.lastFrame)).toContain('command: npm test');
+    expect(frame(view.lastFrame)).toContain('PASSED_MARKER');
+  });
+
+  it('renders every MCP invocation as its own row in compact mode', () => {
     const message: Message = {
       ...msg('a1', 'assistant', ''),
       toolCalls: [
@@ -859,8 +994,9 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-    expect(frame(view.lastFrame)).toContain('Called slack 2 times');
-    expect(frame(view.lastFrame)).not.toContain('Called slack(search)');
+    expect(frame(view.lastFrame)).toContain('Called slack(search)');
+    expect(frame(view.lastFrame)).toContain('Called slack(post)');
+    expect(frame(view.lastFrame)).not.toContain('Called slack 2 times');
 
     view.rerender(
       withTheme(
@@ -876,7 +1012,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(frame(view.lastFrame)).toContain('Called slack(post)');
   });
 
-  it('keeps the latest completed file mutation preview visible under the assistant turn', () => {
+  it('collapses completed file mutation output while keeping diffstats visible', () => {
     const diffOutput = ['@@ -1 +1 @@', '-old line', '+new line'].join('\n');
     const messages: Message[] = [
       {
@@ -908,8 +1044,8 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('Done.');
     expect(output).toContain('Update(src/a.ts)');
     expect(output).toContain('· +1 -1');
-    expect(output).toContain('- old line');
-    expect(output).toContain('+ new line');
+    expect(output).not.toContain('- old line');
+    expect(output).not.toContain('+ new line');
   });
 
   it('collapses an older file preview when a newer non-file tool turn completes', () => {

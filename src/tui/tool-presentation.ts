@@ -46,60 +46,6 @@ export function getTranscriptShortcutAction(
   return null;
 }
 
-export interface PresentableToolInvocation<TCall = unknown> {
-  id: string;
-  name: string;
-  call: TCall;
-  result?: ToolResult;
-}
-
-export type CompactToolGroup<TCall = unknown> =
-  | { kind: 'tool'; invocation: PresentableToolInvocation<TCall> }
-  | {
-      kind: 'mcp-group';
-      id: string;
-      server: string;
-      invocations: PresentableToolInvocation<TCall>[];
-    };
-
-/** Group adjacent successful, completed MCP calls from the same server. */
-export function groupConsecutiveMcpCalls<TCall>(
-  invocations: readonly PresentableToolInvocation<TCall>[],
-): CompactToolGroup<TCall>[] {
-  const groups: CompactToolGroup<TCall>[] = [];
-  for (let index = 0; index < invocations.length;) {
-    const current = invocations[index];
-    const mcp = parseMcpToolName(current.name);
-    if (!mcp || !current.result?.success) {
-      groups.push({ kind: 'tool', invocation: current });
-      index++;
-      continue;
-    }
-
-    const consecutive: PresentableToolInvocation<TCall>[] = [current];
-    let nextIndex = index + 1;
-    while (nextIndex < invocations.length) {
-      const next = invocations[nextIndex];
-      const nextMcp = parseMcpToolName(next.name);
-      if (!nextMcp || nextMcp.server !== mcp.server || !next.result?.success) break;
-      consecutive.push(next);
-      nextIndex++;
-    }
-
-    if (consecutive.length === 1) groups.push({ kind: 'tool', invocation: current });
-    else {
-      groups.push({
-        kind: 'mcp-group',
-        id: `mcp-group:${consecutive.map((item) => item.id).join(',')}`,
-        server: mcp.server,
-        invocations: consecutive,
-      });
-    }
-    index = nextIndex;
-  }
-  return groups;
-}
-
 const LABELS: Record<string, string> = {
   Read: 'Read',
   Write: 'Write',
@@ -310,12 +256,8 @@ export function deriveToolPresentation(
       metadata.push(`${count} ${count === 1 ? 'activity' : 'activities'}`);
     }
   } else if (mcp) {
-    const groupCount = Number(args.__groupCount ?? 0);
-    title =
-      Number.isSafeInteger(groupCount) && groupCount > 1
-        ? `Called ${mcp.server} ${groupCount} times`
-        : `Called ${mcp.server}`;
-    target = groupCount > 1 ? undefined : mcp.tool;
+    title = `Called ${mcp.server}`;
+    target = mcp.tool;
     previewType = result?.output ? 'markdown' : 'none';
   } else if (
     canonicalName === 'Bash' ||

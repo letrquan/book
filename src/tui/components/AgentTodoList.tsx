@@ -7,10 +7,21 @@ interface AgentTodoListProps {
   todos: Todo[];
 }
 
+export function visibleAgentTodos(todos: readonly Todo[]): Todo[] {
+  const visible = todos.slice(0, 5);
+  const activeTodo = todos.find((todo) => todo.status === 'in_progress');
+  if (activeTodo && !visible.includes(activeTodo)) visible.splice(4, 1, activeTodo);
+  return visible;
+}
+
+export function shouldShowAgentPlan(todos: readonly Todo[], showTasks: boolean): boolean {
+  return todos.length > 0 && (showTasks || todos.some((todo) => todo.status !== 'completed'));
+}
+
 export function AgentTodoList({ todos }: AgentTodoListProps) {
   const theme = useTheme();
   if (todos.length === 0) return null;
-  const visible = todos.slice(0, 8);
+  const visible = visibleAgentTodos(todos);
   const done = todos.filter((t) => t.status === 'completed').length;
 
   return (
@@ -32,7 +43,9 @@ export function AgentTodoList({ todos }: AgentTodoListProps) {
           </Box>
         );
       })}
-      {todos.length > 8 && <Text color={theme.subtle}>…and {todos.length - 8} more</Text>}
+      {todos.length > visible.length && (
+        <Text color={theme.subtle}>…and {todos.length - visible.length} more</Text>
+      )}
     </Box>
   );
 }

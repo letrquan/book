@@ -34,7 +34,7 @@ All notable changes to this project are documented in this file.
 - Prevent the first submitted TUI message from freezing during a cold rewind snapshot by yielding filesystem checkpoint work and rendering the optimistic turn first.
 - Make `/theme` open a keyboard picker, apply the full app palette, persist the selection, resolve terminal auto mode correctly, and report invalid custom themes.
 - Keep local slash-command output visible and resumable in the TUI without adding it to provider or compaction context.
-- Keep the latest completed `Write`/`Edit`/`MultiEdit`/`NotebookEdit` diff visible as a bounded Claude Code-style preview, with line-background and inline word-level highlighting.
+- Add breathing room between transcript actions and collapse completed output by default while retaining action summaries, edit diffstats, and on-demand expansion.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).

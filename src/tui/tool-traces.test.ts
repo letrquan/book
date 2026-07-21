@@ -5,6 +5,7 @@ import {
   countNestedToolInvocations,
   selectActiveToolId,
   selectExpandedToolId,
+  selectLatestToolId,
 } from './tool-traces.js';
 import { isRenderableFileMutationDiff } from './file-mutation-display.js';
 
@@ -99,6 +100,19 @@ describe('tool traces', () => {
       ),
     ).toBeNull();
   });
+
+  it('selects the newest action for explicit expansion', () => {
+    expect(
+      selectLatestToolId([
+        assistant({
+          toolCalls: [
+            { id: 'first', name: 'Read', arguments: {} },
+            { id: 'latest', name: 'Bash', arguments: {} },
+          ],
+        }),
+      ]),
+    ).toBe('latest');
+  });
 });
 
 describe('file mutation preview selection', () => {
@@ -112,16 +126,16 @@ describe('file mutation preview selection', () => {
     ).toBe(false);
   });
 
-  it('keeps the latest completed mutation open after its result arrives', () => {
+  it('does not reopen a completed mutation after its result arrives', () => {
     const edit = assistant({
       toolCalls: [{ id: 'edit', name: 'Edit', arguments: {} }],
       toolResults: [result('edit', { output: DIFF })],
     });
 
-    expect(selectExpandedToolId([edit])).toBe('edit');
+    expect(selectExpandedToolId([edit])).toBeNull();
   });
 
-  it('keeps the preview through later text-only assistant turns', () => {
+  it('keeps completed tools collapsed through later text-only assistant turns', () => {
     const edit = assistant({
       id: 'edit-turn',
       toolCalls: [{ id: 'edit', name: 'Edit', arguments: {} }],
@@ -129,7 +143,7 @@ describe('file mutation preview selection', () => {
     });
     const finalText = assistant({ id: 'final', content: 'Done.' });
 
-    expect(selectExpandedToolId([edit, finalText])).toBe('edit');
+    expect(selectExpandedToolId([edit, finalText])).toBeNull();
   });
 
   it('lets the latest tool-bearing turn supersede an older mutation preview', () => {
@@ -173,7 +187,7 @@ describe('file mutation preview selection', () => {
       ],
     });
 
-    expect(selectExpandedToolId([parallel])).toBe('second');
+    expect(selectExpandedToolId([parallel])).toBeNull();
   });
 
   it('supports completed nested mutation previews by trace id', () => {
@@ -183,7 +197,7 @@ describe('file mutation preview selection', () => {
       nestedToolInvocations: [nested('task/1:edit', 'task', true, 'Edit', DIFF)],
     });
 
-    expect(selectExpandedToolId([task])).toBe('task/1:edit');
+    expect(selectExpandedToolId([task])).toBeNull();
   });
 
   it('does not preview failed, skipped, no-op, or hook-rewritten mutation results', () => {

@@ -3,7 +3,6 @@ import type { ToolResult } from '../types.js';
 import {
   deriveToolPresentation,
   getTranscriptShortcutAction,
-  groupConsecutiveMcpCalls,
   parseMcpToolName,
   shouldExpandTool,
 } from './tool-presentation.js';
@@ -114,29 +113,18 @@ describe('deriveToolPresentation', () => {
   });
 });
 
-describe('MCP compact grouping', () => {
-  it('parses MCP names and groups only adjacent successful calls from one server', () => {
+describe('MCP presentation', () => {
+  it('parses names and preserves one summary per invocation', () => {
     expect(parseMcpToolName('mcp__team_slack__search_messages')).toEqual({
       server: 'team_slack',
       tool: 'search messages',
     });
-    const calls = [
-      { id: '1', name: 'mcp__slack__search', call: 1, result: result() },
-      { id: '2', name: 'mcp__slack__post', call: 2, result: result() },
-      { id: '3', name: 'mcp__github__issue', call: 3, result: result() },
-      {
-        id: '4',
-        name: 'mcp__github__comment',
-        call: 4,
-        result: result({ success: false, error: 'denied' }),
-      },
-    ];
-
-    const groups = groupConsecutiveMcpCalls(calls);
-    expect(groups).toHaveLength(3);
-    expect(groups[0]).toMatchObject({ kind: 'mcp-group', server: 'slack' });
-    expect(groups[1]).toMatchObject({ kind: 'tool', invocation: { id: '3' } });
-    expect(groups[2]).toMatchObject({ kind: 'tool', invocation: { id: '4' } });
+    expect(
+      deriveToolPresentation('mcp__slack__search', { query: 'release' }, result()).summary,
+    ).toBe('Called slack(search)');
+    expect(deriveToolPresentation('mcp__slack__post', { channel: 'eng' }, result()).summary).toBe(
+      'Called slack(post)',
+    );
   });
 });
 
