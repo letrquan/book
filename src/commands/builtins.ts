@@ -32,7 +32,13 @@ export interface BuiltinCommandContext {
 export type BuiltinCommandEffect =
   | { type: 'legacy'; commandName: string; rawArguments: string }
   | { type: 'send-prompt'; prompt: string; context: CommandContext }
-  | { type: 'local-message'; content: string };
+  | { type: 'local-message'; content: string }
+  | { type: 'start-new-conversation'; previousName?: string }
+  | { type: 'resume-conversation'; session?: string }
+  | { type: 'compact'; focus?: string }
+  | { type: 'exit' }
+  | { type: 'show-modal'; modal: 'model' | 'rewind' }
+  | { type: 'toggle-panel'; panel: 'help' | 'status' | 'permissions' | 'skills' };
 
 export type BuiltinCommandDefinition = CommandDefinition<
   BuiltinCommandContext,
@@ -74,7 +80,9 @@ function promptEffect(
 }
 
 export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
-  legacyCommand('clear', 'Start a new conversation', {
+  {
+    name: 'clear',
+    description: 'Start a new conversation',
     argumentHint: '[previous-name]',
     aliases: [
       { name: 'new', description: 'Start a new conversation', argumentHint: '[previous-name]' },
@@ -85,8 +93,14 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
         isHidden: true,
       },
     ],
-  }),
-  legacyCommand('resume', 'Resume a saved conversation', {
+    execute: ({ rawArguments }) => ({
+      type: 'start-new-conversation',
+      previousName: rawArguments || undefined,
+    }),
+  },
+  {
+    name: 'resume',
+    description: 'Resume a saved conversation',
     argumentHint: '[id|name]',
     aliases: [
       {
@@ -96,11 +110,35 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
         isHidden: true,
       },
     ],
-  }),
-  legacyCommand('compact', 'Summarize older turns', { argumentHint: '[focus instructions]' }),
-  legacyCommand('rewind', 'Restore conversation, workspace code, or both'),
-  legacyCommand('exit', 'Exit book'),
-  legacyCommand('help', 'Toggle help'),
+    execute: ({ rawArguments }) => ({
+      type: 'resume-conversation',
+      session: rawArguments || undefined,
+    }),
+  },
+  {
+    name: 'compact',
+    description: 'Summarize older turns',
+    argumentHint: '[focus instructions]',
+    execute: ({ rawArguments }) => ({ type: 'compact', focus: rawArguments || undefined }),
+  },
+  {
+    name: 'rewind',
+    description: 'Restore conversation, workspace code, or both',
+    execute: ({ rawArguments }) =>
+      rawArguments
+        ? { type: 'local-message', content: 'Usage: /rewind' }
+        : { type: 'show-modal', modal: 'rewind' },
+  },
+  {
+    name: 'exit',
+    description: 'Exit book',
+    execute: () => ({ type: 'exit' }),
+  },
+  {
+    name: 'help',
+    description: 'Toggle help',
+    execute: () => ({ type: 'toggle-panel', panel: 'help' }),
+  },
   legacyCommand('task', 'Add a task'),
   legacyCommand('agents', 'List managed agents'),
   legacyCommand('agent', 'Inspect or control a managed agent', {
@@ -108,19 +146,38 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   }),
   legacyCommand('theme', 'Switch color theme', { argumentHint: '[dark|light|auto|name]' }),
   legacyCommand('model', 'Switch models and manage BYOK providers'),
-  legacyCommand('providers', 'Add or remove workspace BYOK providers'),
+  {
+    name: 'providers',
+    description: 'Add or remove workspace BYOK providers',
+    execute: ({ rawArguments }) =>
+      rawArguments
+        ? { type: 'local-message', content: 'Usage: /providers' }
+        : { type: 'show-modal', modal: 'model' },
+  },
   legacyCommand('effort', 'Set thinking effort', {
     argumentHint: '[low|medium|high|xhigh|max]',
   }),
   legacyCommand('config', 'Show current configuration'),
   legacyCommand('diff', 'Show git diff'),
-  legacyCommand('status', 'Show session status'),
+  {
+    name: 'status',
+    description: 'Show session status',
+    execute: () => ({ type: 'toggle-panel', panel: 'status' }),
+  },
   legacyCommand('memory', 'Manage auto-memory', {
     argumentHint: '[status|inbox|approve|discard|on|off|path]',
   }),
-  legacyCommand('permissions', 'Manage permission rules'),
+  {
+    name: 'permissions',
+    description: 'Manage permission rules',
+    execute: () => ({ type: 'toggle-panel', panel: 'permissions' }),
+  },
   legacyCommand('cost', 'Show token usage and cost'),
-  legacyCommand('skills', 'List available skills'),
+  {
+    name: 'skills',
+    description: 'List available skills',
+    execute: () => ({ type: 'toggle-panel', panel: 'skills' }),
+  },
   {
     name: 'init',
     description: 'Initialize project with CLAUDE.md',

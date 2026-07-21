@@ -553,40 +553,55 @@ export function App({ config, session, redrawViewport }: AppProps) {
           addLocalMessage(effect.content);
           return;
         }
+        if (effect?.type === 'start-new-conversation') {
+          clearTasks();
+          setShowHelp(false);
+          setShowStatus(false);
+          setShowSessionPicker(false);
+          setShowRewindPicker(false);
+          void startNewConversation(effect.previousName).catch((err) => {
+            addLocalMessage(`✕ ${err instanceof Error ? err.message : String(err)}`);
+          });
+          stdout?.write('\x1b[2J\x1b[3J\x1b[H');
+          return;
+        }
+        if (effect?.type === 'resume-conversation') {
+          if (!effect.session) {
+            setShowSessionPicker(true);
+          } else {
+            clearTasks();
+            void resumeConversation(effect.session).catch((err) => {
+              addLocalMessage(`✕ ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
+          return;
+        }
+        if (effect?.type === 'compact') {
+          void compact(effect.focus);
+          return;
+        }
+        if (effect?.type === 'exit') {
+          void endCurrentSession('exit').finally(exitApp);
+          return;
+        }
+        if (effect?.type === 'show-modal') {
+          if (effect.modal === 'model') setShowModelPicker(true);
+          else setShowRewindPicker(true);
+          return;
+        }
+        if (effect?.type === 'toggle-panel') {
+          if (effect.panel === 'help') setShowHelp((current) => !current);
+          else if (effect.panel === 'status') setShowStatus((current) => !current);
+          else if (effect.panel === 'permissions') setShowPermissions((current) => !current);
+          else setShowSkills((current) => !current);
+          return;
+        }
         if (effect?.type === 'legacy') {
           commandName = effect.commandName;
           commandArg = effect.rawArguments;
         }
       }
-      if (commandName === 'clear' || commandName === 'new' || commandName === 'reset') {
-        clearTasks();
-        setShowHelp(false);
-        setShowStatus(false);
-        setShowSessionPicker(false);
-        setShowRewindPicker(false);
-        void startNewConversation(commandArg || undefined).catch((err) => {
-          addLocalMessage(`✕ ${err instanceof Error ? err.message : String(err)}`);
-        });
-        stdout?.write('\x1b[2J\x1b[3J\x1b[H');
-      } else if (commandName === 'resume' || commandName === 'continue') {
-        if (!commandArg) {
-          setShowSessionPicker(true);
-        } else {
-          clearTasks();
-          void resumeConversation(commandArg).catch((err) => {
-            addLocalMessage(`✕ ${err instanceof Error ? err.message : String(err)}`);
-          });
-        }
-      } else if (commandName === 'compact') {
-        void compact(commandArg || undefined);
-      } else if (commandName === 'rewind') {
-        if (commandArg) addLocalMessage('Usage: /rewind');
-        else setShowRewindPicker(true);
-      } else if (commandName === 'exit') {
-        void endCurrentSession('exit').finally(exitApp);
-      } else if (commandName === 'help') {
-        setShowHelp((s) => !s);
-      } else if (commandName === 'agents') {
+      if (commandName === 'agents') {
         const manager = getOrCreateAgentManager(
           liveConfig,
           createDefaultRegistry({ agents: true }).getDefinitions(),
@@ -668,9 +683,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
         } else {
           setShowModelPicker(true);
         }
-      } else if (commandName === 'providers') {
-        if (commandArg) addLocalMessage('Usage: /providers');
-        else setShowModelPicker(true);
       } else if (commandName === 'effort') {
         if (!commandArg) {
           const unavailable = getEffortUnavailableError(liveConfig);
@@ -749,8 +761,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
             result.error ? `✕ ${result.error}` : result.output.trim() || '(no changes)',
           );
         });
-      } else if (commandName === 'status') {
-        setShowStatus((s) => !s);
       } else if (commandName === 'memory') {
         const arg = commandArg;
 
@@ -807,8 +817,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
             'Usage: /memory [status|inbox|approve <n|file>|discard <n|file>|on|off|path]',
           );
         }
-      } else if (commandName === 'permissions') {
-        setShowPermissions((s) => !s);
       } else if (commandName === 'cost') {
         addLocalMessage(costReport(liveConfig.model, usage));
       } else if (commandName === 'usage' || commandName === 'stats') {
@@ -869,8 +877,6 @@ export function App({ config, session, redrawViewport }: AppProps) {
             hasClaudeMdLoader: ambient.hasClaudeMdLoader,
           },
         });
-      } else if (commandName === 'skills') {
-        setShowSkills((s) => !s);
       } else if (commandName === 'reload-skills') {
         // Force re-discovery of commands and skills on next render.
         addLocalMessage('Commands and skills have been reloaded.');

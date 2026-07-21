@@ -28,12 +28,31 @@ describe('built-in command contract', () => {
     expect(() => createBuiltinCommandRegistry()).not.toThrow();
   });
 
-  it('resolves aliases to the canonical legacy handler', () => {
+  it('resolves aliases to the canonical typed handler', () => {
     const effect = createBuiltinCommandRegistry().execute('new', 'old-session', context());
     expect(effect).toEqual({
-      type: 'legacy',
-      commandName: 'clear',
-      rawArguments: 'old-session',
+      type: 'start-new-conversation',
+      previousName: 'old-session',
+    });
+  });
+
+  it('returns typed session and UI effects', () => {
+    const registry = createBuiltinCommandRegistry();
+    expect(registry.execute('resume', '', context())).toEqual({
+      type: 'resume-conversation',
+      session: undefined,
+    });
+    expect(registry.execute('rewind', '', context())).toEqual({
+      type: 'show-modal',
+      modal: 'rewind',
+    });
+    expect(registry.execute('help', '', context())).toEqual({
+      type: 'toggle-panel',
+      panel: 'help',
+    });
+    expect(registry.execute('providers', 'unexpected', context())).toEqual({
+      type: 'local-message',
+      content: 'Usage: /providers',
     });
   });
 
