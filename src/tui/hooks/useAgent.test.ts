@@ -52,39 +52,6 @@ function applyTickCountdown(state: RetryState): RetryState {
   return { ...state, retryCountdownMs: Math.max(0, state.retryCountdownMs - 1000) };
 }
 
-/**
- * Pure model of the send single-flight lock:
- * - acquire is synchronous at send entry
- * - cancel aborts but does NOT release the lock
- * - only finally releases the lock
- */
-function createSendFlightModel() {
-  let inFlight = false;
-  let aborted = false;
-  return {
-    tryAcquire(): boolean {
-      if (inFlight) return false;
-      inFlight = true;
-      aborted = false;
-      return true;
-    },
-    cancel(): void {
-      if (!inFlight) return;
-      aborted = true;
-      // lock stays held until finally
-    },
-    finallyRelease(): void {
-      inFlight = false;
-    },
-    get inFlight() {
-      return inFlight;
-    },
-    get aborted() {
-      return aborted;
-    },
-  };
-}
-
 describe('useAgent retry state machine', () => {
   it('starts with retryPhase "none"', () => {
     const s = initialRetryState();
@@ -207,28 +174,6 @@ describe('useAgent error/isThinking state transitions', () => {
     isThinking = false;
 
     expect(isThinking).toBe(false);
-  });
-});
-
-describe('useAgent send single-flight lock', () => {
-  it('rejects a second acquire while in flight', () => {
-    const flight = createSendFlightModel();
-    expect(flight.tryAcquire()).toBe(true);
-    expect(flight.tryAcquire()).toBe(false);
-    expect(flight.inFlight).toBe(true);
-  });
-
-  it('cancel aborts but keeps the lock until finally', () => {
-    const flight = createSendFlightModel();
-    expect(flight.tryAcquire()).toBe(true);
-    flight.cancel();
-    expect(flight.aborted).toBe(true);
-    expect(flight.inFlight).toBe(true);
-    // Concurrent send still blocked.
-    expect(flight.tryAcquire()).toBe(false);
-    flight.finallyRelease();
-    expect(flight.inFlight).toBe(false);
-    expect(flight.tryAcquire()).toBe(true);
   });
 });
 

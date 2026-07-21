@@ -62,6 +62,7 @@ import { selectSession, type SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';
 import { runSessionEnd, runSessionStart } from '../../session/lifecycle.js';
 import { AgentInteractionController } from '../../session/agent-interactions.js';
+import { AgentSessionOperations } from '../../session/agent-session-operations.js';
 
 const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
@@ -194,6 +195,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     readLocalProviderOwnership(config.workspace),
   );
   const [interactions] = useState(() => new AgentInteractionController());
+  const [operations] = useState(() => new AgentSessionOperations());
   const [interactionSnapshot, setInteractionSnapshot] = useState(() => interactions.getSnapshot());
   const { pendingPermission, pendingPlanApproval, pendingUserQuestions } = interactionSnapshot;
   const [turnDurationMs, setTurnDurationMs] = useState<number>(0);
@@ -210,7 +212,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // Callbacks read this ref (not state) so multi-turn updates always target
   // the latest in-progress message without stale-closure issues.
   const streamingIdRef = useRef<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<Message[]>(initialTranscript);
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
@@ -224,11 +225,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Message accumulator for batched streaming updates.
   const accumulatorRef = useRef<MessageAccumulator | null>(null);
-  // Synchronous single-flight lock for send()/compact(). isThinking is UI-only
-  // and may lag a render; this ref is the authoritative gate.
-  const sendInFlightRef = useRef(false);
-  const operationInFlightRef = useRef<'send' | 'compact' | 'rewind' | null>(null);
-  const compactAbortRef = useRef<AbortController | null>(null);
   const hostUsageRef = useRef<Usage | null>(null);
   const lastHostCompactAttemptRef = useRef<string | null>(null);
   const timelineStore = session.timelineStore ?? session.store;
@@ -298,12 +294,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       }
       accumulatorRef.current?.stop();
       accumulatorRef.current = null;
-      abortRef.current?.abort();
-      abortRef.current = null;
+      operations.cancel();
       // Deny/reject so agent-loop promises never hang after unmount.
       interactions.cancelAll('unmount');
     };
-  }, [interactions]);
+  }, [interactions, operations]);
 
   const clearCountdown = useCallback(() => {
     if (countdownRef.current) {
@@ -328,14 +323,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       contextHistory: Message[] = transcript,
       boundaries: CompactBoundary[] = [],
       targets: RewindTarget[] = [],
+      opts: { preserveOperation?: boolean } = {},
     ) => {
       sessionGenerationRef.current++;
       interactions.cancelAll('session-reset');
       accumulatorRef.current?.discard();
       accumulatorRef.current = null;
-      abortRef.current?.abort();
-      abortRef.current = null;
-      sendInFlightRef.current = false;
+      if (!opts.preserveOperation) operations.reset();
       clearCountdown();
 
       sessionIdRef.current = nextId;
@@ -370,7 +364,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           : undefined,
       }));
     },
-    [clearCountdown, interactions],
+    [clearCountdown, interactions, operations],
   );
 
   const endCurrentSession = useCallback(
@@ -387,7 +381,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const oldId = sessionIdRef.current;
       sessionGenerationRef.current++;
       accumulatorRef.current?.discard();
-      abortRef.current?.abort();
+      operations.cancel();
       await endCurrentSession('clear');
       if (previousName && session.store) session.store.patchMeta(oldId, { name: previousName });
 
@@ -403,7 +397,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       resetConversationState(nextId, undefined, []);
       await runSessionStart(liveConfigRef.current, nextId, 'clear');
     },
-    [endCurrentSession, liveConfig.workspace, resetConversationState, session.store, timelineStore],
+    [
+      endCurrentSession,
+      liveConfig.workspace,
+      operations,
+      resetConversationState,
+      session.store,
+      timelineStore,
+    ],
   );
 
   const resumeConversation = useCallback(
@@ -416,7 +417,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const loaded = session.store.load(selected.id);
       sessionGenerationRef.current++;
       accumulatorRef.current?.discard();
-      abortRef.current?.abort();
+      operations.cancel();
       await endCurrentSession('resume');
       session.store.touch(selected.id);
       lifecycleEndedRef.current = false;
@@ -430,7 +431,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       );
       await runSessionStart(liveConfigRef.current, selected.id, 'resume');
     },
-    [endCurrentSession, liveConfig.workspace, resetConversationState, session.store],
+    [endCurrentSession, liveConfig.workspace, operations, resetConversationState, session.store],
   );
 
   const listSessions = useCallback((): SessionMeta[] => {
@@ -500,22 +501,20 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
   const send = useCallback(
     async (userMessage: string, commandContext?: CommandContext) => {
-      // Synchronous single-flight: reject concurrent sends even if React has
-      // not yet committed isThinking=true from a prior call.
-      if (sendInFlightRef.current || operationInFlightRef.current) {
+      const operation = operations.tryStart('send', true);
+      if (!operation) {
         uiLog.event('send:rejected', {
-          reason: operationInFlightRef.current === 'compact' ? 'compacting' : 'already-in-flight',
+          reason: operations.activeKind === 'compact' ? 'compacting' : 'already-in-flight',
           len: userMessage.length,
         });
         return;
       }
-      sendInFlightRef.current = true;
-      operationInFlightRef.current = 'send';
       setCompactUi(null);
 
       const generation = sessionGenerationRef.current;
       const activeSessionId = sessionIdRef.current;
-      const stillCurrent = () => sessionGenerationRef.current === generation;
+      const stillCurrent = () =>
+        sessionGenerationRef.current === generation && operation.isCurrent();
       let activeAccumulator: MessageAccumulator | null = null;
 
       log.info('send message', {
@@ -617,8 +616,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
       // Snapshot capture walks the workspace. Keep it off the render-critical
       // path so the first cold capture cannot freeze the input or spinner.
-      const controller = new AbortController();
-      abortRef.current = controller;
       const checkpointId = crypto.randomUUID();
       const checkpointTimestamp = Date.now();
 
@@ -643,14 +640,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               reason: 'Filesystem checkpoint storage is unavailable.',
             };
         if (!stillCurrent()) return;
-        if (controller.signal.aborted) {
+        if (operation.signal?.aborted) {
           setIsThinking(false);
           streamingIdRef.current = null;
           setStreamingMessageId(null);
-          abortRef.current = null;
           removeOptimisticMessages();
-          sendInFlightRef.current = false;
-          if (operationInFlightRef.current === 'send') operationInFlightRef.current = null;
+          operation.release();
           return;
         }
 
@@ -727,11 +722,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           setIsThinking(false);
           streamingIdRef.current = null;
           setStreamingMessageId(null);
-          abortRef.current = null;
           removeOptimisticMessages();
-          sendInFlightRef.current = false;
-          if (operationInFlightRef.current === 'send') operationInFlightRef.current = null;
         }
+        operation.release();
         return;
       }
 
@@ -930,7 +923,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           },
           mode,
           {
-            signal: controller.signal,
+            signal: operation.signal,
             nestedToolObserver: {
               onToolCall: (invocation: NestedToolInvocation) => {
                 if (stillCurrent()) activeAccumulator?.addNestedToolCall(invocation);
@@ -972,18 +965,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           setIsThinking(false);
           streamingIdRef.current = null;
           setStreamingMessageId(null);
-          abortRef.current = null;
           clearCountdown();
           setRetryPhase('none');
           setRetryCountdownMs(0);
         }
-        // Release single-flight only if this invocation still owns the active
-        // session/abort controller. A stale invocation must not unlock or clear
-        // a newer session's send.
-        if (stillCurrent() && abortRef.current === null) {
-          sendInFlightRef.current = false;
-          if (operationInFlightRef.current === 'send') operationInFlightRef.current = null;
-        }
+        operation.release();
         uiLog.event('send:finally', { durationMs: Date.now() - turnStartRef.current });
       }
     },
@@ -996,6 +982,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       commitCompactResult,
       session.snapshotStore,
       interactions,
+      operations,
     ],
   );
 
@@ -1025,26 +1012,28 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   );
 
   // Abort the in-flight agent stream (Esc while thinking) or compact request.
-  // Lock stays held until send()'s finally; only the abort signal is raised.
+  // The active lease stays held until its finally block; only its signal is aborted.
   const cancel = useCallback(() => {
-    const hadAbort = abortRef.current !== null;
-    const hadCompact = compactAbortRef.current !== null;
+    const activeKind = operations.activeKind;
     const hadAccumulator = accumulatorRef.current !== null;
-    const inFlight = sendInFlightRef.current;
-    uiLog.event('cancel', { hadAbort, hadCompact, hadAccumulator, inFlight });
+    const cancelled = operations.cancel();
+    uiLog.event('cancel', {
+      activeKind,
+      aborted: cancelled.aborted,
+      hadAccumulator,
+      inFlight: activeKind === 'send',
+    });
     interactions.cancelAll('cancel');
-    abortRef.current?.abort();
-    compactAbortRef.current?.abort();
-    // Do not null abortRef / release sendInFlightRef / stop accumulator here —
-    // finally owns that so concurrent send cannot slip through mid-unwind.
+    // The active lease stays held until its finally block finishes unwinding.
     clearCountdown();
     setRetryPhase('none');
-  }, [clearCountdown, interactions]);
+  }, [clearCountdown, interactions, operations]);
 
   // Manually compact the conversation (summarize older turns).
   const compact = useCallback(
     async (focus?: string) => {
-      if (sendInFlightRef.current || operationInFlightRef.current) {
+      const operation = operations.tryStart('compact', true);
+      if (!operation) {
         setCompactUi({
           phase: 'skipped',
           trigger: 'manual',
@@ -1052,12 +1041,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         });
         return;
       }
-      operationInFlightRef.current = 'compact';
       const generation = sessionGenerationRef.current;
       const activeSessionId = sessionIdRef.current;
-      const stillCurrent = () => sessionGenerationRef.current === generation;
-      const controller = new AbortController();
-      compactAbortRef.current = controller;
+      const stillCurrent = () =>
+        sessionGenerationRef.current === generation && operation.isCurrent();
       const preMessages = contextHistoryRef.current.length;
       const preContextTokens = usagePressureTokens(hostUsageRef.current);
 
@@ -1075,7 +1062,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           focus,
           sessionId: activeSessionId,
           preContextTokens,
-          signal: controller.signal,
+          signal: operation.signal,
         });
 
         if (!stillCurrent()) return;
@@ -1124,14 +1111,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           });
         }
       } finally {
-        if (compactAbortRef.current === controller) compactAbortRef.current = null;
-        if (stillCurrent()) {
-          setIsCompacting(false);
-          if (operationInFlightRef.current === 'compact') operationInFlightRef.current = null;
-        }
+        if (stillCurrent()) setIsCompacting(false);
+        operation.release();
       }
     },
-    [commitCompactResult],
+    [commitCompactResult, operations],
   );
 
   const getRewindTargets = useCallback((): RewindTarget[] => {
@@ -1164,22 +1148,27 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       targetId: string,
       action: RewindAction,
     ): Promise<{ ok: true; restoredPrompt?: string } | { ok: false; error: string }> => {
-      if (sendInFlightRef.current || operationInFlightRef.current) {
+      const operation = operations.tryStart('rewind');
+      if (!operation) {
         return { ok: false, error: 'Rewind is unavailable while another operation is active.' };
       }
       if (!timelineStore) {
+        operation.release();
         return { ok: false, error: 'Rewind timeline storage is unavailable.' };
       }
       const target = getRewindTargets().find((candidate) => candidate.id === targetId);
-      if (!target) return { ok: false, error: 'The selected rewind target is no longer active.' };
+      if (!target) {
+        operation.release();
+        return { ok: false, error: 'The selected rewind target is no longer active.' };
+      }
       if ((action === 'code' || action === 'both') && !target.codeAvailable) {
+        operation.release();
         return {
           ok: false,
           error: target.codeUnavailableReason ?? 'Code rewind is unavailable for this prompt.',
         };
       }
 
-      operationInFlightRef.current = 'rewind';
       setIsRewinding(true);
       const activeSessionId = sessionIdRef.current;
       let safetySnapshotId: string | undefined;
@@ -1220,6 +1209,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             loaded.contextHistory,
             loaded.compactBoundaries,
             loaded.rewindTargets,
+            { preserveOperation: true },
           );
         }
         if (safetySnapshotId) session.snapshotStore?.discardManifest(safetySnapshotId);
@@ -1238,11 +1228,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           error: `${rewindError instanceof Error ? rewindError.message : String(rewindError)}${rollbackMessage}`,
         };
       } finally {
-        if (operationInFlightRef.current === 'rewind') operationInFlightRef.current = null;
+        operation.release();
         setIsRewinding(false);
       }
     },
-    [getRewindTargets, resetConversationState, session.snapshotStore, sessionName, timelineStore],
+    [
+      getRewindTargets,
+      operations,
+      resetConversationState,
+      session.snapshotStore,
+      sessionName,
+      timelineStore,
+    ],
   );
 
   const clear = useCallback(() => {
@@ -1250,8 +1247,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     // can resurrect content into a cleared conversation.
     accumulatorRef.current?.stop();
     accumulatorRef.current = null;
-    abortRef.current?.abort();
-    abortRef.current = null;
+    operations.cancel();
     interactions.cancelAll('clear');
     messagesRef.current = [];
     contextHistoryRef.current = [];
@@ -1266,15 +1262,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setAgentTodos([]);
     streamingIdRef.current = null;
     setStreamingMessageId(null);
-    // isThinking / sendInFlightRef are released by send()'s finally after abort.
-    // If nothing is in flight they are already false.
-    if (!sendInFlightRef.current) {
-      setIsThinking(false);
-    }
+    // The send lease is released by send()'s finally after abort.
+    if (!operations.isRunning('send')) setIsThinking(false);
     clearCountdown();
     setRetryPhase('none');
     setRetryCountdownMs(0);
-  }, [clearCountdown, interactions]);
+  }, [clearCountdown, interactions, operations]);
 
   const cycleMode = useCallback(() => {
     const modes: PermissionMode[] = [
@@ -1297,9 +1290,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // /init-pre /memory-noop to show output instantly.
   const addLocalMessage = useCallback(
     (text: string, localCommand?: LocalCommandDisplay) => {
-      if (sendInFlightRef.current || isThinking) {
+      const sendInFlight = operations.isRunning('send');
+      if (sendInFlight || isThinking) {
         uiLog.event('local-message:blocked', {
-          reason: sendInFlightRef.current ? 'in-flight' : 'is-thinking',
+          reason: sendInFlight ? 'in-flight' : 'is-thinking',
           preview: text.slice(0, 40),
         });
         return; // don't clobber a streaming turn
@@ -1327,7 +1321,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         return next;
       });
     },
-    [isThinking, timelineStore],
+    [isThinking, operations, timelineStore],
   );
 
   // Switch the active model for the rest of the session, optionally persisting
