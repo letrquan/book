@@ -2,7 +2,6 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import type {
   Message,
   NestedToolInvocation,
-  ToolCall,
   ToolResult,
   PermissionResult,
   PermissionMode,
@@ -25,7 +24,6 @@ import type {
   TurnCheckpointRecordData,
   UserQuestionResponse,
 } from '../../types.js';
-import { runAgentLoop } from '../../agent/loop.js';
 import {
   resolveContextLimit,
   runCompact,
@@ -61,8 +59,7 @@ import { observationKey } from '../../tools/file-provenance.js';
 import { selectSession, type SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';
 import { runSessionEnd, runSessionStart } from '../../session/lifecycle.js';
-import { AgentInteractionController } from '../../session/agent-interactions.js';
-import { AgentSessionOperations } from '../../session/agent-session-operations.js';
+import { AgentSession } from '../../session/agent-session.js';
 
 const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
@@ -194,8 +191,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const [localProviderOwnership, setLocalProviderOwnership] = useState(() =>
     readLocalProviderOwnership(config.workspace),
   );
-  const [interactions] = useState(() => new AgentInteractionController());
-  const [operations] = useState(() => new AgentSessionOperations());
+  const [agentSession] = useState(() => new AgentSession());
+  const { interactions, operations } = agentSession;
   const [interactionSnapshot, setInteractionSnapshot] = useState(() => interactions.getSnapshot());
   const { pendingPermission, pendingPlanApproval, pendingUserQuestions } = interactionSnapshot;
   const [turnDurationMs, setTurnDurationMs] = useState<number>(0);
@@ -294,11 +291,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       }
       accumulatorRef.current?.stop();
       accumulatorRef.current = null;
-      operations.cancel();
-      // Deny/reject so agent-loop promises never hang after unmount.
-      interactions.cancelAll('unmount');
+      // Abort work and deny/reject prompts so no session promise survives unmount.
+      agentSession.cancel('unmount');
     };
-  }, [interactions, operations]);
+  }, [agentSession]);
 
   const clearCountdown = useCallback(() => {
     if (countdownRef.current) {
@@ -326,10 +322,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       opts: { preserveOperation?: boolean } = {},
     ) => {
       sessionGenerationRef.current++;
-      interactions.cancelAll('session-reset');
       accumulatorRef.current?.discard();
       accumulatorRef.current = null;
-      if (!opts.preserveOperation) operations.reset();
+      if (opts.preserveOperation) interactions.cancelAll('session-reset');
+      else agentSession.reset('session-reset');
       clearCountdown();
 
       sessionIdRef.current = nextId;
@@ -364,7 +360,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           : undefined,
       }));
     },
-    [clearCountdown, interactions, operations],
+    [agentSession, clearCountdown, interactions],
   );
 
   const endCurrentSession = useCallback(
@@ -501,7 +497,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
   const send = useCallback(
     async (userMessage: string, commandContext?: CommandContext) => {
-      const operation = operations.tryStart('send', true);
+      const operation = agentSession.startSend();
       if (!operation) {
         uiLog.event('send:rejected', {
           reason: operations.activeKind === 'compact' ? 'compacting' : 'already-in-flight',
@@ -750,28 +746,36 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // `history` (pre-user state) is passed as context; the loop pushes its
         // own copy of the user message for API context. We ignore the loop's
         // returned history — the hook's state is authoritative and updated live.
-        const updatedHistory = await runAgentLoop(
-          liveConfig,
+        const updatedHistory = await agentSession.run({
+          config: liveConfig,
           registry,
-          contextMessage,
+          prompt: contextMessage,
           history,
-          {
-            onText: (text) => {
-              if (stillCurrent()) activeAccumulator?.addText(text);
-            },
-            onToolCall: (call: ToolCall) => {
-              if (stillCurrent()) activeAccumulator?.addToolCall(call);
-            },
-            onToolResult: (result: ToolResult) => {
-              if (stillCurrent()) activeAccumulator?.addToolResult(result);
+          mode,
+          sessionId: activeSessionId,
+          signal: operation.signal,
+          isCurrent: stillCurrent,
+          callbacks: {
+            onEvent: (event) => {
+              if (!stillCurrent()) return;
+              switch (event.type) {
+                case 'text':
+                  activeAccumulator?.addText(event.content);
+                  break;
+                case 'tool_use':
+                  activeAccumulator?.addToolCall(event.toolCall);
+                  break;
+                case 'tool_result':
+                  activeAccumulator?.addToolResult(event.toolResult);
+                  break;
+                case 'error':
+                  log.warn('agent error', { error: event.error });
+                  setError(event.error);
+                  break;
+              }
             },
             onTodos: (todos) => {
               if (stillCurrent()) setAgentTodos(todos as Todo[]);
-            },
-            onError: (err) => {
-              if (!stillCurrent()) return;
-              log.warn('agent error', { error: err });
-              setError(err);
             },
             onTurnStart: (turn) => {
               if (!stillCurrent()) return;
@@ -805,10 +809,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               setIsThinking(false);
               clearCountdown();
             },
-            onPermissionRequired: (toolCall: ToolCall): Promise<PermissionResult> => {
-              if (!stillCurrent()) return Promise.resolve('deny');
-              return interactions.requestPermission(toolCall);
-            },
             onUsage: (u: Usage) => {
               if (!stillCurrent()) return;
               hostUsageRef.current = u;
@@ -817,16 +817,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             },
             onModeChange: (newMode: PermissionMode) => {
               if (stillCurrent()) setMode(newMode);
-            },
-            onPlanApprovalRequired: (plan: string): Promise<PlanApprovalResult> => {
-              if (!stillCurrent()) return Promise.resolve('reject');
-              return interactions.requestPlanApproval(plan);
-            },
-            onUserQuestionRequired: (request): Promise<UserQuestionResponse> => {
-              if (!stillCurrent()) {
-                return Promise.resolve({ action: 'cancel', message: 'Session changed.' });
-              }
-              return interactions.requestUserQuestion(request);
             },
             onCompact: async (history, usage) => {
               if (!stillCurrent()) {
@@ -919,11 +909,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             onPersistPermissionRule: (rule: string) => {
               persistPermissionRule(rule);
             },
-            onAgentEvent: () => {},
           },
-          mode,
-          {
-            signal: operation.signal,
+          options: {
             nestedToolObserver: {
               onToolCall: (invocation: NestedToolInvocation) => {
                 if (stillCurrent()) activeAccumulator?.addNestedToolCall(invocation);
@@ -943,7 +930,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             commands: commandContext ? [commandContext.command] : undefined,
             parentSessionId: activeSessionId,
           },
-        );
+        });
         if (stillCurrent()) {
           // Flush the UI accumulator, but keep its authoritative display state:
           // nested tool traces are display-only and are not present in the loop's
@@ -981,7 +968,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       timelineStore,
       commitCompactResult,
       session.snapshotStore,
-      interactions,
+      agentSession,
       operations,
     ],
   );
@@ -1016,18 +1003,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const cancel = useCallback(() => {
     const activeKind = operations.activeKind;
     const hadAccumulator = accumulatorRef.current !== null;
-    const cancelled = operations.cancel();
+    const cancelled = agentSession.cancel('cancel');
     uiLog.event('cancel', {
       activeKind,
-      aborted: cancelled.aborted,
+      aborted: cancelled.operation.aborted,
       hadAccumulator,
       inFlight: activeKind === 'send',
     });
-    interactions.cancelAll('cancel');
     // The active lease stays held until its finally block finishes unwinding.
     clearCountdown();
     setRetryPhase('none');
-  }, [clearCountdown, interactions, operations]);
+  }, [agentSession, clearCountdown, operations]);
 
   // Manually compact the conversation (summarize older turns).
   const compact = useCallback(
@@ -1247,8 +1233,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     // can resurrect content into a cleared conversation.
     accumulatorRef.current?.stop();
     accumulatorRef.current = null;
-    operations.cancel();
-    interactions.cancelAll('clear');
+    agentSession.cancel('clear');
     messagesRef.current = [];
     contextHistoryRef.current = [];
     setMessages([]);
@@ -1267,7 +1252,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     clearCountdown();
     setRetryPhase('none');
     setRetryCountdownMs(0);
-  }, [clearCountdown, interactions, operations]);
+  }, [agentSession, clearCountdown, operations]);
 
   const cycleMode = useCallback(() => {
     const modes: PermissionMode[] = [
