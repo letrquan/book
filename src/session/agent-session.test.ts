@@ -185,6 +185,73 @@ describe('AgentSession', () => {
     });
   });
 
+  it('does not let a stale overlapping run replace the current snapshot', async () => {
+    let finishFirstRun!: () => void;
+    const firstRunBlocked = new Promise<void>((resolve) => {
+      finishFirstRun = resolve;
+    });
+    const firstMessages: Message[] = [
+      {
+        id: 'assistant-first',
+        role: 'assistant',
+        content: 'first result',
+        includeInContext: true,
+        timestamp: 1,
+      },
+    ];
+    const secondMessages: Message[] = [
+      {
+        id: 'assistant-second',
+        role: 'assistant',
+        content: 'second result',
+        includeInContext: true,
+        timestamp: 2,
+      },
+    ];
+    const session = new AgentSession({
+      runLoop: async (_config, _registry, prompt, _history, callbacks) => {
+        callbacks.onText(`${prompt} started`);
+        if (prompt === 'first') {
+          await firstRunBlocked;
+          callbacks.onText(' too late');
+          return firstMessages;
+        }
+        return secondMessages;
+      },
+    });
+
+    const firstRun = session.run({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      prompt: 'first',
+      history: [],
+      sessionId: 'session-first',
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+    await expect(
+      session.run({
+        config: defaultConfig(),
+        registry: {} as ToolRegistry,
+        prompt: 'second',
+        history: [],
+        sessionId: 'session-second',
+        callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+      }),
+    ).resolves.toEqual(secondMessages);
+    const currentSnapshot = session.getSnapshot();
+
+    finishFirstRun();
+    await expect(firstRun).resolves.toEqual(firstMessages);
+
+    expect(currentSnapshot).toMatchObject({
+      status: 'completed',
+      sessionId: 'session-second',
+      assistantText: 'second started',
+      messages: secondMessages,
+    });
+    expect(session.getSnapshot()).toBe(currentSnapshot);
+  });
+
   it('does not enqueue interactions for a stale host run', async () => {
     const decisions: unknown[] = [];
     const session = new AgentSession({

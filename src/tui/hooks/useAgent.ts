@@ -297,6 +297,20 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     }
   }, []);
 
+  useEffect(
+    () =>
+      agentSession.subscribe((snapshot) => {
+        if (snapshot.status !== 'completed' && snapshot.status !== 'failed') return;
+        if (snapshot.sessionId !== sessionIdRef.current) return;
+        setIsThinking(false);
+        clearCountdown();
+        setRetryPhase('none');
+        setRetryCountdownMs(0);
+        if (snapshot.status === 'failed' && snapshot.error) setError(snapshot.error);
+      }),
+    [agentSession, clearCountdown],
+  );
+
   const finalizeStreamingMessages = useCallback(() => {
     setMessages((prev) => {
       const next = removeTrailingEmptyAssistantPlaceholder(prev);
@@ -688,7 +702,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
                   break;
                 case 'error':
                   log.warn('agent error', { error: event.error });
-                  setError(event.error);
                   break;
               }
             },
@@ -722,10 +735,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               log.info('agent done', { durationMs: Date.now() - turnStartRef.current });
               uiLog.event('send:done', { durationMs: Date.now() - turnStartRef.current });
               setTurnDurationMs(Date.now() - turnStartRef.current);
-              // UI may stop showing the spinner early; the single-flight lock
-              // stays held until finally so a concurrent send cannot start yet.
-              setIsThinking(false);
-              clearCountdown();
             },
             onUsage: (u: Usage) => {
               if (!stillCurrent()) return;
@@ -857,8 +866,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           activeAccumulator?.stop();
           contextHistoryRef.current = updatedHistory;
         }
-      } catch (e) {
-        if (stillCurrent()) setError(e instanceof Error ? e.message : String(e));
+      } catch {
+        // AgentSession publishes the terminal failure through its snapshot.
       } finally {
         if (stillCurrent()) {
           activeAccumulator?.stop();
@@ -867,12 +876,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           // Drop a trailing totally-empty assistant placeholder (e.g. cancelled
           // before any tokens/tools). Never strip partial or tool-bearing turns.
           finalizeStreamingMessages();
-          setIsThinking(false);
           streamingIdRef.current = null;
           setStreamingMessageId(null);
-          clearCountdown();
-          setRetryPhase('none');
-          setRetryCountdownMs(0);
         }
         agentSession.finishSend(operation);
         uiLog.event('send:finally', { durationMs: Date.now() - turnStartRef.current });

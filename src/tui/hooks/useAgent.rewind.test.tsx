@@ -8,6 +8,7 @@ import { defaultConfig } from '../../test/fixtures.js';
 import { SessionStore } from '../../session/store.js';
 
 const callOrder = vi.hoisted(() => [] as string[]);
+const agentLoopState = vi.hoisted(() => ({ nextError: null as Error | null }));
 
 vi.mock('../../agent/compact.js', () => ({
   resolveContextLimit: () => 100,
@@ -34,14 +35,10 @@ vi.mock('../../input/input-expansion.js', () => ({
 
 vi.mock('../../agent/loop.js', () => ({
   runAgentLoop: vi.fn(
-    async (
-      _config: unknown,
-      _registry: unknown,
-      _message: string,
-      history: unknown[],
-      callbacks: { onDone: () => void },
-    ) => {
-      callbacks.onDone();
+    async (_config: unknown, _registry: unknown, _message: string, history: unknown[]) => {
+      const error = agentLoopState.nextError;
+      agentLoopState.nextError = null;
+      if (error) throw error;
       return history;
     },
   ),
@@ -146,6 +143,7 @@ afterEach(() => {
   cleanup();
   latest = undefined;
   callOrder.length = 0;
+  agentLoopState.nextError = null;
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -196,6 +194,22 @@ describe('useAgent rewind integration', () => {
 
     finishCapture();
     await sendPending;
+    await tick();
+
+    expect(latest!.isThinking).toBe(false);
+  });
+
+  it('projects terminal session failures into the host UI', async () => {
+    const { config, timeline, sessionId } = fixture();
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    agentLoopState.nextError = new Error('provider failed');
+    await latest!.send('hello');
+    await tick();
+
+    expect(latest!.isThinking).toBe(false);
+    expect(latest!.error).toBe('provider failed');
   });
 
   it('captures after pre-turn compaction and before @/! expansion', async () => {

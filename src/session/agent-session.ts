@@ -101,6 +101,7 @@ export class AgentSession {
   private readonly runLoop: AgentLoopRunner;
   private snapshot = createAgentSessionSnapshot();
   private readonly listeners = new Set<AgentSessionListener>();
+  private runGeneration = 0;
 
   constructor(dependencies: AgentSessionDependencies = {}) {
     this.runLoop = dependencies.runLoop ?? runAgentLoop;
@@ -133,6 +134,7 @@ export class AgentSession {
   reset(via: string): void {
     this.interactions.cancelAll(via);
     this.operations.reset();
+    this.runGeneration++;
     this.replaceSnapshot(createAgentSessionSnapshot());
   }
 
@@ -216,10 +218,14 @@ export class AgentSession {
 
   async run(request: AgentSessionRunRequest): Promise<Message[]> {
     const { callbacks } = request;
+    const runGeneration = ++this.runGeneration;
     let usage: Usage | null = null;
     let emittedError: string | undefined;
     this.replaceSnapshot(createAgentSessionSnapshot());
-    const emit = (event: AgentEvent) => this.emit(event, callbacks.onEvent);
+    const emit = (event: AgentEvent) => {
+      if (runGeneration === this.runGeneration) this.emit(event, callbacks.onEvent);
+      else callbacks.onEvent(event);
+    };
     emit({ type: 'system', model: request.config.model, cwd: request.config.workspace });
     emit({ type: 'session', sessionId: request.sessionId });
 

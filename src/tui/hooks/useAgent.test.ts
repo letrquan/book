@@ -133,8 +133,8 @@ describe('useAgent retry state machine', () => {
 
 describe('useAgent error/isThinking state transitions', () => {
   it('after error, isThinking should be false (input bar enabled)', () => {
-    // The hook sets isThinking=false in its finally block.
-    // This is verified by the state machine: send starts thinking, error/cancel stops it.
+    // Terminal AgentSession snapshots stop thinking after an error or cancellation.
+    // This verifies the projected state transition independently from React rendering.
     // We test the conceptual flow here.
     let isThinking = false;
     let error: string | null = null;
@@ -146,9 +146,9 @@ describe('useAgent error/isThinking state transitions', () => {
     expect(isThinking).toBe(true);
     expect(error).toBeNull();
 
-    // Simulate: onError callback fires.
+    // Simulate: a failed terminal snapshot arrives.
     error = 'API Error: 500 server error';
-    isThinking = false; // finally block runs
+    isThinking = false;
 
     expect(isThinking).toBe(false);
     expect(error).toMatch(/API Error/);
