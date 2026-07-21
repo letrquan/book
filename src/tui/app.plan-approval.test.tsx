@@ -187,6 +187,29 @@ describe('App session commands', () => {
     expect(agentState.send).toHaveBeenCalledWith('/newline value');
   });
 
+  it('/providers opens provider management and documents removal in help', async () => {
+    const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    await submit(view, '/providers');
+    expect(stripAnsi(view.lastFrame())).toContain('Models & BYOK providers');
+
+    view.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    await submit(view, '/help');
+    const output = view.frames.map(stripAnsi).join('\n');
+    expect(output).toContain('/providers');
+    expect(output).toContain('Alt+D removes selected local BYOK');
+  });
+
   it('opens /rewind only without arguments and lists it in help', async () => {
     const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
     useAgentMock.mockReturnValue(agentState);
@@ -470,7 +493,7 @@ describe('App plan approval keyboard ownership', () => {
     view.stdin.write('\x1bp');
 
     const output = stripAnsi(view.lastFrame());
-    expect(output).not.toContain('Switch model');
+    expect(output).not.toContain('Models & BYOK providers');
     expect(agentState.resolvePlanApproval).not.toHaveBeenCalled();
   });
 

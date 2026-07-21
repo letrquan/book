@@ -41,6 +41,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   },
   { name: 'theme', description: 'Switch color theme', argumentHint: '[dark|light|auto|name]' },
   { name: 'model', description: 'Switch models and manage BYOK providers' },
+  { name: 'providers', description: 'Add or remove workspace BYOK providers' },
   {
     name: 'effort',
     description: 'Set thinking effort',

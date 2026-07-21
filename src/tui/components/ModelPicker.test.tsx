@@ -69,9 +69,11 @@ afterEach(cleanup);
 describe('ModelPicker', () => {
   it('renders custom models and the add-BYOK action', () => {
     const { view } = renderPicker();
-    expect(view.lastFrame()).toContain('Custom  gateway');
+    expect(view.lastFrame()).toContain('Models & BYOK providers');
+    expect(view.lastFrame()).toContain('Custom  gateway  [local BYOK]');
     expect(view.lastFrame()).toContain('Add BYOK provider');
-    expect(view.lastFrame()).toContain('Alt+A add BYOK');
+    expect(view.lastFrame()).toContain('Alt+A add');
+    expect(view.lastFrame()).toContain('Alt+D remove BYOK');
     expect(view.lastFrame()?.split('\n').length).toBeLessThanOrEqual(8);
   });
 
@@ -91,7 +93,7 @@ describe('ModelPicker', () => {
     await write(view, 'gateway');
 
     expect(view.lastFrame()).toContain('Filter: gateway');
-    expect(view.lastFrame()).toContain('Custom  gateway');
+    expect(view.lastFrame()).toContain('Custom  gateway  [local BYOK]');
     expect(view.lastFrame()).not.toContain('Built In');
 
     await write(view, '\r');
@@ -174,8 +176,8 @@ describe('ModelPicker', () => {
     await write(view, key);
 
     expect(onRemoveProvider).not.toHaveBeenCalled();
-    expect(view.lastFrame()).toContain('Switch model');
-    expect(view.lastFrame()).toContain('Custom  gateway');
+    expect(view.lastFrame()).toContain('Models & BYOK providers');
+    expect(view.lastFrame()).toContain('Custom  gateway  [local BYOK]');
   });
 
   it.each(['\r', 'y'])('confirms removal exactly once with %j', async (key) => {
@@ -229,14 +231,12 @@ describe('ModelPicker', () => {
     expect(frame).toContain('❯ Custom  gateway');
   });
 
-  it('shows wide and compact removal shortcuts only for removable rows', async () => {
+  it('shows wide and compact removal shortcuts before selecting a provider row', () => {
     const wide = renderPicker();
-    await write(wide.view, '\x1b[B');
-    expect(wide.view.lastFrame()).toContain('Alt+D remove provider');
+    expect(wide.view.lastFrame()).toContain('Alt+D remove BYOK');
     cleanup();
 
     const compact = renderPicker({ compact: true });
-    await write(compact.view, '\x1b[B');
-    expect(compact.view.lastFrame()).toContain('Alt+D remove');
+    expect(compact.view.lastFrame()).toContain('Alt+D remove BYOK');
   });
 });

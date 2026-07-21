@@ -345,15 +345,12 @@ export function ModelPicker({
     ...filteredOptions.map((option) => ({ type: 'model' as const, option })),
     { type: 'add' as const },
   ].slice(windowStart, windowStart + maxVisibleModels);
-  const selectedOption = selected === addIndex ? undefined : filteredOptions[selected];
-  const selectedProviderRemovable = Boolean(
-    selectedOption?.providerId && removableProviderIds.has(selectedOption.providerId),
-  );
+  const hasRemovableProviders = removableProviderIds.size > 0;
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
       <Text bold color={theme.brand}>
-        Switch model
+        Models &amp; BYOK providers
       </Text>
       <Text color={theme.brand}>Filter: {filter || '(type to filter)'}</Text>
       <Box flexDirection="column">
@@ -383,6 +380,9 @@ export function ModelPicker({
             >
               {isSelected ? '❯' : ' '} {option.label}
               {option.providerId ? `  ${option.providerId}` : ''}
+              {option.providerId && removableProviderIds.has(option.providerId)
+                ? '  [local BYOK]'
+                : ''}
               {isCurrent ? '  (current)' : ''}
             </Text>
           );
@@ -391,11 +391,11 @@ export function ModelPicker({
       <Box flexDirection="column">
         <Text color={theme.subtle} dimColor>
           {compact || !density.showOptionalHelp
-            ? selectedProviderRemovable
-              ? '↑↓ select · Enter save · Alt+D remove · Esc cancel'
+            ? hasRemovableProviders
+              ? '↑↓ select · Enter save · Alt+D remove BYOK · Esc cancel'
               : '↑↓ select · Enter save · Alt+S session · Esc cancel'
-            : selectedProviderRemovable
-              ? 'Type filter · ↑↓ select · Enter save · Alt+A add BYOK · Alt+D remove provider · Alt+S session · Esc cancel'
+            : hasRemovableProviders
+              ? 'Type · ↑↓ select · Enter save · Alt+A add · Alt+D remove BYOK · Esc'
               : 'Type filter · ↑↓ select · Enter save · Alt+A add BYOK · Alt+S session · Esc cancel'}
         </Text>
         {refreshing && <Text color={theme.brand}>Refreshing {refreshing} models…</Text>}

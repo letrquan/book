@@ -628,16 +628,18 @@ export function App({ config, session, redrawViewport }: AppProps) {
           const result = applyThemePreference(commandArg);
           addLocalMessage(result.ok ? themeAppliedMessage(result.theme) : `✕ ${result.error}`);
         }
-      } else if (value.startsWith('/model')) {
-        const arg = value.slice('/model'.length).trim();
-        if (arg) {
-          const result = setModel(arg);
+      } else if (commandName === 'model') {
+        if (commandArg) {
+          const result = setModel(commandArg);
           addLocalMessage(
-            result.ok ? `Switched to ${arg} (saved as default).` : `✕ ${result.error}`,
+            result.ok ? `Switched to ${commandArg} (saved as default).` : `✕ ${result.error}`,
           );
         } else {
           setShowModelPicker(true);
         }
+      } else if (commandName === 'providers') {
+        if (commandArg) addLocalMessage('Usage: /providers');
+        else setShowModelPicker(true);
       } else if (commandName === 'effort') {
         if (!commandArg) {
           const unavailable = getEffortUnavailableError(liveConfig);
@@ -1159,6 +1161,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
                     <HelpRow
                       label="/model [name]"
                       description="Switch models and manage BYOK providers"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/providers"
+                      description="Add providers; Alt+D removes selected local BYOK"
                       theme={theme}
                     />
                     <HelpRow
