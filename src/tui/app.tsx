@@ -1,7 +1,5 @@
 import { Box, Text, useInput, useStdout, useApp } from 'ink';
 import { useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
-import { writeFileSync } from 'fs';
-import { join } from 'path';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { StatusLine } from './components/StatusLine.js';
@@ -39,16 +37,14 @@ import type { SessionBootstrap } from '../session/resolve.js';
 import { DensityContext, resolveTuiDensity } from './density.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
 import { parseSlashInput } from '../commands/resolve.js';
+import {
+  createBuiltinCommandRegistry,
+  type BuiltinCommandContext,
+  type BuiltinCommandEffect,
+} from '../commands/builtins.js';
 import { discoverSkills } from '../skills.js';
 import { runGit } from '../tools/git.js';
 import { costReport, PRICING, usageReport } from '../pricing.js';
-import { buildInitPrompt } from '../commands/init-prompt.js';
-import {
-  buildReviewPrompt,
-  buildSecurityReviewPrompt,
-  REVIEW_TOOLS,
-  SECURITY_REVIEW_TOOLS,
-} from '../commands/builtins-prompts.js';
 import { buildMemoryInboxReport, buildMemoryReport, getMemoryIndex } from '../memory-display.js';
 import {
   approveMemoryCandidate,
@@ -60,7 +56,6 @@ import {
 import { buildContextBreakdown, buildContextReport } from '../context-report.js';
 import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
-import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
 import { persistSettingLocal } from './persist.js';
 import { buildModelOptions } from './model-options.js';
 import { redactSettingValue, redactSettingsForDisplay } from '../settings-redaction.js';
@@ -273,6 +268,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
 
   // Discover slash commands on startup.
   const commands = useMemo(() => discoverCommands(config.workspace), [config.workspace]);
+  const builtinCommandRegistry = useMemo(() => createBuiltinCommandRegistry(), []);
   const skills = useMemo(() => discoverSkills(config.workspace), [config.workspace]);
   const modelOptions = useMemo(() => buildModelOptions(liveConfig.settings), [liveConfig.settings]);
   const effortLevels = useMemo(() => getAvailableEffortLevels(liveConfig), [liveConfig.modelInfo]);
@@ -523,9 +519,45 @@ export function App({ config, session, redrawViewport }: AppProps) {
       } else {
         uiLog.event('submit:text', { len: value.length, disabled: isThinking });
       }
-      // Slash commands: built-in first, then custom.
-      const commandName = parsedSlash?.name ?? '';
-      const commandArg = parsedSlash?.rawArguments ?? '';
+      // Built-ins resolve through the shared exact-name registry before custom commands.
+      let commandName = parsedSlash?.name ?? '';
+      let commandArg = parsedSlash?.rawArguments ?? '';
+      if (parsedSlash) {
+        const commandContext: BuiltinCommandContext = {
+          workspace: config.workspace,
+          sessionId,
+          model: liveConfig.model,
+          provider: liveConfig.provider,
+          currentTurn,
+          messages,
+          lastError: error,
+        };
+        let effect: BuiltinCommandEffect | undefined;
+        try {
+          effect = builtinCommandRegistry.execute(
+            parsedSlash.name,
+            parsedSlash.rawArguments,
+            commandContext,
+          );
+        } catch (commandError) {
+          addLocalMessage(
+            `✕ ${commandError instanceof Error ? commandError.message : String(commandError)}`,
+          );
+          return;
+        }
+        if (effect?.type === 'send-prompt') {
+          send(effect.prompt, effect.context);
+          return;
+        }
+        if (effect?.type === 'local-message') {
+          addLocalMessage(effect.content);
+          return;
+        }
+        if (effect?.type === 'legacy') {
+          commandName = effect.commandName;
+          commandArg = effect.rawArguments;
+        }
+      }
       if (commandName === 'clear' || commandName === 'new' || commandName === 'reset') {
         clearTasks();
         setShowHelp(false);
@@ -839,82 +871,9 @@ export function App({ config, session, redrawViewport }: AppProps) {
         });
       } else if (commandName === 'skills') {
         setShowSkills((s) => !s);
-      } else if (commandName === 'init') {
-        const promptBody = buildInitPrompt(config.workspace);
-        const initCmd = {
-          name: 'init',
-          description: 'Initialize CLAUDE.md',
-          body: promptBody,
-          source: 'project' as const,
-        };
-        const ctx: CommandContext = {
-          command: initCmd,
-          resolvedBody: promptBody,
-          allowedTools: ['Read', 'Glob', 'Grep', 'Write'],
-        };
-        send(promptBody, ctx);
       } else if (commandName === 'reload-skills') {
         // Force re-discovery of commands and skills on next render.
         addLocalMessage('Commands and skills have been reloaded.');
-      } else if (commandName === 'export') {
-        const filename = commandArg || 'conversation.txt';
-        try {
-          const text = messages.map((m) => `${m.role}:\n${m.content}`).join('\n\n---\n\n');
-          writeFileSync(join(config.workspace, filename), text, 'utf-8');
-          addLocalMessage(
-            `Exported ${messages.length} messages to ${join(config.workspace, filename)}`,
-          );
-        } catch (e) {
-          addLocalMessage(`✕ export failed: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      } else if (commandName === 'review') {
-        const arg = commandArg;
-        const promptBody = buildReviewPrompt(arg);
-        const ctx: CommandContext = {
-          command: {
-            name: 'review',
-            description: 'Review current diff',
-            body: promptBody,
-            source: 'project',
-          },
-          resolvedBody: promptBody,
-          allowedTools: [...REVIEW_TOOLS],
-        };
-        send(promptBody, ctx);
-      } else if (commandName === 'security-review') {
-        const arg = commandArg;
-        const promptBody = buildSecurityReviewPrompt(arg);
-        const ctx: CommandContext = {
-          command: {
-            name: 'security-review',
-            description: 'Security audit of current diff',
-            body: promptBody,
-            source: 'project',
-          },
-          resolvedBody: promptBody,
-          allowedTools: [...SECURITY_REVIEW_TOOLS],
-        };
-        send(promptBody, ctx);
-      } else if (commandName === 'release-notes') {
-        addLocalMessage(buildReleaseNotesReport(config.workspace));
-      } else if (commandName === 'feedback') {
-        const note = commandArg;
-        const lastUser = [...messages].reverse().find((m) => m.role === 'user');
-        const r = writeFeedbackReport({
-          workspace: config.workspace,
-          model: liveConfig.model,
-          provider: liveConfig.provider,
-          turn: currentTurn,
-          messageCount: messages.length,
-          lastUserPromptPreview: lastUser?.content,
-          lastError: error,
-          note: note || undefined,
-        });
-        addLocalMessage(
-          r.ok
-            ? `Saved feedback report to ${r.path}. Review it before sharing.`
-            : `✕ feedback failed: ${r.error}`,
-        );
       } else if (value.startsWith('/')) {
         // Custom slash command: /name [args]
         const cmd = commands.find((c) => c.name === commandName);
@@ -969,6 +928,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       isThinking,
       redrawViewport,
       applyThemePreference,
+      builtinCommandRegistry,
     ],
   );
 

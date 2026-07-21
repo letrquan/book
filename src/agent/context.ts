@@ -60,7 +60,8 @@ function builtinSlashCommands(): SlashCommand[] {
 
 function mergeCommands(commands: SlashCommand[]): SlashCommand[] {
   const byName = new Map<string, SlashCommand>();
-  for (const cmd of [...builtinSlashCommands(), ...commands]) byName.set(cmd.name, cmd);
+  // Built-ins own their names; custom command files cannot shadow execution metadata.
+  for (const cmd of [...commands, ...builtinSlashCommands()]) byName.set(cmd.name, cmd);
   return Array.from(byName.values());
 }
 

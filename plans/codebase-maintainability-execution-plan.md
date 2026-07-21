@@ -27,15 +27,16 @@ not complete and should continue as separate changes rather than being collapsed
 | PR 8: MCP connection safety | Substantially complete | Config validation, concurrent connection attempts, initialization/request timeouts, abort support, bounded stderr, version metadata, and exactly-once pending settlement are implemented. Contract tests now cover the full process-mode matrix, mixed healthy/unhealthy servers, timeout/abort/disconnect pending cleanup, bounded stderr, and child exit after disconnect. Explicit active-handle/listener accounting across failed initialization remains. |
 | PR 9: SDK runtime event bridge | Substantially complete | Headless exposes a direct event callback; SDK events stream through an async queue before completion, cancellation is propagated, and real/ephemeral session identity is covered. Broader cancellation tests across every hook/tool/compaction path remain. |
 | PRs 10-11: CI and quality ratchet | Partial | Settings precedence CLI assertions are now exact and offline. CI matrix, secret-free required checks, the remaining vacuous process assertions, coverage floors, dependency audits, type-aware lint rules, and zero-warning enforcement remain. |
-| PR 12: Exact command contract | Partial | Slash input is parsed once into an exact name and raw arguments; prefix collisions are prevented. Typed effects, availability, collision policy, and registry-wide handler contracts remain. |
-| PRs 13-14: Handler migration | Not started | Slash-command business logic still resides in `src/tui/app.tsx`. |
+| PR 12: Exact command contract | Complete | Built-ins use one typed registry for exact names, explicit aliases, availability checks, collision policy, metadata, and execution. Registry-wide tests enforce unique names, aliases, metadata, and handlers. |
+| PR 13: Prompt/report handler migration | Complete | `/review`, `/security-review`, `/release-notes`, `/feedback`, `/export`, and `/init` execute outside `src/tui/app.tsx` and return typed prompt or local-message effects. |
+| PR 14: Settings/session/UI handler migration | Not started | Settings, session, and modal commands still use the legacy dispatch adapter in `src/tui/app.tsx`. |
 | Milestone 5: Shared `AgentSession` | Not started | TUI, headless, and SDK still have separate lifecycle ownership. |
 | PR 15: Break boundary violations | Complete | Input expansion and file-mention discovery live in `src/input/`. Registry mechanics are split from default tool composition, manager/capability code depends on the core, and all architecture exceptions are removed. |
 | PRs 16-20 | Not started | Session runtime ownership, provider port/transport, type-hub split, non-blocking interaction work, and package/release checks remain. |
 
 ### Current Verification
 
-- `npm run check` passes: formatting, lint, typecheck, architecture checks, 1,038 unit tests,
+- `npm run check` passes: formatting, lint, typecheck, architecture checks, 1,046 unit tests,
   and 20 contract tests.
 - `npm run build` passes.
 - Lint still reports 33 warnings; warning elimination and `--max-warnings 0` remain PR 11 work.
@@ -50,7 +51,7 @@ not complete and should continue as separate changes rather than being collapsed
 
 ### Next Recommended Sequence
 
-1. Finish the typed command registry and migrate handlers out of `src/tui/app.tsx`.
+1. Migrate settings, session, and modal command handlers out of `src/tui/app.tsx`.
 2. Extract the shared `AgentSession` service in the milestone order described below.
 
 ## Executive Direction
