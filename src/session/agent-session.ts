@@ -1,6 +1,7 @@
 import type { AgentRuntimeEvent } from '../agents/types.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { runCompact, runPostCompactHooks, type RunCompactOptions } from '../agent/compact.js';
+import { runSessionEnd, runSessionStart } from './lifecycle.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type {
   AgentConfig,
@@ -115,6 +116,8 @@ export interface AgentSessionDependencies {
   runLoop?: AgentLoopRunner;
   compactRunner?: typeof runCompact;
   postCompactHooksRunner?: typeof runPostCompactHooks;
+  sessionStartRunner?: typeof runSessionStart;
+  sessionEndRunner?: typeof runSessionEnd;
 }
 
 type AgentSessionListener = (snapshot: AgentSessionSnapshot) => void;
@@ -126,14 +129,20 @@ export class AgentSession {
   private readonly runLoop: AgentLoopRunner;
   private readonly compactRunner: typeof runCompact;
   private readonly postCompactHooksRunner: typeof runPostCompactHooks;
+  private readonly sessionStartRunner: typeof runSessionStart;
+  private readonly sessionEndRunner: typeof runSessionEnd;
   private snapshot = createAgentSessionSnapshot();
   private readonly listeners = new Set<AgentSessionListener>();
   private runGeneration = 0;
+  private lifecycleStartedSessionId?: string;
+  private lifecycleEndedSessionId?: string;
 
   constructor(dependencies: AgentSessionDependencies = {}) {
     this.runLoop = dependencies.runLoop ?? runAgentLoop;
     this.compactRunner = dependencies.compactRunner ?? runCompact;
     this.postCompactHooksRunner = dependencies.postCompactHooksRunner ?? runPostCompactHooks;
+    this.sessionStartRunner = dependencies.sessionStartRunner ?? runSessionStart;
+    this.sessionEndRunner = dependencies.sessionEndRunner ?? runSessionEnd;
   }
 
   startSend(): AgentSessionOperation | null {
@@ -165,6 +174,26 @@ export class AgentSession {
     this.operations.reset();
     this.runGeneration++;
     this.replaceSnapshot(createAgentSessionSnapshot());
+  }
+
+  async startLifecycle(
+    config: AgentConfig,
+    sessionId: string,
+    source: Parameters<typeof runSessionStart>[2],
+  ): Promise<void> {
+    if (this.lifecycleStartedSessionId === sessionId) return;
+    this.lifecycleStartedSessionId = sessionId;
+    await this.sessionStartRunner(config, sessionId, source);
+  }
+
+  async endLifecycle(
+    config: AgentConfig,
+    sessionId: string,
+    reason: Parameters<typeof runSessionEnd>[2],
+  ): Promise<void> {
+    if (this.lifecycleEndedSessionId === sessionId) return;
+    this.lifecycleEndedSessionId = sessionId;
+    await this.sessionEndRunner(config, sessionId, reason);
   }
 
   async prepareSend(

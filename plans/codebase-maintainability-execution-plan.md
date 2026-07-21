@@ -30,13 +30,13 @@ not complete and should continue as separate changes rather than being collapsed
 | PR 12: Exact command contract | Complete | Built-ins use one typed registry for exact names, explicit aliases, availability checks, collision policy, metadata, and execution. Registry-wide tests enforce unique names, aliases, metadata, and handlers. |
 | PR 13: Prompt/report handler migration | Complete | `/review`, `/security-review`, `/release-notes`, `/feedback`, `/export`, and `/init` execute outside `src/tui/app.tsx` and return typed prompt or local-message effects. |
 | PR 14: Settings/session/UI handler migration | Complete | Session lifecycle, modal, panel, config, memory, model, effort, and theme commands execute through typed handlers/effects. Config help uses schema-backed key metadata, and shared effort policy no longer lives under `tui/`. |
-| Milestone 5: Shared `AgentSession` | Partial | Added a stable public `AgentEvent` contract plus immutable session snapshot/reducer types. `AgentSession` now owns send preflight checkpointing, input expansion/provenance, user timeline persistence, agent-loop invocation, stale-run-safe authoritative snapshots, shared event emission, interaction settlement, cancellation/reset composition, send lease completion, and compaction execution/boundary persistence/post-hooks. `useAgent` projects terminal and compaction state into React but still owns optimistic transcript projection, UI cleanup, compaction trigger policy, and host lifecycle transitions. |
+| Milestone 5: Shared `AgentSession` | Partial | Added a stable public `AgentEvent` contract plus immutable session snapshot/reducer types. `AgentSession` now owns send preflight checkpointing, input expansion/provenance, user timeline persistence, agent-loop invocation, stale-run-safe authoritative snapshots, shared event emission, interaction settlement, cancellation/reset composition, send lease completion, compaction execution/boundary persistence/post-hooks, and exactly-once session start/end hooks. `useAgent` projects terminal and compaction state into React but still owns optimistic transcript projection, UI cleanup, compaction trigger policy, and session store selection/create/resume transitions. |
 | PR 15: Break boundary violations | Complete | Input expansion and file-mention discovery live in `src/input/`. Registry mechanics are split from default tool composition, manager/capability code depends on the core, and all architecture exceptions are removed. |
 | PRs 16-20 | Not started | Session runtime ownership, provider port/transport, type-hub split, non-blocking interaction work, and package/release checks remain. |
 
 ### Current Verification
 
-- `npm run check` passes: formatting, lint, typecheck, architecture checks, 1,064 unit tests,
+- `npm run check` passes: formatting, lint, typecheck, architecture checks, 1,065 unit tests,
   and 20 contract tests.
 - `npm run build` passes.
 - Lint still reports 33 warnings; warning elimination and `--max-warnings 0` remain PR 11 work.
@@ -51,7 +51,7 @@ not complete and should continue as separate changes rather than being collapsed
 
 ### Next Recommended Sequence
 
-1. Move session create/resume/clear/end lifecycle behind the session contract.
+1. Move session selection/create/resume/clear state transitions behind the session contract.
 2. Switch headless and SDK execution to the shared `AgentSession` lifecycle.
 
 ## Executive Direction

@@ -224,6 +224,40 @@ describe('AgentSession', () => {
     expect(postCompactCalled).toBe(false);
   });
 
+  it('settles session lifecycle hooks exactly once per session transition', async () => {
+    const starts: Array<[string, string]> = [];
+    const ends: Array<[string, string]> = [];
+    const session = new AgentSession({
+      sessionStartRunner: async (_config, sessionId, source) => {
+        starts.push([sessionId, source]);
+      },
+      sessionEndRunner: async (_config, sessionId, reason) => {
+        ends.push([sessionId, reason]);
+      },
+    });
+    const config = defaultConfig();
+
+    await Promise.all([
+      session.startLifecycle(config, 'session-1', 'startup'),
+      session.startLifecycle(config, 'session-1', 'startup'),
+    ]);
+    await Promise.all([
+      session.endLifecycle(config, 'session-1', 'clear'),
+      session.endLifecycle(config, 'session-1', 'exit'),
+    ]);
+    await session.startLifecycle(config, 'session-2', 'clear');
+    await session.endLifecycle(config, 'session-2', 'completion');
+
+    expect(starts).toEqual([
+      ['session-1', 'startup'],
+      ['session-2', 'clear'],
+    ]);
+    expect(ends).toEqual([
+      ['session-1', 'clear'],
+      ['session-2', 'completion'],
+    ]);
+  });
+
   it('owns interaction settlement and emits one reducible run sequence', async () => {
     const toolCall = { id: 'call-1', name: 'Read', arguments: { file_path: 'README.md' } };
     const toolResult = toolSuccess('contents', { toolCallId: toolCall.id });

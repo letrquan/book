@@ -45,7 +45,6 @@ import { updateEffortLevel } from '../../commands/effort.js';
 import { observationKey } from '../../tools/file-provenance.js';
 import { selectSession, type SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';
-import { runSessionEnd, runSessionStart } from '../../session/lifecycle.js';
 import { AgentSession } from '../../session/agent-session.js';
 
 const log = createDebugLoggerWithCounter('tui:agent');
@@ -200,8 +199,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
   const sessionGenerationRef = useRef(0);
-  const lifecycleStartedRef = useRef(false);
-  const lifecycleEndedRef = useRef(false);
   const liveConfigRef = useRef(liveConfig);
   const localProviderOwnershipRef = useRef(localProviderOwnership);
   const turnStartRef = useRef(Date.now());
@@ -248,26 +245,26 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   );
 
   useEffect(() => {
-    if (lifecycleStartedRef.current) return;
-    lifecycleStartedRef.current = true;
-    runSessionStart(liveConfigRef.current, session.sessionId, session.source).catch((err) => {
-      log.warn('SessionStart hook failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    });
-  }, [session.sessionId, session.source]);
-
-  useEffect(() => {
-    return () => {
-      if (lifecycleEndedRef.current) return;
-      lifecycleEndedRef.current = true;
-      runSessionEnd(liveConfigRef.current, sessionIdRef.current, 'exit').catch((err) => {
-        log.warn('SessionEnd hook failed', {
+    agentSession
+      .startLifecycle(liveConfigRef.current, session.sessionId, session.source)
+      .catch((err) => {
+        log.warn('SessionStart hook failed', {
           error: err instanceof Error ? err.message : String(err),
         });
       });
+  }, [agentSession, session.sessionId, session.source]);
+
+  useEffect(() => {
+    return () => {
+      agentSession
+        .endLifecycle(liveConfigRef.current, sessionIdRef.current, 'exit')
+        .catch((err) => {
+          log.warn('SessionEnd hook failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
     };
-  }, []);
+  }, [agentSession]);
 
   // Clean up timers / pending prompts / in-flight work on unmount.
   useEffect(() => {
@@ -365,12 +362,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   );
 
   const endCurrentSession = useCallback(
-    async (reason: 'clear' | 'resume' | 'exit' | 'completion') => {
-      if (lifecycleEndedRef.current) return;
-      lifecycleEndedRef.current = true;
-      await runSessionEnd(liveConfigRef.current, sessionIdRef.current, reason);
-    },
-    [],
+    (reason: 'clear' | 'resume' | 'exit' | 'completion') =>
+      agentSession.endLifecycle(liveConfigRef.current, sessionIdRef.current, reason),
+    [agentSession],
   );
 
   const startNewConversation = useCallback(
@@ -390,12 +384,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       if (session.store && timelineStore && timelineStore !== session.store) {
         timelineStore.create({ id: nextId, cwd: liveConfig.workspace });
       }
-      lifecycleEndedRef.current = false;
       resetConversationState(nextId, undefined, []);
-      await runSessionStart(liveConfigRef.current, nextId, 'clear');
+      await agentSession.startLifecycle(liveConfigRef.current, nextId, 'clear');
     },
     [
       endCurrentSession,
+      agentSession,
       liveConfig.workspace,
       operations,
       resetConversationState,
@@ -417,7 +411,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       operations.cancel();
       await endCurrentSession('resume');
       session.store.touch(selected.id);
-      lifecycleEndedRef.current = false;
       resetConversationState(
         selected.id,
         loaded.meta.name,
@@ -426,9 +419,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         loaded.compactBoundaries,
         loaded.rewindTargets,
       );
-      await runSessionStart(liveConfigRef.current, selected.id, 'resume');
+      await agentSession.startLifecycle(liveConfigRef.current, selected.id, 'resume');
     },
-    [endCurrentSession, liveConfig.workspace, operations, resetConversationState, session.store],
+    [
+      agentSession,
+      endCurrentSession,
+      liveConfig.workspace,
+      operations,
+      resetConversationState,
+      session.store,
+    ],
   );
 
   const listSessions = useCallback((): SessionMeta[] => {
