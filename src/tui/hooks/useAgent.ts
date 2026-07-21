@@ -21,7 +21,6 @@ import type {
   RewindRecordData,
   RewindSnapshotStoreInterface,
   RewindTarget,
-  TurnCheckpointRecordData,
   UserQuestionResponse,
 } from '../../types.js';
 import {
@@ -50,11 +49,6 @@ import { resolveSettings } from '../../settings-loader.js';
 import { providerConfigFromDraft, type ProviderSaveRequest } from '../model-options.js';
 import type { ProviderRemovalResult } from '../components/ModelPicker.js';
 import { updateEffortLevel } from '../../commands/effort.js';
-import {
-  collectAtMentionObservations,
-  expandAtMentions,
-  expandShellCommands,
-} from '../../input/input-expansion.js';
 import { observationKey } from '../../tools/file-provenance.js';
 import { selectSession, type SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';
@@ -610,106 +604,30 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         });
       };
 
-      // Snapshot capture walks the workspace. Keep it off the render-critical
-      // path so the first cold capture cannot freeze the input or spinner.
-      const checkpointId = crypto.randomUUID();
-      const checkpointTimestamp = Date.now();
-
       let contextMessage: string;
       try {
-        const capture = session.snapshotStore
-          ? session.snapshotStore.captureAsync
-            ? await session.snapshotStore.captureAsync()
-            : await new Promise<ReturnType<RewindSnapshotStoreInterface['capture']>>(
-                (resolve, reject) => {
-                  setTimeout(() => {
-                    try {
-                      resolve(session.snapshotStore!.capture());
-                    } catch (error) {
-                      reject(error);
-                    }
-                  }, 0);
-                },
-              )
-          : {
-              ok: false as const,
-              reason: 'Filesystem checkpoint storage is unavailable.',
-            };
-        if (!stillCurrent()) return;
-        if (operation.signal?.aborted) {
-          setIsThinking(false);
-          streamingIdRef.current = null;
-          setStreamingMessageId(null);
-          removeOptimisticMessages();
+        const prepared = await agentSession.prepareSend({
+          config: liveConfig,
+          sessionId: activeSessionId,
+          displayMessage: userMessage,
+          userMessage: userMsg,
+          snapshotStore: session.snapshotStore,
+          timelineStore,
+          signal: operation.signal,
+          isCurrent: stillCurrent,
+        });
+        if (prepared.status === 'cancelled') {
+          if (stillCurrent()) {
+            setIsThinking(false);
+            streamingIdRef.current = null;
+            setStreamingMessageId(null);
+            removeOptimisticMessages();
+          }
           operation.release();
           return;
         }
-
-        const checkpoint = capture.ok
-          ? {
-              snapshotId: capture.manifest.id,
-              gitHead: capture.manifest.gitHead,
-              entryCount: capture.manifest.entries.length,
-              logicalBytes: capture.manifest.logicalBytes,
-            }
-          : {
-              gitHead: capture.gitHead,
-              codeUnavailableReason: capture.reason,
-            };
-        const rewindTarget: RewindTarget = {
-          id: checkpointId,
-          userEventId: userMsg.id,
-          prompt: userMessage,
-          timestamp: checkpointTimestamp,
-          ...checkpoint,
-          codeAvailable: capture.ok,
-        };
-
-        timelineStore?.append(activeSessionId, {
-          type: 'turn_checkpoint',
-          eventId: checkpointId,
-          timestamp: checkpointTimestamp,
-          data: {
-            version: 1,
-            checkpointId,
-            userEventId: userMsg.id,
-            prompt: userMessage,
-            checkpoint,
-          } satisfies TurnCheckpointRecordData,
-        } satisfies SessionRecord);
-
-        // Expansion happens after the checkpoint so !cmd and @file side effects
-        // belong to the turn being rewound.
-        contextMessage = expandShellCommands(
-          expandAtMentions(userMessage, liveConfig.workspace),
-          liveConfig.workspace,
-        );
-        userMsg.contextContent = contextMessage === userMessage ? undefined : contextMessage;
-        userMsg.fileObservations = collectAtMentionObservations(
-          userMessage,
-          liveConfig.workspace,
-          userMsg.id,
-        );
-        liveConfig.fileObservationLedger ??= new Map();
-        for (const observation of userMsg.fileObservations) {
-          liveConfig.fileObservationLedger.set(
-            observationKey(observation.workspaceId, observation.path),
-            observation,
-          );
-        }
-        timelineStore?.append(activeSessionId, {
-          type: 'user',
-          eventId: userMsg.id,
-          timestamp: userMsg.timestamp,
-          data: {
-            id: userMsg.id,
-            content: userMessage,
-            contextContent: userMsg.contextContent,
-            kind: 'conversation',
-            fileObservations: userMsg.fileObservations,
-          },
-        } satisfies SessionRecord);
-        setRewindTargets((current) => [rewindTarget, ...current]);
+        contextMessage = prepared.contextMessage;
+        setRewindTargets((current) => [prepared.rewindTarget, ...current]);
       } catch (preflightError) {
         if (stillCurrent()) {
           setError(

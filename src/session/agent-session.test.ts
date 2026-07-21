@@ -6,9 +6,77 @@ import { defaultConfig } from '../test/fixtures.js';
 import { toolSuccess } from '../tools/result.js';
 import type { AgentEvent, AgentSessionSnapshot } from './agent-events.js';
 import { createAgentSessionSnapshot, reduceAgentSessionSnapshot } from './agent-events.js';
-import type { Message } from '../types.js';
+import type { Message, RewindSnapshotCaptureResult, SessionRecord } from '../types.js';
 
 describe('AgentSession', () => {
+  it('prepares checkpoint and user timeline records outside the host layer', async () => {
+    const session = new AgentSession();
+    const records: SessionRecord[] = [];
+    const config = defaultConfig();
+    const userMessage: Message = {
+      id: 'user-1',
+      role: 'user',
+      content: 'hello',
+      includeInContext: true,
+      timestamp: 10,
+    };
+
+    const result = await session.prepareSend({
+      config,
+      sessionId: 'session-1',
+      displayMessage: 'hello',
+      userMessage,
+      timelineStore: { append: (_id, record) => records.push(record) },
+    });
+
+    expect(result).toMatchObject({
+      status: 'prepared',
+      contextMessage: 'hello',
+      rewindTarget: {
+        userEventId: 'user-1',
+        prompt: 'hello',
+        codeAvailable: false,
+        codeUnavailableReason: 'Filesystem checkpoint storage is unavailable.',
+      },
+    });
+    expect(records.map((record) => record.type)).toEqual(['turn_checkpoint', 'user']);
+    expect(userMessage.contextContent).toBeUndefined();
+    expect(userMessage.fileObservations).toEqual([]);
+  });
+
+  it('does not persist preflight records after cancellation', async () => {
+    let finishCapture!: (result: RewindSnapshotCaptureResult) => void;
+    const capture = new Promise<RewindSnapshotCaptureResult>((resolve) => {
+      finishCapture = resolve;
+    });
+    const controller = new AbortController();
+    const records: SessionRecord[] = [];
+    const pending = new AgentSession().prepareSend({
+      config: defaultConfig(),
+      sessionId: 'session-1',
+      displayMessage: 'hello',
+      userMessage: {
+        id: 'user-1',
+        role: 'user',
+        content: 'hello',
+        includeInContext: true,
+        timestamp: 10,
+      },
+      snapshotStore: {
+        capture: () => ({ ok: false, reason: 'unused' }),
+        captureAsync: () => capture,
+      },
+      timelineStore: { append: (_id, record) => records.push(record) },
+      signal: controller.signal,
+    });
+
+    controller.abort();
+    finishCapture({ ok: false, reason: 'capture unavailable' });
+
+    await expect(pending).resolves.toEqual({ status: 'cancelled' });
+    expect(records).toEqual([]);
+  });
+
   it('owns interaction settlement and emits one reducible run sequence', async () => {
     const toolCall = { id: 'call-1', name: 'Read', arguments: { file_path: 'README.md' } };
     const toolResult = toolSuccess('contents', { toolCallId: toolCall.id });

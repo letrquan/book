@@ -6,11 +6,23 @@ import type {
   AgentLoopCallbacks,
   Message,
   PermissionMode,
+  RewindSnapshotCaptureResult,
+  RewindSnapshotStoreInterface,
+  RewindTarget,
+  SessionRecord,
+  SessionStoreInterface,
   ToolCall,
   ToolResult,
+  TurnCheckpointRecordData,
   Usage,
   UserQuestionResponse,
 } from '../types.js';
+import {
+  collectAtMentionObservations,
+  expandAtMentions,
+  expandShellCommands,
+} from '../input/input-expansion.js';
+import { observationKey } from '../tools/file-provenance.js';
 import { AgentInteractionController } from './agent-interactions.js';
 import {
   AgentSessionOperations,
@@ -51,6 +63,21 @@ export interface AgentSessionRunRequest {
   isCurrent?: () => boolean;
 }
 
+export interface AgentSessionPrepareSendRequest {
+  config: AgentConfig;
+  sessionId: string;
+  displayMessage: string;
+  userMessage: Message;
+  snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
+  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+  signal?: AbortSignal;
+  isCurrent?: () => boolean;
+}
+
+export type AgentSessionPrepareSendResult =
+  | { status: 'prepared'; contextMessage: string; rewindTarget: RewindTarget }
+  | { status: 'cancelled' };
+
 export interface AgentSessionCancelResult {
   operation: CancelOperationResult;
   interactions: ReturnType<AgentInteractionController['cancelAll']>;
@@ -84,6 +111,84 @@ export class AgentSession {
   reset(via: string): void {
     this.interactions.cancelAll(via);
     this.operations.reset();
+  }
+
+  async prepareSend(
+    request: AgentSessionPrepareSendRequest,
+  ): Promise<AgentSessionPrepareSendResult> {
+    const checkpointId = crypto.randomUUID();
+    const checkpointTimestamp = Date.now();
+    const capture = await captureSnapshot(request.snapshotStore);
+    if (request.isCurrent?.() === false || request.signal?.aborted) {
+      return { status: 'cancelled' };
+    }
+
+    const checkpoint = capture.ok
+      ? {
+          snapshotId: capture.manifest.id,
+          gitHead: capture.manifest.gitHead,
+          entryCount: capture.manifest.entries.length,
+          logicalBytes: capture.manifest.logicalBytes,
+        }
+      : {
+          gitHead: capture.gitHead,
+          codeUnavailableReason: capture.reason,
+        };
+    const rewindTarget: RewindTarget = {
+      id: checkpointId,
+      userEventId: request.userMessage.id,
+      prompt: request.displayMessage,
+      timestamp: checkpointTimestamp,
+      ...checkpoint,
+      codeAvailable: capture.ok,
+    };
+
+    request.timelineStore?.append(request.sessionId, {
+      type: 'turn_checkpoint',
+      eventId: checkpointId,
+      timestamp: checkpointTimestamp,
+      data: {
+        version: 1,
+        checkpointId,
+        userEventId: request.userMessage.id,
+        prompt: request.displayMessage,
+        checkpoint,
+      } satisfies TurnCheckpointRecordData,
+    } satisfies SessionRecord);
+
+    // Expansion follows checkpoint capture so its side effects belong to this rewind boundary.
+    const contextMessage = expandShellCommands(
+      expandAtMentions(request.displayMessage, request.config.workspace),
+      request.config.workspace,
+    );
+    request.userMessage.contextContent =
+      contextMessage === request.displayMessage ? undefined : contextMessage;
+    request.userMessage.fileObservations = collectAtMentionObservations(
+      request.displayMessage,
+      request.config.workspace,
+      request.userMessage.id,
+    );
+    request.config.fileObservationLedger ??= new Map();
+    for (const observation of request.userMessage.fileObservations) {
+      request.config.fileObservationLedger.set(
+        observationKey(observation.workspaceId, observation.path),
+        observation,
+      );
+    }
+    request.timelineStore?.append(request.sessionId, {
+      type: 'user',
+      eventId: request.userMessage.id,
+      timestamp: request.userMessage.timestamp,
+      data: {
+        id: request.userMessage.id,
+        content: request.displayMessage,
+        contextContent: request.userMessage.contextContent,
+        kind: 'conversation',
+        fileObservations: request.userMessage.fileObservations,
+      },
+    } satisfies SessionRecord);
+
+    return { status: 'prepared', contextMessage, rewindTarget };
   }
 
   async run(request: AgentSessionRunRequest): Promise<Message[]> {
@@ -153,4 +258,22 @@ export class AgentSession {
       emit({ type: 'done' });
     }
   }
+}
+
+async function captureSnapshot(
+  snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>,
+): Promise<RewindSnapshotCaptureResult> {
+  if (!snapshotStore) {
+    return { ok: false, reason: 'Filesystem checkpoint storage is unavailable.' };
+  }
+  if (snapshotStore.captureAsync) return snapshotStore.captureAsync();
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      try {
+        resolve(snapshotStore.capture());
+      } catch (error) {
+        reject(error);
+      }
+    }, 0);
+  });
 }
