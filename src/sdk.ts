@@ -3,8 +3,6 @@
 import { homedir } from 'os';
 import { join } from 'path';
 import type {
-  Message,
-  Usage,
   ToolCall,
   ToolResult,
   UserQuestionHandler,
@@ -18,28 +16,14 @@ import { loadConfig, type LoadConfigOptions } from './config.js';
 import { runHeadless } from './headless.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { connectMcpServers, disconnectMcpServers } from './mcp.js';
-import type { AgentRecord, AgentRuntimeEvent, EvidenceItem } from './agents/types.js';
+import type { AgentRecord, EvidenceItem } from './agents/types.js';
 import { AgentManager, getOrCreateAgentManager } from './agents/manager.js';
 import type { StreamJsonEvent } from './stream-json.js';
 import { SessionStore } from './session/store.js';
 import { resolveSessionBootstrap } from './session/resolve.js';
+import type { AgentEvent } from './session/agent-events.js';
 
-export type QueryEvent =
-  | { type: 'system'; model: string; cwd: string }
-  | { type: 'session'; sessionId: string }
-  | { type: 'text'; content: string }
-  | { type: 'tool_use'; toolCall: ToolCall }
-  | { type: 'tool_result'; toolResult: ToolResult }
-  | { type: 'user_question'; request: UserQuestionRequest; status: 'pending' | 'unavailable' }
-  | { type: 'user_question_result'; requestId: string; response: UserQuestionResponse }
-  | { type: 'agent_start'; agent: AgentRecord }
-  | { type: 'agent_update'; agent: AgentRecord }
-  | { type: 'agent_result'; agent: AgentRecord }
-  | Extract<AgentRuntimeEvent, { type: 'agent_question' | 'agent_apply' }>
-  | { type: 'evidence_update'; evidence: EvidenceItem }
-  | { type: 'error'; error: string }
-  | { type: 'result'; messages: Message[]; usage: Usage | null; sessionId: string }
-  | { type: 'done' };
+export type QueryEvent = AgentEvent;
 
 export interface QueryOptions {
   workspace?: string;
@@ -116,7 +100,7 @@ function mapRuntimeEvent(event: StreamJsonEvent, sessionId: string): QueryEvent 
       return event.agent ? { type: event.type, agent: event.agent as AgentRecord } : undefined;
     case 'agent_question':
     case 'agent_apply':
-      return event as Extract<AgentRuntimeEvent, { type: 'agent_question' | 'agent_apply' }>;
+      return event as Extract<AgentEvent, { type: 'agent_question' | 'agent_apply' }>;
     case 'evidence_update':
       return event.evidence
         ? { type: 'evidence_update', evidence: event.evidence as EvidenceItem }
@@ -235,6 +219,12 @@ export function createAgentManager(config: AgentConfig): AgentManager {
   return getOrCreateAgentManager(config, createDefaultRegistry({ agents: true }).getDefinitions());
 }
 export { runPairedEvaluation, evaluateSuccess } from './agents/evaluation.js';
+export { createAgentSessionSnapshot, reduceAgentSessionSnapshot } from './session/agent-events.js';
+export type {
+  AgentEvent,
+  AgentSessionSnapshot,
+  AgentSessionStatus,
+} from './session/agent-events.js';
 export type {
   EvaluationFixture,
   EvaluationMetric,
