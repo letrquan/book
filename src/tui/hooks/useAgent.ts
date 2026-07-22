@@ -206,6 +206,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
   const sessionGenerationRef = useRef(0);
+  const modeRef = useRef(mode);
   const liveConfigRef = useRef(liveConfig);
   const localProviderOwnershipRef = useRef(localProviderOwnership);
   const turnStartRef = useRef(Date.now());
@@ -226,6 +227,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   useEffect(() => {
     liveConfigRef.current = liveConfig;
   }, [liveConfig]);
+
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   useEffect(() => {
     localProviderOwnershipRef.current = localProviderOwnership;
@@ -481,13 +486,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
       log.info('send message', {
         len: userMessage.length,
-        mode,
+        mode: modeRef.current,
         hasCommandContext: !!commandContext,
         sessionId: activeSessionId,
       });
       uiLog.event('send:start', {
         len: userMessage.length,
-        mode,
+        mode: modeRef.current,
         hasCommandContext: !!commandContext,
       });
 
@@ -608,7 +613,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         displayMessage: userMessage,
         createUserMessage,
         history: () => contextHistoryRef.current,
-        mode,
+        mode: modeRef.current,
         sessionId: activeSessionId,
         snapshotStore: session.snapshotStore,
         timelineStore,
@@ -673,8 +678,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             lastHostCompactAttemptRef.current = null;
             setUsage(u);
           },
+          getMode: () => modeRef.current,
           onModeChange: (newMode: PermissionMode) => {
-            if (stillCurrent()) setMode(newMode);
+            if (!stillCurrent()) return;
+            modeRef.current = newMode;
+            setMode(newMode);
           },
           onCompact: async (history, usage) => {
             if (!stillCurrent()) {
@@ -814,7 +822,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     },
     [
       liveConfig,
-      mode,
       clearCountdown,
       finalizeStreamingMessages,
       timelineStore,
@@ -1123,10 +1130,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       'dontAsk',
       'bypassPermissions',
     ];
-    setMode((prev) => {
-      const idx = modes.indexOf(prev);
-      return modes[(idx + 1) % modes.length];
-    });
+    const idx = modes.indexOf(modeRef.current);
+    const nextMode = modes[(idx + 1) % modes.length];
+    modeRef.current = nextMode;
+    setMode(nextMode);
   }, []);
 
   // Surface a local-only assistant message WITHOUT an agent round-trip.
