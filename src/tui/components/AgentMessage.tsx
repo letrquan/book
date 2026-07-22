@@ -16,7 +16,11 @@ import {
   indexNestedToolInvocations,
   type NestedToolChildren,
 } from '../tool-traces.js';
-import { shouldExpandTool, type TranscriptMode } from '../tool-presentation.js';
+import {
+  shouldDefaultExpandTool,
+  shouldExpandTool,
+  type TranscriptMode,
+} from '../tool-presentation.js';
 
 const renderLog = createRenderDebugLogger('tui:agentmsg');
 
@@ -93,6 +97,7 @@ function NestedToolRows({
             mode: transcriptMode,
             toolId: invocation.traceId,
             automaticToolId: automaticToolCallId,
+            defaultExpanded: shouldDefaultExpandTool(invocation.call.name, invocation.result),
             expansionOverrides: toolExpansionOverrides,
             screenReader,
           })}
@@ -412,6 +417,7 @@ export function AgentMessageInner({
                 mode: transcriptMode,
                 toolId: tc.id,
                 automaticToolId: selectedAutomaticToolId,
+                defaultExpanded: shouldDefaultExpandTool(tc.name, result),
                 expansionOverrides: toolExpansionOverrides,
                 screenReader,
               })}

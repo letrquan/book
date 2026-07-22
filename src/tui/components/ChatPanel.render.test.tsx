@@ -1049,7 +1049,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(frame(view.lastFrame)).toContain('Called slack(post)');
   });
 
-  it('collapses completed file mutation output while keeping diffstats visible', () => {
+  it('expands completed file mutation output by default and preserves manual collapse', () => {
     const diffOutput = ['@@ -1 +1 @@', '-old line', '+new line'].join('\n');
     const messages: Message[] = [
       {
@@ -1076,11 +1076,24 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('Done.');
     expect(output).toContain('Update(src/a.ts)');
     expect(output).toContain('· +1 -1');
-    expect(output).not.toContain('- old line');
-    expect(output).not.toContain('+ new line');
+    expect(output).toContain('- old line');
+    expect(output).toContain('+ new line');
+
+    view.rerender(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          toolExpansionOverrides={new Map([['call-1', false]])}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+    expect(frame(view.lastFrame)).not.toContain('- old line');
+    expect(frame(view.lastFrame)).not.toContain('+ new line');
   });
 
-  it('collapses an older file preview when a newer non-file tool turn completes', () => {
+  it('keeps an older file preview expanded when a newer non-file tool turn completes', () => {
     const messages: Message[] = [
       {
         ...msg('a1', 'assistant', 'Editing the first file.'),
@@ -1107,8 +1120,8 @@ describe('ChatPanel Ink rendering', () => {
     const output = frame(view.lastFrame);
 
     expect(output).toContain('Update(src/a.ts)');
-    expect(output).not.toContain('-old marker');
-    expect(output).not.toContain('+new marker');
+    expect(output).toContain('- old marker');
+    expect(output).toContain('+ new marker');
   });
 
   it('merges adjacent assistant messages where later has no content (tool-call-only turn)', () => {

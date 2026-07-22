@@ -3,6 +3,7 @@ import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import { formatByteSize } from './components/tool-output.js';
+import { isRenderableFileMutationDiff } from './file-mutation-display.js';
 
 export type TranscriptMode = 'compact' | 'detailed';
 export type TranscriptShortcutAction = 'enter-detailed' | 'exit-detailed' | 'expand-output';
@@ -397,8 +398,14 @@ export interface ToolExpansionPolicyInput {
   mode: TranscriptMode;
   toolId: string;
   automaticToolId?: string | null;
+  defaultExpanded?: boolean;
   expansionOverrides: ReadonlyMap<string, boolean>;
   screenReader?: boolean;
+}
+
+/** Successful file mutations stay visible until the user explicitly collapses them. */
+export function shouldDefaultExpandTool(name: string, result?: ToolResult): boolean {
+  return isRenderableFileMutationDiff(name, result);
 }
 
 /** Centralized expansion policy shared by top-level and nested tool rows. */
@@ -406,11 +413,12 @@ export function shouldExpandTool({
   mode,
   toolId,
   automaticToolId,
+  defaultExpanded = false,
   expansionOverrides,
   screenReader = false,
 }: ToolExpansionPolicyInput): boolean {
   if (screenReader) return true;
   const override = expansionOverrides.get(toolId);
   if (override !== undefined) return override;
-  return mode === 'detailed' || automaticToolId === toolId;
+  return mode === 'detailed' || automaticToolId === toolId || defaultExpanded;
 }

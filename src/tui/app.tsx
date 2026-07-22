@@ -49,7 +49,11 @@ import { buildModelOptions } from './model-options.js';
 import { createUiDebugLogger } from '../debug-log.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { getOrCreateAgentManager } from '../agents/manager.js';
-import { selectExpandedToolId, selectLatestToolId } from './tool-traces.js';
+import {
+  selectExpandedToolId,
+  selectLatestToolId,
+  shouldDefaultExpandToolId,
+} from './tool-traces.js';
 import {
   getTranscriptShortcutAction,
   shouldExpandTool,
@@ -434,7 +438,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     }
   }, [isThinking, messages.length, currentTurn]);
 
-  // Compact mode automatically opens only the latest unfinished action.
+  // Active tools open automatically; completed file mutations use their own default policy.
   const expandedToolId = useMemo(() => selectExpandedToolId(messages), [messages]);
   const showAgentPlan = shouldShowAgentPlan(agentTodos, showTasks);
 
@@ -455,6 +459,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
           mode: transcriptMode,
           toolId,
           automaticToolId: expandedToolId,
+          defaultExpanded: shouldDefaultExpandToolId(messages, toolId),
           expansionOverrides: current,
           screenReader,
         });
@@ -462,7 +467,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
         return next;
       });
     },
-    [expandedToolId, screenReader, transcriptMode],
+    [expandedToolId, messages, screenReader, transcriptMode],
   );
 
   const applyThemePreference = useCallback(
