@@ -223,10 +223,16 @@ export async function runAgentLoop(
   /** Avoid re-attempting compact for the same pressure snapshot after skip/fail. */
   let lastCompactAttemptKey: string | null = null;
   let effectiveMode = initialMode;
+  const syncHostMode = (): void => {
+    const hostMode = callbacks.getMode?.();
+    if (hostMode !== undefined) toolContext.currentMode = hostMode;
+    effectiveMode = toolContext.currentMode ?? effectiveMode;
+  };
 
   // maxTurns undefined/0 = unlimited; otherwise stop once the cap is hit.
   while (config.maxTurns == null || config.maxTurns <= 0 || turn < config.maxTurns) {
     if (signal?.aborted) break;
+    syncHostMode();
 
     // Mid-loop auto-compact safety net (host also runs pre-turn compact).
     const contextLimit = resolveContextLimit(config);
@@ -447,7 +453,7 @@ export async function runAgentLoop(
         continue;
       }
 
-      effectiveMode = toolContext.currentMode ?? effectiveMode;
+      syncHostMode();
       const planReadOnly = effectiveMode === 'plan' && READ_ONLY_PLAN_TOOLS.has(canonName);
       const isUserQuestion = canonName === 'AskUserQuestion';
       const managedLifecycle = canonName.startsWith('Agent') && canonName !== 'AgentApply';

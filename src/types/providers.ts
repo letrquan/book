@@ -46,6 +46,8 @@ export interface AgentLoopCallbacks {
   onTurnStart: (turn: number) => void;
   onDone: () => void;
   onPermissionRequired: (toolCall: ToolCall) => Promise<'allow' | 'deny' | 'always'>;
+  /** Reads the host's current permission mode while an agent loop is active. */
+  getMode?: () => PermissionMode;
   /** @deprecated use onUsage for real token counts from the API. */
   onTokenCount?: (count: number) => void;
   onUsage?: (usage: Usage) => void;

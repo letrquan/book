@@ -48,6 +48,7 @@ export interface AgentSessionRunCallbacks {
   onTurnStart: AgentLoopCallbacks['onTurnStart'];
   onDone?: AgentLoopCallbacks['onDone'];
   onUsage?: AgentLoopCallbacks['onUsage'];
+  getMode?: AgentLoopCallbacks['getMode'];
   onModeChange?: AgentLoopCallbacks['onModeChange'];
   onCompact?: AgentLoopCallbacks['onCompact'];
   onAssistantMessageComplete?: AgentLoopCallbacks['onAssistantMessageComplete'];
@@ -645,6 +646,7 @@ export class AgentSession {
             usage = nextUsage;
             callbacks.onUsage?.(nextUsage);
           },
+          getMode: callbacks.getMode,
           onModeChange: callbacks.onModeChange,
           onCompact: callbacks.onCompact,
           onAssistantMessageComplete: (message) => {

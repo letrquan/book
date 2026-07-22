@@ -163,6 +163,66 @@ describe('runAgentLoop streaming render callbacks', () => {
     expect(firstAssistant?.toolCalls?.[0].id).toBe('tool_1');
     expect(firstAssistant?.toolResults?.[0].toolCallId).toBe('tool_1');
   });
+
+  it('uses a permission mode changed by the host during the active loop', async () => {
+    let providerTurn = 0;
+    let activeMode: 'default' | 'auto' = 'default';
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerTurn++;
+        if (providerTurn === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'switch_1', name: 'SwitchMode', arguments: {} },
+          };
+        } else if (providerTurn === 2) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'echo_1', name: 'Echo', arguments: { value: 'ok' } },
+          };
+        } else {
+          yield { type: 'text', content: 'done' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    registry.register({
+      name: 'SwitchMode',
+      description: 'Switch the host permission mode',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        activeMode = 'auto';
+        return toolSuccess('switched');
+      },
+    });
+    registry.register({
+      name: 'Echo',
+      description: 'Echo value',
+      parameters: { type: 'object', properties: { value: { type: 'string' } } },
+      execute: async (args) => toolSuccess(String(args.value)),
+    });
+    let permissionPrompts = 0;
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 4 }),
+      registry,
+      'change mode',
+      [],
+      noopCallbacks({
+        getMode: () => activeMode,
+        onPermissionRequired: async () => {
+          permissionPrompts++;
+          return 'allow';
+        },
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(permissionPrompts).toBe(1);
+  });
 });
 
 describe('runAgentLoop abort', () => {
