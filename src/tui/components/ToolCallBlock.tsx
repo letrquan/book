@@ -7,7 +7,10 @@ import { MarkdownBlock } from './MarkdownBlock.js';
 import { highlightCode } from './syntax-highlight.js';
 import { prepareToolOutputDisplay } from './tool-output.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
-import { isRenderableFileMutationDiff } from '../file-mutation-display.js';
+import {
+  getFileMutationDisplaySummary,
+  isRenderableFileMutationDiff,
+} from '../file-mutation-display.js';
 import {
   deriveToolPresentation,
   formatDuration,
@@ -30,6 +33,8 @@ interface ToolCallBlockProps {
   screenReader?: boolean;
   /** When true, expanded tool results show the large rendering ceiling. */
   showAllToolOutput?: boolean;
+  /** Render a file path as a child row under an aggregate mutation heading. */
+  summaryVariant?: 'default' | 'file-child';
   /** Available terminal width, including this block's outer indentation. */
   terminalWidth?: number;
 }
@@ -160,6 +165,7 @@ function ToolCallBlockInner({
   reducedMotion = false,
   screenReader = false,
   showAllToolOutput = false,
+  summaryVariant = 'default',
   terminalWidth = 80,
 }: ToolCallBlockProps) {
   const theme = useTheme();
@@ -176,8 +182,16 @@ function ToolCallBlockInner({
   const elapsed = isRunning ? formatDuration(runningElapsedMs) : undefined;
   const inlineError = result?.status !== 'blocked' ? result?.structuredError?.message : undefined;
   const elapsedSuffix = elapsed ? ` · ${elapsed}` : '';
+  const mutationSummary = useMemo(
+    () => getFileMutationDisplaySummary(name, args, result),
+    [args, name, result],
+  );
   const iconPrefixWidth = displayWidth('○ ');
   const summaryWidth = Math.max(4, blockWidth - iconPrefixWidth);
+  const groupedFileSummary = mutationSummary
+    ? `${mutationSummary.filePath} (+${mutationSummary.addedLines} -${mutationSummary.removedLines})`
+    : presentation.summary;
+  const baseSummary = summaryVariant === 'file-child' ? groupedFileSummary : presentation.summary;
   const summary = inlineError
     ? (() => {
         const errorWidth = Math.max(
@@ -185,9 +199,9 @@ function ToolCallBlockInner({
           Math.min(Math.floor(summaryWidth / 2), displayWidth(inlineError)),
         );
         const prefixWidth = Math.max(4, summaryWidth - errorWidth - 3);
-        return `${truncateDisplay(presentation.summary, prefixWidth)} · ${truncateDisplay(inlineError, errorWidth)}`;
+        return `${truncateDisplay(baseSummary, prefixWidth)} · ${truncateDisplay(inlineError, errorWidth)}`;
       })()
-    : truncateDisplay(`${presentation.summary}${elapsedSuffix}`, summaryWidth);
+    : truncateDisplay(`${baseSummary}${elapsedSuffix}`, summaryWidth);
 
   useLayoutEffect(() => {
     if (!registry || !toolId) return;
@@ -209,7 +223,9 @@ function ToolCallBlockInner({
   return (
     <Box flexDirection="column" marginLeft={2}>
       <Box ref={summaryRef} height={1}>
-        {isRunning ? (
+        {summaryVariant === 'file-child' ? (
+          <Text color={theme.subtle}>└ </Text>
+        ) : isRunning ? (
           <>
             <Spinner
               active
@@ -257,7 +273,6 @@ function ToolCallBlockInner({
         <DiffBlock
           output={result.content}
           filePath={presentation.filePath}
-          collapsed={!showAllToolOutput}
           terminalWidth={blockWidth}
         />
       ) : isExpanded && result?.content ? (

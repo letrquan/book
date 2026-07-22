@@ -1074,8 +1074,8 @@ describe('ChatPanel Ink rendering', () => {
     const output = frame(view.lastFrame);
     expect(output).toContain('I will update it.');
     expect(output).toContain('Done.');
-    expect(output).toContain('Update(src/a.ts)');
-    expect(output).toContain('· +1 -1');
+    expect(output).toContain('Edited 1 file (+1 -1)');
+    expect(output).toContain('└ src/a.ts (+1 -1)');
     expect(output).toContain('- old line');
     expect(output).toContain('+ new line');
 
@@ -1119,9 +1119,74 @@ describe('ChatPanel Ink rendering', () => {
     );
     const output = frame(view.lastFrame);
 
-    expect(output).toContain('Update(src/a.ts)');
+    expect(output).toContain('Edited 1 file (+1 -1)');
+    expect(output).toContain('└ src/a.ts (+1 -1)');
     expect(output).toContain('- old marker');
     expect(output).toContain('+ new marker');
+  });
+
+  it('shows the complete diff for a default-expanded file mutation', () => {
+    const changedRows = Array.from({ length: 100 }, (_, index) => `+new ${index + 1}`);
+    const message: Message = {
+      ...msg('a1', 'assistant', ''),
+      toolCalls: [{ id: 'edit', name: 'Edit', arguments: { filePath: 'src/a.ts' } }],
+      toolResults: [
+        successResult('edit', ['@@ -1 +1,100 @@', '-old', ...changedRows].join('\n'), {
+          kind: 'update',
+          filePath: 'src/a.ts',
+          addedLines: 100,
+          removedLines: 1,
+        }),
+      ],
+    };
+
+    const view = render(
+      withTheme(<ChatPanel messages={[message]} terminalWidth={100} reducedMotion />),
+    );
+    const output = frame(view.lastFrame);
+
+    expect(output).toContain('Edited 1 file (+100 -1)');
+    expect(output).toContain('└ src/a.ts (+100 -1)');
+    expect(output).toContain('+ new 50');
+    expect(output).toContain('+ new 100');
+    expect(output).not.toContain('rows omitted');
+    expect(output).not.toContain('Ctrl+E shows all');
+  });
+
+  it('groups adjacent mutations into a Codex-style changed-files summary', () => {
+    const message: Message = {
+      ...msg('a1', 'assistant', ''),
+      toolCalls: [
+        { id: 'first', name: 'Edit', arguments: { filePath: 'src/first.ts' } },
+        { id: 'second', name: 'Edit', arguments: { filePath: 'src/second.ts' } },
+      ],
+      toolResults: [
+        successResult('first', '@@ -1 +1,2 @@\n-old first\n+new first\n+extra first', {
+          kind: 'update',
+          filePath: 'src/first.ts',
+          addedLines: 2,
+          removedLines: 1,
+        }),
+        successResult('second', '@@ -1,2 +1 @@\n-old second\n-old extra\n+new second', {
+          kind: 'update',
+          filePath: 'src/second.ts',
+          addedLines: 1,
+          removedLines: 2,
+        }),
+      ],
+    };
+
+    const view = render(
+      withTheme(<ChatPanel messages={[message]} terminalWidth={100} reducedMotion />),
+    );
+    const output = frame(view.lastFrame);
+
+    expect(output).toContain('Edited 2 files (+3 -3)');
+    expect(output).toContain('└ src/first.ts (+2 -1)');
+    expect(output).toContain('└ src/second.ts (+1 -2)');
+    expect(output).toContain('- old first');
+    expect(output).toContain('+ new second');
+    expect(output.match(/Edited 2 files/g)).toHaveLength(1);
   });
 
   it('merges adjacent assistant messages where later has no content (tool-call-only turn)', () => {

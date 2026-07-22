@@ -17,6 +17,10 @@ import {
   type NestedToolChildren,
 } from '../tool-traces.js';
 import {
+  getFileMutationDisplaySummary,
+  type FileMutationDisplaySummary,
+} from '../file-mutation-display.js';
+import {
   shouldDefaultExpandTool,
   shouldExpandTool,
   type TranscriptMode,
@@ -321,12 +325,16 @@ export function AgentMessageInner({
   const contentParts = useMemo(() => splitThinkBlocks(displayContent), [displayContent]);
   const topLevelInvocations = useMemo(
     () =>
-      toolCalls.map((call) => ({
-        id: call.id,
-        name: call.name,
-        call,
-        result: message.toolResults?.find((result) => result.toolCallId === call.id),
-      })),
+      toolCalls.map((call) => {
+        const result = message.toolResults?.find((candidate) => candidate.toolCallId === call.id);
+        return {
+          id: call.id,
+          name: call.name,
+          call,
+          result,
+          mutation: getFileMutationDisplaySummary(call.name, call.arguments, result),
+        };
+      }),
     [message.toolResults, toolCalls],
   );
   const selectedAutomaticToolId = automaticToolCallId ?? expandedToolCallId;
@@ -405,9 +413,52 @@ export function AgentMessageInner({
         const marginTop = index === 0 ? (displayContent ? toolRowGap : 0) : toolRowGap;
         const tc = invocation.call;
         const result = invocation.result;
+        const mutation = invocation.mutation;
+        const previousMutation = topLevelInvocations[index - 1]?.mutation;
+        let mutationGroup:
+          | {
+              summaries: FileMutationDisplaySummary[];
+              fileCount: number;
+              addedLines: number;
+              removedLines: number;
+              createdOnly: boolean;
+            }
+          | undefined;
+        if (mutation && !previousMutation) {
+          const summaries: FileMutationDisplaySummary[] = [];
+          for (let groupIndex = index; groupIndex < topLevelInvocations.length; groupIndex++) {
+            const summary = topLevelInvocations[groupIndex].mutation;
+            if (!summary) break;
+            summaries.push(summary);
+          }
+          mutationGroup = {
+            summaries,
+            fileCount: new Set(summaries.map((summary) => summary.filePath)).size,
+            addedLines: summaries.reduce((total, summary) => total + summary.addedLines, 0),
+            removedLines: summaries.reduce((total, summary) => total + summary.removedLines, 0),
+            createdOnly: summaries.every((summary) => summary.kind === 'create'),
+          };
+        }
         const isPending = pendingPermission?.toolCall.id === tc.id;
         return (
-          <Box key={tc.id || `tool-${index}`} flexDirection="column" marginTop={marginTop}>
+          <Box
+            key={tc.id || `tool-${index}`}
+            flexDirection="column"
+            marginTop={mutation && previousMutation ? 0 : marginTop}
+          >
+            {mutationGroup ? (
+              <Box marginLeft={2}>
+                <Text color={theme.success}>• </Text>
+                <Text color={theme.text} bold>
+                  {mutationGroup.createdOnly ? 'Created' : 'Edited'} {mutationGroup.fileCount}{' '}
+                  {mutationGroup.fileCount === 1 ? 'file' : 'files'}
+                </Text>
+                <Text color={theme.subtle}>
+                  {' '}
+                  (+{mutationGroup.addedLines} -{mutationGroup.removedLines})
+                </Text>
+              </Box>
+            ) : null}
             <ToolCallBlock
               toolId={tc.id}
               name={tc.name}
@@ -426,6 +477,7 @@ export function AgentMessageInner({
               reducedMotion={reducedMotion}
               screenReader={screenReader}
               showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(tc.id)}
+              summaryVariant={mutation ? 'file-child' : 'default'}
               terminalWidth={terminalWidth}
             />
             {childrenByParent.has(tc.id) ? (

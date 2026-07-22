@@ -1,20 +1,17 @@
 import { Text, Box } from 'ink';
 import { Fragment, useMemo } from 'react';
 import { useTheme } from '../theme.js';
-import { displayWidth, padDisplay, truncateDisplay } from './word-wrap.js';
+import { displayWidth, hardWrapLine, padDisplay, truncateDisplay } from './word-wrap.js';
 import { highlightCode, type StyledSegment } from './syntax-highlight.js';
 
 interface DiffProps {
   output: string;
   filePath?: string;
-  /** Maximum structured rows before the 200 KB ceiling is applied. */
-  maxLines?: number;
   /** When true, render a change-focused preview across all hunks. */
   collapsed?: boolean;
   terminalWidth?: number;
 }
 
-const MAX_RENDER_BYTES = 200 * 1024;
 const COLLAPSED_ROWS = 80;
 const COLLAPSED_CONTEXT_ROWS = 2;
 const MAX_WORD_TOKENS = 200;
@@ -284,18 +281,47 @@ function expandTabs(value: string, tabSize = 4): string {
   return result;
 }
 
-function truncateSpans(spans: readonly DiffSpan[], width: number): DiffSpan[] {
+function expandSpanTabs(spans: readonly DiffSpan[], tabSize = 4): DiffSpan[] {
   const output: DiffSpan[] = [];
-  let remaining = Math.max(0, width);
+  let column = 0;
   for (const span of spans) {
-    if (remaining <= 0) break;
-    const text = expandTabs(span.text);
-    const clipped = truncateDisplay(text, remaining);
-    output.push({ ...span, text: clipped });
-    remaining -= displayWidth(clipped);
-    if (clipped !== text) break;
+    let text = '';
+    for (const character of span.text) {
+      if (character === '\t') {
+        const spaces = tabSize - (column % tabSize);
+        text += ' '.repeat(spaces);
+        column += spaces;
+      } else {
+        text += character;
+        column += displayWidth(character);
+      }
+    }
+    if (text) output.push({ ...span, text });
   }
   return output;
+}
+
+function wrapSpans(spans: readonly DiffSpan[], width: number): DiffSpan[][] {
+  const lines: DiffSpan[][] = [[]];
+  let lineWidth = 0;
+
+  for (const span of expandSpanTabs(spans)) {
+    for (const character of span.text) {
+      const characterWidth = displayWidth(character);
+      if (lines[lines.length - 1].length > 0 && lineWidth + characterWidth > width) {
+        lines.push([]);
+        lineWidth = 0;
+      }
+
+      const line = lines[lines.length - 1];
+      const previous = line[line.length - 1];
+      if (previous?.kind === span.kind) previous.text += character;
+      else line.push({ text: character, kind: span.kind });
+      lineWidth += characterWidth;
+    }
+  }
+
+  return lines;
 }
 
 function rowByteSize(row: ParsedDiffLine, index: number, total: number): number {
@@ -353,21 +379,11 @@ interface SelectedDiffRow {
 function selectRenderedRows(
   rows: readonly ParsedDiffLine[],
   collapsed: boolean,
-  maxLines: number,
 ): { rows: SelectedDiffRow[]; hiddenRows: number; hiddenBytes: number } {
   const rowBytes = rows.map((row, index) => rowByteSize(row, index, rows.length));
-  let indices: number[];
-  if (collapsed) {
-    indices = selectPreviewIndices(rows, Math.min(COLLAPSED_ROWS, Math.max(1, maxLines)));
-  } else {
-    indices = [];
-    let bytes = 0;
-    for (let index = 0; index < rows.length && indices.length < maxLines; index++) {
-      if (bytes + rowBytes[index] > MAX_RENDER_BYTES) break;
-      indices.push(index);
-      bytes += rowBytes[index];
-    }
-  }
+  const indices = collapsed
+    ? selectPreviewIndices(rows, COLLAPSED_ROWS)
+    : rows.map((_, index) => index);
   const selected = new Set(indices);
   const hiddenBytes = rowBytes.reduce(
     (total, bytes, index) => total + (selected.has(index) ? 0 : bytes),
@@ -395,26 +411,17 @@ function syntaxSegments(
   return highlightCode(content, language, theme)[0];
 }
 
-export function DiffBlock({
-  output,
-  filePath,
-  maxLines = 2000,
-  collapsed = false,
-  terminalWidth = 80,
-}: DiffProps) {
+export function DiffBlock({ output, filePath, collapsed = false, terminalWidth = 80 }: DiffProps) {
   const theme = useTheme();
   const parsed = useMemo(() => parseDiffLines(output), [output]);
-  const selected = useMemo(
-    () => selectRenderedRows(parsed, collapsed, Math.max(1, maxLines)),
-    [collapsed, maxLines, parsed],
-  );
+  const selected = useMemo(() => selectRenderedRows(parsed, collapsed), [collapsed, parsed]);
   const language = inferDiffLanguage(filePath);
   const maxOld = Math.max(1, ...parsed.map((row) => row.oldLineNumber ?? 0));
   const maxNew = Math.max(1, ...parsed.map((row) => row.newLineNumber ?? 0));
   const narrow = terminalWidth < 36;
   const oldWidth = Math.max(1, Math.min(String(maxOld).length, narrow ? 3 : 6));
   const newWidth = Math.max(1, Math.min(String(maxNew).length, narrow ? 3 : 6));
-  // marginLeft(2) + `│` + gutters + marker remain visible before content is clipped.
+  // marginLeft(2) + `│` + gutters + marker remain visible before wrapped content.
   const fixedWidth = 2 + 1 + oldWidth + 1 + newWidth + 1 + 2;
   const contentWidth = Math.max(1, Math.floor(terminalWidth) - fixedWidth);
 
@@ -428,16 +435,10 @@ export function DiffBlock({
           row.kind === 'add' ? theme.diffAdded : row.kind === 'del' ? theme.diffRemoved : undefined;
         const foregroundColor = row.kind === 'hunk' ? theme.brand : theme.text;
         const rawContent = expandTabs(row.content);
-        const clippedContent = truncateDisplay(rawContent, contentWidth);
-        const clippedSpans = row.spans ? truncateSpans(row.spans, contentWidth) : undefined;
-        const highlighted =
-          !clippedSpans && (row.kind === 'add' || row.kind === 'del' || row.kind === 'ctx')
-            ? syntaxSegments(clippedContent, language, theme)
-            : undefined;
-        const visibleWidth = clippedSpans
-          ? clippedSpans.reduce((total, span) => total + displayWidth(span.text), 0)
-          : displayWidth(clippedContent);
-        const padding = backgroundColor ? ' '.repeat(Math.max(0, contentWidth - visibleWidth)) : '';
+        const wrappedSpans = row.spans ? wrapSpans(row.spans, contentWidth) : undefined;
+        const wrappedContent = wrappedSpans
+          ? wrappedSpans.map((spans) => spans.map((span) => span.text).join(''))
+          : hardWrapLine(rawContent, contentWidth);
 
         return (
           <Fragment key={`${sourceIndex}-${row.text}`}>
@@ -452,57 +453,74 @@ export function DiffBlock({
                 </Text>
               </Box>
             ) : null}
-            <Box marginLeft={2}>
-              <Text color={theme.subtle}>│</Text>
-              <Text color={theme.subtle} dimColor>
-                {lineNumber(row.oldLineNumber, oldWidth)}{' '}
-                {lineNumber(row.newLineNumber, newWidth)}{' '}
-              </Text>
-              <Text
-                color={
-                  row.kind === 'add'
-                    ? theme.success
-                    : row.kind === 'del'
-                      ? theme.error
-                      : foregroundColor
-                }
-                backgroundColor={backgroundColor}
-              >
-                {row.marker}{' '}
-              </Text>
-              <Text color={foregroundColor} backgroundColor={backgroundColor}>
-                {clippedSpans
-                  ? clippedSpans.map((span, spanIndex) => (
-                      <Text
-                        key={spanIndex}
-                        backgroundColor={
-                          span.kind === 'addedWord'
-                            ? theme.diffAddedWord
-                            : span.kind === 'removedWord'
-                              ? theme.diffRemovedWord
-                              : backgroundColor
-                        }
-                        bold={span.kind !== 'plain'}
-                      >
-                        {span.text}
-                      </Text>
-                    ))
-                  : highlighted
-                    ? highlighted.map((segment, segmentIndex) => (
-                        <Text
-                          key={segmentIndex}
-                          color={segment.color}
-                          bold={segment.bold}
-                          italic={segment.italic}
-                          dimColor={segment.dimColor}
-                        >
-                          {segment.text}
-                        </Text>
-                      ))
-                    : clippedContent}
-                {padding}
-              </Text>
-            </Box>
+            {wrappedContent.map((content, visualIndex) => {
+              const spans = wrappedSpans?.[visualIndex];
+              const highlighted =
+                !spans && (row.kind === 'add' || row.kind === 'del' || row.kind === 'ctx')
+                  ? syntaxSegments(content, language, theme)
+                  : undefined;
+              const visibleWidth = spans
+                ? spans.reduce((total, span) => total + displayWidth(span.text), 0)
+                : displayWidth(content);
+              const padding = backgroundColor
+                ? ' '.repeat(Math.max(0, contentWidth - visibleWidth))
+                : '';
+              const continuation = visualIndex > 0;
+
+              return (
+                <Box key={visualIndex} marginLeft={2}>
+                  <Text color={theme.subtle}>│</Text>
+                  <Text color={theme.subtle} dimColor>
+                    {lineNumber(continuation ? undefined : row.oldLineNumber, oldWidth)}{' '}
+                    {lineNumber(continuation ? undefined : row.newLineNumber, newWidth)}{' '}
+                  </Text>
+                  <Text
+                    color={
+                      row.kind === 'add'
+                        ? theme.success
+                        : row.kind === 'del'
+                          ? theme.error
+                          : foregroundColor
+                    }
+                    backgroundColor={backgroundColor}
+                  >
+                    {continuation ? ' ' : row.marker}{' '}
+                  </Text>
+                  <Text color={foregroundColor} backgroundColor={backgroundColor}>
+                    {spans
+                      ? spans.map((span, spanIndex) => (
+                          <Text
+                            key={spanIndex}
+                            backgroundColor={
+                              span.kind === 'addedWord'
+                                ? theme.diffAddedWord
+                                : span.kind === 'removedWord'
+                                  ? theme.diffRemovedWord
+                                  : backgroundColor
+                            }
+                            bold={span.kind !== 'plain'}
+                          >
+                            {span.text}
+                          </Text>
+                        ))
+                      : highlighted
+                        ? highlighted.map((segment, segmentIndex) => (
+                            <Text
+                              key={segmentIndex}
+                              color={segment.color}
+                              bold={segment.bold}
+                              italic={segment.italic}
+                              dimColor={segment.dimColor}
+                            >
+                              {segment.text}
+                            </Text>
+                          ))
+                        : content}
+                    {padding}
+                  </Text>
+                </Box>
+              );
+            })}
           </Fragment>
         );
       })}
