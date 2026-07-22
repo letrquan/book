@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { expandAtMentions } from './input-expansion.js';
+import { expandAtMentions, expandShellCommands } from './input-expansion.js';
 
 let dirs: string[] = [];
 
@@ -79,5 +79,30 @@ describe('expandAtMentions', () => {
     const result = expandAtMentions('Email dev@example.com and say @ hello', ws);
 
     expect(result).toBe('Email dev@example.com and say @ hello');
+  });
+});
+
+describe('expandShellCommands', () => {
+  it('runs without blocking the event loop', async () => {
+    let timerFired = false;
+    const command = `!"${process.execPath}" -e "setTimeout(() => console.log('done'), 30)"`;
+    const pending = expandShellCommands(command, process.cwd());
+    setTimeout(() => {
+      timerFired = true;
+    }, 0);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(timerFired).toBe(true);
+    await expect(pending).resolves.toBe('done');
+  });
+
+  it('cancels owned shell expansion work', async () => {
+    const controller = new AbortController();
+    const command = `!"${process.execPath}" -e "setTimeout(() => console.log('late'), 10000)"`;
+    const pending = expandShellCommands(command, process.cwd(), controller.signal);
+
+    controller.abort();
+
+    await expect(pending).resolves.toMatch(/failed:.*abort/i);
   });
 });

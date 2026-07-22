@@ -3,7 +3,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { RewindSnapshotStoreInterface, TurnCheckpointRecordData } from '../../types.js';
+import type {
+  RewindSnapshotStoreInterface,
+  TurnCheckpointRecordData,
+} from '../../types/sessions.js';
 import { defaultConfig } from '../../test/fixtures.js';
 import { SessionStore } from '../../session/store.js';
 

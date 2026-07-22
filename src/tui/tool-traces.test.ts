@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { Message, NestedToolInvocation, ToolResult } from '../types.js';
+import type { Message } from '../types/messages.js';
+import type { NestedToolInvocation, ToolResult } from '../types/tools.js';
 import {
   indexNestedToolInvocations,
   countNestedToolInvocations,

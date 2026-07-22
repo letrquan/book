@@ -1,6 +1,6 @@
 import { Box, Text, useInput } from 'ink';
 import { useMemo, useState } from 'react';
-import type { RewindAction, RewindTarget } from '../../types.js';
+import type { RewindAction, RewindTarget } from '../../types/sessions.js';
 import { useDensityMetrics } from '../density.js';
 import { useTheme } from '../theme.js';
 

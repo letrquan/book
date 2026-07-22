@@ -1,15 +1,11 @@
 import { existsSync } from 'fs';
 import { platform, release, hostname } from 'os';
 import { dirname, join, parse, resolve } from 'path';
-import type {
-  AgentConfig,
-  Message,
-  ProviderMessage,
-  SlashCommand,
-  SystemPromptZones,
-  ToolContext,
-  ToolDefinition,
-} from '../types.js';
+import type { AgentConfig } from '../types/runtime.js';
+import type { Message } from '../types/messages.js';
+import type { ProviderMessage, SystemPromptZones } from '../types/providers.js';
+import type { SlashCommand } from '../types/commands.js';
+import type { ToolContext, ToolDefinition } from '../types/tools.js';
 import { createHash } from 'crypto';
 import { readFile, stat } from 'fs/promises';
 import { workspaceIdentity } from '../tools/file-provenance.js';

@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from 'fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'path';
-import type { ToolResult } from '../types.js';
+import type { ToolResult } from '../types/tools.js';
 import { toolFailure } from './result.js';
 
 function isOutside(root: string, candidate: string): boolean {

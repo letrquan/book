@@ -97,7 +97,6 @@ export interface CodeBlockLayout {
 }
 
 const MIN_CELL = 1;
-const CELL_PAD = 1; // one space on each side of cell content in borders: "─".repeat(w+2)
 // Row format: │ + " " + cell + " " + │ ...  → per column: 3 chrome chars + width,
 // plus one final │. Equivalently: 1 + sum(width_i + 3) for n columns?
 // Actual: "│ " + cell + " │ " + cell + " │"
@@ -147,15 +146,13 @@ export function allocateTableColumns(
   const n = naturalWidths.length;
   if (n === 0) return [];
 
-  const minTotal = tableChromeWidth(Array(n).fill(MIN_CELL));
+  const minTotal = tableChromeWidth(Array<number>(n).fill(MIN_CELL));
   if (terminalWidth < minTotal) return null;
 
   const natural = naturalWidths.map((w) => Math.max(MIN_CELL, Math.ceil(w)));
   const naturalTotal = tableChromeWidth(natural);
   if (naturalTotal <= terminalWidth) return natural;
 
-  // Budget available for pure cell content.
-  const contentBudget = terminalWidth - tableChromeWidth(Array(n).fill(0));
   // tableChromeWidth(zeros) = 0*n + 3n = 3n ... wait:
   // sum(0+2) + (n-1) + 2 = 2n + n - 1 + 2 = 3n + 1. Yes.
   // contentBudget = terminalWidth - (3n + 1), and sum(widths) must equal contentBudget?

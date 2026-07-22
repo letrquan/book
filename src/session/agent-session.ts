@@ -2,26 +2,23 @@ import type { AgentRuntimeEvent } from '../agents/types.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { runCompact, runPostCompactHooks, type RunCompactOptions } from '../agent/compact.js';
 import { runSessionEnd, runSessionStart } from './lifecycle.js';
+import type { SessionLifecycleOptions } from './lifecycle.js';
 import type { ToolRegistry } from '../tools/registry.js';
+import type { AgentConfig, PermissionMode } from '../types/runtime.js';
+import type { AgentLoopCallbacks } from '../types/providers.js';
 import type {
-  AgentConfig,
-  AgentLoopCallbacks,
   CompactBoundary,
   CompactRecordData,
   CompactResult,
-  Message,
-  PermissionMode,
   RewindSnapshotCaptureResult,
   RewindSnapshotStoreInterface,
   RewindTarget,
   SessionRecord,
   SessionStoreInterface,
-  ToolCall,
-  ToolResult,
   TurnCheckpointRecordData,
-  Usage,
-  UserQuestionResponse,
-} from '../types.js';
+} from '../types/sessions.js';
+import type { Message, Usage } from '../types/messages.js';
+import type { ToolCall, ToolResult, UserQuestionResponse } from '../types/tools.js';
 import {
   collectAtMentionObservations,
   expandAtMentions,
@@ -40,6 +37,8 @@ import {
   type AgentEvent,
   type AgentSessionSnapshot,
 } from './agent-events.js';
+import { selectSession, type SessionBootstrap } from './resolve.js';
+import { SessionRuntime, type SessionRuntimeOptions } from './runtime.js';
 
 export type AgentLoopRunner = typeof runAgentLoop;
 type AgentLoopOptions = NonNullable<Parameters<AgentLoopRunner>[6]>;
@@ -58,6 +57,10 @@ export interface AgentSessionRunCallbacks {
   onStreamResume?: AgentLoopCallbacks['onStreamResume'];
   onPersistPermissionRule?: AgentLoopCallbacks['onPersistPermissionRule'];
   onHookEvent?: AgentLoopCallbacks['onHookEvent'];
+  onPermissionRequired?: AgentLoopCallbacks['onPermissionRequired'];
+  onPlanApprovalRequired?: AgentLoopCallbacks['onPlanApprovalRequired'];
+  onUserQuestionRequired?: AgentLoopCallbacks['onUserQuestionRequired'];
+  userQuestionStatus?: 'pending' | 'unavailable';
 }
 
 export interface AgentSessionRunRequest {
@@ -67,6 +70,7 @@ export interface AgentSessionRunRequest {
   history: Message[];
   mode?: PermissionMode;
   sessionId: string;
+  timelineStore?: Pick<SessionStoreInterface, 'append'>;
   callbacks: AgentSessionRunCallbacks;
   options?: Omit<AgentLoopOptions, 'signal'>;
   signal?: AbortSignal;
@@ -82,12 +86,61 @@ export interface AgentSessionPrepareSendRequest {
   timelineStore?: Pick<SessionStoreInterface, 'append'>;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
+  runtime?: SessionRuntime;
 }
+
+export interface AgentSessionRecordUserRequest {
+  config: AgentConfig;
+  sessionId: string;
+  displayMessage: string;
+  userMessage: Message;
+  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+  expandShellInput?: boolean;
+  runtime?: SessionRuntime;
+  signal?: AbortSignal;
+}
+
+export interface AgentSessionSendControl {
+  signal?: AbortSignal;
+  isCurrent: () => boolean;
+}
+
+export interface AgentSessionSendRequest {
+  config: AgentConfig;
+  registry?: ToolRegistry;
+  displayMessage: string;
+  createUserMessage: () => Message;
+  history: Message[] | (() => Message[]);
+  mode?: PermissionMode;
+  sessionId: string;
+  snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
+  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+  registryStore?: SessionStoreInterface;
+  callbacks: AgentSessionRunCallbacks;
+  options?: Omit<
+    AgentLoopOptions,
+    'signal' | 'displayMessage' | 'userMessageId' | 'userMessageTimestamp' | 'userFileObservations'
+  >;
+  isCurrent?: () => boolean;
+  runtime?: SessionRuntime;
+  beforePrepare?: (control: AgentSessionSendControl) => void | Promise<void>;
+  onPreparing?: (userMessage: Message, control: AgentSessionSendControl) => void;
+  onPrepared?: (
+    result: Extract<AgentSessionPrepareSendResult, { status: 'prepared' }>,
+    control: AgentSessionSendControl,
+  ) => void;
+}
+
+export type AgentSessionSendResult =
+  | { status: 'rejected'; activeKind: AgentSessionOperation['kind'] | null }
+  | { status: 'cancelled' }
+  | { status: 'completed'; messages: Message[] }
+  | { status: 'failed'; phase: 'before-prepare' | 'prepare' | 'run'; error: unknown };
 
 export interface AgentSessionCompactRequest {
   config: AgentConfig;
   history: readonly Message[];
-  sessionId: string;
+  sessionId?: string;
   transcriptOrdinal: number;
   options: Omit<RunCompactOptions, 'sessionId'>;
   timelineStore?: Pick<SessionStoreInterface, 'append'>;
@@ -118,7 +171,31 @@ export interface AgentSessionDependencies {
   postCompactHooksRunner?: typeof runPostCompactHooks;
   sessionStartRunner?: typeof runSessionStart;
   sessionEndRunner?: typeof runSessionEnd;
+  runtime?: SessionRuntime;
+  registryFactory?: (request: {
+    config: AgentConfig;
+    sessionId: string;
+    registryStore?: SessionStoreInterface;
+  }) => ToolRegistry;
 }
+
+export interface AgentSessionTransitionRequest {
+  config: AgentConfig;
+  currentSessionId: string;
+  store?: SessionStoreInterface;
+  timelineStore?: SessionStoreInterface;
+  previousName?: string;
+  onTransitionStart?: () => void;
+  onTransition?: (bootstrap: SessionBootstrap) => void;
+}
+
+export interface AgentSessionResumeRequest extends AgentSessionTransitionRequest {
+  selector: string;
+}
+
+export type AgentSessionTransitionResult =
+  | { status: 'unchanged'; sessionId: string }
+  | { status: 'transitioned'; bootstrap: SessionBootstrap };
 
 type AgentSessionListener = (snapshot: AgentSessionSnapshot) => void;
 
@@ -136,6 +213,8 @@ export class AgentSession {
   private runGeneration = 0;
   private lifecycleStartedSessionId?: string;
   private lifecycleEndedSessionId?: string;
+  private runtime: SessionRuntime;
+  private readonly registryFactory?: AgentSessionDependencies['registryFactory'];
 
   constructor(dependencies: AgentSessionDependencies = {}) {
     this.runLoop = dependencies.runLoop ?? runAgentLoop;
@@ -143,6 +222,8 @@ export class AgentSession {
     this.postCompactHooksRunner = dependencies.postCompactHooksRunner ?? runPostCompactHooks;
     this.sessionStartRunner = dependencies.sessionStartRunner ?? runSessionStart;
     this.sessionEndRunner = dependencies.sessionEndRunner ?? runSessionEnd;
+    this.runtime = dependencies.runtime ?? new SessionRuntime();
+    this.registryFactory = dependencies.registryFactory;
   }
 
   startSend(): AgentSessionOperation | null {
@@ -153,8 +234,99 @@ export class AgentSession {
     return operation.kind === 'send' && operation.release();
   }
 
+  async send(request: AgentSessionSendRequest): Promise<AgentSessionSendResult> {
+    const operation = this.startSend();
+    if (!operation) {
+      return { status: 'rejected', activeKind: this.operations.activeKind };
+    }
+    const control: AgentSessionSendControl = {
+      signal: operation.signal,
+      isCurrent: () => operation.isCurrent() && request.isCurrent?.() !== false,
+    };
+    const runtime = request.runtime ?? this.runtime;
+
+    try {
+      try {
+        await request.beforePrepare?.(control);
+      } catch (error) {
+        return { status: 'failed', phase: 'before-prepare', error };
+      }
+      if (!control.isCurrent() || control.signal?.aborted) return { status: 'cancelled' };
+
+      const userMessage = request.createUserMessage();
+      request.onPreparing?.(userMessage, control);
+
+      let prepared: Extract<AgentSessionPrepareSendResult, { status: 'prepared' }>;
+      try {
+        const result = await this.prepareSend({
+          config: request.config,
+          sessionId: request.sessionId,
+          displayMessage: request.displayMessage,
+          userMessage,
+          snapshotStore: request.snapshotStore,
+          timelineStore: request.timelineStore,
+          signal: control.signal,
+          isCurrent: control.isCurrent,
+          runtime,
+        });
+        if (result.status === 'cancelled') return result;
+        prepared = result;
+        request.onPrepared?.(prepared, control);
+      } catch (error) {
+        return { status: 'failed', phase: 'prepare', error };
+      }
+
+      try {
+        const history = typeof request.history === 'function' ? request.history() : request.history;
+        const registry =
+          request.registry ??
+          this.registryFactory?.({
+            config: request.config,
+            sessionId: request.sessionId,
+            registryStore: request.registryStore,
+          });
+        if (!registry) throw new Error('AgentSession send requires a tool registry.');
+        const messages = await this.run({
+          config: request.config,
+          registry,
+          prompt: prepared.contextMessage,
+          history,
+          mode: request.mode,
+          sessionId: request.sessionId,
+          timelineStore: request.timelineStore,
+          callbacks: request.callbacks,
+          options: {
+            ...request.options,
+            runtime,
+            displayMessage: request.displayMessage,
+            userMessageId: userMessage.id,
+            userMessageTimestamp: userMessage.timestamp,
+            userFileObservations: userMessage.fileObservations,
+          },
+          signal: control.signal,
+          isCurrent: control.isCurrent,
+        });
+        return { status: 'completed', messages };
+      } catch (error) {
+        return { status: 'failed', phase: 'run', error };
+      }
+    } finally {
+      this.finishSend(operation);
+    }
+  }
+
   getSnapshot(): AgentSessionSnapshot {
     return this.snapshot;
+  }
+
+  getRuntime(): SessionRuntime {
+    return this.runtime;
+  }
+
+  replaceRuntime(options: SessionRuntimeOptions = {}, via = 'session_transition'): SessionRuntime {
+    this.runtime.dispose(via);
+    this.runtime = new SessionRuntime(options);
+    return this.runtime;
   }
 
   subscribe(listener: AgentSessionListener): () => void {
@@ -173,27 +345,100 @@ export class AgentSession {
     this.interactions.cancelAll(via);
     this.operations.reset();
     this.runGeneration++;
+    this.replaceRuntime({}, via);
     this.replaceSnapshot(createAgentSessionSnapshot());
+  }
+
+  dispose(via = 'session_disposed'): void {
+    this.interactions.cancelAll(via);
+    this.operations.reset();
+    this.runGeneration++;
+    this.runtime.dispose(via);
   }
 
   async startLifecycle(
     config: AgentConfig,
     sessionId: string,
     source: Parameters<typeof runSessionStart>[2],
+    options?: SessionLifecycleOptions,
   ): Promise<void> {
     if (this.lifecycleStartedSessionId === sessionId) return;
     this.lifecycleStartedSessionId = sessionId;
-    await this.sessionStartRunner(config, sessionId, source);
+    await this.sessionStartRunner(config, sessionId, source, options);
   }
 
   async endLifecycle(
     config: AgentConfig,
     sessionId: string,
     reason: Parameters<typeof runSessionEnd>[2],
+    options?: SessionLifecycleOptions,
   ): Promise<void> {
     if (this.lifecycleEndedSessionId === sessionId) return;
     this.lifecycleEndedSessionId = sessionId;
-    await this.sessionEndRunner(config, sessionId, reason);
+    await this.sessionEndRunner(config, sessionId, reason, options);
+  }
+
+  async clearSession(
+    request: AgentSessionTransitionRequest,
+  ): Promise<AgentSessionTransitionResult> {
+    request.onTransitionStart?.();
+    this.operations.cancel();
+    await this.endLifecycle(request.config, request.currentSessionId, 'clear');
+    if (request.previousName && request.store) {
+      request.store.patchMeta(request.currentSessionId, { name: request.previousName });
+    }
+
+    const sessionId = request.store
+      ? request.store.create({ cwd: request.config.workspace })
+      : (request.timelineStore?.create({ cwd: request.config.workspace }) ?? crypto.randomUUID());
+    if (request.store && request.timelineStore && request.timelineStore !== request.store) {
+      request.timelineStore.create({ id: sessionId, cwd: request.config.workspace });
+    }
+
+    const bootstrap = emptySessionBootstrap(
+      sessionId,
+      undefined,
+      request.store !== undefined,
+      'clear',
+    );
+    this.reset('session-clear');
+    request.onTransition?.(bootstrap);
+    await this.startLifecycle(request.config, sessionId, 'clear');
+    return { status: 'transitioned', bootstrap };
+  }
+
+  async resumeSession(request: AgentSessionResumeRequest): Promise<AgentSessionTransitionResult> {
+    if (!request.store) {
+      throw new Error('Session persistence is disabled; /resume is unavailable.');
+    }
+    const selected = selectSession(request.store, request.selector, request.config.workspace);
+    if (selected.id === request.currentSessionId) {
+      return { status: 'unchanged', sessionId: selected.id };
+    }
+
+    const loaded = request.store.load(selected.id);
+    request.onTransitionStart?.();
+    this.operations.cancel();
+    await this.endLifecycle(request.config, request.currentSessionId, 'resume');
+    request.store.touch(selected.id);
+
+    const bootstrap: SessionBootstrap = {
+      sessionId: selected.id,
+      sessionName: loaded.meta.name,
+      history: loaded.contextHistory,
+      transcript: loaded.transcript,
+      contextHistory: loaded.contextHistory,
+      compactBoundaries: loaded.compactBoundaries,
+      rewindTargets: loaded.rewindTargets,
+      activeEventIds: loaded.activeEventIds,
+      source: 'resume',
+      persisted: true,
+      created: false,
+    };
+    this.reset('session-resume');
+    request.onTransition?.(bootstrap);
+    await this.startLifecycle(request.config, selected.id, 'resume');
+    return { status: 'transitioned', bootstrap };
   }
 
   async prepareSend(
@@ -240,10 +485,19 @@ export class AgentSession {
     } satisfies SessionRecord);
 
     // Expansion follows checkpoint capture so its side effects belong to this rewind boundary.
-    const contextMessage = expandShellCommands(
-      expandAtMentions(request.displayMessage, request.config.workspace),
-      request.config.workspace,
-    );
+    const { contextMessage } = await this.recordUserMessage(request);
+
+    return { status: 'prepared', contextMessage, rewindTarget };
+  }
+
+  async recordUserMessage(
+    request: AgentSessionRecordUserRequest,
+  ): Promise<{ contextMessage: string }> {
+    const expandedMentions = expandAtMentions(request.displayMessage, request.config.workspace);
+    const contextMessage =
+      request.expandShellInput === false
+        ? expandedMentions
+        : await expandShellCommands(expandedMentions, request.config.workspace, request.signal);
     request.userMessage.contextContent =
       contextMessage === request.displayMessage ? undefined : contextMessage;
     request.userMessage.fileObservations = collectAtMentionObservations(
@@ -251,12 +505,9 @@ export class AgentSession {
       request.config.workspace,
       request.userMessage.id,
     );
-    request.config.fileObservationLedger ??= new Map();
+    const observationLedger = (request.runtime ?? this.runtime).fileObservationLedger;
     for (const observation of request.userMessage.fileObservations) {
-      request.config.fileObservationLedger.set(
-        observationKey(observation.workspaceId, observation.path),
-        observation,
-      );
+      observationLedger.set(observationKey(observation.workspaceId, observation.path), observation);
     }
     request.timelineStore?.append(request.sessionId, {
       type: 'user',
@@ -271,7 +522,7 @@ export class AgentSession {
       },
     } satisfies SessionRecord);
 
-    return { status: 'prepared', contextMessage, rewindTarget };
+    return { contextMessage };
   }
 
   async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {
@@ -315,18 +566,21 @@ export class AgentSession {
       degraded: result.degraded,
       warning: result.warning,
     };
-    request.timelineStore?.append(request.sessionId, {
-      type: 'compact',
-      eventId: result.compactId,
-      timestamp,
-      data,
-    } satisfies SessionRecord);
+    if (request.timelineStore && request.sessionId) {
+      request.timelineStore.append(request.sessionId, {
+        type: 'compact',
+        eventId: result.compactId,
+        timestamp,
+        data,
+      } satisfies SessionRecord);
+    }
     request.onCommitted?.(result, boundary);
     await this.postCompactHooksRunner(request.config, {
       trigger: result.trigger,
       sessionId: request.sessionId,
       focus: request.options.focus,
       onHookEvent: request.options.onHookEvent,
+      signal: request.options.signal,
     });
     return { result, boundary };
   }
@@ -360,20 +614,30 @@ export class AgentSession {
           },
           onTurnStart: callbacks.onTurnStart,
           onDone: callbacks.onDone ?? (() => {}),
-          onPermissionRequired: (toolCall) =>
-            request.isCurrent?.() === false
-              ? Promise.resolve('deny')
-              : this.interactions.requestPermission(toolCall),
-          onPlanApprovalRequired: (plan) =>
-            request.isCurrent?.() === false
-              ? Promise.resolve('reject')
-              : this.interactions.requestPlanApproval(plan),
-          onUserQuestionRequired: async (question): Promise<UserQuestionResponse> => {
+          onPermissionRequired: (toolCall) => {
+            if (request.isCurrent?.() === false) return Promise.resolve('deny');
+            return callbacks.onPermissionRequired
+              ? callbacks.onPermissionRequired(toolCall)
+              : this.interactions.requestPermission(toolCall);
+          },
+          onPlanApprovalRequired: (plan) => {
+            if (request.isCurrent?.() === false) return Promise.resolve('reject');
+            return callbacks.onPlanApprovalRequired
+              ? callbacks.onPlanApprovalRequired(plan)
+              : this.interactions.requestPlanApproval(plan);
+          },
+          onUserQuestionRequired: async (question, context): Promise<UserQuestionResponse> => {
             if (request.isCurrent?.() === false) {
               return { action: 'cancel', message: 'Session changed.' };
             }
-            emit({ type: 'user_question', request: question, status: 'pending' });
-            const response = await this.interactions.requestUserQuestion(question);
+            emit({
+              type: 'user_question',
+              request: question,
+              status: callbacks.userQuestionStatus ?? 'pending',
+            });
+            const response = callbacks.onUserQuestionRequired
+              ? await callbacks.onUserQuestionRequired(question, context)
+              : await this.interactions.requestUserQuestion(question);
             emit({ type: 'user_question_result', requestId: question.id, response });
             return response;
           },
@@ -383,7 +647,24 @@ export class AgentSession {
           },
           onModeChange: callbacks.onModeChange,
           onCompact: callbacks.onCompact,
-          onAssistantMessageComplete: callbacks.onAssistantMessageComplete,
+          onAssistantMessageComplete: (message) => {
+            if (request.isCurrent?.() === false) return;
+            request.timelineStore?.append(request.sessionId, {
+              type: 'assistant',
+              eventId: message.id,
+              timestamp: message.timestamp,
+              data: {
+                id: message.id,
+                complete: true,
+                content: message.content,
+                kind: message.kind ?? 'conversation',
+                toolCalls: message.toolCalls,
+                toolResults: message.toolResults,
+                fileObservations: message.fileObservations,
+              },
+            } satisfies SessionRecord);
+            callbacks.onAssistantMessageComplete?.(message);
+          },
           onTodos: callbacks.onTodos,
           onRetry: callbacks.onRetry,
           onStreamStall: callbacks.onStreamStall,
@@ -393,7 +674,11 @@ export class AgentSession {
           onAgentEvent: (event: AgentRuntimeEvent) => emit(event),
         },
         request.mode,
-        { ...request.options, signal: request.signal },
+        {
+          ...request.options,
+          runtime: request.options?.runtime ?? this.runtime,
+          signal: request.signal,
+        },
       );
       emit({ type: 'result', messages, usage, sessionId: request.sessionId });
       return messages;
@@ -434,4 +719,25 @@ async function captureSnapshot(
       }
     }, 0);
   });
+}
+
+function emptySessionBootstrap(
+  sessionId: string,
+  sessionName: string | undefined,
+  persisted: boolean,
+  source: SessionBootstrap['source'],
+): SessionBootstrap {
+  return {
+    sessionId,
+    sessionName,
+    history: [],
+    transcript: [],
+    contextHistory: [],
+    compactBoundaries: [],
+    rewindTargets: [],
+    activeEventIds: [],
+    source,
+    persisted,
+    created: true,
+  };
 }

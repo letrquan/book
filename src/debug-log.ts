@@ -208,7 +208,6 @@ export function createDebugLogger(namespace: string): DebugLogger {
  */
 export function createDebugLoggerWithCounter(namespace: string): DebugLogger {
   if (!DEBUG_ENABLED) return NOOP_LOGGER;
-  const base = buildLogger(namespace);
   const wrap =
     (level: 'debug' | 'info' | 'warn') =>
     (...args: unknown[]) => {

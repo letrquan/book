@@ -1,7 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import type { UserQuestion, UserQuestionRequest, UserQuestionResponse } from '../../types.js';
+import type { UserQuestion, UserQuestionRequest, UserQuestionResponse } from '../../types/tools.js';
 import { useTheme } from '../theme.js';
 import { truncateDisplay } from './word-wrap.js';
 import { floatingFrameMetrics } from './chrome.js';

@@ -6,7 +6,7 @@ import type {
   UserQuestion,
   UserQuestionRequest,
   UserQuestionResponse,
-} from '../types.js';
+} from '../types/tools.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 const optionSchema = z
@@ -128,7 +128,9 @@ export function validateUserQuestionResponse(
       ) {
         return `${question.question}: answers must be non-empty strings up to 2000 characters`;
       }
-      const normalized = answer.map((value) => value.trim().toLocaleLowerCase());
+      const normalized = answer
+        .filter((value): value is string => typeof value === 'string')
+        .map((value) => value.trim().toLocaleLowerCase());
       if (new Set(normalized).size !== normalized.length) {
         return `${question.question}: duplicate answers are not allowed`;
       }

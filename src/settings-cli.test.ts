@@ -3,6 +3,7 @@ import { execFileSync } from 'child_process';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { SETTINGS_TOP_LEVEL_KEYS } from './settings-repository.js';
 
 /**
  * CLI-level smoke tests for --settings and --no-settings flags.
@@ -32,6 +33,14 @@ afterEach(() => {
 });
 
 describe('CLI --settings flag', () => {
+  it('lists the same schema-backed settings keys as the TUI config help', () => {
+    dir = mkdtempSync(join(tmpdir(), 'book-cli-'));
+    const stdout = runCli(['config', '--help']);
+
+    expect(stdout).toContain('Supported top-level settings:');
+    for (const key of SETTINGS_TOP_LEVEL_KEYS) expect(stdout).toContain(`  ${key}`);
+  }, 20000);
+
   it('reports the ad-hoc model over the project model', () => {
     dir = mkdtempSync(join(tmpdir(), 'book-cli-'));
     const projectSettings = join(dir, '.book');

@@ -1,4 +1,4 @@
-import type { ToolCategory, ToolDefinition, ToolResult } from '../types.js';
+import type { ToolCategory, ToolDefinition, ToolResult } from '../types/tools.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 export const toolSearchTools: ToolDefinition[] = [

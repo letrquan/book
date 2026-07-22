@@ -1,4 +1,4 @@
-import type { NestedToolInvocation, ToolCall, ToolResult } from '../../types.js';
+import type { NestedToolInvocation, ToolCall, ToolResult } from '../../types/tools.js';
 import {
   appendContentToMessage,
   appendNestedToolInvocationToMessage,
@@ -6,7 +6,7 @@ import {
   appendToolCallToMessage,
   appendToolResultToMessage,
 } from './streaming-state.js';
-import type { Message } from '../../types.js';
+import type { Message } from '../../types/messages.js';
 
 /**
  * A single queued streaming operation.

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { taskTools } from './tasks.js';
 import { defaultConfig } from '../test/fixtures.js';
-import type { ToolContext } from '../types.js';
+import type { ToolContext } from '../types/tools.js';
+import { SessionRuntime } from '../session/runtime.js';
 
 function ctx(): ToolContext {
   return { workspaceRoot: '.', env: {} };
@@ -37,17 +38,18 @@ describe('task management tools', () => {
     });
   });
 
-  it('shares task state through AgentConfig across contexts', async () => {
+  it('shares task state through SessionRuntime across contexts', async () => {
     const agentConfig = defaultConfig();
-    const first: ToolContext = { workspaceRoot: '.', env: {}, agentConfig };
-    const second: ToolContext = { workspaceRoot: '.', env: {}, agentConfig };
+    const runtime = new SessionRuntime();
+    const first: ToolContext = { workspaceRoot: '.', env: {}, agentConfig, runtime };
+    const second: ToolContext = { workspaceRoot: '.', env: {}, agentConfig, runtime };
 
     await taskCreate.execute({ subject: 'Persisted task' }, first);
     const listed = await taskList.execute({}, second);
 
     expect(listed.status).toBe('success');
     expect(listed.content).toContain('#1 Persisted task');
-    expect(agentConfig.tasks).toHaveLength(1);
+    expect(runtime.tasks).toHaveLength(1);
   });
 
   it('rejects an empty subject', async () => {

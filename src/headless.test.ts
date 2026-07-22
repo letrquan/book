@@ -7,8 +7,10 @@ import { SessionStore } from './session/store.js';
 import { createDefaultRegistry, createRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
 import { createRepeatingScriptedProvider, sseResponse } from './test/scripted-provider.js';
-import type { AgentConfig, UserQuestionRequest } from './types.js';
+import type { AgentConfig } from './types/runtime.js';
+import type { UserQuestionRequest } from './types/tools.js';
 import { toolSuccess } from './tools/result.js';
+import type { AgentEvent } from './session/agent-events.js';
 
 const config = defaultConfig({ baseUrl: 'http://localhost/v1' });
 let tempDirs: string[] = [];
@@ -88,6 +90,32 @@ describe('runHeadless — text output', () => {
       stdout,
     });
     expect(writes.join('')).toContain('Hello!');
+  });
+
+  it('delivers shared agent events before text output encoding', async () => {
+    const events: AgentEvent[] = [];
+
+    await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'say hi',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout: { write: () => true },
+      onAgentEvent: (event) => events.push(event),
+    });
+
+    expect(events.map((event) => event.type)).toEqual([
+      'system',
+      'session',
+      'text',
+      'result',
+      'done',
+    ]);
+    expect(events.find((event) => event.type === 'text')).toEqual({
+      type: 'text',
+      content: 'Hello!',
+    });
   });
 
   it('expands @ file mentions before sending prompts to the provider', async () => {
@@ -499,7 +527,7 @@ describe('runHeadless — runtime stores', () => {
         return true;
       },
     };
-    const runtimeConfig = freshConfig({ maxTurns: 2 });
+    const runtimeConfig = deepFreeze(freshConfig({ maxTurns: 2 }));
     const stdin = Readable.from([
       JSON.stringify({ type: 'user', content: 'create task' }) + '\n',
       JSON.stringify({ type: 'user', content: 'list tasks' }) + '\n',
@@ -522,6 +550,14 @@ describe('runHeadless — runtime stores', () => {
       .filter((event) => event.type === 'tool_result');
 
     expect(toolResults.at(-1).tool_result.content).toContain('#1 Across prompts');
-    expect(runtimeConfig.tasks).toHaveLength(1);
+    expect('tasks' in runtimeConfig).toBe(false);
   });
 });
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
+}

@@ -1,6 +1,9 @@
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import type { AgentConfig, CommandContext, LocalCommandDisplay, Message } from '../types.js';
+import type { AgentConfig } from '../types/runtime.js';
+import type { CommandContext } from '../types/commands.js';
+import type { LocalCommandDisplay, Message, Usage } from '../types/messages.js';
+import type { CompactBoundary } from '../types/sessions.js';
 import { buildInitPrompt } from './init-prompt.js';
 import {
   buildReviewPrompt,
@@ -14,7 +17,7 @@ import { EFFORT_USAGE, isEffortLevel, type EffortLevel } from './effort.js';
 import { redactSettingValue, redactSettingsForDisplay } from '../settings-redaction.js';
 import {
   formatSettingsDiagnostics,
-  SETTINGS_TOP_LEVEL_KEYS,
+  formatSettingsKeyHelp,
   SettingsRepository,
 } from '../settings-repository.js';
 import { buildMemoryInboxReport, buildMemoryReport } from '../memory-display.js';
@@ -25,6 +28,8 @@ import {
   listMemoryCandidates,
   loadMemoryContext,
 } from '../memory-store.js';
+import { costReport, PRICING, usageReport } from '../pricing.js';
+import { buildContextBreakdown, buildContextReport } from '../context-report.js';
 
 export interface BuiltinCommand {
   name: string;
@@ -45,10 +50,20 @@ export interface BuiltinCommandContext {
   effortUnavailableError?: string;
   runtimeConfig: AgentConfig;
   mode: string;
+  usage: Usage | null;
+  turnDurationMs: number;
+  contextHistory: Message[];
+  compactBoundaries: CompactBoundary[];
+  commandCount: number;
+  skillCount: number;
+  resolveAmbientContext: () => {
+    subagentCount: number;
+    hasMemoryIndex: boolean;
+    hasClaudeMdLoader: boolean;
+  };
 }
 
 export type BuiltinCommandEffect =
-  | { type: 'legacy'; commandName: string; rawArguments: string }
   | { type: 'send-prompt'; prompt: string; context: CommandContext }
   | {
       type: 'local-message';
@@ -65,29 +80,22 @@ export type BuiltinCommandEffect =
   | { type: 'set-model'; selection: string }
   | { type: 'set-effort'; level: EffortLevel }
   | { type: 'set-memory-auto-save'; enabled: boolean }
-  | { type: 'toggle-panel'; panel: 'help' | 'status' | 'permissions' | 'skills' };
+  | { type: 'toggle-panel'; panel: 'help' | 'status' | 'permissions' | 'skills' }
+  | { type: 'add-task'; subject: string }
+  | { type: 'show-diff' }
+  | { type: 'reload-assets' }
+  | {
+      type: 'managed-agent';
+      operation: 'list' | 'get' | 'send' | 'stop' | 'apply';
+      agentId?: string;
+      message?: string;
+      evidenceId?: string;
+    };
 
 export type BuiltinCommandDefinition = CommandDefinition<
   BuiltinCommandContext,
   BuiltinCommandEffect
 >;
-
-function legacyCommand(
-  name: string,
-  description: string,
-  options: {
-    argumentHint?: string;
-    aliases?: CommandAlias[];
-    isHidden?: boolean;
-  } = {},
-): BuiltinCommandDefinition {
-  return {
-    name,
-    description,
-    ...options,
-    execute: ({ rawArguments }) => ({ type: 'legacy', commandName: name, rawArguments }),
-  };
-}
 
 function promptEffect(
   name: string,
@@ -144,8 +152,7 @@ function configCommandEffect(
     return {
       type: 'local-message',
       content:
-        'Settable keys (dot-separated):\n' +
-        SETTINGS_TOP_LEVEL_KEYS.map((key) => `  ${key}`).join('\n') +
+        formatSettingsKeyHelp('Settable keys (dot-separated):') +
         '\n\nUsage: /config <key>=<value>',
     };
   }
@@ -240,6 +247,105 @@ function memoryCommandEffect(
   };
 }
 
+const AGENT_USAGE =
+  'Usage: /agent <id> | /agent send <id> <message> | /agent stop <id> | /agent apply <id> [evidence-id]';
+
+function agentCommandEffect(
+  rawArguments: string,
+  context: BuiltinCommandContext,
+): BuiltinCommandEffect {
+  const [actionOrId, id, ...rest] = rawArguments.split(/\s+/).filter(Boolean);
+  if (!actionOrId) return { type: 'local-message', content: AGENT_USAGE };
+  if (actionOrId === 'send') {
+    return id
+      ? { type: 'managed-agent', operation: 'send', agentId: id, message: rest.join(' ') }
+      : { type: 'local-message', content: AGENT_USAGE };
+  }
+  if (actionOrId === 'stop') {
+    return id
+      ? { type: 'managed-agent', operation: 'stop', agentId: id }
+      : { type: 'local-message', content: AGENT_USAGE };
+  }
+  if (actionOrId === 'apply') {
+    if (!id) return { type: 'local-message', content: AGENT_USAGE };
+    if (context.mode === 'plan') {
+      return { type: 'local-message', content: '✕ Agent apply is unavailable in plan mode.' };
+    }
+    return {
+      type: 'managed-agent',
+      operation: 'apply',
+      agentId: id,
+      evidenceId: rest[0],
+    };
+  }
+  return { type: 'managed-agent', operation: 'get', agentId: actionOrId };
+}
+
+function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffect {
+  const rate = PRICING[context.runtimeConfig.model];
+  const estimatedCostUsd =
+    context.usage && rate
+      ? (context.usage.promptTokens * rate.in + context.usage.completionTokens * rate.out) /
+        1_000_000
+      : undefined;
+  return {
+    type: 'local-message',
+    content: usageReport(context.runtimeConfig.model, context.usage, {
+      currentTurn: context.currentTurn,
+      messageCount: context.messages.length,
+      turnDurationMs: context.turnDurationMs,
+    }),
+    display: {
+      kind: 'usage',
+      model: context.runtimeConfig.model,
+      currentTurn: context.currentTurn,
+      messageCount: context.messages.length,
+      turnDurationMs: context.turnDurationMs,
+      usage: context.usage,
+      rate: rate ? { inputPerMillion: rate.in, outputPerMillion: rate.out } : undefined,
+      estimatedCostUsd,
+    },
+  };
+}
+
+function contextCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffect {
+  const dynamic = context.resolveAmbientContext();
+  const ambient = {
+    model: context.runtimeConfig.model,
+    maxTokens: context.runtimeConfig.modelInfo?.contextWindow ?? context.runtimeConfig.maxTokens,
+    contextHistory: context.contextHistory,
+    compactBoundaries: context.compactBoundaries,
+    skillCount: context.skillCount,
+    commandCount: context.commandCount,
+    ...dynamic,
+  };
+  const breakdown = buildContextBreakdown(context.contextHistory);
+  return {
+    type: 'local-message',
+    content: buildContextReport(context.messages, ambient),
+    display: {
+      kind: 'context',
+      model: ambient.model,
+      maxTokens: ambient.maxTokens,
+      estimatedTokens: breakdown.estimatedTokens,
+      totalMessages: breakdown.totalMessages,
+      userMessages: breakdown.userMessages,
+      assistantMessages: breakdown.assistantMessages,
+      toolCalls: breakdown.toolCalls,
+      toolResults: breakdown.toolResults,
+      userTokens: breakdown.byRole.user,
+      assistantTokens: breakdown.byRole.assistant,
+      ambient: {
+        commandCount: ambient.commandCount,
+        skillCount: ambient.skillCount,
+        subagentCount: ambient.subagentCount,
+        hasMemoryIndex: ambient.hasMemoryIndex,
+        hasClaudeMdLoader: ambient.hasClaudeMdLoader,
+      },
+    },
+  };
+}
+
 export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   {
     name: 'clear',
@@ -300,11 +406,25 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     description: 'Toggle help',
     execute: () => ({ type: 'toggle-panel', panel: 'help' }),
   },
-  legacyCommand('task', 'Add a task'),
-  legacyCommand('agents', 'List managed agents'),
-  legacyCommand('agent', 'Inspect or control a managed agent', {
+  {
+    name: 'task',
+    description: 'Add a task',
+    execute: ({ rawArguments }) =>
+      rawArguments
+        ? { type: 'add-task', subject: rawArguments }
+        : { type: 'local-message', content: 'Usage: /task <subject>' },
+  },
+  {
+    name: 'agents',
+    description: 'List managed agents',
+    execute: () => ({ type: 'managed-agent', operation: 'list' }),
+  },
+  {
+    name: 'agent',
+    description: 'Inspect or control a managed agent',
     argumentHint: '<id>|send <id> <message>|stop <id>|apply <id>',
-  }),
+    execute: ({ rawArguments }, context) => agentCommandEffect(rawArguments, context),
+  },
   {
     name: 'theme',
     description: 'Switch color theme',
@@ -351,7 +471,11 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     description: 'Show current configuration',
     execute: ({ rawArguments }, context) => configCommandEffect(rawArguments, context),
   },
-  legacyCommand('diff', 'Show git diff'),
+  {
+    name: 'diff',
+    description: 'Show git diff',
+    execute: () => ({ type: 'show-diff' }),
+  },
   {
     name: 'status',
     description: 'Show session status',
@@ -368,7 +492,14 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     description: 'Manage permission rules',
     execute: () => ({ type: 'toggle-panel', panel: 'permissions' }),
   },
-  legacyCommand('cost', 'Show token usage and cost'),
+  {
+    name: 'cost',
+    description: 'Show token usage and cost',
+    execute: (_invocation, context) => ({
+      type: 'local-message',
+      content: costReport(context.runtimeConfig.model, context.usage),
+    }),
+  },
   {
     name: 'skills',
     description: 'List available skills',
@@ -387,7 +518,11 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
       ]);
     },
   },
-  legacyCommand('reload-skills', 'Re-scan command and skill directories'),
+  {
+    name: 'reload-skills',
+    description: 'Re-scan command and skill directories',
+    execute: () => ({ type: 'reload-assets' }),
+  },
   {
     name: 'export',
     description: 'Export conversation to file',
@@ -411,10 +546,17 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
       }
     },
   },
-  legacyCommand('usage', 'Session cost & token usage (alias: /stats)', {
+  {
+    name: 'usage',
+    description: 'Session cost & token usage (alias: /stats)',
     aliases: [{ name: 'stats', description: 'Alias for /usage', isHidden: true }],
-  }),
-  legacyCommand('context', 'Show what is filling the context window'),
+    execute: (_invocation, context) => usageCommandEffect(context),
+  },
+  {
+    name: 'context',
+    description: 'Show what is filling the context window',
+    execute: (_invocation, context) => contextCommandEffect(context),
+  },
   {
     name: 'review',
     description: 'Review current git diff (correctness & cleanups)',

@@ -1,4 +1,6 @@
-import type { Message, RetryPhase, ToolCall } from '../types.js';
+import type { Message } from '../types/messages.js';
+import type { RetryPhase } from '../types/runtime.js';
+import type { ToolCall } from '../types/tools.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { parseMcpToolName } from './tool-presentation.js';

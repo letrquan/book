@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentLoopCallbacks, Message } from '../types.js';
+import type { AgentLoopCallbacks } from '../types/providers.js';
+import type { Message } from '../types/messages.js';
 import { defaultConfig, toolCall, toolResult } from '../test/fixtures.js';
 import { formatToolCall, formatToolResult, runScrollbackSession } from './scrollback.js';
 import type { ScrollbackOptions } from './scrollback.js';

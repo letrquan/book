@@ -7,7 +7,7 @@
  */
 
 import Fuse from 'fuse.js';
-import type { SlashCommand } from '../types.js';
+import type { SlashCommand } from '../types/commands.js';
 import { BUILTIN_COMMANDS } from './builtins.js';
 import { getRecentCommands } from './recent.js';
 
@@ -184,5 +184,5 @@ export function getCommandsForQuery(commands: SlashCommand[], query: string): Co
     return a.name.localeCompare(b.name);
   });
 
-  return scored.map(({ priority, ...item }) => item);
+  return scored.map(({ priority: _priority, ...item }) => item);
 }

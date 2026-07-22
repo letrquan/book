@@ -4,7 +4,8 @@ import { join } from 'path';
 import { describe, it, expect } from 'vitest';
 import { buildMessages, buildSystemPrompt, buildSystemPromptZones } from './context.js';
 import { getProjectMemoryDir } from '../memory-store.js';
-import type { SlashCommand, ToolDefinition } from '../types.js';
+import type { SlashCommand } from '../types/commands.js';
+import type { ToolDefinition } from '../types/tools.js';
 import { userMsg, assistantMsg, toolCall, toolResult, defaultConfig } from '../test/fixtures.js';
 import { toolSuccess } from '../tools/result.js';
 
@@ -23,12 +24,6 @@ function systemPrefix(out: Awaited<ReturnType<typeof buildMessages>>): string {
   const content = out[0].content;
   if (!content || typeof content !== 'object') throw new Error('expected zoned system prompt');
   return content.cachedPrefix;
-}
-
-function systemSuffix(out: Awaited<ReturnType<typeof buildMessages>>): string {
-  const content = out[0].content;
-  if (!content || typeof content !== 'object') throw new Error('expected zoned system prompt');
-  return content.dynamicSuffix;
 }
 
 describe('buildMessages', () => {

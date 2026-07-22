@@ -1,7 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useTheme } from '../theme.js';
-import type { AgentConfig } from '../../types.js';
+import type { AgentConfig } from '../../types/runtime.js';
 import type { ProviderConfig } from '../../settings.js';
 import { resolveSecret } from '../../config.js';
 import { discoverModels, type ModelDiscoveryOptions } from '../../provider/model-discovery.js';

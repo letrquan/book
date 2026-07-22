@@ -1,10 +1,10 @@
 import type {
   CompactBoundary,
-  Message,
   RewindTarget,
   SessionMeta,
   SessionStoreInterface,
-} from '../types.js';
+} from '../types/sessions.js';
+import type { Message } from '../types/messages.js';
 import { normalizeWorkspace } from './store.js';
 
 export type SessionStartSource = 'startup' | 'resume' | 'clear';

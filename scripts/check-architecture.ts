@@ -3,13 +3,15 @@ import { dirname, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 interface Violation {
-  kind: 'layer' | 'entrypoint' | 'cycle';
+  kind: 'layer' | 'entrypoint' | 'cycle' | 'type-hub' | 'blocking-process';
   source: string;
   target: string;
   detail: string;
 }
 
 const IMPORT_PATTERN = /(?:import|export)\s+(type\s+)?(?:[^'";]+?\s+from\s+)?['"]([^'"]+)['"]/g;
+const CHILD_PROCESS_IMPORT_PATTERN = /from\s+['"](?:node:)?child_process['"]/;
+const SYNC_PROCESS_API_PATTERN = /\b(?:execFileSync|execSync|spawnSync)\b/;
 function sourceFiles(root: string): string[] {
   const files: string[] = [];
   const visit = (directory: string) => {
@@ -38,10 +40,27 @@ export function checkArchitecture(srcRoot: string): Violation[] {
   const graph = new Map<string, string[]>();
   const violations: Violation[] = [];
 
+  if (existsSync(resolve(root, 'types.ts'))) {
+    violations.push({
+      kind: 'type-hub',
+      source: 'types.ts',
+      target: 'types/',
+      detail: 'Domain types must live in src/types/*; the compatibility type hub is forbidden.',
+    });
+  }
+
   for (const file of files) {
     const sourceName = relative(root, file).replaceAll('\\', '/');
     const dependencies: string[] = [];
     const text = readFileSync(file, 'utf-8');
+    if (CHILD_PROCESS_IMPORT_PATTERN.test(text) && SYNC_PROCESS_API_PATTERN.test(text)) {
+      violations.push({
+        kind: 'blocking-process',
+        source: sourceName,
+        target: 'child_process',
+        detail: 'Production code must not use synchronous child-process APIs.',
+      });
+    }
     for (const match of text.matchAll(IMPORT_PATTERN)) {
       if (match[1]) continue;
       const dependency = resolveImport(file, match[2]);

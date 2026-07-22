@@ -2,7 +2,7 @@ import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import { useCallback, useRef, useState } from 'react';
 import { useTheme } from '../theme.js';
-import type { PlanApprovalResult } from '../../types.js';
+import type { PlanApprovalResult } from '../../types/tools.js';
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 import { MarkdownBlock } from './MarkdownBlock.js';

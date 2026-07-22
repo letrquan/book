@@ -1,10 +1,5 @@
-import type {
-  AgentTask,
-  AgentTaskStatus,
-  ToolContext,
-  ToolDefinition,
-  ToolResult,
-} from '../types.js';
+import type { AgentTask, AgentTaskStatus } from '../types/runtime.js';
+import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 const ACTIVE_STATUSES = new Set<AgentTaskStatus>(['pending', 'in_progress', 'completed']);
@@ -19,10 +14,7 @@ function ok(output: string): ToolResult {
 }
 
 function tasks(ctx: ToolContext): AgentTask[] {
-  ctx.tasks ??= ctx.agentConfig?.tasks ?? [];
-  if (ctx.agentConfig && ctx.agentConfig.tasks !== ctx.tasks) {
-    ctx.agentConfig.tasks = ctx.tasks;
-  }
+  ctx.tasks ??= ctx.runtime?.tasks ?? [];
   return ctx.tasks;
 }
 

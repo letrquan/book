@@ -1,4 +1,4 @@
-import type { RetryConfig } from '../types.js';
+import type { RetryConfig } from '../types/runtime.js';
 
 export type ProviderProtocol = 'openai' | 'anthropic';
 

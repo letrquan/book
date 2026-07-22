@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ToolResult } from '../types.js';
+import type { ToolResult } from '../types/tools.js';
 import {
   deriveToolPresentation,
   getTranscriptShortcutAction,

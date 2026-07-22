@@ -1,12 +1,8 @@
 import { createInterface } from 'node:readline/promises';
-import type {
-  AgentConfig,
-  AgentLoopCallbacks,
-  Message,
-  PermissionMode,
-  ToolCall,
-  ToolResult,
-} from '../types.js';
+import type { AgentConfig, PermissionMode } from '../types/runtime.js';
+import type { AgentLoopCallbacks } from '../types/providers.js';
+import type { Message } from '../types/messages.js';
+import type { ToolCall, ToolResult } from '../types/tools.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { createDefaultRegistry, type ToolRegistry } from '../tools/registry.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';

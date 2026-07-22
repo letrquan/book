@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Message } from '../../types.js';
+import type { Message } from '../../types/messages.js';
 import {
   isBlankAssistantContent,
   mergeAssistantMessages,

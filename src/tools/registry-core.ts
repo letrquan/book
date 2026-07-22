@@ -1,4 +1,4 @@
-import type { ToolDefinition, ToolContext, ToolResult, ToolCall } from '../types.js';
+import type { ToolDefinition, ToolContext, ToolResult, ToolCall } from '../types/tools.js';
 import { TOOL_ALIASES } from './aliases.js';
 import { normalizeToolDefinition } from './catalog.js';
 import { validateToolArguments } from './schema.js';

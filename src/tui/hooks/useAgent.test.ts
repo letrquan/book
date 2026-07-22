@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { RetryPhase, AgentConfig } from '../../types.js';
+import type { RetryPhase, AgentConfig } from '../../types/runtime.js';
 import { resolveConfigAfterProviderRemoval } from './useAgent.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from '../../settings.js';
 import { defaultConfig } from '../../test/fixtures.js';

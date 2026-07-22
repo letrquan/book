@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { execSync } from 'child_process';
+import { execFile } from 'node:child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
 
@@ -14,25 +14,26 @@ export function useGitStatus(workspace: string): GitStatus {
 
   useEffect(() => {
     let cancelled = false;
+    let running = false;
+    let activeController: AbortController | undefined;
 
-    function check() {
+    async function check(): Promise<void> {
+      if (running) return;
+      running = true;
+      activeController = new AbortController();
       if (!existsSync(join(workspace, '.git'))) {
         if (!cancelled) setStatus({ branch: '?', status: '' });
+        running = false;
         return;
       }
 
       try {
-        const branch = execSync('git rev-parse --abbrev-ref HEAD', {
-          cwd: workspace,
-          timeout: 5000,
-          encoding: 'utf-8',
-        }).trim();
-
-        const short = execSync('git status --short', {
-          cwd: workspace,
-          timeout: 5000,
-          encoding: 'utf-8',
-        }).trim();
+        const branch = await runGit(
+          ['rev-parse', '--abbrev-ref', 'HEAD'],
+          workspace,
+          activeController.signal,
+        );
+        const short = await runGit(['status', '--short'], workspace, activeController.signal);
 
         if (!short) {
           if (!cancelled) setStatus({ branch, status: '\u2713' });
@@ -56,16 +57,31 @@ export function useGitStatus(workspace: string): GitStatus {
         if (!cancelled) setStatus({ branch, status: parts.join(' ') });
       } catch {
         if (!cancelled) setStatus({ branch: '?', status: '', error: 'git error' });
+      } finally {
+        running = false;
+        activeController = undefined;
       }
     }
 
-    check();
-    const interval = setInterval(check, 5000);
+    void check();
+    const interval = setInterval(() => void check(), 5000);
     return () => {
       cancelled = true;
+      activeController?.abort();
       clearInterval(interval);
     };
   }, [workspace]);
 
   return status;
+}
+
+function runGit(args: string[], cwd: string, signal: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      args,
+      { cwd, timeout: 5_000, encoding: 'utf8', windowsHide: true, signal },
+      (error, stdout) => (error ? reject(error) : resolve(stdout.trim())),
+    );
+  });
 }

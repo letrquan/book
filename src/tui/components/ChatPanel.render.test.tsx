@@ -4,7 +4,8 @@ import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { DensityContext, type TuiDensity } from '../density.js';
 import { ChatPanel } from './ChatPanel.js';
 import { AgentMessage } from './AgentMessage.js';
-import type { FileMutationSummary, Message, ToolCall, ToolResult } from '../../types.js';
+import type { FileMutationSummary, ToolCall, ToolResult } from '../../types/tools.js';
+import type { Message } from '../../types/messages.js';
 
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');

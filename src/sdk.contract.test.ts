@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { HeadlessOptions } from './types.js';
+import type { HeadlessOptions } from './types/public-sdk.js';
 import { createSessionFixture, type SessionFixture } from './test/session-fixture.js';
 
 const state = vi.hoisted(() => {
@@ -17,11 +17,9 @@ vi.mock('./mcp.js', () => ({
 
 vi.mock('./headless.js', () => ({
   runHeadless: vi.fn(async (_config: unknown, _registry: unknown, options: HeadlessOptions) => {
-    options.onEvent?.({ type: 'assistant', text: 'early' });
+    options.onAgentEvent?.({ type: 'text', content: 'early' });
     await state.gate;
-    const result = { messages: [], usage: null, sessionId: options.sessionId };
-    options.onEvent?.({ type: 'result', result });
-    return result;
+    return { messages: [], usage: null, sessionId: options.sessionId };
   }),
 }));
 

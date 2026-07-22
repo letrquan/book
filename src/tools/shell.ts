@@ -1,11 +1,6 @@
 import { exec, spawn, type ChildProcess } from 'child_process';
-import type {
-  BackgroundShellRecord,
-  BackgroundShellStatus,
-  ToolDefinition,
-  ToolContext,
-  ToolResult,
-} from '../types.js';
+import type { BackgroundShellRecord, BackgroundShellStatus } from '../types/runtime.js';
+import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { createSandbox } from '../sandbox.js';
 import { globToRegex } from './glob-regex.js';
 import { toolFailure, toolSuccess } from './result.js';
@@ -65,10 +60,7 @@ function readBoolean(args: Record<string, unknown>, snake: string, camel?: strin
 }
 
 function shellStore(ctx: ToolContext) {
-  ctx.backgroundShells ??= ctx.agentConfig?.backgroundShells ?? { nextId: 1, shells: new Map() };
-  if (ctx.agentConfig && ctx.agentConfig.backgroundShells !== ctx.backgroundShells) {
-    ctx.agentConfig.backgroundShells = ctx.backgroundShells;
-  }
+  ctx.backgroundShells ??= ctx.runtime?.backgroundShells ?? { nextId: 1, shells: new Map() };
   return ctx.backgroundShells;
 }
 

@@ -35,4 +35,35 @@ describe('checkArchitecture', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('rejects reintroducing the removed compatibility type hub', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      writeFileSync(join(dir, 'types.ts'), 'export interface Everything {}\n');
+      expect(checkArchitecture(dir)).toEqual([
+        expect.objectContaining({ kind: 'type-hub', source: 'types.ts', target: 'types/' }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects blocking child-process APIs in production source', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      writeFileSync(
+        join(dir, 'worker.ts'),
+        "import { execFileSync } from 'node:child_process';\nexecFileSync('git', ['status']);\n",
+      );
+      expect(checkArchitecture(dir)).toEqual([
+        expect.objectContaining({
+          kind: 'blocking-process',
+          source: 'worker.ts',
+          target: 'child_process',
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

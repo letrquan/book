@@ -2,23 +2,15 @@
 
 import { homedir } from 'os';
 import { join } from 'path';
-import type {
-  ToolCall,
-  ToolResult,
-  UserQuestionHandler,
-  UserQuestionRequest,
-  UserQuestionResponse,
-  AgentConfig,
-  SessionStoreInterface,
-} from './types.js';
-import type { HeadlessOptions, HeadlessResult } from './types.js';
-import { loadConfig, type LoadConfigOptions } from './config.js';
+import type { UserQuestionHandler } from './types/tools.js';
+import type { AgentConfig } from './types/runtime.js';
+import type { SessionStoreInterface } from './types/sessions.js';
+import type { HeadlessOptions } from './types/public-sdk.js';
+import { freezeAgentConfig, loadConfig, type LoadConfigOptions } from './config.js';
 import { runHeadless } from './headless.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { connectMcpServers, disconnectMcpServers } from './mcp.js';
-import type { AgentRecord, EvidenceItem } from './agents/types.js';
-import { AgentManager, getOrCreateAgentManager } from './agents/manager.js';
-import type { StreamJsonEvent } from './stream-json.js';
+import { AgentManager } from './agents/manager.js';
 import { SessionStore } from './session/store.js';
 import { resolveSessionBootstrap } from './session/resolve.js';
 import type { AgentEvent } from './session/agent-events.js';
@@ -66,73 +58,28 @@ class AsyncEventQueue<T> {
   }
 }
 
-function mapRuntimeEvent(event: StreamJsonEvent, sessionId: string): QueryEvent | undefined {
-  switch (event.type) {
-    case 'assistant':
-      return event.text ? { type: 'text', content: event.text } : undefined;
-    case 'tool_use':
-      return event.tool_call
-        ? { type: 'tool_use', toolCall: event.tool_call as ToolCall }
-        : undefined;
-    case 'tool_result':
-      return event.tool_result
-        ? { type: 'tool_result', toolResult: event.tool_result as ToolResult }
-        : undefined;
-    case 'user_question':
-      return event.request && event.status
-        ? {
-            type: 'user_question',
-            request: event.request as UserQuestionRequest,
-            status: event.status,
-          }
-        : undefined;
-    case 'user_question_result':
-      return event.request_id && event.response
-        ? {
-            type: 'user_question_result',
-            requestId: event.request_id,
-            response: event.response as UserQuestionResponse,
-          }
-        : undefined;
-    case 'agent_start':
-    case 'agent_update':
-    case 'agent_result':
-      return event.agent ? { type: event.type, agent: event.agent as AgentRecord } : undefined;
-    case 'agent_question':
-    case 'agent_apply':
-      return event as Extract<AgentEvent, { type: 'agent_question' | 'agent_apply' }>;
-    case 'evidence_update':
-      return event.evidence
-        ? { type: 'evidence_update', evidence: event.evidence as EvidenceItem }
-        : undefined;
-    case 'error':
-      return event.error ? { type: 'error', error: event.error } : undefined;
-    case 'result': {
-      const result = event.result as HeadlessResult;
-      return {
-        type: 'result',
-        messages: result.messages,
-        usage: result.usage,
-        sessionId,
-      };
-    }
-    default:
-      return undefined;
-  }
-}
-
 export async function* query(
   prompt: string,
   options: QueryOptions = {},
 ): AsyncGenerator<QueryEvent, void, undefined> {
   const workspace = options.workspace || process.cwd();
-  const config = loadConfig(workspace, {
+  const loadedConfig = loadConfig(workspace, {
     settingsOverridePath: options.settingsPath,
     noSettings: options.noSettings,
   });
-  if (options.model) config.model = options.model;
-  if (options.maxTurns) config.maxTurns = options.maxTurns;
-  if (options.agents) config.settings.agents.mode = options.agents;
+  const config = freezeAgentConfig({
+    ...loadedConfig,
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
+    ...(options.agents
+      ? {
+          settings: {
+            ...loadedConfig.settings,
+            agents: { ...loadedConfig.settings.agents, mode: options.agents },
+          },
+        }
+      : {}),
+  });
 
   const controller = new AbortController();
   const abortFromCaller = () => controller.abort(options.signal?.reason);
@@ -160,10 +107,10 @@ export async function* query(
       const registry = createDefaultRegistry({ agents: config.settings.agents.mode !== 'off' });
       if (mcp.tools.length > 0) registry.registerAll(mcp.tools);
 
-      await runHeadless(config, registry, {
+      const result = await runHeadless(config, registry, {
         prompt,
         inputFormat: 'text',
-        outputFormat: 'stream-json',
+        outputFormat: 'text',
         history: bootstrap.history,
         transcript: bootstrap.transcript,
         compactBoundaries: bootstrap.compactBoundaries,
@@ -176,11 +123,22 @@ export async function* query(
         signal: controller.signal,
         onUserQuestionRequired: options.onUserQuestionRequired,
         stdout: { write: () => true },
-        onEvent: (event) => {
-          if (event.type === 'system' || event.type === 'session') return;
-          const mapped = mapRuntimeEvent(event, bootstrap.sessionId);
-          if (mapped) queue.push(mapped);
+        onAgentEvent: (event) => {
+          if (
+            event.type !== 'system' &&
+            event.type !== 'session' &&
+            event.type !== 'result' &&
+            event.type !== 'done'
+          ) {
+            queue.push(event);
+          }
         },
+      });
+      queue.push({
+        type: 'result',
+        messages: result.messages,
+        usage: result.usage,
+        sessionId: bootstrap.sessionId,
       });
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -216,7 +174,7 @@ export { createDefaultRegistry, createRegistry } from './tools/registry.js';
 export { createToolSurface } from './tools/catalog.js';
 export { toolFailure, toolSuccess } from './tools/result.js';
 export function createAgentManager(config: AgentConfig): AgentManager {
-  return getOrCreateAgentManager(config, createDefaultRegistry({ agents: true }).getDefinitions());
+  return new AgentManager(config, createDefaultRegistry({ agents: true }).getDefinitions());
 }
 export { runPairedEvaluation, evaluateSuccess } from './agents/evaluation.js';
 export { createAgentSessionSnapshot, reduceAgentSessionSnapshot } from './session/agent-events.js';
@@ -259,4 +217,4 @@ export type {
   UserQuestionResponse,
   UserQuestionSource,
   UserQuestionHandler,
-} from './types.js';
+} from './types/tools.js';

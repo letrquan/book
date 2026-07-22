@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { webTools } from './web.js';
-import type { ToolContext } from '../types.js';
+import type { ToolContext } from '../types/tools.js';
 
 const ctx: ToolContext = { workspaceRoot: '.', env: {} };
 

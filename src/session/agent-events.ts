@@ -1,12 +1,11 @@
 import type { AgentRecord, AgentRuntimeEvent, EvidenceItem } from '../agents/types.js';
+import type { Message, Usage } from '../types/messages.js';
 import type {
-  Message,
   ToolCall,
   ToolResult,
-  Usage,
   UserQuestionRequest,
   UserQuestionResponse,
-} from '../types.js';
+} from '../types/tools.js';
 
 export type AgentEvent =
   | { type: 'system'; model: string; cwd: string }

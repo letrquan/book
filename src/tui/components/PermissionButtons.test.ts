@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { toolRiskLevel } from './PermissionButtons.js';
-import type { ToolCall } from '../../types.js';
+import type { ToolCall } from '../../types/tools.js';
 
 function toolCall(name: string): ToolCall {
   return { id: 'tc-1', name, arguments: {} };

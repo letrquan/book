@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createMessageAccumulator } from './message-accumulator.js';
-import type { Message, ToolCall } from '../../types.js';
+import type { Message } from '../../types/messages.js';
+import type { ToolCall } from '../../types/tools.js';
 import { toolSuccess } from '../../tools/result.js';
 
 function makeMsg(id: string, content: string): Message {

@@ -4,7 +4,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { shellTools } from './shell.js';
 import { getPrimaryArg } from './primary-arg.js';
-import type { BackgroundShellStore, ToolContext, ToolDefinition, ToolResult } from '../types.js';
+import type { BackgroundShellStore } from '../types/runtime.js';
+import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 
 let dir: string;
 let contexts: ToolContext[] = [];

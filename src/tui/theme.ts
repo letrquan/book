@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
-import type { ThemeTokens } from '../types.js';
-import { DEFAULT_THEME } from '../types.js';
+import type { ThemeTokens } from '../types/theme.js';
+import { DEFAULT_THEME } from '../types/theme.js';
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 

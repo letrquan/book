@@ -1,4 +1,4 @@
-import type { ThemeTokens } from '../../types.js';
+import type { ThemeTokens } from '../../types/theme.js';
 
 export interface StyledSegment {
   text: string;

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { readFileSync, existsSync } from 'fs';
 import { isAbsolute, join, relative, resolve } from 'path';
 import { homedir } from 'os';
-import type { AgentConfig, RetryConfig } from './types.js';
+import type { AgentConfig, RetryConfig } from './types/runtime.js';
 import { resolveSettings, migrateLegacyPermissions } from './settings-loader.js';
 import { DEFAULT_SETTINGS } from './settings.js';
 import { loadMemoryContext } from './memory-store.js';
@@ -205,6 +205,18 @@ export function applyModelDefaults(config: AgentConfig): AgentConfig {
   }
 
   return { ...config, maxTokens, effort };
+}
+
+/** Freeze resolved configuration so runtime code cannot acquire mutable session state. */
+export function freezeAgentConfig(config: AgentConfig): AgentConfig {
+  return deepFreeze(config);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  Object.freeze(value);
+  for (const child of Object.values(value)) deepFreeze(child);
+  return value;
 }
 
 /** Resolve "provider/model" strings through settings.provider, OpenCode-style. */

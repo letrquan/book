@@ -55,7 +55,7 @@ interface TuiSession {
   submit(text: string): void;
   sendKey(seq: string): void;
   resize(columns: number, rows: number): void;
-  waitForExit(timeoutMs?: number): Promise<void>;
+  waitForExit(timeoutMs?: number): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -90,19 +90,21 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
     output += data;
   });
   let exited = false;
-  let resolveExit: (() => void) | undefined;
-  const exitPromise = new Promise<void>((resolve) => {
+  let processExitCode: number | undefined;
+  let resolveExit: ((exitCode: number) => void) | undefined;
+  const exitPromise = new Promise<number>((resolve) => {
     resolveExit = resolve;
   });
-  const exitDisposable = pty.onExit(() => {
+  const exitDisposable = pty.onExit((event) => {
     exited = true;
-    resolveExit?.();
+    processExitCode = event.exitCode;
+    resolveExit?.(event.exitCode);
   });
 
-  async function waitForExit(timeoutMs = 5000): Promise<void> {
-    if (exited) return;
+  async function waitForExit(timeoutMs = 5000): Promise<number> {
+    if (exited) return processExitCode ?? -1;
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
+    return Promise.race([
       exitPromise,
       new Promise<never>((_, reject) => {
         timeout = setTimeout(
@@ -242,10 +244,13 @@ describe('TUI slash commands', () => {
     session = await startAndWait();
     await submitInteractive(session, '/help');
     await session.waitFor('Slash Commands', 5000);
+    const beforeToggle = session.readRaw().length;
     await submitInteractive(session, '/help');
     await sleep(500);
-    const output = session.read();
-    expect(output.length).toBeGreaterThan(0);
+    const output = stripAnsi(session.readRaw().slice(beforeToggle));
+    const latestFrame = output.slice(output.lastIndexOf('╭ BOOK'));
+    expect(latestFrame).toContain('Ask me anything');
+    expect(latestFrame).not.toContain('Slash Commands');
   }, 20_000);
 
   it('/clear clears the conversation', async () => {
@@ -273,7 +278,7 @@ describe('TUI slash commands', () => {
   it('/exit exits the TUI gracefully', async () => {
     session = await startAndWait();
     await submitInteractive(session, '/exit');
-    await session.waitForExit(5000);
+    expect(await session.waitForExit(5000)).toBe(0);
   }, 20_000);
 });
 

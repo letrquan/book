@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { extname } from 'path';
-import type { ToolContext, ToolDefinition, ToolResult } from '../types.js';
+import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';

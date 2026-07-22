@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { todoTools } from './todo.js';
-import type { ToolContext } from '../types.js';
+import type { ToolContext } from '../types/tools.js';
 
 const ctx: ToolContext = { workspaceRoot: '.', env: {} };
 const todoWrite = todoTools.find((t) => t.name === 'TodoWrite')!;

@@ -1,6 +1,6 @@
 import { render } from 'ink';
 import { createElement } from 'react';
-import { loadConfig } from '../config.js';
+import { freezeAgentConfig, loadConfig } from '../config.js';
 import { runHeadless } from '../headless.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { SessionStore } from '../session/store.js';
@@ -8,11 +8,8 @@ import { connectMcpServers } from '../mcp.js';
 import { exit } from './exit.js';
 import { join, resolve } from 'path';
 import { homedir } from 'os';
-import type {
-  AgentConfig,
-  RewindSnapshotStoreInterface,
-  TurnCheckpointRecordData,
-} from '../types.js';
+import type { AgentConfig } from '../types/runtime.js';
+import type { RewindSnapshotStoreInterface, TurnCheckpointRecordData } from '../types/sessions.js';
 import { resolveSessionBootstrap } from '../session/resolve.js';
 import {
   createRewindSnapshotStore,
@@ -87,6 +84,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         config.provider = raw as AgentConfig['provider'];
       }
     }
+    freezeAgentConfig(config);
 
     // Headless / print mode.
     if (options.print !== undefined) {
@@ -187,7 +185,11 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       });
     }
 
-    const { App } = await import('../tui/app.js');
+    const [{ App }, { loadInteractiveAssets }] = await Promise.all([
+      import('../tui/app.js'),
+      import('../tui/interactive-assets.js'),
+    ]);
+    const interactiveAssets = loadInteractiveAssets(config);
     let app: ReturnType<typeof render> | undefined;
     const redrawViewport = () => {
       app?.clear();
@@ -200,6 +202,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       app = render(
         createElement(App, {
           config,
+          interactiveAssets,
           redrawViewport,
           session: { ...bootstrap, store: sessionStore, timelineStore, snapshotStore },
         }),

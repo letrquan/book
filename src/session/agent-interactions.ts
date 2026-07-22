@@ -4,7 +4,7 @@ import type {
   ToolCall,
   UserQuestionRequest,
   UserQuestionResponse,
-} from '../types.js';
+} from '../types/tools.js';
 import { createDebugLoggerWithCounter } from '../debug-log.js';
 
 const log = createDebugLoggerWithCounter('session:interactions');

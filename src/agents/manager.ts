@@ -1,11 +1,7 @@
 import { randomUUID } from 'crypto';
-import type {
-  AgentConfig,
-  Message,
-  ToolDefinition,
-  Usage,
-  UserQuestionResponse,
-} from '../types.js';
+import type { AgentConfig } from '../types/runtime.js';
+import type { Message, Usage } from '../types/messages.js';
+import type { ToolDefinition, UserQuestionResponse } from '../types/tools.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { runCompact, usagePressureTokens } from '../agent/compact.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../config.js';
@@ -38,6 +34,7 @@ import type {
   IssueQuality,
   AgentTopology,
 } from './types.js';
+import { SessionRuntime } from '../session/runtime.js';
 
 interface ManagerOptions {
   storeRoot?: string;
@@ -51,6 +48,7 @@ interface ManagerOptions {
   checkoutWorktree?: typeof checkoutAgentCommit;
   commitWork?: typeof commitAgentWork;
   applyCandidate?: typeof applyVerifiedCandidate;
+  runtime?: SessionRuntime;
 }
 
 interface PublishEvidenceInput {
@@ -596,7 +594,8 @@ export class AgentManager {
       return;
     }
 
-    const controller = new AbortController();
+    const runtime = new SessionRuntime();
+    const controller = runtime.trackAbortController(new AbortController());
     this.controllers.set(record.id, controller);
     try {
       record.status = 'starting';
@@ -652,7 +651,7 @@ export class AgentManager {
           worktree: record.worktree,
           status: record.status,
         },
-        { onHookEvent: this.hookEventSink },
+        { onHookEvent: this.hookEventSink, signal: controller.signal },
       );
 
       const parent = createRegistry();
@@ -663,11 +662,7 @@ export class AgentManager {
         workspace: record.worktree,
         maxTurns: definition.maxTurns ?? this.config.maxTurns,
         autoCompactEnabled: true,
-        tasks: [],
-        backgroundShells: { nextId: 1, shells: new Map() },
-        fileObservationLedger: new Map(),
         memoryContext: undefined,
-        agentManager: this,
       };
       if (definition.model) {
         agentConfig = applyModelDefaults(resolveModelProviderConfig(agentConfig, definition.model));
@@ -724,6 +719,7 @@ export class AgentManager {
           agentId: record.id,
           agentRole: record.role,
           parentSessionId: record.parentSessionId,
+          runtime,
         },
       );
       record.transcript = updated;
@@ -789,6 +785,7 @@ export class AgentManager {
         this.telemetry('failed', record);
       }
     } finally {
+      runtime.dispose('managed_agent_complete');
       this.controllers.delete(record.id);
       this.questionResolvers.delete(record.id);
       await runHooks(
@@ -845,9 +842,18 @@ export function getOrCreateAgentManager(
   parentDefinitions: ToolDefinition[],
   options: ManagerOptions = {},
 ): AgentManager {
-  if (!config.agentManager) {
-    config.agentManager = new AgentManager(config, parentDefinitions, options);
+  if (options.runtime) {
+    options.runtime.agentManager ??= new AgentManager(config, parentDefinitions, options);
+    options.runtime.agentManager.setEventSink(options.eventSink, options.hookEventSink);
+    return options.runtime.agentManager;
   }
-  config.agentManager.setEventSink(options.eventSink, options.hookEventSink);
-  return config.agentManager;
+  let manager = managersByConfig.get(config);
+  if (!manager) {
+    manager = new AgentManager(config, parentDefinitions, options);
+    managersByConfig.set(config, manager);
+  }
+  manager.setEventSink(options.eventSink, options.hookEventSink);
+  return manager;
 }
+
+const managersByConfig = new WeakMap<AgentConfig, AgentManager>();

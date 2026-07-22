@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentConfig, ToolContext, ToolDefinition } from '../types.js';
+import type { AgentConfig } from '../types/runtime.js';
+import type { ToolContext, ToolDefinition } from '../types/tools.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
 import { createToolSurface } from './catalog.js';
 import { createDefaultRegistry, createRegistry } from './registry.js';
 import { toolSuccess } from './result.js';
+import { SessionRuntime } from '../session/runtime.js';
 
 function config(): AgentConfig {
   return {
@@ -227,27 +229,28 @@ describe('tool surface discovery', () => {
 
   it('keeps session activations while a temporary capability surface hides them', () => {
     const runtimeConfig = config();
+    const runtime = new SessionRuntime();
     runtimeConfig.settings.toolDiscovery.mode = 'deferred';
     const definitions = [definition('Read'), definition('SpecialTool')];
     const root = createToolSurface({
       config: runtimeConfig,
-      context: context(),
+      context: { ...context(), runtime },
       definitions,
     });
     root.activate(['SpecialTool']);
 
     const restricted = createToolSurface({
       config: runtimeConfig,
-      context: context(),
+      context: { ...context(), runtime },
       definitions,
       capabilityRules: ['Read'],
     });
     expect(restricted.activeDefinitions().map((tool) => tool.name)).not.toContain('SpecialTool');
-    expect(runtimeConfig.toolDiscoveryState?.loaded.has('SpecialTool')).toBe(true);
+    expect(runtime.toolDiscoveryState.loaded.has('SpecialTool')).toBe(true);
 
     const restored = createToolSurface({
       config: runtimeConfig,
-      context: context(),
+      context: { ...context(), runtime },
       definitions,
     });
     expect(restored.activeDefinitions().map((tool) => tool.name)).toContain('SpecialTool');
@@ -255,6 +258,7 @@ describe('tool surface discovery', () => {
 
   it('keeps child discovery state isolated from root-session activations', () => {
     const runtimeConfig = config();
+    const runtime = new SessionRuntime();
     runtimeConfig.settings.toolDiscovery.mode = 'deferred';
     const definitions = [
       definition('Read'),
@@ -263,14 +267,14 @@ describe('tool surface discovery', () => {
     ];
     const root = createToolSurface({
       config: runtimeConfig,
-      context: context(),
+      context: { ...context(), runtime },
       definitions,
     });
     root.activate(['AgentSpawn']);
 
     const child = createToolSurface({
       config: runtimeConfig,
-      context: context(),
+      context: { ...context(), runtime },
       definitions,
       isSubagent: true,
     });
@@ -278,7 +282,7 @@ describe('tool surface discovery', () => {
     child.activeDefinitions();
 
     expect(root.activeDefinitions().map((tool) => tool.name)).toContain('AgentSpawn');
-    expect(runtimeConfig.toolDiscoveryState?.loaded.has('EvidencePublish')).toBe(false);
+    expect(runtime.toolDiscoveryState.loaded.has('EvidencePublish')).toBe(false);
   });
 });
 

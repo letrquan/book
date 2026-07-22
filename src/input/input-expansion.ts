@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'fs';
-import { execSync } from 'child_process';
+import { exec } from 'child_process';
 import { createHash } from 'crypto';
-import type { FileObservation } from '../types.js';
+import type { FileObservation } from '../types/tools.js';
 import { workspaceIdentity } from '../tools/file-provenance.js';
 import { resolveWorkspaceMentionPath } from './file-mentions.js';
 
@@ -114,8 +114,9 @@ function expandMention(filePath: string, workspace: string): string {
       : '';
 
     return `\nContents of ${resolved.relativePath}:\n\n\`\`\`\n${body}${suffix}\n\`\`\`\n`;
-  } catch (e: any) {
-    return formatMentionError(filePath, e?.message?.slice(0, 200) || 'unable to read file');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return formatMentionError(filePath, message.slice(0, 200) || 'unable to read file');
   }
 }
 
@@ -172,18 +173,50 @@ export function collectAtMentionObservations(
  * Expand !cmd shell commands to their output in user input.
  * Replaces lines starting with !<cmd> with the command's stdout.
  */
-export function expandShellCommands(input: string, workspace: string): string {
-  return input.replace(/^!(\S.*)$/gm, (_match: string, cmd: string) => {
-    try {
-      const output = execSync(cmd, {
+export async function expandShellCommands(
+  input: string,
+  workspace: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const matches = [...input.matchAll(/^!(\S.*)$/gm)];
+  if (matches.length === 0) return input;
+  let output = '';
+  let cursor = 0;
+  for (const match of matches) {
+    const index = match.index ?? 0;
+    const command = match[1];
+    output += input.slice(cursor, index);
+    output += await executeShellExpansion(command, workspace, signal);
+    cursor = index + match[0].length;
+  }
+  return output + input.slice(cursor);
+}
+
+function executeShellExpansion(
+  command: string,
+  workspace: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  return new Promise((resolve) => {
+    exec(
+      command,
+      {
         cwd: workspace,
-        encoding: 'utf-8',
-        timeout: 10000,
+        encoding: 'utf8',
+        timeout: 10_000,
         maxBuffer: 1024 * 1024,
-      }).trim();
-      return output || `(command '${cmd}' produced no output)`;
-    } catch (e: any) {
-      return `(command '${cmd}' failed: ${e.message?.slice(0, 200) || 'unknown error'})`;
-    }
+        signal,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error) {
+          const message = error.message.slice(0, 200) || 'unknown error';
+          resolve(`(command '${command}' failed: ${message})`);
+          return;
+        }
+        const value = stdout.trim();
+        resolve(value || `(command '${command}' produced no output)`);
+      },
+    );
   });
 }

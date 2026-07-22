@@ -1,13 +1,10 @@
 import { Box, Text } from 'ink';
 import { useMemo } from 'react';
 import { useTheme } from '../theme.js';
-import type {
-  CompactBoundary,
-  Message,
-  PermissionResult,
-  PlanApprovalResult,
-  RetryPhase,
-} from '../../types.js';
+import type { CompactBoundary } from '../../types/sessions.js';
+import type { Message } from '../../types/messages.js';
+import type { PermissionResult, PlanApprovalResult } from '../../types/tools.js';
+import type { RetryPhase } from '../../types/runtime.js';
 import type {
   PendingPermissionRequest,
   PendingPlanApprovalRequest,

@@ -13,6 +13,8 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 
+declare const __BOOK_VERSION__: string | undefined;
+
 /** Best-effort __dirname for ESM; undefined under tsx/tsup shim is fine. */
 function thisDir(): string | null {
   try {
@@ -24,6 +26,9 @@ function thisDir(): string | null {
 
 /** Load version from package.json (best-effort; the dist's location varies). */
 export function getPackageVersion(): string {
+  if (typeof __BOOK_VERSION__ === 'string' && __BOOK_VERSION__.length > 0) {
+    return __BOOK_VERSION__;
+  }
   // package.json is at the workspace root in dev, and bundled by tsup in dist.
   const dir = thisDir();
   const candidates = [

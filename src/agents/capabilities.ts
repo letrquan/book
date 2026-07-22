@@ -1,4 +1,4 @@
-import type { ToolCall, ToolDefinition, ToolResult } from '../types.js';
+import type { ToolCall, ToolDefinition, ToolResult } from '../types/tools.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { toolFailure } from '../tools/result.js';
 import { createRegistry, type ToolRegistry } from '../tools/registry-core.js';

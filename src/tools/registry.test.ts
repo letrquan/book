@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createDefaultRegistry, createRegistry } from './registry.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
-import type { ToolContext } from '../types.js';
+import type { ToolContext } from '../types/tools.js';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';

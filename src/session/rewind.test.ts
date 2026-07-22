@@ -4,11 +4,11 @@ import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type {
   CompactRecordData,
-  Message,
   RewindRecordData,
   SessionRecord,
   TurnCheckpointRecordData,
-} from '../types.js';
+} from '../types/sessions.js';
+import type { Message } from '../types/messages.js';
 import { SessionStore } from './store.js';
 
 const roots: string[] = [];

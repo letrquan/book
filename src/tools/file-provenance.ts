@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { readFile, stat } from 'fs/promises';
 import { normalize, relative, resolve } from 'path';
-import type { FileObservation, FileObservationOperation, ToolContext } from '../types.js';
+import type { FileObservation, FileObservationOperation, ToolContext } from '../types/tools.js';
 
 export function workspaceIdentity(workspaceRoot: string): string {
   const root = normalize(resolve(workspaceRoot));

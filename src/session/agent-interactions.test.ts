@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ToolCall, UserQuestionRequest } from '../types.js';
+import type { ToolCall, UserQuestionRequest } from '../types/tools.js';
 import { AgentInteractionController } from './agent-interactions.js';
 
 const toolCall: ToolCall = { id: 'tc-1', name: 'Bash', arguments: { command: 'ls' } };

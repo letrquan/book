@@ -70,64 +70,64 @@ describe('resolveCommandBody', () => {
     source: 'project' as const,
   };
 
-  it('substitutes $ARGUMENTS', () => {
-    const { resolved } = resolveCommandBody(cmd, 'hello world');
+  it('substitutes $ARGUMENTS', async () => {
+    const { resolved } = await resolveCommandBody(cmd, 'hello world');
     expect(resolved).toContain('echo hello world');
     expect(resolved).toContain('first is hello');
     expect(resolved).toContain('second is world');
   });
 
-  it('substitutes $* as alias for $ARGUMENTS', () => {
+  it('substitutes $* as alias for $ARGUMENTS', async () => {
     const cmd2 = { ...cmd, body: 'run $*' };
-    const { resolved } = resolveCommandBody(cmd2, 'a b c');
+    const { resolved } = await resolveCommandBody(cmd2, 'a b c');
     expect(resolved).toBe('run a b c');
   });
 
-  it('substitutes positional args', () => {
-    const { resolved } = resolveCommandBody(cmd, 'alpha beta');
+  it('substitutes positional args', async () => {
+    const { resolved } = await resolveCommandBody(cmd, 'alpha beta');
     expect(resolved).toContain('first is alpha');
     expect(resolved).toContain('second is beta');
   });
 
-  it('handles empty args', () => {
-    const { resolved } = resolveCommandBody(cmd, '');
+  it('handles empty args', async () => {
+    const { resolved } = await resolveCommandBody(cmd, '');
     expect(resolved).toBe('echo  and first is  and second is ');
   });
 
-  it('resolves named arguments from $name', () => {
+  it('resolves named arguments from $name', async () => {
     const cmdNamed = {
       ...cmd,
       body: 'File: $file, Focus: $focus',
       arguments: ['file', 'focus'] as string[],
     };
-    const { resolved } = resolveCommandBody(cmdNamed, 'src/app.ts performance');
+    const { resolved } = await resolveCommandBody(cmdNamed, 'src/app.ts performance');
     expect(resolved).toContain('File: src/app.ts');
     expect(resolved).toContain('Focus: performance');
   });
 
-  it('resolves ${BOOK_DATE} env var', () => {
+  it('resolves ${BOOK_DATE} env var', async () => {
     const cmdEnv = { ...cmd, body: 'Today is ${BOOK_DATE}' };
-    const { resolved } = resolveCommandBody(cmdEnv, '');
+    const { resolved } = await resolveCommandBody(cmdEnv, '');
     const today = new Date().toISOString().split('T')[0];
     expect(resolved).toContain(today);
   });
 
-  it('resolves ${BOOK_WORKSPACE} from context', () => {
+  it('resolves ${BOOK_WORKSPACE} from context', async () => {
     const cmdEnv = { ...cmd, body: 'Workspace: ${BOOK_WORKSPACE}' };
-    const { resolved } = resolveCommandBody(cmdEnv, '', { workspace: '/test/path' });
+    const { resolved } = await resolveCommandBody(cmdEnv, '', { workspace: '/test/path' });
     expect(resolved).toContain('Workspace: /test/path');
   });
 
-  it('resolves shell injection from !`cmd`', () => {
+  it('resolves shell injection from !`cmd`', async () => {
     const cmdShell = { ...cmd, body: 'Output: !`echo hello_from_shell`' };
-    const { resolved, shellErrors } = resolveCommandBody(cmdShell, '');
+    const { resolved, shellErrors } = await resolveCommandBody(cmdShell, '');
     expect(resolved).toContain('hello_from_shell');
     expect(shellErrors).toHaveLength(0);
   });
 
-  it('respects shell-style quoting', () => {
+  it('respects shell-style quoting', async () => {
     const cmdQuoted = { ...cmd, body: 'First: $1, Second: $2' };
-    const { resolved } = resolveCommandBody(cmdQuoted, '"hello world" arg2');
+    const { resolved } = await resolveCommandBody(cmdQuoted, '"hello world" arg2');
     expect(resolved).toContain('First: hello world');
     expect(resolved).toContain('Second: arg2');
   });

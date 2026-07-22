@@ -12,18 +12,18 @@ import type {
   CompactBoundary,
   CompactRecordData,
   LoadedSession,
-  Message,
   RewindRecordData,
   RewindTarget,
   SessionHistorySearchResult,
   SessionMeta,
   SessionRecord,
   TurnCheckpointRecordData,
-} from '../types.js';
+} from '../types/sessions.js';
+import type { Message } from '../types/messages.js';
 import { createDebugLogger } from '../debug-log.js';
 import { normalizeToolResult } from '../tools/result.js';
 
-export type { SessionMeta } from '../types.js';
+export type { SessionMeta } from '../types/sessions.js';
 
 const log = createDebugLogger('session:store');
 const SEARCH_LIMIT_DEFAULT = 10;

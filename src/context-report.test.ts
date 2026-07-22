@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { estimateTokens, buildContextBreakdown, buildContextReport } from './context-report.js';
-import type { Message } from './types.js';
+import type { Message } from './types/messages.js';
 import { toolSuccess } from './tools/result.js';
 
 function msg(role: 'user' | 'assistant', content: string, toolCalls = 0, toolResults = 0): Message {

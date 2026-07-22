@@ -1,4 +1,5 @@
-import type { Message, Usage, UserQuestionRequest } from '../types.js';
+import type { Message, Usage } from '../types/messages.js';
+import type { UserQuestionRequest } from '../types/tools.js';
 
 export type AgentMode = 'adaptive' | 'manual' | 'off';
 export type AgentRole = 'explorer' | 'patcher' | 'validator' | 'custom';

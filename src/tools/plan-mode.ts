@@ -1,4 +1,5 @@
-import type { PermissionMode, ToolContext, ToolDefinition, ToolResult } from '../types.js';
+import type { PermissionMode } from '../types/runtime.js';
+import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 export const READ_ONLY_PLAN_TOOLS = new Set([

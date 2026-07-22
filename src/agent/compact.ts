@@ -1,16 +1,15 @@
 import { z } from 'zod';
+import type { AgentConfig } from '../types/runtime.js';
 import type {
-  AgentConfig,
   CheckpointSourceRef,
   CompactCoverageReason,
   CompactResult,
   CompactTrigger,
   ConversationCheckpointCoverage,
   ConversationCheckpointV2,
-  Message,
-  Usage,
-} from '../types.js';
-import { chatCompletionStream } from '../provider/index.js';
+} from '../types/sessions.js';
+import type { Message, Usage } from '../types/messages.js';
+import { createProvider, type Provider } from '../provider/index.js';
 import { runHooks } from '../hooks.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import {
@@ -251,6 +250,7 @@ export interface RunCompactOptions {
   signal?: AbortSignal;
   onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
   minMessages?: number;
+  provider?: Provider;
 }
 
 export async function runCompact(
@@ -266,7 +266,15 @@ export async function runCompact(
     return { status: 'skipped', reason: 'too-short', message: 'Not enough messages to compact.' };
   }
 
-  const hookResult = await runPreCompactHooks(config, options);
+  let hookResult: Extract<CompactResult, { status: 'skipped' }> | undefined;
+  try {
+    hookResult = await runPreCompactHooks(config, options);
+  } catch (error) {
+    if (options.signal?.aborted) {
+      return { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' };
+    }
+    throw error;
+  }
   if (hookResult) return hookResult;
   if (options.signal?.aborted) {
     return { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' };
@@ -370,7 +378,13 @@ export async function runCompact(
         statistics,
       );
       modelCalls++;
-      let generated = await generateCheckpoint(config, prompt, checkpointBudget, options.signal);
+      let generated = await generateCheckpoint(
+        config,
+        prompt,
+        checkpointBudget,
+        options.signal,
+        options.provider,
+      );
       if (!generated.ok) {
         if (generated.contextOverflow) {
           baseReasons.add('context-overflow');
@@ -398,6 +412,7 @@ export async function runCompact(
           repairPrompt,
           checkpointBudget,
           options.signal,
+          options.provider,
         );
         if (!generated.ok) {
           if (generated.contextOverflow) {
@@ -639,7 +654,7 @@ async function runPreCompactHooks(
       trigger: options.trigger,
       focus: options.focus,
     },
-    { onHookEvent: options.onHookEvent },
+    { onHookEvent: options.onHookEvent, signal: options.signal },
   );
   const blocked = results.find((result) => result.action === 'block');
   return blocked
@@ -891,11 +906,12 @@ async function generateCheckpoint(
   prompt: string,
   maxOutputTokens: number,
   signal?: AbortSignal,
+  provider: Provider = createProvider(config),
 ): Promise<GenerateResult> {
   let text = '';
   let sawDone = false;
   try {
-    for await (const event of chatCompletionStream(
+    for await (const event of provider.stream(
       config,
       [
         { role: 'system', content: CHECKPOINT_SYSTEM },
@@ -1461,6 +1477,7 @@ export async function runPostCompactHooks(
     sessionId?: string;
     focus?: string;
     onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
+    signal?: AbortSignal;
   },
 ): Promise<void> {
   const hooks = config.settings.hooks.PostCompact ?? [];
@@ -1476,7 +1493,7 @@ export async function runPostCompactHooks(
         trigger: opts.trigger,
         focus: opts.focus,
       },
-      { onHookEvent: opts.onHookEvent },
+      { onHookEvent: opts.onHookEvent, signal: opts.signal },
     );
   } catch (error) {
     log.warn('PostCompact hook failed', error instanceof Error ? error.message : String(error));

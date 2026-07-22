@@ -6,7 +6,8 @@
  * token estimator). The real per-turn token counts come from the provider via
  * onUsage; this is the structural breakdown the user asks for with /context.
  */
-import type { CompactBoundary, Message } from './types.js';
+import type { CompactBoundary } from './types/sessions.js';
+import type { Message } from './types/messages.js';
 import { estimateMessageTokens } from './agent/compact.js';
 
 /** Rough token estimate for an arbitrary string. ~4 chars/token for English/code. */

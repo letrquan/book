@@ -1,5 +1,5 @@
-import { execSync } from 'child_process';
-import type { SlashCommand } from '../types.js';
+import { exec } from 'child_process';
+import type { SlashCommand } from '../types/commands.js';
 
 export interface ParsedSlashInput {
   name: string;
@@ -131,51 +131,24 @@ export function resolveVariables(
  *   ```!           — fenced code block for multi-line commands
  *   ```
  *
- * Each shell command runs via execSync with a 5-second timeout.
+ * Each shell command runs asynchronously with a 5-second timeout.
  * Output replaces the placeholder inline. Errors are collected.
  */
-export function resolveShellInjection(
+export async function resolveShellInjection(
   body: string,
   workspace: string,
-): { resolved: string; errors: string[] } {
+  signal?: AbortSignal,
+): Promise<{ resolved: string; errors: string[] }> {
   const errors: string[] = [];
-  let resolved = body;
+  let resolved = await replaceAsync(body, /```!\s*\n([\s\S]*?)```/g, async (_match, command) =>
+    executeInjection(command.trim(), workspace, errors, 'block', signal),
+  );
 
-  // Fenced code blocks: ```! ... ```
-  resolved = resolved.replace(/```!\s*\n([\s\S]*?)```/g, (_match: string, cmd: string) => {
-    try {
-      return execSync(cmd.trim(), {
-        cwd: workspace,
-        encoding: 'utf-8',
-        timeout: 5000,
-        maxBuffer: 1024 * 1024, // 1MB
-      }).trim();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      errors.push(`Shell block failed: ${msg}`);
-      return `[shell error: ${msg}]`;
-    }
-  });
-
-  // Inline backtick commands: !`cmd` or `!cmd`
-  resolved = resolved.replace(/!?`([^`]+)`/g, (_match: string, cmd: string) => {
-    // Only expand patterns with ! prefix (either !`cmd` or `!cmd`).
-    // Skip regular markdown inline code like `code`.
-    const isShell = _match.startsWith('!`') || cmd.startsWith('!');
-    if (!isShell) return _match;
-    const shellCmd = cmd.startsWith('!') ? cmd.slice(1).trim() : cmd.trim();
-    try {
-      return execSync(shellCmd, {
-        cwd: workspace,
-        encoding: 'utf-8',
-        timeout: 5000,
-        maxBuffer: 1024 * 1024,
-      }).trim();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      errors.push(`Shell command '${shellCmd}' failed: ${msg}`);
-      return `[shell error: ${msg}]`;
-    }
+  resolved = await replaceAsync(resolved, /!?`([^`]+)`/g, async (match, command) => {
+    const isShell = match.startsWith('!`') || command.startsWith('!');
+    if (!isShell) return match;
+    const shellCommand = command.startsWith('!') ? command.slice(1).trim() : command.trim();
+    return executeInjection(shellCommand, workspace, errors, 'command', signal);
   });
 
   return { resolved, errors };
@@ -187,25 +160,79 @@ export function resolveShellInjection(
  *
  * Returns the fully resolved body and any shell errors encountered.
  */
-export function resolveCommandBody(
+export async function resolveCommandBody(
   command: SlashCommand,
   args: string,
   context?: { sessionId?: string; workspace?: string; model?: string },
-): { resolved: string; shellErrors: string[] } {
+  signal?: AbortSignal,
+): Promise<{ resolved: string; shellErrors: string[] }> {
   const argv = parseArgs(args);
   const namedArgs = command.arguments ?? [];
 
   // Step 1: Resolve shell injections first (raw body, before var substitution).
   // This allows shell commands to produce text that may contain $variables.
-  const { resolved: afterShell, errors } = resolveShellInjection(
+  const { resolved: afterShell, errors } = await resolveShellInjection(
     command.body,
     context?.workspace ?? process.cwd(),
+    signal,
   );
 
   // Step 2: Resolve variables ($ARGUMENTS, $1..$9, $name, ${ENV}).
   const resolved = resolveVariables(afterShell, argv, namedArgs, context);
 
   return { resolved, shellErrors: errors };
+}
+
+async function replaceAsync(
+  input: string,
+  pattern: RegExp,
+  replacer: (match: string, capture: string) => Promise<string>,
+): Promise<string> {
+  const matches = [...input.matchAll(pattern)];
+  let output = '';
+  let cursor = 0;
+  for (const match of matches) {
+    const index = match.index ?? 0;
+    output += input.slice(cursor, index);
+    output += await replacer(match[0], match[1]);
+    cursor = index + match[0].length;
+  }
+  return output + input.slice(cursor);
+}
+
+function executeInjection(
+  command: string,
+  workspace: string,
+  errors: string[],
+  kind: 'block' | 'command',
+  signal?: AbortSignal,
+): Promise<string> {
+  return new Promise((resolve) => {
+    exec(
+      command,
+      {
+        cwd: workspace,
+        encoding: 'utf8',
+        timeout: 5_000,
+        maxBuffer: 1024 * 1024,
+        signal,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (!error) {
+          resolve(stdout.trim());
+          return;
+        }
+        const message = error.message;
+        errors.push(
+          kind === 'block'
+            ? `Shell block failed: ${message}`
+            : `Shell command '${command}' failed: ${message}`,
+        );
+        resolve(`[shell error: ${message}]`);
+      },
+    );
+  });
 }
 
 function escapeRegex(s: string): string {

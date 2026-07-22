@@ -69,7 +69,6 @@ function stripTrigger(text: string): string {
 
 export function detectMemoryCandidate(input: DetectInput): MemoryCandidate | null {
   const raw = input.userMessage.trim();
-  const lower = raw.toLowerCase();
   if (/^(ok|okay|yes|yep|thanks|thank you|sounds good|great|cool)[.!\s]*$/i.test(raw)) return null;
 
   const explicit =

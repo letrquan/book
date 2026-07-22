@@ -1,4 +1,4 @@
-import type { ToolContext, ToolDefinition, ToolResult } from '../types.js';
+import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { getOrCreateAgentManager } from '../agents/manager.js';
 import type {
   AgentTopology,
@@ -25,6 +25,7 @@ function manager(ctx: ToolContext) {
   return getOrCreateAgentManager(ctx.agentConfig, ctx.availableTools, {
     eventSink: ctx.onAgentEvent,
     hookEventSink: ctx.onHookEvent,
+    runtime: ctx.runtime,
   });
 }
 

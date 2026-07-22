@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve, sep } from 'path';
 import { SessionStore } from '../session/store.js';
-import type { RewindSnapshotStoreInterface } from '../types.js';
+import type { RewindSnapshotStoreInterface } from '../types/sessions.js';
 import { createRewindSnapshotStore } from './snapshot-store.js';
 
 export interface EphemeralRewindEnvironment {

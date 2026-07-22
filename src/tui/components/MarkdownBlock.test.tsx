@@ -3,7 +3,7 @@ import { render, cleanup } from 'ink-testing-library';
 import { Text } from 'ink';
 import React from 'react';
 import { ThemeContext } from '../theme.js';
-import { DEFAULT_THEME } from '../../types.js';
+import { DEFAULT_THEME } from '../../types/theme.js';
 import { MarkdownBlock, useThrottledValue, wrapParagraphLines } from './MarkdownBlock.js';
 import { displayWidth } from './word-wrap.js';
 

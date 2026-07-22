@@ -27,12 +27,9 @@ import {
   type ThemeTokens,
   type ResolvedTheme,
 } from './theme.js';
-import type {
-  AgentConfig,
-  CommandContext,
-  RewindSnapshotStoreInterface,
-  SessionStoreInterface,
-} from '../types.js';
+import type { AgentConfig } from '../types/runtime.js';
+import type { CommandContext } from '../types/commands.js';
+import type { RewindSnapshotStoreInterface, SessionStoreInterface } from '../types/sessions.js';
 import type { SessionBootstrap } from '../session/resolve.js';
 import { DensityContext, resolveTuiDensity } from './density.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
@@ -44,9 +41,7 @@ import {
 } from '../commands/builtins.js';
 import { discoverSkills } from '../skills.js';
 import { runGit } from '../tools/git.js';
-import { costReport, PRICING, usageReport } from '../pricing.js';
 import { getMemoryIndex } from '../memory-display.js';
-import { buildContextBreakdown, buildContextReport } from '../context-report.js';
 import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { persistSettingLocal } from './persist.js';
@@ -62,6 +57,7 @@ import {
 } from './tool-presentation.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
+import type { InteractiveAssets } from './interactive-assets.js';
 
 const uiLog = createUiDebugLogger('tui:app');
 
@@ -111,6 +107,7 @@ export function providerRemovalMessage(
 
 interface AppProps {
   config: AgentConfig;
+  interactiveAssets?: InteractiveAssets;
   session: SessionBootstrap & {
     store?: SessionStoreInterface;
     timelineStore?: SessionStoreInterface;
@@ -146,7 +143,7 @@ interface AppProps {
  *   Shift+Tab — cycle permission mode
  *   Ctrl+/   — toggle keyboard shortcuts reference
  */
-export function App({ config, session, redrawViewport }: AppProps) {
+export function App({ config, session, redrawViewport, interactiveAssets }: AppProps) {
   const {
     messages,
     contextHistory,
@@ -168,6 +165,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
     pendingUserQuestionCount,
     agentTodos,
     liveConfig,
+    runtime,
     localProviderIds,
     localProviderModelCounts,
     sessionId,
@@ -218,27 +216,42 @@ export function App({ config, session, redrawViewport }: AppProps) {
   const [showThemePicker, setShowThemePicker] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [showRewindPicker, setShowRewindPicker] = useState(false);
+  const [isResolvingCommand, setIsResolvingCommand] = useState(false);
   const [draftRestore, setDraftRestore] = useState<{ key: number; value: string }>();
   const [followRequestKey, setFollowRequestKey] = useState(0);
+  const commandResolutionRef = useRef<AbortController | null>(null);
   const [currentTheme, setCurrentTheme] = useState<ResolvedTheme>(
     () =>
+      interactiveAssets?.initialTheme ??
       resolveTheme(config.workspace, config.settings.theme ?? 'dark') ?? {
         preference: 'dark',
         resolvedName: 'dark',
         tokens: DARK_THEME,
       },
   );
-  const [customThemes, setCustomThemes] = useState<string[]>(() =>
-    listCustomThemes(config.workspace),
+  const [customThemes, setCustomThemes] = useState<string[]>(
+    () => interactiveAssets?.customThemes ?? listCustomThemes(config.workspace),
   );
   const { tasks, addTask, updateTaskStatus, removeTask, clearTasks } = useTasks();
   const theme = currentTheme.tokens;
   const { exit: exitApp } = useApp();
+  const interrupt = useCallback(() => {
+    commandResolutionRef.current?.abort();
+    commandResolutionRef.current = null;
+    cancel();
+  }, [cancel]);
 
-  // Discover slash commands on startup.
-  const commands = useMemo(() => discoverCommands(config.workspace), [config.workspace]);
+  useEffect(() => {
+    return () => commandResolutionRef.current?.abort();
+  }, []);
+
+  const [commands, setCommands] = useState(
+    () => interactiveAssets?.commands ?? discoverCommands(config.workspace),
+  );
   const builtinCommandRegistry = useMemo(() => createBuiltinCommandRegistry(), []);
-  const skills = useMemo(() => discoverSkills(config.workspace), [config.workspace]);
+  const [skills, setSkills] = useState(
+    () => interactiveAssets?.skills ?? discoverSkills(config.workspace),
+  );
   const modelOptions = useMemo(() => buildModelOptions(liveConfig.settings), [liveConfig.settings]);
   const effortLevels = useMemo(() => getAvailableEffortLevels(liveConfig), [liveConfig.modelInfo]);
 
@@ -341,7 +354,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       } else if (key.ctrl && input === 'c') {
         if (pendingUserQuestion) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
-          cancel();
+          interrupt();
         } else {
           uiLog.event('input:Ctrl+C', { action: 'noop-modal-active' });
         }
@@ -368,18 +381,18 @@ export function App({ config, session, redrawViewport }: AppProps) {
 
     // Escape aborts an in-flight stream when no prompt owns the keyboard.
     if (key.escape) {
-      if (isThinking) {
+      if (isThinking || isResolvingCommand) {
         uiLog.event('input:Escape', { action: 'cancel-stream' });
-        cancel();
+        interrupt();
         return;
       }
       uiLog.event('input:Escape', { action: 'noop-idle' });
     }
     // Ctrl+C — cancel an in-flight stream; otherwise preserve normal terminal exit.
     if (key.ctrl && input === 'c') {
-      if (isThinking) {
+      if (isThinking || isResolvingCommand) {
         uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
-        cancel();
+        interrupt();
         return;
       }
       uiLog.event('input:Ctrl+C', { action: 'exit' });
@@ -475,7 +488,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
   );
 
   const handleSubmit = useCallback(
-    (value: string) => {
+    async (value: string) => {
       setFollowRequestKey((key) => key + 1);
       // Coarse slash-command dispatch trace (one event per submit).
       const parsedSlash = parseSlashInput(value);
@@ -489,8 +502,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
         uiLog.event('submit:text', { len: value.length, disabled: isThinking });
       }
       // Built-ins resolve through the shared exact-name registry before custom commands.
-      let commandName = parsedSlash?.name ?? '';
-      let commandArg = parsedSlash?.rawArguments ?? '';
+      const commandName = parsedSlash?.name ?? '';
+      const commandArg = parsedSlash?.rawArguments ?? '';
       if (parsedSlash) {
         const commandContext: BuiltinCommandContext = {
           workspace: config.workspace,
@@ -503,6 +516,19 @@ export function App({ config, session, redrawViewport }: AppProps) {
           effortUnavailableError: getEffortUnavailableError(liveConfig),
           runtimeConfig: liveConfig,
           mode,
+          usage,
+          turnDurationMs,
+          contextHistory,
+          compactBoundaries,
+          commandCount: commands.length,
+          skillCount: skills.length,
+          resolveAmbientContext: () => ({
+            subagentCount: discoverAgents(config.workspace).length,
+            hasMemoryIndex: Boolean(
+              liveConfig.memoryContext?.indexLoaded ?? getMemoryIndex(config.workspace).indexFile,
+            ),
+            hasClaudeMdLoader: discoverClaudeMd(config.workspace).length > 0,
+          }),
         };
         let effect: BuiltinCommandEffect | undefined;
         try {
@@ -518,7 +544,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
           return;
         }
         if (effect?.type === 'send-prompt') {
-          send(effect.prompt, effect.context);
+          void send(effect.prompt, effect.context);
           return;
         }
         if (effect?.type === 'local-message') {
@@ -604,157 +630,119 @@ export function App({ config, session, redrawViewport }: AppProps) {
           else setShowSkills((current) => !current);
           return;
         }
-        if (effect?.type === 'legacy') {
-          commandName = effect.commandName;
-          commandArg = effect.rawArguments;
+        if (effect?.type === 'add-task') {
+          addTask({ subject: effect.subject, status: 'pending' });
+          return;
         }
-      }
-      if (commandName === 'agents') {
-        const manager = getOrCreateAgentManager(
-          liveConfig,
-          createDefaultRegistry({ agents: true }).getDefinitions(),
-        );
-        void manager
-          .list()
-          .then((records) => {
+        if (effect?.type === 'show-diff') {
+          void runGit(['diff'], {
+            workspaceRoot: config.workspace,
+            env: process.env as Record<string, string>,
+          }).then((result) => {
             addLocalMessage(
-              records.length === 0
-                ? 'No managed agents for this repository.'
-                : records
-                    .map(
-                      (record) =>
-                        `${record.id}  ${record.role}/${record.name}  ${record.status}  apply:${record.applicationStatus}`,
-                    )
-                    .join('\n'),
+              result.error ? `✕ ${result.error}` : result.output.trim() || '(no changes)',
             );
-          })
-          .catch((error) =>
-            addLocalMessage(`✕ ${error instanceof Error ? error.message : String(error)}`),
+          });
+          return;
+        }
+        if (effect?.type === 'reload-assets') {
+          setCommands(discoverCommands(config.workspace));
+          setSkills(discoverSkills(config.workspace));
+          setCustomThemes(listCustomThemes(config.workspace));
+          addLocalMessage('Commands and skills have been reloaded.');
+          return;
+        }
+        if (effect?.type === 'managed-agent') {
+          const manager = getOrCreateAgentManager(
+            liveConfig,
+            createDefaultRegistry({ agents: true }).getDefinitions(),
+            { runtime },
           );
-      } else if (commandName === 'agent') {
-        const manager = getOrCreateAgentManager(
-          liveConfig,
-          createDefaultRegistry({ agents: true }).getDefinitions(),
-        );
-        const [actionOrId, id, ...rest] = commandArg.split(/\s+/).filter(Boolean);
-        const reportError = (error: unknown) =>
-          addLocalMessage(`✕ ${error instanceof Error ? error.message : String(error)}`);
-        if (!actionOrId) {
-          addLocalMessage(
-            'Usage: /agent <id> | /agent send <id> <message> | /agent stop <id> | /agent apply <id> [evidence-id]',
-          );
-        } else if (actionOrId === 'send' && id) {
-          void manager
-            .send(id, rest.join(' '))
-            .then((record) => addLocalMessage(JSON.stringify(record, null, 2)))
-            .catch(reportError);
-        } else if (actionOrId === 'stop' && id) {
-          void manager
-            .stop(id)
-            .then((record) => addLocalMessage(JSON.stringify(record, null, 2)))
-            .catch(reportError);
-        } else if (actionOrId === 'apply' && id) {
-          if (mode === 'plan') {
-            addLocalMessage('✕ Agent apply is unavailable in plan mode.');
-          } else {
+          const reportError = (managedError: unknown) =>
+            addLocalMessage(
+              `✕ ${managedError instanceof Error ? managedError.message : String(managedError)}`,
+            );
+          if (effect.operation === 'list') {
             void manager
-              .apply(id, rest[0])
+              .list()
+              .then((records) => {
+                addLocalMessage(
+                  records.length === 0
+                    ? 'No managed agents for this repository.'
+                    : records
+                        .map(
+                          (record) =>
+                            `${record.id}  ${record.role}/${record.name}  ${record.status}  apply:${record.applicationStatus}`,
+                        )
+                        .join('\n'),
+                );
+              })
+              .catch(reportError);
+          } else if (effect.operation === 'send') {
+            void manager
+              .send(effect.agentId!, effect.message ?? '')
+              .then((record) => addLocalMessage(JSON.stringify(record, null, 2)))
+              .catch(reportError);
+          } else if (effect.operation === 'stop') {
+            void manager
+              .stop(effect.agentId!)
+              .then((record) => addLocalMessage(JSON.stringify(record, null, 2)))
+              .catch(reportError);
+          } else if (effect.operation === 'apply') {
+            void manager
+              .apply(effect.agentId!, effect.evidenceId)
               .then((result) => addLocalMessage(JSON.stringify(result, null, 2)))
               .catch(reportError);
+          } else {
+            void manager
+              .get(effect.agentId!)
+              .then((record) =>
+                addLocalMessage(
+                  record
+                    ? JSON.stringify(record, null, 2)
+                    : `✕ Agent ${effect.agentId} was not found.`,
+                ),
+              )
+              .catch(reportError);
           }
-        } else {
-          void manager
-            .get(actionOrId)
-            .then((record) =>
-              addLocalMessage(
-                record ? JSON.stringify(record, null, 2) : `✕ Agent ${actionOrId} was not found.`,
-              ),
-            )
-            .catch(reportError);
+          return;
         }
-      } else if (commandName === 'task' && commandArg) {
-        addTask({ subject: commandArg, status: 'pending' });
-      } else if (commandName === 'diff') {
-        void runGit(['diff'], {
-          workspaceRoot: config.workspace,
-          env: process.env as Record<string, string>,
-        }).then((result) => {
-          addLocalMessage(
-            result.error ? `✕ ${result.error}` : result.output.trim() || '(no changes)',
-          );
-        });
-      } else if (commandName === 'cost') {
-        addLocalMessage(costReport(liveConfig.model, usage));
-      } else if (commandName === 'usage' || commandName === 'stats') {
-        const rate = PRICING[liveConfig.model];
-        const estimatedCostUsd =
-          usage && rate
-            ? (usage.promptTokens * rate.in + usage.completionTokens * rate.out) / 1_000_000
-            : undefined;
-        addLocalMessage(
-          usageReport(liveConfig.model, usage, {
-            currentTurn,
-            messageCount: messages.length,
-            turnDurationMs,
-          }),
-          {
-            kind: 'usage',
-            model: liveConfig.model,
-            currentTurn,
-            messageCount: messages.length,
-            turnDurationMs,
-            usage,
-            rate: rate ? { inputPerMillion: rate.in, outputPerMillion: rate.out } : undefined,
-            estimatedCostUsd,
-          },
-        );
-      } else if (commandName === 'context') {
-        const ambient = {
-          model: liveConfig.model,
-          maxTokens: liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens,
-          contextHistory,
-          compactBoundaries,
-          skillCount: skills.length,
-          commandCount: commands.length,
-          subagentCount: discoverAgents(config.workspace).length,
-          hasMemoryIndex: Boolean(
-            liveConfig.memoryContext?.indexLoaded ?? getMemoryIndex(config.workspace).indexFile,
-          ),
-          hasClaudeMdLoader: discoverClaudeMd(config.workspace).length > 0,
-        };
-        const breakdown = buildContextBreakdown(contextHistory);
-        addLocalMessage(buildContextReport(messages, ambient), {
-          kind: 'context',
-          model: ambient.model,
-          maxTokens: ambient.maxTokens,
-          estimatedTokens: breakdown.estimatedTokens,
-          totalMessages: breakdown.totalMessages,
-          userMessages: breakdown.userMessages,
-          assistantMessages: breakdown.assistantMessages,
-          toolCalls: breakdown.toolCalls,
-          toolResults: breakdown.toolResults,
-          userTokens: breakdown.byRole.user,
-          assistantTokens: breakdown.byRole.assistant,
-          ambient: {
-            commandCount: ambient.commandCount,
-            skillCount: ambient.skillCount,
-            subagentCount: ambient.subagentCount,
-            hasMemoryIndex: ambient.hasMemoryIndex,
-            hasClaudeMdLoader: ambient.hasClaudeMdLoader,
-          },
-        });
-      } else if (commandName === 'reload-skills') {
-        // Force re-discovery of commands and skills on next render.
-        addLocalMessage('Commands and skills have been reloaded.');
-      } else if (value.startsWith('/')) {
+      }
+      if (value.startsWith('/')) {
         // Custom slash command: /name [args]
         const cmd = commands.find((c) => c.name === commandName);
         if (cmd) {
-          const { resolved } = resolveCommandBody(cmd, commandArg, {
-            sessionId,
-            workspace: config.workspace,
-            model: liveConfig.model,
-          });
+          const controller = new AbortController();
+          commandResolutionRef.current?.abort();
+          commandResolutionRef.current = controller;
+          setIsResolvingCommand(true);
+          let resolved: string;
+          try {
+            ({ resolved } = await resolveCommandBody(
+              cmd,
+              commandArg,
+              {
+                sessionId,
+                workspace: config.workspace,
+                model: liveConfig.model,
+              },
+              controller.signal,
+            ));
+          } catch (resolveError) {
+            if (!controller.signal.aborted) {
+              addLocalMessage(
+                `✕ ${resolveError instanceof Error ? resolveError.message : String(resolveError)}`,
+              );
+            }
+            return;
+          } finally {
+            if (commandResolutionRef.current === controller) {
+              commandResolutionRef.current = null;
+              setIsResolvingCommand(false);
+            }
+          }
+          // Escape/Ctrl+C may abort after resolution succeeds; never dispatch stale input.
+          if (controller.signal.aborted) return;
           // Pass command context for allowed-tools and model enforcement.
           const ctx: CommandContext | undefined =
             cmd.allowedTools || cmd.model
@@ -765,17 +753,18 @@ export function App({ config, session, redrawViewport }: AppProps) {
                   allowedTools: cmd.allowedTools,
                 }
               : undefined;
-          send(resolved, ctx);
+          void send(resolved, ctx);
         } else {
           // Unknown command — send as-is (the model might handle it).
-          send(value);
+          void send(value);
         }
       } else {
-        send(value);
+        void send(value);
       }
     },
     [
       send,
+      commandResolutionRef,
       clear,
       startNewConversation,
       resumeConversation,
@@ -823,16 +812,16 @@ export function App({ config, session, redrawViewport }: AppProps) {
       if (key.ctrl && input === 'c') {
         if (pendingUserQuestion) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
-          cancel();
+          interrupt();
           return true;
         }
         if (pendingPermission || pendingPlanApproval) {
           uiLog.event('input:Ctrl+C', { action: 'noop-approval-active' });
           return true;
         }
-        if (isThinking) {
+        if (isThinking || isResolvingCommand) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
-          cancel();
+          interrupt();
           return true;
         }
         uiLog.event('input:Ctrl+C', { action: 'exit' });
@@ -875,10 +864,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
       return false; // not consumed — let text input handle it
     },
     [
-      cancel,
+      interrupt,
       endCurrentSession,
       exitApp,
       isThinking,
+      isResolvingCommand,
       pendingPermission,
       pendingPlanApproval,
       pendingUserQuestion,
@@ -1445,6 +1435,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
             />
           ) : null}
 
+          {isResolvingCommand ? <Text dimColor>Resolving command shell expansions...</Text> : null}
+
           <WorkingIndicator
             isThinking={isThinking}
             isCompacting={isCompacting}
@@ -1469,10 +1461,10 @@ export function App({ config, session, redrawViewport }: AppProps) {
             <InputBar
               key={sessionId}
               onSubmit={handleSubmit}
-              disabled={isThinking || isCompacting || isRewinding}
+              disabled={isThinking || isCompacting || isRewinding || isResolvingCommand}
               mode={mode}
               onCycleMode={cycleMode}
-              onInterrupt={cancel}
+              onInterrupt={interrupt}
               inputSuppressed={
                 ownsModalInput(
                   pendingPermission,

@@ -1,58 +1,85 @@
 # Codebase Maintainability Execution Plan
 
-- **Date:** 2026-07-21
-- **Status:** In progress
+- **Date:** 2026-07-22
+- **Status:** Complete
 - **Source:** `plans/long-term-maintainability-plan.md`
 - **Objective:** Turn the long-term maintainability roadmap into a sequence of small,
   independently releasable pull requests.
 
 ## Current Progress
 
-**Last updated:** 2026-07-21
+**Last updated:** 2026-07-22
 
-The first risk-reduction tranche is implemented. The broader application/runtime restructuring is
-not complete and should continue as separate changes rather than being collapsed into one patch.
+All planned pull requests and milestone exit gates are implemented. The original baseline and
+delivery guidance remain below as historical context; the tables in this section are the final
+requirement-by-requirement audit.
 
 ### Delivery Status
 
 | Planned work | Status | Current result |
 | --- | --- | --- |
-| PR 1: Test taxonomy and aggregate scripts | Partial | Added unit, contract, and integration configs; `npm test` remains the aggregate; `npm run check` is available. Process-heavy tests run with one worker, and the Windows/Node 24 integration tier now completes without ConPTY helper failures. The unit suite also remains on one worker because parallel TUI tests were flaky. |
-| PR 2: Architecture checks | Complete | Added cycle/layer/entry-point checks and a failing fixture test. The non-TUI import from `tui/` and the registry/agent-manager/task cycle are removed; no exception ledger remains. |
-| PR 3: Characterization fixtures | Complete | Added reusable MCP stdio, scripted-provider, temporary `SessionStore`, and async event collector fixtures. Contract coverage is offline and deterministic across SDK, headless, MCP, and PTY paths. |
-| PR 4: Settings repository core | Complete | Added schema-backed key metadata, distinct document read states, cloned dot-path mutations, complete validation, atomic sibling-file replacement, structured diagnostics, malformed-file preservation, and secret-redacted mutation metadata. |
-| PR 5: Settings merge policies | Complete | Added explicit array policies, normalized/deduplicated `additionalDirectories`, permission/hook accumulation, replacement for unregistered arrays, and injectable resolution paths. |
-| PR 6: Migrate all writers | Partial | CLI config writes, TUI persistence, BYOK provider removal, permission migration, and preference writes use the repository. CLI/TUI help metadata is not fully unified. |
-| PR 7: Stream-JSON framing | Complete | One bounded parser now handles fragmentation, multiple records, CRLF, unterminated records, invalid JSON, invalid shapes, and oversized lines; headless stdin uses it. |
-| PR 8: MCP connection safety | Substantially complete | Config validation, concurrent connection attempts, initialization/request timeouts, abort support, bounded stderr, version metadata, and exactly-once pending settlement are implemented. Contract tests now cover the full process-mode matrix, mixed healthy/unhealthy servers, timeout/abort/disconnect pending cleanup, bounded stderr, and child exit after disconnect. Explicit active-handle/listener accounting across failed initialization remains. |
-| PR 9: SDK runtime event bridge | Substantially complete | Headless exposes a direct event callback; SDK events stream through an async queue before completion, cancellation is propagated, and real/ephemeral session identity is covered. Broader cancellation tests across every hook/tool/compaction path remain. |
-| PRs 10-11: CI and quality ratchet | Partial | Settings precedence CLI assertions are now exact and offline. CI matrix, secret-free required checks, the remaining vacuous process assertions, coverage floors, dependency audits, type-aware lint rules, and zero-warning enforcement remain. |
-| PR 12: Exact command contract | Complete | Built-ins use one typed registry for exact names, explicit aliases, availability checks, collision policy, metadata, and execution. Registry-wide tests enforce unique names, aliases, metadata, and handlers. |
-| PR 13: Prompt/report handler migration | Complete | `/review`, `/security-review`, `/release-notes`, `/feedback`, `/export`, and `/init` execute outside `src/tui/app.tsx` and return typed prompt or local-message effects. |
-| PR 14: Settings/session/UI handler migration | Complete | Session lifecycle, modal, panel, config, memory, model, effort, and theme commands execute through typed handlers/effects. Config help uses schema-backed key metadata, and shared effort policy no longer lives under `tui/`. |
-| Milestone 5: Shared `AgentSession` | Partial | Added a stable public `AgentEvent` contract plus immutable session snapshot/reducer types. `AgentSession` now owns send preflight checkpointing, input expansion/provenance, user timeline persistence, agent-loop invocation, stale-run-safe authoritative snapshots, shared event emission, interaction settlement, cancellation/reset composition, send lease completion, compaction execution/boundary persistence/post-hooks, and exactly-once session start/end hooks. `useAgent` projects terminal and compaction state into React but still owns optimistic transcript projection, UI cleanup, compaction trigger policy, and session store selection/create/resume transitions. |
-| PR 15: Break boundary violations | Complete | Input expansion and file-mention discovery live in `src/input/`. Registry mechanics are split from default tool composition, manager/capability code depends on the core, and all architecture exceptions are removed. |
-| PRs 16-20 | Not started | Session runtime ownership, provider port/transport, type-hub split, non-blocking interaction work, and package/release checks remain. |
+| PR 1: Test taxonomy and aggregate scripts | Complete | Unit, contract, and integration suites have explicit configs; `npm test` remains the aggregate; pure unit tests run with four workers while process-heavy tiers remain isolated. |
+| PR 2: Architecture checks | Complete | Cycle, layer, entry-point, removed type-hub, and blocking child-process rules fail on fixtures and pass with no exception ledger. |
+| PR 3: Characterization fixtures | Complete | Deterministic scripted-provider, MCP stdio, temporary session/settings, event-collector, SDK, headless, and PTY fixtures run without network credentials or user-home state. |
+| PR 4: Settings repository core | Complete | Settings writes use schema validation, distinct malformed/absent states, cloned mutations, atomic sibling replacement, structured diagnostics, malformed-file preservation, and secret redaction. |
+| PR 5: Settings merge policies | Complete | Array policies, normalized/deduplicated directories, documented permission/hook accumulation, default replacement, and injectable resolution paths are directly tested. |
+| PR 6: Migrate all writers | Complete | CLI, TUI, BYOK removal, permission migration, and preference writes use the repository; CLI and TUI settings help share schema-backed metadata. |
+| PR 7: Stream-JSON framing | Complete | One bounded parser owns fragmentation, CRLF, multiple/final records, shape validation, invalid JSON, and oversized-line diagnostics for headless input. |
+| PR 8: MCP connection safety | Complete | Validation, concurrent initialization, timeout/abort handling, bounded stderr, exactly-once settlement, child exit, and process/timer/listener cleanup are covered across success and failure modes. |
+| PR 9: SDK runtime event bridge | Complete | SDK events stream live from shared runtime events, use real or ephemeral session identity correctly, and propagate cancellation through provider, tool, hook, compaction, lifecycle, managed-agent, and MCP paths. |
+| PR 10: Deterministic required checks | Complete | Required CI uses Ubuntu and Windows on Node 20 and 24 without provider secrets; exact settings, PTY exit, and visible TUI behavior assertions replace vacuous checks. |
+| PR 11: Quality ratchet | Complete | Lint has zero warnings with type-aware promise/unsafe-boundary rules, global and critical-module coverage floors are enforced, and production/development audits are part of CI/release checks. |
+| PR 12: Exact command contract | Complete | One typed exact-match registry owns names, aliases, collisions, availability, help/autocomplete metadata, and execution. |
+| PR 13: Prompt/report handlers | Complete | Prompt/report commands execute outside React and return typed effects. |
+| PR 14: Settings/session/UI handlers | Complete | All remaining built-ins, including task/agent/diff/reload/usage/cost/context behavior, execute through typed handlers/effects; `App` contains no command-name business logic. |
+| Milestone 5: Shared `AgentSession` | Complete | TUI, headless, and SDK share lifecycle, send, persistence, interaction settlement, cancellation, compaction, and session transitions; React retains projection and UI actions only. |
+| PR 15: Break boundary violations | Complete | Shared input modules, split registry composition, injected catalogs, and a leaf TUI remove all architecture exceptions and cycles. |
+| PR 16: Configuration/runtime ownership | Complete | Resolved configuration is deeply frozen; `SessionRuntime` owns per-session tasks, shells, observations, discovery state, abort controllers, timers, trace identity, child processes, and disposal. |
+| PR 17: Provider port and reliability | Complete | Agent and compaction paths consume an injected `Provider`; adapters share retry classification, `Retry-After`, jitter, total budgets, request timeouts, stalled-stream handling, abort composition, and bounded error extraction. |
+| PR 18: Type-hub split | Complete | Domain types live under `src/types/`; every caller migrated, `src/types.ts` was removed, and architecture checks forbid its return. |
+| PR 19: Responsive interactive work | Complete | Git polling and shell resolution are asynchronous/cancellable, discovery is performed before React render, synchronous child-process APIs are forbidden in production, and UI latency budgets are enforced. |
+| PR 20: Package and version checks | Complete | One version source feeds CLI/MCP, consistency checks cover package/lock/changelog/tag surfaces, packed CLI/SDK smoke tests pass, npm metadata and Dependabot are configured, and release/rollback steps are documented. |
 
 ### Current Verification
 
-- `npm run check` passes: formatting, lint, typecheck, architecture checks, 1,065 unit tests,
-  and 20 contract tests.
-- `npm run build` passes.
-- Lint still reports 33 warnings; warning elimination and `--max-warnings 0` remain PR 11 work.
-- `npm run test:integration` passes on Windows/Node 24: 6 files, 48 tests passed, 4 skipped, in
-  about 53 seconds. The TUI harness now awaits PTY exit, reports bounded startup/assertion
-  diagnostics, separates text and Enter writes for ConPTY, avoids node-pty's racing
-  `AttachConsole` cleanup helper, and isolates workspace/home/session state.
-- Settings CLI integration now asserts exact resolved values through `book config get` without
-  starting the agent runtime or making provider requests. The config subcommand honors root
-  `--settings` and `--no-settings` flags.
-- Architecture checks enforce all known boundaries with no cycle or layer exceptions.
+- `npm run check` passes formatting, zero-warning lint, typecheck, architecture checks, 1,100 unit
+  tests, and 20 contract tests.
+- `npm test` passes after the build: 1,100 unit tests, 20 contract tests, and 49 integration tests;
+  4 platform/fixture cases are intentionally skipped.
+- `npm run test:coverage` passes 1,120 tests and every global/critical-module threshold. The measured
+  aggregate is 70.25% statements, 64.03% branches, 71.11% functions, and 72.49% lines.
+- `npm run bench:ui` passes the explicit budgets: markdown 18.75/75 ms, large transcript
+  126.93/750 ms, diff 44.31/175 ms, and input submission 1.08/75 ms.
+- `npm run release:check` passes version consistency, audit, package installation, installed CLI,
+  and installed SDK smoke checks. `npm run audit:prod` reports zero vulnerabilities; the full audit
+  meets the high-severity gate with one known low-severity development-only `esbuild` advisory.
+- `git diff --check` passes, the architecture graph has no exceptions or cycles, `src/types.ts` is
+  absent, and production source contains no synchronous child-process API.
+- Local verification was performed on Windows with Node 24.18.0 and npm 11.16.0. The checked-in CI
+  matrix covers Ubuntu/Windows and Node 20/24 without secrets; this record does not claim a remote
+  GitHub Actions run occurred locally.
 
-### Next Recommended Sequence
+### Definition of Done Audit
 
-1. Move session selection/create/resume/clear state transitions behind the session contract.
-2. Switch headless and SDK execution to the shared `AgentSession` lifecycle.
+| Requirement | Result | Evidence |
+| --- | --- | --- |
+| Settings changes are validated, atomic, shared, and non-destructive | Met | `settings-repository` owns production writes; malformed, invalid, failure, precedence, metadata, and redaction cases are tested. |
+| Stream framing and MCP process behavior are bounded and directly tested | Met | Bounded stream parsing and the full MCP timeout/abort/exit/crash/listener/process cleanup matrix pass. |
+| SDK events stream live with cancellation and real session persistence | Met | The SDK consumes raw shared events through an async queue and cancellation tests span every owned runtime path. |
+| Required CI is deterministic on Ubuntu and Windows without secrets | Met | CI matrices both operating systems and Node 20/24; required jobs contain no provider credential references and use offline fixtures. |
+| Command metadata and execution have one exact-match registry | Met | Registry contract tests cover unique names, aliases, metadata, collision policy, availability, and handlers. |
+| TUI, headless, and SDK share one `AgentSession` lifecycle | Met | Lifecycle, send, persistence, interactions, compaction, cancellation, and session transitions are owned below host layers. |
+| Runtime state is separate from immutable configuration | Met | Resolved config is deeply frozen and mutable resources have one per-session `SessionRuntime` owner/disposal path. |
+| Dependency rules are enforced with no exceptions or cycles | Met | Architecture checks pass with no ledger; TUI is a leaf and the removed compatibility type hub is forbidden. |
+| Providers implement an injected port with one shared reliability layer | Met | Provider port/factory tests and shared reliability tests cover both adapters and compaction/agent injection. |
+| Interactive code performs no blocking process work | Met | Git polling, shell resolution, and rewind Git identity avoid synchronous processes; the architecture gate forbids `execSync`, `execFileSync`, and `spawnSync` in production. |
+| Package, CLI, MCP, changelog, and release tags agree on version | Met | `version:check`, package smoke, installed CLI/SDK smoke, and the release checklist pass; tag validation is enforced when HEAD is tagged. |
+
+### Completion Evidence
+
+No temporary adapter introduced by this plan, architecture exception, or planned follow-up remains.
+Future maintenance should use the established gates rather than extend this plan's milestone
+sequence.
 
 ## Executive Direction
 

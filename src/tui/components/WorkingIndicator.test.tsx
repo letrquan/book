@@ -4,7 +4,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { toolActivityText } from '../working-activity.js';
 import { WorkingIndicator } from './WorkingIndicator.js';
-import type { Message } from '../../types.js';
+import type { Message } from '../../types/messages.js';
 
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');

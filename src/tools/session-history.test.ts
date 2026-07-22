@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { SessionStoreInterface, ToolContext } from '../types.js';
+import type { SessionStoreInterface } from '../types/sessions.js';
+import type { ToolContext } from '../types/tools.js';
 import { createDefaultRegistry } from './registry.js';
 import { READ_ONLY_PLAN_TOOLS } from './plan-mode.js';
 

@@ -9,7 +9,7 @@ import {
   makeMessage,
   removeTrailingEmptyAssistantPlaceholder,
 } from './streaming-state.js';
-import type { Message } from '../../types.js';
+import type { Message } from '../../types/messages.js';
 import { toolFailure, toolSuccess } from '../../tools/result.js';
 
 beforeEach(() => {

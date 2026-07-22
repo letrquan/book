@@ -6,7 +6,7 @@ import {
   resolveShellInjection,
   resolveCommandBody,
 } from './resolve.js';
-import type { SlashCommand } from '../types.js';
+import type { SlashCommand } from '../types/commands.js';
 
 describe('parseSlashInput', () => {
   it('uses exact command identity and preserves raw arguments', () => {
@@ -119,18 +119,21 @@ describe('resolveVariables', () => {
 });
 
 describe('resolveShellInjection', () => {
-  it('injects inline !`cmd` output', () => {
-    const { resolved, errors } = resolveShellInjection('Output: !`echo hello_test`', process.cwd());
+  it('injects inline !`cmd` output', async () => {
+    const { resolved, errors } = await resolveShellInjection(
+      'Output: !`echo hello_test`',
+      process.cwd(),
+    );
     expect(resolved).toContain('hello_test');
     expect(errors).toHaveLength(0);
   });
 
-  it('injects fenced ```! block output', () => {
+  it('injects fenced ```! block output', async () => {
     const isWindows = process.platform === 'win32';
     const shellCmd = isWindows
       ? '```!\necho test_output_12345\n```'
       : '```!\necho line1\necho line2\n```';
-    const { resolved, errors } = resolveShellInjection(shellCmd, process.cwd());
+    const { resolved, errors } = await resolveShellInjection(shellCmd, process.cwd());
     if (isWindows) {
       expect(resolved).toContain('test_output_12345');
     } else {
@@ -140,8 +143,8 @@ describe('resolveShellInjection', () => {
     expect(errors).toHaveLength(0);
   });
 
-  it('preserves non-shell backticks', () => {
-    const { resolved, errors } = resolveShellInjection(
+  it('preserves non-shell backticks', async () => {
+    const { resolved, errors } = await resolveShellInjection(
       'This is `code` and this is !`echo cmd`',
       process.cwd(),
     );
@@ -150,9 +153,9 @@ describe('resolveShellInjection', () => {
     expect(errors).toHaveLength(0);
   });
 
-  it('captures errors from failed commands', () => {
+  it('captures errors from failed commands', async () => {
     // Use a command that definitely doesn't exist.
-    const { resolved, errors } = resolveShellInjection(
+    const { resolved, errors } = await resolveShellInjection(
       'Result: !`this_command_definitely_does_not_exist_xyz`',
       process.cwd(),
     );
@@ -173,30 +176,30 @@ describe('resolveCommandBody', () => {
     source: 'project',
   };
 
-  it('returns resolved body and empty errors for simple command', () => {
-    const { resolved, shellErrors } = resolveCommandBody(baseCmd, 'hello');
+  it('returns resolved body and empty errors for simple command', async () => {
+    const { resolved, shellErrors } = await resolveCommandBody(baseCmd, 'hello');
     expect(resolved).toBe('hello');
     expect(shellErrors).toEqual([]);
   });
 
-  it('applies named args from command.arguments', () => {
+  it('applies named args from command.arguments', async () => {
     const cmd: SlashCommand = {
       ...baseCmd,
       body: 'Review $file focusing on $aspect',
       arguments: ['file', 'aspect'],
     };
-    const { resolved } = resolveCommandBody(cmd, 'src/main.ts performance');
+    const { resolved } = await resolveCommandBody(cmd, 'src/main.ts performance');
     expect(resolved).toContain('Review src/main.ts focusing on performance');
   });
 
-  it('resolves shell injections before variables', () => {
+  it('resolves shell injections before variables', async () => {
     const isWindows = process.platform === 'win32';
     const shellCmd = isWindows ? 'Env: !`echo hello_test`' : 'Env: !`echo $USER`';
     const cmd: SlashCommand = {
       ...baseCmd,
       body: shellCmd,
     };
-    const { resolved } = resolveCommandBody(cmd, '', { workspace: process.cwd() });
+    const { resolved } = await resolveCommandBody(cmd, '', { workspace: process.cwd() });
     // Shell injection should have been resolved (no `!` backtick markers left).
     expect(resolved).not.toContain('!`');
   });

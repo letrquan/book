@@ -17,7 +17,7 @@ export default mergeConfig(
         'src/tools/shell.test.ts',
         'src/tui/tui-integration.test.ts',
       ],
-      maxWorkers: 1,
+      maxWorkers: 4,
     },
   }),
 );

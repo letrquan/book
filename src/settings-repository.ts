@@ -42,6 +42,10 @@ export interface SettingsRepositoryOptions {
 
 export const SETTINGS_TOP_LEVEL_KEYS = Object.freeze(Object.keys(bookSettingsSchema.shape).sort());
 
+export function formatSettingsKeyHelp(heading = 'Supported top-level settings:'): string {
+  return `${heading}\n${SETTINGS_TOP_LEVEL_KEYS.map((key) => `  ${key}`).join('\n')}`;
+}
+
 function issueDiagnostic(path: string, issue: ZodIssue): SettingsDiagnostic {
   return {
     path,

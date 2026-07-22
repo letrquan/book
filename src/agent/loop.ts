@@ -1,26 +1,22 @@
+import type { AgentConfig, PermissionMode } from '../types/runtime.js';
+import type { Message, Usage } from '../types/messages.js';
+import type { SlashCommand } from '../types/commands.js';
 import type {
-  AgentConfig,
-  Message,
-  SlashCommand,
   ToolCall,
   ToolResult,
   ToolContext,
-  AgentLoopCallbacks,
   NestedToolObserver,
-  Usage,
-  RetryPhase,
-  PermissionMode,
   UserQuestionRequest,
   UserQuestionResponse,
-} from '../types.js';
-import { chatCompletionStream } from '../provider/index.js';
+} from '../types/tools.js';
+import type { AgentLoopCallbacks } from '../types/providers.js';
+import { createProvider, type Provider } from '../provider/index.js';
 import { buildMessages } from './context.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
 import { resolveContextLimit, shouldCompact, usagePressureTokens } from './compact.js';
 import { evaluatePermission } from '../permissions.js';
 import { runHooks } from '../hooks.js';
-import type { HookContext } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { createDebugLogger } from '../debug-log.js';
@@ -40,6 +36,7 @@ import {
   toolResultSucceeded,
 } from '../tools/result.js';
 import { toolSearchTools } from '../tools/tool-search.js';
+import { SessionRuntime } from '../session/runtime.js';
 
 const log = createDebugLogger('agent');
 
@@ -92,12 +89,15 @@ export async function runAgentLoop(
     agentId?: string;
     agentRole?: import('../agents/types.js').AgentRole;
     parentSessionId?: string;
+    /** Mutable resources owned by the logical session. */
+    runtime?: SessionRuntime;
+    provider?: Provider;
   },
 ): Promise<Message[]> {
   const signal = options?.signal;
   const newHistory = [...history];
   const retry = config.retry;
-  if (!options?.isSubagent) config.toolDiscoveryState ??= { clock: 0, loaded: new Map() };
+  const runtime = options?.runtime ?? new SessionRuntime();
   if (!registry.getTool('ToolSearch')) registry.registerAll(toolSearchTools);
 
   // Apply model override from command frontmatter.
@@ -119,7 +119,7 @@ export async function runAgentLoop(
         workspace: config.workspace,
         event: 'SessionStart',
       },
-      { onHookEvent: callbacks.onHookEvent },
+      { onHookEvent: callbacks.onHookEvent, signal },
     ).catch((err) => console.warn('SessionStart hook failed:', err));
   }
 
@@ -130,7 +130,7 @@ export async function runAgentLoop(
     config.settings.hooks.UserPromptSubmit,
     'UserPromptSubmit',
     { workspace: config.workspace, event: 'UserPromptSubmit', userPrompt: userMessage },
-    { onHookEvent: callbacks.onHookEvent },
+    { onHookEvent: callbacks.onHookEvent, signal },
   );
   for (const r of userHookResults) {
     if (r.action === 'block') {
@@ -183,9 +183,6 @@ export async function runAgentLoop(
     }
   }
 
-  config.tasks ??= [];
-  config.backgroundShells ??= { nextId: 1, shells: new Map() };
-  config.fileObservationLedger ??= new Map();
   const initialMode = mode as PermissionMode;
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
@@ -196,19 +193,20 @@ export async function runAgentLoop(
     signal,
     nestedToolObserver: options?.nestedToolObserver,
     todos: [],
-    tasks: config.tasks,
-    backgroundShells: config.backgroundShells,
-    fileObservationLedger: config.fileObservationLedger,
+    tasks: runtime.tasks,
+    backgroundShells: runtime.backgroundShells,
+    fileObservationLedger: runtime.fileObservationLedger,
     currentMode: initialMode,
     userQuestionHandler: callbacks.onUserQuestionRequired,
     agentPath: options?.agentPath ?? [],
     availableTools: registry.getDefinitions(),
-    agentManager: config.agentManager,
+    agentManager: runtime.agentManager,
     agentId: options?.agentId,
     agentRole: options?.agentRole,
     parentSessionId: options?.parentSessionId,
     onAgentEvent: callbacks.onAgentEvent,
     onHookEvent: callbacks.onHookEvent,
+    runtime,
   };
   const toolSurface = createToolSurface({
     config: effectiveConfig,
@@ -220,7 +218,7 @@ export async function runAgentLoop(
   toolContext.toolDiscovery = toolSurface;
 
   let turn = 0;
-  let approveAll: string[] = [];
+  const approveAll: string[] = [];
   let lastUsage: Usage | null = null;
   /** Avoid re-attempting compact for the same pressure snapshot after skip/fail. */
   let lastCompactAttemptKey: string | null = null;
@@ -286,7 +284,8 @@ export async function runAgentLoop(
     // Buffer text during streaming so we can discard on retry.
     let textBuffer = '';
 
-    const stream = chatCompletionStream(effectiveConfig, messages, activeDefinitions, {
+    const provider = options?.provider ?? createProvider(effectiveConfig);
+    const stream = provider.stream(effectiveConfig, messages, activeDefinitions, {
       signal,
       onRetry: (attempt, max, delayMs) => {
         callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
@@ -433,7 +432,7 @@ export async function runAgentLoop(
           toolName: canonName,
           toolArgs: call.arguments,
         },
-        { onHookEvent: callbacks.onHookEvent },
+        { onHookEvent: callbacks.onHookEvent, signal },
       );
       const blocked = preHookResults.find((r) => r.action === 'block');
       if (blocked) {
@@ -693,7 +692,7 @@ export async function runAgentLoop(
             ? result.content
             : (toolResultErrorMessage(result) ?? ''),
         },
-        { onHookEvent: callbacks.onHookEvent },
+        { onHookEvent: callbacks.onHookEvent, signal },
       );
       for (const r of postHookResults) {
         if (r.action === 'modify' && r.modifiedOutput !== undefined) {
@@ -719,7 +718,7 @@ export async function runAgentLoop(
         workspace: config.workspace,
         event: 'Stop',
       },
-      { onHookEvent: callbacks.onHookEvent },
+      { onHookEvent: callbacks.onHookEvent, signal },
     ).catch((err) => console.warn('Stop hook failed:', err));
 
     const assistantMessage: Message = {
@@ -765,7 +764,7 @@ export async function runAgentLoop(
         workspace: config.workspace,
         event: 'SessionEnd',
       },
-      { onHookEvent: callbacks.onHookEvent },
+      { onHookEvent: callbacks.onHookEvent, signal },
     ).catch((err) => console.warn('SessionEnd hook failed:', err));
   }
 

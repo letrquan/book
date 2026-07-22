@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { spawn, type ChildProcess } from 'child_process';
-import type { ToolDefinition, ToolContext } from './types.js';
+import type { ToolDefinition, ToolContext } from './types/tools.js';
 import { toolFailure, toolSuccess } from './tools/result.js';
 import { getPackageVersion } from './version-info.js';
 
@@ -46,6 +46,8 @@ export interface McpConnectionOptions {
   initializationTimeoutMs?: number;
   requestTimeoutMs?: number;
   maxStderrBytes?: number;
+  /** Lifecycle observer used by hosts/tests that account for owned child processes. */
+  onProcessSpawn?: (name: string, process: ChildProcess) => void;
 }
 
 const DEFAULT_INITIALIZATION_TIMEOUT_MS = 10_000;
@@ -148,13 +150,46 @@ function sendRequest(
     try {
       if (!conn.process.stdin || conn.process.stdin.destroyed) {
         settlePending(conn, id, errorWithContext(conn, `MCP server ${conn.name} stdin is closed`));
-      } else if (!conn.process.stdin.write(request)) {
-        conn.process.stdin.once('error', (error) => settlePending(conn, id, error));
+      } else {
+        conn.process.stdin.write(request, (error) => {
+          if (error) settlePending(conn, id, error);
+        });
       }
     } catch (error) {
       settlePending(conn, id, error instanceof Error ? error : new Error(String(error)));
     }
   });
+}
+
+function waitForProcessExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener('exit', onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref();
+    child.once('exit', onExit);
+  });
+}
+
+async function terminateProcess(child: ChildProcess): Promise<void> {
+  child.stdin?.end();
+  if (child.exitCode === null && child.signalCode === null) child.kill();
+  if (!(await waitForProcessExit(child, 250))) {
+    child.kill('SIGKILL');
+    await waitForProcessExit(child, 750);
+  }
+  child.stdin?.destroy();
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+  child.unref();
 }
 
 function processLine(conn: McpConnection, line: string): void {
@@ -190,6 +225,7 @@ async function connectMcpServer(
     );
     return null;
   }
+  options.onProcessSpawn?.(name, child);
 
   const conn: McpConnection = {
     name,
@@ -203,26 +239,41 @@ async function connectMcpServer(
   };
   const maxStderrBytes = options.maxStderrBytes ?? DEFAULT_MAX_STDERR_BYTES;
 
-  child.stdout?.on('data', (data: Buffer) => {
+  const onStdoutData = (data: Buffer) => {
     conn.buffer += data.toString();
     const lines = conn.buffer.split('\n');
     conn.buffer = lines.pop() ?? '';
     for (const line of lines) if (line.trim()) processLine(conn, line.trim());
-  });
-  child.stderr?.on('data', (data: Buffer) => {
+  };
+  const onStderrData = (data: Buffer) => {
     conn.stderr = (conn.stderr + data.toString()).slice(-maxStderrBytes);
-  });
+  };
+  let cleanupListeners = () => {};
   const close = (reason: string) => {
     if (conn.closed) return;
     conn.closed = true;
     rejectAllPending(conn, errorWithContext(conn, reason));
+    cleanupListeners();
   };
-  child.once('error', () => close(`MCP server ${name} process error`));
-  child.stdin?.once('error', (error) => close(`MCP server ${name} stdin error: ${error.message}`));
-  child.once('exit', (code, signal) =>
-    close(`MCP server ${name} exited (${code ?? signal ?? 'unknown'})`),
-  );
-  child.once('close', () => close(`MCP server ${name} closed`));
+  const onChildError = () => close(`MCP server ${name} process error`);
+  const onStdinError = (error: Error) => close(`MCP server ${name} stdin error: ${error.message}`);
+  const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
+    close(`MCP server ${name} exited (${code ?? signal ?? 'unknown'})`);
+  const onClose = () => close(`MCP server ${name} closed`);
+  cleanupListeners = () => {
+    child.stdout?.removeListener('data', onStdoutData);
+    child.stderr?.removeListener('data', onStderrData);
+    child.removeListener('error', onChildError);
+    child.stdin?.removeListener('error', onStdinError);
+    child.removeListener('exit', onExit);
+    child.removeListener('close', onClose);
+  };
+  child.stdout?.on('data', onStdoutData);
+  child.stderr?.on('data', onStderrData);
+  child.once('error', onChildError);
+  child.stdin?.once('error', onStdinError);
+  child.once('exit', onExit);
+  child.once('close', onClose);
 
   try {
     await sendRequest(
@@ -253,7 +304,7 @@ async function connectMcpServer(
       `⚠  Failed to connect to MCP server "${name}": ${error instanceof Error ? error.message : String(error)}`,
     );
     close(`MCP server ${name} disconnected`);
-    child.kill();
+    await terminateProcess(child);
     return null;
   }
 }

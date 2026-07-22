@@ -2,7 +2,7 @@ import type { ChildProcess } from 'child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { connectMcpServers, disconnectMcpServers } from './mcp.js';
 import { createMcpStdioFixture, type McpStdioFixture } from './test/mcp-stdio-fixture.js';
-import type { ToolContext } from './types.js';
+import type { ToolContext } from './types/tools.js';
 
 const fixtures: McpStdioFixture[] = [];
 
@@ -62,13 +62,24 @@ describe('MCP connection safety', () => {
       vi.spyOn(console, 'warn').mockImplementation(() => {});
       const item = fixture({ fixture: mode });
       const startedAt = Date.now();
+      const spawned: ChildProcess[] = [];
 
       const result = await connectMcpServers(item.workspace, {
         initializationTimeoutMs: 50,
         requestTimeoutMs: 50,
+        onProcessSpawn: (_name, child) => spawned.push(child),
       });
 
       expect(result.connections).toHaveLength(0);
+      expect(spawned).toHaveLength(1);
+      await waitForExit(spawned[0]);
+      expect(spawned[0].exitCode !== null || spawned[0].signalCode !== null).toBe(true);
+      expect(spawned[0].listenerCount('error')).toBe(0);
+      expect(spawned[0].listenerCount('exit')).toBe(0);
+      expect(spawned[0].listenerCount('close')).toBe(0);
+      expect(spawned[0].stdin?.listenerCount('error') ?? 0).toBe(0);
+      expect(spawned[0].stdout?.listenerCount('data') ?? 0).toBe(0);
+      expect(spawned[0].stderr?.listenerCount('data') ?? 0).toBe(0);
       expect(Date.now() - startedAt).toBeLessThan(1000);
     },
   );

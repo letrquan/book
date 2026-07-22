@@ -46,9 +46,7 @@ describe('Anthropic request URL', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
     const stream = chatCompletionStream(defaultConfig({ baseUrl, provider: 'anthropic' }), [], []);
-    for await (const _event of stream) {
-      // Drain the error event.
-    }
+    for await (const event of stream) void event;
     expect(fetchMock.mock.calls[0][0]).toBe(expected);
   });
 });

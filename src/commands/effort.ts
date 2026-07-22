@@ -1,4 +1,4 @@
-import type { AgentConfig } from '../types.js';
+import type { AgentConfig } from '../types/runtime.js';
 
 export type EffortLevel = NonNullable<AgentConfig['effort']>;
 export type EffortResult = { ok: boolean; error?: string };

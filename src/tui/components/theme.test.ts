@@ -10,7 +10,7 @@ import {
   loadCustomTheme,
   resolveTheme,
 } from '../theme.js';
-import { DEFAULT_THEME } from '../../types.js';
+import { DEFAULT_THEME } from '../../types/theme.js';
 
 let dir: string;
 

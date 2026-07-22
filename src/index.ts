@@ -3,11 +3,13 @@ import { program } from 'commander';
 import { runDoctorCommand } from './cli/doctor.js';
 import { runConfigCommand } from './cli/config-cmd.js';
 import { runMainAction } from './cli/run.js';
+import { getPackageVersion } from './version-info.js';
+import { formatSettingsKeyHelp } from './settings-repository.js';
 
 program
   .name('book')
   .description('AI coding agent with rich TUI')
-  .version('0.1.0')
+  .version(getPackageVersion())
   .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
   .option('-m, --model <model>', 'Model to use')
   .option(
@@ -49,7 +51,7 @@ program
   .command('doctor')
   .description('Diagnose configuration and environment')
   .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
-  .action(async (options) => {
+  .action(async (options: { workspace: string }) => {
     await runDoctorCommand(options.workspace);
   });
 
@@ -61,16 +63,24 @@ program
   .argument('[action]', 'get <key>, set <key> <value>, or list')
   .argument('[key]', 'Dot-separated key path (e.g. permissions.deny)')
   .argument('[value]', 'Value to set (JSON-parsed)')
-  .action(async (action, key, value, options) => {
-    const rootSettings = program.opts().settings as string | false | undefined;
-    await runConfigCommand(options.workspace, action, key, value, {
-      settingsOverridePath: typeof rootSettings === 'string' ? rootSettings : undefined,
-      noSettings: rootSettings === false,
-    });
-  });
+  .addHelpText('after', `\n${formatSettingsKeyHelp()}`)
+  .action(
+    async (
+      action: string | undefined,
+      key: string | undefined,
+      value: string | undefined,
+      options: { workspace: string },
+    ) => {
+      const rootSettings = program.opts().settings as string | false | undefined;
+      await runConfigCommand(options.workspace, action, key, value, {
+        settingsOverridePath: typeof rootSettings === 'string' ? rootSettings : undefined,
+        noSettings: rootSettings === false,
+      });
+    },
+  );
 
 // ---- main (interactive / headless) ----
-program.action(async (options) => {
+program.action(async (options: Record<string, unknown>) => {
   await runMainAction(options);
 });
 

@@ -7,7 +7,8 @@ import { MarkdownBlock } from './MarkdownBlock.js';
 import { CommandPanel } from './CommandPanel.js';
 import { useTheme } from '../theme.js';
 import { useDensityMetrics } from '../density.js';
-import type { Message, RetryPhase } from '../../types.js';
+import type { Message } from '../../types/messages.js';
+import type { RetryPhase } from '../../types/runtime.js';
 import type { PendingPermissionRequest } from '../../session/agent-interactions.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
 import {

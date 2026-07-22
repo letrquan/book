@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
-import type { ContextCommandDisplay, UsageCommandDisplay } from '../../types.js';
+import type { ContextCommandDisplay, UsageCommandDisplay } from '../../types/messages.js';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { CommandPanel, flattenConfigSnapshot } from './CommandPanel.js';
 import { displayWidth } from './word-wrap.js';

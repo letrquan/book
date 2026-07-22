@@ -5,7 +5,7 @@ import { join } from 'path';
 import { discoverAgents, runSubagent, type SubagentDef } from './subagent.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
-import type { UserQuestionRequest } from './types.js';
+import type { UserQuestionRequest } from './types/tools.js';
 
 let dir: string;
 

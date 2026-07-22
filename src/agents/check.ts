@@ -1,7 +1,7 @@
 import { exec } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import type { ToolContext, ToolDefinition, ToolResult } from '../types.js';
+import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { toolFailure, toolSuccess } from '../tools/result.js';
 
 function configuredChecks(ctx: ToolContext): Record<string, string> {

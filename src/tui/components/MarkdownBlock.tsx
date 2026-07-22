@@ -311,34 +311,6 @@ function InlineRuns({ runs }: { runs: InlineRun[] }) {
   );
 }
 
-/**
- * Render a single inline token (or array of inline tokens) into Text elements.
- * These are tokens that appear within paragraphs, headings, list items, etc.
- * They never produce block-level layout like Box borders or margins.
- */
-function renderInlineTokens(
-  tokens: Token[],
-  theme: ReturnType<typeof useTheme>,
-  keyPrefix: string,
-  textColor?: string,
-): React.ReactNode[] {
-  const runs = inlineRunsFromTokens(tokens, { color: textColor ?? theme.text }, theme);
-  return runs.map((run, i) => (
-    <Text
-      key={`${keyPrefix}-${i}`}
-      color={run.color}
-      bold={run.bold}
-      italic={run.italic}
-      strikethrough={run.strikethrough}
-      underline={run.underline}
-      dimColor={run.dimColor}
-      backgroundColor={run.backgroundColor}
-    >
-      {run.text}
-    </Text>
-  ));
-}
-
 function renderStyledLine(line: StyledLine, keyPrefix: string) {
   return (
     <Text>

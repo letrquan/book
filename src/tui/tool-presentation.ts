@@ -1,4 +1,4 @@
-import type { ToolResult } from '../types.js';
+import type { ToolResult } from '../types/tools.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';

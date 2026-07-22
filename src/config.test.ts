@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { applyModelDefaults, loadConfig, resolveModelProviderConfig } from './config.js';
+import {
+  applyModelDefaults,
+  freezeAgentConfig,
+  loadConfig,
+  resolveModelProviderConfig,
+} from './config.js';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { defaultConfig } from './test/fixtures.js';
@@ -53,6 +58,21 @@ describe('loadConfig model defaults', () => {
     expect(config.maxTokens).toBe(272_000);
     expect(config.defaultMaxTokens).toBe(272_000);
     expect(config.maxTokensExplicit).toBe(false);
+  });
+});
+
+describe('freezeAgentConfig', () => {
+  it('deep-freezes resolved configuration without runtime resource fields', () => {
+    const config = freezeAgentConfig(loadConfig(workspace, { noSettings: true }));
+
+    expect(Object.isFrozen(config)).toBe(true);
+    expect(Object.isFrozen(config.settings)).toBe(true);
+    expect(Object.isFrozen(config.settings.permissions.allow)).toBe(true);
+    expect(config).not.toHaveProperty('tasks');
+    expect(config).not.toHaveProperty('backgroundShells');
+    expect(config).not.toHaveProperty('fileObservationLedger');
+    expect(config).not.toHaveProperty('agentManager');
+    expect(config).not.toHaveProperty('toolDiscoveryState');
   });
 });
 

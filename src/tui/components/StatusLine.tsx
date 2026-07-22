@@ -2,7 +2,7 @@ import { Box, Text } from 'ink';
 import { useMemo } from 'react';
 import { usePulse, useTimedFlash } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
-import type { PermissionMode } from '../../types.js';
+import type { PermissionMode } from '../../types/runtime.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
 import { modeColorToken, modeLabel } from '../mode-style.js';

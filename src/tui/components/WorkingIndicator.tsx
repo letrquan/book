@@ -1,6 +1,7 @@
 import { Box, Text } from 'ink';
 import { useEffect, useState } from 'react';
-import type { Message, RetryPhase } from '../../types.js';
+import type { Message } from '../../types/messages.js';
+import type { RetryPhase } from '../../types/runtime.js';
 import type {
   PendingPermissionRequest,
   PendingPlanApprovalRequest,
