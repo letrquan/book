@@ -340,9 +340,10 @@ describe('TUI keyboard input', () => {
 
   it('wheel events do not enter the prompt', async () => {
     session = await startAndWait();
-    // Terminal-mode lifecycle is covered by run.test.ts. This test verifies
-    // the resulting mouse input routing through the active PTY.
+    // Full-screen mode leaves mouse reporting disabled so terminal-native text
+    // selection remains available. Explicit reports are still safely ignored.
     expect(session.readRaw()).toContain('\x1b[?1049h');
+    expect(session.readRaw()).not.toContain('\x1b[?1000h');
 
     session.sendKey('MOUSE_DRAFT');
     await session.waitFor('MOUSE_DRAFT');

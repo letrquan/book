@@ -35,6 +35,7 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Keep terminal-native drag selection and clipboard copy available in the full-screen TUI.
 - Prevent the first submitted TUI message from freezing during a cold rewind snapshot by yielding filesystem checkpoint work and rendering the optimistic turn first.
 - Make `/theme` open a keyboard picker, apply the full app palette, persist the selection, resolve terminal auto mode correctly, and report invalid custom themes.
 - Keep local slash-command output visible and resumable in the TUI without adding it to provider or compaction context.
