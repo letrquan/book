@@ -10,7 +10,7 @@ import {
 } from 'fs';
 import { createHash } from 'crypto';
 import { homedir } from 'os';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
+import { basename, isAbsolute, join, relative, resolve } from 'path';
 import { parseFrontmatter } from './frontmatter.js';
 
 export const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;

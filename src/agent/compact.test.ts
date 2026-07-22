@@ -9,11 +9,17 @@ import {
   runCompact,
   DEFAULT_CONTEXT_WINDOW,
 } from './compact.js';
-import type { AgentConfig, Message, Usage } from '../types.js';
+import type { AgentConfig } from '../types/runtime.js';
+import type { Message, Usage } from '../types/messages.js';
 import { defaultConfig, toolResult } from '../test/fixtures.js';
 
 vi.mock('../provider/index.js', () => ({
   chatCompletionStream: vi.fn(),
+  createProvider: () => ({
+    id: 'test',
+    stream: (...args: unknown[]) =>
+      vi.mocked(chatCompletionStream)(...(args as Parameters<typeof chatCompletionStream>)),
+  }),
 }));
 
 import { chatCompletionStream } from '../provider/index.js';
@@ -384,6 +390,26 @@ describe('runCompact', () => {
 
     expect(result).toMatchObject({ status: 'failed', reason: 'aborted' });
     expect(history).toEqual(twoTurns);
+    expect(mockedStream).not.toHaveBeenCalled();
+  });
+
+  it('returns an aborted result when a pre-compact hook is cancelled', async () => {
+    const config = makeConfig();
+    config.settings.hooks.PreCompact = [
+      {
+        command: `"${process.execPath}" -e "setTimeout(() => {}, 30000)"`,
+        env: {},
+      },
+    ];
+    const controller = new AbortController();
+    const pending = runCompact(config, twoTurns, {
+      trigger: 'auto',
+      signal: controller.signal,
+    });
+
+    setTimeout(() => controller.abort(new Error('compaction cancelled')), 25);
+
+    await expect(pending).resolves.toMatchObject({ status: 'failed', reason: 'aborted' });
     expect(mockedStream).not.toHaveBeenCalled();
   });
 

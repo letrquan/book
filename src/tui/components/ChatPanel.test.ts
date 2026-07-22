@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { ToolResult } from '../../types.js';
+import type { ToolResult } from '../../types/tools.js';
 
 /**
  * Tests for ChatPanel rendering.

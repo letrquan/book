@@ -115,6 +115,39 @@ describe('runHooks — timeout', () => {
   }, 15000);
 });
 
+describe('runHooks — cancellation', () => {
+  it('terminates an active hook and rejects with the abort reason', async () => {
+    const hook: HookEntry = {
+      command: `"${process.execPath}" -e "setTimeout(() => {}, 30000)"`,
+      env: {},
+    };
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const pending = runHooks([hook], 'Stop', ctx({ event: 'Stop' as HookEvent }), {
+      signal: controller.signal,
+    });
+
+    setTimeout(() => controller.abort(new Error('hook cancelled')), 25);
+
+    await expect(pending).rejects.toThrow('hook cancelled');
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+  });
+
+  it('does not launch hooks for an already-aborted signal', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('cancelled before hooks'));
+
+    await expect(
+      runHooks(
+        [{ command: 'echo should-not-run', env: {} }],
+        'Stop',
+        ctx({ event: 'Stop' as HookEvent }),
+        { signal: controller.signal },
+      ),
+    ).rejects.toThrow('cancelled before hooks');
+  });
+});
+
 describe('runHooks — matcher filtering', () => {
   it('runs hook when matcher matches the tool call', async () => {
     const hook: HookEntry = {

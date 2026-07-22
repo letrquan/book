@@ -1,4 +1,6 @@
-import type { Message, ToolCall, ToolResult, AgentConfig } from '../types.js';
+import type { Message } from '../types/messages.js';
+import type { ToolCall, ToolResult } from '../types/tools.js';
+import type { AgentConfig } from '../types/runtime.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
 import { toolFailure, toolSuccess } from '../tools/result.js';
 

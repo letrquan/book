@@ -2,7 +2,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
-import type { UserQuestionRequest } from '../../types.js';
+import type { UserQuestionRequest } from '../../types/tools.js';
 import { AskUserQuestionWizard } from './AskUserQuestionWizard.js';
 
 const request: UserQuestionRequest = {

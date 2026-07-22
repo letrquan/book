@@ -1,9 +1,10 @@
-import type { AgentConfig } from '../types.js';
+import type { AgentConfig } from '../types/runtime.js';
 import { runHooks } from '../hooks.js';
 import type { SessionStartSource } from './resolve.js';
 
 export interface SessionLifecycleOptions {
   onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
+  signal?: AbortSignal;
 }
 
 export async function runSessionStart(

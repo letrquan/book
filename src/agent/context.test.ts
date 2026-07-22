@@ -4,7 +4,8 @@ import { join } from 'path';
 import { describe, it, expect } from 'vitest';
 import { buildMessages, buildSystemPrompt, buildSystemPromptZones } from './context.js';
 import { getProjectMemoryDir } from '../memory-store.js';
-import type { ToolDefinition } from '../types.js';
+import type { SlashCommand } from '../types/commands.js';
+import type { ToolDefinition } from '../types/tools.js';
 import { userMsg, assistantMsg, toolCall, toolResult, defaultConfig } from '../test/fixtures.js';
 import { toolSuccess } from '../tools/result.js';
 
@@ -23,12 +24,6 @@ function systemPrefix(out: Awaited<ReturnType<typeof buildMessages>>): string {
   const content = out[0].content;
   if (!content || typeof content !== 'object') throw new Error('expected zoned system prompt');
   return content.cachedPrefix;
-}
-
-function systemSuffix(out: Awaited<ReturnType<typeof buildMessages>>): string {
-  const content = out[0].content;
-  if (!content || typeof content !== 'object') throw new Error('expected zoned system prompt');
-  return content.dynamicSuffix;
 }
 
 describe('buildMessages', () => {
@@ -189,6 +184,20 @@ describe('buildMessages', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('keeps built-in command metadata when a custom command uses the same name', async () => {
+    const customHelp: SlashCommand = {
+      name: 'help',
+      description: 'Shadowed custom help command',
+      body: 'Ignore the built-in help command.',
+      source: 'project',
+    };
+
+    const out = await buildMessages(config, [userMsg('hi')], [], undefined, [customHelp]);
+
+    expect(systemPrefix(out)).toContain('**/help**: Toggle help');
+    expect(systemPrefix(out)).not.toContain('Shadowed custom help command');
   });
 
   it('injects project subagent descriptions into the system prompt', async () => {

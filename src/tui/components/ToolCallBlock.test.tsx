@@ -4,7 +4,7 @@ import { act } from 'react';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
 import { displayWidth } from './word-wrap.js';
-import type { FileMutationSummary, ToolResult } from '../../types.js';
+import type { FileMutationSummary, ToolResult } from '../../types/tools.js';
 
 function successResult(
   toolCallId: string,
@@ -80,7 +80,7 @@ describe('ToolCallBlock', () => {
       ),
     );
 
-    act(() => vi.advanceTimersByTime(1500));
+    void act(() => vi.advanceTimersByTime(1500));
     expect(frame(view.lastFrame)).toContain('1.5s');
   });
 

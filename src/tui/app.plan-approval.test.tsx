@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { App, ownsModalInput, providerRemovalMessage } from './app.js';
-import type { AgentConfig } from '../types.js';
+import type { AgentConfig } from '../types/runtime.js';
+import type { SlashCommand } from '../types/commands.js';
+import { DEFAULT_THEME } from '../types/theme.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
 
 const useAgentMock = vi.fn();
 const useTasksMock = vi.fn();
-const discoverCommandsMock = vi.fn((_workspace: string) => []);
+const discoverCommandsMock = vi.fn((_workspace: string): SlashCommand[] => []);
+const resolveCommandBodyMock = vi.fn();
 const discoverSkillsMock = vi.fn((_workspace: string) => []);
 const persistSettingLocalMock = vi.fn((_workspace: string, _key: string, _value: unknown) => ({
   ok: true,
@@ -22,7 +25,7 @@ vi.mock('./hooks/useTasks.js', () => ({
 
 vi.mock('../commands/loader.js', () => ({
   discoverCommands: (workspace: string) => discoverCommandsMock(workspace),
-  resolveCommandBody: vi.fn(),
+  resolveCommandBody: (...args: unknown[]) => resolveCommandBodyMock(...args),
 }));
 
 vi.mock('../skills.js', () => ({
@@ -140,6 +143,8 @@ function stripAnsi(value: string | undefined): string {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  discoverCommandsMock.mockImplementation((_workspace: string) => []);
+  resolveCommandBodyMock.mockReset();
   vi.unstubAllEnvs();
 });
 
@@ -232,6 +237,88 @@ describe('App session commands', () => {
     await new Promise((resolve) => setTimeout(resolve, 75));
     await submit(view, '/help');
     expect(view.frames.map(stripAnsi).join('\n')).toContain('/rewind');
+  });
+});
+
+describe('App interactive asset cache', () => {
+  it('uses preloaded filesystem metadata without rediscovering during render', () => {
+    useAgentMock.mockReturnValue({
+      ...pendingAgentState(),
+      isThinking: false,
+      pendingPlanApproval: null,
+    });
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    render(
+      <App
+        config={config()}
+        session={testSession}
+        interactiveAssets={{
+          commands: [],
+          skills: [],
+          customThemes: [],
+          initialTheme: { preference: 'dark', resolvedName: 'dark', tokens: DEFAULT_THEME },
+        }}
+      />,
+    );
+
+    expect(discoverCommandsMock).not.toHaveBeenCalled();
+    expect(discoverSkillsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('App custom command cancellation', () => {
+  it('does not send shell error text after command resolution is aborted', async () => {
+    const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+    discoverCommandsMock.mockReturnValue([
+      {
+        name: 'slow',
+        description: 'Slow command',
+        body: '!`slow command`',
+        source: 'project',
+      },
+    ]);
+    let observedSignal: AbortSignal | undefined;
+    resolveCommandBodyMock.mockImplementation(
+      (_command: unknown, _argument: unknown, _context: unknown, signal?: AbortSignal) =>
+        new Promise((resolve) => {
+          observedSignal = signal;
+          signal?.addEventListener(
+            'abort',
+            () => resolve({ resolved: '[shell error: aborted]', shellErrors: ['aborted'] }),
+            { once: true },
+          );
+        }),
+    );
+
+    const view = render(<App config={config()} session={testSession} />);
+    view.stdin.write('/slow');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    view.stdin.write('\r');
+    await vi.waitFor(() => expect(resolveCommandBodyMock).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(stripAnsi(view.lastFrame())).toContain('Resolving command shell expansions...'),
+    );
+
+    view.stdin.write('\u001B');
+    await vi.waitFor(() => expect(observedSignal?.aborted).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(agentState.send).not.toHaveBeenCalled();
   });
 });
 

@@ -1,6 +1,6 @@
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { RewindTarget } from '../../types.js';
+import type { RewindTarget } from '../../types/sessions.js';
 import { RewindPicker } from './RewindPicker.js';
 
 const targets: RewindTarget[] = [

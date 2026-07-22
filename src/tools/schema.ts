@@ -1,4 +1,4 @@
-import type { JsonSchemaObject } from '../types.js';
+import type { JsonSchemaObject } from '../types/tools.js';
 
 export function normalizeToolSchema(raw: Record<string, unknown>): JsonSchemaObject {
   const schema = raw as JsonSchemaObject;

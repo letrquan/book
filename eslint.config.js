@@ -17,10 +17,16 @@ export default [
       ecmaVersion: 2022,
       sourceType: 'module',
       globals: globals.node,
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
     },
     rules: {
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-unsafe-argument': 'error',
       'no-console': 'off',
       'no-control-regex': 'off',
       'no-irregular-whitespace': 'off',

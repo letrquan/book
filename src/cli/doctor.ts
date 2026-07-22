@@ -1,5 +1,5 @@
 import { loadConfig } from '../config.js';
-import { exit } from './exit.js';
+import { getPackageVersion } from '../version-info.js';
 
 export async function runDoctorCommand(workspace: string): Promise<void> {
   const config = loadConfig(workspace);
@@ -9,7 +9,7 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   console.log('Book Doctor');
   console.log('===========');
   console.log();
-  console.log('Version:', '0.1.0');
+  console.log('Version:', getPackageVersion());
   console.log('Node:', process.version);
   console.log('Platform:', process.platform, process.arch);
   console.log('Workspace:', config.workspace);

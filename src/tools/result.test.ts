@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ToolContext } from '../types.js';
+import type { ToolContext } from '../types/tools.js';
 import { createRegistry } from './registry.js';
 import {
   normalizeToolResult,

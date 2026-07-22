@@ -1,4 +1,5 @@
-import type { Message, NestedToolInvocation } from '../types.js';
+import type { Message } from '../types/messages.js';
+import type { NestedToolInvocation } from '../types/tools.js';
 
 export type NestedToolChildren = ReadonlyMap<string, readonly NestedToolInvocation[]>;
 

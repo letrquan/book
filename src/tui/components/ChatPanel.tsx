@@ -1,14 +1,14 @@
 import { Box, Text } from 'ink';
 import { useMemo } from 'react';
 import { useTheme } from '../theme.js';
+import type { CompactBoundary } from '../../types/sessions.js';
+import type { Message } from '../../types/messages.js';
+import type { PermissionResult, PlanApprovalResult } from '../../types/tools.js';
+import type { RetryPhase } from '../../types/runtime.js';
 import type {
-  CompactBoundary,
-  Message,
-  PermissionResult,
-  PlanApprovalResult,
-  RetryPhase,
-  ToolCall,
-} from '../../types.js';
+  PendingPermissionRequest,
+  PendingPlanApprovalRequest,
+} from '../../session/agent-interactions.js';
 import { AgentMessage } from './AgentMessage.js';
 import { UserMessage } from './UserMessage.js';
 import { WelcomeScreen } from './WelcomeScreen.js';
@@ -45,25 +45,15 @@ function ScreenReaderRoleLabel({
   );
 }
 
-interface PendingPermission {
-  toolCall: ToolCall;
-  resolve: (value: PermissionResult) => void;
-}
-
-interface PendingPlanApproval {
-  plan: string;
-  resolve: (value: PlanApprovalResult) => void;
-}
-
 interface ChatPanelProps {
   messages: Message[];
   compactBoundaries?: CompactBoundary[];
   streamingMessageId?: string | null;
-  pendingPermission?: PendingPermission | null;
+  pendingPermission?: PendingPermissionRequest | null;
   /** @deprecated Approval actions now render in App's fixed interaction area. */
   onResolvePermission?: (result: PermissionResult) => void;
   /** @deprecated Plan details/actions now render outside ChatPanel. */
-  pendingPlanApproval?: PendingPlanApproval | null;
+  pendingPlanApproval?: PendingPlanApprovalRequest | null;
   /** @deprecated Plan details/actions now render outside ChatPanel. */
   onResolvePlanApproval?: (result: PlanApprovalResult) => void;
   /** @deprecated Dynamic transcript rendering no longer needs Static replay epochs. */

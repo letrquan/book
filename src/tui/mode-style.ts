@@ -1,4 +1,4 @@
-import type { PermissionMode } from '../types.js';
+import type { PermissionMode } from '../types/runtime.js';
 
 export type ModeColorToken =
   'modeDefault' | 'modeAuto' | 'modePlan' | 'modeAcceptEdits' | 'modeDontAsk' | 'modeBypass';

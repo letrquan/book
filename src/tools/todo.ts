@@ -1,4 +1,4 @@
-import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 export type TodoStatus = 'pending' | 'in_progress' | 'completed';

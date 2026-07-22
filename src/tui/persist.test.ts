@@ -43,7 +43,13 @@ describe('persistSettingLocal', () => {
     persistSettingLocal(dir, 'provider.openrouter.type', 'openai');
     persistSettingLocal(dir, 'provider.openrouter.baseURL', 'https://openrouter.ai/api/v1');
     persistSettingLocal(dir, 'provider.openrouter.models.deepseek-chat.contextWindow', 128000);
-    const provider = readSettingsLocal(dir).provider as Record<string, any>;
+    const provider = readSettingsLocal(dir).provider as {
+      openrouter: {
+        type: string;
+        baseURL: string;
+        models: Record<string, { contextWindow: number }>;
+      };
+    };
     expect(provider.openrouter.type).toBe('openai');
     expect(provider.openrouter.baseURL).toBe('https://openrouter.ai/api/v1');
     expect(provider.openrouter.models['deepseek-chat'].contextWindow).toBe(128000);
@@ -74,6 +80,17 @@ describe('persistSettingLocal', () => {
     const r = persistSettingLocal(badWorkspace, 'model', 'x');
     expect(r.ok).toBe(false);
     expect(typeof r.error).toBe('string');
+  });
+
+  it('preserves malformed local settings instead of replacing them', () => {
+    const localPath = join(dir, '.book', 'settings.local.json');
+    expect(persistSettingLocal(dir, 'model', 'initial').ok).toBe(true);
+    writeFileSync(localPath, '{broken', 'utf-8');
+
+    const result = persistSettingLocal(dir, 'model', 'replacement');
+
+    expect(result.ok).toBe(false);
+    expect(readFileSync(localPath, 'utf-8')).toBe('{broken');
   });
 });
 

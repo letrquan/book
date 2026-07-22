@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ToolCall, ToolContext, ToolDefinition } from '../types.js';
+import type { ToolCall, ToolContext, ToolDefinition } from '../types/tools.js';
 import { createRegistry } from '../tools/registry.js';
 import {
   createCapabilityRegistry,

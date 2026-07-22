@@ -1,4 +1,5 @@
-import type { Message, NestedToolInvocation, ToolCall, ToolResult } from '../../types.js';
+import type { Message } from '../../types/messages.js';
+import type { NestedToolInvocation, ToolCall, ToolResult } from '../../types/tools.js';
 
 export function makeMessage(
   role: 'user' | 'assistant',

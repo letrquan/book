@@ -1,4 +1,4 @@
-import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { getOrCreateAgentManager } from '../agents/manager.js';
 import { toolFailure, toolSuccess } from './result.js';
 
@@ -30,6 +30,7 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
     const manager = getOrCreateAgentManager(ctx.agentConfig, ctx.availableTools, {
       eventSink: ctx.onAgentEvent,
       hookEventSink: ctx.onHookEvent,
+      runtime: ctx.runtime,
     });
     const spawned = await manager.spawn({
       agent: agentName,

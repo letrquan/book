@@ -5,7 +5,7 @@ import { useDensityMetrics } from '../density.js';
 import { getPrimaryArg } from '../../tools/primary-arg.js';
 import { canonicalToolName } from '../../tools/aliases.js';
 import { isFileMutatingTool } from '../../tools/tool-capabilities.js';
-import type { PermissionResult, ToolCall } from '../../types.js';
+import type { PermissionResult, ToolCall } from '../../types/tools.js';
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 

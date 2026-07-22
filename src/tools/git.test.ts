@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { execFile as ExecFile } from 'child_process';
-import type { ToolContext } from '../types.js';
+import type { ToolContext } from '../types/tools.js';
 import { runGit } from './git.js';
 
 const ctx: ToolContext = { workspaceRoot: '/workspace', env: { TEST_ENV: 'yes' } };

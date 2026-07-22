@@ -8,7 +8,7 @@ import {
   getAvailableEffortLevels,
   updateEffortLevel,
   type EffortLevel,
-} from './effort.js';
+} from '../commands/effort.js';
 
 const tempDirs: string[] = [];
 

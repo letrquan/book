@@ -1,6 +1,6 @@
 import { Box, Text, useInput } from 'ink';
 import { useMemo, useState } from 'react';
-import type { SessionMeta } from '../../types.js';
+import type { SessionMeta } from '../../types/sessions.js';
 import { useTheme } from '../theme.js';
 import { useDensityMetrics } from '../density.js';
 

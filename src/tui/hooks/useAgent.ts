@@ -1,43 +1,30 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import type { Message, Usage, LocalCommandDisplay } from '../../types/messages.js';
 import type {
-  Message,
   NestedToolInvocation,
-  ToolCall,
   ToolResult,
   PermissionResult,
-  PermissionMode,
   PlanApprovalResult,
-  Usage,
-  RetryPhase,
-  CommandContext,
+  UserQuestionResponse,
+} from '../../types/tools.js';
+import type { PermissionMode, RetryPhase } from '../../types/runtime.js';
+import type { CommandContext } from '../../types/commands.js';
+import type {
   SessionMeta,
   SessionRecord,
   SessionStoreInterface,
   CompactResult,
-  CompactRecordData,
   CompactTrigger,
-  LocalCommandDisplay,
   CompactBoundary,
   RewindAction,
   RewindRecordData,
   RewindSnapshotStoreInterface,
   RewindTarget,
-  TurnCheckpointRecordData,
-  UserQuestionRequest,
-  UserQuestionResponse,
-} from '../../types.js';
-import { runAgentLoop } from '../../agent/loop.js';
-import {
-  resolveContextLimit,
-  runCompact,
-  runPostCompactHooks,
-  shouldCompact,
-  usagePressureTokens,
-} from '../../agent/compact.js';
+} from '../../types/sessions.js';
+import { resolveContextLimit, shouldCompact, usagePressureTokens } from '../../agent/compact.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
-import { createDefaultRegistry } from '../../tools/registry.js';
 import type { Todo } from '../../tools/todo.js';
-import type { AgentConfig } from '../../types.js';
+import type { AgentConfig } from '../../types/runtime.js';
 import { makeMessage, removeTrailingEmptyAssistantPlaceholder } from './streaming-state.js';
 import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-log.js';
 import { loadMemoryContext } from '../../memory-store.js';
@@ -52,133 +39,18 @@ import { DEFAULT_SETTINGS, providerConfigSchema, type ResolvedSettings } from '.
 import { resolveSettings } from '../../settings-loader.js';
 import { providerConfigFromDraft, type ProviderSaveRequest } from '../model-options.js';
 import type { ProviderRemovalResult } from '../components/ModelPicker.js';
-import { updateEffortLevel } from '../effort.js';
-import {
-  collectAtMentionObservations,
-  expandAtMentions,
-  expandShellCommands,
-} from '../input-expansion.js';
+import { updateEffortLevel } from '../../commands/effort.js';
 import { observationKey } from '../../tools/file-provenance.js';
-import { selectSession, type SessionBootstrap } from '../../session/resolve.js';
+import type { SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';
-import { runSessionEnd, runSessionStart } from '../../session/lifecycle.js';
+import { AgentSession, type AgentSessionSendControl } from '../../session/agent-session.js';
+import { SessionRuntime } from '../../session/runtime.js';
+import { createInteractiveAgentSession } from '../../session/interactive-session.js';
 
 const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
 import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
-
-type PendingPermission = {
-  toolCall: ToolCall;
-  resolve: (value: PermissionResult) => void;
-};
-
-type PendingPlanApproval = {
-  plan: string;
-  resolve: (value: PlanApprovalResult) => void;
-};
-
-export type PendingUserQuestion = {
-  request: UserQuestionRequest;
-  resolve: (value: UserQuestionResponse) => void;
-};
-
-/**
- * Idempotent permission settlement used by resolve/cancel/clear/unmount.
- * Exported for pure unit tests of the lifecycle contract.
- */
-export function settlePermissionRequest(
-  pendingRef: { current: PendingPermission | null },
-  setPending: (value: PendingPermission | null) => void,
-  result: PermissionResult,
-  via: string,
-): boolean {
-  const pending = pendingRef.current;
-  if (!pending) {
-    uiLog.event('permission:settled:noop', { reason: 'no-pending', result, via });
-    return false;
-  }
-  // Clear ref first so a re-entrant call cannot double-resolve.
-  pendingRef.current = null;
-  setPending(null);
-  uiLog.event('permission:settled', {
-    tool: pending.toolCall.name,
-    id: pending.toolCall.id,
-    result,
-    via,
-  });
-  pending.resolve(result);
-  return true;
-}
-
-/**
- * Idempotent plan-approval settlement used by resolve/cancel/clear/unmount.
- * Exported for pure unit tests of the lifecycle contract.
- */
-export function settlePlanApprovalRequest(
-  pendingRef: { current: PendingPlanApproval | null },
-  setPending: (value: PendingPlanApproval | null) => void,
-  result: PlanApprovalResult,
-  via: string,
-): boolean {
-  const pending = pendingRef.current;
-  if (!pending) {
-    uiLog.event('plan-approval:settled:noop', { reason: 'no-pending', result, via });
-    return false;
-  }
-  pendingRef.current = null;
-  setPending(null);
-  uiLog.event('plan-approval:settled', { result, via, len: pending.plan.length });
-  pending.resolve(result);
-  return true;
-}
-
-/** Settle one queued user question and promote the next request. */
-export function settleUserQuestionRequest(
-  pendingRef: { current: PendingUserQuestion[] },
-  setPending: (value: PendingUserQuestion[]) => void,
-  result: UserQuestionResponse,
-  via: string,
-  requestId?: string,
-): boolean {
-  const index = requestId
-    ? pendingRef.current.findIndex((entry) => entry.request.id === requestId)
-    : 0;
-  if (index < 0 || pendingRef.current.length === 0) {
-    uiLog.event('user-question:settled:noop', { reason: 'no-pending', via, requestId });
-    return false;
-  }
-
-  const next = [...pendingRef.current];
-  const [pending] = next.splice(index, 1);
-  pendingRef.current = next;
-  setPending(next);
-  uiLog.event('user-question:settled', {
-    id: pending.request.id,
-    action: result.action,
-    via,
-    remaining: next.length,
-  });
-  pending.resolve(result);
-  return true;
-}
-
-/** Cancel every queued request so nested agent loops cannot remain suspended. */
-export function cancelUserQuestionRequests(
-  pendingRef: { current: PendingUserQuestion[] },
-  setPending: (value: PendingUserQuestion[]) => void,
-  via: string,
-): number {
-  const pending = pendingRef.current;
-  if (pending.length === 0) return 0;
-  pendingRef.current = [];
-  setPending([]);
-  for (const entry of pending) {
-    entry.resolve({ action: 'cancel', message: `Question cancelled via ${via}.` });
-  }
-  uiLog.event('user-question:cancelled-all', { via, count: pending.length });
-  return pending.length;
-}
 
 export interface UseAgentSessionOptions extends SessionBootstrap {
   store?: SessionStoreInterface;
@@ -276,6 +148,10 @@ function buildObservationLedger(messages: Message[]) {
   return ledger;
 }
 
+function withoutRuntimeState(config: AgentConfig): AgentConfig {
+  return { ...config };
+}
+
 export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const initialTranscript = session.transcript ?? session.history;
   const initialContext = session.contextHistory ?? session.history;
@@ -298,16 +174,20 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // prop) is the startup snapshot; setModel/setEffort/persistPermissionRule
   // mutate liveConfig so subsequent runAgentLoop calls pick up the change.
   // Without this, /model would silently no-op (send closes over `config`).
-  const [liveConfig, setLiveConfig] = useState<AgentConfig>(() => ({
-    ...config,
-    fileObservationLedger: buildObservationLedger(initialTranscript),
-  }));
+  const [liveConfig, setLiveConfig] = useState<AgentConfig>(() => withoutRuntimeState(config));
   const [localProviderOwnership, setLocalProviderOwnership] = useState(() =>
     readLocalProviderOwnership(config.workspace),
   );
-  const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
-  const [pendingPlanApproval, setPendingPlanApproval] = useState<PendingPlanApproval | null>(null);
-  const [pendingUserQuestions, setPendingUserQuestions] = useState<PendingUserQuestion[]>([]);
+  const [agentSession] = useState(() =>
+    createInteractiveAgentSession({
+      runtime: new SessionRuntime({
+        fileObservationLedger: buildObservationLedger(initialTranscript),
+      }),
+    }),
+  );
+  const { interactions, operations } = agentSession;
+  const [interactionSnapshot, setInteractionSnapshot] = useState(() => interactions.getSnapshot());
+  const { pendingPermission, pendingPlanApproval, pendingUserQuestions } = interactionSnapshot;
   const [turnDurationMs, setTurnDurationMs] = useState<number>(0);
   const [sessionId, setSessionId] = useState(session.sessionId);
   const [sessionName, setSessionName] = useState(session.sessionName);
@@ -322,13 +202,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // Callbacks read this ref (not state) so multi-turn updates always target
   // the latest in-progress message without stale-closure issues.
   const streamingIdRef = useRef<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<Message[]>(initialTranscript);
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
   const sessionGenerationRef = useRef(0);
-  const lifecycleStartedRef = useRef(false);
-  const lifecycleEndedRef = useRef(false);
   const liveConfigRef = useRef(liveConfig);
   const localProviderOwnershipRef = useRef(localProviderOwnership);
   const turnStartRef = useRef(Date.now());
@@ -336,18 +213,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Message accumulator for batched streaming updates.
   const accumulatorRef = useRef<MessageAccumulator | null>(null);
-  // Synchronous single-flight lock for send()/compact(). isThinking is UI-only
-  // and may lag a render; this ref is the authoritative gate.
-  const sendInFlightRef = useRef(false);
-  const operationInFlightRef = useRef<'send' | 'compact' | 'rewind' | null>(null);
-  const compactAbortRef = useRef<AbortController | null>(null);
   const hostUsageRef = useRef<Usage | null>(null);
   const lastHostCompactAttemptRef = useRef<string | null>(null);
-  // Resolve handles for pending interactive prompts (refs for idempotent settle).
-  const pendingPermissionRef = useRef<PendingPermission | null>(pendingPermission);
-  const pendingPlanApprovalRef = useRef<PendingPlanApproval | null>(pendingPlanApproval);
-  const pendingUserQuestionsRef = useRef<PendingUserQuestion[]>(pendingUserQuestions);
   const timelineStore = session.timelineStore ?? session.store;
+
+  useEffect(() => interactions.subscribe(setInteractionSnapshot), [interactions]);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -361,51 +231,47 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     localProviderOwnershipRef.current = localProviderOwnership;
   }, [localProviderOwnership]);
 
-  const settlePermission = useCallback((result: PermissionResult, via: string) => {
-    return settlePermissionRequest(pendingPermissionRef, setPendingPermission, result, via);
-  }, []);
+  const settlePermission = useCallback(
+    (result: PermissionResult, via: string) => {
+      return interactions.settlePermission(result, via);
+    },
+    [interactions],
+  );
 
-  const settlePlanApproval = useCallback((result: PlanApprovalResult, via: string) => {
-    return settlePlanApprovalRequest(pendingPlanApprovalRef, setPendingPlanApproval, result, via);
-  }, []);
+  const settlePlanApproval = useCallback(
+    (result: PlanApprovalResult, via: string) => {
+      return interactions.settlePlanApproval(result, via);
+    },
+    [interactions],
+  );
 
   const settleUserQuestion = useCallback(
     (result: UserQuestionResponse, via: string, requestId?: string) =>
-      settleUserQuestionRequest(
-        pendingUserQuestionsRef,
-        setPendingUserQuestions,
-        result,
-        via,
-        requestId,
-      ),
-    [],
+      interactions.settleUserQuestion(result, via, requestId),
+    [interactions],
   );
 
-  const cancelUserQuestions = useCallback((via: string) => {
-    return cancelUserQuestionRequests(pendingUserQuestionsRef, setPendingUserQuestions, via);
-  }, []);
-
   useEffect(() => {
-    if (lifecycleStartedRef.current) return;
-    lifecycleStartedRef.current = true;
-    runSessionStart(liveConfigRef.current, session.sessionId, session.source).catch((err) => {
-      log.warn('SessionStart hook failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    });
-  }, [session.sessionId, session.source]);
-
-  useEffect(() => {
-    return () => {
-      if (lifecycleEndedRef.current) return;
-      lifecycleEndedRef.current = true;
-      runSessionEnd(liveConfigRef.current, sessionIdRef.current, 'exit').catch((err) => {
-        log.warn('SessionEnd hook failed', {
+    agentSession
+      .startLifecycle(liveConfigRef.current, session.sessionId, session.source)
+      .catch((err) => {
+        log.warn('SessionStart hook failed', {
           error: err instanceof Error ? err.message : String(err),
         });
       });
+  }, [agentSession, session.sessionId, session.source]);
+
+  useEffect(() => {
+    return () => {
+      agentSession
+        .endLifecycle(liveConfigRef.current, sessionIdRef.current, 'exit')
+        .catch((err) => {
+          log.warn('SessionEnd hook failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
     };
-  }, []);
+  }, [agentSession]);
 
   // Clean up timers / pending prompts / in-flight work on unmount.
   useEffect(() => {
@@ -416,14 +282,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       }
       accumulatorRef.current?.stop();
       accumulatorRef.current = null;
-      abortRef.current?.abort();
-      abortRef.current = null;
-      // Deny/reject so agent-loop promises never hang after unmount.
-      settlePermissionRequest(pendingPermissionRef, () => {}, 'deny', 'unmount');
-      settlePlanApprovalRequest(pendingPlanApprovalRef, () => {}, 'reject', 'unmount');
-      cancelUserQuestionRequests(pendingUserQuestionsRef, () => {}, 'unmount');
+      // Abort work and deny/reject prompts so no session promise survives unmount.
+      agentSession.dispose('unmount');
     };
-  }, []);
+  }, [agentSession]);
 
   const clearCountdown = useCallback(() => {
     if (countdownRef.current) {
@@ -431,6 +293,20 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       countdownRef.current = null;
     }
   }, []);
+
+  useEffect(
+    () =>
+      agentSession.subscribe((snapshot) => {
+        if (snapshot.status !== 'completed' && snapshot.status !== 'failed') return;
+        if (snapshot.sessionId !== sessionIdRef.current) return;
+        setIsThinking(false);
+        clearCountdown();
+        setRetryPhase('none');
+        setRetryCountdownMs(0);
+        if (snapshot.status === 'failed' && snapshot.error) setError(snapshot.error);
+      }),
+    [agentSession, clearCountdown],
+  );
 
   const finalizeStreamingMessages = useCallback(() => {
     setMessages((prev) => {
@@ -440,7 +316,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     });
   }, []);
 
-  const resetConversationState = useCallback(
+  const prepareConversationProjection = useCallback(() => {
+    sessionGenerationRef.current++;
+    accumulatorRef.current?.discard();
+    accumulatorRef.current = null;
+    clearCountdown();
+  }, [clearCountdown]);
+
+  const projectConversationState = useCallback(
     (
       nextId: string,
       nextName: string | undefined,
@@ -449,17 +332,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       boundaries: CompactBoundary[] = [],
       targets: RewindTarget[] = [],
     ) => {
-      sessionGenerationRef.current++;
-      settlePermission('deny', 'session-reset');
-      settlePlanApproval('reject', 'session-reset');
-      cancelUserQuestions('session-reset');
-      accumulatorRef.current?.discard();
-      accumulatorRef.current = null;
-      abortRef.current?.abort();
-      abortRef.current = null;
-      sendInFlightRef.current = false;
-      clearCountdown();
-
       sessionIdRef.current = nextId;
       messagesRef.current = transcript;
       contextHistoryRef.current = contextHistory;
@@ -482,77 +354,100 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setRetryAttempt(0);
       setRetryMax(0);
       setRetryCountdownMs(0);
+      agentSession.replaceRuntime(
+        { fileObservationLedger: buildObservationLedger(transcript) },
+        'session_transition',
+      );
       setLiveConfig((current) => ({
         ...current,
-        tasks: [],
-        toolDiscoveryState: undefined,
-        fileObservationLedger: buildObservationLedger(transcript),
         memoryContext: current.settings.memory.enabled
           ? loadMemoryContext(current.workspace)
           : undefined,
       }));
     },
-    [cancelUserQuestions, clearCountdown, settlePermission, settlePlanApproval],
+    [agentSession],
+  );
+
+  const resetConversationState = useCallback(
+    (
+      nextId: string,
+      nextName: string | undefined,
+      transcript: Message[],
+      contextHistory: Message[] = transcript,
+      boundaries: CompactBoundary[] = [],
+      targets: RewindTarget[] = [],
+      opts: { preserveOperation?: boolean } = {},
+    ) => {
+      prepareConversationProjection();
+      if (opts.preserveOperation) interactions.cancelAll('session-reset');
+      else agentSession.reset('session-reset');
+      projectConversationState(nextId, nextName, transcript, contextHistory, boundaries, targets);
+    },
+    [agentSession, interactions, prepareConversationProjection, projectConversationState],
   );
 
   const endCurrentSession = useCallback(
-    async (reason: 'clear' | 'resume' | 'exit' | 'completion') => {
-      if (lifecycleEndedRef.current) return;
-      lifecycleEndedRef.current = true;
-      await runSessionEnd(liveConfigRef.current, sessionIdRef.current, reason);
-    },
-    [],
+    (reason: 'clear' | 'resume' | 'exit' | 'completion') =>
+      agentSession.endLifecycle(liveConfigRef.current, sessionIdRef.current, reason),
+    [agentSession],
   );
 
   const startNewConversation = useCallback(
     async (previousName?: string) => {
-      const oldId = sessionIdRef.current;
-      sessionGenerationRef.current++;
-      accumulatorRef.current?.discard();
-      abortRef.current?.abort();
-      await endCurrentSession('clear');
-      if (previousName && session.store) session.store.patchMeta(oldId, { name: previousName });
-
-      const nextId = session.store
-        ? session.store.create({ cwd: liveConfig.workspace })
-        : timelineStore
-          ? timelineStore.create({ cwd: liveConfig.workspace })
-          : crypto.randomUUID();
-      if (session.store && timelineStore && timelineStore !== session.store) {
-        timelineStore.create({ id: nextId, cwd: liveConfig.workspace });
-      }
-      lifecycleEndedRef.current = false;
-      resetConversationState(nextId, undefined, []);
-      await runSessionStart(liveConfigRef.current, nextId, 'clear');
+      await agentSession.clearSession({
+        config: liveConfigRef.current,
+        currentSessionId: sessionIdRef.current,
+        store: session.store,
+        timelineStore,
+        previousName,
+        onTransitionStart: prepareConversationProjection,
+        onTransition: (bootstrap) =>
+          projectConversationState(
+            bootstrap.sessionId,
+            bootstrap.sessionName,
+            bootstrap.transcript ?? bootstrap.history,
+            bootstrap.contextHistory ?? bootstrap.history,
+            bootstrap.compactBoundaries,
+            bootstrap.rewindTargets,
+          ),
+      });
     },
-    [endCurrentSession, liveConfig.workspace, resetConversationState, session.store, timelineStore],
+    [
+      agentSession,
+      prepareConversationProjection,
+      projectConversationState,
+      session.store,
+      timelineStore,
+    ],
   );
 
   const resumeConversation = useCallback(
     async (selector: string) => {
-      if (!session.store)
-        throw new Error('Session persistence is disabled; /resume is unavailable.');
-      const selected = selectSession(session.store, selector, liveConfig.workspace);
-      if (selected.id === sessionIdRef.current) return;
-
-      const loaded = session.store.load(selected.id);
-      sessionGenerationRef.current++;
-      accumulatorRef.current?.discard();
-      abortRef.current?.abort();
-      await endCurrentSession('resume');
-      session.store.touch(selected.id);
-      lifecycleEndedRef.current = false;
-      resetConversationState(
-        selected.id,
-        loaded.meta.name,
-        loaded.transcript,
-        loaded.contextHistory,
-        loaded.compactBoundaries,
-        loaded.rewindTargets,
-      );
-      await runSessionStart(liveConfigRef.current, selected.id, 'resume');
+      await agentSession.resumeSession({
+        config: liveConfigRef.current,
+        currentSessionId: sessionIdRef.current,
+        store: session.store,
+        timelineStore,
+        selector,
+        onTransitionStart: prepareConversationProjection,
+        onTransition: (bootstrap) =>
+          projectConversationState(
+            bootstrap.sessionId,
+            bootstrap.sessionName,
+            bootstrap.transcript ?? bootstrap.history,
+            bootstrap.contextHistory ?? bootstrap.history,
+            bootstrap.compactBoundaries,
+            bootstrap.rewindTargets,
+          ),
+      });
     },
-    [endCurrentSession, liveConfig.workspace, resetConversationState, session.store],
+    [
+      agentSession,
+      prepareConversationProjection,
+      projectConversationState,
+      session.store,
+      timelineStore,
+    ],
   );
 
   const listSessions = useCallback((): SessionMeta[] => {
@@ -561,84 +456,28 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     return session.store.list().filter((meta) => meta.cwd === cwd);
   }, [liveConfig.workspace, session.store]);
 
-  const commitCompactResult = useCallback(
-    async (
-      result: Extract<CompactResult, { status: 'compacted' }>,
-      opts: { focus?: string; sessionId: string },
-    ) => {
-      const timestamp = Date.now();
-      const boundary: CompactBoundary = {
-        id: result.compactId,
-        trigger: result.trigger,
-        transcriptOrdinal: messagesRef.current.length,
-        preContextCount: result.preMessageCount,
-        postContextCount: result.replacementHistory.length,
-        preContextTokens: result.preContextTokens,
-        postContextTokens: result.postContextTokens,
-        generation: result.generation,
-        checkpointVersion: 2,
-        timestamp,
-      };
-      if (timelineStore) {
-        const data: CompactRecordData = {
-          version: 2,
-          compactId: result.compactId,
-          generation: result.generation,
-          trigger: result.trigger,
-          focus: opts.focus,
-          checkpoint: result.checkpoint,
-          summary: result.summary,
-          preContextTokens: result.preContextTokens,
-          postContextTokens: result.postContextTokens,
-          replacementHistory: result.replacementHistory,
-          boundary,
-          throughEventRef: result.throughEventRef,
-          summarizedCount: result.summarizedCount,
-          retainedCount: result.retainedCount,
-          strategy: result.strategy,
-          modelCalls: result.modelCalls,
-          degraded: result.degraded,
-          warning: result.warning,
-        };
-        timelineStore.append(opts.sessionId, {
-          type: 'compact',
-          eventId: result.compactId,
-          timestamp,
-          data,
-        } satisfies SessionRecord);
-      }
+  const projectCompactResult = useCallback(
+    (result: Extract<CompactResult, { status: 'compacted' }>, boundary: CompactBoundary) => {
       contextHistoryRef.current = result.replacementHistory;
       setCompactBoundaries((current) => [...current, boundary]);
       setUsage(null);
       hostUsageRef.current = null;
-      await runPostCompactHooks(liveConfigRef.current, {
-        trigger: result.trigger,
-        sessionId: opts.sessionId,
-        focus: opts.focus,
-      });
     },
-    [timelineStore],
+    [],
   );
 
   const send = useCallback(
     async (userMessage: string, commandContext?: CommandContext) => {
-      // Synchronous single-flight: reject concurrent sends even if React has
-      // not yet committed isThinking=true from a prior call.
-      if (sendInFlightRef.current || operationInFlightRef.current) {
-        uiLog.event('send:rejected', {
-          reason: operationInFlightRef.current === 'compact' ? 'compacting' : 'already-in-flight',
-          len: userMessage.length,
-        });
-        return;
-      }
-      sendInFlightRef.current = true;
-      operationInFlightRef.current = 'send';
       setCompactUi(null);
 
       const generation = sessionGenerationRef.current;
       const activeSessionId = sessionIdRef.current;
-      const stillCurrent = () => sessionGenerationRef.current === generation;
+      let operationIsCurrent = () => false;
+      const stillCurrent = () =>
+        sessionGenerationRef.current === generation && operationIsCurrent();
       let activeAccumulator: MessageAccumulator | null = null;
+      let activeUserMessage: Message | undefined;
+      let placeholder: Message | undefined;
 
       log.info('send message', {
         len: userMessage.length,
@@ -652,486 +491,326 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         hasCommandContext: !!commandContext,
       });
 
-      // Cross-turn auto-compact before appending the new user message.
-      const contextLimit = resolveContextLimit(liveConfig);
-      const hostCompactAttemptKey = `${usagePressureTokens(hostUsageRef.current)}:${contextHistoryRef.current.length}`;
-      if (
-        liveConfig.autoCompactEnabled !== false &&
-        contextLimit != null &&
-        shouldCompact(hostUsageRef.current, contextLimit) &&
-        lastHostCompactAttemptRef.current !== hostCompactAttemptKey
-      ) {
-        lastHostCompactAttemptRef.current = hostCompactAttemptKey;
-        try {
-          setIsCompacting(true);
-          setCompactUi({
-            phase: 'working',
-            trigger: 'auto',
-            preMessages: contextHistoryRef.current.length,
-            preContextTokens: usagePressureTokens(hostUsageRef.current),
-          });
-          const autoResult = await runCompact(liveConfig, contextHistoryRef.current, {
-            trigger: 'auto',
-            sessionId: activeSessionId,
-            preContextTokens: usagePressureTokens(hostUsageRef.current),
-            upcomingUserIntent: userMessage,
-          });
-          if (stillCurrent() && autoResult.status === 'compacted') {
-            await commitCompactResult(autoResult, { sessionId: activeSessionId });
+      const beforePrepare = async (control: AgentSessionSendControl) => {
+        operationIsCurrent = control.isCurrent;
+        // Cross-turn auto-compact before appending the new user message.
+        const contextLimit = resolveContextLimit(liveConfig);
+        const hostCompactAttemptKey = `${usagePressureTokens(hostUsageRef.current)}:${contextHistoryRef.current.length}`;
+        if (
+          liveConfig.autoCompactEnabled !== false &&
+          contextLimit != null &&
+          shouldCompact(hostUsageRef.current, contextLimit) &&
+          lastHostCompactAttemptRef.current !== hostCompactAttemptKey
+        ) {
+          lastHostCompactAttemptRef.current = hostCompactAttemptKey;
+          try {
+            setIsCompacting(true);
             setCompactUi({
-              phase: 'diff',
+              phase: 'working',
               trigger: 'auto',
-              preMessages: autoResult.preMessageCount,
-              preContextTokens: autoResult.preContextTokens,
-              message: autoResult.degraded
-                ? 'Conversation compacted with reduced fidelity'
-                : 'Conversation compacted',
-              degraded: autoResult.degraded,
-              warning: autoResult.warning,
-              strategy: autoResult.strategy,
-              modelCalls: autoResult.modelCalls,
+              preMessages: contextHistoryRef.current.length,
+              preContextTokens: usagePressureTokens(hostUsageRef.current),
             });
-          } else if (stillCurrent()) {
-            setCompactUi(null);
+            const autoOutcome = await agentSession.compact({
+              config: liveConfig,
+              history: contextHistoryRef.current,
+              sessionId: activeSessionId,
+              transcriptOrdinal: messagesRef.current.length,
+              timelineStore,
+              isCurrent: stillCurrent,
+              onCommitted: projectCompactResult,
+              options: {
+                trigger: 'auto',
+                preContextTokens: usagePressureTokens(hostUsageRef.current),
+                upcomingUserIntent: userMessage,
+              },
+            });
+            const autoResult = autoOutcome.result;
+            if (stillCurrent() && autoResult.status === 'compacted' && autoOutcome.boundary) {
+              setCompactUi({
+                phase: 'diff',
+                trigger: 'auto',
+                preMessages: autoResult.preMessageCount,
+                preContextTokens: autoResult.preContextTokens,
+                message: autoResult.degraded
+                  ? 'Conversation compacted with reduced fidelity'
+                  : 'Conversation compacted',
+                degraded: autoResult.degraded,
+                warning: autoResult.warning,
+                strategy: autoResult.strategy,
+                modelCalls: autoResult.modelCalls,
+              });
+            } else if (stillCurrent()) {
+              setCompactUi(null);
+            }
+          } catch (err) {
+            log.warn('pre-turn auto-compact failed', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+            if (stillCurrent()) setCompactUi(null);
+          } finally {
+            if (stillCurrent()) setIsCompacting(false);
           }
-        } catch (err) {
-          log.warn('pre-turn auto-compact failed', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-          if (stillCurrent()) setCompactUi(null);
-        } finally {
-          if (stillCurrent()) setIsCompacting(false);
         }
-      }
+      };
 
-      // --- Optimistic, Claude-Code-style update ---
-      // Render the user's message IMMEDIATELY, and seed a fresh, empty
-      // assistant message that we will stream into. Prior messages are never
-      // touched, so they stay visible (scrolled above) while the reply streams.
-      const history = contextHistoryRef.current;
-      const userMsg = makeMessage('user', userMessage, undefined, true);
-      userMsg.kind = 'conversation';
-      const placeholder = makeMessage('assistant', '', undefined, true);
-      streamingIdRef.current = placeholder.id;
-      setStreamingMessageId(placeholder.id);
-      setIsThinking(true);
-      setError(null);
-      setCurrentTurn(0);
-      setUsage(null);
-      setRetryPhase('none');
-      setRetryAttempt(0);
-      setRetryMax(0);
-      setRetryCountdownMs(0);
-      setMessages((prev) => {
-        const next = [...prev, userMsg, placeholder];
-        messagesRef.current = next;
-        return next;
-      });
+      const createUserMessage = () => {
+        const message = makeMessage('user', userMessage, undefined, true);
+        message.kind = 'conversation';
+        activeUserMessage = message;
+        return message;
+      };
+
+      const projectPreparingSend = (userMsg: Message, control: AgentSessionSendControl) => {
+        operationIsCurrent = control.isCurrent;
+        // Render the user's message immediately and stream into a fresh placeholder.
+        placeholder = makeMessage('assistant', '', undefined, true);
+        streamingIdRef.current = placeholder.id;
+        setStreamingMessageId(placeholder.id);
+        setIsThinking(true);
+        setError(null);
+        setCurrentTurn(0);
+        setUsage(null);
+        setRetryPhase('none');
+        setRetryAttempt(0);
+        setRetryMax(0);
+        setRetryCountdownMs(0);
+        setMessages((prev) => {
+          const next = [...prev, userMsg, placeholder!];
+          messagesRef.current = next;
+          return next;
+        });
+      };
+
       const removeOptimisticMessages = () => {
+        if (!activeUserMessage || !placeholder) return;
         setMessages((prev) => {
           const next = prev.filter(
-            (message) => message.id !== userMsg.id && message.id !== placeholder.id,
+            (message) => message.id !== activeUserMessage?.id && message.id !== placeholder?.id,
           );
           messagesRef.current = next;
           return next;
         });
       };
 
-      // Snapshot capture walks the workspace. Keep it off the render-critical
-      // path so the first cold capture cannot freeze the input or spinner.
-      const controller = new AbortController();
-      abortRef.current = controller;
-      const checkpointId = crypto.randomUUID();
-      const checkpointTimestamp = Date.now();
+      const projectPreparedSend = (
+        prepared: Extract<Awaited<ReturnType<AgentSession['prepareSend']>>, { status: 'prepared' }>,
+      ) => {
+        setRewindTargets((current) => [prepared.rewindTarget, ...current]);
+        activeAccumulator = createMessageAccumulator(placeholder!.id, setMessages, messagesRef, 16);
+        accumulatorRef.current = activeAccumulator;
+        activeAccumulator.start();
+        uiLog.event('accumulator:started', { flushIntervalMs: 16 });
+      };
 
-      let contextMessage: string;
-      try {
-        const capture = session.snapshotStore
-          ? session.snapshotStore.captureAsync
-            ? await session.snapshotStore.captureAsync()
-            : await new Promise<ReturnType<RewindSnapshotStoreInterface['capture']>>(
-                (resolve, reject) => {
-                  setTimeout(() => {
-                    try {
-                      resolve(session.snapshotStore!.capture());
-                    } catch (error) {
-                      reject(error);
-                    }
-                  }, 0);
-                },
-              )
-          : {
-              ok: false as const,
-              reason: 'Filesystem checkpoint storage is unavailable.',
-            };
-        if (!stillCurrent()) return;
-        if (controller.signal.aborted) {
-          setIsThinking(false);
-          streamingIdRef.current = null;
-          setStreamingMessageId(null);
-          abortRef.current = null;
-          removeOptimisticMessages();
-          sendInFlightRef.current = false;
-          if (operationInFlightRef.current === 'send') operationInFlightRef.current = null;
-          return;
-        }
-
-        const checkpoint = capture.ok
-          ? {
-              snapshotId: capture.manifest.id,
-              gitHead: capture.manifest.gitHead,
-              entryCount: capture.manifest.entries.length,
-              logicalBytes: capture.manifest.logicalBytes,
+      const sendResult = await agentSession.send({
+        config: liveConfig,
+        displayMessage: userMessage,
+        createUserMessage,
+        history: () => contextHistoryRef.current,
+        mode,
+        sessionId: activeSessionId,
+        snapshotStore: session.snapshotStore,
+        timelineStore,
+        registryStore: timelineStore,
+        isCurrent: () => sessionGenerationRef.current === generation,
+        runtime: agentSession.getRuntime(),
+        beforePrepare,
+        onPreparing: projectPreparingSend,
+        onPrepared: projectPreparedSend,
+        callbacks: {
+          onEvent: (event) => {
+            if (!stillCurrent()) return;
+            switch (event.type) {
+              case 'text':
+                activeAccumulator?.addText(event.content);
+                break;
+              case 'tool_use':
+                activeAccumulator?.addToolCall(event.toolCall);
+                break;
+              case 'tool_result':
+                activeAccumulator?.addToolResult(event.toolResult);
+                break;
+              case 'error':
+                log.warn('agent error', { error: event.error });
+                break;
             }
-          : {
-              gitHead: capture.gitHead,
-              codeUnavailableReason: capture.reason,
-            };
-        const rewindTarget: RewindTarget = {
-          id: checkpointId,
-          userEventId: userMsg.id,
-          prompt: userMessage,
-          timestamp: checkpointTimestamp,
-          ...checkpoint,
-          codeAvailable: capture.ok,
-        };
-
-        timelineStore?.append(activeSessionId, {
-          type: 'turn_checkpoint',
-          eventId: checkpointId,
-          timestamp: checkpointTimestamp,
-          data: {
-            version: 1,
-            checkpointId,
-            userEventId: userMsg.id,
-            prompt: userMessage,
-            checkpoint,
-          } satisfies TurnCheckpointRecordData,
-        } satisfies SessionRecord);
-
-        // Expansion happens after the checkpoint so !cmd and @file side effects
-        // belong to the turn being rewound.
-        contextMessage = expandShellCommands(
-          expandAtMentions(userMessage, liveConfig.workspace),
-          liveConfig.workspace,
-        );
-        userMsg.contextContent = contextMessage === userMessage ? undefined : contextMessage;
-        userMsg.fileObservations = collectAtMentionObservations(
-          userMessage,
-          liveConfig.workspace,
-          userMsg.id,
-        );
-        liveConfig.fileObservationLedger ??= new Map();
-        for (const observation of userMsg.fileObservations) {
-          liveConfig.fileObservationLedger.set(
-            observationKey(observation.workspaceId, observation.path),
-            observation,
-          );
-        }
-        timelineStore?.append(activeSessionId, {
-          type: 'user',
-          eventId: userMsg.id,
-          timestamp: userMsg.timestamp,
-          data: {
-            id: userMsg.id,
-            content: userMessage,
-            contextContent: userMsg.contextContent,
-            kind: 'conversation',
-            fileObservations: userMsg.fileObservations,
           },
-        } satisfies SessionRecord);
-        setRewindTargets((current) => [rewindTarget, ...current]);
-      } catch (preflightError) {
-        if (stillCurrent()) {
-          setError(
-            preflightError instanceof Error ? preflightError.message : String(preflightError),
-          );
-          setIsThinking(false);
-          streamingIdRef.current = null;
-          setStreamingMessageId(null);
-          abortRef.current = null;
-          removeOptimisticMessages();
-          sendInFlightRef.current = false;
-          if (operationInFlightRef.current === 'send') operationInFlightRef.current = null;
-        }
+          onTodos: (todos) => {
+            if (stillCurrent()) setAgentTodos(todos as Todo[]);
+          },
+          onTurnStart: (turn) => {
+            if (!stillCurrent()) return;
+            log.debug('TUI turn start', { turn });
+            setCurrentTurn(turn);
+            turnStartRef.current = Date.now();
+            if (turn > 1) {
+              activeAccumulator?.stop();
+              uiLog.event('accumulator:stopped', { reason: 'new-turn', turn });
+              const next = makeMessage('assistant', '', undefined, true);
+              streamingIdRef.current = next.id;
+              setStreamingMessageId(next.id);
+              setMessages((prev) => {
+                const updated = [...prev, next];
+                messagesRef.current = updated;
+                return updated;
+              });
+              activeAccumulator = createMessageAccumulator(next.id, setMessages, messagesRef, 32);
+              accumulatorRef.current = activeAccumulator;
+              activeAccumulator.start();
+              uiLog.event('accumulator:started', { flushIntervalMs: 32, turn });
+            }
+          },
+          onDone: () => {
+            if (!stillCurrent()) return;
+            log.info('agent done', { durationMs: Date.now() - turnStartRef.current });
+            uiLog.event('send:done', { durationMs: Date.now() - turnStartRef.current });
+            setTurnDurationMs(Date.now() - turnStartRef.current);
+          },
+          onUsage: (u: Usage) => {
+            if (!stillCurrent()) return;
+            hostUsageRef.current = u;
+            lastHostCompactAttemptRef.current = null;
+            setUsage(u);
+          },
+          onModeChange: (newMode: PermissionMode) => {
+            if (stillCurrent()) setMode(newMode);
+          },
+          onCompact: async (history, usage) => {
+            if (!stillCurrent()) {
+              return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
+            }
+            // Flush display accumulator so it cannot overwrite a replacement.
+            activeAccumulator?.stop();
+            const outcome = await agentSession.compact({
+              config: liveConfigRef.current,
+              history,
+              sessionId: activeSessionId,
+              transcriptOrdinal: messagesRef.current.length,
+              timelineStore,
+              isCurrent: stillCurrent,
+              onCommitted: projectCompactResult,
+              options: {
+                trigger: 'auto',
+                preContextTokens: usagePressureTokens(usage),
+              },
+            });
+            const result = outcome.result;
+            if (!stillCurrent()) return result;
+            if (result.status === 'compacted' && outcome.boundary) {
+              setCompactUi({
+                phase: 'diff',
+                trigger: 'auto',
+                preMessages: result.preMessageCount,
+                preContextTokens: result.preContextTokens,
+                message: result.degraded
+                  ? 'Conversation compacted with reduced fidelity'
+                  : 'Conversation compacted',
+                degraded: result.degraded,
+                warning: result.warning,
+                strategy: result.strategy,
+                modelCalls: result.modelCalls,
+              });
+            }
+            return result;
+          },
+          onRetry: (phase, attempt, max, delayMs) => {
+            if (!stillCurrent()) return;
+            setRetryPhase(phase);
+            setRetryAttempt(attempt);
+            setRetryMax(max);
+            setRetryCountdownMs(delayMs);
+
+            // Start countdown timer.
+            clearCountdown();
+            countdownRef.current = setInterval(() => {
+              setRetryCountdownMs((prev) => {
+                const next = prev - 1000;
+                if (next <= 0) {
+                  clearCountdown();
+                  return 0;
+                }
+                return next;
+              });
+            }, 1000);
+          },
+          onStreamStall: (countdownMs) => {
+            if (!stillCurrent()) return;
+            setRetryPhase('stalled');
+            setRetryCountdownMs(countdownMs);
+            clearCountdown();
+            countdownRef.current = setInterval(() => {
+              setRetryCountdownMs((prev) => {
+                const next = prev - 1000;
+                if (next <= 0) {
+                  clearCountdown();
+                  return 0;
+                }
+                return next;
+              });
+            }, 1000);
+          },
+          onStreamResume: () => {
+            if (!stillCurrent()) return;
+            setRetryPhase('none');
+            clearCountdown();
+          },
+          onPersistPermissionRule: (rule: string) => {
+            persistPermissionRule(rule);
+          },
+        },
+        options: {
+          nestedToolObserver: {
+            onToolCall: (invocation: NestedToolInvocation) => {
+              if (stillCurrent()) activeAccumulator?.addNestedToolCall(invocation);
+            },
+            onToolResult: (traceId: string, result: ToolResult) => {
+              if (stillCurrent()) activeAccumulator?.addNestedToolResult(traceId, result);
+            },
+          },
+          manageSessionHooks: false,
+          assistantMessageId: () => streamingIdRef.current ?? undefined,
+          allowedTools: commandContext?.allowedTools,
+          modelOverride: commandContext?.modelOverride,
+          commands: commandContext ? [commandContext.command] : undefined,
+          parentSessionId: activeSessionId,
+        },
+      });
+
+      const hostStillCurrent = sessionGenerationRef.current === generation;
+      if (sendResult.status === 'rejected') {
+        uiLog.event('send:rejected', {
+          reason: sendResult.activeKind === 'compact' ? 'compacting' : 'already-in-flight',
+          len: userMessage.length,
+        });
         return;
       }
-
-      // Create and start the batched message accumulator.
-      // All streaming callbacks push to this queue; it flushes at ~60fps.
-      activeAccumulator = createMessageAccumulator(placeholder.id, setMessages, messagesRef, 16);
-      accumulatorRef.current = activeAccumulator;
-      activeAccumulator.start();
-      uiLog.event('accumulator:started', { flushIntervalMs: 16 });
-
-      const registry = createDefaultRegistry({
-        agents: liveConfig.settings.agents.mode !== 'off',
-        ...(timelineStore
-          ? {
-              sessionHistory: {
-                store: timelineStore,
-                sessionId: () => sessionIdRef.current,
-              },
-            }
-          : {}),
-      });
-      try {
-        // `history` (pre-user state) is passed as context; the loop pushes its
-        // own copy of the user message for API context. We ignore the loop's
-        // returned history — the hook's state is authoritative and updated live.
-        const updatedHistory = await runAgentLoop(
-          liveConfig,
-          registry,
-          contextMessage,
-          history,
-          {
-            onText: (text) => {
-              if (stillCurrent()) activeAccumulator?.addText(text);
-            },
-            onToolCall: (call: ToolCall) => {
-              if (stillCurrent()) activeAccumulator?.addToolCall(call);
-            },
-            onToolResult: (result: ToolResult) => {
-              if (stillCurrent()) activeAccumulator?.addToolResult(result);
-            },
-            onTodos: (todos) => {
-              if (stillCurrent()) setAgentTodos(todos as Todo[]);
-            },
-            onError: (err) => {
-              if (!stillCurrent()) return;
-              log.warn('agent error', { error: err });
-              setError(err);
-            },
-            onTurnStart: (turn) => {
-              if (!stillCurrent()) return;
-              log.debug('TUI turn start', { turn });
-              setCurrentTurn(turn);
-              turnStartRef.current = Date.now();
-              if (turn > 1) {
-                activeAccumulator?.stop();
-                uiLog.event('accumulator:stopped', { reason: 'new-turn', turn });
-                const next = makeMessage('assistant', '', undefined, true);
-                streamingIdRef.current = next.id;
-                setStreamingMessageId(next.id);
-                setMessages((prev) => {
-                  const updated = [...prev, next];
-                  messagesRef.current = updated;
-                  return updated;
-                });
-                activeAccumulator = createMessageAccumulator(next.id, setMessages, messagesRef, 32);
-                accumulatorRef.current = activeAccumulator;
-                activeAccumulator.start();
-                uiLog.event('accumulator:started', { flushIntervalMs: 32, turn });
-              }
-            },
-            onDone: () => {
-              if (!stillCurrent()) return;
-              log.info('agent done', { durationMs: Date.now() - turnStartRef.current });
-              uiLog.event('send:done', { durationMs: Date.now() - turnStartRef.current });
-              setTurnDurationMs(Date.now() - turnStartRef.current);
-              // UI may stop showing the spinner early; the single-flight lock
-              // stays held until finally so a concurrent send cannot start yet.
-              setIsThinking(false);
-              clearCountdown();
-            },
-            onPermissionRequired: (toolCall: ToolCall): Promise<PermissionResult> => {
-              if (!stillCurrent()) return Promise.resolve('deny');
-              return new Promise((resolve) => {
-                uiLog.event('permission:pending', {
-                  tool: toolCall.name,
-                  id: toolCall.id,
-                });
-                const entry: PendingPermission = { toolCall, resolve };
-                pendingPermissionRef.current = entry;
-                setPendingPermission(entry);
-              });
-            },
-            onUsage: (u: Usage) => {
-              if (!stillCurrent()) return;
-              hostUsageRef.current = u;
-              lastHostCompactAttemptRef.current = null;
-              setUsage(u);
-            },
-            onModeChange: (newMode: PermissionMode) => {
-              if (stillCurrent()) setMode(newMode);
-            },
-            onPlanApprovalRequired: (plan: string): Promise<PlanApprovalResult> => {
-              if (!stillCurrent()) return Promise.resolve('reject');
-              return new Promise((resolve) => {
-                uiLog.event('plan-approval:pending', { len: plan.length });
-                const entry: PendingPlanApproval = { plan, resolve };
-                pendingPlanApprovalRef.current = entry;
-                setPendingPlanApproval(entry);
-              });
-            },
-            onUserQuestionRequired: (request): Promise<UserQuestionResponse> => {
-              if (!stillCurrent()) {
-                return Promise.resolve({ action: 'cancel', message: 'Session changed.' });
-              }
-              return new Promise((resolve) => {
-                const entry: PendingUserQuestion = { request, resolve };
-                const next = [...pendingUserQuestionsRef.current, entry];
-                pendingUserQuestionsRef.current = next;
-                setPendingUserQuestions(next);
-                uiLog.event('user-question:pending', {
-                  id: request.id,
-                  count: request.questions.length,
-                  queueLength: next.length,
-                  source: request.source.kind,
-                });
-              });
-            },
-            onCompact: async (history, usage) => {
-              if (!stillCurrent()) {
-                return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
-              }
-              // Flush display accumulator so it cannot overwrite a replacement.
-              activeAccumulator?.stop();
-              const result = await runCompact(liveConfigRef.current, history, {
-                trigger: 'auto',
-                sessionId: activeSessionId,
-                preContextTokens: usagePressureTokens(usage),
-              });
-              if (!stillCurrent()) return result;
-              if (result.status === 'compacted') {
-                await commitCompactResult(result, { sessionId: activeSessionId });
-                setCompactUi({
-                  phase: 'diff',
-                  trigger: 'auto',
-                  preMessages: result.preMessageCount,
-                  preContextTokens: result.preContextTokens,
-                  message: result.degraded
-                    ? 'Conversation compacted with reduced fidelity'
-                    : 'Conversation compacted',
-                  degraded: result.degraded,
-                  warning: result.warning,
-                  strategy: result.strategy,
-                  modelCalls: result.modelCalls,
-                });
-              }
-              return result;
-            },
-            onAssistantMessageComplete: (message) => {
-              if (!stillCurrent() || !timelineStore) return;
-              timelineStore.append(activeSessionId, {
-                type: 'assistant',
-                eventId: message.id,
-                timestamp: message.timestamp,
-                data: {
-                  id: message.id,
-                  complete: true,
-                  content: message.content,
-                  kind: message.kind ?? 'conversation',
-                  toolCalls: message.toolCalls,
-                  toolResults: message.toolResults,
-                  fileObservations: message.fileObservations,
-                },
-              } satisfies SessionRecord);
-            },
-            onRetry: (phase, attempt, max, delayMs) => {
-              if (!stillCurrent()) return;
-              setRetryPhase(phase);
-              setRetryAttempt(attempt);
-              setRetryMax(max);
-              setRetryCountdownMs(delayMs);
-
-              // Start countdown timer.
-              clearCountdown();
-              countdownRef.current = setInterval(() => {
-                setRetryCountdownMs((prev) => {
-                  const next = prev - 1000;
-                  if (next <= 0) {
-                    clearCountdown();
-                    return 0;
-                  }
-                  return next;
-                });
-              }, 1000);
-            },
-            onStreamStall: (countdownMs) => {
-              if (!stillCurrent()) return;
-              setRetryPhase('stalled');
-              setRetryCountdownMs(countdownMs);
-              clearCountdown();
-              countdownRef.current = setInterval(() => {
-                setRetryCountdownMs((prev) => {
-                  const next = prev - 1000;
-                  if (next <= 0) {
-                    clearCountdown();
-                    return 0;
-                  }
-                  return next;
-                });
-              }, 1000);
-            },
-            onStreamResume: () => {
-              if (!stillCurrent()) return;
-              setRetryPhase('none');
-              clearCountdown();
-            },
-            onPersistPermissionRule: (rule: string) => {
-              persistPermissionRule(rule);
-            },
-            onAgentEvent: () => {},
-          },
-          mode,
-          {
-            signal: controller.signal,
-            nestedToolObserver: {
-              onToolCall: (invocation: NestedToolInvocation) => {
-                if (stillCurrent()) activeAccumulator?.addNestedToolCall(invocation);
-              },
-              onToolResult: (traceId: string, result: ToolResult) => {
-                if (stillCurrent()) activeAccumulator?.addNestedToolResult(traceId, result);
-              },
-            },
-            manageSessionHooks: false,
-            displayMessage: userMessage,
-            userMessageId: userMsg.id,
-            userMessageTimestamp: userMsg.timestamp,
-            userFileObservations: userMsg.fileObservations,
-            assistantMessageId: () => streamingIdRef.current ?? undefined,
-            allowedTools: commandContext?.allowedTools,
-            modelOverride: commandContext?.modelOverride,
-            commands: commandContext ? [commandContext.command] : undefined,
-            parentSessionId: activeSessionId,
-          },
-        );
-        if (stillCurrent()) {
-          // Flush the UI accumulator, but keep its authoritative display state:
-          // nested tool traces are display-only and are not present in the loop's
-          // returned API history. Assistant turns are persisted via
-          // onAssistantMessageComplete (not final-history length slicing).
-          activeAccumulator?.stop();
-          contextHistoryRef.current = updatedHistory;
-        }
-      } catch (e) {
-        if (stillCurrent()) setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (stillCurrent()) {
-          activeAccumulator?.stop();
-          uiLog.event('accumulator:stopped', { reason: 'done' });
-          if (accumulatorRef.current === activeAccumulator) accumulatorRef.current = null;
-          // Drop a trailing totally-empty assistant placeholder (e.g. cancelled
-          // before any tokens/tools). Never strip partial or tool-bearing turns.
-          finalizeStreamingMessages();
-          setIsThinking(false);
-          streamingIdRef.current = null;
-          setStreamingMessageId(null);
-          abortRef.current = null;
-          clearCountdown();
-          setRetryPhase('none');
-          setRetryCountdownMs(0);
-        }
-        // Release single-flight only if this invocation still owns the active
-        // session/abort controller. A stale invocation must not unlock or clear
-        // a newer session's send.
-        if (stillCurrent() && abortRef.current === null) {
-          sendInFlightRef.current = false;
-          if (operationInFlightRef.current === 'send') operationInFlightRef.current = null;
-        }
-        uiLog.event('send:finally', { durationMs: Date.now() - turnStartRef.current });
+      if (hostStillCurrent && sendResult.status === 'completed') {
+        // Nested tool traces remain display-only; the returned history is provider context.
+        contextHistoryRef.current = sendResult.messages;
       }
+      if (
+        hostStillCurrent &&
+        (sendResult.status === 'cancelled' ||
+          (sendResult.status === 'failed' && sendResult.phase !== 'run'))
+      ) {
+        if (sendResult.status === 'failed') {
+          setError(
+            sendResult.error instanceof Error ? sendResult.error.message : String(sendResult.error),
+          );
+        }
+        setIsThinking(false);
+        removeOptimisticMessages();
+      }
+      if (hostStillCurrent && placeholder) {
+        accumulatorRef.current?.stop();
+        uiLog.event('accumulator:stopped', { reason: 'done' });
+        if (accumulatorRef.current === activeAccumulator) accumulatorRef.current = null;
+        finalizeStreamingMessages();
+        streamingIdRef.current = null;
+        setStreamingMessageId(null);
+      }
+      uiLog.event('send:finally', { durationMs: Date.now() - turnStartRef.current });
     },
     [
       liveConfig,
@@ -1139,8 +818,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       clearCountdown,
       finalizeStreamingMessages,
       timelineStore,
-      commitCompactResult,
+      projectCompactResult,
       session.snapshotStore,
+      agentSession,
     ],
   );
 
@@ -1170,28 +850,27 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   );
 
   // Abort the in-flight agent stream (Esc while thinking) or compact request.
-  // Lock stays held until send()'s finally; only the abort signal is raised.
+  // The active lease stays held until its finally block; only its signal is aborted.
   const cancel = useCallback(() => {
-    const hadAbort = abortRef.current !== null;
-    const hadCompact = compactAbortRef.current !== null;
+    const activeKind = operations.activeKind;
     const hadAccumulator = accumulatorRef.current !== null;
-    const inFlight = sendInFlightRef.current;
-    uiLog.event('cancel', { hadAbort, hadCompact, hadAccumulator, inFlight });
-    settlePermission('deny', 'cancel');
-    settlePlanApproval('reject', 'cancel');
-    cancelUserQuestions('cancel');
-    abortRef.current?.abort();
-    compactAbortRef.current?.abort();
-    // Do not null abortRef / release sendInFlightRef / stop accumulator here —
-    // finally owns that so concurrent send cannot slip through mid-unwind.
+    const cancelled = agentSession.cancel('cancel');
+    uiLog.event('cancel', {
+      activeKind,
+      aborted: cancelled.operation.aborted,
+      hadAccumulator,
+      inFlight: activeKind === 'send',
+    });
+    // The active lease stays held until its finally block finishes unwinding.
     clearCountdown();
     setRetryPhase('none');
-  }, [cancelUserQuestions, clearCountdown, settlePermission, settlePlanApproval]);
+  }, [agentSession, clearCountdown, operations]);
 
   // Manually compact the conversation (summarize older turns).
   const compact = useCallback(
     async (focus?: string) => {
-      if (sendInFlightRef.current || operationInFlightRef.current) {
+      const operation = operations.tryStart('compact', true);
+      if (!operation) {
         setCompactUi({
           phase: 'skipped',
           trigger: 'manual',
@@ -1199,12 +878,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         });
         return;
       }
-      operationInFlightRef.current = 'compact';
       const generation = sessionGenerationRef.current;
       const activeSessionId = sessionIdRef.current;
-      const stillCurrent = () => sessionGenerationRef.current === generation;
-      const controller = new AbortController();
-      compactAbortRef.current = controller;
+      const stillCurrent = () =>
+        sessionGenerationRef.current === generation && operation.isCurrent();
       const preMessages = contextHistoryRef.current.length;
       const preContextTokens = usagePressureTokens(hostUsageRef.current);
 
@@ -1217,13 +894,22 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       });
 
       try {
-        const result = await runCompact(liveConfigRef.current, contextHistoryRef.current, {
-          trigger: 'manual',
-          focus,
+        const outcome = await agentSession.compact({
+          config: liveConfigRef.current,
+          history: contextHistoryRef.current,
           sessionId: activeSessionId,
-          preContextTokens,
-          signal: controller.signal,
+          transcriptOrdinal: messagesRef.current.length,
+          timelineStore,
+          isCurrent: stillCurrent,
+          onCommitted: projectCompactResult,
+          options: {
+            trigger: 'manual',
+            focus,
+            preContextTokens,
+            signal: operation.signal,
+          },
         });
+        const result = outcome.result;
 
         if (!stillCurrent()) return;
 
@@ -1246,7 +932,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           return;
         }
 
-        await commitCompactResult(result, { focus, sessionId: activeSessionId });
+        if (!outcome.boundary) return;
         if (!stillCurrent()) return;
         setCompactUi({
           phase: 'diff',
@@ -1271,14 +957,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           });
         }
       } finally {
-        if (compactAbortRef.current === controller) compactAbortRef.current = null;
-        if (stillCurrent()) {
-          setIsCompacting(false);
-          if (operationInFlightRef.current === 'compact') operationInFlightRef.current = null;
-        }
+        if (stillCurrent()) setIsCompacting(false);
+        operation.release();
       }
     },
-    [commitCompactResult],
+    [agentSession, operations, projectCompactResult, timelineStore],
   );
 
   const getRewindTargets = useCallback((): RewindTarget[] => {
@@ -1311,22 +994,27 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       targetId: string,
       action: RewindAction,
     ): Promise<{ ok: true; restoredPrompt?: string } | { ok: false; error: string }> => {
-      if (sendInFlightRef.current || operationInFlightRef.current) {
+      const operation = operations.tryStart('rewind');
+      if (!operation) {
         return { ok: false, error: 'Rewind is unavailable while another operation is active.' };
       }
       if (!timelineStore) {
+        operation.release();
         return { ok: false, error: 'Rewind timeline storage is unavailable.' };
       }
       const target = getRewindTargets().find((candidate) => candidate.id === targetId);
-      if (!target) return { ok: false, error: 'The selected rewind target is no longer active.' };
+      if (!target) {
+        operation.release();
+        return { ok: false, error: 'The selected rewind target is no longer active.' };
+      }
       if ((action === 'code' || action === 'both') && !target.codeAvailable) {
+        operation.release();
         return {
           ok: false,
           error: target.codeUnavailableReason ?? 'Code rewind is unavailable for this prompt.',
         };
       }
 
-      operationInFlightRef.current = 'rewind';
       setIsRewinding(true);
       const activeSessionId = sessionIdRef.current;
       let safetySnapshotId: string | undefined;
@@ -1367,6 +1055,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             loaded.contextHistory,
             loaded.compactBoundaries,
             loaded.rewindTargets,
+            { preserveOperation: true },
           );
         }
         if (safetySnapshotId) session.snapshotStore?.discardManifest(safetySnapshotId);
@@ -1385,11 +1074,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           error: `${rewindError instanceof Error ? rewindError.message : String(rewindError)}${rollbackMessage}`,
         };
       } finally {
-        if (operationInFlightRef.current === 'rewind') operationInFlightRef.current = null;
+        operation.release();
         setIsRewinding(false);
       }
     },
-    [getRewindTargets, resetConversationState, session.snapshotStore, sessionName, timelineStore],
+    [
+      getRewindTargets,
+      operations,
+      resetConversationState,
+      session.snapshotStore,
+      sessionName,
+      timelineStore,
+    ],
   );
 
   const clear = useCallback(() => {
@@ -1397,11 +1093,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     // can resurrect content into a cleared conversation.
     accumulatorRef.current?.stop();
     accumulatorRef.current = null;
-    abortRef.current?.abort();
-    abortRef.current = null;
-    settlePermission('deny', 'clear');
-    settlePlanApproval('reject', 'clear');
-    cancelUserQuestions('clear');
+    agentSession.cancel('clear');
     messagesRef.current = [];
     contextHistoryRef.current = [];
     setMessages([]);
@@ -1413,20 +1105,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     hostUsageRef.current = null;
     lastHostCompactAttemptRef.current = null;
     setAgentTodos([]);
-    setPendingPermission(null);
-    setPendingPlanApproval(null);
-    setPendingUserQuestions([]);
     streamingIdRef.current = null;
     setStreamingMessageId(null);
-    // isThinking / sendInFlightRef are released by send()'s finally after abort.
-    // If nothing is in flight they are already false.
-    if (!sendInFlightRef.current) {
-      setIsThinking(false);
-    }
+    // The send lease is released by send()'s finally after abort.
+    if (!operations.isRunning('send')) setIsThinking(false);
     clearCountdown();
     setRetryPhase('none');
     setRetryCountdownMs(0);
-  }, [cancelUserQuestions, clearCountdown, settlePermission, settlePlanApproval]);
+  }, [agentSession, clearCountdown, operations]);
 
   const cycleMode = useCallback(() => {
     const modes: PermissionMode[] = [
@@ -1449,9 +1135,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // /init-pre /memory-noop to show output instantly.
   const addLocalMessage = useCallback(
     (text: string, localCommand?: LocalCommandDisplay) => {
-      if (sendInFlightRef.current || isThinking) {
+      const sendInFlight = operations.isRunning('send');
+      if (sendInFlight || isThinking) {
         uiLog.event('local-message:blocked', {
-          reason: sendInFlightRef.current ? 'in-flight' : 'is-thinking',
+          reason: sendInFlight ? 'in-flight' : 'is-thinking',
           preview: text.slice(0, 40),
         });
         return; // don't clobber a streaming turn
@@ -1479,7 +1166,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         return next;
       });
     },
-    [isThinking, timelineStore],
+    [isThinking, operations, timelineStore],
   );
 
   // Switch the active model for the rest of the session, optionally persisting
@@ -1680,6 +1367,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     retryMax,
     retryCountdownMs,
     liveConfig,
+    runtime: agentSession.getRuntime(),
     localProviderIds: localProviderOwnership.ids,
     localProviderModelCounts: localProviderOwnership.modelCounts,
     sessionId,

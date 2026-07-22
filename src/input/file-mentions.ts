@@ -136,5 +136,5 @@ export async function getFileMentionCandidates(
   });
 
   throwIfAborted(signal);
-  return scored.slice(0, limit).map(({ score, ...item }) => item);
+  return scored.slice(0, limit).map(({ score: _score, ...item }) => item);
 }

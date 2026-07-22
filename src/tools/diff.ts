@@ -120,7 +120,7 @@ export async function lineDiffAsync(
   const dp: number[][] = [];
 
   for (let row = 0; row <= n; row++) {
-    dp.push(new Array(m + 1).fill(0));
+    dp.push(new Array<number>(m + 1).fill(0));
     if (row > 0 && row % 128 === 0) await yieldToEventLoop(signal);
   }
 

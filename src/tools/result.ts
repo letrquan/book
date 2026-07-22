@@ -4,7 +4,7 @@ import type {
   ToolResultError,
   ToolResultPresentation,
   ToolResultStatus,
-} from '../types.js';
+} from '../types/tools.js';
 import { canonicalToolName } from './aliases.js';
 import { getPrimaryArg } from './primary-arg.js';
 import { isFileMutatingTool } from './tool-capabilities.js';

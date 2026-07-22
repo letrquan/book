@@ -1,12 +1,12 @@
 import { Box, Text, useInput } from 'ink';
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useTheme } from '../theme.js';
-import type { AgentConfig } from '../../types.js';
+import type { AgentConfig } from '../../types/runtime.js';
 import type { ProviderConfig } from '../../settings.js';
 import { resolveSecret } from '../../config.js';
 import { discoverModels, type ModelDiscoveryOptions } from '../../provider/model-discovery.js';
 import type { ModelPickerOption, ProviderSaveRequest } from '../model-options.js';
-import { EFFORT_LEVELS, type EffortLevel, type EffortResult } from '../effort.js';
+import { EFFORT_LEVELS, type EffortLevel, type EffortResult } from '../../commands/effort.js';
 import { ByokWizard } from './ByokWizard.js';
 import { useDensityMetrics } from '../density.js';
 

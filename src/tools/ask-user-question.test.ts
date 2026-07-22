@@ -4,7 +4,7 @@ import {
   parseUserQuestionInput,
   validateUserQuestionResponse,
 } from './ask-user-question.js';
-import type { UserQuestionRequest } from '../types.js';
+import type { UserQuestionRequest } from '../types/tools.js';
 
 const questions = [
   {

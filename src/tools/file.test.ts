@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { fileTools } from './file.js';
-import type { ToolContext } from '../types.js';
+import type { ToolContext } from '../types/tools.js';
 import {
   existsSync,
   mkdirSync,

@@ -6,9 +6,13 @@
  * process.exit() (which would kill the app). Settings are layered user →
  * project → local; we write to the local (highest-priority, gitignored) layer.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { existsSync } from 'fs';
 import { join } from 'path';
-import { deleteNestedValue, setNestedValue } from '../cli/utils.js';
+import {
+  formatSettingsDiagnostics,
+  readSettingsDocument,
+  SettingsRepository,
+} from '../settings-repository.js';
 
 const LOCAL_DIR = '.book';
 const LOCAL_FILE = 'settings.local.json';
@@ -33,14 +37,8 @@ export type RemoveLocalProviderResult =
 /** Read the local settings.local.json as a plain object ({} if absent/invalid). */
 export function readSettingsLocal(workspace: string): Record<string, unknown> {
   const localPath = join(workspace, LOCAL_DIR, LOCAL_FILE);
-  if (!existsSync(localPath)) return {};
-  try {
-    const raw = readFileSync(localPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
+  const result = readSettingsDocument(localPath);
+  return result.status === 'valid' ? result.document : {};
 }
 
 /**
@@ -53,17 +51,11 @@ export function persistSettingsLocal(
   workspace: string,
   values: Record<string, unknown>,
 ): { ok: boolean; error?: string } {
-  try {
-    const localDir = join(workspace, LOCAL_DIR);
-    const localPath = join(localDir, LOCAL_FILE);
-    mkdirSync(localDir, { recursive: true });
-    const existing = readSettingsLocal(workspace);
-    for (const [key, value] of Object.entries(values)) setNestedValue(existing, key, value);
-    writeFileSync(localPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
+  const localPath = join(workspace, LOCAL_DIR, LOCAL_FILE);
+  const result = new SettingsRepository(localPath).set(values);
+  return result.ok
+    ? { ok: true }
+    : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
 }
 
 export function persistSettingLocal(
@@ -80,33 +72,28 @@ export function removeProviderLocal(
   providerId: string,
 ): RemoveLocalProviderResult {
   const localPath = join(workspace, LOCAL_DIR, LOCAL_FILE);
-  let existing: Record<string, unknown>;
-  try {
-    if (!existsSync(localPath)) {
-      return {
-        ok: false,
-        providerId,
-        removedModelCount: 0,
-        localDefaultCleared: false,
-        localProviderExisted: false,
-        error: `Provider "${providerId}" is not configured in ${LOCAL_DIR}/${LOCAL_FILE}.`,
-      };
-    }
-    const parsed: unknown = JSON.parse(readFileSync(localPath, 'utf-8'));
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('Local settings must contain a JSON object.');
-    }
-    existing = parsed as Record<string, unknown>;
-  } catch (error) {
+  if (!existsSync(localPath)) {
     return {
       ok: false,
       providerId,
       removedModelCount: 0,
       localDefaultCleared: false,
       localProviderExisted: false,
-      error: error instanceof Error ? error.message : String(error),
+      error: `Provider "${providerId}" is not configured in ${LOCAL_DIR}/${LOCAL_FILE}.`,
     };
   }
+  const source = readSettingsDocument(localPath);
+  if (source.status !== 'valid') {
+    return {
+      ok: false,
+      providerId,
+      removedModelCount: 0,
+      localDefaultCleared: false,
+      localProviderExisted: false,
+      error: source.status === 'absent' ? 'Local settings are absent.' : source.error,
+    };
+  }
+  const existing = source.document;
 
   const registry = existing.provider;
   const ownsProvider =
@@ -137,11 +124,13 @@ export function removeProviderLocal(
   const localDefaultCleared =
     typeof existing.model === 'string' && existing.model.startsWith(`${providerId}/`);
 
-  deleteNestedValue(existing, ['provider', providerId]);
-  if (localDefaultCleared) delete existing.model;
-
-  try {
-    writeFileSync(localPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+  const result = new SettingsRepository(localPath).update((candidate) => {
+    const candidateProviders = candidate.provider as Record<string, unknown>;
+    delete candidateProviders[providerId];
+    if (Object.keys(candidateProviders).length === 0) delete candidate.provider;
+    if (localDefaultCleared) delete candidate.model;
+  });
+  if (result.ok) {
     return {
       ok: true,
       providerId,
@@ -149,16 +138,15 @@ export function removeProviderLocal(
       localDefaultCleared,
       localProviderExisted: true,
     };
-  } catch (error) {
-    return {
-      ok: false,
-      providerId,
-      removedModelCount,
-      localDefaultCleared: false,
-      localProviderExisted: true,
-      error: error instanceof Error ? error.message : String(error),
-    };
   }
+  return {
+    ok: false,
+    providerId,
+    removedModelCount,
+    localDefaultCleared: false,
+    localProviderExisted: true,
+    error: formatSettingsDiagnostics(result.diagnostics),
+  };
 }
 
 /**

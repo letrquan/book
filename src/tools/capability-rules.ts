@@ -1,4 +1,4 @@
-import type { ToolCall, ToolDefinition } from '../types.js';
+import type { ToolCall, ToolDefinition } from '../types/tools.js';
 import { canonicalToolName } from './aliases.js';
 import { globToRegex } from './glob-regex.js';
 import { getPrimaryArg } from './primary-arg.js';

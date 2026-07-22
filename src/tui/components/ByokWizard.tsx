@@ -1,7 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import type { RetryConfig } from '../../types.js';
+import type { RetryConfig } from '../../types/runtime.js';
 import {
   DEFAULT_PROVIDER_BASE_URLS,
   discoverModels,

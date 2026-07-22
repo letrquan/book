@@ -10,7 +10,7 @@ import type {
   ContextCommandDisplay,
   LocalCommandDisplay,
   UsageCommandDisplay,
-} from '../../types.js';
+} from '../../types/messages.js';
 import { useStaggeredReveal } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { padDisplay, truncateDisplay, wordWrap } from './word-wrap.js';

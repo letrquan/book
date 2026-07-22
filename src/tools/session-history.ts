@@ -1,4 +1,5 @@
-import type { SessionStoreInterface, ToolDefinition, ToolResult } from '../types.js';
+import type { SessionStoreInterface } from '../types/sessions.js';
+import type { ToolDefinition, ToolResult } from '../types/tools.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 export interface SessionHistoryCapability {

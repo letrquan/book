@@ -1,4 +1,3 @@
-import type { ToolCall } from './types.js';
 import type { ResolvedSettings } from './settings.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex } from './tools/glob-regex.js';

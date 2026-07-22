@@ -1,7 +1,5 @@
 import { Box, Text, useInput, useStdout, useApp } from 'ink';
 import { useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
-import { writeFileSync } from 'fs';
-import { join } from 'path';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { StatusLine } from './components/StatusLine.js';
@@ -29,40 +27,25 @@ import {
   type ThemeTokens,
   type ResolvedTheme,
 } from './theme.js';
-import type {
-  AgentConfig,
-  CommandContext,
-  RewindSnapshotStoreInterface,
-  SessionStoreInterface,
-} from '../types.js';
+import type { AgentConfig } from '../types/runtime.js';
+import type { CommandContext } from '../types/commands.js';
+import type { RewindSnapshotStoreInterface, SessionStoreInterface } from '../types/sessions.js';
 import type { SessionBootstrap } from '../session/resolve.js';
 import { DensityContext, resolveTuiDensity } from './density.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
+import { parseSlashInput } from '../commands/resolve.js';
+import {
+  createBuiltinCommandRegistry,
+  type BuiltinCommandContext,
+  type BuiltinCommandEffect,
+} from '../commands/builtins.js';
 import { discoverSkills } from '../skills.js';
 import { runGit } from '../tools/git.js';
-import { costReport, PRICING, usageReport } from '../pricing.js';
-import { buildInitPrompt } from '../commands/init-prompt.js';
-import {
-  buildReviewPrompt,
-  buildSecurityReviewPrompt,
-  REVIEW_TOOLS,
-  SECURITY_REVIEW_TOOLS,
-} from '../commands/builtins-prompts.js';
-import { buildMemoryInboxReport, buildMemoryReport, getMemoryIndex } from '../memory-display.js';
-import {
-  approveMemoryCandidate,
-  discardMemoryCandidate,
-  getProjectMemoryDir,
-  listMemoryCandidates,
-  loadMemoryContext,
-} from '../memory-store.js';
-import { buildContextBreakdown, buildContextReport } from '../context-report.js';
+import { getMemoryIndex } from '../memory-display.js';
 import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
-import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
 import { persistSettingLocal } from './persist.js';
 import { buildModelOptions } from './model-options.js';
-import { redactSettingValue, redactSettingsForDisplay } from '../settings-redaction.js';
 import { createUiDebugLogger } from '../debug-log.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { getOrCreateAgentManager } from '../agents/manager.js';
@@ -73,12 +56,8 @@ import {
   type TranscriptMode,
 } from './tool-presentation.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
-import {
-  EFFORT_USAGE,
-  getAvailableEffortLevels,
-  getEffortUnavailableError,
-  isEffortLevel,
-} from './effort.js';
+import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
+import type { InteractiveAssets } from './interactive-assets.js';
 
 const uiLog = createUiDebugLogger('tui:app');
 
@@ -104,24 +83,6 @@ export function ownsModalInput(
   );
 }
 
-/** Settable top-level settings keys (for /config --help). Mirrors cli/config-cmd.ts allowlist. */
-const SETTABLE_KEYS = [
-  'model',
-  'maxTurns',
-  'maxTokens',
-  'autoCompactEnabled',
-  'defaultMode',
-  'effort',
-  'theme',
-  'provider',
-  'permissions',
-  'sandbox',
-  'hooks',
-  'memory',
-  'additionalDirectories',
-  'env',
-];
-
 type ApplyThemeResult = { ok: true; theme: ResolvedTheme } | { ok: false; error: string };
 
 function themeAppliedMessage(theme: ResolvedTheme): string {
@@ -146,6 +107,7 @@ export function providerRemovalMessage(
 
 interface AppProps {
   config: AgentConfig;
+  interactiveAssets?: InteractiveAssets;
   session: SessionBootstrap & {
     store?: SessionStoreInterface;
     timelineStore?: SessionStoreInterface;
@@ -181,7 +143,7 @@ interface AppProps {
  *   Shift+Tab — cycle permission mode
  *   Ctrl+/   — toggle keyboard shortcuts reference
  */
-export function App({ config, session, redrawViewport }: AppProps) {
+export function App({ config, session, redrawViewport, interactiveAssets }: AppProps) {
   const {
     messages,
     contextHistory,
@@ -203,6 +165,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
     pendingUserQuestionCount,
     agentTodos,
     liveConfig,
+    runtime,
     localProviderIds,
     localProviderModelCounts,
     sessionId,
@@ -253,26 +216,42 @@ export function App({ config, session, redrawViewport }: AppProps) {
   const [showThemePicker, setShowThemePicker] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [showRewindPicker, setShowRewindPicker] = useState(false);
+  const [isResolvingCommand, setIsResolvingCommand] = useState(false);
   const [draftRestore, setDraftRestore] = useState<{ key: number; value: string }>();
   const [followRequestKey, setFollowRequestKey] = useState(0);
+  const commandResolutionRef = useRef<AbortController | null>(null);
   const [currentTheme, setCurrentTheme] = useState<ResolvedTheme>(
     () =>
+      interactiveAssets?.initialTheme ??
       resolveTheme(config.workspace, config.settings.theme ?? 'dark') ?? {
         preference: 'dark',
         resolvedName: 'dark',
         tokens: DARK_THEME,
       },
   );
-  const [customThemes, setCustomThemes] = useState<string[]>(() =>
-    listCustomThemes(config.workspace),
+  const [customThemes, setCustomThemes] = useState<string[]>(
+    () => interactiveAssets?.customThemes ?? listCustomThemes(config.workspace),
   );
   const { tasks, addTask, updateTaskStatus, removeTask, clearTasks } = useTasks();
   const theme = currentTheme.tokens;
   const { exit: exitApp } = useApp();
+  const interrupt = useCallback(() => {
+    commandResolutionRef.current?.abort();
+    commandResolutionRef.current = null;
+    cancel();
+  }, [cancel]);
 
-  // Discover slash commands on startup.
-  const commands = useMemo(() => discoverCommands(config.workspace), [config.workspace]);
-  const skills = useMemo(() => discoverSkills(config.workspace), [config.workspace]);
+  useEffect(() => {
+    return () => commandResolutionRef.current?.abort();
+  }, []);
+
+  const [commands, setCommands] = useState(
+    () => interactiveAssets?.commands ?? discoverCommands(config.workspace),
+  );
+  const builtinCommandRegistry = useMemo(() => createBuiltinCommandRegistry(), []);
+  const [skills, setSkills] = useState(
+    () => interactiveAssets?.skills ?? discoverSkills(config.workspace),
+  );
   const modelOptions = useMemo(() => buildModelOptions(liveConfig.settings), [liveConfig.settings]);
   const effortLevels = useMemo(() => getAvailableEffortLevels(liveConfig), [liveConfig.modelInfo]);
 
@@ -375,7 +354,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       } else if (key.ctrl && input === 'c') {
         if (pendingUserQuestion) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
-          cancel();
+          interrupt();
         } else {
           uiLog.event('input:Ctrl+C', { action: 'noop-modal-active' });
         }
@@ -402,18 +381,18 @@ export function App({ config, session, redrawViewport }: AppProps) {
 
     // Escape aborts an in-flight stream when no prompt owns the keyboard.
     if (key.escape) {
-      if (isThinking) {
+      if (isThinking || isResolvingCommand) {
         uiLog.event('input:Escape', { action: 'cancel-stream' });
-        cancel();
+        interrupt();
         return;
       }
       uiLog.event('input:Escape', { action: 'noop-idle' });
     }
     // Ctrl+C — cancel an in-flight stream; otherwise preserve normal terminal exit.
     if (key.ctrl && input === 'c') {
-      if (isThinking) {
+      if (isThinking || isResolvingCommand) {
         uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
-        cancel();
+        interrupt();
         return;
       }
       uiLog.event('input:Ctrl+C', { action: 'exit' });
@@ -509,425 +488,261 @@ export function App({ config, session, redrawViewport }: AppProps) {
   );
 
   const handleSubmit = useCallback(
-    (value: string) => {
+    async (value: string) => {
       setFollowRequestKey((key) => key + 1);
       // Coarse slash-command dispatch trace (one event per submit).
-      if (value.startsWith('/')) {
-        const spaceIdx = value.indexOf(' ');
-        const cmdName = spaceIdx === -1 ? value.slice(1) : value.slice(1, spaceIdx);
+      const parsedSlash = parseSlashInput(value);
+      if (parsedSlash) {
         uiLog.event('slash:dispatch', {
-          command: cmdName,
-          hasArg: spaceIdx !== -1,
+          command: parsedSlash.name,
+          hasArg: parsedSlash.rawArguments.length > 0,
           disabled: isThinking,
         });
       } else {
         uiLog.event('submit:text', { len: value.length, disabled: isThinking });
       }
-      // Slash commands: built-in first, then custom.
-      const firstSpace = value.indexOf(' ');
-      const commandName = firstSpace === -1 ? value.slice(1) : value.slice(1, firstSpace);
-      const commandArg = firstSpace === -1 ? '' : value.slice(firstSpace + 1).trim();
-      if (commandName === 'clear' || commandName === 'new' || commandName === 'reset') {
-        clearTasks();
-        setShowHelp(false);
-        setShowStatus(false);
-        setShowSessionPicker(false);
-        setShowRewindPicker(false);
-        void startNewConversation(commandArg || undefined).catch((err) => {
-          addLocalMessage(`✕ ${err instanceof Error ? err.message : String(err)}`);
-        });
-        stdout?.write('\x1b[2J\x1b[3J\x1b[H');
-      } else if (commandName === 'resume' || commandName === 'continue') {
-        if (!commandArg) {
-          setShowSessionPicker(true);
-        } else {
-          clearTasks();
-          void resumeConversation(commandArg).catch((err) => {
-            addLocalMessage(`✕ ${err instanceof Error ? err.message : String(err)}`);
-          });
-        }
-      } else if (commandName === 'compact') {
-        void compact(commandArg || undefined);
-      } else if (commandName === 'rewind') {
-        if (commandArg) addLocalMessage('Usage: /rewind');
-        else setShowRewindPicker(true);
-      } else if (value.startsWith('/exit')) {
-        void endCurrentSession('exit').finally(exitApp);
-      } else if (value.startsWith('/help')) {
-        setShowHelp((s) => !s);
-      } else if (commandName === 'agents') {
-        const manager = getOrCreateAgentManager(
-          liveConfig,
-          createDefaultRegistry({ agents: true }).getDefinitions(),
-        );
-        void manager
-          .list()
-          .then((records) => {
-            addLocalMessage(
-              records.length === 0
-                ? 'No managed agents for this repository.'
-                : records
-                    .map(
-                      (record) =>
-                        `${record.id}  ${record.role}/${record.name}  ${record.status}  apply:${record.applicationStatus}`,
-                    )
-                    .join('\n'),
-            );
-          })
-          .catch((error) =>
-            addLocalMessage(`✕ ${error instanceof Error ? error.message : String(error)}`),
-          );
-      } else if (commandName === 'agent') {
-        const manager = getOrCreateAgentManager(
-          liveConfig,
-          createDefaultRegistry({ agents: true }).getDefinitions(),
-        );
-        const [actionOrId, id, ...rest] = commandArg.split(/\s+/).filter(Boolean);
-        const reportError = (error: unknown) =>
-          addLocalMessage(`✕ ${error instanceof Error ? error.message : String(error)}`);
-        if (!actionOrId) {
-          addLocalMessage(
-            'Usage: /agent <id> | /agent send <id> <message> | /agent stop <id> | /agent apply <id> [evidence-id]',
-          );
-        } else if (actionOrId === 'send' && id) {
-          void manager
-            .send(id, rest.join(' '))
-            .then((record) => addLocalMessage(JSON.stringify(record, null, 2)))
-            .catch(reportError);
-        } else if (actionOrId === 'stop' && id) {
-          void manager
-            .stop(id)
-            .then((record) => addLocalMessage(JSON.stringify(record, null, 2)))
-            .catch(reportError);
-        } else if (actionOrId === 'apply' && id) {
-          if (mode === 'plan') {
-            addLocalMessage('✕ Agent apply is unavailable in plan mode.');
-          } else {
-            void manager
-              .apply(id, rest[0])
-              .then((result) => addLocalMessage(JSON.stringify(result, null, 2)))
-              .catch(reportError);
-          }
-        } else {
-          void manager
-            .get(actionOrId)
-            .then((record) =>
-              addLocalMessage(
-                record ? JSON.stringify(record, null, 2) : `✕ Agent ${actionOrId} was not found.`,
-              ),
-            )
-            .catch(reportError);
-        }
-      } else if (value.startsWith('/task ')) {
-        addTask({ subject: value.slice(6), status: 'pending' });
-      } else if (commandName === 'theme') {
-        if (!commandArg) {
-          setCustomThemes(listCustomThemes(config.workspace));
-          setShowThemePicker(true);
-        } else {
-          const result = applyThemePreference(commandArg);
-          addLocalMessage(result.ok ? themeAppliedMessage(result.theme) : `✕ ${result.error}`);
-        }
-      } else if (commandName === 'model') {
-        if (commandArg) {
-          const result = setModel(commandArg);
-          addLocalMessage(
-            result.ok ? `Switched to ${commandArg} (saved as default).` : `✕ ${result.error}`,
-          );
-        } else {
-          setShowModelPicker(true);
-        }
-      } else if (commandName === 'providers') {
-        if (commandArg) addLocalMessage('Usage: /providers');
-        else setShowModelPicker(true);
-      } else if (commandName === 'effort') {
-        if (!commandArg) {
-          const unavailable = getEffortUnavailableError(liveConfig);
-          if (unavailable) addLocalMessage(`✕ ${unavailable}`);
-          else setShowEffortPicker(true);
-        } else {
-          const normalized = commandArg.toLowerCase();
-          if (!isEffortLevel(normalized)) {
-            addLocalMessage(EFFORT_USAGE);
-          } else {
-            const result = setEffort(normalized);
-            addLocalMessage(
-              result.ok
-                ? `Set effort level to ${normalized} (saved as default).`
-                : `✕ ${result.error}`,
-            );
-          }
-        }
-      } else if (value.startsWith('/config')) {
-        const arg = value.slice('/config'.length).trim();
-        if (!arg) {
-          const snapshot = redactSettingsForDisplay({
-            ...liveConfig.settings,
-            model: liveConfig.modelSelection ?? liveConfig.model,
-            baseUrl: liveConfig.baseUrl,
-            workspace: liveConfig.workspace,
-            maxTurns: liveConfig.maxTurns,
-            maxTokens: liveConfig.maxTokens,
-            effort: liveConfig.effort,
-            activeProvider: liveConfig.provider,
-            modelInfo: liveConfig.modelInfo,
-          }) as Record<string, unknown>;
-          addLocalMessage(JSON.stringify(snapshot, null, 2), {
-            kind: 'config',
-            snapshot,
-            runtime: {
-              model: liveConfig.modelSelection ?? liveConfig.model,
-              provider: liveConfig.provider ?? 'auto',
-              effort: liveConfig.effort,
-              mode,
-              maxTokens: liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens,
-              workspace: liveConfig.workspace,
-            },
-          });
-        } else if (arg === '--help') {
-          addLocalMessage(
-            'Settable keys (dot-separated):\n' +
-              SETTABLE_KEYS.map((k) => `  ${k}`).join('\n') +
-              '\n\nUsage: /config <key>=<value>',
-          );
-        } else if (arg.includes('=')) {
-          const eq = arg.indexOf('=');
-          const key = arg.slice(0, eq).trim();
-          const raw = arg.slice(eq + 1).trim();
-          let parsed: unknown = raw;
-          try {
-            parsed = JSON.parse(raw);
-          } catch {
-            /* keep as string */
-          }
-          const r = persistSettingLocal(config.workspace, key, parsed);
-          addLocalMessage(
-            r.ok
-              ? `Set ${key} = ${JSON.stringify(redactSettingValue(key, parsed))} in .book/settings.local.json (next session).`
-              : `✕ ${r.error}`,
-          );
-        } else {
-          addLocalMessage('Usage: /config [key=value] or /config --help');
-        }
-      } else if (value.startsWith('/diff')) {
-        void runGit(['diff'], {
-          workspaceRoot: config.workspace,
-          env: process.env as Record<string, string>,
-        }).then((result) => {
-          addLocalMessage(
-            result.error ? `✕ ${result.error}` : result.output.trim() || '(no changes)',
-          );
-        });
-      } else if (value.startsWith('/status')) {
-        setShowStatus((s) => !s);
-      } else if (value === '/memory' || value.startsWith('/memory ')) {
-        const arg = value.slice('/memory'.length).trim();
-
-        if (!arg || arg === 'status') {
-          // Respect the enabled gate: when memory loading is disabled, don't
-          // walk the disk just to render a status line.
-          const loaded = liveConfig.settings.memory.enabled
-            ? (liveConfig.memoryContext ?? loadMemoryContext(config.workspace))
-            : undefined;
-          addLocalMessage(
-            buildMemoryReport({
-              workspace: config.workspace,
-              settings: liveConfig.settings,
-              loaded,
-            }),
-          );
-        } else if (arg === 'inbox') {
-          addLocalMessage(buildMemoryInboxReport({ workspace: config.workspace }));
-        } else if (arg === 'path') {
-          addLocalMessage(getProjectMemoryDir(config.workspace));
-        } else if (arg === 'on' || arg === 'auto-save on') {
-          setMemoryAutoSave(true);
-          addLocalMessage(
-            'Memory auto-capture enabled. New candidates will still require approval.',
-          );
-        } else if (arg === 'off' || arg === 'auto-save off') {
-          setMemoryAutoSave(false);
-          addLocalMessage('Memory auto-capture disabled. Existing approved memory can still load.');
-        } else if (arg.startsWith('approve ') || arg.startsWith('discard ')) {
-          const action = arg.startsWith('approve ') ? 'approve ' : 'discard ';
-          const rest = arg.slice(action.length).trim();
-          const candidates = listMemoryCandidates(config.workspace);
-          const resolveCandidate = (raw: string): string | undefined => {
-            if (!raw) return undefined;
-            const idx = Number(raw);
-            if (Number.isInteger(idx) && idx >= 1 && idx <= candidates.length)
-              return candidates[idx - 1].name;
-            return raw;
-          };
-          const target = resolveCandidate(rest);
-          const r = target
-            ? action === 'approve '
-              ? approveMemoryCandidate(config.workspace, target)
-              : discardMemoryCandidate(config.workspace, target)
-            : { ok: false, error: 'Missing candidate id or filename.' };
-          addLocalMessage(
-            r.ok
-              ? `${action === 'approve ' ? 'Approved' : 'Discarded'} memory candidate → ${r.path}`
-              : `✕ ${r.error}`,
-          );
-          if (r.ok && action === 'approve ') refreshMemoryContext();
-        } else {
-          addLocalMessage(
-            'Usage: /memory [status|inbox|approve <n|file>|discard <n|file>|on|off|path]',
-          );
-        }
-      } else if (value.startsWith('/permissions')) {
-        setShowPermissions((s) => !s);
-      } else if (value.startsWith('/cost')) {
-        addLocalMessage(costReport(liveConfig.model, usage));
-      } else if (value.startsWith('/usage') || value.startsWith('/stats')) {
-        const rate = PRICING[liveConfig.model];
-        const estimatedCostUsd =
-          usage && rate
-            ? (usage.promptTokens * rate.in + usage.completionTokens * rate.out) / 1_000_000
-            : undefined;
-        addLocalMessage(
-          usageReport(liveConfig.model, usage, {
-            currentTurn,
-            messageCount: messages.length,
-            turnDurationMs,
-          }),
-          {
-            kind: 'usage',
-            model: liveConfig.model,
-            currentTurn,
-            messageCount: messages.length,
-            turnDurationMs,
-            usage,
-            rate: rate ? { inputPerMillion: rate.in, outputPerMillion: rate.out } : undefined,
-            estimatedCostUsd,
-          },
-        );
-      } else if (value.startsWith('/context')) {
-        const ambient = {
-          model: liveConfig.model,
-          maxTokens: liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens,
-          contextHistory,
-          compactBoundaries,
-          skillCount: skills.length,
-          commandCount: commands.length,
-          subagentCount: discoverAgents(config.workspace).length,
-          hasMemoryIndex: Boolean(
-            liveConfig.memoryContext?.indexLoaded ?? getMemoryIndex(config.workspace).indexFile,
-          ),
-          hasClaudeMdLoader: discoverClaudeMd(config.workspace).length > 0,
-        };
-        const breakdown = buildContextBreakdown(contextHistory);
-        addLocalMessage(buildContextReport(messages, ambient), {
-          kind: 'context',
-          model: ambient.model,
-          maxTokens: ambient.maxTokens,
-          estimatedTokens: breakdown.estimatedTokens,
-          totalMessages: breakdown.totalMessages,
-          userMessages: breakdown.userMessages,
-          assistantMessages: breakdown.assistantMessages,
-          toolCalls: breakdown.toolCalls,
-          toolResults: breakdown.toolResults,
-          userTokens: breakdown.byRole.user,
-          assistantTokens: breakdown.byRole.assistant,
-          ambient: {
-            commandCount: ambient.commandCount,
-            skillCount: ambient.skillCount,
-            subagentCount: ambient.subagentCount,
-            hasMemoryIndex: ambient.hasMemoryIndex,
-            hasClaudeMdLoader: ambient.hasClaudeMdLoader,
-          },
-        });
-      } else if (value.startsWith('/skills')) {
-        setShowSkills((s) => !s);
-      } else if (value.startsWith('/init')) {
-        const promptBody = buildInitPrompt(config.workspace);
-        const initCmd = {
-          name: 'init',
-          description: 'Initialize CLAUDE.md',
-          body: promptBody,
-          source: 'project' as const,
-        };
-        const ctx: CommandContext = {
-          command: initCmd,
-          resolvedBody: promptBody,
-          allowedTools: ['Read', 'Glob', 'Grep', 'Write'],
-        };
-        send(promptBody, ctx);
-      } else if (value.startsWith('/reload-skills')) {
-        // Force re-discovery of commands and skills on next render.
-        addLocalMessage('Commands and skills have been reloaded.');
-      } else if (value.startsWith('/export')) {
-        const filename = value.slice('/export'.length).trim() || 'conversation.txt';
-        try {
-          const text = messages.map((m) => `${m.role}:\n${m.content}`).join('\n\n---\n\n');
-          writeFileSync(join(config.workspace, filename), text, 'utf-8');
-          addLocalMessage(
-            `Exported ${messages.length} messages to ${join(config.workspace, filename)}`,
-          );
-        } catch (e) {
-          addLocalMessage(`✕ export failed: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      } else if (value.startsWith('/review')) {
-        const arg = value.slice('/review'.length).trim();
-        const promptBody = buildReviewPrompt(arg);
-        const ctx: CommandContext = {
-          command: {
-            name: 'review',
-            description: 'Review current diff',
-            body: promptBody,
-            source: 'project',
-          },
-          resolvedBody: promptBody,
-          allowedTools: [...REVIEW_TOOLS],
-        };
-        send(promptBody, ctx);
-      } else if (value.startsWith('/security-review')) {
-        const arg = value.slice('/security-review'.length).trim();
-        const promptBody = buildSecurityReviewPrompt(arg);
-        const ctx: CommandContext = {
-          command: {
-            name: 'security-review',
-            description: 'Security audit of current diff',
-            body: promptBody,
-            source: 'project',
-          },
-          resolvedBody: promptBody,
-          allowedTools: [...SECURITY_REVIEW_TOOLS],
-        };
-        send(promptBody, ctx);
-      } else if (value.startsWith('/release-notes')) {
-        addLocalMessage(buildReleaseNotesReport(config.workspace));
-      } else if (value.startsWith('/feedback')) {
-        const note = value.slice('/feedback'.length).trim();
-        const lastUser = [...messages].reverse().find((m) => m.role === 'user');
-        const r = writeFeedbackReport({
+      // Built-ins resolve through the shared exact-name registry before custom commands.
+      const commandName = parsedSlash?.name ?? '';
+      const commandArg = parsedSlash?.rawArguments ?? '';
+      if (parsedSlash) {
+        const commandContext: BuiltinCommandContext = {
           workspace: config.workspace,
+          sessionId,
           model: liveConfig.model,
           provider: liveConfig.provider,
-          turn: currentTurn,
-          messageCount: messages.length,
-          lastUserPromptPreview: lastUser?.content,
+          currentTurn,
+          messages,
           lastError: error,
-          note: note || undefined,
-        });
-        addLocalMessage(
-          r.ok
-            ? `Saved feedback report to ${r.path}. Review it before sharing.`
-            : `✕ feedback failed: ${r.error}`,
-        );
-      } else if (value.startsWith('/')) {
-        // Custom slash command: /name [args]
-        const spaceIdx = value.indexOf(' ');
-        const cmdName = spaceIdx === -1 ? value.slice(1) : value.slice(1, spaceIdx);
-        const cmdArgs = spaceIdx === -1 ? '' : value.slice(spaceIdx + 1);
-        const cmd = commands.find((c) => c.name === cmdName);
-        if (cmd) {
-          const { resolved } = resolveCommandBody(cmd, cmdArgs, {
-            sessionId,
-            workspace: config.workspace,
-            model: liveConfig.model,
+          effortUnavailableError: getEffortUnavailableError(liveConfig),
+          runtimeConfig: liveConfig,
+          mode,
+          usage,
+          turnDurationMs,
+          contextHistory,
+          compactBoundaries,
+          commandCount: commands.length,
+          skillCount: skills.length,
+          resolveAmbientContext: () => ({
+            subagentCount: discoverAgents(config.workspace).length,
+            hasMemoryIndex: Boolean(
+              liveConfig.memoryContext?.indexLoaded ?? getMemoryIndex(config.workspace).indexFile,
+            ),
+            hasClaudeMdLoader: discoverClaudeMd(config.workspace).length > 0,
+          }),
+        };
+        let effect: BuiltinCommandEffect | undefined;
+        try {
+          effect = builtinCommandRegistry.execute(
+            parsedSlash.name,
+            parsedSlash.rawArguments,
+            commandContext,
+          );
+        } catch (commandError) {
+          addLocalMessage(
+            `✕ ${commandError instanceof Error ? commandError.message : String(commandError)}`,
+          );
+          return;
+        }
+        if (effect?.type === 'send-prompt') {
+          void send(effect.prompt, effect.context);
+          return;
+        }
+        if (effect?.type === 'local-message') {
+          if (effect.display) addLocalMessage(effect.content, effect.display);
+          else addLocalMessage(effect.content);
+          if (effect.refreshMemory) refreshMemoryContext();
+          return;
+        }
+        if (effect?.type === 'start-new-conversation') {
+          clearTasks();
+          setShowHelp(false);
+          setShowStatus(false);
+          setShowSessionPicker(false);
+          setShowRewindPicker(false);
+          void startNewConversation(effect.previousName).catch((err) => {
+            addLocalMessage(`✕ ${err instanceof Error ? err.message : String(err)}`);
           });
+          stdout?.write('\x1b[2J\x1b[3J\x1b[H');
+          return;
+        }
+        if (effect?.type === 'resume-conversation') {
+          if (!effect.session) {
+            setShowSessionPicker(true);
+          } else {
+            clearTasks();
+            void resumeConversation(effect.session).catch((err) => {
+              addLocalMessage(`✕ ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
+          return;
+        }
+        if (effect?.type === 'compact') {
+          void compact(effect.focus);
+          return;
+        }
+        if (effect?.type === 'exit') {
+          void endCurrentSession('exit').finally(exitApp);
+          return;
+        }
+        if (effect?.type === 'show-modal') {
+          if (effect.modal === 'model') setShowModelPicker(true);
+          else if (effect.modal === 'rewind') setShowRewindPicker(true);
+          else if (effect.modal === 'theme') {
+            setCustomThemes(listCustomThemes(config.workspace));
+            setShowThemePicker(true);
+          } else setShowEffortPicker(true);
+          return;
+        }
+        if (effect?.type === 'set-theme') {
+          const result = applyThemePreference(effect.preference);
+          addLocalMessage(result.ok ? themeAppliedMessage(result.theme) : `✕ ${result.error}`);
+          return;
+        }
+        if (effect?.type === 'set-model') {
+          const result = setModel(effect.selection);
+          addLocalMessage(
+            result.ok ? `Switched to ${effect.selection} (saved as default).` : `✕ ${result.error}`,
+          );
+          return;
+        }
+        if (effect?.type === 'set-effort') {
+          const result = setEffort(effect.level);
+          addLocalMessage(
+            result.ok
+              ? `Set effort level to ${effect.level} (saved as default).`
+              : `✕ ${result.error}`,
+          );
+          return;
+        }
+        if (effect?.type === 'set-memory-auto-save') {
+          setMemoryAutoSave(effect.enabled);
+          addLocalMessage(
+            effect.enabled
+              ? 'Memory auto-capture enabled. New candidates will still require approval.'
+              : 'Memory auto-capture disabled. Existing approved memory can still load.',
+          );
+          return;
+        }
+        if (effect?.type === 'toggle-panel') {
+          if (effect.panel === 'help') setShowHelp((current) => !current);
+          else if (effect.panel === 'status') setShowStatus((current) => !current);
+          else if (effect.panel === 'permissions') setShowPermissions((current) => !current);
+          else setShowSkills((current) => !current);
+          return;
+        }
+        if (effect?.type === 'add-task') {
+          addTask({ subject: effect.subject, status: 'pending' });
+          return;
+        }
+        if (effect?.type === 'show-diff') {
+          void runGit(['diff'], {
+            workspaceRoot: config.workspace,
+            env: process.env as Record<string, string>,
+          }).then((result) => {
+            addLocalMessage(
+              result.error ? `✕ ${result.error}` : result.output.trim() || '(no changes)',
+            );
+          });
+          return;
+        }
+        if (effect?.type === 'reload-assets') {
+          setCommands(discoverCommands(config.workspace));
+          setSkills(discoverSkills(config.workspace));
+          setCustomThemes(listCustomThemes(config.workspace));
+          addLocalMessage('Commands and skills have been reloaded.');
+          return;
+        }
+        if (effect?.type === 'managed-agent') {
+          const manager = getOrCreateAgentManager(
+            liveConfig,
+            createDefaultRegistry({ agents: true }).getDefinitions(),
+            { runtime },
+          );
+          const reportError = (managedError: unknown) =>
+            addLocalMessage(
+              `✕ ${managedError instanceof Error ? managedError.message : String(managedError)}`,
+            );
+          if (effect.operation === 'list') {
+            void manager
+              .list()
+              .then((records) => {
+                addLocalMessage(
+                  records.length === 0
+                    ? 'No managed agents for this repository.'
+                    : records
+                        .map(
+                          (record) =>
+                            `${record.id}  ${record.role}/${record.name}  ${record.status}  apply:${record.applicationStatus}`,
+                        )
+                        .join('\n'),
+                );
+              })
+              .catch(reportError);
+          } else if (effect.operation === 'send') {
+            void manager
+              .send(effect.agentId!, effect.message ?? '')
+              .then((record) => addLocalMessage(JSON.stringify(record, null, 2)))
+              .catch(reportError);
+          } else if (effect.operation === 'stop') {
+            void manager
+              .stop(effect.agentId!)
+              .then((record) => addLocalMessage(JSON.stringify(record, null, 2)))
+              .catch(reportError);
+          } else if (effect.operation === 'apply') {
+            void manager
+              .apply(effect.agentId!, effect.evidenceId)
+              .then((result) => addLocalMessage(JSON.stringify(result, null, 2)))
+              .catch(reportError);
+          } else {
+            void manager
+              .get(effect.agentId!)
+              .then((record) =>
+                addLocalMessage(
+                  record
+                    ? JSON.stringify(record, null, 2)
+                    : `✕ Agent ${effect.agentId} was not found.`,
+                ),
+              )
+              .catch(reportError);
+          }
+          return;
+        }
+      }
+      if (value.startsWith('/')) {
+        // Custom slash command: /name [args]
+        const cmd = commands.find((c) => c.name === commandName);
+        if (cmd) {
+          const controller = new AbortController();
+          commandResolutionRef.current?.abort();
+          commandResolutionRef.current = controller;
+          setIsResolvingCommand(true);
+          let resolved: string;
+          try {
+            ({ resolved } = await resolveCommandBody(
+              cmd,
+              commandArg,
+              {
+                sessionId,
+                workspace: config.workspace,
+                model: liveConfig.model,
+              },
+              controller.signal,
+            ));
+          } catch (resolveError) {
+            if (!controller.signal.aborted) {
+              addLocalMessage(
+                `✕ ${resolveError instanceof Error ? resolveError.message : String(resolveError)}`,
+              );
+            }
+            return;
+          } finally {
+            if (commandResolutionRef.current === controller) {
+              commandResolutionRef.current = null;
+              setIsResolvingCommand(false);
+            }
+          }
+          // Escape/Ctrl+C may abort after resolution succeeds; never dispatch stale input.
+          if (controller.signal.aborted) return;
           // Pass command context for allowed-tools and model enforcement.
           const ctx: CommandContext | undefined =
             cmd.allowedTools || cmd.model
@@ -938,17 +753,18 @@ export function App({ config, session, redrawViewport }: AppProps) {
                   allowedTools: cmd.allowedTools,
                 }
               : undefined;
-          send(resolved, ctx);
+          void send(resolved, ctx);
         } else {
           // Unknown command — send as-is (the model might handle it).
-          send(value);
+          void send(value);
         }
       } else {
-        send(value);
+        void send(value);
       }
     },
     [
       send,
+      commandResolutionRef,
       clear,
       startNewConversation,
       resumeConversation,
@@ -973,6 +789,7 @@ export function App({ config, session, redrawViewport }: AppProps) {
       isThinking,
       redrawViewport,
       applyThemePreference,
+      builtinCommandRegistry,
     ],
   );
 
@@ -995,16 +812,16 @@ export function App({ config, session, redrawViewport }: AppProps) {
       if (key.ctrl && input === 'c') {
         if (pendingUserQuestion) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
-          cancel();
+          interrupt();
           return true;
         }
         if (pendingPermission || pendingPlanApproval) {
           uiLog.event('input:Ctrl+C', { action: 'noop-approval-active' });
           return true;
         }
-        if (isThinking) {
+        if (isThinking || isResolvingCommand) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
-          cancel();
+          interrupt();
           return true;
         }
         uiLog.event('input:Ctrl+C', { action: 'exit' });
@@ -1047,10 +864,11 @@ export function App({ config, session, redrawViewport }: AppProps) {
       return false; // not consumed — let text input handle it
     },
     [
-      cancel,
+      interrupt,
       endCurrentSession,
       exitApp,
       isThinking,
+      isResolvingCommand,
       pendingPermission,
       pendingPlanApproval,
       pendingUserQuestion,
@@ -1617,6 +1435,8 @@ export function App({ config, session, redrawViewport }: AppProps) {
             />
           ) : null}
 
+          {isResolvingCommand ? <Text dimColor>Resolving command shell expansions...</Text> : null}
+
           <WorkingIndicator
             isThinking={isThinking}
             isCompacting={isCompacting}
@@ -1641,10 +1461,10 @@ export function App({ config, session, redrawViewport }: AppProps) {
             <InputBar
               key={sessionId}
               onSubmit={handleSubmit}
-              disabled={isThinking || isCompacting || isRewinding}
+              disabled={isThinking || isCompacting || isRewinding || isResolvingCommand}
               mode={mode}
               onCycleMode={cycleMode}
-              onInterrupt={cancel}
+              onInterrupt={interrupt}
               inputSuppressed={
                 ownsModalInput(
                   pendingPermission,

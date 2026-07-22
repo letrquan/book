@@ -5,7 +5,8 @@ import { useTimedFlash, usePulse } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { CommandMenu } from './CommandMenu.js';
 import { FileMentionMenu } from './FileMentionMenu.js';
-import type { PermissionMode, SlashCommand } from '../../types.js';
+import type { PermissionMode } from '../../types/runtime.js';
+import type { SlashCommand } from '../../types/commands.js';
 import { modeColorToken } from '../mode-style.js';
 import { floatingFrameMetrics } from './chrome.js';
 import {
@@ -14,7 +15,7 @@ import {
   replaceActiveFileMention,
   type ActiveFileMention,
   type FileMentionCandidate,
-} from '../file-mentions.js';
+} from '../../input/file-mentions.js';
 import { recordCommandUse } from '../../commands/recent.js';
 import {
   getCommandsForEmptyQuery,

@@ -26,6 +26,7 @@
   "engines": {
     "node": ">=20"
   },
+  "packageManager": "npm@11.16.0",
   "files": [
     "dist",
     "README.md",
@@ -52,13 +53,23 @@
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
-    "test": "vitest run",
+    "test": "npm run test:unit && npm run test:contract && npm run test:integration",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:contract": "vitest run --config vitest.contract.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage --config vitest.coverage.config.ts",
     "bench:ui": "tsx src/tui/__benchmarks__/ui.bench.tsx",
-    "lint": "eslint src/ --ext .ts,.tsx",
+    "lint": "eslint src/ --ext .ts,.tsx --max-warnings 0",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx}\""
+    "format:check": "prettier --check \"{src,scripts}/**/*.{ts,tsx}\" \"*.config.ts\"",
+    "architecture:check": "tsx scripts/check-architecture.ts",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "audit:all": "npm audit --audit-level=high",
+    "version:check": "tsx scripts/verify-release.ts",
+    "package:smoke": "npm run build && tsx scripts/package-smoke.ts",
+    "release:check": "npm run version:check && npm run audit:all && npm run package:smoke",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run architecture:check && npm run test:unit && npm run test:contract"
   },
   "dependencies": {
     "chalk": "^5.4.0",

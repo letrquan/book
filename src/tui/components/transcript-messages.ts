@@ -1,4 +1,4 @@
-import type { Message } from '../../types.js';
+import type { Message } from '../../types/messages.js';
 
 export function isBlankAssistantContent(content: string | undefined | null): boolean {
   return !content || content.trim().length === 0;

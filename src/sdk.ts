@@ -1,194 +1,172 @@
-/**
- * Book Agent SDK — programmatic API for embedding book as a library.
- *
- * Usage:
- *   import { query } from 'book';
- *   const stream = query({ prompt: "Fix lint errors", options: { workspace: "./my-project" } });
- *   for await (const event of stream) {
- *     console.log(event.type, event);
- *   }
- */
+/** Book Agent SDK — programmatic API for embedding Book as a library. */
 
-import type {
-  Message,
-  Usage,
-  ToolCall,
-  ToolResult,
-  UserQuestionHandler,
-  UserQuestionRequest,
-  UserQuestionResponse,
-  AgentConfig,
-} from './types.js';
-import type { HeadlessOptions, HeadlessResult } from './types.js';
-import { loadConfig, type LoadConfigOptions } from './config.js';
+import { homedir } from 'os';
+import { join } from 'path';
+import type { UserQuestionHandler } from './types/tools.js';
+import type { AgentConfig } from './types/runtime.js';
+import type { SessionStoreInterface } from './types/sessions.js';
+import type { HeadlessOptions } from './types/public-sdk.js';
+import { freezeAgentConfig, loadConfig, type LoadConfigOptions } from './config.js';
 import { runHeadless } from './headless.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { connectMcpServers, disconnectMcpServers } from './mcp.js';
-import type { AgentRecord, AgentRuntimeEvent, EvidenceItem } from './agents/types.js';
-import { AgentManager, getOrCreateAgentManager } from './agents/manager.js';
+import { AgentManager } from './agents/manager.js';
+import { SessionStore } from './session/store.js';
+import { resolveSessionBootstrap } from './session/resolve.js';
+import type { AgentEvent } from './session/agent-events.js';
 
-/** Events emitted by the query() async iterable. */
-export type QueryEvent =
-  | { type: 'system'; model: string; cwd: string }
-  | { type: 'session'; sessionId: string }
-  | { type: 'text'; content: string }
-  | { type: 'tool_use'; toolCall: ToolCall }
-  | { type: 'tool_result'; toolResult: ToolResult }
-  | { type: 'user_question'; request: UserQuestionRequest; status: 'pending' | 'unavailable' }
-  | { type: 'user_question_result'; requestId: string; response: UserQuestionResponse }
-  | { type: 'agent_start'; agent: AgentRecord }
-  | { type: 'agent_update'; agent: AgentRecord }
-  | { type: 'agent_result'; agent: AgentRecord }
-  | Extract<AgentRuntimeEvent, { type: 'agent_question' | 'agent_apply' }>
-  | { type: 'evidence_update'; evidence: EvidenceItem }
-  | { type: 'error'; error: string }
-  | { type: 'result'; messages: Message[]; usage: Usage | null; sessionId?: string }
-  | { type: 'done' };
+export type QueryEvent = AgentEvent;
 
-/** Options for query(). Mirrors CLI flags + HeadlessOptions. */
 export interface QueryOptions {
-  /** Workspace root directory. Default: process.cwd(). */
   workspace?: string;
-  /** Model to use (overrides config). */
   model?: string;
-  /** Permission mode. Default: 'default'. */
   permissionMode?: string;
-  /** Max agent turns. */
   maxTurns?: number;
-  /** Settings file override path (--settings). */
   settingsPath?: string;
-  /** Skip all settings layers. */
   noSettings?: boolean;
-  /** Whether to persist the session to disk. Default: true. */
   persistSession?: boolean;
-  /** Session ID to resume or assign. */
   sessionId?: string;
-  /** Handle structured questions from the root agent or Task subagents. */
+  sessionStore?: SessionStoreInterface;
+  signal?: AbortSignal;
   onUserQuestionRequired?: UserQuestionHandler;
-  /** Override the configured managed-agent mode. */
   agents?: 'adaptive' | 'manual' | 'off';
 }
 
-/**
- * Run a prompt against the book agent and return an async iterable of events.
- *
- * This is the primary SDK entry point. It handles config loading, MCP
- * connection, and headless execution, emitting typed events as they occur.
- *
- * @example
- * for await (const event of query({ prompt: "Explain this code" })) {
- *   if (event.type === 'text') process.stdout.write(event.content);
- *   if (event.type === 'result') console.log('Done. Usage:', event.usage);
- * }
- */
+class AsyncEventQueue<T> {
+  private values: T[] = [];
+  private waiters: Array<(value: T | undefined) => void> = [];
+  private closed = false;
+
+  push(value: T): void {
+    if (this.closed) return;
+    const waiter = this.waiters.shift();
+    if (waiter) waiter(value);
+    else this.values.push(value);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const waiter of this.waiters.splice(0)) waiter(undefined);
+  }
+
+  next(): Promise<T | undefined> {
+    const value = this.values.shift();
+    if (value !== undefined) return Promise.resolve(value);
+    if (this.closed) return Promise.resolve(undefined);
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+}
+
 export async function* query(
   prompt: string,
   options: QueryOptions = {},
 ): AsyncGenerator<QueryEvent, void, undefined> {
   const workspace = options.workspace || process.cwd();
-  const config = loadConfig(workspace, {
+  const loadedConfig = loadConfig(workspace, {
     settingsOverridePath: options.settingsPath,
     noSettings: options.noSettings,
   });
-  if (options.model) config.model = options.model;
-  if (options.maxTurns) config.maxTurns = options.maxTurns;
-  if (options.agents) config.settings.agents.mode = options.agents;
+  const config = freezeAgentConfig({
+    ...loadedConfig,
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
+    ...(options.agents
+      ? {
+          settings: {
+            ...loadedConfig.settings,
+            agents: { ...loadedConfig.settings.agents, mode: options.agents },
+          },
+        }
+      : {}),
+  });
 
-  // Connect MCP servers.
-  const mcp = await connectMcpServers(config.workspace);
-  const registry = createDefaultRegistry({ agents: config.settings.agents.mode !== 'off' });
-  if (mcp.tools.length > 0) registry.registerAll(mcp.tools);
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(options.signal?.reason);
+  if (options.signal?.aborted) abortFromCaller();
+  else options.signal?.addEventListener('abort', abortFromCaller, { once: true });
 
-  let usage: Usage | null = null;
-  const sessionId = options.sessionId;
+  const persistSession = options.persistSession !== false;
+  const sessionStore = persistSession
+    ? (options.sessionStore ?? new SessionStore(join(homedir(), '.book', 'sessions')))
+    : undefined;
+  const bootstrap = resolveSessionBootstrap(sessionStore, {
+    cwd: config.workspace,
+    sessionId: options.sessionId,
+  });
+  const queue = new AsyncEventQueue<QueryEvent>();
+  let connections: Awaited<ReturnType<typeof connectMcpServers>>['connections'] = [];
+
+  queue.push({ type: 'system', model: config.model, cwd: config.workspace });
+  queue.push({ type: 'session', sessionId: bootstrap.sessionId });
+
+  const running = (async () => {
+    try {
+      const mcp = await connectMcpServers(config.workspace, { signal: controller.signal });
+      connections = mcp.connections;
+      const registry = createDefaultRegistry({ agents: config.settings.agents.mode !== 'off' });
+      if (mcp.tools.length > 0) registry.registerAll(mcp.tools);
+
+      const result = await runHeadless(config, registry, {
+        prompt,
+        inputFormat: 'text',
+        outputFormat: 'text',
+        history: bootstrap.history,
+        transcript: bootstrap.transcript,
+        compactBoundaries: bootstrap.compactBoundaries,
+        mode: (options.permissionMode as HeadlessOptions['mode']) || 'default',
+        maxTurns: options.maxTurns,
+        persistSession,
+        sessionStore,
+        sessionId: bootstrap.sessionId,
+        sessionCreated: bootstrap.created,
+        signal: controller.signal,
+        onUserQuestionRequired: options.onUserQuestionRequired,
+        stdout: { write: () => true },
+        onAgentEvent: (event) => {
+          if (
+            event.type !== 'system' &&
+            event.type !== 'session' &&
+            event.type !== 'result' &&
+            event.type !== 'done'
+          ) {
+            queue.push(event);
+          }
+        },
+      });
+      queue.push({
+        type: 'result',
+        messages: result.messages,
+        usage: result.usage,
+        sessionId: bootstrap.sessionId,
+      });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        queue.push({
+          type: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } finally {
+      disconnectMcpServers(connections);
+      queue.push({ type: 'done' });
+      queue.close();
+    }
+  })();
 
   try {
-    // Emit system event.
-    yield { type: 'system', model: config.model, cwd: config.workspace };
-    if (sessionId) yield { type: 'session', sessionId };
-
-    // Use a passthrough stdout to capture events.
-    const events: QueryEvent[] = [];
-
-    await runHeadless(config, registry, {
-      prompt,
-      inputFormat: 'text',
-      outputFormat: 'stream-json',
-      history: [],
-      mode: (options.permissionMode as HeadlessOptions['mode']) || 'default',
-      maxTurns: options.maxTurns,
-      persistSession: options.persistSession,
-      sessionId: options.sessionId,
-      onUserQuestionRequired: options.onUserQuestionRequired,
-      stdout: {
-        write: (s: string) => {
-          try {
-            const parsed = JSON.parse(s.trim());
-            if (parsed.type === 'assistant' && parsed.text) {
-              events.push({ type: 'text', content: parsed.text as string });
-            } else if (parsed.type === 'tool_use') {
-              events.push({ type: 'tool_use', toolCall: parsed.tool_call as ToolCall });
-            } else if (parsed.type === 'tool_result') {
-              events.push({ type: 'tool_result', toolResult: parsed.tool_result as ToolResult });
-            } else if (parsed.type === 'user_question') {
-              events.push({
-                type: 'user_question',
-                request: parsed.request as UserQuestionRequest,
-                status: parsed.status as 'pending' | 'unavailable',
-              });
-            } else if (parsed.type === 'user_question_result') {
-              events.push({
-                type: 'user_question_result',
-                requestId: parsed.request_id as string,
-                response: parsed.response as UserQuestionResponse,
-              });
-            } else if (
-              parsed.type === 'agent_start' ||
-              parsed.type === 'agent_update' ||
-              parsed.type === 'agent_result'
-            ) {
-              events.push({ type: parsed.type, agent: parsed.agent as AgentRecord });
-            } else if (parsed.type === 'agent_question') {
-              events.push(parsed as Extract<AgentRuntimeEvent, { type: 'agent_question' }>);
-            } else if (parsed.type === 'evidence_update') {
-              events.push({ type: 'evidence_update', evidence: parsed.evidence as EvidenceItem });
-            } else if (parsed.type === 'agent_apply') {
-              events.push(parsed as Extract<AgentRuntimeEvent, { type: 'agent_apply' }>);
-            } else if (parsed.type === 'error') {
-              events.push({ type: 'error', error: parsed.error as string });
-            } else if (parsed.type === 'result') {
-              usage = (parsed.result as HeadlessResult).usage;
-              events.push({
-                type: 'result',
-                messages: (parsed.result as HeadlessResult).messages,
-                usage,
-                sessionId,
-              });
-            }
-          } catch {
-            // Non-JSON line — ignore.
-          }
-          return true;
-        },
-      },
-    });
-
-    // Yield buffered events.
-    for (const event of events) {
+    while (true) {
+      const event = await queue.next();
+      if (!event) break;
       yield event;
     }
-  } catch (e) {
-    yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
   } finally {
-    disconnectMcpServers(mcp.connections);
-    yield { type: 'done' };
+    controller.abort(new Error('SDK event consumer stopped'));
+    options.signal?.removeEventListener('abort', abortFromCaller);
+    await running;
   }
 }
 
-/**
- * Create a session for programmatic use. Returns session metadata.
- * The session can be resumed later via query({ sessionId }).
- */
 export { loadConfig, type LoadConfigOptions };
 export type { ToolDiscoverySettings } from './settings.js';
 export { AgentManager };
@@ -196,9 +174,15 @@ export { createDefaultRegistry, createRegistry } from './tools/registry.js';
 export { createToolSurface } from './tools/catalog.js';
 export { toolFailure, toolSuccess } from './tools/result.js';
 export function createAgentManager(config: AgentConfig): AgentManager {
-  return getOrCreateAgentManager(config, createDefaultRegistry({ agents: true }).getDefinitions());
+  return new AgentManager(config, createDefaultRegistry({ agents: true }).getDefinitions());
 }
 export { runPairedEvaluation, evaluateSuccess } from './agents/evaluation.js';
+export { createAgentSessionSnapshot, reduceAgentSessionSnapshot } from './session/agent-events.js';
+export type {
+  AgentEvent,
+  AgentSessionSnapshot,
+  AgentSessionStatus,
+} from './session/agent-events.js';
 export type {
   EvaluationFixture,
   EvaluationMetric,
@@ -233,4 +217,4 @@ export type {
   UserQuestionResponse,
   UserQuestionSource,
   UserQuestionHandler,
-} from './types.js';
+} from './types/tools.js';

@@ -1,177 +1,15 @@
+import type { AgentConfig } from '../types/runtime.js';
 import type {
-  AgentConfig,
   ProviderMessage,
   ProviderStreamEvent,
-  RetryConfig,
   SystemPromptZones,
-  ToolDefinition,
-  Usage,
-} from '../types.js';
+} from '../types/providers.js';
+import type { ToolDefinition } from '../types/tools.js';
+import type { Usage } from '../types/messages.js';
 import { createDebugLogger } from '../debug-log.js';
+import { fetchWithRetry, formatApiError, readStreamChunk } from './reliability.js';
 
 const log = createDebugLogger('provider:anthropic');
-
-// ── Retry infrastructure ─────────────────────────────────────────────────────
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error('Aborted'));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new Error('Aborted'));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-function jitter(ms: number): number {
-  return ms * (0.5 + Math.random());
-}
-
-function backoffMs(attempt: number, retry: RetryConfig, retryAfter?: string | null): number {
-  if (retryAfter) {
-    const secs = Number(retryAfter);
-    if (!Number.isNaN(secs) && secs > 0) {
-      return Math.min(secs * 1000, retry.maxDelayMs);
-    }
-  }
-  const exponential = Math.min(retry.baseDelayMs * 2 ** attempt, retry.maxDelayMs);
-  return Math.round(jitter(exponential));
-}
-
-function classifyHttpStatus(status: number): {
-  code:
-    | 'network'
-    | 'timeout'
-    | 'rate_limited'
-    | 'overloaded'
-    | 'server_error'
-    | 'auth'
-    | 'bad_request'
-    | 'not_found'
-    | 'quota'
-    | 'unknown';
-  retryable: boolean;
-} {
-  if (status === 429) return { code: 'rate_limited', retryable: true };
-  if (status === 529) return { code: 'overloaded', retryable: true };
-  if (status >= 500 && status < 600) return { code: 'server_error', retryable: true };
-  if (status === 408) return { code: 'timeout', retryable: true };
-  if (status === 401 || status === 403) return { code: 'auth', retryable: false };
-  if (status === 402) return { code: 'quota', retryable: false };
-  if (status === 400) return { code: 'bad_request', retryable: false };
-  if (status === 404) return { code: 'not_found', retryable: false };
-  return { code: 'unknown', retryable: false };
-}
-
-function formatApiError(status: number, body: string): string {
-  const { code } = classifyHttpStatus(status);
-  let detail = body;
-  try {
-    const parsed = JSON.parse(body);
-    if (parsed.error?.message) detail = parsed.error.message;
-  } catch {
-    detail = body.slice(0, 200);
-  }
-  const base = `API Error: ${status}`;
-  switch (code) {
-    case 'rate_limited':
-      return `${base} ${detail}. This may be a temporary capacity issue. Try again in a moment.`;
-    case 'overloaded':
-      return `${base} Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment.`;
-    case 'server_error':
-      return `${base} ${detail}. This is a server-side issue, usually temporary — try again in a moment.`;
-    case 'timeout':
-      return `Request timed out. Check your network connection and try again.`;
-    case 'auth':
-      return `${base} ${detail}. Check BOOK_API_KEY or run /login.`;
-    case 'quota':
-      return `${base} ${detail}. Check your usage/credits.`;
-    default:
-      return `${base} ${detail}`;
-  }
-}
-
-async function fetchWithRetry(
-  url: string,
-  init: RequestInit,
-  retry: RetryConfig,
-  signal?: AbortSignal,
-  onRetry?: (attempt: number, max: number, delayMs: number) => void,
-): Promise<Response> {
-  const startMs = Date.now();
-  const maxAttempts = retry.watchdog ? Number.MAX_SAFE_INTEGER : retry.maxAttempts;
-  let lastError: string | null = null;
-  let lastStatus: number | null = null;
-
-  for (let attempt = 0; attempt <= maxAttempts; attempt++) {
-    const fetchInit = { ...init };
-    if (retry.requestTimeoutMs > 0) {
-      const timeoutSignal = AbortSignal.timeout(retry.requestTimeoutMs);
-      if (signal) {
-        const merged = new AbortController();
-        const onAbort = () => merged.abort(signal.reason);
-        signal.addEventListener('abort', onAbort, { once: true });
-        timeoutSignal.addEventListener('abort', () => merged.abort(timeoutSignal.reason), {
-          once: true,
-        });
-        fetchInit.signal = merged.signal;
-      } else {
-        fetchInit.signal = timeoutSignal;
-      }
-    } else if (signal) {
-      fetchInit.signal = signal;
-    }
-
-    let resp: Response;
-    try {
-      resp = await fetch(url, fetchInit);
-    } catch (e) {
-      if (signal?.aborted) throw e;
-      lastError = e instanceof Error ? e.message : String(e);
-      if (retry.totalBudgetMs > 0 && Date.now() - startMs > retry.totalBudgetMs) break;
-      if (attempt >= maxAttempts) break;
-      const delay = backoffMs(attempt, retry);
-      log.warn('retry network error', { attempt: attempt + 1, delayMs: delay, error: lastError });
-      onRetry?.(attempt + 1, maxAttempts > 100 ? -1 : maxAttempts, delay);
-      try {
-        await sleep(delay, signal);
-      } catch {
-        throw e;
-      }
-      continue;
-    }
-
-    if (resp.status === 429 || resp.status === 529 || resp.status === 408 || resp.status >= 500) {
-      lastError = `API error ${resp.status}`;
-      lastStatus = resp.status;
-      const isWatchdogRetryable = retry.watchdog && (resp.status === 429 || resp.status === 529);
-      const effectiveMax = isWatchdogRetryable ? Number.MAX_SAFE_INTEGER : maxAttempts;
-      if (retry.totalBudgetMs > 0 && Date.now() - startMs > retry.totalBudgetMs) return resp;
-      if (attempt >= effectiveMax) return resp;
-      const delay = backoffMs(attempt, retry, resp.headers.get('retry-after'));
-      log.warn('retry http status', { attempt: attempt + 1, status: resp.status, delayMs: delay });
-      onRetry?.(attempt + 1, isWatchdogRetryable ? -1 : maxAttempts, delay);
-      try {
-        await sleep(delay, signal);
-      } catch {
-        return resp;
-      }
-      continue;
-    }
-
-    return resp;
-  }
-
-  throw new Error(lastError ?? 'request failed after retries');
-}
 
 // ── Message format conversion (OpenAI → Anthropic) ──────────────────────────
 
@@ -397,47 +235,6 @@ function parseToolArguments(raw: string): Record<string, unknown> {
   }
 }
 
-// ── SSE stream reading ──────────────────────────────────────────────────────
-
-async function readStreamChunk(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  signal: AbortSignal | undefined,
-  stallTimeoutMs: number,
-): Promise<
-  | { tag: 'read'; done: boolean; value: Uint8Array | undefined }
-  | { tag: 'stall' }
-  | { tag: 'abort' }
-> {
-  if (signal?.aborted) return { tag: 'abort' };
-
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  let onAbort: (() => void) | undefined;
-
-  try {
-    return await Promise.race([
-      reader.read().then((r) => ({ tag: 'read' as const, done: r.done, value: r.value })),
-      ...(stallTimeoutMs > 0
-        ? [
-            new Promise<{ tag: 'stall' }>((resolve) => {
-              timeout = setTimeout(() => resolve({ tag: 'stall' }), stallTimeoutMs);
-            }),
-          ]
-        : []),
-      ...(signal
-        ? [
-            new Promise<{ tag: 'abort' }>((resolve) => {
-              onAbort = () => resolve({ tag: 'abort' });
-              signal.addEventListener('abort', onAbort, { once: true });
-            }),
-          ]
-        : []),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
-  }
-}
-
 // ── Main streaming function ──────────────────────────────────────────────────
 
 export async function* chatCompletionStream(
@@ -512,6 +309,7 @@ export async function* chatCompletionStream(
       retry,
       signal,
       options?.onRetry,
+      log,
     );
   } catch (e) {
     log.warn('fetchWithRetry failed', e instanceof Error ? e.message : String(e));

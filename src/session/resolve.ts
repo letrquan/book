@@ -1,10 +1,10 @@
 import type {
   CompactBoundary,
-  Message,
   RewindTarget,
   SessionMeta,
   SessionStoreInterface,
-} from '../types.js';
+} from '../types/sessions.js';
+import type { Message } from '../types/messages.js';
 import { normalizeWorkspace } from './store.js';
 
 export type SessionStartSource = 'startup' | 'resume' | 'clear';
@@ -93,7 +93,7 @@ export function resolveSessionBootstrap(
       throw new Error('Session persistence is disabled; /resume and --continue are unavailable.');
     }
     return {
-      sessionId: crypto.randomUUID(),
+      sessionId: options.sessionId ?? crypto.randomUUID(),
       sessionName: options.sessionName,
       history: [],
       transcript: [],

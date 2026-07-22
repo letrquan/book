@@ -14,7 +14,7 @@ import {
   type ToolPresentationStatus,
 } from '../tool-presentation.js';
 import { useToolRowInteractionRegistry } from './tool-row-interactions.js';
-import type { ToolResult } from '../../types.js';
+import type { ToolResult } from '../../types/tools.js';
 
 interface ToolCallBlockProps {
   toolId?: string;

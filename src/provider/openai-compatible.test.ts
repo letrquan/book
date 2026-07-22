@@ -4,14 +4,14 @@ import { defaultConfig } from '../test/fixtures.js';
 
 const config = defaultConfig({ maxTurns: 25, baseUrl: 'http://localhost/v1' });
 
-let capturedBody: any;
+let capturedBody: Record<string, unknown>;
 
 beforeEach(() => {
-  capturedBody = null;
+  capturedBody = {};
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (_url: string, init: any) => {
-      capturedBody = JSON.parse(init.body);
+    vi.fn(async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(String(init.body)) as Record<string, unknown>;
       const body = new ReadableStream({
         start(c) {
           c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
@@ -26,9 +26,7 @@ beforeEach(() => {
 describe('chatCompletionStream request body', () => {
   it('does not send max_turns (not an OpenAI param)', async () => {
     const stream = chatCompletionStream(config, [{ role: 'user', content: 'hi' }], []);
-    for await (const _ of stream) {
-      /* drain */
-    }
+    await drain(stream);
     expect(capturedBody).not.toHaveProperty('max_turns');
     expect(capturedBody).not.toHaveProperty('maxTurns');
     expect(capturedBody.model).toBe('m');
@@ -37,17 +35,13 @@ describe('chatCompletionStream request body', () => {
 
   it('includes stream_options.include_usage so usage is reported', async () => {
     const stream = chatCompletionStream(config, [{ role: 'user', content: 'hi' }], []);
-    for await (const _ of stream) {
-      /* drain */
-    }
+    await drain(stream);
     expect(capturedBody.stream_options).toEqual({ include_usage: true });
   });
 
   it('omits max_tokens when only the generic default is present', async () => {
     const stream = chatCompletionStream(config, [{ role: 'user', content: 'hi' }], []);
-    for await (const _ of stream) {
-      /* drain */
-    }
+    await drain(stream);
     expect(capturedBody).not.toHaveProperty('max_tokens');
   });
 
@@ -57,9 +51,7 @@ describe('chatCompletionStream request body', () => {
       [{ role: 'user', content: 'hi' }],
       [],
     );
-    for await (const _ of stream) {
-      /* drain */
-    }
+    await drain(stream);
     expect(capturedBody.max_tokens).toBe(4096);
   });
 });
@@ -85,18 +77,8 @@ function hangingStream(): ReadableStream {
   });
 }
 
-// Helper: create a stream that yields after a delay.
-function delayedStream(content: string, delayMs: number): ReadableStream {
-  return new ReadableStream({
-    start(c) {
-      const enc = new TextEncoder();
-      setTimeout(() => {
-        c.enqueue(enc.encode(`data: {"choices":[{"delta":{"content":"${content}"}}]}\n\n`));
-        c.enqueue(enc.encode('data: [DONE]\n\n'));
-        c.close();
-      }, delayMs);
-    },
-  });
+async function drain(stream: AsyncIterable<unknown>): Promise<void> {
+  for await (const event of stream) void event;
 }
 
 describe('chatCompletionStream retry — status codes', () => {

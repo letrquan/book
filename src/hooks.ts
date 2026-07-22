@@ -43,6 +43,11 @@ export interface HookResult {
   modifiedOutput?: string;
 }
 
+export interface HookRunOptions {
+  onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
+  signal?: AbortSignal;
+}
+
 const HOOK_TIMEOUT_MS = 10_000;
 
 /**
@@ -56,8 +61,9 @@ export async function runHooks(
   hooks: HookEntry[],
   event: HookEvent,
   ctx: HookContext,
-  opts?: { onHookEvent?: (event: string, payload: Record<string, unknown>) => void },
+  opts?: HookRunOptions,
 ): Promise<HookResult[]> {
+  opts?.signal?.throwIfAborted();
   if (hooks.length === 0) return [];
 
   opts?.onHookEvent?.(event, {
@@ -82,6 +88,7 @@ export async function runHooks(
   const blockingEvents: HookEvent[] = ['PreToolUse', 'UserPromptSubmit', 'PreCompact'];
 
   for (const entry of hooks) {
+    opts?.signal?.throwIfAborted();
     // Filter by matcher when present.
     if (entry.matcher) {
       if (event === 'PreCompact' || event === 'PostCompact') {
@@ -93,7 +100,7 @@ export async function runHooks(
       }
     }
 
-    const result = await runSingleHook(entry, event, ctx);
+    const result = await runSingleHook(entry, event, ctx, opts?.signal);
     results.push(result);
 
     // On blocking events, stop after a block.
@@ -147,11 +154,11 @@ function matchesHookMatcher(
 
     // Normalize leading ./ in paths.
     if (primaryArg.startsWith('./')) primaryArg = primaryArg.slice(2);
-    let normPattern = pattern.startsWith('./') ? pattern.slice(2) : pattern;
+    const normPattern = pattern.startsWith('./') ? pattern.slice(2) : pattern;
 
     // Glob to regex: * → .* (zero or more). A trailing " *" (space-star)
     // idiom means "optionally followed by space and more args" (CC convention).
-    let reStr = normPattern
+    const reStr = normPattern
       .replace(/[.+^${}()|[\]\\]/g, '\\$&')
       .replace(/\*\*/g, '.*')
       .replace(/ \*$/g, '( .*)?') // trailing " *" = optional args
@@ -167,6 +174,7 @@ async function runSingleHook(
   entry: HookEntry,
   event: HookEvent,
   ctx: HookContext,
+  signal?: AbortSignal,
 ): Promise<HookResult> {
   const inputPayload = JSON.stringify({
     hook: event,
@@ -188,12 +196,8 @@ async function runSingleHook(
     stop_reason: ctx.stopReason,
   });
 
-  return new Promise<HookResult>((resolve) => {
-    const timer = setTimeout(() => {
-      console.warn(`⚠  Hook timed out after ${HOOK_TIMEOUT_MS / 1000}s: ${entry.command}`);
-      resolve({ entry, action: 'continue' });
-    }, HOOK_TIMEOUT_MS);
-
+  return new Promise<HookResult>((resolve, reject) => {
+    let settled = false;
     const child = exec(
       entry.command,
       {
@@ -206,10 +210,14 @@ async function runSingleHook(
         },
         timeout: HOOK_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
+        signal,
       },
       (error, stdout, stderr) => {
-        clearTimeout(timer);
-
+        if (settled) return;
+        if (signal?.aborted) {
+          fail(signal.reason ?? new DOMException('Hook execution aborted', 'AbortError'));
+          return;
+        }
         if (error) {
           // Exit code 2 = block per CC's hook contract.
           if (error.code === 2) {
@@ -221,7 +229,7 @@ async function runSingleHook(
             } catch {
               message = stdout.trim() || 'Blocked by hook';
             }
-            resolve({
+            settle({
               entry,
               action: 'block',
               message,
@@ -233,7 +241,7 @@ async function runSingleHook(
           console.warn(
             `⚠  Hook exited with code ${error.code}: ${entry.command}\n${stderr || error.message}`,
           );
-          resolve({ entry, action: 'continue' });
+          settle({ entry, action: 'continue' });
           return;
         }
 
@@ -241,32 +249,60 @@ async function runSingleHook(
         try {
           const parsed = JSON.parse(stdout.trim());
           if (parsed.action === 'block') {
-            resolve({
+            settle({
               entry,
               action: 'block',
               message: parsed.message,
             });
           } else if (parsed.action === 'modify') {
-            resolve({
+            settle({
               entry,
               action: 'modify',
               modifiedPrompt: parsed.message ?? parsed.prompt,
               modifiedOutput: parsed.output,
             });
           } else {
-            resolve({ entry, action: 'continue' });
+            settle({ entry, action: 'continue' });
           }
         } catch {
           // stdout isn't JSON — just continue.
-          resolve({ entry, action: 'continue' });
+          settle({ entry, action: 'continue' });
         }
       },
     );
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const settle = (result: HookResult) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onAbort = () => {
+      child?.kill();
+      fail(signal?.reason ?? new DOMException('Hook execution aborted', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      console.warn(`⚠  Hook timed out after ${HOOK_TIMEOUT_MS / 1000}s: ${entry.command}`);
+      child?.kill();
+      settle({ entry, action: 'continue' });
+    }, HOOK_TIMEOUT_MS);
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    if (signal?.aborted) onAbort();
 
     // Some hooks exit before reading stdin. Treat a closed pipe as normal hook
     // lifecycle instead of surfacing an unhandled EPIPE from the parent process.
     if (child.stdin) {
-      child.stdin.on('error', () => {});
+      child.stdin.once('error', () => {});
       child.stdin.end(inputPayload);
     }
   });

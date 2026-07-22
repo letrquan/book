@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 type ExecFile = typeof execFile;

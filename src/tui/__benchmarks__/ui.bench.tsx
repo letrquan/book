@@ -3,14 +3,23 @@ import { render, cleanup } from 'ink-testing-library';
 import React from 'react';
 import { marked, Tokens } from 'marked';
 import { ThemeContext } from '../theme.js';
-import { DEFAULT_THEME } from '../../types.js';
+import { DEFAULT_THEME } from '../../types/theme.js';
 import { MarkdownBlock, wrapParagraphLines } from '../components/MarkdownBlock.js';
 import { DiffBlock } from '../components/Diff.js';
 import { ToolCallBlock } from '../components/ToolCallBlock.js';
+import { ChatPanel } from '../components/ChatPanel.js';
+import { InputBar } from '../components/InputBar.js';
 import { wordWrap } from '../components/word-wrap.js';
 import { toolSuccess } from '../../tools/result.js';
+import type { Message } from '../../types/messages.js';
 
 const TERMINAL_WIDTH = 80;
+const LATENCY_BUDGETS_MS = {
+  'MarkdownBlock render sample': 75,
+  'large transcript render': 750,
+  'multi-hunk diff preview render': 175,
+  'input submission': 75,
+} as const;
 let sink = 0;
 
 function makeParagraph(wordCount: number): string {
@@ -84,8 +93,24 @@ const multiHunkDiff = Array.from({ length: 120 }, (_, index) => [
 ])
   .flat()
   .join('\n');
+const largeTranscript: Message[] = Array.from({ length: 60 }, (_, index) => [
+  {
+    id: `user-${index}`,
+    role: 'user' as const,
+    content: `Question ${index}: ${makeParagraph(20)}`,
+    includeInContext: true,
+    timestamp: index * 2,
+  },
+  {
+    id: `assistant-${index}`,
+    role: 'assistant' as const,
+    content: `## Answer ${index}\n\n${makeParagraph(45)}`,
+    includeInContext: true,
+    timestamp: index * 2 + 1,
+  },
+]).flat();
 
-const bench = new Bench({ time: 500, warmupTime: 100, warmupIterations: 16 });
+const bench = new Bench({ time: 500, iterations: 16, warmupTime: 100, warmupIterations: 8 });
 
 bench
   .add('legacy wrap + marked.lexer', () => {
@@ -98,6 +123,21 @@ bench
     const view = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <MarkdownBlock content={markdown} terminalWidth={TERMINAL_WIDTH} />
+      </ThemeContext.Provider>,
+    );
+    sink += view.lastFrame()?.length ?? 0;
+    view.unmount();
+    cleanup();
+  })
+  .add('large transcript render', () => {
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ChatPanel
+          messages={largeTranscript}
+          reducedMotion
+          terminalWidth={TERMINAL_WIDTH}
+          terminalHeight={40}
+        />
       </ThemeContext.Provider>,
     );
     sink += view.lastFrame()?.length ?? 0;
@@ -135,6 +175,32 @@ bench
     sink += view.lastFrame()?.length ?? 0;
     view.unmount();
     cleanup();
+  })
+  .add('input submission', async () => {
+    let resolveSubmit: (() => void) | undefined;
+    const submitted = new Promise<void>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <InputBar
+          onSubmit={(value) => {
+            sink += value.length;
+            resolveSubmit?.();
+          }}
+          disabled={false}
+          mode="default"
+          onCycleMode={() => {}}
+          reducedMotion
+          terminalWidth={TERMINAL_WIDTH}
+        />
+      </ThemeContext.Provider>,
+    );
+    view.stdin.write('benchmark input submission');
+    view.stdin.write('\r');
+    await submitted;
+    view.unmount();
+    cleanup();
   });
 
 await bench.run();
@@ -156,6 +222,15 @@ console.log(
 if (optimizedMean >= legacyMean * 1.1) {
   console.error('Expected optimized paragraph wrapping to stay within 10% of legacy parsing.');
   process.exitCode = 1;
+}
+
+for (const [name, budgetMs] of Object.entries(LATENCY_BUDGETS_MS)) {
+  const meanMs = getMeanMs(bench, name);
+  console.log(`${name}: ${meanMs.toFixed(2)}ms mean (budget ${budgetMs}ms).`);
+  if (meanMs > budgetMs) {
+    console.error(`${name} exceeded its ${budgetMs}ms mean latency budget.`);
+    process.exitCode = 1;
+  }
 }
 
 // Prevent the benchmarked work from being optimized away in overly aggressive runtimes.

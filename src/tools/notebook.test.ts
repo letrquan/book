@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
-import type { ToolContext } from '../types.js';
+import type { ToolContext } from '../types/tools.js';
 import { notebookTools } from './notebook.js';
 
 let dir: string;

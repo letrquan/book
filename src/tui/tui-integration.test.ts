@@ -14,6 +14,8 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn } from 'node-pty';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -39,10 +41,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function submitInteractive(session: TuiSession, text: string): Promise<void> {
-  session.sendKey(text);
-  const output = await session.waitFor(`› ${text}`, 5000);
-  expect(output).toContain(`› ${text}`);
-  session.sendKey('\r');
+  session.submit(text);
 }
 
 // ---------------------------------------------------------------------------
@@ -56,7 +55,8 @@ interface TuiSession {
   submit(text: string): void;
   sendKey(seq: string): void;
   resize(columns: number, rows: number): void;
-  kill(): void;
+  waitForExit(timeoutMs?: number): Promise<number>;
+  close(): Promise<void>;
 }
 
 /**
@@ -64,16 +64,19 @@ interface TuiSession {
  * the presence of the "Ask me anything" placeholder in the input bar).
  */
 async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiSession> {
+  const testRoot = mkdtempSync(join(tmpdir(), 'book-tui-'));
   const env = {
     ...process.env,
     // Ink suppresses intermediate frames in CI, but this child is an interactive PTY.
     CI: 'false',
     CONTINUOUS_INTEGRATION: 'false',
+    HOME: testRoot,
+    USERPROFILE: testRoot,
     BOOK_API_KEY: process.env.BOOK_API_KEY ?? 'sk-test-placeholder',
     ...extraEnv,
   };
   const nodePath = process.execPath;
-  const pty = spawn(nodePath, [DIST_INDEX], {
+  const pty = spawn(nodePath, [DIST_INDEX, '--workspace', testRoot, '--no-session-persistence'], {
     cwd: PROJECT_ROOT,
     cols: 120,
     rows: 40,
@@ -86,6 +89,33 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
   const disposable = pty.onData((data: string) => {
     output += data;
   });
+  let exited = false;
+  let processExitCode: number | undefined;
+  let resolveExit: ((exitCode: number) => void) | undefined;
+  const exitPromise = new Promise<number>((resolve) => {
+    resolveExit = resolve;
+  });
+  const exitDisposable = pty.onExit((event) => {
+    exited = true;
+    processExitCode = event.exitCode;
+    resolveExit?.(event.exitCode);
+  });
+
+  async function waitForExit(timeoutMs = 5000): Promise<number> {
+    if (exited) return processExitCode ?? -1;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      exitPromise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`TUI did not exit within ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]).finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
+  }
 
   const session: TuiSession = {
     read() {
@@ -101,14 +131,19 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
         if (typeof pattern === 'string') {
           if (text.includes(pattern)) return text;
         } else {
+          pattern.lastIndex = 0;
           if (pattern.test(text)) return text;
         }
         await sleep(150);
       }
-      return stripAnsi(output);
+      const rendered = stripAnsi(output);
+      throw new Error(
+        `Timed out waiting for ${String(pattern)} after ${timeoutMs}ms. Last output:\n${rendered.slice(-4000)}`,
+      );
     },
     submit(text: string) {
-      pty.write(text + '\r');
+      pty.write(text);
+      setTimeout(() => pty.write('\r'), 50);
     },
     sendKey(seq: string) {
       pty.write(seq);
@@ -116,23 +151,41 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
     resize(columns: number, rows: number) {
       pty.resize(columns, rows);
     },
-    kill() {
+    waitForExit,
+    async close() {
+      if (!exited) {
+        try {
+          // node-pty's ConPTY kill helper races with short-lived test sessions on Windows.
+          if (IS_WINDOWS) process.kill(pty.pid);
+          else pty.kill();
+          await waitForExit();
+        } catch {
+          pty.kill();
+          await waitForExit().catch(() => {});
+        }
+      }
       try {
         disposable.dispose();
       } catch {
         /* */
       }
       try {
-        pty.kill();
+        exitDisposable.dispose();
       } catch {
         /* */
       }
+      rmSync(testRoot, { recursive: true, force: true });
     },
   };
 
   // Wait for the TUI to fully render (input bar placeholder visible).
-  await session.waitFor('Ask me anything', 10_000);
-  return session;
+  try {
+    await session.waitFor('Ask me anything', 10_000);
+    return session;
+  } catch (error) {
+    await session.close();
+    throw error;
+  }
 }
 
 // ANSI escape sequences for common keys.
@@ -163,10 +216,8 @@ let session: TuiSession | null = null;
 
 afterEach(async () => {
   if (session) {
-    session.kill();
+    await session.close();
     session = null;
-    // Let the previous PTY clean up before the next spawn.
-    await sleep(500);
   }
 });
 
@@ -193,10 +244,13 @@ describe('TUI slash commands', () => {
     session = await startAndWait();
     await submitInteractive(session, '/help');
     await session.waitFor('Slash Commands', 5000);
+    const beforeToggle = session.readRaw().length;
     await submitInteractive(session, '/help');
     await sleep(500);
-    const output = session.read();
-    expect(output.length).toBeGreaterThan(0);
+    const output = stripAnsi(session.readRaw().slice(beforeToggle));
+    const latestFrame = output.slice(output.lastIndexOf('╭ BOOK'));
+    expect(latestFrame).toContain('Ask me anything');
+    expect(latestFrame).not.toContain('Slash Commands');
   }, 20_000);
 
   it('/clear clears the conversation', async () => {
@@ -224,8 +278,7 @@ describe('TUI slash commands', () => {
   it('/exit exits the TUI gracefully', async () => {
     session = await startAndWait();
     await submitInteractive(session, '/exit');
-    await sleep(1500);
-    expect(true).toBe(true);
+    expect(await session.waitForExit(5000)).toBe(0);
   }, 20_000);
 });
 

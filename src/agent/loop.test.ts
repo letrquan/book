@@ -2,9 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { runAgentLoop } from './loop.js';
 import { createRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
-import type { ToolResult, UserQuestionRequest } from '../types.js';
+import type { AgentLoopCallbacks } from '../types/providers.js';
+import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
 import { askUserQuestionTools } from '../tools/ask-user-question.js';
 import { toolSuccess } from '../tools/result.js';
+import type { Provider } from '../provider/index.js';
 
 const config = defaultConfig();
 
@@ -21,7 +23,7 @@ function textStream(content: string): ReadableStream {
 }
 
 // Helper: noop callbacks.
-function noopCallbacks(overrides: Record<string, any> = {}) {
+function noopCallbacks(overrides: Partial<AgentLoopCallbacks> = {}): AgentLoopCallbacks {
   return {
     onText: () => {},
     onToolCall: () => {},
@@ -35,6 +37,31 @@ function noopCallbacks(overrides: Record<string, any> = {}) {
 }
 
 describe('runAgentLoop streaming render callbacks', () => {
+  it('uses an injected provider port without resolving a concrete adapter', async () => {
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: 'from port' };
+        yield { type: 'done' };
+      },
+    };
+
+    const result = await runAgentLoop(
+      config,
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks(),
+      'default',
+      {
+        provider,
+        isNewSession: false,
+      },
+    );
+
+    expect(result.at(-1)?.content).toBe('from port');
+  });
+
   it('streams text chunks in order before onDone and returns assistant content', async () => {
     vi.stubGlobal(
       'fetch',
@@ -317,11 +344,9 @@ describe('runAgentLoop error handling', () => {
   });
 
   it('calls onError when max turns reached', async () => {
-    let turns = 0;
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
-        turns++;
         // Return a tool call each turn so the loop keeps going.
         return new Response(
           new ReadableStream({

@@ -8,10 +8,14 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    name: Check (${{ matrix.os }}, Node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
-        node-version: [20.x, 22.x]
+        os: [ubuntu-latest, windows-latest]
+        node-version: [20.x, 24.x]
 
     steps:
       - uses: actions/checkout@v4
@@ -23,12 +27,48 @@ jobs:
 
       - run: npm ci
 
-      - run: npm run typecheck
+      - run: npm run check
 
-      - run: npm run lint
+      - run: npm run build
 
-      - run: npm run format:check
+      - run: npm run test:integration
 
-      - run: npm test
-        env:
-          BOOK_API_KEY: ${{ secrets.BOOK_API_KEY }}
+      - run: npm run package:smoke
+
+      - run: npm run audit:prod
+
+      - run: npm run audit:all
+
+  package:
+    name: Package smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run release:check
+
+  quality-ratchet:
+    name: Coverage and UI budgets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run test:coverage
+
+      - run: npm run bench:ui

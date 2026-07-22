@@ -13,7 +13,6 @@ import {
   writeFileSync,
 } from 'fs';
 import { lstat, mkdir, readFile, readdir, readlink, rename, rm, writeFile } from 'fs/promises';
-import { execFile, execFileSync } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
@@ -24,7 +23,7 @@ import type {
   RewindSnapshotEntry,
   RewindSnapshotManifest,
   RewindSnapshotStoreInterface,
-} from '../types.js';
+} from '../types/sessions.js';
 
 export const REWIND_MAX_ENTRIES = 20_000;
 export const REWIND_MAX_FILE_BYTES = 16 * 1024 * 1024;
@@ -179,31 +178,102 @@ function expandNegatedParents(patterns: string[]): string[] {
   return expanded;
 }
 
-function gitHead(workspace: string): string | undefined {
+function readOptionalText(path: string): string | undefined {
   try {
-    return execFileSync('git', ['rev-parse', '--verify', 'HEAD'], {
-      cwd: workspace,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+    return readFileSync(path, 'utf-8').trim();
   } catch {
     return undefined;
   }
 }
 
-function gitHeadAsync(workspace: string): Promise<string | undefined> {
-  return new Promise((resolveHead) => {
-    execFile(
-      'git',
-      ['rev-parse', '--verify', 'HEAD'],
-      {
-        cwd: workspace,
-        encoding: 'utf-8',
-        windowsHide: true,
-      },
-      (error, stdout) => resolveHead(error ? undefined : stdout.trim()),
-    );
-  });
+function resolveGitDirectory(workspace: string): string | undefined {
+  const dotGit = join(workspace, '.git');
+  try {
+    if (lstatSync(dotGit).isDirectory()) return dotGit;
+  } catch {
+    return undefined;
+  }
+
+  const match = /^gitdir:\s*(.+)$/i.exec(readOptionalText(dotGit) ?? '');
+  return match ? resolve(dirname(dotGit), match[1]) : undefined;
+}
+
+function resolveCommonGitDirectory(gitDirectory: string): string {
+  const commonDirectory = readOptionalText(join(gitDirectory, 'commondir'));
+  return commonDirectory ? resolve(gitDirectory, commonDirectory) : gitDirectory;
+}
+
+function parseGitHash(value: string | undefined): string | undefined {
+  const hash = value?.trim();
+  return hash && /^[0-9a-f]{40,64}$/i.test(hash) ? hash : undefined;
+}
+
+function readPackedRef(directory: string, ref: string): string | undefined {
+  const packedRefs = readOptionalText(join(directory, 'packed-refs'));
+  if (!packedRefs) return undefined;
+  for (const line of packedRefs.split(/\r?\n/)) {
+    if (!line || line.startsWith('#') || line.startsWith('^')) continue;
+    const separator = line.indexOf(' ');
+    if (separator > 0 && line.slice(separator + 1) === ref) {
+      return parseGitHash(line.slice(0, separator));
+    }
+  }
+  return undefined;
+}
+
+function resolveGitRef(
+  gitDirectory: string,
+  commonDirectory: string,
+  ref: string,
+  depth = 0,
+): string | undefined {
+  if (
+    depth > 4 ||
+    !ref.startsWith('refs/') ||
+    ref.includes('..') ||
+    ref.includes('\\') ||
+    ref.includes('\0')
+  ) {
+    return undefined;
+  }
+
+  for (const directory of new Set([gitDirectory, commonDirectory])) {
+    const value = readOptionalText(join(directory, ...ref.split('/')));
+    const hash = parseGitHash(value);
+    if (hash) return hash;
+    if (value?.startsWith('ref:')) {
+      const resolved = resolveGitRef(
+        gitDirectory,
+        commonDirectory,
+        value.slice('ref:'.length).trim(),
+        depth + 1,
+      );
+      if (resolved) return resolved;
+    }
+  }
+
+  return (
+    readPackedRef(gitDirectory, ref) ??
+    (commonDirectory === gitDirectory ? undefined : readPackedRef(commonDirectory, ref))
+  );
+}
+
+function gitHead(workspace: string): string | undefined {
+  const gitDirectory = resolveGitDirectory(workspace);
+  if (!gitDirectory) return undefined;
+  const head = readOptionalText(join(gitDirectory, 'HEAD'));
+  const directHash = parseGitHash(head);
+  if (directHash) return directHash;
+  if (!head?.startsWith('ref:')) return undefined;
+  return resolveGitRef(
+    gitDirectory,
+    resolveCommonGitDirectory(gitDirectory),
+    head.slice('ref:'.length).trim(),
+  );
+}
+
+async function gitHeadAsync(workspace: string): Promise<string | undefined> {
+  return gitHead(workspace);
 }
 
 function assertSafeRelativePath(path: string): void {

@@ -1,6 +1,6 @@
 import Fuse from 'fuse.js';
+import type { AgentConfig } from '../types/runtime.js';
 import type {
-  AgentConfig,
   ToolCall,
   ToolCatalogMetadata,
   ToolCategory,
@@ -10,7 +10,7 @@ import type {
   ToolDiscoveryState,
   ToolEffect,
   ToolSearchMatch,
-} from '../types.js';
+} from '../types/tools.js';
 import { estimateTokens } from '../context-report.js';
 import { canonicalToolName, TOOL_ALIASES } from './aliases.js';
 import {
@@ -215,7 +215,7 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
   const role = options.isSubagent ? 'child' : 'root';
   const state: ToolDiscoveryState = options.isSubagent
     ? { clock: 0, loaded: new Map() }
-    : (config.toolDiscoveryState ??= { clock: 0, loaded: new Map() });
+    : (context.runtime?.toolDiscoveryState ?? { clock: 0, loaded: new Map() });
   let activeSnapshot = new Set<string>();
 
   const authorized = (): ToolDefinition[] =>

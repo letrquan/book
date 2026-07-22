@@ -2,7 +2,7 @@ import { Text } from 'ink';
 import { useMemo } from 'react';
 import { usePulse } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
-import type { FileMentionCandidate } from '../file-mentions.js';
+import type { FileMentionCandidate } from '../../input/file-mentions.js';
 import { truncateDisplay } from './word-wrap.js';
 import { getCommandMenuWindow } from './CommandMenu.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';

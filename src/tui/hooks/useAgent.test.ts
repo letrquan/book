@@ -1,19 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import type {
-  RetryPhase,
-  PermissionResult,
-  PlanApprovalResult,
-  ToolCall,
-  UserQuestionRequest,
-  AgentConfig,
-} from '../../types.js';
-import {
-  cancelUserQuestionRequests,
-  settlePermissionRequest,
-  settlePlanApprovalRequest,
-  settleUserQuestionRequest,
-  resolveConfigAfterProviderRemoval,
-} from './useAgent.js';
+import { describe, it, expect } from 'vitest';
+import type { RetryPhase, AgentConfig } from '../../types/runtime.js';
+import { resolveConfigAfterProviderRemoval } from './useAgent.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from '../../settings.js';
 import { defaultConfig } from '../../test/fixtures.js';
 
@@ -63,39 +50,6 @@ function applyClear(): RetryState {
 function applyTickCountdown(state: RetryState): RetryState {
   if (state.retryCountdownMs <= 0) return { ...state, retryCountdownMs: 0 };
   return { ...state, retryCountdownMs: Math.max(0, state.retryCountdownMs - 1000) };
-}
-
-/**
- * Pure model of the send single-flight lock:
- * - acquire is synchronous at send entry
- * - cancel aborts but does NOT release the lock
- * - only finally releases the lock
- */
-function createSendFlightModel() {
-  let inFlight = false;
-  let aborted = false;
-  return {
-    tryAcquire(): boolean {
-      if (inFlight) return false;
-      inFlight = true;
-      aborted = false;
-      return true;
-    },
-    cancel(): void {
-      if (!inFlight) return;
-      aborted = true;
-      // lock stays held until finally
-    },
-    finallyRelease(): void {
-      inFlight = false;
-    },
-    get inFlight() {
-      return inFlight;
-    },
-    get aborted() {
-      return aborted;
-    },
-  };
 }
 
 describe('useAgent retry state machine', () => {
@@ -179,8 +133,8 @@ describe('useAgent retry state machine', () => {
 
 describe('useAgent error/isThinking state transitions', () => {
   it('after error, isThinking should be false (input bar enabled)', () => {
-    // The hook sets isThinking=false in its finally block.
-    // This is verified by the state machine: send starts thinking, error/cancel stops it.
+    // Terminal AgentSession snapshots stop thinking after an error or cancellation.
+    // This verifies the projected state transition independently from React rendering.
     // We test the conceptual flow here.
     let isThinking = false;
     let error: string | null = null;
@@ -192,9 +146,9 @@ describe('useAgent error/isThinking state transitions', () => {
     expect(isThinking).toBe(true);
     expect(error).toBeNull();
 
-    // Simulate: onError callback fires.
+    // Simulate: a failed terminal snapshot arrives.
     error = 'API Error: 500 server error';
-    isThinking = false; // finally block runs
+    isThinking = false;
 
     expect(isThinking).toBe(false);
     expect(error).toMatch(/API Error/);
@@ -220,144 +174,6 @@ describe('useAgent error/isThinking state transitions', () => {
     isThinking = false;
 
     expect(isThinking).toBe(false);
-  });
-});
-
-describe('useAgent send single-flight lock', () => {
-  it('rejects a second acquire while in flight', () => {
-    const flight = createSendFlightModel();
-    expect(flight.tryAcquire()).toBe(true);
-    expect(flight.tryAcquire()).toBe(false);
-    expect(flight.inFlight).toBe(true);
-  });
-
-  it('cancel aborts but keeps the lock until finally', () => {
-    const flight = createSendFlightModel();
-    expect(flight.tryAcquire()).toBe(true);
-    flight.cancel();
-    expect(flight.aborted).toBe(true);
-    expect(flight.inFlight).toBe(true);
-    // Concurrent send still blocked.
-    expect(flight.tryAcquire()).toBe(false);
-    flight.finallyRelease();
-    expect(flight.inFlight).toBe(false);
-    expect(flight.tryAcquire()).toBe(true);
-  });
-});
-
-describe('permission / plan approval settlement', () => {
-  const toolCall: ToolCall = { id: 'tc-1', name: 'Bash', arguments: { command: 'ls' } };
-
-  it('resolves permission once and is idempotent on subsequent settles', () => {
-    const resolve = vi.fn();
-    const setPending = vi.fn();
-    const pendingRef = {
-      current: { toolCall, resolve } as {
-        toolCall: ToolCall;
-        resolve: (value: PermissionResult) => void;
-      } | null,
-    };
-
-    expect(settlePermissionRequest(pendingRef, setPending, 'allow', 'resolve')).toBe(true);
-    expect(resolve).toHaveBeenCalledTimes(1);
-    expect(resolve).toHaveBeenCalledWith('allow');
-    expect(pendingRef.current).toBeNull();
-    expect(setPending).toHaveBeenCalledWith(null);
-
-    // Second settle is a no-op (cancel/clear/unmount after resolve).
-    expect(settlePermissionRequest(pendingRef, setPending, 'deny', 'cancel')).toBe(false);
-    expect(resolve).toHaveBeenCalledTimes(1);
-  });
-
-  it('settles queued user questions in FIFO order and cancels the remainder', () => {
-    const request = (id: string): UserQuestionRequest => ({
-      id,
-      source: { kind: 'root' },
-      questions: [
-        {
-          question: `Question ${id}?`,
-          header: 'Question',
-          options: [
-            { label: 'Yes', description: 'Yes' },
-            { label: 'No', description: 'No' },
-          ],
-          multiSelect: false,
-        },
-      ],
-    });
-    const first = vi.fn();
-    const second = vi.fn();
-    const setPending = vi.fn();
-    const pendingRef = {
-      current: [
-        { request: request('one'), resolve: first },
-        { request: request('two'), resolve: second },
-      ],
-    };
-
-    expect(
-      settleUserQuestionRequest(
-        pendingRef,
-        setPending,
-        { action: 'answer', answers: { 'Question one?': 'Yes' } },
-        'resolve',
-      ),
-    ).toBe(true);
-    expect(first).toHaveBeenCalledOnce();
-    expect(pendingRef.current.map((entry) => entry.request.id)).toEqual(['two']);
-    expect(cancelUserQuestionRequests(pendingRef, setPending, 'clear')).toBe(1);
-    expect(second).toHaveBeenCalledWith(expect.objectContaining({ action: 'cancel' }));
-  });
-
-  it('denies permission on cancel path without double-resolve', () => {
-    const resolve = vi.fn();
-    const setPending = vi.fn();
-    const pendingRef = {
-      current: { toolCall, resolve } as {
-        toolCall: ToolCall;
-        resolve: (value: PermissionResult) => void;
-      } | null,
-    };
-
-    expect(settlePermissionRequest(pendingRef, setPending, 'deny', 'cancel')).toBe(true);
-    expect(resolve).toHaveBeenCalledWith('deny');
-    expect(settlePermissionRequest(pendingRef, setPending, 'deny', 'clear')).toBe(false);
-    expect(resolve).toHaveBeenCalledTimes(1);
-  });
-
-  it('resolves plan approval once and rejects idempotently afterward', () => {
-    const resolve = vi.fn();
-    const setPending = vi.fn();
-    const pendingRef = {
-      current: { plan: 'do the thing', resolve } as {
-        plan: string;
-        resolve: (value: PlanApprovalResult) => void;
-      } | null,
-    };
-
-    expect(settlePlanApprovalRequest(pendingRef, setPending, 'approve', 'resolve')).toBe(true);
-    expect(resolve).toHaveBeenCalledWith('approve');
-    expect(pendingRef.current).toBeNull();
-
-    expect(settlePlanApprovalRequest(pendingRef, setPending, 'reject', 'unmount')).toBe(false);
-    expect(resolve).toHaveBeenCalledTimes(1);
-  });
-
-  it('rejects plan approval on cancel/clear/unmount paths', () => {
-    for (const via of ['cancel', 'clear', 'unmount'] as const) {
-      const resolve = vi.fn();
-      const setPending = vi.fn();
-      const pendingRef = {
-        current: { plan: 'p', resolve } as {
-          plan: string;
-          resolve: (value: PlanApprovalResult) => void;
-        } | null,
-      };
-      expect(settlePlanApprovalRequest(pendingRef, setPending, 'reject', via)).toBe(true);
-      expect(resolve).toHaveBeenCalledWith('reject');
-      expect(settlePlanApprovalRequest(pendingRef, setPending, 'reject', via)).toBe(false);
-      expect(resolve).toHaveBeenCalledTimes(1);
-    }
   });
 });
 

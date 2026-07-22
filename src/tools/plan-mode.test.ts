@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ToolContext } from '../types.js';
+import type { ToolContext } from '../types/tools.js';
 import { planModeTools, READ_ONLY_PLAN_TOOLS } from './plan-mode.js';
 
 function tool(name: string) {
