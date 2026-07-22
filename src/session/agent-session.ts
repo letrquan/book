@@ -81,6 +81,7 @@ export interface AgentSessionPrepareSendRequest {
   config: AgentConfig;
   sessionId: string;
   displayMessage: string;
+  contextMessage?: string;
   userMessage: Message;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
   timelineStore?: Pick<SessionStoreInterface, 'append'>;
@@ -93,6 +94,7 @@ export interface AgentSessionRecordUserRequest {
   config: AgentConfig;
   sessionId: string;
   displayMessage: string;
+  contextMessage?: string;
   userMessage: Message;
   timelineStore?: Pick<SessionStoreInterface, 'append'>;
   expandShellInput?: boolean;
@@ -109,6 +111,7 @@ export interface AgentSessionSendRequest {
   config: AgentConfig;
   registry?: ToolRegistry;
   displayMessage: string;
+  contextMessage?: string;
   createUserMessage: () => Message;
   history: Message[] | (() => Message[]);
   mode?: PermissionMode;
@@ -262,6 +265,7 @@ export class AgentSession {
           config: request.config,
           sessionId: request.sessionId,
           displayMessage: request.displayMessage,
+          contextMessage: request.contextMessage,
           userMessage,
           snapshotStore: request.snapshotStore,
           timelineStore: request.timelineStore,
@@ -302,6 +306,8 @@ export class AgentSession {
             userMessageId: userMessage.id,
             userMessageTimestamp: userMessage.timestamp,
             userFileObservations: userMessage.fileObservations,
+            userMessageKind: userMessage.kind,
+            skipUserPromptHooks: userMessage.kind === 'agent-notification',
           },
           signal: control.signal,
           isCurrent: control.isCurrent,
@@ -493,18 +499,24 @@ export class AgentSession {
   async recordUserMessage(
     request: AgentSessionRecordUserRequest,
   ): Promise<{ contextMessage: string }> {
-    const expandedMentions = expandAtMentions(request.displayMessage, request.config.workspace);
+    const expandedMentions =
+      request.contextMessage === undefined
+        ? expandAtMentions(request.displayMessage, request.config.workspace)
+        : request.contextMessage;
     const contextMessage =
-      request.expandShellInput === false
+      request.contextMessage !== undefined || request.expandShellInput === false
         ? expandedMentions
         : await expandShellCommands(expandedMentions, request.config.workspace, request.signal);
     request.userMessage.contextContent =
       contextMessage === request.displayMessage ? undefined : contextMessage;
-    request.userMessage.fileObservations = collectAtMentionObservations(
-      request.displayMessage,
-      request.config.workspace,
-      request.userMessage.id,
-    );
+    request.userMessage.fileObservations =
+      request.contextMessage === undefined
+        ? collectAtMentionObservations(
+            request.displayMessage,
+            request.config.workspace,
+            request.userMessage.id,
+          )
+        : [];
     const observationLedger = (request.runtime ?? this.runtime).fileObservationLedger;
     for (const observation of request.userMessage.fileObservations) {
       observationLedger.set(observationKey(observation.workspaceId, observation.path), observation);
@@ -517,7 +529,8 @@ export class AgentSession {
         id: request.userMessage.id,
         content: request.displayMessage,
         contextContent: request.userMessage.contextContent,
-        kind: 'conversation',
+        kind: request.userMessage.kind ?? 'conversation',
+        agentNotifications: request.userMessage.agentNotifications,
         fileObservations: request.userMessage.fileObservations,
       },
     } satisfies SessionRecord);

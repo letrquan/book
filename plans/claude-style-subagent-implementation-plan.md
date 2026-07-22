@@ -1,7 +1,8 @@
 # Plan: Claude-Style Subagent Backend and TUI
 
 - **Date:** 2026-07-21
-- **Status:** Draft
+- **Revised:** 2026-07-22 after a second Claude Code UX audit
+- **Status:** Implemented; Agent Center replaced by Claude Code's in-session task model
 - **Scope:** Managed-agent contracts, model routing, automatic exploration, actionable tool errors, runtime events, persistence, SDK/headless output, and the Ink TUI
 - **Goal:** Make Book delegate broad exploration automatically, keep child work out of the parent context, let users configure models by agent profile, and show live purpose-named subagents in a Claude Code-style interface.
 
@@ -22,8 +23,9 @@ parent detects broad exploration
   -> AgentSpawn(explorer, "Trace authentication flow")
   -> explorer searches in an isolated context
   -> TUI shows its status, model, and current activity
-  -> explorer returns compact referenced findings
-  -> parent continues with only the useful summary in context
+  -> explorer completion is delivered automatically to the parent
+  -> main transcript shows a compact completion notification
+  -> parent continues with only the useful summary in context, without polling
 ```
 
 Users can configure defaults such as:
@@ -51,8 +53,10 @@ Explore | provider/fast-model | Searching src/auth
 6. **Resolved behavior is visible.** The UI shows the actual model, isolation mode, status, and current activity used by a run.
 7. **Read-only exploration does not require Git.** Patch and validation agents retain existing snapshot and worktree safety.
 8. **Permission denial includes recovery guidance.** A blocked tool result explains the reason, safe alternatives, and the exact next action.
-9. **UI events do not enter model context.** Live text and tool activity are host-display data unless explicitly summarized into a parent-facing result.
+9. **Display events stay out of model context; completion delivery does not.** Live text and tool activity are host-only data. A terminal child result becomes one persisted, compact parent-facing completion notification.
 10. **Headless and SDK behavior remains supported.** New event types are additive and have deterministic non-interactive behavior.
+11. **Completion delivery is automatic and exactly once.** `AgentWait` is a synchronization barrier, not the only way the parent can discover a result.
+12. **Terminal delivery precedes cleanup.** Completed and failed rows freeze their duration and replace stale activity while delivery is pending, then disappear automatically after the parent accepts the report.
 
 ## Non-Goals
 
@@ -62,6 +66,7 @@ Explore | provider/fast-model | Searching src/auth
 - Do not let the profile setup UI edit permission rules or tool allowlists implicitly.
 - Do not hardcode provider-specific marketing aliases as universal model tiers.
 - Do not merge full background-session Agent View behavior with in-session subagents.
+- Do not use a separate Agent Center for child-agent runtime interaction. Runtime navigation belongs to the prompt-adjacent task panel; profile configuration remains file/settings based.
 
 ## Target Architecture
 
@@ -80,25 +85,75 @@ AgentManager
     |      +-- activity deltas --------------------+
     |      +-- permission/question requests ------+--> TUI / SDK host
     |
-    +-- compact completion projector
+    +-- completion delivery broker
            |
-           +------------------------------------------> Parent model
+           +-- compact persisted notification --------> Parent model
+           +-- semantic completion card --------------> Main transcript
+           +-- terminal status/result preview --------> TUI / SDK host
 ```
 
-The backend owns authoritative agent state. The TUI subscribes to delta events and maintains display state without forcing the parent conversation to ingest those events.
+The backend owns authoritative agent state. The TUI subscribes to delta events and maintains display state without forcing the parent conversation to ingest those events. Only the compact terminal completion notification crosses the child-to-parent context boundary.
+
+## Research Findings and Product Direction
+
+Research completed on 2026-07-22 used the current Codex manual and open-source implementation, OpenCode documentation and `dev` source, and Claude Code's official documentation. Claude Code's runtime implementation is not public, so its internal behavior is derived from documented product contracts.
+
+### Codex
+
+- Child work remains in a separate agent thread, inspectable through `/agent` and supported background-agent panels.
+- Completion is delivered to the parent as a notification or inter-agent `FINAL_ANSWER`, rather than existing only as a status-row update.
+- `wait_agent` waits for mailbox activity; it is not the sole result-retrieval mechanism.
+- Completed status rendering includes a bounded result preview such as `Completed - <message>` and uses readable nicknames independently of the underlying role.
+
+### OpenCode
+
+- Foreground `Task` returns the child result directly.
+- The feature-gated background implementation promises automatic notification, tells the model not to poll, and injects a synthetic `<task state="completed">` prompt into the parent when the job finishes.
+- Child agents are ordinary child sessions with explicit parent/child navigation and resumable task IDs.
+- TUI state is derived from structured task/session state, not from raw pretty-printed lifecycle JSON.
+
+### Claude Code
+
+- Subagents keep separate context and return only summaries/results to the main conversation.
+- Background results reach Claude as completion notifications in a later turn.
+- Completed subagents remain in `/tasks`, marked done and sorted below running work; their detail view stays open.
+- Opening a child transcript allows direct follow-up input, and messaging a completed child resumes it under the same identity.
+- Running subagents appear in a panel directly below the prompt. The panel has a `main` row and one row per child.
+- In that panel, Up/Down changes the selected row, Enter opens the child transcript, `x` stops a running child or dismisses a completed child, and Esc returns focus to the main prompt.
+- The open child transcript accepts follow-up prompts; built-in commands still apply to the main conversation and must say so rather than silently changing the child.
+- Claude Code distinguishes in-session `/tasks` from the separate full-session Agent View. `/tasks` manages the current session's shells and subagents; current `/agents` is configuration guidance, not the runtime dashboard.
+- Failed and user-stopped subagents leave `/tasks`; successful completed subagents remain until cleanup or dismissal.
+
+Official sources checked on 2026-07-22:
+
+- `https://code.claude.com/docs/en/sub-agents`
+- `https://code.claude.com/docs/en/commands`
+- `https://code.claude.com/docs/en/interactive-mode`
+- `https://code.claude.com/docs/en/agent-view`
+
+### Consequences for Book
+
+1. Emitting `agent_result` to the host is insufficient unless the parent model receives a compact, persisted notification.
+2. `AgentSpawn` must promise automatic delivery. `AgentWait` remains useful for explicit orchestration barriers and timeouts.
+3. Lifecycle tools need semantic presentation strings while retaining structured data for SDK callers.
+4. Entering child detail must keep follow-up input available even while the main agent is working, with a visible `main > child` path and an explicit return hint.
+5. Terminal rows must show final state, bounded result/error preview, and frozen duration while parent delivery is pending, then clean up automatically after acknowledgement.
+6. Completion delivery must be idempotent across event replay, session switching, and restart recovery.
+7. `/tasks` must focus the in-session child list. `/agents` must not open a competing runtime dashboard.
+8. The prompt-adjacent panel must expose its controls in place; users should not have to discover a hidden manager screen.
 
 ## Implementation Tracking Ledger
 
 | Phase | Purpose                                                  | Status      | Exit gate                                                     |
 | ----- | -------------------------------------------------------- | ----------- | ------------------------------------------------------------- |
-| 1     | Split profile identity from run identity                 | Not started | Persisted and runtime contracts are migration-safe            |
-| 2     | Add profile model resolution and import normalization    | Not started | Each profile has a visible, testable effective model          |
-| 3     | Keep parent-facing results compact                       | Not started | No agent lifecycle tool returns a transcript to the parent    |
-| 4     | Add lightweight read-only Explore execution              | Not started | Explore works without Git and cannot mutate files             |
-| 5     | Add automatic exploration steering and actionable errors | Not started | Broad exploration is proactively delegated or nudged          |
-| 6     | Add granular runtime events and permission bridging      | Not started | Hosts can observe and interact with live agents safely        |
-| 7     | Add the Claude-style TUI and profile setup               | Not started | Users can monitor, enter, message, stop, and configure agents |
-| 8     | Add compatibility, documentation, and rollout hardening  | Not started | Full tests, docs, migration, and rollback controls pass       |
+| 1     | Split profile identity from run identity                 | Implemented | Persisted and runtime contracts are migration-safe            |
+| 2     | Add profile model resolution and import normalization    | Implemented | Each profile has a visible, testable effective model          |
+| 3     | Compact results plus automatic parent delivery           | Implemented | Terminal result reaches parent exactly once without polling   |
+| 4     | Add lightweight read-only Explore execution              | Implemented | Explore works without Git and cannot mutate files             |
+| 5     | Add automatic exploration steering and actionable errors | Implemented | Broad exploration is proactively delegated or nudged          |
+| 6     | Add granular runtime events and permission bridging      | Implemented | Hosts can observe, route, and acknowledge completion safely   |
+| 7     | Add Claude-style task panel and child transcript UX      | Implemented | `/tasks`, panel controls, child input, and auto-delivery match |
+| 8     | Add compatibility, documentation, and rollout hardening  | Implemented with exception | Build, unit, contract, docs, migration, and rollback controls pass; unrelated Windows shell integration failures remain |
 
 ---
 
@@ -398,6 +453,30 @@ The TUI and local commands may access detailed records directly from the manager
 
 Keep transcripts available for UI inspection and resume. Prefer moving transcripts into per-agent JSONL files while the state store retains summaries and references. If this is too large for the first pull request, retain the current persistence format but enforce compact projection at every model-facing boundary.
 
+### Automatic Completion Delivery
+
+Add a host-safe completion notification distinct from high-volume display events:
+
+```ts
+interface AgentCompletionNotification {
+  deliveryId: string;
+  sequence: number;
+  completion: AgentCompletion;
+  parentSessionId?: string;
+}
+```
+
+Delivery contract:
+
+1. A terminal child transition creates one compact completion projection.
+2. The manager emits the legacy `agent_result` event for compatibility and a new compact `agent_completion` event for parent routing.
+3. Interactive hosts append a semantic notification to the main transcript and submit provider-facing synthetic context containing the child ID, display name, status, summary/error, evidence IDs, and duration.
+4. If the parent is busy, delivery queues until its active turn ends. Multiple queued completions may be coalesced into one continuation turn.
+5. The host durably acknowledges successful delivery by completion sequence. Hydration queues only unacknowledged terminal generations, while legacy completed records migrate as already delivered.
+6. Failed, stopped, and interrupted children use the same durable delivery path; completed and failed UI rows clean up after acknowledgement.
+
+`AgentWait` remains available to express an explicit barrier or timeout, but the parent must not need to call it merely to discover that a child finished.
+
 ### Tests
 
 - Every lifecycle tool result is checked for forbidden fields.
@@ -405,6 +484,9 @@ Keep transcripts available for UI inspection and resume. Prefer moving transcrip
 - A completed explorer returns summary, evidence IDs, model, usage, and error only.
 - TUI manager APIs can still retrieve the full transcript.
 - SDK detailed access and model-facing tool output remain separate contracts.
+- A child completion produces one compact parent notification without `AgentGet` or `AgentWait`.
+- A completion arriving during a parent turn queues and runs after that turn.
+- Repeated host snapshots do not redeliver the same completion, and restart hydration recovers only persisted unacknowledged completions.
 
 ### File Plan
 
@@ -685,7 +767,8 @@ type AgentRuntimeEvent =
   | { type: 'agent_permission'; agentId: string; request: AgentPermissionRequest }
   | { type: 'agent_question'; agentId: string; request: UserQuestionRequest }
   | { type: 'evidence_update'; evidence: EvidenceItem }
-  | { type: 'agent_result'; completion: AgentCompletion }
+  | { type: 'agent_completion'; notification: AgentCompletionNotification }
+  | { type: 'agent_result'; agent: AgentRecord } // deprecated compatibility event
   | { type: 'agent_apply' /* existing fields */ };
 ```
 
@@ -697,6 +780,8 @@ interface AgentActivity {
   kind: 'thinking' | 'tool' | 'waiting' | 'compacting';
   label: string;
   toolName?: string;
+  toolCall?: ToolCall;
+  result?: ToolResult; // bounded display projection; no data or full output
   startedAt: number;
   finishedAt?: number;
   status: 'running' | 'completed' | 'failed';
@@ -765,6 +850,7 @@ forwardSubagentText?: boolean;
 ```
 
 Status, activity, question, permission, completion, and evidence events remain available by default.
+`agent_completion` is compact and suitable for parent routing. `agent_result` remains host/compatibility data until the next major SDK revision.
 
 ### Tests
 
@@ -774,6 +860,8 @@ Status, activity, question, permission, completion, and evidence events remain a
 - Tool activity transitions running -> completed or failed.
 - Full records are not cloned for text events.
 - Complete messages persist for resume.
+- Terminal completion events contain no transcript or raw prompt.
+- Completion precedes or accompanies the legacy result event deterministically.
 - Permission requests name the correct agent.
 - Approval resumes only the requesting child call.
 - Non-interactive denial cannot deadlock.
@@ -802,7 +890,7 @@ Modify src/sdk.test.ts
 
 ### Objective
 
-Give users a compact live overview, purpose-named rows, navigable child transcripts, and profile model setup without crowding the main conversation.
+Give users Claude Code's prompt-adjacent task workflow: purpose-named rows, navigable child transcripts, explicit keyboard controls, and automatic parent completion delivery without crowding the main conversation.
 
 ### TUI State Hook
 
@@ -813,8 +901,8 @@ Responsibilities:
 - Subscribe once to `AgentManager`.
 - Maintain summaries keyed by agent ID.
 - Maintain bounded live transcript buffers for active detail views.
-- Track selected agent, focused surface, and Running/Profiles tab.
-- Expose actions for send, stop, dismiss, permission resolution, question resolution, and profile updates.
+- Track selected agent and focused surface (`main`, `tasks`, or `detail`).
+- Expose actions for send, stop, dismiss, permission resolution, and question resolution.
 - Restore persisted completed agents when the TUI starts.
 - Avoid inserting UI-only child events into `messages` or provider context.
 
@@ -829,7 +917,7 @@ src/tui/components/SubagentPanel.tsx
 src/tui/components/SubagentRow.tsx
 ```
 
-Place the compact panel below `InputBar` and above `StatusLine` so it matches the Claude Code relationship between prompt, agents, and footer.
+Place the compact panel below `InputBar` and above `StatusLine` so it matches Claude Code's in-session task panel relationship between prompt, agents, and footer. Do not confuse this panel with Claude Code Agent View, which manages independent sessions.
 
 Example wide layout:
 
@@ -850,8 +938,17 @@ Row priority:
 3. Current activity.
 4. Profile.
 5. Resolved model.
-6. Elapsed time.
+6. Running elapsed time or frozen terminal duration.
 7. Token usage.
+
+Terminal row rules:
+
+- Running rows may show the current activity and a live timer.
+- Completed rows show `Completed` plus a bounded summary preview.
+- Failed rows show `Failed` plus a bounded error preview.
+- Stopped and interrupted rows show the terminal reason where available.
+- Terminal rows use `finishedAt` and never continue counting.
+- A completed row never displays stale text such as `Thinking` or a previously completed tool call.
 
 Responsive rules:
 
@@ -859,29 +956,24 @@ Responsive rules:
 - Hide elapsed time second.
 - Shorten model third.
 - Preserve display name, status, and activity for as long as possible.
-- Tiny mode shows one selected/important row plus `+N agents`.
+- Tiny mode shows one selected/important row plus `+N more tasks`.
 - Screen-reader mode renders flat descriptive sentences.
 - Reduced-motion mode uses static status glyphs.
 
-### Agent Center
+### Prompt-Adjacent Task Panel
 
-Change `/agents` from a local text dump into a focused Agent Center with two tabs:
+Use one in-session task surface directly below the prompt. `/tasks` focuses it; `/agents` remains configuration guidance and import support.
 
-```text
-Running | Profiles
-```
-
-Running tab interactions:
+Panel interactions:
 
 ```text
 Up/Down  select row
 Enter    open transcript
 x        stop running agent or dismiss completed agent
-Esc      return to main conversation
-Tab      switch to Profiles
+Esc      return focus to the main prompt
 ```
 
-Completed agents remain listed until dismissed or retention cleanup removes them. Failed and stopped agents remain available for diagnosis.
+The panel includes a `main` row and one row per visible child. Completed and failed agents briefly show their frozen terminal result while parent delivery is pending, then disappear automatically after acknowledgement. User-stopped agents leave immediately. Persisted records and parent-facing completion/error messages remain available for diagnosis.
 
 ### Detail Transcript
 
@@ -894,11 +986,12 @@ When open:
 - Render the child transcript with the existing message and tool components.
 - Show purpose, profile, resolved model, usage, status, worktree mode, and evidence references.
 - Route normal input to `AgentSend`.
+- Keep child input enabled while the main agent is running; the two sessions have independent turns.
 - `Esc` returns to the main conversation without stopping the agent.
-- `x` stops the running agent after a concise confirmation if the action could discard work.
+- Stop or dismiss the child from `/tasks`; do not reserve ordinary text such as `x` inside the child input.
 - Built-in session commands continue to act on the main session and show a notice when invoked from a child detail view.
 
-Do not attach background managed-agent tool rows to the currently streaming parent assistant message. The existing nested `Task` rendering remains only for the deprecated synchronous adapter until it is removed.
+Render each resolved `AgentSpawn` as a dedicated, UI-only Claude-style activity block in the parent transcript. Keep the block compact (latest three calls plus `+N tool uses`), while retaining full child history in the detail transcript. The existing nested `Task` rendering remains only for the deprecated synchronous adapter until it is removed.
 
 ### Questions and Permissions
 
@@ -915,35 +1008,8 @@ When several agents need input:
 
 - show the oldest pending request first;
 - show the queue count;
-- return focus to the Agent Center after resolving if another agent still needs input.
-
-### Profile Setup UI
-
-Add:
-
-```text
-src/tui/components/AgentProfilePanel.tsx
-src/tui/components/AgentModelPicker.tsx
-```
-
-Profiles tab example:
-
-```text
-Explorer    gateway/fast-model    read-only
-Patcher     inherit               worktree
-Validator   gateway/review-model  worktree
-```
-
-Selecting a profile opens a model picker:
-
-- `inherit` is always the first option.
-- Remaining choices come from the same resolved provider model catalog as `/model`.
-- Show provider and model label.
-- Save only `agents.profiles.<name>.model`.
-- Update live configuration and the manager after a successful save.
-- Show the new default; do not change already-running agents.
-
-Refactor the current `ModelPicker` into reusable list and provider-management layers. Agent model selection should not expose provider deletion, BYOK creation, or main-session effort controls unless explicitly opened through the normal `/model` workflow.
+- keep the prompt usable for the main conversation after the request resolves;
+- keep the child row highlighted as needing input until it continues.
 
 ### Status Line
 
@@ -965,6 +1031,7 @@ The status line is a shortcut indicator only; the full panel remains authoritati
 
 - Agent status events create and update rows.
 - Purpose name, profile, resolved model, activity, and elapsed time render correctly.
+- Completed rows freeze duration and replace stale activity with their result preview.
 - Tiny and narrow layouts do not wrap unpredictably.
 - Screen-reader output contains all important state without decorative rails.
 - Enter opens the selected transcript.
@@ -973,11 +1040,9 @@ The status line is a shortcut indicator only; the full panel remains authoritati
 - `x` stops active agents and dismisses completed agents.
 - Needs-input requests are attributed to the correct agent.
 - Multiple pending requests queue deterministically.
-- Profiles tab persists a model override.
-- Running agents keep their original model after the profile default changes.
-- New agents use the updated model without restart.
-- Completed agents remain until dismissal.
+- Completed and failed agents disappear automatically after parent delivery is acknowledged.
 - Main conversation messages remain unchanged by UI-only child events.
+- Compact completion notifications enter the parent context exactly once and render as notifications, not as user-authored prompts.
 
 ### File Plan
 
@@ -989,10 +1054,6 @@ Add    src/tui/components/SubagentPanel.test.tsx
 Add    src/tui/components/SubagentRow.tsx
 Add    src/tui/components/SubagentDetail.tsx
 Add    src/tui/components/SubagentDetail.test.tsx
-Add    src/tui/components/AgentProfilePanel.tsx
-Add    src/tui/components/AgentProfilePanel.test.tsx
-Add    src/tui/components/AgentModelPicker.tsx
-Add    src/tui/components/AgentModelPicker.test.tsx
 Modify src/tui/components/ModelPicker.tsx
 Modify src/tui/app.tsx
 Modify src/tui/hooks/useAgent.ts
@@ -1023,7 +1084,8 @@ After telemetry shows no meaningful use, remove `Task` in a separate breaking ch
 Update commands:
 
 ```text
-/agents                 open Agent Center
+/tasks                  focus the prompt-adjacent child task panel
+/agents                 show agent configuration/import guidance
 /agent <id>             open agent detail
 /agent send <id> ...    send follow-up
 /agent stop <id>        stop agent
@@ -1143,6 +1205,22 @@ Import a VoltAgent definition with comma-separated tools and model: inherit.
 Expected: tools normalize correctly, inherit remains inheritance, and risky capabilities are shown before installation.
 ```
 
+#### Scenario H: Automatic completion delivery
+
+```text
+Parent starts an explorer and continues or finishes its current turn.
+Explorer completes without the parent polling.
+Expected: the main transcript receives one semantic completion notification, the parent receives the compact report in its next turn, and the row moves to Done with a frozen duration.
+```
+
+#### Scenario I: Child follow-up while parent is active
+
+```text
+Open a child transcript while the main conversation is generating.
+Send a follow-up from the child detail input.
+Expected: the message routes to that child without interrupting the main turn.
+```
+
 ## Full Verification Matrix
 
 ### Type and Static Checks
@@ -1166,9 +1244,11 @@ npm test -- src/agent/loop.test.ts
 npm test -- src/permissions.test.ts
 npm test -- src/hooks.test.ts
 npm test -- src/tui/hooks/useManagedAgents.test.tsx
+npm test -- src/tui/hooks/useAgentCompletionDelivery.test.tsx
 npm test -- src/tui/components/SubagentPanel.test.tsx
+npm test -- src/tui/components/ChatPanel.render.test.tsx
 npm test -- src/tui/components/SubagentDetail.test.tsx
-npm test -- src/tui/components/AgentProfilePanel.test.tsx
+npm test -- src/tui/app.plan-approval.test.tsx
 ```
 
 ### Full Suite
@@ -1177,6 +1257,16 @@ npm test -- src/tui/components/AgentProfilePanel.test.tsx
 npm test
 npm run build
 ```
+
+## Verification Results (2026-07-22)
+
+- `npm run format:check`, `npm run lint`, `npm run typecheck`, and `git diff --check` pass.
+- `npm run build` passes, including declaration generation.
+- Unit suite passes: 128 files, 1,131 tests.
+- Contract suite passes: 4 files, 27 tests.
+- Focused managed-agent/session/TUI tests pass, including durable completion acknowledgement, restart hydration, busy-parent queuing, coalescing, semantic lifecycle presentation, compact notification rendering, and frozen terminal rows.
+- The full integration stage still reports the repository's existing Windows background-shell cleanup/timing failures in `src/tools/shell.test.ts`: three failed tests; 53 passed and 4 skipped. These failures are outside the managed-agent changes and match the prior baseline.
+- Real-terminal smoke testing remains recommended before release for desktop, narrow, tiny, reduced-motion, and screen-reader presentation.
 
 ### Manual TUI Verification
 
@@ -1189,7 +1279,7 @@ npm run build
 - Completed and failed agents.
 - Permission and question queues.
 - Agent detail while the main conversation continues.
-- Model change followed by a new spawn.
+- Profile/settings change followed by a new spawn.
 - Session restart with persisted agents.
 
 ## Acceptance Criteria
@@ -1199,11 +1289,11 @@ The plan is complete only when all of these are true:
 1. Broad exploration normally delegates without the user explicitly requesting a subagent.
 2. Targeted work with three or fewer discovery queries remains lightweight and inline.
 3. Every run has a purpose-specific display name separate from its profile.
-4. Users can configure a default model for each profile from the TUI.
+4. Users can configure a default model for each profile through settings and imported definitions.
 5. The TUI shows the actual resolved model used by every run.
-6. Live status and tool activity are visible without opening the full transcript.
+6. Live status and tool activity are visible in the prompt-adjacent task panel without opening the full transcript.
 7. Users can enter a child transcript, send follow-ups, return to main, and stop the child.
-8. Completed agents remain inspectable until dismissed or cleaned up.
+8. Completed and failed rows remain visible only until their parent report is acknowledged, then clean up automatically.
 9. Parent-facing lifecycle tool results never contain full child transcripts.
 10. Explore works without Git and cannot mutate files.
 11. Patcher and validator retain existing worktree and evidence safeguards.
@@ -1211,6 +1301,11 @@ The plan is complete only when all of these are true:
 13. Every restriction error gives the model a safe recovery path.
 14. Claude/VoltAgent-style definitions can be imported without silent zero-tool or literal-`inherit` failures.
 15. Print mode, stream JSON, SDK mode, reduced-motion mode, and screen-reader mode remain functional.
+16. Every terminal child result is delivered automatically to the correct parent session exactly once.
+17. `AgentWait` is optional for result discovery and remains available as an explicit synchronization barrier.
+18. Lifecycle tool rows show semantic actions and results rather than raw JSON opening braces.
+19. Completed rows freeze duration, show a bounded result/error preview, and never retain stale running activity.
+20. Child transcript input remains usable while the main agent is running.
 
 ## Recommended Pull Request Order
 
@@ -1220,8 +1315,8 @@ The plan is complete only when all of these are true:
 4. **Explore execution:** read-only non-Git path and updated prompts.
 5. **Steering and errors:** three-query reminder, detailed permission and hook errors.
 6. **Runtime events:** subscriptions, activity deltas, transcript checkpoints, permission bridge.
-7. **TUI monitoring:** compact panel, status line, Agent Center, detail transcript.
-8. **TUI setup and rollout:** profile model picker, import UI, docs, screenshots, compatibility cleanup.
+7. **TUI monitoring:** prompt-adjacent task panel, status line, detail transcript, automatic parent result cards.
+8. **TUI rollout:** import guidance, docs, screenshots, compatibility cleanup.
 
 Each pull request should be independently testable and should not depend on later UI work to enforce backend safety.
 

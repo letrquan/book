@@ -137,6 +137,24 @@ export const agentSettingsSchema = z.object({
   telemetry: z.boolean().default(true),
   retentionDays: z.number().int().min(1).max(3650).default(30),
   checks: z.record(z.union([z.string().min(1), z.array(z.string().min(1)).min(1)])).default({}),
+  profiles: z
+    .record(
+      z.object({
+        model: z.string().min(1).optional(),
+        effort: effortLevelSchema.optional(),
+        maxTurns: z.number().int().min(1).optional(),
+        color: z.string().optional(),
+      }),
+    )
+    .default({}),
+  ui: z.object({ enabled: z.boolean().default(true) }).default({}),
+  routing: z
+    .object({
+      inlineSearchBudget: z.number().int().min(1).max(20).default(3),
+      exploreReminder: z.boolean().default(true),
+    })
+    .default({}),
+  forwardTextEvents: z.boolean().default(false),
 });
 
 export const toolDiscoverySettingsSchema = z.object({
@@ -264,6 +282,10 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     telemetry: true,
     retentionDays: 30,
     checks: {},
+    profiles: {},
+    ui: { enabled: true },
+    routing: { inlineSearchBudget: 3, exploreReminder: true },
+    forwardTextEvents: false,
   },
   toolDiscovery: {
     mode: 'auto',

@@ -49,6 +49,10 @@ interface InputBarProps {
   inputSuppressed?: boolean;
   /** Called when the user presses Enter while `disabled` (agent running) — interrupts the stream. */
   onInterrupt?: () => void;
+  /** Allows immediate local commands such as /tasks while the parent is running. */
+  canSubmitWhileDisabled?: (value: string) => boolean;
+  /** Moves focus from an empty prompt to the first background task when available. */
+  onFocusBackgroundTask?: () => boolean;
   /** Forward unrecognized global keyboard shortcuts to the parent App. */
   onGlobalShortcut?: (
     input: string,
@@ -132,6 +136,8 @@ export function InputBar({
   mode,
   onCycleMode,
   onInterrupt,
+  canSubmitWhileDisabled,
+  onFocusBackgroundTask,
   onGlobalShortcut,
   inputSuppressed = false,
   commands = [],
@@ -377,6 +383,12 @@ export function InputBar({
         return;
       }
     }
+    // Claude Code-style task access: Down from a fresh, empty prompt moves
+    // focus into the task list. Enter is then handled by SubagentPanel.
+    if (key.downArrow && !value && historyIndex < 0 && onFocusBackgroundTask?.()) {
+      uiLog.event('input:Down', { action: 'focus-background-task' });
+      return;
+    }
     // Up arrow — navigate history backward
     if (key.upArrow && history.length > 0 && historyIndex < history.length - 1) {
       const newIdx = historyIndex + 1;
@@ -457,7 +469,7 @@ export function InputBar({
           uiLog.event('submit:menu', { result: 'no-command-value' });
           return;
         }
-        if (disabled) {
+        if (disabled && !canSubmitWhileDisabled?.(commandValue)) {
           uiLog.event('submit:menu', {
             result: 'interrupt',
             command: commandValue.slice(1),
@@ -498,7 +510,7 @@ export function InputBar({
       }
       // While the agent is running, Enter interrupts the stream instead of
       // submitting — input stays live and focusable so the user can act.
-      if (disabled) {
+      if (disabled && !canSubmitWhileDisabled?.(normalized)) {
         uiLog.event('submit:text', { result: 'interrupt', len: normalized.length });
         setSubmitFlashKey((key) => key + 1);
         onInterrupt?.();
@@ -517,7 +529,7 @@ export function InputBar({
       onSubmit(normalized);
       setValue('');
     },
-    [acceptSelectedFileMention, commands, disabled, onInterrupt, onSubmit],
+    [acceptSelectedFileMention, canSubmitWhileDisabled, commands, disabled, onInterrupt, onSubmit],
   );
 
   const tokenKey = modeColorToken(mode);

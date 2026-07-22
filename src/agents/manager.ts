@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message, Usage } from '../types/messages.js';
-import type { ToolDefinition, UserQuestionResponse } from '../types/tools.js';
+import type { ToolCall, ToolDefinition, ToolResult, UserQuestionResponse } from '../types/tools.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { runCompact, usagePressureTokens } from '../agent/compact.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../config.js';
@@ -19,9 +19,18 @@ import {
   repositoryHash,
 } from './git-isolation.js';
 import { withBuiltInAgents, type ManagedAgentDef } from './profiles.js';
+import { resolveAgentProfile, usableAgentEffort } from './profile-resolver.js';
+import { deriveAgentDisplayName, uniqueAgentDisplayName } from './naming.js';
+import { projectAgentCompletion, projectAgentSummary } from './projections.js';
+import { projectToolResultForDisplay, redactToolCallForDisplay } from './activity.js';
 import { AgentStore } from './store.js';
+import { canonicalToolName } from '../tools/aliases.js';
+import { getPrimaryArg } from '../tools/primary-arg.js';
 import type {
   AgentApplyResult,
+  AgentActivity,
+  AgentCompletionNotification,
+  AgentPermissionRequest,
   AgentPlanRecord,
   AgentRecord,
   AgentRuntimeEvent,
@@ -49,6 +58,12 @@ interface ManagerOptions {
   commitWork?: typeof commitAgentWork;
   applyCandidate?: typeof applyVerifiedCandidate;
   runtime?: SessionRuntime;
+  permissionMode?: string;
+  persistPermissionRule?: (rule: string) => void;
+}
+
+interface SubscribeOptions {
+  snapshot?: boolean;
 }
 
 interface PublishEvidenceInput {
@@ -72,6 +87,12 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
+function permissionRuleForToolCall(call: ToolCall): string {
+  const toolName = canonicalToolName(call.name);
+  const primaryArg = getPrimaryArg(call.arguments);
+  return primaryArg ? `${toolName}(${primaryArg})` : toolName;
+}
+
 function accumulateUsage(current: Usage | undefined, next: Usage): Usage {
   return {
     promptTokens: (current?.promptTokens ?? 0) + next.promptTokens,
@@ -85,7 +106,7 @@ function accumulateUsage(current: Usage | undefined, next: Usage): Usage {
 }
 
 export class AgentManager {
-  private readonly config: AgentConfig;
+  private config: AgentConfig;
   private readonly parentDefinitions: ToolDefinition[];
   private readonly options: ManagerOptions;
   private store?: AgentStore;
@@ -100,9 +121,21 @@ export class AgentManager {
   private readonly queue: string[] = [];
   private readonly controllers = new Map<string, AbortController>();
   private readonly questionResolvers = new Map<string, (response: UserQuestionResponse) => void>();
+  private readonly permissionResolvers = new Map<
+    string,
+    (response: 'allow' | 'deny' | 'always') => void
+  >();
+  private readonly permissionRules = new Map<string, string>();
+  private readonly activities = new Map<string, Map<string, AgentActivity>>();
   private readonly waiters = new Map<string, Set<(record: AgentRecord) => void>>();
+  private readonly idleWaiters = new Set<() => void>();
   private active = 0;
-  private eventSink?: (event: AgentRuntimeEvent) => void;
+  private interactivePermissions = false;
+  private permissionMode = 'default';
+  private readonly subscribers = new Set<(event: AgentRuntimeEvent) => void>();
+  private legacyEventSink?: (event: AgentRuntimeEvent) => void;
+  private readonly textBuffers = new Map<string, string>();
+  private readonly textTimers = new Map<string, NodeJS.Timeout>();
   private hookEventSink?: (event: string, payload: Record<string, unknown>) => void;
   private exitHandler?: () => void;
 
@@ -114,7 +147,8 @@ export class AgentManager {
     this.config = config;
     this.parentDefinitions = parentDefinitions;
     this.options = options;
-    this.eventSink = options.eventSink;
+    this.permissionMode = options.permissionMode ?? 'default';
+    this.legacyEventSink = options.eventSink;
     this.hookEventSink = options.hookEventSink;
   }
 
@@ -122,8 +156,140 @@ export class AgentManager {
     sink?: (event: AgentRuntimeEvent) => void,
     hookSink?: (event: string, payload: Record<string, unknown>) => void,
   ): void {
-    if (sink) this.eventSink = sink;
+    if (sink) this.legacyEventSink = sink;
     if (hookSink) this.hookEventSink = hookSink;
+  }
+
+  updateConfig(config: AgentConfig): void {
+    this.config = config;
+  }
+
+  hasActiveProfile(profile: string): boolean {
+    return Array.from(this.agents.values()).some(
+      (record) =>
+        (record.profile ?? record.name) === profile && !TERMINAL_STATUSES.has(record.status),
+    );
+  }
+
+  setInteractivePermissions(enabled: boolean): void {
+    this.interactivePermissions = enabled;
+    if (enabled) return;
+    for (const record of this.agents.values()) {
+      let changed = false;
+      if (record.pendingPermission) {
+        this.permissionResolvers.get(record.pendingPermission.id)?.('deny');
+        this.permissionResolvers.delete(record.pendingPermission.id);
+        this.permissionRules.delete(record.pendingPermission.id);
+        record.pendingPermission = undefined;
+        changed = true;
+      }
+      if (record.pendingQuestion) {
+        this.questionResolvers.get(record.id)?.({
+          action: 'cancel',
+          message:
+            'No interactive host is available. Use AgentSend from an interactive host to answer.',
+        });
+        this.questionResolvers.delete(record.id);
+        record.pendingQuestion = undefined;
+        record.pendingQuestionCreatedAt = undefined;
+        changed = true;
+      }
+      if (changed && !TERMINAL_STATUSES.has(record.status)) {
+        record.status = 'running';
+        this.persist(record);
+      }
+    }
+  }
+
+  setPermissionMode(mode: string | undefined): void {
+    if (mode) this.permissionMode = mode;
+  }
+
+  async resolvePermission(
+    agentId: string,
+    requestId: string,
+    response: 'allow' | 'deny' | 'always',
+  ): Promise<AgentRecord> {
+    await this.ensureInitialized();
+    const record = this.agents.get(agentId);
+    if (!record) throw new Error(`Agent ${agentId} was not found.`);
+    if (record.pendingPermission?.id !== requestId) {
+      throw new Error(`Permission request ${requestId} is no longer pending.`);
+    }
+    if (response === 'always') {
+      const rule = this.permissionRules.get(requestId);
+      if (rule) this.options.persistPermissionRule?.(rule);
+    }
+    record.pendingPermission = undefined;
+    record.status = 'running';
+    this.permissionResolvers.get(requestId)?.(response);
+    this.permissionResolvers.delete(requestId);
+    this.permissionRules.delete(requestId);
+    this.persist(record);
+    return clone(record);
+  }
+
+  async resolveQuestion(agentId: string, response: UserQuestionResponse): Promise<AgentRecord> {
+    await this.ensureInitialized();
+    const record = this.agents.get(agentId);
+    if (!record) throw new Error(`Agent ${agentId} was not found.`);
+    if (!record.pendingQuestion) throw new Error(`Agent ${agentId} has no pending question.`);
+    record.pendingQuestion = undefined;
+    record.pendingQuestionCreatedAt = undefined;
+    record.status = 'running';
+    this.questionResolvers.get(agentId)?.(response);
+    this.questionResolvers.delete(agentId);
+    this.persist(record);
+    return clone(record);
+  }
+
+  recordRoutingTelemetry(event: string, data: Record<string, unknown> = {}): void {
+    if (!this.config.settings.agents.telemetry) return;
+    this.store?.appendTelemetry({ timestamp: Date.now(), event, ...data });
+  }
+
+  subscribe(
+    listener: (event: AgentRuntimeEvent) => void,
+    options: SubscribeOptions = {},
+  ): () => void {
+    this.subscribers.add(listener);
+    if (options.snapshot) {
+      void this.ensureInitialized().then(() => {
+        for (const record of this.agents.values()) {
+          listener({ type: 'agent_status', agent: projectAgentSummary(record) });
+        }
+      });
+    }
+    return () => this.subscribers.delete(listener);
+  }
+
+  async listPendingCompletions(): Promise<AgentCompletionNotification[]> {
+    await this.ensureInitialized();
+    return Array.from(this.agents.values())
+      .filter(
+        (record) =>
+          TERMINAL_STATUSES.has(record.status) &&
+          (record.completionSequence ?? 0) > (record.completionDeliveredSequence ?? 0),
+      )
+      .map((record) => this.completionNotification(record));
+  }
+
+  async acknowledgeCompletion(deliveryId: string): Promise<void> {
+    await this.ensureInitialized();
+    const record = Array.from(this.agents.values()).find(
+      (candidate) => `${candidate.id}:${candidate.completionSequence ?? 0}` === deliveryId,
+    );
+    if (!record) return;
+    const sequence = record.completionSequence ?? 0;
+    if ((record.completionDeliveredSequence ?? 0) >= sequence) return;
+    record.completionDeliveredSequence = sequence;
+    this.store?.saveAgent(record);
+  }
+
+  async waitForIdle(): Promise<void> {
+    await this.ensureInitialized();
+    if (this.active === 0 && this.queue.length === 0) return;
+    await new Promise<void>((resolve) => this.idleWaiters.add(resolve));
   }
 
   private async ensureInitialized(): Promise<void> {
@@ -143,16 +309,33 @@ export class AgentManager {
       for (const item of this.store.listEvidence()) this.evidence.set(item.id, item);
       for (const snapshot of this.store.listSnapshots()) this.snapshots.set(snapshot.id, snapshot);
       for (const record of this.agents.values()) {
+        record.producedEvidenceIds = Array.from(
+          new Set([
+            ...(record.producedEvidenceIds ?? []),
+            ...Array.from(this.evidence.values())
+              .filter((item) => item.sourceAgentId === record.id)
+              .map((item) => item.id),
+          ]),
+        );
+      }
+      for (const record of this.agents.values()) {
         if (record.planId && record.snapshotId)
           this.planSnapshots.set(record.planId, record.snapshotId);
       }
       this.exitHandler = () => {
         for (const record of this.agents.values()) {
-          if (!['queued', 'starting', 'running', 'waiting_input'].includes(record.status)) continue;
+          if (
+            !['queued', 'starting', 'running', 'waiting_input', 'waiting_permission'].includes(
+              record.status,
+            )
+          )
+            continue;
           record.status = 'interrupted';
           record.stopReason = 'process_exit';
+          record.pendingPermission = undefined;
           record.updatedAt = Date.now();
           record.finishedAt = record.updatedAt;
+          record.completionSequence = (record.completionSequence ?? 0) + 1;
           this.store?.saveAgent(record);
         }
       };
@@ -164,17 +347,70 @@ export class AgentManager {
   dispose(): void {
     if (this.exitHandler) process.off('exit', this.exitHandler);
     for (const controller of this.controllers.values()) controller.abort('manager_disposed');
+    for (const timer of this.textTimers.values()) clearTimeout(timer);
+    this.textTimers.clear();
+    this.textBuffers.clear();
+    this.permissionRules.clear();
+    this.subscribers.clear();
+    for (const resolve of this.idleWaiters) resolve();
+    this.idleWaiters.clear();
+  }
+
+  private notifyIdle(): void {
+    if (this.active !== 0 || this.queue.length !== 0) return;
+    for (const resolve of this.idleWaiters) resolve();
+    this.idleWaiters.clear();
   }
 
   private emit(event: AgentRuntimeEvent): void {
-    this.eventSink?.(clone(event));
+    this.legacyEventSink?.(clone(event));
+    for (const listener of this.subscribers) listener(clone(event));
+  }
+
+  private queueTextDelta(agentId: string, text: string): void {
+    this.textBuffers.set(agentId, `${this.textBuffers.get(agentId) ?? ''}${text}`);
+    if (this.textTimers.has(agentId)) return;
+    this.textTimers.set(
+      agentId,
+      setTimeout(() => this.flushTextDelta(agentId), 32),
+    );
+  }
+
+  private flushTextDelta(agentId: string): void {
+    const timer = this.textTimers.get(agentId);
+    if (timer) clearTimeout(timer);
+    this.textTimers.delete(agentId);
+    const text = this.textBuffers.get(agentId);
+    this.textBuffers.delete(agentId);
+    if (text) this.emit({ type: 'agent_text_delta', agentId, text });
   }
 
   private persist(record: AgentRecord, event: 'update' | 'result' = 'update'): void {
+    if (event === 'result') {
+      record.currentActivity = undefined;
+      record.completionSequence = (record.completionSequence ?? 0) + 1;
+    }
     record.updatedAt = Date.now();
     this.store?.saveAgent(record);
     this.notify(record);
+    this.emit({ type: 'agent_status', agent: projectAgentSummary(record) });
+    if (event === 'result') {
+      this.emit({
+        type: 'agent_completion',
+        notification: this.completionNotification(record),
+      });
+    }
     this.emit({ type: event === 'result' ? 'agent_result' : 'agent_update', agent: clone(record) });
+  }
+
+  private completionNotification(record: AgentRecord): AgentCompletionNotification {
+    const sequence = record.completionSequence ?? 0;
+    return {
+      deliveryId: `${record.id}:${sequence}`,
+      sequence,
+      completion: projectAgentCompletion(record),
+      parentSessionId: record.parentSessionId,
+    };
   }
 
   private notify(record: AgentRecord): void {
@@ -255,11 +491,6 @@ export class AgentManager {
     if (this.config.settings.agents.mode === 'off') {
       throw new Error('Managed agents are disabled by --agents off or agents.mode=off.');
     }
-    if (!this.repoRoot) {
-      throw new Error(
-        'Managed agents require a Git workspace. Use --agents off or initialize and commit the repository first.',
-      );
-    }
     const definition = this.definitions().find((candidate) => candidate.name === request.agent);
     if (!definition) {
       throw new Error(
@@ -268,6 +499,17 @@ export class AgentManager {
           .join(', ')}`,
       );
     }
+    if (definition.unknownTools?.length) {
+      throw new Error(
+        `Agent ${definition.name} declares unsupported tools: ${definition.unknownTools.join(', ')}. Import or edit the definition before running it.`,
+      );
+    }
+    if (definition.isolation === 'worktree' && !this.repoRoot) {
+      throw new Error(
+        `${definition.name} requires Git worktree isolation. Initialize and commit the repository, or use the explorer profile for read-only discovery.`,
+      );
+    }
+    const resolvedProfile = resolveAgentProfile(definition, this.config, request.model);
 
     let plan = request.planId ? this.plans.get(request.planId) : undefined;
     if (request.planId && !plan) throw new Error(`Agent plan ${request.planId} was not found.`);
@@ -286,8 +528,25 @@ export class AgentManager {
       throw new Error(`Agent plan ${plan.id} has exhausted its budget of ${plan.agentBudget}.`);
     }
     const now = Date.now();
+    const requestedDisplayName =
+      request.description?.trim() || deriveAgentDisplayName(request.prompt, definition.name);
+    const displayName = uniqueAgentDisplayName(
+      requestedDisplayName,
+      Array.from(this.agents.values())
+        .filter((agent) => !TERMINAL_STATUSES.has(agent.status))
+        .map((agent) => agent.displayName ?? agent.name),
+    );
     const record: AgentRecord = {
       id: randomUUID(),
+      profile: definition.name,
+      displayName,
+      profileDescription: definition.description,
+      purpose: request.prompt,
+      requestedModel: resolvedProfile.requestedModel,
+      resolvedModel: resolvedProfile.resolvedModel,
+      provider: resolvedProfile.provider,
+      effort: resolvedProfile.effort,
+      isolation: definition.isolation,
       name: definition.name,
       role: definition.role,
       description: definition.description,
@@ -297,6 +556,7 @@ export class AgentManager {
       applicationStatus: 'not_applied',
       prompt: request.prompt,
       referencedEvidenceIds: request.evidenceIds ?? [],
+      producedEvidenceIds: [],
       transcript: [],
       pendingMessages: [],
       createdAt: now,
@@ -317,10 +577,47 @@ export class AgentManager {
       .map(clone);
   }
 
+  async listProfiles(): Promise<
+    Array<{
+      name: string;
+      description: string;
+      role: AgentRecord['role'];
+      isolation: NonNullable<AgentRecord['isolation']>;
+      resolvedModel: string;
+      configuredModel?: string;
+      color?: string;
+    }>
+  > {
+    await this.ensureInitialized();
+    return this.definitions().map((definition) => {
+      const resolved = resolveAgentProfile(definition, this.config);
+      return {
+        name: definition.name,
+        description: definition.description,
+        role: definition.role,
+        isolation: definition.isolation,
+        resolvedModel: resolved.resolvedModel,
+        configuredModel: this.config.settings.agents.profiles[definition.name]?.model,
+        color: resolved.color,
+      };
+    });
+  }
+
   async get(agentId: string): Promise<AgentRecord | undefined> {
     await this.ensureInitialized();
     const record = this.agents.get(agentId);
     return record ? clone(record) : undefined;
+  }
+
+  async dismiss(agentId: string): Promise<void> {
+    await this.ensureInitialized();
+    const record = this.agents.get(agentId);
+    if (!record) return;
+    if (!TERMINAL_STATUSES.has(record.status)) {
+      throw new Error('Only terminal agents can be dismissed.');
+    }
+    this.agents.delete(agentId);
+    this.store?.removeAgent(agentId);
   }
 
   async send(agentId: string, message: string, evidenceIds: string[] = []): Promise<AgentRecord> {
@@ -341,6 +638,7 @@ export class AgentManager {
         ),
       };
       record.pendingQuestion = undefined;
+      record.pendingQuestionCreatedAt = undefined;
       record.status = 'running';
       this.questionResolvers.get(agentId)?.(response);
       this.questionResolvers.delete(agentId);
@@ -404,9 +702,18 @@ export class AgentManager {
     this.controllers.get(agentId)?.abort(reason);
     this.questionResolvers.get(agentId)?.({ action: 'cancel', message: reason });
     this.questionResolvers.delete(agentId);
+    record.pendingQuestion = undefined;
+    record.pendingQuestionCreatedAt = undefined;
+    if (record.pendingPermission) {
+      this.permissionResolvers.get(record.pendingPermission.id)?.('deny');
+      this.permissionResolvers.delete(record.pendingPermission.id);
+      this.permissionRules.delete(record.pendingPermission.id);
+      record.pendingPermission = undefined;
+    }
     const queuedIndex = this.queue.indexOf(agentId);
     if (queuedIndex >= 0) this.queue.splice(queuedIndex, 1);
     this.persist(record, 'result');
+    this.notifyIdle();
     return clone(record);
   }
 
@@ -427,6 +734,13 @@ export class AgentManager {
       updatedAt: now,
     };
     this.evidence.set(item.id, item);
+    const record = this.agents.get(agentId);
+    if (record) {
+      record.producedEvidenceIds = Array.from(
+        new Set([...(record.producedEvidenceIds ?? []), item.id]),
+      );
+      this.store?.saveAgent(record);
+    }
     this.store?.saveEvidence(item);
     this.emit({ type: 'evidence_update', evidence: clone(item) });
     return clone(item);
@@ -540,6 +854,7 @@ export class AgentManager {
       void this.run(record).finally(() => {
         this.active--;
         this.pump();
+        this.notifyIdle();
       });
     }
   }
@@ -556,7 +871,7 @@ export class AgentManager {
   private systemPrompt(
     record: AgentRecord,
     definition: ManagedAgentDef,
-    snapshot: AgentSnapshot,
+    snapshot?: AgentSnapshot,
   ): string {
     const evidence = this.evidenceContext(record).map((item) => ({
       id: item.id,
@@ -572,8 +887,13 @@ export class AgentManager {
       definition.body,
       `Agent ID: ${record.id}`,
       `Role: ${record.role}`,
-      `Managed worktree: ${record.worktree}`,
-      `Snapshot: ${snapshot.id} (${snapshot.manifest.length} changed paths)`,
+      `Isolation: ${record.isolation ?? definition.isolation}`,
+      record.worktree
+        ? `Managed worktree: ${record.worktree}`
+        : `Workspace: ${this.config.workspace}`,
+      snapshot
+        ? `Snapshot: ${snapshot.id} (${snapshot.manifest.length} changed paths)`
+        : 'Snapshot: not used for workspace-readonly isolation',
       `Capabilities: ${describeCapabilities(definition.allowedTools)}`,
       'Delegation is disabled at this depth. Do not attempt to apply work to the parent workspace.',
       '',
@@ -585,7 +905,9 @@ export class AgentManager {
   }
 
   private async run(record: AgentRecord): Promise<void> {
-    const definition = this.definitions().find((candidate) => candidate.name === record.name);
+    const definition = this.definitions().find(
+      (candidate) => candidate.name === (record.profile ?? record.name),
+    );
     if (!definition) {
       record.status = 'failed';
       record.error = 'Agent definition is no longer available.';
@@ -601,35 +923,39 @@ export class AgentManager {
       record.status = 'starting';
       record.startedAt ??= Date.now();
       this.persist(record);
-      const snapshot = record.snapshotId
-        ? this.snapshots.get(record.snapshotId)
-        : record.planId
-          ? await this.snapshotForPlan(record.planId)
-          : undefined;
-      if (!snapshot) throw new Error('Snapshot is unavailable.');
-      record.snapshotId = snapshot.id;
-      this.store?.saveAgent(record);
-      if (controller.signal.aborted || this.agents.get(record.id)?.status === 'stopped') return;
-      const validationHead =
-        record.role === 'validator'
-          ? record.referencedEvidenceIds
-              .map((id) => this.evidence.get(id)?.patchCandidate?.headCommit)
-              .find((head): head is string => Boolean(head))
-          : undefined;
-      const worktree = await (this.options.createWorktree ?? createAgentWorktree)(
-        snapshot,
-        record.id,
-        this.options.worktreeRoot,
-        validationHead,
-      );
-      record.worktree = worktree.path;
-      record.branch = worktree.branch;
-      if (controller.signal.aborted || this.agents.get(record.id)?.status === 'stopped') return;
-      if (validationHead) {
-        await (this.options.checkoutWorktree ?? checkoutAgentCommit)(
-          record.worktree,
+      let snapshot: AgentSnapshot | undefined;
+      const isolation = record.isolation ?? definition.isolation;
+      if (isolation === 'worktree') {
+        snapshot = record.snapshotId
+          ? this.snapshots.get(record.snapshotId)
+          : record.planId
+            ? await this.snapshotForPlan(record.planId)
+            : undefined;
+        if (!snapshot) throw new Error('Snapshot is unavailable.');
+        record.snapshotId = snapshot.id;
+        this.store?.saveAgent(record);
+        if (controller.signal.aborted || this.agents.get(record.id)?.status === 'stopped') return;
+        const validationHead =
+          record.role === 'validator'
+            ? record.referencedEvidenceIds
+                .map((id) => this.evidence.get(id)?.patchCandidate?.headCommit)
+                .find((head): head is string => Boolean(head))
+            : undefined;
+        const worktree = await (this.options.createWorktree ?? createAgentWorktree)(
+          snapshot,
+          record.id,
+          this.options.worktreeRoot,
           validationHead,
         );
+        record.worktree = worktree.path;
+        record.branch = worktree.branch;
+        if (controller.signal.aborted || this.agents.get(record.id)?.status === 'stopped') return;
+        if (validationHead) {
+          await (this.options.checkoutWorktree ?? checkoutAgentCommit)(
+            record.worktree,
+            validationHead,
+          );
+        }
       }
       if (controller.signal.aborted || this.agents.get(record.id)?.status === 'stopped') return;
       record.status = 'running';
@@ -637,7 +963,7 @@ export class AgentManager {
       this.emit({
         type: 'agent_start',
         agent: clone(record),
-        snapshot: { id: snapshot.id, manifest: clone(snapshot.manifest) },
+        snapshot: snapshot ? { id: snapshot.id, manifest: clone(snapshot.manifest) } : undefined,
       });
       await runHooks(
         this.config.settings.hooks.SubagentStart,
@@ -656,58 +982,194 @@ export class AgentManager {
 
       const parent = createRegistry();
       parent.registerAll(this.parentDefinitions);
-      const registry = createCapabilityRegistry(parent, definition.allowedTools);
+      const registry = createCapabilityRegistry(parent, definition.allowedTools, {
+        isolation,
+        profile: definition.name,
+      });
+      if (
+        definition.source !== 'builtin' &&
+        definition.allowedTools.length > 0 &&
+        registry.getDefinitions().every((tool) => tool.name === 'ToolSearch')
+      ) {
+        throw new Error(
+          `Agent ${definition.name} declares tools, but none are available in this host. Check unsupported names or import the definition with /agents import for diagnostics.`,
+        );
+      }
+      const resolvedProfile = resolveAgentProfile(definition, this.config, record.requestedModel);
+      const resolvedEffort = usableAgentEffort(record.effort) ?? resolvedProfile.effort;
       let agentConfig: AgentConfig = {
         ...this.config,
-        workspace: record.worktree,
-        maxTurns: definition.maxTurns ?? this.config.maxTurns,
+        workspace: record.worktree ?? this.config.workspace,
+        maxTurns: resolvedProfile.maxTurns,
+        effort: resolvedEffort,
+        effortExplicit: resolvedEffort !== undefined || this.config.effortExplicit,
         autoCompactEnabled: true,
         memoryContext: undefined,
       };
-      if (definition.model) {
-        agentConfig = applyModelDefaults(resolveModelProviderConfig(agentConfig, definition.model));
+      if (record.resolvedModel && record.resolvedModel !== 'unknown') {
+        agentConfig = applyModelDefaults(
+          resolveModelProviderConfig(agentConfig, record.resolvedModel),
+        );
       }
       let loopError: string | undefined;
+      const startActivity = (
+        kind: AgentActivity['kind'],
+        label: string,
+        toolName?: string,
+        id: string = randomUUID(),
+        toolCall?: ToolCall,
+      ): AgentActivity => {
+        const activity: AgentActivity = {
+          id,
+          kind,
+          label,
+          toolName,
+          toolCall,
+          startedAt: Date.now(),
+          status: 'running',
+        };
+        const byCall = this.activities.get(record.id) ?? new Map<string, AgentActivity>();
+        byCall.set(id, activity);
+        this.activities.set(record.id, byCall);
+        record.currentActivity = activity;
+        this.emit({ type: 'agent_activity', agentId: record.id, activity: clone(activity) });
+        this.persist(record);
+        return activity;
+      };
+      const finishActivityById = (
+        activityId: string,
+        failed: boolean,
+        result?: ToolResult,
+      ): void => {
+        const activity = this.activities.get(record.id)?.get(activityId);
+        if (!activity) return;
+        activity.finishedAt = Date.now();
+        activity.status = failed ? 'failed' : 'completed';
+        if (result) activity.result = projectToolResultForDisplay(result);
+        record.currentActivity = activity;
+        this.emit({ type: 'agent_activity', agentId: record.id, activity: clone(activity) });
+        this.persist(record);
+      };
+      const finishActivity = (result: ToolResult): void => {
+        finishActivityById(result.toolCallId ?? '', result.status !== 'success', result);
+      };
+      const finishRunningActivities = (failed: boolean): void => {
+        for (const activity of this.activities.get(record.id)?.values() ?? []) {
+          if (activity.status !== 'running') continue;
+          activity.finishedAt = Date.now();
+          activity.status = failed ? 'failed' : 'completed';
+          record.currentActivity = activity;
+          this.emit({ type: 'agent_activity', agentId: record.id, activity: clone(activity) });
+          this.persist(record);
+        }
+      };
       const updated = await (this.options.runLoop ?? runAgentLoop)(
         agentConfig,
         registry,
         record.prompt,
         record.transcript,
         {
-          onText: () => {},
-          onToolCall: () => {},
-          onToolResult: () => {},
+          onText: (text) => {
+            this.queueTextDelta(record.id, text);
+          },
+          onToolCall: (call) => {
+            startActivity('tool', `Using ${call.name}`, call.name, call.id, clone(call));
+          },
+          onToolResult: (result) => {
+            finishActivity(result);
+          },
           onError: (error) => {
             loopError = error;
           },
-          onTurnStart: () => {},
+          onTurnStart: (turn) => {
+            startActivity('thinking', `Thinking (turn ${turn})`);
+          },
           onDone: () => {},
-          onPermissionRequired: async () => 'deny',
+          onPermissionRequired: async (toolCall: ToolCall) => {
+            if (!this.interactivePermissions) return 'deny';
+            const request: AgentPermissionRequest = {
+              id: randomUUID(),
+              agentId: record.id,
+              displayName: record.displayName ?? record.name,
+              toolName: toolCall.name,
+              toolCall: redactToolCallForDisplay(toolCall),
+              createdAt: Date.now(),
+            };
+            record.status = 'waiting_permission';
+            record.pendingPermission = request;
+            this.permissionRules.set(request.id, permissionRuleForToolCall(toolCall));
+            this.persist(record);
+            this.emit({ type: 'agent_permission', agentId: record.id, request: clone(request) });
+            return new Promise<'allow' | 'deny' | 'always'>((resolvePromise) => {
+              this.permissionResolvers.set(request.id, resolvePromise);
+            });
+          },
           onUsage: (usage) => {
             record.usage = accumulateUsage(record.usage, usage);
             this.store?.saveAgent(record);
+            this.emit({ type: 'agent_status', agent: projectAgentSummary(record) });
           },
-          onAssistantMessageComplete: () => {
+          onAssistantMessageComplete: (message) => {
+            this.flushTextDelta(record.id);
+            if (!record.transcript.some((candidate) => candidate.id === message.id)) {
+              record.transcript.push(message);
+            }
             this.store?.saveAgent(record);
+            this.emit({ type: 'agent_message', agentId: record.id, message: clone(message) });
           },
           onUserQuestionRequired: async (request) => {
+            if (!this.interactivePermissions) {
+              return {
+                action: 'cancel',
+                message:
+                  'No interactive host is available to answer this child question. Use AgentSend from an interactive host.',
+              };
+            }
+            const attributedRequest = {
+              ...request,
+              source:
+                request.source.kind === 'subagent'
+                  ? {
+                      ...request.source,
+                      agentPath: [
+                        `${record.displayName ?? record.name} (${record.profile ?? record.name})`,
+                      ],
+                    }
+                  : request.source,
+            } satisfies typeof request;
             record.status = 'waiting_input';
-            record.pendingQuestion = request;
+            record.pendingQuestion = attributedRequest;
+            record.pendingQuestionCreatedAt = Date.now();
             this.persist(record);
-            this.emit({ type: 'agent_question', agentId: record.id, request });
+            this.emit({
+              type: 'agent_question',
+              agentId: record.id,
+              request: attributedRequest,
+            });
             return new Promise<UserQuestionResponse>((resolvePromise) => {
               this.questionResolvers.set(record.id, resolvePromise);
             });
           },
-          onCompact: (history, usage) =>
-            runCompact(agentConfig, history, {
+          onCompact: (history, usage) => {
+            const activity = startActivity('compacting', 'Compacting context');
+            return runCompact(agentConfig, history, {
               trigger: 'auto',
               preContextTokens: usagePressureTokens(usage),
               signal: controller.signal,
-            }),
-          onAgentEvent: this.eventSink,
+            }).then(
+              (result) => {
+                finishActivityById(activity.id, result.status === 'failed');
+                return result;
+              },
+              (error) => {
+                finishActivityById(activity.id, true);
+                throw error;
+              },
+            );
+          },
+          onAgentEvent: (event) => this.emit(event),
         },
-        'bypassPermissions',
+        this.permissionMode,
         {
           signal: controller.signal,
           isNewSession: record.transcript.length === 0,
@@ -722,6 +1184,8 @@ export class AgentManager {
           runtime,
         },
       );
+      finishRunningActivities(false);
+      this.flushTextDelta(record.id);
       record.transcript = updated;
       record.result = lastAssistantText(updated);
       record.error = loopError;
@@ -736,7 +1200,7 @@ export class AgentManager {
       if (loopError?.startsWith('Reached max turns')) record.stopReason = 'max_turns';
 
       if (this.agents.get(record.id)?.status !== 'stopped' && !controller.signal.aborted) {
-        if (record.role === 'patcher') {
+        if (record.role === 'patcher' && snapshot) {
           const candidate = await (this.options.commitWork ?? commitAgentWork)(record, snapshot);
           if (controller.signal.aborted || this.agents.get(record.id)?.status === 'stopped') return;
           if (candidate) {
@@ -758,6 +1222,9 @@ export class AgentManager {
               updatedAt: now,
             };
             this.evidence.set(item.id, item);
+            record.producedEvidenceIds = Array.from(
+              new Set([...(record.producedEvidenceIds ?? []), item.id]),
+            );
             this.store?.saveEvidence(item);
             this.emit({ type: 'evidence_update', evidence: clone(item) });
           }
@@ -778,6 +1245,7 @@ export class AgentManager {
       }
     } catch (error) {
       if (record.status !== 'stopped') {
+        this.flushTextDelta(record.id);
         record.status = controller.signal.aborted ? 'stopped' : 'failed';
         record.error = error instanceof Error ? error.message : String(error);
         record.finishedAt = Date.now();
@@ -786,8 +1254,16 @@ export class AgentManager {
       }
     } finally {
       runtime.dispose('managed_agent_complete');
+      this.flushTextDelta(record.id);
       this.controllers.delete(record.id);
       this.questionResolvers.delete(record.id);
+      if (record.pendingPermission) {
+        this.permissionResolvers.get(record.pendingPermission.id)?.('deny');
+        this.permissionResolvers.delete(record.pendingPermission.id);
+        this.permissionRules.delete(record.pendingPermission.id);
+        record.pendingPermission = undefined;
+      }
+      this.activities.delete(record.id);
       await runHooks(
         this.config.settings.hooks.SubagentStop,
         'SubagentStop',
@@ -844,6 +1320,8 @@ export function getOrCreateAgentManager(
 ): AgentManager {
   if (options.runtime) {
     options.runtime.agentManager ??= new AgentManager(config, parentDefinitions, options);
+    options.runtime.agentManager.updateConfig(config);
+    options.runtime.agentManager.setPermissionMode(options.permissionMode);
     options.runtime.agentManager.setEventSink(options.eventSink, options.hookEventSink);
     return options.runtime.agentManager;
   }
@@ -853,6 +1331,8 @@ export function getOrCreateAgentManager(
     managersByConfig.set(config, manager);
   }
   manager.setEventSink(options.eventSink, options.hookEventSink);
+  manager.updateConfig(config);
+  manager.setPermissionMode(options.permissionMode);
   return manager;
 }
 

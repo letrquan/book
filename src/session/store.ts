@@ -179,6 +179,7 @@ export class SessionStore {
         id?: string;
         includeInContext?: boolean;
         fileObservations?: Message['fileObservations'];
+        agentNotifications?: Message['agentNotifications'];
       };
 
       if (data.kind === 'session_meta_patch') {
@@ -308,6 +309,7 @@ export class SessionStore {
           contextContent: data.contextContent,
           includeInContext: data.includeInContext ?? true,
           kind: (data.kind as Message['kind']) ?? 'conversation',
+          agentNotifications: data.agentNotifications,
           fileObservations: data.fileObservations,
           timestamp: record.timestamp,
         };
@@ -339,6 +341,7 @@ export class SessionStore {
             contextContent: data.contextContent,
             includeInContext: data.includeInContext ?? true,
             kind: (data.kind as Message['kind']) ?? 'conversation',
+            agentNotifications: data.agentNotifications,
             toolCalls: data.toolCalls,
             toolResults: normalizePersistedToolResults(data.toolResults),
             fileObservations: data.fileObservations,

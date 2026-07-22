@@ -11,6 +11,8 @@ import type { AgentConfig } from './types/runtime.js';
 import type { UserQuestionRequest } from './types/tools.js';
 import { toolSuccess } from './tools/result.js';
 import type { AgentEvent } from './session/agent-events.js';
+import type { AgentManager } from './agents/manager.js';
+import type { AgentCompletionNotification } from './agents/types.js';
 
 const config = defaultConfig({ baseUrl: 'http://localhost/v1' });
 let tempDirs: string[] = [];
@@ -116,6 +118,95 @@ describe('runHeadless — text output', () => {
       type: 'text',
       content: 'Hello!',
     });
+  });
+
+  it('waits for background completions and routes them through a parent continuation turn', async () => {
+    const workspace = makeWorkspace();
+    const hookScript = join(workspace, 'block-agent-notifications.cjs');
+    writeFileSync(
+      hookScript,
+      [
+        "let input = '';",
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => (input += chunk));",
+        "process.stdin.on('end', () => {",
+        '  const payload = JSON.parse(input);',
+        "  if (payload.user_prompt?.includes('<subagent_notification>')) process.exit(2);",
+        '});',
+      ].join('\n'),
+    );
+    const runtimeConfig = freshConfig({ workspace });
+    runtimeConfig.settings.hooks.UserPromptSubmit = [{ command: `node "${hookScript}"`, env: {} }];
+    const notification: AgentCompletionNotification = {
+      deliveryId: 'child-1:1',
+      sequence: 1,
+      completion: {
+        agentId: 'child-1',
+        displayName: 'Atlas',
+        profile: 'explorer',
+        status: 'completed',
+        resolvedModel: 'test/model',
+        isolation: 'workspace-readonly',
+        summary: 'Found the missing delivery bridge',
+        evidenceIds: ['evidence-1'],
+        createdAt: 1,
+        startedAt: 2,
+        updatedAt: 3,
+        finishedAt: 3,
+      },
+    };
+    let pending = [notification];
+    const acknowledgeCompletion = vi.fn(async () => {
+      pending = [];
+    });
+    const fakeManager = {
+      waitForIdle: vi.fn(async () => {}),
+      listPendingCompletions: vi.fn(async () => pending),
+      acknowledgeCompletion,
+      dispose: vi.fn(),
+    } as unknown as AgentManager;
+    const registry = createRegistry();
+    registry.register({
+      name: 'SpawnFakeAgent',
+      description: 'Create a deterministic fake background completion for the host test.',
+      parameters: { type: 'object', properties: {} },
+      execute: async (_args, context) => {
+        notification.parentSessionId = context.parentSessionId;
+        context.runtime!.agentManager = fakeManager;
+        return toolSuccess('spawned');
+      },
+    });
+    let requestCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        requestCount++;
+        if (requestCount === 1) return sse([toolDelta('spawn', 'SpawnFakeAgent', {})]);
+        if (requestCount === 2) return sse([textDelta('Background work started.')]);
+        expect(String(init?.body)).toContain('<subagent_notification>');
+        return sse([textDelta('Integrated the child report.')]);
+      }),
+    );
+
+    const result = await runHeadless(runtimeConfig, registry, {
+      prompt: 'delegate',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      maxTurns: 3,
+      stdout: { write: () => true },
+    });
+
+    expect(requestCount).toBe(3);
+    expect(result.messages).toContainEqual(
+      expect.objectContaining({
+        kind: 'agent-notification',
+        content: expect.stringContaining('Atlas'),
+      }),
+    );
+    expect(result.messages.at(-1)?.content).toContain('Integrated the child report.');
+    expect(acknowledgeCompletion).toHaveBeenCalledWith('child-1:1');
   });
 
   it('expands @ file mentions before sending prompts to the provider', async () => {

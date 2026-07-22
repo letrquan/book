@@ -1,6 +1,8 @@
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { getOrCreateAgentManager } from '../agents/manager.js';
 import { toolFailure, toolSuccess } from './result.js';
+import { deriveAgentDisplayName } from '../agents/naming.js';
+import { projectAgentCompletion } from '../agents/projections.js';
 
 async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const agentName = args.agent as string;
@@ -31,23 +33,28 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
       eventSink: ctx.onAgentEvent,
       hookEventSink: ctx.onHookEvent,
       runtime: ctx.runtime,
+      permissionMode: ctx.currentMode,
     });
     const spawned = await manager.spawn({
       agent: agentName,
+      description: deriveAgentDisplayName(prompt, agentName),
       prompt,
       parentSessionId: ctx.parentSessionId,
     });
     const completed = await manager.wait(spawned.id);
+    if (['completed', 'failed', 'stopped', 'interrupted'].includes(completed.status)) {
+      await manager.acknowledgeCompletion(`${completed.id}:${completed.completionSequence ?? 0}`);
+    }
     if (completed.status !== 'completed') {
       return toolFailure(completed.error ?? `Subagent ended with status ${completed.status}`, {
         content: completed.result ?? '',
         code: 'subagent_failed',
-        data: completed,
+        data: projectAgentCompletion(completed),
       });
     }
     return toolSuccess(
-      `## Subagent result: ${completed.name}\n\n${completed.result || '(no output)'}`,
-      { data: completed },
+      `## Subagent result: ${completed.displayName ?? completed.name}\n\n${completed.result || '(no output)'}`,
+      { data: projectAgentCompletion(completed) },
     );
   } catch (error) {
     return toolFailure(error instanceof Error ? error.message : String(error));

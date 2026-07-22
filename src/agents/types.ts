@@ -1,5 +1,5 @@
 import type { Message, Usage } from '../types/messages.js';
-import type { UserQuestionRequest } from '../types/tools.js';
+import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
 
 export type AgentMode = 'adaptive' | 'manual' | 'off';
 export type AgentRole = 'explorer' | 'patcher' | 'validator' | 'custom';
@@ -8,6 +8,7 @@ export type AgentStatus =
   | 'starting'
   | 'running'
   | 'waiting_input'
+  | 'waiting_permission'
   | 'completed'
   | 'failed'
   | 'stopped'
@@ -16,6 +17,36 @@ export type AgentApplicationStatus = 'not_applied' | 'applied' | 'conflicted';
 export type AgentTopology =
   'single' | 'parallel_research' | 'explore_then_patch' | 'patch_validate';
 export type IssueQuality = 'clear' | 'ambiguous' | 'unknown';
+export type AgentIsolation = 'workspace-readonly' | 'worktree';
+
+export interface AgentProfile {
+  name: string;
+  role: AgentRole;
+  description: string;
+  allowedTools: string[];
+  model?: string;
+  maxTurns?: number;
+  effort?: string;
+  isolation: AgentIsolation;
+  color?: string;
+}
+
+export interface AgentActivitySummary {
+  kind: 'thinking' | 'tool' | 'waiting' | 'compacting';
+  label: string;
+  toolName?: string;
+  status: 'running' | 'completed' | 'failed';
+  startedAt: number;
+}
+
+export interface AgentActivity extends AgentActivitySummary {
+  id: string;
+  /** Full live tool call used by hosts to render nested child activity. */
+  toolCall?: import('../types/tools.js').ToolCall;
+  /** Bounded, display-only result projection for realtime host rendering. */
+  result?: ToolResult;
+  finishedAt?: number;
+}
 
 export interface AgentPlanRecord {
   id: string;
@@ -52,8 +83,20 @@ export interface PatchCandidate {
 
 export interface AgentRecord {
   id: string;
+  profile?: string;
+  displayName?: string;
+  profileDescription?: string;
+  purpose?: string;
+  requestedModel?: string;
+  resolvedModel?: string;
+  provider?: string;
+  effort?: string;
+  isolation?: AgentIsolation;
+  currentActivity?: AgentActivitySummary;
+  /** @deprecated Use profile. Retained for persisted version 1 compatibility. */
   name: string;
   role: AgentRole;
+  /** @deprecated Use profileDescription. */
   description: string;
   parentSessionId?: string;
   planId?: string;
@@ -64,9 +107,13 @@ export interface AgentRecord {
   snapshotId?: string;
   prompt: string;
   referencedEvidenceIds: string[];
+  /** Evidence published by this agent, kept separate from supplied inputs. */
+  producedEvidenceIds?: string[];
   transcript: Message[];
   pendingMessages: string[];
   pendingQuestion?: UserQuestionRequest;
+  pendingQuestionCreatedAt?: number;
+  pendingPermission?: AgentPermissionRequest;
   result?: string;
   error?: string;
   stopReason?: string;
@@ -76,6 +123,39 @@ export interface AgentRecord {
   startedAt?: number;
   updatedAt: number;
   finishedAt?: number;
+  /** Monotonic terminal-result generation used for durable parent delivery. */
+  completionSequence?: number;
+  /** Latest completion generation durably accepted by the parent host. */
+  completionDeliveredSequence?: number;
+}
+
+export interface AgentSummary {
+  agentId: string;
+  displayName: string;
+  profile: string;
+  status: AgentStatus;
+  resolvedModel: string;
+  isolation: AgentIsolation;
+  currentActivity?: AgentActivitySummary;
+  summary?: string;
+  error?: string;
+  usage?: Usage;
+  createdAt: number;
+  startedAt?: number;
+  updatedAt: number;
+  finishedAt?: number;
+}
+
+export interface AgentCompletion extends AgentSummary {
+  evidenceIds: string[];
+  applicationStatus?: AgentApplicationStatus;
+}
+
+export interface AgentCompletionNotification {
+  deliveryId: string;
+  sequence: number;
+  completion: AgentCompletion;
+  parentSessionId?: string;
 }
 
 export type EvidenceKind = 'finding' | 'hypothesis' | 'test_result' | 'patch_candidate' | 'blocker';
@@ -104,8 +184,14 @@ export interface EvidenceItem {
 }
 
 export type AgentRuntimeEvent =
+  | { type: 'agent_status'; agent: AgentSummary }
+  | { type: 'agent_activity'; agentId: string; activity: AgentActivity }
+  | { type: 'agent_text_delta'; agentId: string; text: string }
+  | { type: 'agent_message'; agentId: string; message: Message }
+  | { type: 'agent_permission'; agentId: string; request: AgentPermissionRequest }
   | { type: 'agent_start'; agent: AgentRecord; snapshot?: Pick<AgentSnapshot, 'id' | 'manifest'> }
   | { type: 'agent_update'; agent: AgentRecord }
+  | { type: 'agent_completion'; notification: AgentCompletionNotification }
   | { type: 'agent_result'; agent: AgentRecord }
   | { type: 'agent_question'; agentId: string; request: UserQuestionRequest }
   | { type: 'evidence_update'; evidence: EvidenceItem }
@@ -120,10 +206,21 @@ export type AgentRuntimeEvent =
 
 export interface AgentSpawnRequest {
   agent: string;
+  description?: string;
   prompt: string;
+  model?: string;
   planId?: string;
   evidenceIds?: string[];
   parentSessionId?: string;
+}
+
+export interface AgentPermissionRequest {
+  id: string;
+  agentId: string;
+  displayName: string;
+  toolName: string;
+  toolCall: import('../types/tools.js').ToolCall;
+  createdAt: number;
 }
 
 export interface AgentApplyResult {

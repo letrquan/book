@@ -1,15 +1,15 @@
 import type { SubagentDef } from '../subagent-discovery.js';
-import type { AgentRole } from './types.js';
+import type { AgentProfile } from './types.js';
 
-export interface ManagedAgentDef extends SubagentDef {
-  role: AgentRole;
-}
+export interface ManagedAgentDef extends Omit<SubagentDef, 'isolation'>, AgentProfile {}
 
 export const BUILTIN_AGENTS: ManagedAgentDef[] = [
   {
     name: 'explorer',
-    description: 'Investigates ambiguous code and publishes compact, referenced findings.',
+    description:
+      'Fast read-only search agent for locating files, symbols, references, and code paths while keeping raw exploration out of the parent context. Use proactively when broad discovery is expected to require more than three search queries. Specify quick, medium, or very thorough search breadth. Do not use for implementation, code review, or design auditing.',
     role: 'explorer',
+    isolation: 'workspace-readonly',
     allowedTools: [
       'Read',
       'Glob',
@@ -18,14 +18,14 @@ export const BUILTIN_AGENTS: ManagedAgentDef[] = [
       'GitDiff',
       'GitLog',
       'GitBranch',
-      'Check',
       'EvidencePublish',
       'EvidenceList',
     ],
-    maxTurns: 12,
     body: [
       'You are the explorer agent.',
       'Investigate the assigned question without editing files.',
+      'Return compact findings with exact file and line references, confidence, and unresolved questions.',
+      'Do not include raw search dumps or duplicated prose.',
       'Publish important findings, hypotheses, blockers, and test results as typed evidence.',
       'Prefer exact file, command, and diff references over broad narrative.',
     ].join('\n'),
@@ -35,6 +35,7 @@ export const BUILTIN_AGENTS: ManagedAgentDef[] = [
     name: 'patcher',
     description: 'Implements a bounded change in an isolated managed worktree.',
     role: 'patcher',
+    isolation: 'worktree',
     allowedTools: [
       'Read',
       'Glob',
@@ -64,6 +65,7 @@ export const BUILTIN_AGENTS: ManagedAgentDef[] = [
     name: 'validator',
     description: 'Independently checks a patch candidate and records a pass/fail verdict.',
     role: 'validator',
+    isolation: 'worktree',
     allowedTools: [
       'Read',
       'Glob',
@@ -94,7 +96,12 @@ export function withBuiltInAgents(discovered: SubagentDef[]): ManagedAgentDef[] 
   );
   for (const agent of discovered) {
     const builtinRole = BUILTIN_AGENTS.find((candidate) => candidate.name === agent.name)?.role;
-    byName.set(agent.name, { ...agent, role: builtinRole ?? 'custom' });
+    byName.set(agent.name, {
+      ...agent,
+      role: builtinRole ?? 'custom',
+      isolation:
+        agent.isolation ?? (builtinRole === 'explorer' ? 'workspace-readonly' : 'worktree'),
+    });
   }
   return Array.from(byName.values());
 }

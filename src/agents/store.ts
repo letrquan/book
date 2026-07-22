@@ -10,9 +10,10 @@ import {
 import { homedir } from 'os';
 import { join } from 'path';
 import type { AgentPlanRecord, AgentRecord, AgentSnapshot, EvidenceItem } from './types.js';
+import { deriveAgentDisplayName } from './naming.js';
 
 interface StoreState {
-  version: 1;
+  version: 2;
   plans: AgentPlanRecord[];
   agents: AgentRecord[];
   evidence: EvidenceItem[];
@@ -20,7 +21,7 @@ interface StoreState {
 }
 
 const EMPTY_STATE: StoreState = {
-  version: 1,
+  version: 2,
   plans: [],
   agents: [],
   evidence: [],
@@ -30,31 +31,64 @@ const EMPTY_STATE: StoreState = {
 export class AgentStore {
   readonly directory: string;
   private readonly statePath: string;
-  private readonly enabled: boolean;
+  private enabled: boolean;
   private state: StoreState;
 
   constructor(repoHash: string, root = join(homedir(), '.book', 'agents'), enabled = true) {
     this.directory = join(root, repoHash);
     this.statePath = join(this.directory, 'state.json');
     this.enabled = enabled;
-    if (enabled) mkdirSync(this.directory, { recursive: true });
-    this.state = enabled ? this.load() : structuredClone(EMPTY_STATE);
+    if (enabled) {
+      try {
+        mkdirSync(this.directory, { recursive: true });
+      } catch {
+        this.enabled = false;
+      }
+    }
+    this.state = this.enabled ? this.load() : structuredClone(EMPTY_STATE);
   }
 
   private load(): StoreState {
     if (!existsSync(this.statePath)) return structuredClone(EMPTY_STATE);
     try {
-      const parsed = JSON.parse(readFileSync(this.statePath, 'utf8')) as Partial<StoreState>;
+      const parsed = JSON.parse(readFileSync(this.statePath, 'utf8')) as Partial<StoreState> & {
+        version?: number;
+      };
+      const agents = (parsed.agents ?? []).map((agent) => this.migrateAgent(agent));
       return {
-        version: 1,
+        version: 2,
         plans: parsed.plans ?? [],
-        agents: parsed.agents ?? [],
+        agents,
         evidence: parsed.evidence ?? [],
         snapshots: parsed.snapshots ?? [],
       };
     } catch {
       return structuredClone(EMPTY_STATE);
     }
+  }
+
+  private migrateAgent(record: AgentRecord): AgentRecord {
+    const profile = record.profile ?? record.name ?? 'unknown';
+    const purpose = record.purpose ?? record.prompt ?? '';
+    const terminal = ['completed', 'failed', 'stopped', 'interrupted'].includes(record.status);
+    const hasCompletionSequence = record.completionSequence !== undefined;
+    const completionSequence = record.completionSequence ?? (terminal ? 1 : 0);
+    return {
+      ...record,
+      profile,
+      displayName: record.displayName ?? deriveAgentDisplayName(purpose, record.name ?? profile),
+      profileDescription: record.profileDescription ?? record.description ?? profile,
+      purpose,
+      resolvedModel: record.resolvedModel ?? 'unknown',
+      isolation: record.isolation ?? 'worktree',
+      name: record.name ?? profile,
+      description: record.description ?? record.profileDescription ?? profile,
+      producedEvidenceIds: record.producedEvidenceIds ?? [],
+      finishedAt: terminal ? (record.finishedAt ?? record.updatedAt) : record.finishedAt,
+      completionSequence,
+      completionDeliveredSequence:
+        record.completionDeliveredSequence ?? (hasCompletionSequence ? 0 : completionSequence),
+    };
   }
 
   private flush(): void {
@@ -88,6 +122,14 @@ export class AgentStore {
     this.flush();
   }
 
+  removeAgent(agentId: string): void {
+    this.state.agents = this.state.agents.filter((agent) => agent.id !== agentId);
+    this.state.evidence = this.state.evidence.filter(
+      (evidence) => evidence.sourceAgentId !== agentId,
+    );
+    this.flush();
+  }
+
   savePlan(plan: AgentPlanRecord): void {
     const index = this.state.plans.findIndex((candidate) => candidate.id === plan.id);
     if (index === -1) this.state.plans.push(structuredClone(plan));
@@ -112,11 +154,20 @@ export class AgentStore {
   markActiveInterrupted(): AgentRecord[] {
     const interrupted: AgentRecord[] = [];
     for (const agent of this.state.agents) {
-      if (!['queued', 'starting', 'running', 'waiting_input'].includes(agent.status)) continue;
+      if (
+        !['queued', 'starting', 'running', 'waiting_input', 'waiting_permission'].includes(
+          agent.status,
+        )
+      )
+        continue;
       agent.status = 'interrupted';
       agent.stopReason = 'process_exit';
+      // A recovered process has no live resolver, so do not expose stale
+      // permission UI that cannot be answered by an active child loop.
+      agent.pendingPermission = undefined;
       agent.updatedAt = Date.now();
       agent.finishedAt = agent.updatedAt;
+      agent.completionSequence = (agent.completionSequence ?? 0) + 1;
       interrupted.push(structuredClone(agent));
     }
     if (interrupted.length > 0) this.flush();

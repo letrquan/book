@@ -31,4 +31,15 @@ describe('createStreamParser', () => {
   it('validates input-specific required fields', () => {
     expect(parseStreamLineDetailed('{"type":"user"}').diagnostic?.code).toBe('invalid-shape');
   });
+
+  it.each([
+    { type: 'agent_status', agent: { agentId: 'a1' } },
+    { type: 'agent_activity', agentId: 'a1', activity: { id: 'activity' } },
+    { type: 'agent_text_delta', agentId: 'a1', text: 'delta' },
+    { type: 'agent_message', agentId: 'a1', message: { id: 'message' } },
+    { type: 'agent_permission', agentId: 'a1', request: { id: 'permission' } },
+    { type: 'agent_question', agentId: 'a1', request: { id: 'question' } },
+  ])('parses managed-agent event $type', (event) => {
+    expect(parseStreamLineDetailed(JSON.stringify(event))).toEqual({ event });
+  });
 });

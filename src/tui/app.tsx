@@ -19,6 +19,11 @@ import { PlanApprovalActions, PlanApprovalDetails } from './components/PlanAppro
 import { AskUserQuestionWizard } from './components/AskUserQuestionWizard.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
+import { useManagedAgents } from './hooks/useManagedAgents.js';
+import { useAgentCompletionDelivery } from './hooks/useAgentCompletionDelivery.js';
+import { SubagentPanel } from './components/SubagentPanel.js';
+import { SubagentDetail } from './components/SubagentDetail.js';
+import { projectManagedAgentTraces } from './managed-agent-transcript.js';
 import {
   ThemeContext,
   listCustomThemes,
@@ -49,6 +54,8 @@ import { buildModelOptions } from './model-options.js';
 import { createUiDebugLogger } from '../debug-log.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { getOrCreateAgentManager } from '../agents/manager.js';
+import { installAgentImports, previewAgentImport } from '../agents/importer.js';
+import { join } from 'path';
 import { selectExpandedToolId, selectLatestToolId } from './tool-traces.js';
 import {
   getTranscriptShortcutAction,
@@ -171,6 +178,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     sessionId,
     sessionName,
     send,
+    sendAgentCompletions,
     clear,
     startNewConversation,
     resumeConversation,
@@ -191,12 +199,28 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     setEffort,
     setMemoryAutoSave,
     refreshMemoryContext,
+    persistPermissionRule,
     turnDurationMs,
     retryPhase,
     retryAttempt,
     retryMax,
     retryCountdownMs,
   } = useAgent(config, session);
+
+  const managedAgentManager = useMemo(
+    () =>
+      getOrCreateAgentManager(
+        liveConfig,
+        createDefaultRegistry({ agents: true }).getDefinitions(),
+        {
+          runtime,
+          permissionMode: mode,
+          persistPermissionRule,
+        },
+      ),
+    [liveConfig, mode, persistPermissionRule, runtime],
+  );
+  const managedAgents = useManagedAgents(managedAgentManager);
 
   const [showTasks, setShowTasks] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -219,6 +243,8 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   const [isResolvingCommand, setIsResolvingCommand] = useState(false);
   const [draftRestore, setDraftRestore] = useState<{ key: number; value: string }>();
   const [followRequestKey, setFollowRequestKey] = useState(0);
+  const [detailTaskPickerOpen, setDetailTaskPickerOpen] = useState(false);
+  const [detailTaskPickerAgentId, setDetailTaskPickerAgentId] = useState<string>();
   const commandResolutionRef = useRef<AbortController | null>(null);
   const [currentTheme, setCurrentTheme] = useState<ResolvedTheme>(
     () =>
@@ -244,6 +270,29 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   useEffect(() => {
     return () => commandResolutionRef.current?.abort();
   }, []);
+
+  useEffect(() => {
+    setDetailTaskPickerOpen(false);
+    setDetailTaskPickerAgentId(undefined);
+    managedAgents.setSurface('main');
+    managedAgents.selectAgent(undefined);
+  }, [managedAgents.selectAgent, managedAgents.setSurface, sessionId]);
+
+  useAgentCompletionDelivery({
+    pending: managedAgents.pendingCompletions,
+    parentSessionId: sessionId,
+    blocked: Boolean(
+      isThinking ||
+      isCompacting ||
+      isRewinding ||
+      isResolvingCommand ||
+      pendingPermission ||
+      pendingPlanApproval ||
+      pendingUserQuestion,
+    ),
+    deliver: sendAgentCompletions,
+    acknowledge: managedAgents.acknowledgeCompletions,
+  });
 
   const [commands, setCommands] = useState(
     () => interactiveAssets?.commands ?? discoverCommands(config.workspace),
@@ -310,6 +359,21 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   // to the user reviewing a plan. Any animation repaint can snap scrollback.
   const motionDisabled = reducedMotion || Boolean(pendingPlanApproval || pendingUserQuestion);
   const screenReader = Boolean(config.accessibility?.screenReader);
+  const managedAgentUiEnabled = liveConfig.settings.agents.ui.enabled;
+  const childPermission = managedAgents.pendingPermissions.find(
+    (event) => event.type === 'agent_permission',
+  );
+  const childQuestion = managedAgents.pendingQuestions[0];
+  const managedAgentTraces = useMemo(
+    () => projectManagedAgentTraces(messages, managedAgents.records, managedAgents.activities),
+    [managedAgents.activities, managedAgents.records, messages],
+  );
+  const returnToMain = useCallback(() => {
+    setDetailTaskPickerOpen(false);
+    setDetailTaskPickerAgentId(undefined);
+    managedAgents.setSurface('main');
+    managedAgents.selectAgent(undefined);
+  }, [managedAgents.selectAgent, managedAgents.setSurface]);
 
   useDebugMount(uiLog, {
     workspace: config.workspace,
@@ -339,7 +403,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     // mutate surrounding UI state from this global handler.
     if (
       ownsModalInput(
-        pendingPermission,
+        pendingPermission ?? childPermission ?? childQuestion,
         pendingPlanApproval,
         showModelPicker,
         showSessionPicker,
@@ -377,6 +441,20 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
         setShowAllDetailedOutput(true);
         return;
       }
+    }
+
+    if (key.escape && detailTaskPickerOpen) {
+      setDetailTaskPickerOpen(false);
+      setDetailTaskPickerAgentId(undefined);
+      return;
+    }
+    if (key.escape && managedAgents.surface === 'detail') {
+      returnToMain();
+      return;
+    }
+    if (key.escape && managedAgents.surface === 'tasks') {
+      managedAgents.setSurface('main');
+      return;
     }
 
     // Escape aborts an in-flight stream when no prompt owns the keyboard.
@@ -490,6 +568,20 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   const handleSubmit = useCallback(
     async (value: string) => {
       setFollowRequestKey((key) => key + 1);
+      const selectedChild = managedAgents.selectedAgentId
+        ? managedAgents.records.get(managedAgents.selectedAgentId)
+        : undefined;
+      if (managedAgents.surface === 'detail' && !value.startsWith('/') && selectedChild) {
+        await managedAgents.send(value);
+        return;
+      }
+      if (managedAgents.surface === 'detail' && !value.startsWith('/') && !selectedChild) {
+        managedAgents.setSurface('main');
+        managedAgents.selectAgent(undefined);
+      }
+      if (managedAgents.surface === 'detail' && value.startsWith('/')) {
+        addLocalMessage('Session commands apply to the main conversation while viewing a child.');
+      }
       // Coarse slash-command dispatch trace (one event per submit).
       const parsedSlash = parseSlashInput(value);
       if (parsedSlash) {
@@ -653,56 +745,75 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
           return;
         }
         if (effect?.type === 'managed-agent') {
-          const manager = getOrCreateAgentManager(
-            liveConfig,
-            createDefaultRegistry({ agents: true }).getDefinitions(),
-            { runtime },
-          );
+          const manager = managedAgentManager;
           const reportError = (managedError: unknown) =>
             addLocalMessage(
               `✕ ${managedError instanceof Error ? managedError.message : String(managedError)}`,
             );
           if (effect.operation === 'list') {
-            void manager
-              .list()
-              .then((records) => {
+            managedAgents.setSurface('tasks');
+            void managedAgents.refresh().catch(reportError);
+          } else if (effect.operation === 'import') {
+            try {
+              const previews = previewAgentImport(effect.importPath!);
+              if (previews.length === 0) throw new Error('No Markdown agent definitions found.');
+              const report = previews
+                .map((preview) =>
+                  [
+                    `${preview.name}: ${preview.description}`,
+                    `tools: ${preview.tools.join(', ') || '(none)'}`,
+                    `model: ${preview.model ?? 'inherit'}`,
+                    ...preview.warnings.map((warning) => `warning: ${warning}`),
+                  ].join('\n'),
+                )
+                .join('\n\n');
+              if (!effect.confirmed) {
                 addLocalMessage(
-                  records.length === 0
-                    ? 'No managed agents for this repository.'
-                    : records
-                        .map(
-                          (record) =>
-                            `${record.id}  ${record.role}/${record.name}  ${record.status}  apply:${record.applicationStatus}`,
-                        )
-                        .join('\n'),
+                  `${report}\n\nRun /agents import --confirm ${effect.importPath} to install.`,
                 );
-              })
-              .catch(reportError);
+              } else {
+                const installed = installAgentImports(
+                  previews,
+                  join(config.workspace, '.book', 'agents'),
+                );
+                addLocalMessage(`${report}\n\nInstalled:\n${installed.join('\n')}`);
+                void managedAgents.refresh();
+              }
+            } catch (importError) {
+              reportError(importError);
+            }
           } else if (effect.operation === 'send') {
             void manager
               .send(effect.agentId!, effect.message ?? '')
-              .then((record) => addLocalMessage(JSON.stringify(record, null, 2)))
+              .then((record) => {
+                managedAgents.selectAgent(record.id);
+                managedAgents.setSurface('detail');
+              })
               .catch(reportError);
           } else if (effect.operation === 'stop') {
             void manager
               .stop(effect.agentId!)
-              .then((record) => addLocalMessage(JSON.stringify(record, null, 2)))
+              .then((record) => addLocalMessage(`Stopped ${record.displayName ?? record.name}.`))
               .catch(reportError);
           } else if (effect.operation === 'apply') {
             void manager
               .apply(effect.agentId!, effect.evidenceId)
-              .then((result) => addLocalMessage(JSON.stringify(result, null, 2)))
+              .then((result) =>
+                addLocalMessage(
+                  result.status === 'applied'
+                    ? `Applied validated candidate${result.commit ? ` (${result.commit})` : ''}.`
+                    : `Application ${result.status}${result.error ? `: ${result.error}` : '.'}`,
+                ),
+              )
               .catch(reportError);
           } else {
             void manager
               .get(effect.agentId!)
-              .then((record) =>
-                addLocalMessage(
-                  record
-                    ? JSON.stringify(record, null, 2)
-                    : `✕ Agent ${effect.agentId} was not found.`,
-                ),
-              )
+              .then((record) => {
+                if (!record) throw new Error(`Agent ${effect.agentId} was not found.`);
+                managedAgents.selectAgent(record.id);
+                managedAgents.setSurface('detail');
+              })
               .catch(reportError);
           }
           return;
@@ -790,8 +901,14 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
       redrawViewport,
       applyThemePreference,
       builtinCommandRegistry,
+      managedAgentManager,
+      managedAgents,
     ],
   );
+
+  const canSubmitWhileParentBusy = useCallback((value: string) => {
+    return parseSlashInput(value)?.name === 'tasks';
+  }, []);
 
   const handleGlobalShortcut = useCallback(
     (
@@ -901,7 +1018,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
           <TranscriptView
             key={sessionId}
             width={termWidth}
-            isActive={!pickerOwnsTranscript}
+            isActive={!pickerOwnsTranscript && managedAgents.surface !== 'tasks'}
             followRequestKey={followRequestKey}
             onToggleTool={toggleToolExpansion}
           >
@@ -911,30 +1028,44 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                   <Text color={theme.error}>✕ {error}</Text>
                 </Box>
               )}
-              <ChatPanel
-                messages={messages}
-                compactBoundaries={compactBoundaries}
-                streamingMessageId={streamingMessageId}
-                pendingPermission={pendingPermission}
-                transcriptMode={transcriptMode}
-                automaticToolCallId={expandedToolId}
-                toolExpansionOverrides={toolExpansionOverrides}
-                reducedMotion={motionDisabled}
-                screenReader={screenReader}
-                terminalWidth={termWidth}
-                terminalHeight={termHeight}
-                workspace={config.workspace}
-                model={liveConfig.modelSelection ?? liveConfig.model}
-                mode={mode}
-                commandCount={commands.length}
-                skillCount={skills.length}
-                retryPhase={retryPhase}
-                showAllToolOutput={showAllDetailedOutput}
-                showAllToolOutputIds={showAllToolOutputIds}
-                retryAttempt={retryAttempt}
-                retryMax={retryMax}
-                retryCountdownMs={retryCountdownMs}
-              />
+              {managedAgents.surface === 'detail' &&
+              managedAgents.selectedAgentId &&
+              managedAgents.records.get(managedAgents.selectedAgentId) ? (
+                <SubagentDetail
+                  record={managedAgents.records.get(managedAgents.selectedAgentId)!}
+                  liveText={managedAgents.liveText.get(managedAgents.selectedAgentId)}
+                  width={termWidth}
+                  height={termHeight}
+                  reducedMotion={motionDisabled}
+                  screenReader={screenReader}
+                />
+              ) : (
+                <ChatPanel
+                  messages={messages}
+                  managedAgentTraces={managedAgentTraces}
+                  compactBoundaries={compactBoundaries}
+                  streamingMessageId={streamingMessageId}
+                  pendingPermission={pendingPermission}
+                  transcriptMode={transcriptMode}
+                  automaticToolCallId={expandedToolId}
+                  toolExpansionOverrides={toolExpansionOverrides}
+                  reducedMotion={motionDisabled}
+                  screenReader={screenReader}
+                  terminalWidth={termWidth}
+                  terminalHeight={termHeight}
+                  workspace={config.workspace}
+                  model={liveConfig.modelSelection ?? liveConfig.model}
+                  mode={mode}
+                  commandCount={commands.length}
+                  skillCount={skills.length}
+                  retryPhase={retryPhase}
+                  showAllToolOutput={showAllDetailedOutput}
+                  showAllToolOutputIds={showAllToolOutputIds}
+                  retryAttempt={retryAttempt}
+                  retryMax={retryMax}
+                  retryCountdownMs={retryCountdownMs}
+                />
+              )}
               {showAgentPlan && <AgentTodoList todos={agentTodos} />}
               {showTasks && (
                 <TaskList tasks={tasks} onUpdateStatus={updateTaskStatus} onRemove={removeTask} />
@@ -972,6 +1103,16 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                       theme={theme}
                     />
                     <HelpRow label="/task <subject>" description="Add a task" theme={theme} />
+                    <HelpRow
+                      label="/tasks"
+                      description="Manage background subagents"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/agents"
+                      description="Show subagent configuration guidance"
+                      theme={theme}
+                    />
                     <HelpRow
                       label="/theme [dark|light|auto|name]"
                       description="Choose and save a color theme"
@@ -1231,7 +1372,16 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                       theme={theme}
                     />
                     <HelpRow label="Ctrl+C" description="Cancel current turn" theme={theme} />
-                    <HelpRow label="Ctrl+T" description="Toggle task list" theme={theme} />
+                    <HelpRow
+                      label="Ctrl+T"
+                      description="Toggle the main agent checklist (not background tasks)"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="/tasks"
+                      description="Focus background tasks; ↑↓ select, Enter open, x stop"
+                      theme={theme}
+                    />
                     <HelpRow
                       label="Ctrl+O"
                       description="Toggle detailed transcript"
@@ -1284,6 +1434,22 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                 onResolve={resolvePermission}
                 screenReader={screenReader}
               />
+            ) : childPermission?.type === 'agent_permission' ? (
+              <Box flexDirection="column">
+                <Text color={theme.warning}>
+                  ? {childPermission.request.displayName} (
+                  {managedAgents.records.get(childPermission.agentId)?.profile ?? 'agent'}) requests{' '}
+                  {childPermission.request.toolName}
+                </Text>
+                <PermissionButtons
+                  key={childPermission.request.id}
+                  toolCall={childPermission.request.toolCall}
+                  onResolve={(result) =>
+                    void managedAgents.resolvePermission(childPermission.request.id, result)
+                  }
+                  screenReader={screenReader}
+                />
+              </Box>
             ) : null}
             {pendingPlanApproval ? (
               <PlanApprovalActions
@@ -1300,6 +1466,17 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                 queueLength={pendingUserQuestionCount}
                 terminalWidth={termWidth}
                 onResolve={resolveUserQuestion}
+                screenReader={screenReader}
+              />
+            ) : childQuestion ? (
+              <AskUserQuestionWizard
+                key={childQuestion.request.id}
+                request={childQuestion.request}
+                queueLength={managedAgents.pendingQuestions.length}
+                terminalWidth={termWidth}
+                onResolve={(response) =>
+                  void managedAgents.resolveQuestion(childQuestion.agentId, response)
+                }
                 screenReader={screenReader}
               />
             ) : null}
@@ -1461,13 +1638,30 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
             <InputBar
               key={sessionId}
               onSubmit={handleSubmit}
-              disabled={isThinking || isCompacting || isRewinding || isResolvingCommand}
+              disabled={
+                managedAgents.surface !== 'detail' &&
+                (isThinking || isCompacting || isRewinding || isResolvingCommand)
+              }
               mode={mode}
               onCycleMode={cycleMode}
               onInterrupt={interrupt}
+              canSubmitWhileDisabled={canSubmitWhileParentBusy}
+              onFocusBackgroundTask={() => {
+                if (managedAgents.surface === 'detail') {
+                  if (!managedAgentUiEnabled) return false;
+                  setDetailTaskPickerAgentId(undefined);
+                  setDetailTaskPickerOpen(true);
+                  return true;
+                }
+                const firstAgent = managedAgents.summaries[0];
+                if (!managedAgentUiEnabled || !firstAgent) return false;
+                managedAgents.selectAgent(firstAgent.agentId);
+                managedAgents.setSurface('tasks');
+                return true;
+              }}
               inputSuppressed={
                 ownsModalInput(
-                  pendingPermission,
+                  pendingPermission ?? childPermission ?? childQuestion,
                   pendingPlanApproval,
                   showModelPicker,
                   showSessionPicker,
@@ -1475,7 +1669,10 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                   showEffortPicker,
                   showThemePicker,
                   showRewindPicker,
-                ) || transcriptMode === 'detailed'
+                ) ||
+                transcriptMode === 'detailed' ||
+                managedAgents.surface === 'tasks' ||
+                detailTaskPickerOpen
               }
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
@@ -1488,6 +1685,49 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
             />
           </Box>
 
+          {managedAgentUiEnabled &&
+          (managedAgents.surface === 'main' || managedAgents.surface === 'tasks') ? (
+            <SubagentPanel
+              agents={managedAgents.summaries}
+              selectedAgentId={managedAgents.selectedAgentId}
+              isActive={managedAgents.surface === 'tasks'}
+              onSelect={managedAgents.selectAgent}
+              onOpen={(agentId) => {
+                managedAgents.selectAgent(agentId);
+                managedAgents.setSurface('detail');
+              }}
+              onClose={() => managedAgents.setSurface('main')}
+              onCancel={() => managedAgents.setSurface('main')}
+              onStopOrDismiss={(agentId) => void managedAgents.stopOrDismiss(agentId)}
+              width={termWidth}
+              reducedMotion={motionDisabled}
+              screenReader={screenReader}
+            />
+          ) : null}
+
+          {managedAgentUiEnabled && managedAgents.surface === 'detail' && detailTaskPickerOpen ? (
+            <SubagentPanel
+              agents={managedAgents.summaries}
+              selectedAgentId={detailTaskPickerAgentId}
+              isActive
+              onSelect={setDetailTaskPickerAgentId}
+              onOpen={(agentId) => {
+                setDetailTaskPickerOpen(false);
+                setDetailTaskPickerAgentId(undefined);
+                managedAgents.selectAgent(agentId);
+              }}
+              onClose={returnToMain}
+              onCancel={() => {
+                setDetailTaskPickerOpen(false);
+                setDetailTaskPickerAgentId(undefined);
+              }}
+              onStopOrDismiss={(agentId) => void managedAgents.stopOrDismiss(agentId)}
+              width={termWidth}
+              reducedMotion={motionDisabled}
+              screenReader={screenReader}
+            />
+          ) : null}
+
           {/* Status line — stable footer */}
           <Box flexShrink={0} width={termWidth}>
             <StatusLine
@@ -1497,6 +1737,23 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
               mode={mode}
               taskCount={tasks.length}
               activeTaskCount={tasks.filter((t) => t.status === 'in_progress').length}
+              agentCount={managedAgentUiEnabled ? managedAgents.summaries.length : 0}
+              activeAgentCount={
+                managedAgentUiEnabled
+                  ? managedAgents.summaries.filter(
+                      (agent) =>
+                        !['completed', 'failed', 'stopped', 'interrupted'].includes(agent.status),
+                    ).length
+                  : 0
+              }
+              needsInputAgentCount={
+                managedAgentUiEnabled
+                  ? managedAgents.summaries.filter(
+                      (agent) =>
+                        agent.status === 'waiting_input' || agent.status === 'waiting_permission',
+                    ).length
+                  : 0
+              }
               terminalWidth={termWidth}
               compact={compactStatus}
               reducedMotion={motionDisabled}

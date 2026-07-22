@@ -3,10 +3,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentLoopCallbacks } from '../types/providers.js';
+import type { AgentConfig } from '../types/runtime.js';
 import type { Message } from '../types/messages.js';
-import { defaultConfig } from '../test/fixtures.js';
+import { defaultConfig, toolResult } from '../test/fixtures.js';
 import { AgentManager } from './manager.js';
-import type { AgentSnapshot } from './types.js';
+import type { AgentRuntimeEvent, AgentSnapshot } from './types.js';
 
 const tempRoots: string[] = [];
 
@@ -173,6 +174,10 @@ describe('AgentManager lifecycle', () => {
     const candidate = (await manager.listEvidence()).find(
       (item) => item.kind === 'patch_candidate',
     )!;
+    expect((await manager.get(patcher.id))?.producedEvidenceIds).toContain(candidate.id);
+    expect((await manager.listPendingCompletions())[0]?.completion.evidenceIds).toContain(
+      candidate.id,
+    );
     const validator = await manager.spawn({
       agent: 'validator',
       prompt: 'validate',
@@ -215,7 +220,7 @@ describe('AgentManager lifecycle', () => {
         throw new Error('stopped agents must not enter the model loop');
       },
     });
-    const record = await manager.spawn({ agent: 'explorer', prompt: 'wait' });
+    const record = await manager.spawn({ agent: 'patcher', prompt: 'wait' });
     for (let attempt = 0; attempt < 50 && !releaseWorktree; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
@@ -262,6 +267,7 @@ describe('AgentManager lifecycle', () => {
         ];
       },
     });
+    manager.setInteractivePermissions(true);
     const record = await manager.spawn({ agent: 'explorer', prompt: 'ask' });
     for (let attempt = 0; attempt < 50; attempt++) {
       if ((await manager.get(record.id))?.status === 'waiting_input') break;
@@ -303,5 +309,366 @@ describe('AgentManager lifecycle', () => {
     expect(result.status).toBe('completed');
     expect(result.stopReason).toBe('max_turns');
     boundedManager.dispose();
+  });
+
+  it('runs explorer without Git, snapshots, or worktrees', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const createSnapshot = vi.fn(async () => snapshot(root));
+    const createWorktree = vi.fn(async () => ({ path: root, branch: 'unused' }));
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      createSnapshot,
+      createWorktree,
+      runLoop: async (_config, _registry, prompt, history, callbacks) => {
+        callbacks.onDone();
+        return [
+          ...history,
+          { id: 'u', role: 'user', content: prompt, includeInContext: true, timestamp: 1 },
+          { id: 'a', role: 'assistant', content: 'found', includeInContext: true, timestamp: 2 },
+        ];
+      },
+    });
+
+    const explorer = await manager.spawn({ agent: 'explorer', prompt: 'find symbol' });
+    expect((await manager.wait(explorer.id)).status).toBe('completed');
+    expect(createSnapshot).not.toHaveBeenCalled();
+    expect(createWorktree).not.toHaveBeenCalled();
+    await expect(manager.spawn({ agent: 'patcher', prompt: 'edit symbol' })).rejects.toThrow(
+      'Git worktree isolation',
+    );
+    manager.dispose();
+  });
+
+  it('supports multiple independent event subscribers', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history) => history,
+    });
+    const first = vi.fn();
+    const second = vi.fn();
+    const unsubscribe = manager.subscribe(first);
+    manager.subscribe(second);
+    await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+    expect(first).toHaveBeenCalled();
+    expect(second).toHaveBeenCalled();
+    unsubscribe();
+    await manager.spawn({ agent: 'explorer', prompt: 'inspect again' });
+    expect(second.mock.calls.length).toBeGreaterThan(first.mock.calls.length);
+    manager.dispose();
+  });
+
+  it('resolves permission requests for only the requesting child', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    config.settings.agents.maxConcurrent = 2;
+    const decisions = new Map<string, string>();
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, prompt, history, callbacks) => {
+        const decision = await callbacks.onPermissionRequired({
+          id: `call-${prompt}`,
+          name: 'Read',
+          arguments: { file_path: `${prompt}.txt` },
+        });
+        decisions.set(prompt, decision);
+        return history;
+      },
+    });
+    manager.setInteractivePermissions(true);
+    const [first, second] = await Promise.all([
+      manager.spawn({ agent: 'explorer', prompt: 'first' }),
+      manager.spawn({ agent: 'explorer', prompt: 'second' }),
+    ]);
+
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const records = await Promise.all([manager.get(first.id), manager.get(second.id)]);
+      if (records.every((record) => record?.pendingPermission)) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const firstPending = (await manager.get(first.id))?.pendingPermission;
+    const secondPending = (await manager.get(second.id))?.pendingPermission;
+    expect(firstPending).toBeDefined();
+    expect(secondPending).toBeDefined();
+
+    await manager.resolvePermission(first.id, firstPending!.id, 'allow');
+    expect((await manager.wait(first.id, 1000)).status).toBe('completed');
+    expect(decisions.get('first')).toBe('allow');
+    expect((await manager.get(second.id))?.status).toBe('waiting_permission');
+    expect(decisions.has('second')).toBe(false);
+
+    await manager.resolvePermission(second.id, secondPending!.id, 'deny');
+    expect((await manager.wait(second.id, 1000)).status).toBe('completed');
+    expect(decisions.get('second')).toBe('deny');
+    manager.dispose();
+  });
+
+  it('persists a child Always allow rule using the tool primary argument', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const persistPermissionRule = vi.fn();
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      persistPermissionRule,
+      runLoop: async (_config, _registry, _prompt, history, callbacks) => {
+        const call = { id: 'read-call', name: 'Read', arguments: { filePath: 'src/a.ts' } };
+        await callbacks.onPermissionRequired(call);
+        return history;
+      },
+    });
+    manager.setInteractivePermissions(true);
+    const record = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+    await vi.waitFor(async () =>
+      expect((await manager.get(record.id))?.pendingPermission).toBeDefined(),
+    );
+    const request = (await manager.get(record.id))!.pendingPermission!;
+    await manager.resolvePermission(record.id, request.id, 'always');
+    expect(persistPermissionRule).toHaveBeenCalledWith('Read(src/a.ts)');
+    await manager.stop(record.id);
+    manager.dispose();
+  });
+
+  it('denies noninteractive child permissions without waiting for a host', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const decision = vi.fn();
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history, callbacks) => {
+        decision(
+          await callbacks.onPermissionRequired({
+            id: 'call',
+            name: 'Read',
+            arguments: { file_path: 'README.md' },
+          }),
+        );
+        return history;
+      },
+    });
+
+    const record = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+    expect((await manager.wait(record.id, 1000)).status).toBe('completed');
+    expect(decision).toHaveBeenCalledWith('deny');
+    expect((await manager.get(record.id))?.pendingPermission).toBeUndefined();
+    manager.dispose();
+  });
+
+  it('cancels noninteractive child questions with recovery guidance', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    let responseMessage = '';
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history, callbacks) => {
+        const response = await callbacks.onUserQuestionRequired!(
+          {
+            id: 'question',
+            source: { kind: 'subagent', agentPath: ['explorer'] },
+            questions: [
+              {
+                question: 'Continue?',
+                header: 'Continue',
+                options: [{ label: 'Yes', description: 'Continue' }],
+                multiSelect: false,
+              },
+            ],
+          },
+          {},
+        );
+        responseMessage = response.action === 'cancel' ? (response.message ?? '') : '';
+        return history;
+      },
+    });
+
+    const record = await manager.spawn({ agent: 'explorer', prompt: 'ask' });
+    expect((await manager.wait(record.id, 1000)).status).toBe('completed');
+    expect(responseMessage).toContain('AgentSend');
+    manager.dispose();
+  });
+
+  it('coalesces ordered text deltas and persists complete child messages', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const message: Message = {
+      id: 'assistant-complete',
+      role: 'assistant',
+      content: 'hello',
+      includeInContext: true,
+      timestamp: 2,
+    };
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history, callbacks) => {
+        callbacks.onToolCall({ id: 'read-call', name: 'Read', arguments: { file_path: 'a.ts' } });
+        callbacks.onToolResult(toolResult('read-call', 'ok'));
+        callbacks.onText('hel');
+        callbacks.onText('lo');
+        callbacks.onAssistantMessageComplete?.(message);
+        return [...history, message];
+      },
+    });
+    const events: string[] = [];
+    let completionEvent: Extract<AgentRuntimeEvent, { type: 'agent_completion' }> | undefined;
+    const deltas: string[] = [];
+    const activityStatuses: string[] = [];
+    let liveToolCall: Extract<
+      AgentRuntimeEvent,
+      { type: 'agent_activity' }
+    >['activity']['toolCall'];
+    let liveToolResult: Extract<
+      AgentRuntimeEvent,
+      { type: 'agent_activity' }
+    >['activity']['result'];
+    manager.subscribe((event) => {
+      events.push(event.type);
+      if (event.type === 'agent_completion') completionEvent = event;
+      if (event.type === 'agent_text_delta') deltas.push(event.text);
+      if (event.type === 'agent_activity') {
+        activityStatuses.push(event.activity.status);
+        liveToolCall ??= event.activity.toolCall;
+        liveToolResult ??= event.activity.result;
+      }
+    });
+
+    const record = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+    const completed = await manager.wait(record.id, 1000);
+    expect(deltas).toEqual(['hello']);
+    expect(events.indexOf('agent_text_delta')).toBeLessThan(events.indexOf('agent_message'));
+    expect(events.indexOf('agent_message')).toBeLessThan(events.lastIndexOf('agent_result'));
+    expect(events.indexOf('agent_completion')).toBeLessThan(events.lastIndexOf('agent_result'));
+    expect(completionEvent?.notification.parentSessionId).toBeUndefined();
+    expect(completionEvent?.notification.completion).not.toHaveProperty('transcript');
+    expect(completionEvent?.notification.completion).not.toHaveProperty('prompt');
+    expect(completionEvent?.notification.completion).not.toHaveProperty('worktree');
+    expect(completionEvent?.notification.completion).not.toHaveProperty('pendingMessages');
+    const pending = await manager.listPendingCompletions();
+    expect(pending).toHaveLength(1);
+    await manager.acknowledgeCompletion(pending[0].deliveryId);
+    expect(await manager.listPendingCompletions()).toEqual([]);
+    expect(activityStatuses).toEqual(['running', 'completed']);
+    expect(liveToolCall).toEqual({
+      id: 'read-call',
+      name: 'Read',
+      arguments: { file_path: 'a.ts' },
+    });
+    expect(liveToolResult?.content).toBe('ok');
+    expect(liveToolResult).not.toHaveProperty('data');
+    expect(completed.transcript).toContainEqual(message);
+    expect((await manager.get(record.id))?.transcript).toContainEqual(message);
+    manager.dispose();
+  });
+
+  it('projects evidence published by the completed child instead of supplied evidence', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history) => {
+        await gate;
+        return history;
+      },
+    });
+    const record = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'inspect',
+      evidenceIds: ['supplied-evidence'],
+    });
+    await vi.waitFor(async () => expect((await manager.get(record.id))?.status).toBe('running'));
+    const published = await manager.publishEvidence(record.id, {
+      kind: 'finding',
+      summary: 'Found it',
+    });
+    let idle = false;
+    const idlePromise = manager.waitForIdle().then(() => {
+      idle = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(idle).toBe(false);
+    release();
+    await idlePromise;
+    expect((await manager.get(record.id))?.status).toBe('completed');
+
+    const [notification] = await manager.listPendingCompletions();
+    expect(notification.completion.evidenceIds).toEqual([published.id]);
+    expect(notification.completion.evidenceIds).not.toContain('supplied-evidence');
+    manager.dispose();
+  });
+
+  it('applies profile model changes only to newly spawned runs', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    config.settings.agents.profiles.explorer = { model: 'gateway/first' };
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history) => history,
+    });
+    const first = await manager.spawn({ agent: 'explorer', prompt: 'first' });
+    config.settings.agents.profiles.explorer = { model: 'gateway/second' };
+    manager.updateConfig(config);
+    const second = await manager.spawn({ agent: 'explorer', prompt: 'second' });
+
+    expect((await manager.get(first.id))?.resolvedModel).toBe('gateway/first');
+    expect(second.resolvedModel).toBe('gateway/second');
+    manager.dispose();
+  });
+
+  it('applies the resolved profile effort to the child model loop', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root, effort: 'high', effortExplicit: false });
+    config.settings.agents.persist = false;
+    config.settings.agents.maxConcurrent = 1;
+    config.settings.agents.profiles.explorer = { effort: 'low' };
+    let childConfig: AgentConfig | undefined;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (nextConfig, _registry, prompt, history) => {
+        if (prompt === 'blocker') await gate;
+        else childConfig = nextConfig;
+        return history;
+      },
+    });
+
+    const blocker = await manager.spawn({ agent: 'explorer', prompt: 'blocker' });
+    await vi.waitFor(async () => expect((await manager.get(blocker.id))?.status).toBe('running'));
+    const record = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+    expect(record.effort).toBe('low');
+    config.settings.agents.profiles.explorer = { effort: 'high' };
+    manager.updateConfig(config);
+    release();
+    await manager.wait(blocker.id, 1000);
+    await manager.wait(record.id, 1000);
+
+    expect(childConfig!.effort).toBe('low');
+    expect(childConfig!.effortExplicit).toBe(true);
+    manager.dispose();
   });
 });

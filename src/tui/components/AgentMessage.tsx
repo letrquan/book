@@ -17,11 +17,14 @@ import {
   type NestedToolChildren,
 } from '../tool-traces.js';
 import { shouldExpandTool, type TranscriptMode } from '../tool-presentation.js';
+import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
+import { ManagedAgentActivityBlock } from './ManagedAgentActivityBlock.js';
 
 const renderLog = createRenderDebugLogger('tui:agentmsg');
 
 interface AgentMessageProps {
   message: Message;
+  managedAgentTraces?: ReadonlyMap<string, ManagedAgentTrace>;
   isStreaming: boolean;
   pendingPermission?: PendingPermissionRequest | null;
   expandedToolCallId?: string | null;
@@ -265,6 +268,7 @@ function ThinkBlock({
  */
 export function AgentMessageInner({
   message,
+  managedAgentTraces,
   isStreaming,
   pendingPermission,
   expandedToolCallId,
@@ -401,28 +405,38 @@ export function AgentMessageInner({
         const tc = invocation.call;
         const result = invocation.result;
         const isPending = pendingPermission?.toolCall.id === tc.id;
+        const managedAgentTrace = managedAgentTraces?.get(tc.id);
         return (
           <Box key={tc.id || `tool-${index}`} flexDirection="column" marginTop={marginTop}>
-            <ToolCallBlock
-              toolId={tc.id}
-              name={tc.name}
-              args={tc.arguments}
-              result={result}
-              isExpanded={shouldExpandTool({
-                mode: transcriptMode,
-                toolId: tc.id,
-                automaticToolId: selectedAutomaticToolId,
-                expansionOverrides: toolExpansionOverrides,
-                screenReader,
-              })}
-              isPending={isPending}
-              nestedActivityCount={countNestedToolInvocations(childrenByParent, tc.id)}
-              reducedMotion={reducedMotion}
-              screenReader={screenReader}
-              showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(tc.id)}
-              terminalWidth={terminalWidth}
-            />
-            {childrenByParent.has(tc.id) ? (
+            {managedAgentTrace ? (
+              <ManagedAgentActivityBlock
+                trace={managedAgentTrace}
+                reducedMotion={reducedMotion}
+                screenReader={screenReader}
+                terminalWidth={terminalWidth}
+              />
+            ) : (
+              <ToolCallBlock
+                toolId={tc.id}
+                name={tc.name}
+                args={tc.arguments}
+                result={result}
+                isExpanded={shouldExpandTool({
+                  mode: transcriptMode,
+                  toolId: tc.id,
+                  automaticToolId: selectedAutomaticToolId,
+                  expansionOverrides: toolExpansionOverrides,
+                  screenReader,
+                })}
+                isPending={isPending}
+                nestedActivityCount={countNestedToolInvocations(childrenByParent, tc.id)}
+                reducedMotion={reducedMotion}
+                screenReader={screenReader}
+                showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(tc.id)}
+                terminalWidth={terminalWidth}
+              />
+            )}
+            {!managedAgentTrace && childrenByParent.has(tc.id) ? (
               <NestedToolRows
                 childrenByParent={childrenByParent}
                 parentTraceId={tc.id}
@@ -456,6 +470,7 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
   // Fast path: same references for the most common props.
   if (
     prev.isStreaming === next.isStreaming &&
+    prev.managedAgentTraces === next.managedAgentTraces &&
     prev.expandedToolCallId === next.expandedToolCallId &&
     prev.transcriptMode === next.transcriptMode &&
     prev.automaticToolCallId === next.automaticToolCallId &&

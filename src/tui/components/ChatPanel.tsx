@@ -18,6 +18,8 @@ import { useDensity } from '../density.js';
 import { mergeAssistantMessages } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
 import type { TranscriptMode } from '../tool-presentation.js';
+import { AgentNotificationMessage } from './AgentNotificationMessage.js';
+import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
@@ -47,6 +49,7 @@ function ScreenReaderRoleLabel({
 
 interface ChatPanelProps {
   messages: Message[];
+  managedAgentTraces?: ReadonlyMap<string, ManagedAgentTrace>;
   compactBoundaries?: CompactBoundary[];
   streamingMessageId?: string | null;
   pendingPermission?: PendingPermissionRequest | null;
@@ -82,6 +85,7 @@ interface ChatPanelProps {
 /** Dynamically renders transcript content. TranscriptView owns clipping and navigation. */
 export function ChatPanel({
   messages,
+  managedAgentTraces,
   compactBoundaries = [],
   streamingMessageId,
   pendingPermission,
@@ -145,6 +149,17 @@ export function ChatPanel({
         }
         const message = entry;
         const previous = timeline[index - 1];
+        if (message.kind === 'agent-notification') {
+          return (
+            <Box
+              key={message.id}
+              flexDirection="column"
+              marginTop={index > 0 && density !== 'tight' ? 1 : 0}
+            >
+              <AgentNotificationMessage message={message} screenReader={screenReader} />
+            </Box>
+          );
+        }
         if (message.role === 'user') {
           return (
             <Box
@@ -182,6 +197,7 @@ export function ChatPanel({
             ) : null}
             <AgentMessage
               message={message}
+              managedAgentTraces={managedAgentTraces}
               isStreaming={isStreaming}
               pendingPermission={pendingPermission}
               expandedToolCallId={selectedToolCallId}

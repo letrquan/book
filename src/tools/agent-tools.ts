@@ -2,16 +2,55 @@ import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js'
 import { getOrCreateAgentManager } from '../agents/manager.js';
 import type {
   AgentTopology,
+  AgentSummary,
   EvidenceKind,
   EvidenceReference,
   IssueQuality,
 } from '../agents/types.js';
 import { toolFailure, toolSuccess } from './result.js';
+import { projectAgentResult, projectAgentSummary } from '../agents/projections.js';
 
-function ok(output: unknown): ToolResult {
-  return toolSuccess(typeof output === 'string' ? output : JSON.stringify(output, null, 2), {
+function ok(
+  output: unknown,
+  presentation?: { summary: string; target?: string; metadata?: string[] },
+): ToolResult {
+  const content = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
+  return toolSuccess(content, {
     data: output,
+    presentation: presentation
+      ? {
+          kind: 'agent',
+          summary: presentation.summary,
+          target: presentation.target,
+          metadata: presentation.metadata,
+          details: content,
+        }
+      : undefined,
   });
+}
+
+function compactText(value: string | undefined, fallback: string): string {
+  const text = value?.split(/\r?\n/, 1)[0]?.trim();
+  if (!text) return fallback;
+  return text.length > 96 ? `${text.slice(0, 93).trimEnd()}...` : text;
+}
+
+export function agentStatusPresentation(agent: AgentSummary, action?: string) {
+  const terminal = ['completed', 'failed', 'stopped', 'interrupted'].includes(agent.status);
+  const status = agent.status.replace('_', ' ');
+  const detail =
+    agent.status === 'completed'
+      ? compactText(agent.summary, 'Completed')
+      : agent.status === 'failed'
+        ? compactText(agent.error, 'Failed')
+        : terminal
+          ? status
+          : compactText(agent.currentActivity?.label, status);
+  return {
+    summary: action ? `${action} ${agent.displayName}` : `${agent.displayName}: ${detail}`,
+    target: agent.profile,
+    metadata: action ? [status] : [agent.resolvedModel],
+  };
 }
 
 function fail(error: unknown): ToolResult {
@@ -26,6 +65,7 @@ function manager(ctx: ToolContext) {
     eventSink: ctx.onAgentEvent,
     hookEventSink: ctx.onHookEvent,
     runtime: ctx.runtime,
+    permissionMode: ctx.currentMode,
   });
 }
 
@@ -50,16 +90,18 @@ async function agentPlan(args: Record<string, unknown>, ctx: ToolContext): Promi
       throw new Error('topology is invalid.');
     }
     const budget = typeof args.agentBudget === 'number' ? args.agentBudget : 1;
-    return ok(
-      await manager(ctx).createPlan({
-        taskShape,
-        rationale,
-        issueQuality,
-        topology,
-        agentBudget: budget,
-        parentSessionId: ctx.parentSessionId,
-      }),
-    );
+    const plan = await manager(ctx).createPlan({
+      taskShape,
+      rationale,
+      issueQuality,
+      topology,
+      agentBudget: budget,
+      parentSessionId: ctx.parentSessionId,
+    });
+    return ok(plan, {
+      summary: `Planned ${plan.topology.replaceAll('_', ' ')} delegation`,
+      metadata: [`budget ${plan.agentBudget}`],
+    });
   } catch (error) {
     return fail(error);
   }
@@ -73,14 +115,17 @@ async function agentSpawn(args: Record<string, unknown>, ctx: ToolContext): Prom
     if (!agent || !prompt) throw new Error('agent and prompt are required.');
     const record = await manager(ctx).spawn({
       agent,
+      description: typeof args.description === 'string' ? args.description.trim() : undefined,
       prompt,
+      model: typeof args.model === 'string' ? args.model.trim() : undefined,
       planId: typeof args.planId === 'string' ? args.planId : undefined,
       evidenceIds: Array.isArray(args.evidenceIds)
         ? args.evidenceIds.filter((value): value is string => typeof value === 'string')
         : undefined,
       parentSessionId: ctx.parentSessionId,
     });
-    return ok({ agentId: record.id, status: record.status, role: record.role });
+    const summary = projectAgentSummary(record);
+    return ok(summary, agentStatusPresentation(summary, 'Spawned'));
   } catch (error) {
     return fail(error);
   }
@@ -89,7 +134,10 @@ async function agentSpawn(args: Record<string, unknown>, ctx: ToolContext): Prom
 async function agentList(_args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   try {
     requireRoot(ctx);
-    return ok(await manager(ctx).list());
+    const agents = (await manager(ctx).list()).map(projectAgentSummary);
+    return ok(agents, {
+      summary: `Listed ${agents.length} managed ${agents.length === 1 ? 'agent' : 'agents'}`,
+    });
   } catch (error) {
     return fail(error);
   }
@@ -101,7 +149,8 @@ async function agentGet(args: Record<string, unknown>, ctx: ToolContext): Promis
     const id = typeof args.agentId === 'string' ? args.agentId : '';
     const record = await manager(ctx).get(id);
     if (!record) throw new Error(`Agent ${id} was not found.`);
-    return ok(record);
+    const result = projectAgentResult(record);
+    return ok(result, agentStatusPresentation(result));
   } catch (error) {
     return fail(error);
   }
@@ -110,7 +159,7 @@ async function agentGet(args: Record<string, unknown>, ctx: ToolContext): Promis
 async function agentSend(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   try {
     requireRoot(ctx);
-    return ok(
+    const summary = projectAgentSummary(
       await manager(ctx).send(
         typeof args.agentId === 'string' ? args.agentId : '',
         typeof args.message === 'string' ? args.message : '',
@@ -119,6 +168,7 @@ async function agentSend(args: Record<string, unknown>, ctx: ToolContext): Promi
           : [],
       ),
     );
+    return ok(summary, agentStatusPresentation(summary, 'Sent follow-up to'));
   } catch (error) {
     return fail(error);
   }
@@ -127,12 +177,16 @@ async function agentSend(args: Record<string, unknown>, ctx: ToolContext): Promi
 async function agentWait(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   try {
     requireRoot(ctx);
-    return ok(
-      await manager(ctx).wait(
-        typeof args.agentId === 'string' ? args.agentId : '',
-        typeof args.timeoutMs === 'number' ? args.timeoutMs : 0,
-      ),
+    const managed = manager(ctx);
+    const waited = await managed.wait(
+      typeof args.agentId === 'string' ? args.agentId : '',
+      typeof args.timeoutMs === 'number' ? args.timeoutMs : 0,
     );
+    if (['completed', 'failed', 'stopped', 'interrupted'].includes(waited.status)) {
+      await managed.acknowledgeCompletion(`${waited.id}:${waited.completionSequence ?? 0}`);
+    }
+    const result = projectAgentResult(waited);
+    return ok(result, agentStatusPresentation(result));
   } catch (error) {
     return fail(error);
   }
@@ -141,12 +195,13 @@ async function agentWait(args: Record<string, unknown>, ctx: ToolContext): Promi
 async function agentStop(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   try {
     requireRoot(ctx);
-    return ok(
+    const summary = projectAgentSummary(
       await manager(ctx).stop(
         typeof args.agentId === 'string' ? args.agentId : '',
         typeof args.reason === 'string' ? args.reason : 'requested',
       ),
     );
+    return ok(summary, agentStatusPresentation(summary, 'Stopped'));
   } catch (error) {
     return fail(error);
   }
@@ -265,16 +320,21 @@ export const agentLifecycleTools: ToolDefinition[] = [
   {
     name: 'AgentSpawn',
     description:
-      'Queue an isolated managed agent and return immediately. Use AgentWait or AgentGet to collect results.',
+      'Queue an isolated managed agent and return immediately. Its compact result is delivered automatically; use AgentWait only when an explicit synchronization barrier is needed.',
     parameters: {
       type: 'object',
       properties: {
         agent: { type: 'string' },
+        description: {
+          type: 'string',
+          description: 'Concise 3-6 word purpose name for this run',
+        },
         prompt: { type: 'string' },
+        model: { type: 'string' },
         planId: { type: 'string' },
         evidenceIds: { type: 'array', items: { type: 'string' } },
       },
-      required: ['agent', 'prompt'],
+      required: ['agent', 'description', 'prompt'],
     },
     execute: agentSpawn,
   },
@@ -287,7 +347,7 @@ export const agentLifecycleTools: ToolDefinition[] = [
   {
     name: 'AgentGet',
     description:
-      'Inspect a managed agent, including transcript, evidence references, and patch state.',
+      'Inspect compact managed-agent status or completion metadata. Child transcripts remain host-only.',
     parameters: {
       type: 'object',
       properties: { agentId: agentIdParameter },
@@ -312,7 +372,8 @@ export const agentLifecycleTools: ToolDefinition[] = [
   },
   {
     name: 'AgentWait',
-    description: 'Wait for a managed agent to finish or until timeoutMs elapses.',
+    description:
+      'Wait for a managed agent to finish or until timeoutMs elapses. Completion delivery is automatic; use this only as an explicit synchronization barrier.',
     parameters: {
       type: 'object',
       properties: { agentId: agentIdParameter, timeoutMs: { type: 'number', minimum: 0 } },
