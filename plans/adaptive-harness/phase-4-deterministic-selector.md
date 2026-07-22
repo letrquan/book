@@ -58,6 +58,10 @@ interface PolicyInput {
 
 Every feature needs provenance, freshness, and a default. Features without reliable derivation stay `unknown`; they should not be guessed by the policy.
 
+Classify the original user text and trusted slash-command metadata before `@file` expansion or shell
+substitution. Repository/tool-derived context enters as separately attributed untrusted features and
+cannot be mistaken for current explicit intent.
+
 ##### 4.2 Implement deterministic task classification
 
 Initial classification may combine:
@@ -97,6 +101,11 @@ Rules:
 - old evidence decays or becomes stale;
 - tool, runtime, environment, context-capability, or evaluator changes invalidate incompatible samples.
 
+Partition evidence by workflow, task class/risk/horizon, corpus/evaluator version, and existing
+managed-agent mode. Historical success rates are selection-confounded unless they came from a
+randomized/control exposure or a valid replay; observational rates may diagnose but cannot by
+themselves justify a stronger policy.
+
 ##### 4.4 Derive project evidence views
 
 Use deterministic facts:
@@ -122,6 +131,10 @@ Create stable redacted identities for:
 - evaluator and verifier versions.
 
 Use these fingerprints primarily to accept or reject evidence compatibility. Do not let incidental machine properties become a hidden workflow preference. If compatibility cannot be established, lower confidence and fall back to `minimal`.
+
+Use canonical structured inputs for component digests and retain component descriptors beside the
+aggregate identity. Provider aliases or proxies that do not expose an exact resolved model remain
+`unknown` rather than being treated as the requested model version.
 
 ##### 4.6 Implement scoped user-signal resolution
 
@@ -153,6 +166,10 @@ manual override -> selected fixed workflow
 ```
 
 Each rule returns an explanation with the evidence IDs it used. Avoid rules whose only effect is adding prompts without a measured failure pattern.
+
+Define confidence as a typed, calibrated policy quantity rather than a free-form number. Also define
+the partial order used by any safety property: `minimal`, `safe-edit`, and `verify-heavy` differ in
+structure/cost and are not a simple permission ladder.
 
 ##### 4.8 Add explain and dry-run output
 
@@ -188,6 +205,11 @@ Every transition requires:
 - a recorded reason;
 - no permission escalation beyond the kernel;
 - deterministic behavior for the same event sequence.
+
+Transitions occur only at predeclared loop boundaries before the next provider request. Manual
+interactive overrides apply to the next root run unless a thread-safe transition channel is
+implemented. Disable transitions after ambiguous partial mutation unless the trigger and attribution
+rule explicitly allow them.
 
 #### Phase 4 File Plan
 
@@ -231,10 +253,10 @@ Modify src/agent/loop.ts only for explicit transition triggers/events
 
 ```powershell
 npm run typecheck
-npm test -- src/harness/policy.test.ts
-npm test -- src/harness/fingerprints.test.ts
-npm test -- src/harness/user-signals.test.ts
-npm test -- src/agent/loop.test.ts
+npm run test:unit -- src/harness/policy.test.ts
+npm run test:unit -- src/harness/fingerprints.test.ts
+npm run test:unit -- src/harness/user-signals.test.ts
+npm run test:unit -- src/agent/loop.test.ts
 npm test
 ```
 

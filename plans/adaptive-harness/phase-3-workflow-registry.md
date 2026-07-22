@@ -14,7 +14,7 @@
 
 **Deliverables:**
 
-- Define a small workflow schema with knobs such as planning, bounded context/resume strategy, verification, edit scope, autonomy, and bounded parallelism.
+- Define a small workflow schema with knobs such as planning, bounded context/resume strategy, verification, edit scope, and autonomy.
 - Add no more than three initial workflows: `minimal`, `safe-edit`, and `verify-heavy`.
 - Validate workflow files with Zod and reject unknown or unsafe fields.
 - Add an explicit CLI/settings override for manual workflow selection.
@@ -50,18 +50,24 @@ interface WorkflowDefinition {
   };
   execution: {
     editScope: 'small' | 'normal' | 'broad';
-    parallelism: 'none' | 'bounded';
     retryPosture: 'default' | 'cautious';
   };
-  requestedApprovalPosture: 'default' | 'ask-more' | 'ask-less';
+  requestedApprovalPosture: 'default' | 'ask-more';
 }
 ```
 
-`requestedApprovalPosture` is advisory. It cannot select `bypassPermissions`, override deny rules, or exceed the user's configured mode.
+`requestedApprovalPosture` is advisory and monotone toward more confirmation. The initial workflow
+surface does not contain `ask-less`; it cannot select `auto`, `dontAsk`, `bypassPermissions`, override
+deny rules, or exceed the user's configured mode.
 
 Context token limits are requests clamped by the trusted runtime. Compaction, checkpoint, and handoff values are valid only when the fixed runtime advertises the corresponding tested capability.
 
 Do not add model names, user identities, project paths, task prompts, arbitrary code, free-form system prompts, tool definitions, retry implementations, or security rules to workflow definitions.
+
+Use recursively strict validation and canonical JSON serialization before hashing. Project-local
+workflow files are untrusted repository data even after schema validation: never render their
+free-form description as instructions, reject symlink/path escapes, and fail closed when an explicit
+workflow is malformed.
 
 ##### 3.2 Define the three initial workflows
 
@@ -88,6 +94,10 @@ Do not add model names, user identities, project paths, task prompts, arbitrary 
 - accept higher cost only within the fixed kernel budget.
 
 These workflows are comparison instruments first. Avoid optimizing them during Phase 3.
+
+Only fields classified as kernel-enforced or explicitly bounded guidance by the Phase 1 capability
+matrix may vary. Unsupported fields are rejected or visibly clamped. Initial workflows do not select
+multi-agent parallelism; the existing managed-agent system is a separate experimental axis.
 
 ##### 3.3 Implement registry loading and precedence
 
@@ -129,7 +139,7 @@ This makes kernel restrictions visible instead of silently ignoring workflow req
 
 ##### 3.5 Render a bounded execution-policy section
 
-Add the active workflow to `src/agent/context.ts` in the dynamic suffix so switching workflows does not invalidate the session-stable prompt prefix unnecessarily.
+Add the active workflow to `src/agent/context.ts` through a dedicated dynamic policy zone so switching workflows does not invalidate the session-stable prompt prefix unnecessarily. Do not reuse generic `systemPromptAppend`, which currently belongs to the cached prefix and can contain unrelated agent text.
 
 The rendered section should:
 
@@ -152,6 +162,10 @@ Support at least one non-TUI control first, such as settings or a CLI flag. Late
 ```
 
 Manual selection should be scoped to the current run/session unless the user explicitly persists it to project settings.
+
+Define whether a session override survives process resume. If persistence is required, add a
+versioned session record; otherwise call it process/run-scoped. Include CLI parser/help/contract tests
+and public SDK fields if SDK selection is in scope.
 
 ##### 3.7 Record workflow provenance
 
@@ -178,6 +192,7 @@ Modify src/agent/context.ts
 Modify src/agent/context.test.ts
 Modify src/settings.ts
 Modify src/cli/run.ts or src/index.ts
+Modify src/cli/options.ts or the actual CLI parser/help module
 Modify src/commands/builtins.ts and src/tui/app.tsx only if /harness ships in this phase
 ```
 
@@ -194,6 +209,8 @@ Modify src/commands/builtins.ts and src/tui/app.tsx only if /harness ships in th
 - Unsupported context, compaction, checkpoint, or handoff capabilities are rejected or clamped explicitly.
 - Workflow definitions cannot change tool schemas, retry/cancellation correctness, provenance, or prompt-injection defenses.
 - Candidate files placed beside the candidate store never become active.
+- Recursive unknown fields, symlink escapes, and candidate-path workflows are rejected.
+- Every selected field has a recorded requested/effective capability mapping; prompt-only guidance is not reported as enforcement.
 
 **Verification:**
 
@@ -208,10 +225,10 @@ Modify src/commands/builtins.ts and src/tui/app.tsx only if /harness ships in th
 
 ```powershell
 npm run typecheck
-npm test -- src/harness/workflows.test.ts
-npm test -- src/agent/context.test.ts
-npm test -- src/config.test.ts
-npm test -- src/permissions.test.ts
+npm run test:unit -- src/harness/workflows.test.ts
+npm run test:unit -- src/agent/context.test.ts
+npm run test:unit -- src/config.test.ts
+npm run test:unit -- src/permissions.test.ts
 npm test
 ```
 

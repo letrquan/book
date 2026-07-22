@@ -73,6 +73,9 @@ interface WorkflowCandidate {
 
 Reject candidates that change too many independent dimensions at once. Prefer narrow, attributable changes.
 
+Recompute `changedFields`, effective clamps, complexity, and the canonical candidate hash in trusted
+code. Never accept proposer-supplied accounting as authoritative.
+
 ##### 8.3 Build failure-pattern inputs
 
 Generate proposal inputs from normalized, verifier-grounded evidence:
@@ -109,6 +112,10 @@ It does not receive write access to:
 - budgets;
 - historical event records.
 
+Failure and success inputs are typed, bounded, provenance-carrying facts. Do not pass raw private
+transcripts or free-text held-out summaries to the proposer; rejected-candidate feedback is a reusable
+holdout query channel and needs a sealed final-test/query budget.
+
 ##### 8.5 Validate candidates statically
 
 Before any model/task execution:
@@ -134,6 +141,10 @@ held-out comparison
 manual/automated promotion review
 Phase 7 canary
 ```
+
+Declare candidate-cycle limits, multiple-testing/alpha-spending policy, and a fresh or sealed final
+holdout. Stop candidate generation when the query budget or evidence budget is exhausted; do not
+continue until a favorable candidate appears.
 
 Stop at the first failed gate. Do not spend the full evaluation budget on structurally invalid or clearly regressing candidates.
 
@@ -165,6 +176,10 @@ timestamp and expiry/recalibration rule
 ```
 
 Promotion copies or references the validated candidate into the active registry. The candidate store itself is never treated as executable configuration.
+
+Promotion requires canonical signed records, an atomic registry update, a parent-version/TOCTOU check,
+and an independently retained last-known-good rollback artifact. High-risk candidates require an
+explicit approval authority. A reproducible `rejected` or `no promotion` result is valid completion.
 
 ##### 8.9 Build reward-hacking and evaluator-integrity fixtures
 
@@ -242,16 +257,16 @@ Modify src/harness/rollout-registry.ts
 
 ```powershell
 npm run typecheck
-npm test -- src/harness/evaluation/candidate.test.ts
-npm test -- src/harness/evaluation/promotion.test.ts
-npm test -- src/permissions.test.ts
-npm test -- src/sandbox.test.ts
+npm run test:unit -- src/harness/evaluation/candidate.test.ts
+npm run test:unit -- src/harness/evaluation/promotion.test.ts
+npm run test:unit -- src/permissions.test.ts
+npm run test:unit -- src/sandbox.test.ts
 npm test
 npm run lint
 npm run format:check
 ```
 
-**Exit gate:** A candidate can move from proposal to promotion only through reproducible evidence and an immutable gate.
+**Exit gate:** The pipeline reproducibly promotes only candidates that clear immutable gates and reproducibly rejects the rest. No promotion is a valid phase result when no candidate earns a benefit.
 
 **Rollback:** Disable candidate generation and restore the prior registry version; no runtime code rollback should be necessary.
 

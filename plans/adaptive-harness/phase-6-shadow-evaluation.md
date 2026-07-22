@@ -41,6 +41,10 @@ Not every historical run is replayable. A run is eligible only when Book can rec
 
 Initial replay should use deterministic fixture repositories from Phase 0. Historical user runs may be used for diagnosis without replay when their environment cannot be reconstructed.
 
+Private historical runs are diagnosis-only by default unless consent, redaction, deletion, complete
+identity, and replay eligibility are explicit. A deterministic fixture still requires repeated model
+trials because model/provider execution is not deterministic.
+
 ##### 6.2 Build isolated fixture execution
 
 Run each evaluation arm in a fresh isolated copy of the fixture. The runner should:
@@ -57,6 +61,11 @@ destroy or archive the isolated workspace according to policy
 ```
 
 Do not reuse a mutated workspace across comparison arms.
+
+Isolation includes a disposable Book home, sanitized environment, fresh session/tool-discovery
+state, disabled user skills/commands/agents/MCP/memory unless declared, process/resource limits,
+network policy, secret isolation, and evaluator code outside the candidate-writable workspace.
+On Windows this requires an external container/VM/runner boundary, not only a fresh directory.
 
 ##### 6.3 Freeze the evaluation matrix
 
@@ -77,6 +86,9 @@ interface EvaluationMatrixEntry {
   toolSurfaceFingerprint: string;
   contextCapabilitiesVersion: string;
   evaluatorVersion: string;
+  agentsMode: 'off' | 'manual' | 'adaptive';
+  bookHomeFingerprint: string;
+  isolationProfile: string;
 }
 ```
 
@@ -89,6 +101,10 @@ The runner must reject invalid comparisons where critical fields differ.
 - Store held-out membership outside candidate-editable files.
 - Version every split.
 - Rotate or add fresh held-out cases when repeated use risks contamination.
+
+Choose the best fixed baseline using held-in or nested validation only. Maintain a sealed final
+holdout with an access/query budget; do not send free-text held-out failure summaries back to the
+selector or candidate proposer.
 
 ##### 6.5 Add shadow selection to live runs
 
@@ -113,7 +129,12 @@ Report:
 - paired-control variance and the predeclared infrastructure noise floor;
 - effect size against both base and best fixed workflow.
 
-Avoid complex statistics with tiny samples. When evidence is insufficient or the measured effect falls inside the noise band, report "insufficient evidence" instead of a directional claim. When outcomes are equivalent within the declared uncertainty, prefer the simpler workflow.
+Predeclare the randomization/paired unit, MDE, alpha/power or minimum-sample rule, non-inferiority
+margins, treatment of unknown/evaluator-failed results, and correction across slices, metrics, and
+candidates. Randomize or balance arm order and record provider cache, concurrency, rate-limit, clock,
+seed, and trial-order effects.
+
+Avoid complex statistics with tiny samples. When evidence is insufficient or the measured effect falls inside the noise band, report "insufficient evidence" instead of a directional claim. When outcomes are equivalent within the declared uncertainty, prefer the simpler workflow. Do not call a slice successful merely because its interval includes no regression; equivalence/non-inferiority requires a declared margin and adequate power.
 
 ##### 6.7 Add external benchmark adapters
 
@@ -166,6 +187,10 @@ guardrail status
 expiry/recalibration rule
 ```
 
+Eligibility is decided separately for every predeclared enabled slice. The phase may find no eligible
+slices. "At least one" result cannot override multiplicity, a cherry-picked slice, or a failing
+guardrail elsewhere in the declared rollout family.
+
 #### Phase 6 File Plan
 
 ```text
@@ -213,14 +238,14 @@ Modify src/harness/coordinator.ts for shadow decisions only
 
 ```powershell
 npm run typecheck
-npm test -- src/harness/evaluation/replay.test.ts
-npm test -- src/harness/evaluation/scoring.test.ts
+npm run test:unit -- src/harness/evaluation/replay.test.ts
+npm run test:unit -- src/harness/evaluation/scoring.test.ts
 npm test
 npm run lint
 npm run format:check
 ```
 
-**Exit gate:** Adaptive selection demonstrates a predeclared benefit over the best fixed workflow on at least one held-out slice and no unacceptable regression on enabled slices.
+**Exit gate:** Adaptive selection demonstrates a predeclared, multiplicity-controlled benefit over the best fixed workflow for each proposed enabled slice, with adequate non-inferiority evidence for guardrails. It is valid to exit with no eligible slices and keep adaptation disabled.
 
 **Rollback:** Keep the selector in shadow mode and ship no adaptive execution.
 
