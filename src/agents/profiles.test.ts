@@ -11,5 +11,6 @@ describe('built-in managed-agent prompts', () => {
     expect(explorer?.body).toContain('exact file:line');
     expect(patcher?.body).toContain('state the outcome first');
     expect(validator?.body).toContain('start with the verdict');
+    expect(BUILTIN_AGENTS.every((agent) => agent.maxTurns === undefined)).toBe(true);
   });
 });

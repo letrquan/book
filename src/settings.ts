@@ -131,6 +131,7 @@ export const memorySettingsSchema = z.object({
 export const agentSettingsSchema = z.object({
   mode: z.enum(['adaptive', 'manual', 'off']).default('adaptive'),
   maxConcurrent: z.number().int().min(1).max(16).default(3),
+  maxSpawned: z.number().int().min(1).max(64).default(8),
   maxDepth: z.literal(1).default(1),
   persist: z.boolean().default(true),
   includeUntrackedInSnapshot: z.boolean().default(true),
@@ -276,6 +277,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   agents: {
     mode: 'adaptive',
     maxConcurrent: 3,
+    maxSpawned: 8,
     maxDepth: 1,
     persist: true,
     includeUntrackedInSnapshot: true,

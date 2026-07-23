@@ -63,6 +63,8 @@ export interface UsageCommandDisplay {
 
 /** Compact completion metadata rendered as a host notification. */
 export interface AgentNotificationDisplay {
+  deliveryId?: string;
+  sequence?: number;
   agentId: string;
   displayName: string;
   status: 'completed' | 'failed' | 'stopped' | 'interrupted';

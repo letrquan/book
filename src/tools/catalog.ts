@@ -33,6 +33,7 @@ const ROOT_ONLY = new Set([
   'AgentSpawn',
   'AgentList',
   'AgentGet',
+  'AgentRead',
   'AgentSend',
   'AgentWait',
   'AgentStop',
@@ -78,6 +79,7 @@ function keywordsFor(name: string): string[] {
     SessionHistoryRead: ['conversation', 'transcript', 'past session'],
     InvokeSkill: ['workflow', 'instructions'],
     AgentSpawn: ['delegate', 'subagent', 'parallel'],
+    AgentRead: ['subagent', 'result', 'output', 'continuation'],
     WebSearch: ['internet', 'research'],
     WebFetch: ['url', 'page', 'download'],
   };

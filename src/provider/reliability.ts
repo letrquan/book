@@ -7,6 +7,7 @@ interface RetryLogger {
 export type ProviderErrorCode =
   | 'network'
   | 'timeout'
+  | 'context_overflow'
   | 'rate_limited'
   | 'overloaded'
   | 'server_error'
@@ -20,6 +21,7 @@ export function classifyHttpStatus(status: number): {
   code: ProviderErrorCode;
   retryable: boolean;
 } {
+  if (status === 413) return { code: 'context_overflow', retryable: false };
   if (status === 429) return { code: 'rate_limited', retryable: true };
   if (status === 529) return { code: 'overloaded', retryable: true };
   if (status >= 500 && status < 600) return { code: 'server_error', retryable: true };
@@ -36,6 +38,8 @@ export function formatApiError(status: number, body: string): string {
   const detail = safeErrorDetail(body);
   const base = `API Error: ${status}`;
   switch (code) {
+    case 'context_overflow':
+      return `${base} ${detail}. The request exceeds the provider context limit.`;
     case 'rate_limited':
       return `${base} ${detail}. This may be a temporary capacity issue. Try again in a moment.`;
     case 'overloaded':
@@ -51,6 +55,24 @@ export function formatApiError(status: number, body: string): string {
     default:
       return `${base} ${detail}`;
   }
+}
+
+/** Detect provider errors that can be recovered by compacting conversation history. */
+export function isContextOverflowError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    /\b(?:api error:\s*)?413\b/.test(message) ||
+    message.includes('request entity too large') ||
+    message.includes('payload too large') ||
+    message.includes('request too large') ||
+    message.includes('context_length_exceeded') ||
+    message.includes('maximum context length') ||
+    message.includes('context window') ||
+    message.includes('prompt is too long') ||
+    message.includes('prompt too long') ||
+    message.includes('input is too long') ||
+    message.includes('too many tokens')
+  );
 }
 
 export async function fetchWithRetry(

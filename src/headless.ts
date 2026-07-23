@@ -15,7 +15,10 @@ import {
 } from './stream-json.js';
 import { AgentSession, type AgentSessionRunRequest } from './session/agent-session.js';
 import type { AgentEvent } from './session/agent-events.js';
-import { buildAgentCompletionMessage } from './agents/completion-notification.js';
+import {
+  buildAgentCompletionMessage,
+  takeAgentCompletionBatch,
+} from './agents/completion-notification.js';
 
 export async function runHeadless(
   config: AgentConfig,
@@ -46,10 +49,14 @@ export async function runHeadless(
     if (store && sessionId && opts.forkSession) {
       sessionId = undefined; // start a new session, copy history only
     }
+    let sessionName = opts.sessionName;
     let sessionCreated = opts.sessionCreated === true;
     if (store && !sessionId) {
-      sessionId = store.create({ cwd: config.workspace, name: opts.sessionName });
+      sessionId = store.create({ cwd: config.workspace, name: sessionName });
       sessionCreated = true;
+    }
+    if (store && sessionId && !sessionName) {
+      sessionName = store.findById(sessionId)?.name;
     }
     if (sessionCreated && sessionId && opts.outputFormat === 'stream-json') {
       emit({ type: 'session', session_id: sessionId });
@@ -146,7 +153,7 @@ export async function runHeadless(
           onCommitted: (_result, boundary) => compactBoundaries.push(boundary),
           options: {
             trigger: 'auto',
-            preContextTokens: usagePressureTokens(usage),
+            preContextTokens: usage ? usagePressureTokens(usage) : undefined,
             signal: opts.signal,
             onHookEvent: createHookEventHandler(opts, emit),
           },
@@ -277,11 +284,13 @@ export async function runHeadless(
         sessionId: runtimeSessionId,
         displayMessage: prompt,
         userMessage,
+        sessionName,
         timelineStore: store && sessionId ? store : undefined,
         expandShellInput: false,
         runtime,
         signal: opts.signal,
       });
+      sessionName = recorded.sessionName;
       const contextMessage = recorded.contextMessage;
       transcript.push(userMessage);
       await runParentTurn(contextMessage, prompt, userMessage);
@@ -292,13 +301,31 @@ export async function runHeadless(
     // after that continuation turn succeeds.
     const managedAgentManager = runtime.agentManager;
     if (managedAgentManager) {
+      const deliveredCompletionIds = new Set(
+        transcript.flatMap((message) =>
+          (message.agentNotifications ?? [])
+            .map((notification) => notification.deliveryId)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      );
       while (true) {
         await managedAgentManager.waitForIdle();
         const pending = (await managedAgentManager.listPendingCompletions()).filter(
           (notification) => notification.parentSessionId === runtimeSessionId,
         );
         if (pending.length === 0) break;
-        const built = pending.map((notification: AgentCompletionNotification) =>
+        const alreadyDelivered = pending.filter((notification) =>
+          deliveredCompletionIds.has(notification.deliveryId),
+        );
+        for (const notification of alreadyDelivered) {
+          await managedAgentManager.acknowledgeCompletion(notification.deliveryId);
+        }
+        const fresh = pending.filter(
+          (notification) => !deliveredCompletionIds.has(notification.deliveryId),
+        );
+        if (fresh.length === 0) continue;
+        const batch = takeAgentCompletionBatch(fresh);
+        const built = batch.map((notification: AgentCompletionNotification) =>
           buildAgentCompletionMessage(notification),
         );
         const displayMessage = built.map((item) => item.displayMessage).join('\n');
@@ -325,7 +352,8 @@ export async function runHeadless(
         });
         transcript.push(userMessage);
         await runParentTurn(recorded.contextMessage, displayMessage, userMessage);
-        for (const notification of pending) {
+        for (const notification of batch) {
+          deliveredCompletionIds.add(notification.deliveryId);
           await managedAgentManager.acknowledgeCompletion(notification.deliveryId);
         }
       }

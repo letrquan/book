@@ -366,6 +366,19 @@ describe('SessionStore', () => {
     expect(s.findByName('feature-x')?.id).toBe(id);
   });
 
+  it('derives a display name for legacy sessions without name metadata', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, {
+      type: 'user',
+      timestamp: 1,
+      data: { content: 'investigate legacy session labels' },
+    });
+
+    expect(s.load(id).meta.name).toBe('Investigate legacy session labels');
+    expect(s.findByName('Investigate legacy session labels')?.id).toBe(id);
+  });
+
   it('applies append-only metadata patches without counting them as messages', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj' });

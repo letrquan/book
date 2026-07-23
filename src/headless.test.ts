@@ -285,7 +285,9 @@ describe('runHeadless — text output', () => {
 
     expect(result.messages[0].content).toBe('Explain @src/app.ts');
     expect(result.messages[0].contextContent).toContain('Contents of src/app.ts:');
-    expect(sessions.load(result.sessionId!).history[0].content).toBe('Explain @src/app.ts');
+    const loaded = sessions.load(result.sessionId!);
+    expect(loaded.history[0].content).toBe('Explain @src/app.ts');
+    expect(loaded.meta.name).toBe('Explain @src/app.ts');
   });
 });
 

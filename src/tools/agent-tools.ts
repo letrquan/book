@@ -156,6 +156,37 @@ async function agentGet(args: Record<string, unknown>, ctx: ToolContext): Promis
   }
 }
 
+async function agentRead(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  try {
+    requireRoot(ctx);
+    const id = typeof args.agentId === 'string' ? args.agentId : '';
+    const record = await manager(ctx).get(id);
+    if (!record) throw new Error(`Agent ${id} was not found.`);
+    const field = args.field === 'error' ? 'error' : 'summary';
+    const value = field === 'error' ? (record.error ?? '') : (record.result ?? '');
+    const offset = Math.max(0, Math.floor(typeof args.offset === 'number' ? args.offset : 0));
+    const requestedLimit = Math.floor(typeof args.limit === 'number' ? args.limit : 16 * 1024);
+    const limit = Math.max(1, Math.min(requestedLimit, 50 * 1024));
+    const text = value.slice(offset, offset + limit);
+    const nextOffset = offset + text.length < value.length ? offset + text.length : undefined;
+    const output = {
+      agentId: record.id,
+      field,
+      text,
+      offset,
+      nextOffset,
+      totalCharacters: value.length,
+      truncated: nextOffset !== undefined,
+    };
+    return ok(output, {
+      summary: `Read ${field} from ${record.displayName ?? record.name}`,
+      metadata: [`${offset}-${offset + text.length} of ${value.length}`],
+    });
+  } catch (error) {
+    return fail(error);
+  }
+}
+
 async function agentSend(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   try {
     requireRoot(ctx);
@@ -358,6 +389,35 @@ export const agentLifecycleTools: ToolDefinition[] = [
       required: ['agentId'],
     },
     execute: agentGet,
+  },
+  {
+    name: 'AgentRead',
+    description:
+      'Read a bounded chunk of a managed agent final summary or error. Use when AgentGet reports truncated output.',
+    parameters: {
+      type: 'object',
+      properties: {
+        agentId: agentIdParameter,
+        field: {
+          type: 'string',
+          enum: ['summary', 'error'],
+          description: 'Terminal field to read. Defaults to summary.',
+        },
+        offset: {
+          type: 'number',
+          minimum: 0,
+          description: 'Zero-based character offset. Defaults to 0.',
+        },
+        limit: {
+          type: 'number',
+          minimum: 1,
+          maximum: 51200,
+          description: 'Maximum characters to return. Defaults to 16384 and is capped at 51200.',
+        },
+      },
+      required: ['agentId'],
+    },
+    execute: agentRead,
   },
   {
     name: 'AgentSend',

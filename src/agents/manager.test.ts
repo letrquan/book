@@ -39,6 +39,121 @@ afterEach(() => {
 });
 
 describe('AgentManager lifecycle', () => {
+  it('dismisses terminal agents with their evidence, worktree, and unshared snapshot', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const removeWorktree = vi.fn(async () => {});
+    const removeSnapshot = vi.fn(async () => {});
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      worktreeRoot: tempRoot(),
+      findGitRoot: async () => root,
+      createSnapshot: async () => snapshot(root),
+      createWorktree: async (_snapshot, agentId) => ({
+        path: join(root, agentId),
+        branch: `branch-${agentId}`,
+      }),
+      commitWork: async () => undefined,
+      removeWorktree,
+      removeSnapshot,
+      runLoop: async (_config, _registry, _prompt, history) => history,
+    });
+    const record = await manager.spawn({ agent: 'patcher', prompt: 'patch' });
+    await manager.wait(record.id, 1000);
+    const evidence = await manager.publishEvidence(record.id, {
+      kind: 'finding',
+      summary: 'temporary finding',
+    });
+
+    await manager.dismiss(record.id);
+
+    expect(await manager.get(record.id)).toBeUndefined();
+    expect((await manager.listEvidence()).find((item) => item.id === evidence.id)).toBeUndefined();
+    expect(removeWorktree).toHaveBeenCalledOnce();
+    expect(removeSnapshot).toHaveBeenCalledWith(expect.objectContaining({ id: 'snapshot' }));
+    manager.dispose();
+  });
+
+  it('caps outstanding spawned agents without limiting completed history', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    config.settings.agents.maxConcurrent = 1;
+    config.settings.agents.maxSpawned = 2;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, prompt, history) => {
+        if (prompt !== 'third') await gate;
+        return history;
+      },
+    });
+
+    const first = await manager.spawn({ agent: 'explorer', prompt: 'first' });
+    await manager.spawn({ agent: 'explorer', prompt: 'second' });
+    await expect(manager.spawn({ agent: 'explorer', prompt: 'blocked' })).rejects.toThrow(
+      'spawn cap reached',
+    );
+
+    release();
+    await manager.wait(first.id, 1000);
+    await manager.waitForIdle();
+    await expect(manager.spawn({ agent: 'explorer', prompt: 'third' })).resolves.toMatchObject({
+      status: 'queued',
+    });
+    await manager.waitForIdle();
+    manager.dispose();
+  });
+
+  it('tracks resumed execution generations separately from cumulative usage', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    let messageIndex = 0;
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, prompt, history, callbacks) => {
+        callbacks.onUsage?.({ promptTokens: 2, completionTokens: 3, totalTokens: 5 });
+        return [
+          ...history,
+          {
+            id: `assistant-${messageIndex++}`,
+            role: 'assistant',
+            content: `Finished ${prompt}`,
+            includeInContext: true,
+            timestamp: Date.now(),
+          },
+        ];
+      },
+    });
+
+    const spawned = await manager.spawn({ agent: 'explorer', prompt: 'first' });
+    const first = await manager.wait(spawned.id, 1000);
+    const identityStartedAt = first.startedAt;
+    expect(first).toMatchObject({
+      runSequence: 1,
+      runUsage: { totalTokens: 5 },
+      usage: { totalTokens: 5 },
+    });
+
+    await manager.send(spawned.id, 'second');
+    const second = await manager.wait(spawned.id, 1000);
+    expect(second.startedAt).toBe(identityStartedAt);
+    expect(second).toMatchObject({
+      runSequence: 2,
+      runUsage: { totalTokens: 5 },
+      usage: { totalTokens: 10 },
+      result: 'Finished second',
+    });
+    manager.dispose();
+  });
+
   it('runs three workers concurrently and completes queued records independently', async () => {
     const root = tempRoot();
     const config = defaultConfig({ workspace: root });

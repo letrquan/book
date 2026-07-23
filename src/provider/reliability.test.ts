@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultConfig } from '../test/fixtures.js';
-import { fetchWithRetry, formatApiError } from './reliability.js';
+import { fetchWithRetry, formatApiError, isContextOverflowError } from './reliability.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -37,5 +37,14 @@ describe('provider reliability transport', () => {
 
     expect(message).toContain('x'.repeat(200));
     expect(message).not.toContain('x'.repeat(201));
+  });
+
+  it('recognizes provider context overflow responses without treating ordinary bad requests as recoverable', () => {
+    expect(isContextOverflowError('API Error: 413 request entity too large')).toBe(true);
+    expect(isContextOverflowError('API Error: 400 context_length_exceeded')).toBe(true);
+    expect(isContextOverflowError('API Error: 400 invalid tool arguments')).toBe(false);
+    expect(formatApiError(413, '{"error":{"message":"payload too large"}}')).toContain(
+      'context limit',
+    );
   });
 });

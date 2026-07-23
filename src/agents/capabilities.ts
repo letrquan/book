@@ -18,6 +18,7 @@ const CHILD_LIFECYCLE_TOOLS = new Set([
   'AgentSpawn',
   'AgentList',
   'AgentGet',
+  'AgentRead',
   'AgentSend',
   'AgentWait',
   'AgentStop',

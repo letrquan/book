@@ -55,7 +55,6 @@ export const BUILTIN_AGENTS: ManagedAgentDef[] = [
       'EvidencePublish',
       'EvidenceList',
     ],
-    maxTurns: 24,
     body: [
       'You are the patcher agent.',
       'Implement only the assigned bounded change in your isolated worktree.',
@@ -84,7 +83,6 @@ export const BUILTIN_AGENTS: ManagedAgentDef[] = [
       'EvidenceList',
       'EvidenceReview',
     ],
-    maxTurns: 16,
     body: [
       'You are the validator agent.',
       'Independently validate explicitly referenced patch candidates.',

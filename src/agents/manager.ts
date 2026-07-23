@@ -17,6 +17,8 @@ import {
   checkoutAgentCommit,
   findGitRoot,
   repositoryHash,
+  removeAgentWorktree,
+  removeSnapshotRef,
 } from './git-isolation.js';
 import { withBuiltInAgents, type ManagedAgentDef } from './profiles.js';
 import { resolveAgentProfile, usableAgentEffort } from './profile-resolver.js';
@@ -57,6 +59,8 @@ interface ManagerOptions {
   checkoutWorktree?: typeof checkoutAgentCommit;
   commitWork?: typeof commitAgentWork;
   applyCandidate?: typeof applyVerifiedCandidate;
+  removeWorktree?: (record: AgentRecord, repoRoot?: string) => Promise<void>;
+  removeSnapshot?: typeof removeSnapshotRef;
   runtime?: SessionRuntime;
   permissionMode?: string;
   persistPermissionRule?: (rule: string) => void;
@@ -103,6 +107,16 @@ function accumulateUsage(current: Usage | undefined, next: Usage): Usage {
       (current?.cacheCreationInputTokens ?? 0) + (next.cacheCreationInputTokens ?? 0),
     cacheReadInputTokens: (current?.cacheReadInputTokens ?? 0) + (next.cacheReadInputTokens ?? 0),
   };
+}
+
+function errorKind(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (/413|request too large|context length/i.test(value)) return 'context_overflow';
+  if (/stream stall|no data received/i.test(value)) return 'stream_stall';
+  if (/timeout|timed out/i.test(value)) return 'timeout';
+  if (/abort|cancel|stop/i.test(value)) return 'aborted';
+  if (/permission|capability denied/i.test(value)) return 'permission';
+  return 'other';
 }
 
 export class AgentManager {
@@ -306,7 +320,13 @@ export class AgentManager {
         this.options.storeRoot,
         this.config.settings.agents.persist,
       );
-      this.store.cleanup(this.config.settings.agents.retentionDays);
+      const cleanup = this.store.cleanupDetailed(this.config.settings.agents.retentionDays);
+      for (const agent of cleanup.agents) {
+        await (this.options.removeWorktree ?? removeAgentWorktree)(agent, this.repoRoot);
+      }
+      for (const snapshot of cleanup.snapshots) {
+        await (this.options.removeSnapshot ?? removeSnapshotRef)(snapshot);
+      }
       this.store.markActiveInterrupted();
       for (const record of this.store.listAgents()) this.agents.set(record.id, record);
       for (const plan of this.store.listPlans()) this.plans.set(plan.id, plan);
@@ -358,6 +378,7 @@ export class AgentManager {
     this.subscribers.clear();
     for (const resolve of this.idleWaiters) resolve();
     this.idleWaiters.clear();
+    this.store?.dispose();
   }
 
   private notifyIdle(): void {
@@ -395,7 +416,7 @@ export class AgentManager {
       record.completionSequence = (record.completionSequence ?? 0) + 1;
     }
     record.updatedAt = Date.now();
-    this.store?.saveAgent(record);
+    this.store?.saveAgent(record, { defer: event !== 'result' });
     this.notify(record);
     this.emit({
       type: 'agent_status',
@@ -517,6 +538,14 @@ export class AgentManager {
         `${definition.name} requires Git worktree isolation. Initialize and commit the repository, or use the explorer profile for read-only discovery.`,
       );
     }
+    const outstanding = Array.from(this.agents.values()).filter(
+      (record) => !TERMINAL_STATUSES.has(record.status),
+    ).length;
+    if (outstanding >= this.config.settings.agents.maxSpawned) {
+      throw new Error(
+        `Managed agent spawn cap reached (${this.config.settings.agents.maxSpawned} outstanding). Wait for or stop an existing agent before spawning another.`,
+      );
+    }
     const resolvedProfile = resolveAgentProfile(definition, this.config, request.model);
 
     let plan = request.planId ? this.plans.get(request.planId) : undefined;
@@ -624,8 +653,26 @@ export class AgentManager {
     if (!TERMINAL_STATUSES.has(record.status)) {
       throw new Error('Only terminal agents can be dismissed.');
     }
+    await (this.options.removeWorktree ?? removeAgentWorktree)(record, this.repoRoot);
     this.agents.delete(agentId);
+    for (const evidence of Array.from(this.evidence.values())) {
+      if (evidence.sourceAgentId === agentId) this.evidence.delete(evidence.id);
+    }
     this.store?.removeAgent(agentId);
+    if (record.snapshotId) {
+      const stillReferenced = Array.from(this.agents.values()).some(
+        (candidate) => candidate.snapshotId === record.snapshotId,
+      );
+      if (!stillReferenced) {
+        const snapshot = this.snapshots.get(record.snapshotId);
+        if (snapshot) await (this.options.removeSnapshot ?? removeSnapshotRef)(snapshot);
+        this.snapshots.delete(record.snapshotId);
+        if (record.planId && this.planSnapshots.get(record.planId) === record.snapshotId) {
+          this.planSnapshots.delete(record.planId);
+        }
+        this.store?.removeSnapshot(record.snapshotId);
+      }
+    }
   }
 
   async send(agentId: string, message: string, evidenceIds: string[] = []): Promise<AgentRecord> {
@@ -663,6 +710,7 @@ export class AgentManager {
     record.prompt = trimmed;
     record.pendingMessages = [];
     record.error = undefined;
+    record.result = undefined;
     record.stopReason = undefined;
     record.finishedAt = undefined;
     record.status = 'queued';
@@ -936,6 +984,12 @@ export class AgentManager {
     try {
       record.status = 'starting';
       record.startedAt ??= Date.now();
+      record.runSequence = (record.runSequence ?? 0) + 1;
+      record.runStartedAt = Date.now();
+      record.runUsage = undefined;
+      record.runMetrics = { toolCalls: 0, compactions: 0, retries: 0 };
+      record.result = undefined;
+      record.error = undefined;
       this.persist(record);
       let snapshot: AgentSnapshot | undefined;
       const isolation = record.isolation ?? definition.isolation;
@@ -1087,6 +1141,7 @@ export class AgentManager {
             this.queueTextDelta(record.id, text);
           },
           onToolCall: (call) => {
+            record.runMetrics!.toolCalls++;
             startActivity('tool', `Using ${call.name}`, call.name, call.id, clone(call));
           },
           onToolResult: (result) => {
@@ -1120,7 +1175,8 @@ export class AgentManager {
           },
           onUsage: (usage) => {
             record.usage = accumulateUsage(record.usage, usage);
-            this.store?.saveAgent(record);
+            record.runUsage = accumulateUsage(record.runUsage, usage);
+            this.store?.saveAgent(record, { defer: true });
             this.emit({
               type: 'agent_status',
               agent: projectAgentSummary(record),
@@ -1169,10 +1225,11 @@ export class AgentManager {
             });
           },
           onCompact: (history, usage) => {
+            record.runMetrics!.compactions++;
             const activity = startActivity('compacting', 'Compacting context');
             return runCompact(agentConfig, history, {
               trigger: 'auto',
-              preContextTokens: usagePressureTokens(usage),
+              preContextTokens: usage ? usagePressureTokens(usage) : undefined,
               signal: controller.signal,
             }).then(
               (result) => {
@@ -1184,6 +1241,10 @@ export class AgentManager {
                 throw error;
               },
             );
+          },
+          onRetry: () => {
+            record.runMetrics!.retries++;
+            this.store?.saveAgent(record, { defer: true });
           },
           onAgentEvent: (event) => this.emit(event),
         },
@@ -1323,8 +1384,19 @@ export class AgentManager {
       status: record.status,
       route: plan?.topology,
       issueQuality: plan?.issueQuality,
-      wallTimeMs: record.startedAt ? Date.now() - record.startedAt : undefined,
-      totalTokens: record.usage?.totalTokens,
+      runSequence: record.runSequence,
+      completionSequence: record.completionSequence,
+      wallTimeMs: record.runStartedAt ? Date.now() - record.runStartedAt : undefined,
+      totalTokens: record.runUsage?.totalTokens,
+      cumulativeTokens: record.usage?.totalTokens,
+      promptTokens: record.runUsage?.promptTokens,
+      completionTokens: record.runUsage?.completionTokens,
+      contextTokens: record.runUsage?.contextTokens,
+      toolCalls: record.runMetrics?.toolCalls,
+      compactions: record.runMetrics?.compactions,
+      retries: record.runMetrics?.retries,
+      resultCharacters: record.result?.length ?? 0,
+      errorKind: errorKind(record.error),
       applicationStatus: record.applicationStatus,
       ...extra,
     });

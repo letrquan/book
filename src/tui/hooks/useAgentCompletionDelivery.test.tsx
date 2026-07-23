@@ -84,4 +84,35 @@ describe('useAgentCompletionDelivery', () => {
     expect(deliver).toHaveBeenCalledOnce();
     expect(acknowledge).not.toHaveBeenCalled();
   });
+
+  it('retries a failed parent continuation with bounded backoff', async () => {
+    vi.useFakeTimers();
+    const pending = [queued('retry')];
+    const deliver = vi
+      .fn<(_notifications: AgentCompletionNotification[]) => Promise<boolean>>()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const acknowledge = vi.fn(async (_ids: string[]) => {});
+    function Harness() {
+      useAgentCompletionDelivery({
+        pending,
+        parentSessionId: 'parent',
+        blocked: false,
+        deliver,
+        acknowledge,
+      });
+      return <Text>delivery</Text>;
+    }
+
+    try {
+      render(<Harness />);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(deliver).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(deliver).toHaveBeenCalledTimes(2);
+      expect(acknowledge).toHaveBeenCalledWith(['retry']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

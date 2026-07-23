@@ -19,6 +19,8 @@ import { createEphemeralRewindEnvironment } from '../rewind/environment.js';
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
+const ENABLE_MOUSE_TRACKING = '\x1b[?1000h';
+const ENABLE_SGR_MOUSE = '\x1b[?1006h';
 const DISABLE_SGR_MOUSE = '\x1b[?1006l';
 const DISABLE_MOUSE_TRACKING = '\x1b[?1000l';
 const EXIT_ALT_SCREEN = '\x1b[?1049l';
@@ -53,8 +55,9 @@ export function enterInteractiveScreen(
     process.off('exit', restore);
   };
 
-  // Leave mouse reporting disabled so the terminal owns drag selection and copy.
-  stdout.write(ENTER_ALT_SCREEN + DISABLE_SGR_MOUSE + DISABLE_MOUSE_TRACKING);
+  // Shift+drag remains available for terminal-native selection while mouse
+  // reporting keeps transcript wheel scrolling and tool-row clicks working.
+  stdout.write(ENTER_ALT_SCREEN + ENABLE_MOUSE_TRACKING + ENABLE_SGR_MOUSE);
   process.once('exit', restore);
   return restore;
 }

@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -13,7 +21,21 @@ afterEach(() => {
 });
 
 describe('AgentStore recovery', () => {
-  it('migrates version 1 records to explicit version 2 profile and run fields', () => {
+  it('quarantines corrupt version 3 record files and loads the remaining store', () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const directory = join(root, 'repo');
+    const records = join(directory, 'records');
+    mkdirSync(records, { recursive: true });
+    writeFileSync(join(directory, 'state.json'), JSON.stringify({ version: 3 }));
+    writeFileSync(join(records, 'broken.json'), '{not valid json');
+
+    const store = new AgentStore('repo', root);
+
+    expect(store.listAgents()).toEqual([]);
+    expect(readdirSync(records).some((name) => name.startsWith('broken.json.corrupt-'))).toBe(true);
+  });
+
+  it('migrates monolithic records to version 3 per-record storage', () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const directory = join(root, 'repo');
     mkdirSync(directory, { recursive: true });
@@ -52,7 +74,12 @@ describe('AgentStore recovery', () => {
     expect(record.completionSequence).toBe(1);
     expect(record.completionDeliveredSequence).toBe(1);
     store.saveAgent(record);
-    expect(JSON.parse(readFileSync(join(directory, 'state.json'), 'utf8')).version).toBe(2);
+    expect(JSON.parse(readFileSync(join(directory, 'state.json'), 'utf8')).version).toBe(3);
+    expect(existsSync(join(directory, 'records', 'old.json'))).toBe(true);
+    expect(JSON.parse(readFileSync(join(directory, 'records', 'old.json'), 'utf8'))).toMatchObject({
+      id: 'old',
+      profile: 'explorer',
+    });
   });
 
   it('marks active persisted agents interrupted while preserving transcript and worktree references', () => {

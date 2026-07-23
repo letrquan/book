@@ -22,6 +22,7 @@ import type {
 import type { Message } from '../types/messages.js';
 import { createDebugLogger } from '../debug-log.js';
 import { normalizeToolResult } from '../tools/result.js';
+import { deriveSessionName } from './name.js';
 
 export type { SessionMeta } from '../types/sessions.js';
 
@@ -379,6 +380,12 @@ export class SessionStore {
 
     if (records.length) meta.updatedAt = records[records.length - 1].timestamp;
     meta.messageCount = count;
+    if (!meta.name) {
+      const firstUserPrompt = transcript.find(
+        (message) => message.role === 'user' && message.kind !== 'local',
+      )?.content;
+      if (firstUserPrompt) meta.name = deriveSessionName(firstUserPrompt);
+    }
     const activeTargetIds = replayLinkValues(activeTargetTail);
     const activeEventIds = replayLinkValues(activeEventTail);
     const rewindTargets = activeTargetIds

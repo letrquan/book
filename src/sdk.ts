@@ -202,6 +202,7 @@ export type {
   AgentProfile,
   AgentActivity,
   AgentRuntimeEvent,
+  AgentRunMetrics,
   AgentSnapshot,
   AgentSpawnRequest,
   EvidenceItem,

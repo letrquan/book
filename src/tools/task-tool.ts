@@ -45,16 +45,31 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
     if (['completed', 'failed', 'stopped', 'interrupted'].includes(completed.status)) {
       await manager.acknowledgeCompletion(`${completed.id}:${completed.completionSequence ?? 0}`);
     }
+    const projection = projectAgentCompletion(completed);
+    const resultField = completed.status === 'completed' || !completed.error ? 'summary' : 'error';
+    const resultText =
+      resultField === 'summary' ? projection.summary : (projection.error ?? projection.summary);
+    const resultTruncated =
+      resultField === 'summary'
+        ? projection.summaryTruncated
+        : (projection.errorTruncated ?? projection.summaryTruncated);
+    const resultCharacters =
+      resultField === 'summary'
+        ? projection.summaryCharacters
+        : (projection.errorCharacters ?? projection.summaryCharacters);
+    const recovery = resultTruncated
+      ? `\n\n[Result truncated at ${resultText?.length ?? 0} of ${resultCharacters} characters. Use AgentRead with agentId ${completed.id} and field ${resultField}.]`
+      : '';
     if (completed.status !== 'completed') {
-      return toolFailure(completed.error ?? `Subagent ended with status ${completed.status}`, {
-        content: completed.result ?? '',
+      return toolFailure(resultText ?? `Subagent ended with status ${completed.status}`, {
+        content: `${resultText ?? ''}${recovery}`,
         code: 'subagent_failed',
-        data: projectAgentCompletion(completed),
+        data: projection,
       });
     }
     return toolSuccess(
-      `## Subagent result: ${completed.displayName ?? completed.name}\n\n${completed.result || '(no output)'}`,
-      { data: projectAgentCompletion(completed) },
+      `## Subagent result: ${completed.displayName ?? completed.name}\n\n${resultText || '(no output)'}${recovery}`,
+      { data: projection },
     );
   } catch (error) {
     return toolFailure(error instanceof Error ? error.message : String(error));

@@ -39,6 +39,7 @@ import { toolSearchTools } from '../tools/tool-search.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
 import { permissionDeniedError } from './actionable-errors.js';
+import { isContextOverflowError } from '../provider/reliability.js';
 
 const log = createDebugLogger('agent');
 
@@ -229,6 +230,8 @@ export async function runAgentLoop(
   let lastUsage: Usage | null = null;
   /** Avoid re-attempting compact for the same pressure snapshot after skip/fail. */
   let lastCompactAttemptKey: string | null = null;
+  let retrySameTurn = false;
+  let forcedCompactTurn: number | null = null;
   let effectiveMode = initialMode;
   const syncHostMode = (): void => {
     const hostMode = callbacks.getMode?.();
@@ -240,7 +243,12 @@ export async function runAgentLoop(
   );
 
   // maxTurns undefined/0 = unlimited; otherwise stop once the cap is hit.
-  while (config.maxTurns == null || config.maxTurns <= 0 || turn < config.maxTurns) {
+  while (
+    retrySameTurn ||
+    config.maxTurns == null ||
+    config.maxTurns <= 0 ||
+    turn < config.maxTurns
+  ) {
     if (signal?.aborted) break;
     syncHostMode();
 
@@ -274,9 +282,14 @@ export async function runAgentLoop(
       }
     }
 
-    turn++;
-    callbacks.onTurnStart(turn);
-    log.debug('turn start', { turn, maxTurns: config.maxTurns, mode: effectiveMode });
+    if (retrySameTurn) {
+      retrySameTurn = false;
+      log.info('retrying turn after context-overflow compaction', { turn });
+    } else {
+      turn++;
+      callbacks.onTurnStart(turn);
+      log.debug('turn start', { turn, maxTurns: config.maxTurns, mode: effectiveMode });
+    }
 
     const activeDefinitions = toolSurface.activeDefinitions();
     const messages = await buildMessages(
@@ -362,6 +375,36 @@ export async function runAgentLoop(
     // any partial assistant text/tool call metadata in returned history so
     // callers that persist sessions do not lose what was already rendered.
     if (streamError) {
+      const canRecoverContextOverflow =
+        callbacks.onCompact &&
+        forcedCompactTurn !== turn &&
+        assistantContent.length === 0 &&
+        toolCalls.length === 0 &&
+        isContextOverflowError(streamError);
+      if (canRecoverContextOverflow) {
+        forcedCompactTurn = turn;
+        log.warn('provider context overflow; forcing compaction before retry', {
+          turn,
+          historyLength: newHistory.length,
+          error: streamError,
+        });
+        try {
+          const result = await callbacks.onCompact!(newHistory, lastUsage);
+          if (result.status === 'compacted') {
+            newHistory.length = 0;
+            newHistory.push(...result.replacementHistory);
+            lastUsage = null;
+            lastCompactAttemptKey = null;
+            retrySameTurn = true;
+            continue;
+          }
+          log.warn('context-overflow compaction did not complete', { status: result.status });
+        } catch (error) {
+          log.warn('context-overflow compaction failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
       log.warn('stream error', {
         error: streamError,
         contentLen: assistantContent.length,
@@ -798,7 +841,15 @@ export async function runAgentLoop(
     }
   }
 
-  if (config.maxTurns != null && config.maxTurns > 0 && turn >= config.maxTurns) {
+  const finalMessage = newHistory.at(-1);
+  if (
+    config.maxTurns != null &&
+    config.maxTurns > 0 &&
+    turn >= config.maxTurns &&
+    finalMessage?.role === 'assistant' &&
+    (finalMessage.toolCalls?.length ?? 0) > 0 &&
+    !signal?.aborted
+  ) {
     log.warn('max turns reached', { maxTurns: config.maxTurns });
     callbacks.onError(
       `Reached max turns (${config.maxTurns}). Refine your prompt or increase BOOK_MAX_TURNS.`,

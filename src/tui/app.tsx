@@ -36,6 +36,7 @@ import type { AgentConfig } from '../types/runtime.js';
 import type { CommandContext } from '../types/commands.js';
 import type { RewindSnapshotStoreInterface, SessionStoreInterface } from '../types/sessions.js';
 import type { SessionBootstrap } from '../session/resolve.js';
+import { displaySessionName } from '../session/name.js';
 import { DensityContext, resolveTuiDensity } from './density.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
 import { parseSlashInput } from '../commands/resolve.js';
@@ -149,6 +150,7 @@ interface AppProps {
  *   Ctrl+J   — insert newline
  *   PgUp/PgDn, Ctrl+U/Ctrl+D — scroll transcript
  *   Ctrl+Home/Ctrl+End — jump to transcript start/latest
+ *   Shift+drag — select terminal text for copying
  *   Alt+M    — cycle permission mode
  *   Alt+P    — open model picker
  *   Shift+Tab — cycle permission mode
@@ -1219,7 +1221,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                     />
                     <HelpRow
                       label="Session"
-                      description={`${sessionName ? `${sessionName} · ` : ''}${sessionId}`}
+                      description={displaySessionName(sessionName)}
                       theme={theme}
                     />
                     <HelpRow label="Workspace" description={config.workspace} theme={theme} />
@@ -1407,6 +1409,11 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                     <HelpRow label="Alt+P" description="Open model picker" theme={theme} />
                     <HelpRow label="Up/Down" description="Navigate input history" theme={theme} />
                     <HelpRow label="PgUp/PgDn" description="Scroll transcript" theme={theme} />
+                    <HelpRow
+                      label="Shift+drag"
+                      description="Select terminal text for copying"
+                      theme={theme}
+                    />
                     <HelpRow
                       label="Ctrl+U/Ctrl+D"
                       description="Scroll transcript half a page"

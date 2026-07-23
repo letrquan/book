@@ -31,9 +31,39 @@ describe('managed-agent projections', () => {
     expect(summary.finishedAt).toBe(record.updatedAt);
   });
 
-  it('bounds completion text before it enters the parent mailbox', () => {
-    const completion = projectAgentCompletion({ ...record, result: 'x'.repeat(3000) });
-    expect(completion.summary?.length).toBe(2000);
+  it('preserves normal-sized completion text for the parent', () => {
+    const result = 'x'.repeat(20_522);
+    const completion = projectAgentCompletion({ ...record, result });
+    expect(completion.summary).toBe(result);
+    expect(completion.summaryCharacters).toBe(20_522);
+    expect(completion.summaryTruncated).toBe(false);
+  });
+
+  it('keeps list/status summaries compact while reporting the full size', () => {
+    const result = 'x'.repeat(3000);
+    const summary = projectAgentSummary({ ...record, result });
+    expect(summary.summary?.length).toBe(2000);
+    expect(summary.summaryCharacters).toBe(3000);
+    expect(summary.summaryTruncated).toBe(true);
+  });
+
+  it('bounds unusually large completion text and reports truncation', () => {
+    const result = 'x'.repeat(50 * 1024 + 1);
+    const completion = projectAgentCompletion({ ...record, result });
+    expect(completion.summary?.length).toBe(50 * 1024);
     expect(completion.summary?.endsWith('...')).toBe(true);
+    expect(completion.summaryCharacters).toBe(result.length);
+    expect(completion.summaryTruncated).toBe(true);
+  });
+
+  it('reports error length and truncation separately from the summary', () => {
+    const error = 'failure '.repeat(7000);
+    const completion = projectAgentCompletion({ ...record, result: undefined, error });
+    expect(completion.summaryCharacters).toBe(0);
+    expect(completion.summaryTruncated).toBe(false);
+    expect(completion.error?.length).toBeLessThanOrEqual(50 * 1024);
+    expect(completion.error?.endsWith('...')).toBe(true);
+    expect(completion.errorCharacters).toBe(error.length);
+    expect(completion.errorTruncated).toBe(true);
   });
 });

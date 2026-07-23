@@ -130,7 +130,7 @@ function agentRoutingSection(config: AgentConfig): string {
   if (config.settings.agents.mode === 'manual') {
     return [
       '## Managed delegation',
-      `Mode: manual; concurrency: ${config.settings.agents.maxConcurrent}; depth: ${config.settings.agents.maxDepth}.`,
+      `Mode: manual; concurrency: ${config.settings.agents.maxConcurrent}; outstanding spawn cap: ${config.settings.agents.maxSpawned}; depth: ${config.settings.agents.maxDepth}.`,
       'Use managed agents only when the user explicitly requests delegation.',
       'Explorer works read-only without Git. Patcher and validator require Git worktree isolation.',
       'Patch work remains isolated and requires a distinct validator pass before AgentApply.',
@@ -138,7 +138,7 @@ function agentRoutingSection(config: AgentConfig): string {
   }
   return [
     '## Managed delegation',
-    `Mode: ${config.settings.agents.mode}; concurrency: ${config.settings.agents.maxConcurrent}; depth: ${config.settings.agents.maxDepth}.`,
+    `Mode: ${config.settings.agents.mode}; concurrency: ${config.settings.agents.maxConcurrent}; outstanding spawn cap: ${config.settings.agents.maxSpawned}; depth: ${config.settings.agents.maxDepth}.`,
     'Use AgentSpawn with the explorer profile for broad codebase exploration or research expected to require more than three discovery queries.',
     'When invoking AgentSpawn, do not narrate the delegation in assistant text; the host renders the managed-agent activity and delivers its result automatically.',
     'Give each child a self-contained prompt with one objective, a narrow scope, and an explicit concise deliverable. Ask for a short referenced handoff, not a repository tour or raw search output.',

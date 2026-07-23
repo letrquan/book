@@ -95,4 +95,61 @@ describe('managed-agent synchronous delivery', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('reads oversized terminal results through bounded AgentRead chunks', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'book-agent-read-'));
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const result = 'x'.repeat(60_000);
+    const manager = new AgentManager(config, [], {
+      storeRoot: root,
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history) => [
+        ...history,
+        {
+          id: 'assistant-large',
+          role: 'assistant',
+          content: result,
+          includeInContext: true,
+          timestamp: 1,
+        },
+      ],
+    });
+    const runtime = new SessionRuntime();
+    runtime.agentManager = manager;
+    const context: ToolContext = {
+      workspaceRoot: root,
+      env: {},
+      agentConfig: config,
+      availableTools: [],
+      currentMode: 'bypassPermissions',
+      runtime,
+    };
+
+    try {
+      const spawned = await manager.spawn({ agent: 'explorer', prompt: 'large' });
+      await manager.wait(spawned.id, 1000);
+      const readTool = agentLifecycleTools.find((tool) => tool.name === 'AgentRead')!;
+      const first = await readTool.execute({ agentId: spawned.id, limit: 40_000 }, context);
+      expect(first.status).toBe('success');
+      expect(first.data).toMatchObject({
+        offset: 0,
+        nextOffset: 40_000,
+        totalCharacters: 60_000,
+        truncated: true,
+      });
+      const second = await readTool.execute(
+        { agentId: spawned.id, offset: 40_000, limit: 40_000 },
+        context,
+      );
+      expect(second.data).toMatchObject({
+        offset: 40_000,
+        totalCharacters: 60_000,
+        truncated: false,
+      });
+    } finally {
+      manager.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AgentLoopRunner } from './agent-session.js';
 import { AgentSession } from './agent-session.js';
 import type { ToolRegistry } from '../tools/registry.js';
@@ -214,6 +214,7 @@ describe('AgentSession', () => {
   it('prepares checkpoint and user timeline records outside the host layer', async () => {
     const session = new AgentSession();
     const records: SessionRecord[] = [];
+    const metaPatches: Array<[string, { name?: string }]> = [];
     const config = defaultConfig();
     const userMessage: Message = {
       id: 'user-1',
@@ -228,12 +229,16 @@ describe('AgentSession', () => {
       sessionId: 'session-1',
       displayMessage: 'hello',
       userMessage,
-      timelineStore: { append: (_id, record) => records.push(record) },
+      timelineStore: {
+        append: (_id, record) => records.push(record),
+        patchMeta: (id, patch) => metaPatches.push([id, patch]),
+      },
     });
 
     expect(result).toMatchObject({
       status: 'prepared',
       contextMessage: 'hello',
+      sessionName: 'Hello',
       rewindTarget: {
         userEventId: 'user-1',
         prompt: 'hello',
@@ -242,8 +247,31 @@ describe('AgentSession', () => {
       },
     });
     expect(records.map((record) => record.type)).toEqual(['turn_checkpoint', 'user']);
+    expect(metaPatches).toEqual([['session-1', { name: 'Hello' }]]);
     expect(userMessage.contextContent).toBeUndefined();
     expect(userMessage.fileObservations).toEqual([]);
+  });
+
+  it('preserves an explicit session name when recording the first prompt', async () => {
+    const patchMeta = vi.fn();
+    const result = await new AgentSession().recordUserMessage({
+      config: defaultConfig(),
+      sessionId: 'session-1',
+      sessionName: 'Release work',
+      displayMessage: 'fix the release workflow',
+      userMessage: {
+        id: 'user-named',
+        role: 'user',
+        content: 'fix the release workflow',
+        includeInContext: true,
+        timestamp: 10,
+      },
+      timelineStore: { append: () => {}, patchMeta },
+      expandShellInput: false,
+    });
+
+    expect(result.sessionName).toBe('Release work');
+    expect(patchMeta).not.toHaveBeenCalled();
   });
 
   it('records checkpoint-free host input without enabling shell expansion', async () => {

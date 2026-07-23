@@ -7,6 +7,44 @@ import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
 import { askUserQuestionTools } from '../tools/ask-user-question.js';
 import { toolSuccess } from '../tools/result.js';
 import type { Provider } from '../provider/index.js';
+import type { CompactResult } from '../types/sessions.js';
+
+function compactedForRetry(): Extract<CompactResult, { status: 'compacted' }> {
+  return {
+    status: 'compacted',
+    trigger: 'auto',
+    replacementHistory: [
+      {
+        id: 'checkpoint-retry',
+        role: 'assistant',
+        content: 'compact summary',
+        kind: 'checkpoint',
+        includeInContext: true,
+        timestamp: 2,
+      },
+    ],
+    summary: 'compact summary',
+    compactId: 'compact-retry',
+    generation: 1,
+    checkpoint: {
+      version: 2,
+      generation: 1,
+      state: { summary: 'compact summary', status: 'active' },
+      constraints: [],
+      files: [],
+      episodes: [],
+      openThreads: [],
+      statistics: { summarizedMessages: 1, retainedMessages: 0, preTokens: 100, postTokens: 10 },
+    },
+    checkpointVersion: 2,
+    summarizedCount: 1,
+    retainedCount: 0,
+    postContextTokens: 10,
+    preMessageCount: 2,
+    strategy: 'single-pass',
+    modelCalls: 1,
+  };
+}
 
 const config = defaultConfig();
 
@@ -37,6 +75,74 @@ function noopCallbacks(overrides: Partial<AgentLoopCallbacks> = {}): AgentLoopCa
 }
 
 describe('runAgentLoop streaming render callbacks', () => {
+  it('compacts and retries once when the provider rejects an oversized context', async () => {
+    let providerCalls = 0;
+    const seenMessageContents: string[][] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        providerCalls++;
+        seenMessageContents.push(messages.map((message) => String(message.content)));
+        if (providerCalls === 1) {
+          yield { type: 'error', error: 'API Error: 413 request entity too large' };
+          return;
+        }
+        yield { type: 'text', content: 'recovered' };
+        yield { type: 'done' };
+      },
+    };
+    const compact = vi.fn(async () => compactedForRetry());
+    const onError = vi.fn();
+    let turnStarts = 0;
+
+    const result = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onError,
+        onCompact: compact,
+        onTurnStart: () => {
+          turnStarts++;
+        },
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(providerCalls).toBe(2);
+    expect(compact).toHaveBeenCalledOnce();
+    expect(onError).not.toHaveBeenCalled();
+    expect(turnStarts).toBe(1);
+    expect(seenMessageContents[1]).toContain('compact summary');
+    expect(result.at(-1)?.content).toBe('recovered');
+  });
+
+  it('does not compact again after a second context overflow on the same turn', async () => {
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'error', error: 'maximum context length exceeded' };
+      },
+    };
+    const compact = vi.fn(async () => compactedForRetry());
+    const onError = vi.fn();
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onCompact: compact, onError }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith('maximum context length exceeded');
+  });
+
   it('uses an injected provider port without resolving a concrete adapter', async () => {
     const provider: Provider = {
       id: 'scripted',

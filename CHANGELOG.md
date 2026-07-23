@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Managed-agent hardening with an outstanding spawn cap, paginated `AgentRead` result recovery, context-budgeted and idempotent completion delivery, bounded retries, per-record version-3 persistence, managed Git artifact cleanup, and per-run telemetry generations.
 - Claude-style managed-agent contracts: purpose-named runs distinct from reusable profiles, durable automatic parent completion delivery, semantic lifecycle rows, a prompt-adjacent `/tasks` panel, resumable child transcripts, version-2 state migration, profile model resolution, compact lifecycle projections, advisory three-query Explore routing, actionable permission errors, multi-host runtime events, read-only non-Git Explore, and explicit third-party agent import previews.
 - Claude-style inline managed-agent activity blocks: live child tool calls in the main transcript, compact `+N tool uses` overflow, bounded realtime result previews, and full-history child detail navigation.
 - Provider-neutral `ToolSearch` with adaptive eager/deferred exposure, fuzzy catalog metadata, next-turn activation, MCP namespace discovery, and session-scoped LRU retention.
@@ -23,6 +24,7 @@ All notable changes to this project are documented in this file.
 ### Changed
 
 - Replaced the separate Agent Center and profile tab with Claude Code's in-session task workflow: `main` and child rows below the prompt, empty-prompt Down then Enter to open a child transcript, `/tasks` for explicit management, `x` to stop or dismiss, and Esc to return.
+- New sessions receive a short title from their first prompt, and the TUI shows session names instead of internal UUIDs.
 - Provider visibility, system-prompt tool summaries, command/skill capabilities, role restrictions, permission modes, runtime availability, and execution now share one resolved tool surface.
 - Tool schemas are closed and centrally validated; model-visible sandbox bypass, backend selection, and generic timeout controls moved back to host configuration.
 - Managed agents are enabled by default in adaptive mode; use `--agents manual` for explicit-only delegation or `--agents off` for the single-agent baseline.
@@ -39,7 +41,7 @@ All notable changes to this project are documented in this file.
 ### Fixed
 
 - Apply interactive permission-mode changes immediately to the active agent loop.
-- Keep terminal-native drag selection and clipboard copy available in the full-screen TUI.
+- Keep mouse-wheel transcript scrolling while allowing terminal copy with Shift+drag.
 - Deliver completed and failed subagent reports to the parent before automatically removing their terminal rows from the prompt-adjacent task panel.
 - Prevent the first submitted TUI message from freezing during a cold rewind snapshot by yielding filesystem checkpoint work and rendering the optimistic turn first.
 - Make `/theme` open a keyboard picker, apply the full app palette, persist the selection, resolve terminal auto mode correctly, and report invalid custom themes.

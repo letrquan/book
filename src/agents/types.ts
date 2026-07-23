@@ -59,6 +59,12 @@ export interface AgentPlanRecord {
   createdAt: number;
 }
 
+export interface AgentRunMetrics {
+  toolCalls: number;
+  compactions: number;
+  retries: number;
+}
+
 export interface AgentSnapshot {
   id: string;
   repoRoot: string;
@@ -127,6 +133,12 @@ export interface AgentRecord {
   completionSequence?: number;
   /** Latest completion generation durably accepted by the parent host. */
   completionDeliveredSequence?: number;
+  /** Monotonic execution generation for resumed/follow-up runs. */
+  runSequence?: number;
+  /** Start and usage for the current execution generation. */
+  runStartedAt?: number;
+  runUsage?: Usage;
+  runMetrics?: AgentRunMetrics;
 }
 
 export interface AgentSummary {
@@ -138,7 +150,11 @@ export interface AgentSummary {
   isolation: AgentIsolation;
   currentActivity?: AgentActivitySummary;
   summary?: string;
+  summaryCharacters?: number;
+  summaryTruncated?: boolean;
   error?: string;
+  errorCharacters?: number;
+  errorTruncated?: boolean;
   usage?: Usage;
   createdAt: number;
   startedAt?: number;

@@ -39,9 +39,12 @@ import {
 } from './agent-events.js';
 import { selectSession, type SessionBootstrap } from './resolve.js';
 import { SessionRuntime, type SessionRuntimeOptions } from './runtime.js';
+import { deriveSessionName } from './name.js';
 
 export type AgentLoopRunner = typeof runAgentLoop;
 type AgentLoopOptions = NonNullable<Parameters<AgentLoopRunner>[6]>;
+type SessionTimelineStore = Pick<SessionStoreInterface, 'append'> &
+  Partial<Pick<SessionStoreInterface, 'patchMeta'>>;
 
 export interface AgentSessionRunCallbacks {
   onEvent: (event: AgentEvent) => void;
@@ -84,8 +87,9 @@ export interface AgentSessionPrepareSendRequest {
   displayMessage: string;
   contextMessage?: string;
   userMessage: Message;
+  sessionName?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
-  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+  timelineStore?: SessionTimelineStore;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
@@ -97,7 +101,8 @@ export interface AgentSessionRecordUserRequest {
   displayMessage: string;
   contextMessage?: string;
   userMessage: Message;
-  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+  sessionName?: string;
+  timelineStore?: SessionTimelineStore;
   expandShellInput?: boolean;
   runtime?: SessionRuntime;
   signal?: AbortSignal;
@@ -117,8 +122,9 @@ export interface AgentSessionSendRequest {
   history: Message[] | (() => Message[]);
   mode?: PermissionMode;
   sessionId: string;
+  sessionName?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
-  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+  timelineStore?: SessionTimelineStore;
   registryStore?: SessionStoreInterface;
   callbacks: AgentSessionRunCallbacks;
   options?: Omit<
@@ -161,7 +167,12 @@ export interface AgentSessionCompactOutcome {
 }
 
 export type AgentSessionPrepareSendResult =
-  | { status: 'prepared'; contextMessage: string; rewindTarget: RewindTarget }
+  | {
+      status: 'prepared';
+      contextMessage: string;
+      rewindTarget: RewindTarget;
+      sessionName: string;
+    }
   | { status: 'cancelled' };
 
 export interface AgentSessionCancelResult {
@@ -268,6 +279,7 @@ export class AgentSession {
           displayMessage: request.displayMessage,
           contextMessage: request.contextMessage,
           userMessage,
+          sessionName: request.sessionName,
           snapshotStore: request.snapshotStore,
           timelineStore: request.timelineStore,
           signal: control.signal,
@@ -492,14 +504,14 @@ export class AgentSession {
     } satisfies SessionRecord);
 
     // Expansion follows checkpoint capture so its side effects belong to this rewind boundary.
-    const { contextMessage } = await this.recordUserMessage(request);
+    const { contextMessage, sessionName } = await this.recordUserMessage(request);
 
-    return { status: 'prepared', contextMessage, rewindTarget };
+    return { status: 'prepared', contextMessage, rewindTarget, sessionName };
   }
 
   async recordUserMessage(
     request: AgentSessionRecordUserRequest,
-  ): Promise<{ contextMessage: string }> {
+  ): Promise<{ contextMessage: string; sessionName: string }> {
     const expandedMentions =
       request.contextMessage === undefined
         ? expandAtMentions(request.displayMessage, request.config.workspace)
@@ -536,7 +548,12 @@ export class AgentSession {
       },
     } satisfies SessionRecord);
 
-    return { contextMessage };
+    const sessionName = request.sessionName?.trim() || deriveSessionName(request.displayMessage);
+    if (!request.sessionName?.trim()) {
+      request.timelineStore?.patchMeta?.(request.sessionId, { name: sessionName });
+    }
+
+    return { contextMessage, sessionName };
   }
 
   async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {

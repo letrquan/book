@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { AgentCompletionNotification } from '../../agents/types.js';
+import { takeAgentCompletionBatch } from '../../agents/completion-notification.js';
 import type { QueuedAgentCompletion } from './useManagedAgents.js';
 
 export function useAgentCompletionDelivery(options: {
@@ -12,13 +13,27 @@ export function useAgentCompletionDelivery(options: {
   const deliveryInFlight = useRef(false);
   const deliveredIds = useRef(new Set<string>());
   const mounted = useRef(true);
+  const retryAttempts = useRef(0);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pendingKey = useRef('');
   const latest = useRef(options);
   const drain = useRef<() => void>(() => {});
   latest.current = options;
 
+  const scheduleRetry = () => {
+    if (!mounted.current || retryTimer.current || retryAttempts.current >= 5) return;
+    const delayMs = Math.min(1000 * 2 ** retryAttempts.current, 16_000);
+    retryAttempts.current++;
+    retryTimer.current = setTimeout(() => {
+      retryTimer.current = undefined;
+      drain.current();
+    }, delayMs);
+  };
+
   drain.current = () => {
     const current = latest.current;
-    if (!mounted.current || current.blocked || deliveryInFlight.current) return;
+    if (!mounted.current || current.blocked || deliveryInFlight.current || retryTimer.current)
+      return;
     const pending = current.pending.filter(
       (item) =>
         item.notification.parentSessionId === current.parentSessionId &&
@@ -26,35 +41,56 @@ export function useAgentCompletionDelivery(options: {
     );
     if (pending.length === 0) return;
 
+    const batchNotifications = takeAgentCompletionBatch(pending.map((item) => item.notification));
+    const batchIds = new Set(batchNotifications.map((notification) => notification.deliveryId));
+    const batch = pending.filter((item) => batchIds.has(item.notification.deliveryId));
     deliveryInFlight.current = true;
-    let accepted = false;
+    let acknowledged = false;
     void current
-      .deliver(pending.map((item) => item.notification))
+      .deliver(batchNotifications)
       .then(async (nextAccepted) => {
-        accepted = nextAccepted;
-        if (!accepted || !mounted.current) return;
-        const ids = pending.map((item) => item.id);
-        await current.acknowledge(ids);
+        if (!nextAccepted || !mounted.current) {
+          scheduleRetry();
+          return;
+        }
+        const ids = batch.map((item) => item.id);
+        try {
+          await current.acknowledge(ids);
+        } catch {
+          scheduleRetry();
+          return;
+        }
         if (!mounted.current) return;
+        retryAttempts.current = 0;
         for (const id of ids) deliveredIds.current.add(id);
+        acknowledged = true;
       })
       .catch(() => {
-        accepted = false;
+        scheduleRetry();
       })
       .finally(() => {
         deliveryInFlight.current = false;
-        if (accepted) queueMicrotask(() => drain.current());
+        if (acknowledged) queueMicrotask(() => drain.current());
       });
   };
 
   useEffect(() => {
+    const nextKey = options.pending.map((item) => item.id).join('\0');
+    if (nextKey !== pendingKey.current) {
+      pendingKey.current = nextKey;
+      retryAttempts.current = 0;
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+      retryTimer.current = undefined;
+    }
     drain.current();
   }, [options.blocked, options.parentSessionId, options.pending]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+      retryTimer.current = undefined;
+    };
+  }, []);
 }
