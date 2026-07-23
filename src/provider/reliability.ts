@@ -34,12 +34,16 @@ export function classifyHttpStatus(status: number): {
 }
 
 export function formatApiError(status: number, body: string): string {
-  const { code } = classifyHttpStatus(status);
+  const statusCode = classifyHttpStatus(status).code;
+  const code =
+    statusCode === 'bad_request' && isContextOverflowError(body)
+      ? ('context_overflow' as const)
+      : statusCode;
   const detail = safeErrorDetail(body);
   const base = `API Error: ${status}`;
   switch (code) {
     case 'context_overflow':
-      return `${base} ${detail}. The request exceeds the provider context limit.`;
+      return `${base} ${detail || 'Input exceeds the model context window.'} Reduce the conversation or tool output and try again.`;
     case 'rate_limited':
       return `${base} ${detail}. This may be a temporary capacity issue. Try again in a moment.`;
     case 'overloaded':
@@ -57,21 +61,27 @@ export function formatApiError(status: number, body: string): string {
   }
 }
 
-/** Detect provider errors that can be recovered by compacting conversation history. */
+/** Detect provider/router responses that mean the input, rather than transport, is too large. */
 export function isContextOverflowError(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  const normalized = (error instanceof Error ? error.message : String(error)).toLowerCase();
   return (
-    /\b(?:api error:\s*)?413\b/.test(message) ||
-    message.includes('request entity too large') ||
-    message.includes('payload too large') ||
-    message.includes('request too large') ||
-    message.includes('context_length_exceeded') ||
-    message.includes('maximum context length') ||
-    message.includes('context window') ||
-    message.includes('prompt is too long') ||
-    message.includes('prompt too long') ||
-    message.includes('input is too long') ||
-    message.includes('too many tokens')
+    /\b(?:api error:\s*)?413\b/.test(normalized) ||
+    normalized.includes('request entity too large') ||
+    normalized.includes('payload too large') ||
+    normalized.includes('request too large') ||
+    normalized.includes('context_length_exceeded') ||
+    normalized.includes('maximum context length') ||
+    normalized.includes('context window') ||
+    normalized.includes('prompt too long') ||
+    /prompt\s+is\s+too\s+long/.test(normalized) ||
+    /input\s+(?:is\s+)?too\s+long/.test(normalized) ||
+    normalized.includes('too many tokens') ||
+    /input\s+(?:token\s+count\s+)?exceeds?.*(?:context|limit|maximum)/.test(normalized) ||
+    /input\s+exceeds?.*(?:context\s+window|context\s+length|token\s+limit)/.test(normalized) ||
+    /maximum\s+context|context\s+(?:length|window|size).*(?:exceed|overflow|too\s+(?:long|large)|maximum)/.test(
+      normalized,
+    ) ||
+    /too\s+many\s+(?:input\s+)?tokens|request\s+too\s+large.*token/.test(normalized)
   );
 }
 

@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runAgentLoop } from './loop.js';
 import { createRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
@@ -465,6 +468,171 @@ describe('runAgentLoop abort', () => {
 });
 
 describe('runAgentLoop error handling', () => {
+  it('clips a newly produced oversized tool result before the next provider request', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-context-'));
+    let providerTurn = 0;
+    let secondRequestToolContent = '';
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        providerTurn++;
+        if (providerTurn === 1) {
+          yield { type: 'tool_call', toolCall: { id: 'big_1', name: 'Big', arguments: {} } };
+        } else {
+          secondRequestToolContent = String(messages.at(-1)?.content ?? '');
+          yield { type: 'text', content: 'recovered' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    registry.register({
+      name: 'Big',
+      description: 'Return a large result',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => toolSuccess('x'.repeat(100_000)),
+    });
+
+    try {
+      const result = await runAgentLoop(
+        defaultConfig({
+          workspace,
+          maxTurns: 2,
+          maxTokens: 4_000,
+          autoCompactEnabled: false,
+          modelInfo: { contextWindow: 16_000 },
+        }),
+        registry,
+        'inspect',
+        [],
+        noopCallbacks(),
+        'auto',
+        { provider, isNewSession: false, toolOutputRoot: join(workspace, 'tool-output') },
+      );
+
+      expect(providerTurn).toBe(2);
+      expect(secondRequestToolContent.length).toBeLessThan(10_000);
+      expect(result.at(-1)?.content).toBe('recovered');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('reserves the complete requested output budget during preflight', async () => {
+    let providerToolContent = '';
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        providerToolContent = String(messages.find((message) => message.role === 'tool')?.content);
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done' };
+      },
+    };
+    const history = [
+      {
+        id: 'budget-user',
+        role: 'user' as const,
+        content: 'inspect',
+        includeInContext: true,
+        timestamp: 0,
+      },
+      {
+        id: 'budget-assistant',
+        role: 'assistant' as const,
+        content: '',
+        includeInContext: true,
+        toolCalls: [{ id: 'budget-tool', name: 'Read', arguments: {} }],
+        toolResults: [toolSuccess('z'.repeat(80_000), { toolCallId: 'budget-tool' })],
+        timestamp: 0,
+      },
+    ];
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        maxTokens: 80_000,
+        autoCompactEnabled: false,
+        modelInfo: { contextWindow: 100_000, maxOutputTokens: 80_000 },
+      }),
+      createRegistry(),
+      'continue',
+      history,
+      noopCallbacks(),
+      'auto',
+      { provider, isNewSession: false },
+    );
+
+    expect(providerToolContent.length).toBeLessThan(10_000);
+  });
+
+  it('recovers once from a router context error without persisting the error as an answer', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-overflow-'));
+    let providerTurn = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerTurn++;
+        if (providerTurn === 1) {
+          yield {
+            type: 'text',
+            content: '[Error] Your input exceeds the context window of this model.',
+          };
+        } else {
+          yield { type: 'text', content: 'answer after reduction' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    const largeHistory = [
+      {
+        id: 'old-user',
+        role: 'user' as const,
+        content: 'inspect',
+        includeInContext: true,
+        timestamp: 0,
+      },
+      {
+        id: 'old-assistant',
+        role: 'assistant' as const,
+        content: '',
+        includeInContext: true,
+        toolCalls: [{ id: 'old-tool', name: 'Read', arguments: {} }],
+        toolResults: [toolSuccess('y'.repeat(20_000), { toolCallId: 'old-tool' })],
+        timestamp: 0,
+      },
+    ];
+    const errors: string[] = [];
+    const streamedText: string[] = [];
+    try {
+      const result = await runAgentLoop(
+        defaultConfig({
+          workspace,
+          maxTurns: 2,
+          maxTokens: 4_000,
+          autoCompactEnabled: false,
+          modelInfo: { contextWindow: 100_000 },
+        }),
+        createRegistry(),
+        'continue',
+        largeHistory,
+        noopCallbacks({
+          onError: (error) => errors.push(error),
+          onText: (text) => streamedText.push(text),
+        }),
+        'auto',
+        { provider, isNewSession: false },
+      );
+
+      expect(providerTurn).toBe(2);
+      expect(errors).toEqual([]);
+      expect(streamedText).toEqual(['answer after reduction']);
+      expect(result.at(-1)?.content).toBe('answer after reduction');
+      expect(result.some((message) => message.content.includes('[Error]'))).toBe(false);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('calls onError and stops loop when stream yields error event', async () => {
     vi.stubGlobal(
       'fetch',

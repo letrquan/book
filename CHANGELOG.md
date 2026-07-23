@@ -40,6 +40,7 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Prevent context-window failures from oversized tool output by skipping binary `Grep` inputs, bounding search and generic tool results, preflighting complete provider requests, and compacting or clipping once before retrying recognized overflow errors.
 - Apply interactive permission-mode changes immediately to the active agent loop.
 - Keep mouse-wheel transcript scrolling while allowing terminal copy with Shift+drag.
 - Deliver completed and failed subagent reports to the parent before automatically removing their terminal rows from the prompt-adjacent task panel.

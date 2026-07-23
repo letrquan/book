@@ -9,7 +9,10 @@ import type {
   ConversationCheckpointV2,
 } from '../types/sessions.js';
 import type { Message, Usage } from '../types/messages.js';
+import type { ProviderMessage, SystemPromptZones } from '../types/providers.js';
+import type { ToolDefinition } from '../types/tools.js';
 import { createProvider, type Provider } from '../provider/index.js';
+import { isContextOverflowError } from '../provider/reliability.js';
 import { runHooks } from '../hooks.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import {
@@ -200,6 +203,34 @@ export function estimateHistoryTokens(messages: readonly Message[]): number {
     (total, message) => total + (message.includeInContext ? estimateMessageTokens(message) : 0),
     0,
   );
+}
+
+function providerContentText(content: ProviderMessage['content']): string {
+  if (content === null) return '';
+  if (typeof content === 'string') return content;
+  const zones = content as SystemPromptZones;
+  return [zones.cachedPrefix, zones.dynamicSuffix].filter(Boolean).join('\n\n');
+}
+
+/** Estimate the complete provider request, including system prompt and active tool schemas. */
+export function estimateProviderRequestTokens(
+  messages: readonly ProviderMessage[],
+  tools: readonly ToolDefinition[],
+): number {
+  let tokens = 0;
+  for (const message of messages) {
+    tokens += estimateTextTokens(providerContentText(message.content)) + MESSAGE_OVERHEAD_TOKENS;
+    if (message.tool_calls) tokens += estimateTextTokens(JSON.stringify(message.tool_calls));
+    if (message.tool_call_id) tokens += estimateTextTokens(message.tool_call_id);
+  }
+  for (const tool of tools) {
+    tokens +=
+      estimateTextTokens(tool.name) +
+      estimateTextTokens(tool.description) +
+      estimateTextTokens(JSON.stringify(tool.inputSchema ?? tool.parameters)) +
+      TOOL_OVERHEAD_TOKENS;
+  }
+  return tokens;
 }
 
 function estimateTextTokens(text: string): number {
@@ -729,17 +760,21 @@ function splitUserLedBundles(messages: readonly Message[]): {
   return { leading, bundles };
 }
 
-function clipBundleToolResults(bundle: readonly Message[]): Message[] {
+export function clipHistoryToolResults(
+  bundle: readonly Message[],
+  maxTokens = RETAINED_TOOL_RESULT_MAX_TOKENS,
+): Message[] {
   return bundle.map((message) => {
     if (!message.toolResults?.length) return message;
     return {
       ...message,
       toolResults: message.toolResults.map((result) => {
         const content = result.content;
-        if (estimateTextTokens(content) <= RETAINED_TOOL_RESULT_MAX_TOKENS) return result;
-        const maxChars = RETAINED_TOOL_RESULT_MAX_TOKENS * 4;
+        if (estimateTextTokens(content) <= maxTokens) return result;
+        const maxChars = maxTokens * 4;
         const half = Math.floor((maxChars - 100) / 2);
         const ref =
+          result.artifacts?.outputPath ??
           result.artifacts?.eventRef ??
           `session://current/tool-result/${message.id}/${result.toolCallId}`;
         const clipped = `${content.slice(0, half)}\n[... compacted tool output; retrieve ${ref} ...]\n${content.slice(-half)}`;
@@ -754,6 +789,10 @@ function clipBundleToolResults(bundle: readonly Message[]): Message[] {
       }),
     };
   });
+}
+
+function clipBundleToolResults(bundle: readonly Message[]): Message[] {
+  return clipHistoryToolResults(bundle);
 }
 
 function planReduction(
@@ -962,18 +1001,6 @@ async function generateCheckpoint(
     };
   }
   return { ok: true, text };
-}
-
-function isContextOverflowError(error: string): boolean {
-  const normalized = error.toLowerCase();
-  return (
-    /maximum context|context (?:length|window|size).*(?:exceed|overflow|too (?:long|large)|maximum)/.test(
-      normalized,
-    ) ||
-    /too many (?:input )?tokens|prompt (?:is )?too long|input.*token.*limit|request too large.*token/.test(
-      normalized,
-    )
-  );
 }
 
 function parseAndValidateCheckpoint(

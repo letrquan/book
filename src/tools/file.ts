@@ -1,4 +1,5 @@
-import { readFile as readTextFile, writeFile as writeTextFile } from 'fs/promises';
+import { open, readFile as readTextFile, writeFile as writeTextFile } from 'fs/promises';
+import { extname } from 'node:path';
 import fg from 'fast-glob';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
@@ -10,6 +11,78 @@ import { toolFailure, toolSuccess } from './result.js';
 const GLOB_OUTPUT_LIMIT = 1000;
 const PATH_YIELD_INTERVAL = 128;
 const LINE_YIELD_INTERVAL = 2_048;
+const GREP_MATCH_LIMIT = 100;
+const GREP_LINE_MAX_CHARS = 2_000;
+const GREP_OUTPUT_MAX_BYTES = 50 * 1024;
+const GREP_OUTPUT_NOTICE_RESERVE_BYTES = 256;
+const GREP_BINARY_SAMPLE_BYTES = 8 * 1024;
+const GREP_DEFAULT_IGNORES = [
+  '**/.git/**',
+  '**/.book/tool-output/**',
+  '**/node_modules/**',
+  '**/dist/**',
+  '**/coverage/**',
+  '**/bin/**',
+  '**/obj/**',
+];
+const GREP_BINARY_EXTENSIONS = new Set([
+  '.7z',
+  '.a',
+  '.bin',
+  '.bmp',
+  '.class',
+  '.dll',
+  '.dylib',
+  '.eot',
+  '.exe',
+  '.gif',
+  '.gz',
+  '.ico',
+  '.jar',
+  '.jpeg',
+  '.jpg',
+  '.lib',
+  '.mp3',
+  '.mp4',
+  '.o',
+  '.obj',
+  '.otf',
+  '.pdf',
+  '.png',
+  '.so',
+  '.tar',
+  '.ttf',
+  '.webm',
+  '.webp',
+  '.woff',
+  '.woff2',
+  '.zip',
+]);
+
+function clipGrepText(text: string): string {
+  if (text.length <= GREP_LINE_MAX_CHARS) return text;
+  return `${text.slice(0, GREP_LINE_MAX_CHARS - 24)}... [line truncated]`;
+}
+
+async function isBinaryFile(filePath: string): Promise<boolean> {
+  if (GREP_BINARY_EXTENSIONS.has(extname(filePath).toLowerCase())) return true;
+
+  const handle = await open(filePath, 'r');
+  try {
+    const sample = Buffer.allocUnsafe(GREP_BINARY_SAMPLE_BYTES);
+    const { bytesRead } = await handle.read(sample, 0, sample.byteLength, 0);
+    if (bytesRead === 0) return false;
+    let controlBytes = 0;
+    for (let index = 0; index < bytesRead; index++) {
+      const byte = sample[index];
+      if (byte === 0) return true;
+      if (byte < 7 || (byte > 13 && byte < 32)) controlBytes++;
+    }
+    return controlBytes / bytesRead > 0.1;
+  } finally {
+    await handle.close();
+  }
+}
 
 function isMissingFile(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
@@ -299,7 +372,11 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
   const contextBefore = (args.B as number) ?? 0;
   const contextAfter = (args.A as number) ?? 0;
   const multiline = (args.multiline as boolean) ?? false;
-  const headLimit = (args.head_limit as number) ?? 500;
+  const requestedHeadLimit = (args.head_limit as number) ?? GREP_MATCH_LIMIT;
+  const headLimit = Math.min(
+    GREP_MATCH_LIMIT,
+    Math.max(1, Number.isFinite(requestedHeadLimit) ? Math.floor(requestedHeadLimit) : 1),
+  );
 
   let regex: RegExp;
   try {
@@ -311,7 +388,7 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
   const files = await fg(includePattern, {
     cwd: ctx.workspaceRoot,
     dot: true,
-    ignore: ctx.gitignorePatterns ?? [],
+    ignore: [...GREP_DEFAULT_IGNORES, ...(ctx.gitignorePatterns ?? [])],
   });
   throwIfAborted(ctx.signal);
 
@@ -334,6 +411,7 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
     const { file, filePath } = inWorkspaceFiles[fileIndex];
     let content: string;
     try {
+      if (await isBinaryFile(filePath)) continue;
       content = await readTextFile(filePath, 'utf-8');
     } catch {
       continue;
@@ -357,7 +435,7 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
           }
         }
         countedUntil = match.index;
-        matches.push({ line, text: match[0].replace(/\n/g, '\\n') });
+        matches.push({ line, text: clipGrepText(match[0].replace(/\n/g, '\\n')) });
         totalMatches++;
         iterations++;
         if (totalMatches >= headLimit) break;
@@ -368,7 +446,7 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
       for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         regex.lastIndex = 0;
         if (regex.test(lines[lineIndex])) {
-          matches.push({ line: lineIndex + 1, text: lines[lineIndex] });
+          matches.push({ line: lineIndex + 1, text: clipGrepText(lines[lineIndex]) });
           totalMatches++;
           if (totalMatches >= headLimit) break;
         }
@@ -411,6 +489,19 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
   }
 
   const output: string[] = [];
+  let outputBytes = 0;
+  let outputTruncated = false;
+  const appendOutput = (line: string): boolean => {
+    const clippedLine = clipGrepText(line);
+    const additionalBytes = Buffer.byteLength(clippedLine) + (output.length > 0 ? 1 : 0);
+    if (outputBytes + additionalBytes > GREP_OUTPUT_MAX_BYTES - GREP_OUTPUT_NOTICE_RESERVE_BYTES) {
+      outputTruncated = true;
+      return false;
+    }
+    output.push(clippedLine);
+    outputBytes += additionalBytes;
+    return true;
+  };
   for (const [file, result] of matchesByFile) {
     const lines = result.lines ?? [];
     for (const match of result.matches) {
@@ -419,17 +510,20 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
       for (let line = start; line <= end; line++) {
         const text = lines[line - 1] ?? '';
         const marker = line === match.line ? ':' : '-';
-        output.push(`${file}:${line}${marker} ${text}`);
+        if (!appendOutput(`${file}:${line}${marker} ${text}`)) break;
         if (output.length >= headLimit) break;
       }
-      if (output.length >= headLimit) break;
+      if (output.length >= headLimit || outputTruncated) break;
     }
-    if (output.length >= headLimit) break;
+    if (output.length >= headLimit || outputTruncated) break;
     await yieldToEventLoop(ctx.signal);
   }
-  return toolSuccess(output.join('\n') || 'No matches found', {
+  const truncationNotice = outputTruncated
+    ? '\n... (truncated at 50 KB; refine pattern or include)'
+    : '';
+  return toolSuccess((output.join('\n') || 'No matches found') + truncationNotice, {
     data: { mode: outputMode, totalMatches, matches: serializedMatches },
-    pagination: { truncated: totalMatches >= headLimit },
+    pagination: { truncated: totalMatches >= headLimit || outputTruncated },
   });
 }
 
@@ -585,8 +679,9 @@ export const fileTools: ToolDefinition[] = [
         },
         head_limit: {
           type: 'number',
-          description: 'Max matches to return (default 500)',
-          default: 500,
+          description: 'Max matches to return (default and maximum 100)',
+          default: 100,
+          maximum: 100,
         },
       },
       required: ['pattern'],

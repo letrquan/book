@@ -311,6 +311,48 @@ describe('grep', () => {
     expect(JSON.stringify(result.data)).not.toContain('unrelated secret');
   });
 
+  it('skips binary files even when their bytes contain the pattern', async () => {
+    writeFileSync(join(dir, 'native.dll'), Buffer.from('prefix\0needle\0suffix'));
+
+    const result = await grep.execute({ pattern: 'needle', include: '**/*' }, ctx);
+
+    expect(result.content).toBe('No matches found');
+    expect(JSON.stringify(result.data)).not.toContain('native.dll');
+  });
+
+  it('searches supported project files under .book', async () => {
+    mkdirSync(join(dir, '.book', 'commands'), { recursive: true });
+    writeFileSync(join(dir, '.book', 'commands', 'review.md'), 'project-command-marker');
+
+    const result = await grep.execute(
+      { pattern: 'project-command-marker', include: '.book/**/*.md' },
+      ctx,
+    );
+
+    expect(result.content).toContain('.book/commands/review.md');
+  });
+
+  it('caps individual lines and total provider-facing output', async () => {
+    for (let index = 0; index < 100; index++) {
+      writeFileSync(join(dir, `large-${index}.txt`), `needle ${'x'.repeat(10_000)}`);
+    }
+
+    const result = await grep.execute(
+      { pattern: 'needle', include: '*.txt', head_limit: 100 },
+      ctx,
+    );
+    const data = result.data as {
+      matches: Record<string, { matches: Array<{ line: number; text: string }> }>;
+    };
+
+    expect(Buffer.byteLength(result.content)).toBeLessThanOrEqual(50 * 1024);
+    expect(result.content).toContain('line truncated');
+    expect(result.pagination?.truncated).toBe(true);
+    for (const file of Object.values(data.matches)) {
+      for (const match of file.matches) expect(match.text.length).toBeLessThanOrEqual(2_000);
+    }
+  });
+
   it('matches files after workspace path normalization', async () => {
     writeFileSync(join(dir, 'a.ts'), 'const x = 1;');
     const r = await grep.execute({ pattern: 'const', include: '**/*.ts' }, ctx);
