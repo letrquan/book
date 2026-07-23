@@ -102,6 +102,7 @@ describe('managed agent transcript projection', () => {
     expect(output).toContain('explorer(Trace authentication)');
     expect(output).toContain('src/read-1.ts');
     expect(output).toContain('Running in background');
+    expect(output).not.toContain('I delegated the investigation.');
     expect(output).not.toContain('AgentSpawn');
     expect(rootMessage.nestedToolInvocations).toBeUndefined();
   });

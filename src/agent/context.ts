@@ -140,6 +140,8 @@ function agentRoutingSection(config: AgentConfig): string {
     '## Managed delegation',
     `Mode: ${config.settings.agents.mode}; concurrency: ${config.settings.agents.maxConcurrent}; depth: ${config.settings.agents.maxDepth}.`,
     'Use AgentSpawn with the explorer profile for broad codebase exploration or research expected to require more than three discovery queries.',
+    'When invoking AgentSpawn, do not narrate the delegation in assistant text; the host renders the managed-agent activity and delivers its result automatically.',
+    'Give each child a self-contained prompt with one objective, a narrow scope, and an explicit concise deliverable. Ask for a short referenced handoff, not a repository tour or raw search output.',
     'Search directly when the target file or symbol is known and the work should take three queries or fewer. Explorer work stays outside the parent context and returns compact referenced findings. Do not repeat searches already delegated to an explorer.',
     'A single explorer can use the implicit bounded plan. Use AgentPlan for parallel_research, explore_then_patch, or patch_validate topologies.',
     'Keep sequential or tool-dependent work single-agent. Use parallel_research for decomposable research, explore_then_patch for ambiguous implementation, and patch_validate for clear implementation.',

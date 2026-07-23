@@ -9,6 +9,7 @@ import type {
   AgentRuntimeEvent,
 } from '../../agents/types.js';
 import type { UserQuestionRequest } from '../../types/tools.js';
+import { projectAgentSummary } from '../../agents/projections.js';
 import { useManagedAgents, type ManagedAgentState } from './useManagedAgents.js';
 
 afterEach(cleanup);
@@ -56,11 +57,12 @@ function record(id: string, pendingQuestionCreatedAt: number): AgentRecord {
 function completionNotification(
   agentId = 'older',
   status: AgentCompletionNotification['completion']['status'] = 'completed',
+  parentSessionId = 'session-1',
 ): AgentCompletionNotification {
   return {
     deliveryId: `${agentId}:1`,
     sequence: 1,
-    parentSessionId: 'session-1',
+    parentSessionId,
     completion: {
       agentId,
       displayName: agentId,
@@ -225,6 +227,73 @@ describe('useManagedAgents', () => {
     const view = render(<Harness />);
     await vi.waitFor(() => expect(manager.list).toHaveBeenCalled());
     expect(latest?.summaries).toEqual([]);
+    view.unmount();
+  });
+
+  it('shows only agents and completions owned by the active session', async () => {
+    const current = {
+      ...record('current', 20),
+      parentSessionId: 'current-session',
+      status: 'completed' as const,
+      pendingQuestion: undefined,
+      completionSequence: 1,
+      completionDeliveredSequence: 0,
+      finishedAt: 40,
+    };
+    const stale = {
+      ...record('stale', 10),
+      parentSessionId: 'stale-session',
+      status: 'interrupted' as const,
+      pendingQuestion: undefined,
+      completionSequence: 1,
+      completionDeliveredSequence: 0,
+      finishedAt: 30,
+    };
+    let listener: ((event: AgentRuntimeEvent) => void) | undefined;
+    const manager = {
+      list: vi.fn(async () => [stale, current]),
+      listPendingCompletions: vi.fn(async () => [
+        completionNotification('stale', 'interrupted', 'stale-session'),
+        completionNotification('current', 'completed', 'current-session'),
+      ]),
+      subscribe: vi.fn((next: (event: AgentRuntimeEvent) => void) => {
+        listener = next;
+        return vi.fn();
+      }),
+      setInteractivePermissions: vi.fn(),
+    } as unknown as AgentManager;
+    let latest: ManagedAgentState | undefined;
+    function Harness({ sessionId }: { sessionId: string }) {
+      latest = useManagedAgents(manager, sessionId);
+      return <Text>{latest.summaries.map((summary) => summary.agentId).join(',')}</Text>;
+    }
+
+    const view = render(<Harness sessionId="current-session" />);
+    await vi.waitFor(() =>
+      expect(latest?.summaries.map((item) => item.agentId)).toEqual(['current']),
+    );
+    expect(Array.from(latest?.records.keys() ?? [])).toEqual(['current']);
+    expect(latest?.pendingCompletions.map((item) => item.notification.completion.agentId)).toEqual([
+      'current',
+    ]);
+
+    listener?.({
+      type: 'agent_status',
+      agent: projectAgentSummary(stale),
+      parentSessionId: stale.parentSessionId,
+    });
+    listener?.({ type: 'agent_update', agent: stale });
+    await wait(0);
+    expect(latest?.summaries.map((item) => item.agentId)).toEqual(['current']);
+
+    view.rerender(<Harness sessionId="stale-session" />);
+    await vi.waitFor(() =>
+      expect(latest?.summaries.map((item) => item.agentId)).toEqual(['stale']),
+    );
+    expect(Array.from(latest?.records.keys() ?? [])).toEqual(['stale']);
+    expect(latest?.pendingCompletions.map((item) => item.notification.completion.agentId)).toEqual([
+      'stale',
+    ]);
     view.unmount();
   });
 

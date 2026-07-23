@@ -18,7 +18,6 @@ import { useDensity } from '../density.js';
 import { mergeAssistantMessages } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
 import type { TranscriptMode } from '../tool-presentation.js';
-import { AgentNotificationMessage } from './AgentNotificationMessage.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');
@@ -149,17 +148,6 @@ export function ChatPanel({
         }
         const message = entry;
         const previous = timeline[index - 1];
-        if (message.kind === 'agent-notification') {
-          return (
-            <Box
-              key={message.id}
-              flexDirection="column"
-              marginTop={index > 0 && density !== 'tight' ? 1 : 0}
-            >
-              <AgentNotificationMessage message={message} screenReader={screenReader} />
-            </Box>
-          );
-        }
         if (message.role === 'user') {
           return (
             <Box
@@ -247,7 +235,9 @@ function buildTimeline(
       flush();
       timeline.push(...markers.sort((a, b) => a.timestamp - b.timestamp));
     }
-    if (index < messages.length) segment.push(messages[index]);
+    if (index < messages.length && messages[index].kind !== 'agent-notification') {
+      segment.push(messages[index]);
+    }
   }
   flush();
   return timeline;

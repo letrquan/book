@@ -256,7 +256,11 @@ export class AgentManager {
     if (options.snapshot) {
       void this.ensureInitialized().then(() => {
         for (const record of this.agents.values()) {
-          listener({ type: 'agent_status', agent: projectAgentSummary(record) });
+          listener({
+            type: 'agent_status',
+            agent: projectAgentSummary(record),
+            parentSessionId: record.parentSessionId,
+          });
         }
       });
     }
@@ -393,7 +397,11 @@ export class AgentManager {
     record.updatedAt = Date.now();
     this.store?.saveAgent(record);
     this.notify(record);
-    this.emit({ type: 'agent_status', agent: projectAgentSummary(record) });
+    this.emit({
+      type: 'agent_status',
+      agent: projectAgentSummary(record),
+      parentSessionId: record.parentSessionId,
+    });
     if (event === 'result') {
       this.emit({
         type: 'agent_completion',
@@ -897,6 +905,12 @@ export class AgentManager {
       `Capabilities: ${describeCapabilities(definition.allowedTools)}`,
       'Delegation is disabled at this depth. Do not attempt to apply work to the parent workspace.',
       '',
+      '## Final response contract',
+      'Return a compact handoff, not a transcript or process diary.',
+      'Start with the outcome or verdict, then give only the material findings, changes, checks, and blockers.',
+      'Use exact file:line, command, or commit references. Never paste raw search output or full file contents.',
+      'Keep the response under 200 words unless the assigned task explicitly requires more detail. Omit empty sections.',
+      '',
       '## Supplied evidence',
       evidence.length > 0
         ? JSON.stringify(evidence, null, 2)
@@ -1107,7 +1121,11 @@ export class AgentManager {
           onUsage: (usage) => {
             record.usage = accumulateUsage(record.usage, usage);
             this.store?.saveAgent(record);
-            this.emit({ type: 'agent_status', agent: projectAgentSummary(record) });
+            this.emit({
+              type: 'agent_status',
+              agent: projectAgentSummary(record),
+              parentSessionId: record.parentSessionId,
+            });
           },
           onAssistantMessageComplete: (message) => {
             this.flushTextDelta(record.id);

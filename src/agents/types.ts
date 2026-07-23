@@ -184,7 +184,7 @@ export interface EvidenceItem {
 }
 
 export type AgentRuntimeEvent =
-  | { type: 'agent_status'; agent: AgentSummary }
+  | { type: 'agent_status'; agent: AgentSummary; parentSessionId?: string }
   | { type: 'agent_activity'; agentId: string; activity: AgentActivity }
   | { type: 'agent_text_delta'; agentId: string; text: string }
   | { type: 'agent_message'; agentId: string; message: Message }

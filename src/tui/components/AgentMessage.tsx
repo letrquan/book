@@ -289,7 +289,18 @@ export function AgentMessageInner({
 }: AgentMessageProps) {
   const theme = useTheme();
   const { toolRowGap } = useDensityMetrics();
-  const displayContent = isStreaming ? trimPartialClosingFences(message.content) : message.content;
+  const toolCalls = message.toolCalls ?? [];
+  const suppressDelegationNarration = toolCalls.some((call) => {
+    if (call.name !== 'AgentSpawn') return false;
+    const result = message.toolResults?.find((candidate) => candidate.toolCallId === call.id);
+    return !result || result.status === 'success';
+  });
+  // AgentSpawn has its own activity row. Keep the model text in history/context,
+  // but avoid showing duplicated delegation narration in the user transcript.
+  const rawDisplayContent = isStreaming
+    ? trimPartialClosingFences(message.content)
+    : message.content;
+  const displayContent = suppressDelegationNarration ? '' : rawDisplayContent;
 
   renderLog.event('render', {
     id: message.id.slice(-8),
@@ -300,7 +311,6 @@ export function AgentMessageInner({
     retry: retryPhase,
   });
 
-  const toolCalls = message.toolCalls ?? [];
   const childrenByParent = useMemo(
     () => indexNestedToolInvocations(message.nestedToolInvocations ?? []),
     [message.nestedToolInvocations],

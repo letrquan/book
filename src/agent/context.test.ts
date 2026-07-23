@@ -220,6 +220,15 @@ describe('buildMessages', () => {
     }
   });
 
+  it('guides the parent toward concise, self-contained delegation prompts', async () => {
+    const out = await buildMessages(config, [userMsg('hi')], []);
+    const prompt = systemPrefix(out);
+
+    expect(prompt).toContain('self-contained prompt with one objective, a narrow scope');
+    expect(prompt).toContain('short referenced handoff');
+    expect(prompt).toContain('do not narrate the delegation');
+  });
+
   it('injects the approved MEMORY.md snapshot from config and limits it to loaded text', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'book-context-'));
     try {

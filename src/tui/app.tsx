@@ -220,7 +220,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
       ),
     [liveConfig, mode, persistPermissionRule, runtime],
   );
-  const managedAgents = useManagedAgents(managedAgentManager);
+  const managedAgents = useManagedAgents(managedAgentManager, sessionId);
 
   const [showTasks, setShowTasks] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -1686,7 +1686,9 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
           </Box>
 
           {managedAgentUiEnabled &&
-          (managedAgents.surface === 'main' || managedAgents.surface === 'tasks') ? (
+          (managedAgents.surface === 'main' ||
+            managedAgents.surface === 'tasks' ||
+            (managedAgents.surface === 'detail' && !detailTaskPickerOpen)) ? (
             <SubagentPanel
               agents={managedAgents.summaries}
               selectedAgentId={managedAgents.selectedAgentId}

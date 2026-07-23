@@ -320,7 +320,7 @@ export const agentLifecycleTools: ToolDefinition[] = [
   {
     name: 'AgentSpawn',
     description:
-      'Queue an isolated managed agent and return immediately. Its compact result is delivered automatically; use AgentWait only when an explicit synchronization barrier is needed.',
+      'Queue an isolated managed agent and return immediately. Do not add a prose narration after calling this tool; the host renders the activity and delivers its compact result automatically. Use AgentWait only when an explicit synchronization barrier is needed.',
     parameters: {
       type: 'object',
       properties: {
@@ -329,7 +329,11 @@ export const agentLifecycleTools: ToolDefinition[] = [
           type: 'string',
           description: 'Concise 3-6 word purpose name for this run',
         },
-        prompt: { type: 'string' },
+        prompt: {
+          type: 'string',
+          description:
+            'Self-contained task with one objective, narrow scope, and an explicit concise deliverable.',
+        },
         model: { type: 'string' },
         planId: { type: 'string' },
         evidenceIds: { type: 'array', items: { type: 'string' } },

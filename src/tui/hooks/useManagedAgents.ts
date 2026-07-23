@@ -50,7 +50,10 @@ function upsertSummary(current: AgentSummary[], next: AgentSummary): AgentSummar
   });
 }
 
-export function useManagedAgents(manager: AgentManager): ManagedAgentState {
+export function useManagedAgents(
+  manager: AgentManager,
+  parentSessionId?: string,
+): ManagedAgentState {
   const [summaries, setSummaries] = useState<AgentSummary[]>([]);
   const [records, setRecords] = useState<Map<string, AgentRecord>>(() => new Map());
   const [activities, setActivities] = useState<Map<string, AgentActivity[]>>(() => new Map());
@@ -60,13 +63,24 @@ export function useManagedAgents(manager: AgentManager): ManagedAgentState {
   const [pendingCompletions, setPendingCompletions] = useState<QueuedAgentCompletion[]>([]);
   const seenCompletions = useRef(new Set<string>());
   const deferredDismissals = useRef(new Set<string>());
+  const visibleAgentIds = useRef(new Set<string>());
 
-  const enqueueCompletion = useCallback((notification: AgentCompletionNotification) => {
-    const id = notification.deliveryId;
-    if (seenCompletions.current.has(id)) return;
-    seenCompletions.current.add(id);
-    setPendingCompletions((current) => [...current, { id, notification }]);
-  }, []);
+  const belongsToCurrentSession = useCallback(
+    (candidateParentSessionId: string | undefined) =>
+      parentSessionId === undefined || candidateParentSessionId === parentSessionId,
+    [parentSessionId],
+  );
+
+  const enqueueCompletion = useCallback(
+    (notification: AgentCompletionNotification) => {
+      if (!belongsToCurrentSession(notification.parentSessionId)) return;
+      const id = notification.deliveryId;
+      if (seenCompletions.current.has(id)) return;
+      seenCompletions.current.add(id);
+      setPendingCompletions((current) => [...current, { id, notification }]);
+    },
+    [belongsToCurrentSession],
+  );
 
   const refresh = useCallback(async () => {
     const pendingPromise =
@@ -74,9 +88,13 @@ export function useManagedAgents(manager: AgentManager): ManagedAgentState {
         ? manager.listPendingCompletions()
         : Promise.resolve([]);
     const [nextRecords, nextCompletions] = await Promise.all([manager.list(), pendingPromise]);
-    setRecords(new Map(nextRecords.map((record) => [record.id, record])));
+    const scopedRecords = nextRecords.filter((record) =>
+      belongsToCurrentSession(record.parentSessionId),
+    );
+    visibleAgentIds.current = new Set(scopedRecords.map((record) => record.id));
+    setRecords(new Map(scopedRecords.map((record) => [record.id, record])));
     setSummaries(
-      nextRecords
+      scopedRecords
         .filter((record) => {
           const terminal = ['completed', 'failed', 'stopped', 'interrupted'].includes(
             record.status,
@@ -110,14 +128,18 @@ export function useManagedAgents(manager: AgentManager): ManagedAgentState {
     setPendingCompletions([]);
     seenCompletions.current.clear();
     deferredDismissals.current.clear();
+    visibleAgentIds.current.clear();
     void refresh().catch(() => {});
     const unsubscribe = manager.subscribe(
       (event) => {
         if (event.type === 'agent_status') {
+          if (!belongsToCurrentSession(event.parentSessionId)) return;
+          visibleAgentIds.current.add(event.agent.agentId);
           setSummaries((current) => upsertSummary(current, event.agent));
           return;
         }
         if (event.type === 'agent_activity') {
+          if (!visibleAgentIds.current.has(event.agentId)) return;
           setActivities((current) => {
             const next = new Map(current);
             const agentActivities = [...(next.get(event.agentId) ?? [])];
@@ -156,11 +178,15 @@ export function useManagedAgents(manager: AgentManager): ManagedAgentState {
           return;
         }
         if (event.type === 'agent_update' || event.type === 'agent_start') {
+          if (!belongsToCurrentSession(event.agent.parentSessionId)) return;
+          visibleAgentIds.current.add(event.agent.id);
           setRecords((current) => new Map(current).set(event.agent.id, event.agent));
           setSummaries((current) => upsertSummary(current, projectAgentSummary(event.agent)));
           return;
         }
         if (event.type === 'agent_result') {
+          if (!belongsToCurrentSession(event.agent.parentSessionId)) return;
+          visibleAgentIds.current.add(event.agent.id);
           setRecords((current) => new Map(current).set(event.agent.id, event.agent));
           setSummaries((current) => upsertSummary(current, projectAgentSummary(event.agent)));
           return;
@@ -170,6 +196,7 @@ export function useManagedAgents(manager: AgentManager): ManagedAgentState {
           return;
         }
         if (event.type === 'agent_message') {
+          if (!visibleAgentIds.current.has(event.agentId)) return;
           setRecords((current) => {
             const record = current.get(event.agentId);
             if (!record || record.transcript.some((message) => message.id === event.message.id)) {
@@ -183,6 +210,7 @@ export function useManagedAgents(manager: AgentManager): ManagedAgentState {
           return;
         }
         if (event.type === 'agent_text_delta') {
+          if (!visibleAgentIds.current.has(event.agentId)) return;
           setLiveText((current) => {
             const next = new Map(current);
             next.set(event.agentId, `${next.get(event.agentId) ?? ''}${event.text}`.slice(-12000));
@@ -197,7 +225,7 @@ export function useManagedAgents(manager: AgentManager): ManagedAgentState {
       unsubscribe();
       manager.setInteractivePermissions(false);
     };
-  }, [enqueueCompletion, manager, refresh]);
+  }, [belongsToCurrentSession, enqueueCompletion, manager, refresh]);
 
   const pendingPermissions = useMemo(
     () =>
