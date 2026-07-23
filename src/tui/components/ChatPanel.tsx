@@ -19,6 +19,7 @@ import { mergeAssistantMessages } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
 import type { TranscriptMode } from '../tool-presentation.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
+import { truncateDisplay } from './word-wrap.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
@@ -144,7 +145,7 @@ export function ChatPanel({
     <Box flexDirection="column">
       {timeline.map((entry, index) => {
         if ('transcriptOrdinal' in entry) {
-          return <CompactBoundaryRow key={`boundary-${entry.id}`} boundary={entry} />;
+          return <CompactBoundaryRow key={`boundary-${entry.id}`} terminalWidth={terminalWidth} />;
         }
         const message = entry;
         const previous = timeline[index - 1];
@@ -243,25 +244,14 @@ function buildTimeline(
   return timeline;
 }
 
-function CompactBoundaryRow({ boundary }: { boundary: CompactBoundary }) {
+function CompactBoundaryRow({ terminalWidth = 80 }: { terminalWidth?: number }) {
   const theme = useTheme();
-  const removed = Math.max(0, boundary.preContextCount - boundary.postContextCount);
-  const tokens =
-    boundary.preContextTokens !== undefined && boundary.postContextTokens !== undefined
-      ? ` · ~${formatCompactNumber(boundary.preContextTokens)} → ~${formatCompactNumber(boundary.postContextTokens)} tokens`
-      : '';
   return (
-    <Box flexDirection="column" marginY={1} paddingX={1}>
-      <Text color={theme.subtle}>Context compacted · full transcript retained</Text>
-      <Text color={theme.subtle} dimColor>
-        −{removed} context messages → checkpoint + {Math.max(0, boundary.postContextCount - 1)}{' '}
-        recent messages{tokens} · generation {boundary.generation}
+    <Box marginLeft={2} width={Math.max(12, Math.floor(terminalWidth) - 2)}>
+      <Text color={theme.success}>✓ </Text>
+      <Text color={theme.text}>
+        {truncateDisplay('Compact conversation', Math.max(8, Math.floor(terminalWidth) - 6))}
       </Text>
     </Box>
   );
-}
-
-function formatCompactNumber(value: number): string {
-  if (value < 1_000) return String(Math.round(value));
-  return `${Math.round(value / 1_000)}k`;
 }

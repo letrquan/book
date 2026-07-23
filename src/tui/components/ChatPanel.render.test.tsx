@@ -145,7 +145,11 @@ describe('ChatPanel Ink rendering', () => {
     const output = frame(view.lastFrame);
     expect(output).toContain('before compact');
     expect(output).toContain('after compact');
-    expect(output).toContain('Context compacted · full transcript retained');
+    expect(output).toContain('✓ Compact conversation');
+    expect(output).not.toContain('context messages');
+    expect(output).not.toContain('recent');
+    expect(output).not.toContain('tokens');
+    expect(output).not.toContain('Context compacted · full transcript retained');
     expect(output).not.toContain('Historical conversation checkpoint');
   });
 

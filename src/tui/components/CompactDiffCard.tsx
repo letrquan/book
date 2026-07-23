@@ -1,8 +1,7 @@
 import { Box, Text } from 'ink';
 import { useEffect } from 'react';
-import { useTheme } from '../theme.js';
-import { useStaggeredReveal } from '../hooks/useAnimation.js';
 import type { CompactUiState } from '../hooks/useAgent.js';
+import { useTheme } from '../theme.js';
 import { truncateDisplay } from './word-wrap.js';
 
 export interface CompactDiffCardProps {
@@ -10,15 +9,23 @@ export interface CompactDiffCardProps {
   terminalWidth?: number;
   reducedMotion?: boolean;
   screenReader?: boolean;
-  /** Called once the stagger settles so the host can collapse to a one-liner. */
   onSettled?: () => void;
 }
 
-/**
- * Context-diff card shown after a successful compact.
- * Borrows diff theme tokens; does not parse chat as a unified diff.
- * UI-only — never part of provider history.
- */
+function compactSummary(state: CompactUiState): string {
+  const details: string[] = [];
+  if (state.trigger === 'auto') details.push('automatic');
+  if (state.preMessages !== undefined) {
+    details.push(`${state.preMessages} ${state.preMessages === 1 ? 'message' : 'messages'}`);
+  }
+  if (state.preContextTokens !== undefined && state.preContextTokens > 0) {
+    details.push(`~${Math.round(state.preContextTokens / 100) / 10}k context`);
+  }
+  if (state.degraded) details.unshift('reduced fidelity');
+  return ['Compact conversation', ...details].join(' · ');
+}
+
+/** Post-compact status rendered like a tool result without creating a tool invocation. */
 export function CompactDiffCard({
   state,
   terminalWidth = 80,
@@ -27,98 +34,43 @@ export function CompactDiffCard({
   onSettled,
 }: CompactDiffCardProps) {
   const theme = useTheme();
-  const motionDisabled = reducedMotion || screenReader;
-  const width = Math.max(24, Math.floor(terminalWidth));
-  const contentWidth = Math.max(12, width - 4);
-
-  const playDiff = state.phase === 'diff' || state.phase === 'done';
-  const reveal = useStaggeredReveal(4, playDiff && !motionDisabled, 140, motionDisabled);
+  const width = Math.max(12, Math.floor(terminalWidth) - 2);
+  const summaryWidth = Math.max(4, width - 4);
 
   useEffect(() => {
-    if (!playDiff || !onSettled) return;
-    if (motionDisabled) {
+    if (state.phase !== 'diff' || !onSettled) return;
+    if (reducedMotion || screenReader) {
       onSettled();
       return;
     }
-    const t = setTimeout(onSettled, 140 * 4 + 200);
-    return () => clearTimeout(t);
-  }, [playDiff, motionDisabled, onSettled]);
+    const timer = setTimeout(onSettled, 760);
+    return () => clearTimeout(timer);
+  }, [onSettled, reducedMotion, screenReader, state.phase]);
 
-  if (state.phase === 'working') {
-    return null; // StatusLine owns the busy state.
-  }
+  if (state.phase === 'working') return null;
 
-  if (state.phase === 'skipped' || state.phase === 'error') {
-    const color = state.phase === 'error' ? theme.error : theme.subtle;
-    return (
-      <Box flexDirection="column" width={width} paddingX={1}>
-        <Text color={color}>{truncateDisplay(state.message ?? '', contentWidth)}</Text>
-      </Box>
-    );
-  }
-
-  if (!playDiff) return null;
-
-  const pre = state.preMessages ?? 0;
-  const preTok = state.preContextTokens;
-  const narrow = width < 48;
-  const show = (n: number) => motionDisabled || reveal >= n;
-
-  if (narrow) {
-    return (
-      <Box flexDirection="column" width={width} paddingX={1}>
-        <Text>
-          <Text color={theme.error}>−{pre} msgs</Text>
-          <Text color={theme.subtle}> → </Text>
-          <Text color={theme.success}>+summary</Text>
-          <Text color={state.degraded ? theme.warning : theme.success}>
-            {state.degraded ? ' · Compacted with reduced fidelity' : ' · Conversation compacted'}
-          </Text>
-        </Text>
-        {state.degraded && state.warning && (
-          <Text color={theme.warning}>{truncateDisplay(state.warning, contentWidth)}</Text>
-        )}
-      </Box>
-    );
-  }
-
-  const hunk = `@@ context  −${pre} msgs  →  +1 summary @@`;
-  const metrics =
-    typeof preTok === 'number' && preTok > 0 ? `pre ~${(preTok / 1000).toFixed(1)}k context` : null;
+  const failed = state.phase === 'error';
+  const skipped = state.phase === 'skipped';
+  const symbol = failed ? '×' : skipped ? '–' : '✓';
+  const color = failed ? theme.error : skipped ? theme.warning : theme.success;
+  const summary =
+    failed || skipped ? (state.message ?? compactSummary(state)) : compactSummary(state);
 
   return (
-    <Box
-      flexDirection="column"
-      width={width}
-      borderStyle="round"
-      borderColor={state.degraded ? theme.warning : theme.border}
-      paddingX={1}
-    >
-      <Text color={theme.subtle} bold>
-        compact
-      </Text>
-      {show(1) && <Text color={theme.subtle}>{truncateDisplay(hunk, contentWidth)}</Text>}
-      {show(2) && (
-        <Text color={theme.error}>
-          {truncateDisplay('−  older conversation turns & tool dumps', contentWidth)}
+    <Box flexDirection="column" marginLeft={2} width={width}>
+      <Box>
+        <Text color={color}>{symbol} </Text>
+        <Text color={failed ? theme.error : theme.text}>
+          {truncateDisplay(summary, summaryWidth)}
         </Text>
-      )}
-      {show(3) && (
-        <Text color={theme.success}>
-          {truncateDisplay('+  Structured summary (goals, files, tasks)', contentWidth)}
-        </Text>
-      )}
-      {show(4) && (
-        <Box flexDirection="column">
-          <Text color={state.degraded ? theme.warning : theme.success}>
-            {state.message ?? 'Conversation compacted'}
+      </Box>
+      {state.degraded && state.warning ? (
+        <Box marginLeft={2} borderLeft borderLeftColor={theme.toolRail} paddingLeft={1}>
+          <Text color={theme.warning}>
+            {truncateDisplay(state.warning, Math.max(8, width - 6))}
           </Text>
-          {state.degraded && state.warning && (
-            <Text color={theme.warning}>{truncateDisplay(state.warning, contentWidth)}</Text>
-          )}
-          {metrics && <Text color={theme.subtle}>{truncateDisplay(metrics, contentWidth)}</Text>}
         </Box>
-      )}
+      ) : null}
     </Box>
   );
 }

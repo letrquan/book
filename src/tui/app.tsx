@@ -165,7 +165,6 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     isCompacting,
     isRewinding,
     compactUi,
-    setCompactUi,
     streamingMessageId,
     error,
     currentTurn,
@@ -1610,17 +1609,12 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
             ) : null}
           </Box>
 
-          {compactUi && compactUi.phase !== 'working' ? (
+          {compactUi && (compactUi.phase === 'error' || compactUi.phase === 'skipped') ? (
             <CompactDiffCard
               state={compactUi}
               terminalWidth={termWidth}
               reducedMotion={motionDisabled}
               screenReader={screenReader}
-              onSettled={() => {
-                if (compactUi.phase === 'diff') {
-                  setCompactUi({ ...compactUi, phase: 'done' });
-                }
-              }}
             />
           ) : null}
 
@@ -1630,7 +1624,6 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
             isThinking={isThinking}
             isCompacting={isCompacting}
             compactTrigger={compactUi?.trigger}
-            compactComplete={compactUi?.phase === 'diff'}
             messages={messages}
             streamingMessageId={streamingMessageId}
             pendingPermission={pendingPermission}
