@@ -14,6 +14,12 @@ export interface ParsedRule {
   pattern: string | null;
 }
 
+export interface PermissionVerdict {
+  decision: 'allow' | 'deny' | 'ask';
+  matchedRule?: string;
+  source?: 'allow' | 'deny' | 'ask' | 'default';
+}
+
 export function parseRule(rule: string): ParsedRule {
   const parenIdx = rule.indexOf('(');
   if (parenIdx === -1) {
@@ -72,27 +78,41 @@ export function evaluatePermission(
   args: Record<string, unknown>,
   settings: ResolvedSettings,
 ): 'allow' | 'deny' | 'ask' {
+  return evaluatePermissionDetail(toolName, args, settings).decision;
+}
+
+export function evaluatePermissionDetail(
+  toolName: string,
+  args: Record<string, unknown>,
+  settings: ResolvedSettings,
+): PermissionVerdict {
   const primaryArg = primaryArgForRule(toolName, args);
   const { deny, ask, allow } = settings.permissions;
 
   // Deny rules first.
   for (const ruleStr of deny) {
     const rule = parseRule(ruleStr);
-    if (ruleMatches(rule, toolName, primaryArg)) return 'deny';
+    if (ruleMatches(rule, toolName, primaryArg)) {
+      return { decision: 'deny', matchedRule: ruleStr, source: 'deny' };
+    }
   }
 
   // Ask rules second.
   for (const ruleStr of ask) {
     const rule = parseRule(ruleStr);
-    if (ruleMatches(rule, toolName, primaryArg)) return 'ask';
+    if (ruleMatches(rule, toolName, primaryArg)) {
+      return { decision: 'ask', matchedRule: ruleStr, source: 'ask' };
+    }
   }
 
   // Allow rules third.
   for (const ruleStr of allow) {
     const rule = parseRule(ruleStr);
-    if (ruleMatches(rule, toolName, primaryArg)) return 'allow';
+    if (ruleMatches(rule, toolName, primaryArg)) {
+      return { decision: 'allow', matchedRule: ruleStr, source: 'allow' };
+    }
   }
 
   // No rule matched — default to asking.
-  return 'ask';
+  return { decision: 'ask', source: 'default' };
 }

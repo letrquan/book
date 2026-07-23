@@ -68,6 +68,7 @@ export function persistHistory(
               contextContent: message.contextContent,
               kind: message.kind,
               includeInContext: message.includeInContext,
+              agentNotifications: message.agentNotifications,
               fileObservations: message.fileObservations,
             }
           : {

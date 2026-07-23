@@ -17,6 +17,9 @@ interface StatusLineProps {
   mode: PermissionMode;
   taskCount: number;
   activeTaskCount: number;
+  agentCount?: number;
+  activeAgentCount?: number;
+  needsInputAgentCount?: number;
   terminalWidth?: number;
   compact?: boolean;
   reducedMotion?: boolean;
@@ -61,6 +64,9 @@ export function StatusLine({
   mode,
   taskCount,
   activeTaskCount,
+  agentCount = 0,
+  activeAgentCount = 0,
+  needsInputAgentCount = 0,
   terminalWidth = 80,
   compact = false,
   reducedMotion = false,
@@ -121,6 +127,16 @@ export function StatusLine({
       });
     }
 
+    if (agentCount > 0) {
+      segments.push({
+        text:
+          needsInputAgentCount > 0
+            ? `agents ${activeAgentCount} | ${needsInputAgentCount} needs input`
+            : `agents ${activeAgentCount}/${agentCount}`,
+        color: needsInputAgentCount > 0 ? theme.warning : theme.subtle,
+      });
+    }
+
     if (tokenCount > 0 && !compact && width >= 64) {
       segments.push({ text: `$${costEstimate.toFixed(3)}`, color: theme.subtle });
     }
@@ -128,6 +144,8 @@ export function StatusLine({
     return buildColoredSegments(segments, contentWidth);
   }, [
     activeTaskCount,
+    activeAgentCount,
+    agentCount,
     compact,
     contentWidth,
     costEstimate,
@@ -137,6 +155,7 @@ export function StatusLine({
     contextColor,
     model,
     taskCount,
+    needsInputAgentCount,
     tokenCount,
     usagePercent,
     width,

@@ -18,6 +18,7 @@ import { useDensity } from '../density.js';
 import { mergeAssistantMessages } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
 import type { TranscriptMode } from '../tool-presentation.js';
+import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
@@ -47,6 +48,7 @@ function ScreenReaderRoleLabel({
 
 interface ChatPanelProps {
   messages: Message[];
+  managedAgentTraces?: ReadonlyMap<string, ManagedAgentTrace>;
   compactBoundaries?: CompactBoundary[];
   streamingMessageId?: string | null;
   pendingPermission?: PendingPermissionRequest | null;
@@ -82,6 +84,7 @@ interface ChatPanelProps {
 /** Dynamically renders transcript content. TranscriptView owns clipping and navigation. */
 export function ChatPanel({
   messages,
+  managedAgentTraces,
   compactBoundaries = [],
   streamingMessageId,
   pendingPermission,
@@ -182,6 +185,7 @@ export function ChatPanel({
             ) : null}
             <AgentMessage
               message={message}
+              managedAgentTraces={managedAgentTraces}
               isStreaming={isStreaming}
               pendingPermission={pendingPermission}
               expandedToolCallId={selectedToolCallId}
@@ -231,7 +235,9 @@ function buildTimeline(
       flush();
       timeline.push(...markers.sort((a, b) => a.timestamp - b.timestamp));
     }
-    if (index < messages.length) segment.push(messages[index]);
+    if (index < messages.length && messages[index].kind !== 'agent-notification') {
+      segment.push(messages[index]);
+    }
   }
   flush();
   return timeline;

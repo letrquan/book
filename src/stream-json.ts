@@ -10,6 +10,12 @@ export type StreamJsonEvent =
   | { type: 'user_question_result'; request_id?: string; response?: unknown }
   | { type: 'agent_start' | 'agent_update' | 'agent_result'; agent?: unknown }
   | { type: 'agent_question'; agentId?: string; request?: unknown }
+  | { type: 'agent_status'; agent?: unknown }
+  | { type: 'agent_activity'; agentId?: string; activity?: unknown }
+  | { type: 'agent_text_delta'; agentId?: string; text?: string }
+  | { type: 'agent_message'; agentId?: string; message?: unknown }
+  | { type: 'agent_completion'; notification?: unknown }
+  | { type: 'agent_permission'; agentId?: string; request?: unknown }
   | { type: 'evidence_update'; evidence?: unknown }
   | { type: 'agent_apply'; agentId?: string; evidenceId?: string; status?: string }
   | { type: 'hook_event'; event?: string; [key: string]: unknown }
@@ -46,6 +52,12 @@ const EVENT_TYPES = new Set<StreamJsonEvent['type']>([
   'agent_update',
   'agent_result',
   'agent_question',
+  'agent_status',
+  'agent_activity',
+  'agent_text_delta',
+  'agent_message',
+  'agent_completion',
+  'agent_permission',
   'evidence_update',
   'agent_apply',
   'hook_event',

@@ -16,6 +16,7 @@ import { discoverClaudeMd, renderClaudeMd } from '../claude-md.js';
 import { discoverAgents, type SubagentDef } from '../subagent-discovery.js';
 import { runGit } from '../tools/git.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
+import { resolveAgentProfile } from '../agents/profile-resolver.js';
 import { toolResultModelContent } from '../tools/result.js';
 
 function compactList(
@@ -105,36 +106,44 @@ function memorySection(config: AgentConfig): string {
   ].join('\n');
 }
 
-function generateAgentListing(agents: SubagentDef[], budgetChars = 1024): string {
+function generateAgentListing(
+  config: AgentConfig,
+  agents: SubagentDef[],
+  budgetChars = 1024,
+): string {
   return compactList(
     'Available subagents',
-    'Use the Task tool to delegate bounded, independent work to one of these agents.',
-    agents.map((agent) => ({ name: agent.name, description: agent.description })),
+    'Use AgentSpawn to delegate bounded, independent work to one of these profiles.',
+    withBuiltInAgents(agents).map((agent) => {
+      const resolved = resolveAgentProfile(agent, config);
+      return {
+        name: agent.name,
+        description: `${agent.description} Model: ${resolved.resolvedModel}; isolation: ${agent.isolation}.`,
+      };
+    }),
     budgetChars,
   );
 }
 
 function agentRoutingSection(config: AgentConfig): string {
   if (config.settings.agents.mode === 'off') return '';
-  if (!isInGitWorktree(config.workspace)) {
-    return [
-      '## Managed delegation',
-      'This workspace is not a Git worktree, so adaptive routing must remain single-agent.',
-      'Do not call AgentSpawn unless the user first initializes and commits the repository.',
-    ].join('\n');
-  }
   if (config.settings.agents.mode === 'manual') {
     return [
       '## Managed delegation',
       `Mode: manual; concurrency: ${config.settings.agents.maxConcurrent}; depth: ${config.settings.agents.maxDepth}.`,
-      'Use managed agents only when the user explicitly requests delegation. Record an AgentPlan before spawning.',
+      'Use managed agents only when the user explicitly requests delegation.',
+      'Explorer works read-only without Git. Patcher and validator require Git worktree isolation.',
       'Patch work remains isolated and requires a distinct validator pass before AgentApply.',
     ].join('\n');
   }
   return [
     '## Managed delegation',
     `Mode: ${config.settings.agents.mode}; concurrency: ${config.settings.agents.maxConcurrent}; depth: ${config.settings.agents.maxDepth}.`,
-    'Before spawning, call AgentPlan with task shape, issue quality, topology, rationale, and budget.',
+    'Use AgentSpawn with the explorer profile for broad codebase exploration or research expected to require more than three discovery queries.',
+    'When invoking AgentSpawn, do not narrate the delegation in assistant text; the host renders the managed-agent activity and delivers its result automatically.',
+    'Give each child a self-contained prompt with one objective, a narrow scope, and an explicit concise deliverable. Ask for a short referenced handoff, not a repository tour or raw search output.',
+    'Search directly when the target file or symbol is known and the work should take three queries or fewer. Explorer work stays outside the parent context and returns compact referenced findings. Do not repeat searches already delegated to an explorer.',
+    'A single explorer can use the implicit bounded plan. Use AgentPlan for parallel_research, explore_then_patch, or patch_validate topologies.',
     'Keep sequential or tool-dependent work single-agent. Use parallel_research for decomposable research, explore_then_patch for ambiguous implementation, and patch_validate for clear implementation.',
     'For patch_validate, a validator may plan concurrently; after the patch candidate exists, pass its evidence ID through AgentSpawn or AgentSend before requesting the final verdict.',
     'Patch work remains isolated and cannot be applied until a distinct validator passes the exact candidate commit.',
@@ -225,7 +234,7 @@ export async function buildSystemPromptZones(
     generateCommandListing(cmdList, 1536),
     overrides?.hideAgents || config.settings.agents.mode === 'off'
       ? ''
-      : generateAgentListing(withBuiltInAgents(discoverAgents(config.workspace)), 1536),
+      : generateAgentListing(config, discoverAgents(config.workspace), 1536),
     overrides?.hideAgents ? '' : agentRoutingSection(config),
     generateToolListing(tools, 2048),
     overrides?.toolCatalogSummary

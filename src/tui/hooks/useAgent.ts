@@ -43,14 +43,24 @@ import { updateEffortLevel } from '../../commands/effort.js';
 import { observationKey } from '../../tools/file-provenance.js';
 import type { SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';
-import { AgentSession, type AgentSessionSendControl } from '../../session/agent-session.js';
+import {
+  AgentSession,
+  type AgentSessionSendControl,
+  type AgentSessionSendResult,
+} from '../../session/agent-session.js';
 import { SessionRuntime } from '../../session/runtime.js';
 import { createInteractiveAgentSession } from '../../session/interactive-session.js';
+import type { AgentCompletionNotification } from '../../agents/types.js';
+import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
 
 const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
 import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
+
+export function didSendMessageComplete(result: AgentSessionSendResult): boolean {
+  return result.status === 'completed';
+}
 
 export interface UseAgentSessionOptions extends SessionBootstrap {
   store?: SessionStoreInterface;
@@ -150,6 +160,12 @@ function buildObservationLedger(messages: Message[]) {
 
 function withoutRuntimeState(config: AgentConfig): AgentConfig {
   return { ...config };
+}
+
+interface SendMessageOptions {
+  contextMessage?: string;
+  kind?: Message['kind'];
+  agentNotifications?: Message['agentNotifications'];
 }
 
 export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
@@ -471,8 +487,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [],
   );
 
-  const send = useCallback(
-    async (userMessage: string, commandContext?: CommandContext) => {
+  const sendMessage = useCallback(
+    async (
+      userMessage: string,
+      commandContext?: CommandContext,
+      messageOptions?: SendMessageOptions,
+    ): Promise<boolean> => {
       setCompactUi(null);
 
       const generation = sessionGenerationRef.current;
@@ -527,7 +547,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               options: {
                 trigger: 'auto',
                 preContextTokens: usagePressureTokens(hostUsageRef.current),
-                upcomingUserIntent: userMessage,
+                upcomingUserIntent: messageOptions?.contextMessage ?? userMessage,
               },
             });
             const autoResult = autoOutcome.result;
@@ -560,8 +580,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       };
 
       const createUserMessage = () => {
-        const message = makeMessage('user', userMessage, undefined, true);
-        message.kind = 'conversation';
+        const message = makeMessage('user', userMessage, messageOptions?.contextMessage, true);
+        message.kind = messageOptions?.kind ?? 'conversation';
+        message.agentNotifications = messageOptions?.agentNotifications;
         activeUserMessage = message;
         return message;
       };
@@ -611,6 +632,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const sendResult = await agentSession.send({
         config: liveConfig,
         displayMessage: userMessage,
+        contextMessage: messageOptions?.contextMessage,
         createUserMessage,
         history: () => contextHistoryRef.current,
         mode: modeRef.current,
@@ -791,7 +813,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           reason: sendResult.activeKind === 'compact' ? 'compacting' : 'already-in-flight',
           len: userMessage.length,
         });
-        return;
+        return false;
       }
       if (hostStillCurrent && sendResult.status === 'completed') {
         // Nested tool traces remain display-only; the returned history is provider context.
@@ -819,6 +841,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         setStreamingMessageId(null);
       }
       uiLog.event('send:finally', { durationMs: Date.now() - turnStartRef.current });
+      return didSendMessageComplete(sendResult);
     },
     [
       liveConfig,
@@ -829,6 +852,26 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       session.snapshotStore,
       agentSession,
     ],
+  );
+
+  const send = useCallback(
+    async (userMessage: string, commandContext?: CommandContext) => {
+      await sendMessage(userMessage, commandContext);
+    },
+    [sendMessage],
+  );
+
+  const sendAgentCompletions = useCallback(
+    async (notifications: AgentCompletionNotification[]): Promise<boolean> => {
+      if (notifications.length === 0) return false;
+      const built = notifications.map(buildAgentCompletionMessage);
+      return sendMessage(built.map((item) => item.displayMessage).join('\n'), undefined, {
+        contextMessage: built.map((item) => item.contextMessage).join('\n'),
+        kind: 'agent-notification',
+        agentNotifications: built.map((item) => item.display),
+      });
+    },
+    [sendMessage],
   );
 
   const resolvePermission = useCallback(
@@ -1380,6 +1423,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     sessionId,
     sessionName,
     send,
+    sendAgentCompletions,
     clear,
     startNewConversation,
     resumeConversation,

@@ -41,6 +41,8 @@ export interface HeadlessOptions {
   includeHookEvents?: boolean;
   /** Emit partial assistant text deltas as stream-json lines (default: true for stream-json). */
   includePartialMessages?: boolean;
+  /** Forward high-volume managed-agent text deltas. Defaults to false. */
+  forwardSubagentText?: boolean;
   /** After completion, ask the model for follow-up prompt suggestions. */
   promptSuggestions?: boolean;
   /** Optional interactive host callback for AskUserQuestion. */

@@ -149,6 +149,37 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).not.toContain('Historical conversation checkpoint');
   });
 
+  it('keeps automatic child completion notifications out of the visible transcript', () => {
+    const notification: Message = {
+      id: 'notification-1',
+      role: 'user',
+      content: 'Atlas completed: Found three gaps',
+      includeInContext: true,
+      kind: 'agent-notification',
+      agentNotifications: [
+        {
+          agentId: 'atlas',
+          displayName: 'Atlas',
+          status: 'completed',
+          summary: 'Found three gaps',
+          evidenceIds: ['e1'],
+          durationMs: 1200,
+        },
+      ],
+      timestamp: 1,
+    };
+    const visible = msg('assistant-1', 'assistant', 'Here is the explorer report.');
+    const view = render(
+      withTheme(<ChatPanel messages={[notification, visible]} terminalWidth={80} reducedMotion />),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('Here is the explorer report.');
+    expect(output).not.toContain('Agent update');
+    expect(output).not.toContain('Atlas completed');
+    expect(output).not.toContain('Found three gaps');
+  });
+
   it('renders a submitted user message, assistant placeholder, then streamed text without overwriting older messages', () => {
     const baseMessages = [
       msg('u0', 'user', 'older question'),

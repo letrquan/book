@@ -15,7 +15,7 @@ import { buildMessages } from './context.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
 import { resolveContextLimit, shouldCompact, usagePressureTokens } from './compact.js';
-import { evaluatePermission } from '../permissions.js';
+import { evaluatePermissionDetail } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
@@ -37,6 +37,8 @@ import {
 } from '../tools/result.js';
 import { toolSearchTools } from '../tools/tool-search.js';
 import { SessionRuntime } from '../session/runtime.js';
+import { ExplorationRoutingTracker } from './exploration-routing.js';
+import { permissionDeniedError } from './actionable-errors.js';
 
 const log = createDebugLogger('agent');
 
@@ -71,6 +73,9 @@ export async function runAgentLoop(
     userMessageId?: string;
     userMessageTimestamp?: number;
     userFileObservations?: Message['fileObservations'];
+    userMessageKind?: Message['kind'];
+    /** Synthetic host notifications bypass user-authored prompt hooks and memory capture. */
+    skipUserPromptHooks?: boolean;
     /** Host identity for each streamed assistant turn. */
     assistantMessageId?: (turn: number) => string | undefined;
     /** True when this loop is a subagent (Task tool) invocation — skips memory auto-capture. */
@@ -126,12 +131,14 @@ export async function runAgentLoop(
   // UserPromptSubmit hook — can modify or block the user prompt.
   let effectivePrompt = userMessage;
   let displayPrompt = options?.displayMessage ?? userMessage;
-  const userHookResults = await runHooks(
-    config.settings.hooks.UserPromptSubmit,
-    'UserPromptSubmit',
-    { workspace: config.workspace, event: 'UserPromptSubmit', userPrompt: userMessage },
-    { onHookEvent: callbacks.onHookEvent, signal },
-  );
+  const userHookResults = options?.skipUserPromptHooks
+    ? []
+    : await runHooks(
+        config.settings.hooks.UserPromptSubmit,
+        'UserPromptSubmit',
+        { workspace: config.workspace, event: 'UserPromptSubmit', userPrompt: userMessage },
+        { onHookEvent: callbacks.onHookEvent, signal },
+      );
   for (const r of userHookResults) {
     if (r.action === 'block') {
       newHistory.push({
@@ -155,12 +162,12 @@ export async function runAgentLoop(
     content: displayPrompt,
     contextContent: effectivePrompt === displayPrompt ? undefined : effectivePrompt,
     includeInContext: true,
-    kind: 'conversation',
+    kind: options?.userMessageKind ?? 'conversation',
     fileObservations: options?.userFileObservations,
     timestamp: options?.userMessageTimestamp ?? Date.now(),
   });
 
-  if (!options?.isSubagent) {
+  if (!options?.isSubagent && !options?.skipUserPromptHooks) {
     try {
       let previousAssistant: string | undefined;
       for (let i = history.length - 1; i >= 0; i--) {
@@ -228,6 +235,9 @@ export async function runAgentLoop(
     if (hostMode !== undefined) toolContext.currentMode = hostMode;
     effectiveMode = toolContext.currentMode ?? effectiveMode;
   };
+  const explorationRouting = new ExplorationRoutingTracker(
+    config.settings.agents.routing.inlineSearchBudget,
+  );
 
   // maxTurns undefined/0 = unlimited; otherwise stop once the cap is hit.
   while (config.maxTurns == null || config.maxTurns <= 0 || turn < config.maxTurns) {
@@ -488,10 +498,10 @@ export async function runAgentLoop(
           // Consult the resolved permission rules from settings (deny → ask → allow).
           let permission: 'allow' | 'deny' | 'always' | undefined;
           if (effectiveMode !== 'dontAsk') {
-            const verdict = evaluatePermission(canonName, call.arguments, config.settings);
-            if (verdict === 'allow') {
+            const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
+            if (verdict.decision === 'allow') {
               permission = 'allow';
-            } else if (verdict === 'deny') {
+            } else if (verdict.decision === 'deny') {
               permission = 'deny';
             }
             // 'ask' falls through to the interactive prompt below
@@ -503,10 +513,13 @@ export async function runAgentLoop(
 
           if (permission === 'deny') {
             log.debug('permission denied', { tool: canonName });
+            const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
+            const actionable = permissionDeniedError(canonName, verdict.matchedRule);
             const deniedResult = toolFailure('SKIPPED: Permission denied', {
               toolCallId: call.id,
               code: 'permission_denied',
               status: 'blocked',
+              content: actionable,
             });
             toolResults.push(deniedResult);
             publishResult(deniedResult);
@@ -704,6 +717,38 @@ export async function runAgentLoop(
         if (r.action === 'modify' && r.modifiedOutput !== undefined) {
           result = replaceToolResult(result, { content: r.modifiedOutput });
         }
+      }
+
+      if (
+        !options?.isSubagent &&
+        config.settings.agents.routing.exploreReminder &&
+        toolResultSucceeded(result) &&
+        (canonName === 'Glob' || canonName === 'Grep')
+      ) {
+        const manager = runtime.agentManager;
+        const explorerActive = manager?.hasActiveProfile('explorer') ?? false;
+        if (explorerActive) manager?.recordRoutingTelemetry('parent_search_while_explorer_active');
+        const reminder = explorationRouting.recordSuccessfulQuery(explorerActive);
+        if (reminder) {
+          result = replaceToolResult(result, { content: `${result.content}\n\n${reminder}` });
+          runtime.agentManager?.recordRoutingTelemetry(
+            'explore_reminder',
+            explorationRouting.snapshot(),
+          );
+        }
+      }
+
+      if (
+        !options?.isSubagent &&
+        toolResultSucceeded(result) &&
+        canonName === 'AgentSpawn' &&
+        call.arguments.agent === 'explorer'
+      ) {
+        const routing = explorationRouting.snapshot();
+        runtime.agentManager?.recordRoutingTelemetry('explorer_spawned', {
+          discoveryQueriesBeforeSpawn: routing.discoveryQueries,
+          afterReminder: routing.reminderEmitted,
+        });
       }
 
       const normalizedResult = enrichToolResultPresentation(result, canonName, call.arguments);

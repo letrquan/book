@@ -174,6 +174,43 @@ describe('App session commands', () => {
     expect(agentState.clear).not.toHaveBeenCalled();
   });
 
+  it('/tasks opens the prompt-adjacent task panel while the parent is running', async () => {
+    const agentState = { ...pendingAgentState(), pendingPlanApproval: null };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    await submit(view, '/tasks');
+
+    expect(stripAnsi(view.lastFrame())).toContain('Background tasks');
+    expect(stripAnsi(view.lastFrame())).toContain('No background tasks.');
+    expect(agentState.cancel).not.toHaveBeenCalled();
+  });
+
+  it('/agents gives configuration guidance instead of opening Agent Center', async () => {
+    const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    await submit(view, '/agents');
+
+    expect(agentState.addLocalMessage).toHaveBeenCalledWith(expect.stringContaining('/tasks'));
+    expect(stripAnsi(view.lastFrame())).not.toContain('Agent Center');
+  });
+
   it('/newline is not treated as /new', async () => {
     const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
     useAgentMock.mockReturnValue(agentState);
