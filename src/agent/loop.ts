@@ -14,7 +14,15 @@ import { createProvider, type Provider } from '../provider/index.js';
 import { buildMessages } from './context.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
-import { resolveContextLimit, shouldCompact, usagePressureTokens } from './compact.js';
+import {
+  clipHistoryToolResults,
+  estimateHistoryTokens,
+  estimateProviderRequestTokens,
+  resolveContextLimit,
+  shouldCompact,
+  usagePressureTokens,
+} from './compact.js';
+import { isContextOverflowError } from '../provider/reliability.js';
 import { evaluatePermission } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
@@ -30,6 +38,7 @@ import {
 import { createToolSurface } from '../tools/catalog.js';
 import {
   enrichToolResultPresentation,
+  boundToolResultOutput,
   replaceToolResult,
   toolFailure,
   toolResultErrorMessage,
@@ -91,6 +100,8 @@ export async function runAgentLoop(
     parentSessionId?: string;
     /** Mutable resources owned by the logical session. */
     runtime?: SessionRuntime;
+    /** Override user-local oversized tool-output storage (primarily for isolated hosts/tests). */
+    toolOutputRoot?: string;
     provider?: Provider;
   },
 ): Promise<Message[]> {
@@ -222,6 +233,7 @@ export async function runAgentLoop(
   let lastUsage: Usage | null = null;
   /** Avoid re-attempting compact for the same pressure snapshot after skip/fail. */
   let lastCompactAttemptKey: string | null = null;
+  let overflowRecoveryAttempted = false;
   let effectiveMode = initialMode;
   const syncHostMode = (): void => {
     const hostMode = callbacks.getMode?.();
@@ -269,7 +281,7 @@ export async function runAgentLoop(
     log.debug('turn start', { turn, maxTurns: config.maxTurns, mode: effectiveMode });
 
     const activeDefinitions = toolSurface.activeDefinitions();
-    const messages = await buildMessages(
+    let messages = await buildMessages(
       effectiveConfig,
       newHistory,
       activeDefinitions,
@@ -282,6 +294,91 @@ export async function runAgentLoop(
         toolCatalogSummary: toolSurface.catalogSummary(),
       },
     );
+    let requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
+    const reservedOutputTokens = Math.min(
+      Math.max(
+        1_024,
+        effectiveConfig.modelInfo?.maxOutputTokens ??
+          effectiveConfig.maxTokens ??
+          Math.floor(contextLimit * 0.2),
+      ),
+      Math.max(1, contextLimit - 1),
+    );
+    const usableContextLimit = Math.max(1, contextLimit - reservedOutputTokens);
+    const preflightThreshold = Math.floor(usableContextLimit * 0.8);
+    const hasToolResults = newHistory.some((message) => (message.toolResults?.length ?? 0) > 0);
+    const preflightEligible = requestTokens >= preflightThreshold && hasToolResults;
+
+    // Usage from the prior request cannot see a tool result added afterward. Measure the complete
+    // request that is about to be sent and compact it before the provider has to reject it.
+    if (config.autoCompactEnabled !== false && callbacks.onCompact && preflightEligible) {
+      const attemptKey = `preflight:${requestTokens}:${newHistory.length}`;
+      if (attemptKey !== lastCompactAttemptKey) {
+        lastCompactAttemptKey = attemptKey;
+        const estimatedUsage: Usage = {
+          promptTokens: requestTokens,
+          completionTokens: 0,
+          totalTokens: requestTokens,
+          contextTokens: requestTokens,
+        };
+        log.info('preflight compact triggered', { requestTokens, contextLimit });
+        try {
+          const result = await callbacks.onCompact(newHistory, estimatedUsage);
+          if (result.status === 'compacted') {
+            newHistory.length = 0;
+            newHistory.push(...result.replacementHistory);
+            lastUsage = null;
+            lastCompactAttemptKey = null;
+            messages = await buildMessages(
+              effectiveConfig,
+              newHistory,
+              activeDefinitions,
+              toolContext.todos,
+              options?.commands,
+              signal,
+              {
+                append: options?.systemPromptAppend,
+                hideAgents: options?.hideAgents,
+                toolCatalogSummary: toolSurface.catalogSummary(),
+              },
+            );
+            requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
+          }
+        } catch {
+          // Deterministic clipping below remains available if model-assisted compaction fails.
+        }
+      }
+    }
+
+    if (preflightEligible) {
+      const clippedHistory = clipHistoryToolResults(newHistory);
+      if (clippedHistory.some((message, index) => message !== newHistory[index])) {
+        newHistory.length = 0;
+        newHistory.push(...clippedHistory);
+        messages = await buildMessages(
+          effectiveConfig,
+          newHistory,
+          activeDefinitions,
+          toolContext.todos,
+          options?.commands,
+          signal,
+          {
+            append: options?.systemPromptAppend,
+            hideAgents: options?.hideAgents,
+            toolCatalogSummary: toolSurface.catalogSummary(),
+          },
+        );
+        requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
+        log.info('preflight tool outputs clipped', { requestTokens, contextLimit });
+      }
+    }
+
+    if (requestTokens >= usableContextLimit && hasToolResults) {
+      callbacks.onError(
+        `Request is too large for ${effectiveConfig.model} (${requestTokens} estimated input tokens, ${usableContextLimit} available input tokens after reserving output space). Start a new session or reduce the current prompt.`,
+      );
+      return newHistory;
+    }
     let assistantContent = '';
     const toolCalls: ToolCall[] = [];
     const nestedTraceIds: string[] = [];
@@ -289,6 +386,8 @@ export async function runAgentLoop(
 
     // Buffer text during streaming so we can discard on retry.
     let textBuffer = '';
+    let heldText = '';
+    let textStreamingStarted = false;
 
     const provider = options?.provider ?? createProvider(effectiveConfig);
     const stream = provider.stream(effectiveConfig, messages, activeDefinitions, {
@@ -311,9 +410,18 @@ export async function runAgentLoop(
       for await (const event of stream) {
         if (event.type === 'text' && event.content) {
           textBuffer += event.content;
-          // Still stream to the UI so the user sees tokens arriving.
-          // If a retry occurs at the provider level, the user sees it restart.
-          callbacks.onText(event.content);
+          if (textStreamingStarted) {
+            callbacks.onText(event.content);
+          } else {
+            heldText += event.content;
+            const candidate = heldText.trimStart().toLowerCase();
+            const errorPrefix = '[error]';
+            if (!errorPrefix.startsWith(candidate) && !candidate.startsWith(errorPrefix)) {
+              textStreamingStarted = true;
+              callbacks.onText(heldText);
+              heldText = '';
+            }
+          }
         } else if (event.type === 'tool_call' && event.toolCall) {
           toolCalls.push(event.toolCall);
           callbacks.onToolCall(event.toolCall);
@@ -348,10 +456,59 @@ export async function runAgentLoop(
 
     assistantContent = textBuffer;
 
+    const routerOverflowResponse =
+      !streamError &&
+      streamDone &&
+      toolCalls.length === 0 &&
+      /^\s*\[Error\]/i.test(assistantContent) &&
+      isContextOverflowError(assistantContent);
+    if (routerOverflowResponse) {
+      streamError = assistantContent.trim();
+      assistantContent = '';
+    }
+    if (heldText && !routerOverflowResponse) callbacks.onText(heldText);
+
     // If the stream ended with an error, surface it and stop the loop. Keep
     // any partial assistant text/tool call metadata in returned history so
     // callers that persist sessions do not lose what was already rendered.
     if (streamError) {
+      if (isContextOverflowError(streamError) && !overflowRecoveryAttempted) {
+        overflowRecoveryAttempted = true;
+        const beforeTokens = estimateHistoryTokens(newHistory);
+        let compacted = false;
+        if (config.autoCompactEnabled !== false && callbacks.onCompact) {
+          const estimatedUsage: Usage = {
+            promptTokens: requestTokens,
+            completionTokens: 0,
+            totalTokens: requestTokens,
+            contextTokens: requestTokens,
+          };
+          try {
+            const result = await callbacks.onCompact(newHistory, estimatedUsage);
+            if (result.status === 'compacted') {
+              newHistory.length = 0;
+              newHistory.push(...result.replacementHistory);
+              compacted = true;
+            }
+          } catch {
+            // Fall through to local clipping.
+          }
+        }
+        if (!compacted) {
+          const clippedHistory = clipHistoryToolResults(newHistory);
+          newHistory.length = 0;
+          newHistory.push(...clippedHistory);
+        }
+        const afterTokens = estimateHistoryTokens(newHistory);
+        if (afterTokens < beforeTokens) {
+          log.warn('context overflow recovered; retrying with reduced history', {
+            beforeTokens,
+            afterTokens,
+          });
+          turn--;
+          continue;
+        }
+      }
       log.warn('stream error', {
         error: streamError,
         contentLen: assistantContent.length,
@@ -706,7 +863,12 @@ export async function runAgentLoop(
         }
       }
 
-      const normalizedResult = enrichToolResultPresentation(result, canonName, call.arguments);
+      const normalizedResult = await boundToolResultOutput(
+        enrichToolResultPresentation(result, canonName, call.arguments),
+        toolContext.workspaceRoot,
+        undefined,
+        options?.toolOutputRoot,
+      );
       toolResults.push(normalizedResult);
       publishResult(normalizedResult);
 

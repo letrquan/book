@@ -35,6 +35,7 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Prevent context-window failures from oversized tool output by skipping binary `Grep` inputs, bounding search and generic tool results, preflighting complete provider requests, and compacting or clipping once before retrying recognized overflow errors.
 - Apply interactive permission-mode changes immediately to the active agent loop.
 - Keep terminal-native drag selection and clipboard copy available in the full-screen TUI.
 - Prevent the first submitted TUI message from freezing during a cold rewind snapshot by yielding filesystem checkpoint work and rendering the optimistic turn first.

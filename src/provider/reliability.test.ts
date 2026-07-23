@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultConfig } from '../test/fixtures.js';
-import { fetchWithRetry, formatApiError } from './reliability.js';
+import {
+  classifyHttpStatus,
+  fetchWithRetry,
+  formatApiError,
+  isContextOverflowError,
+} from './reliability.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -37,5 +42,17 @@ describe('provider reliability transport', () => {
 
     expect(message).toContain('x'.repeat(200));
     expect(message).not.toContain('x'.repeat(201));
+  });
+
+  it('classifies HTTP 413 and common provider messages as context overflow', () => {
+    expect(classifyHttpStatus(413)).toEqual({ code: 'context_overflow', retryable: false });
+    expect(isContextOverflowError('context_length_exceeded')).toBe(true);
+    expect(isContextOverflowError('Your input exceeds the context window of this model.')).toBe(
+      true,
+    );
+    expect(formatApiError(413, 'request too large')).toContain('Reduce the conversation');
+    expect(formatApiError(400, '{"error":{"code":"context_length_exceeded"}}')).toContain(
+      'Reduce the conversation',
+    );
   });
 });

@@ -14,6 +14,7 @@ export type ProviderErrorCode =
   | 'bad_request'
   | 'not_found'
   | 'quota'
+  | 'context_overflow'
   | 'unknown';
 
 export function classifyHttpStatus(status: number): {
@@ -24,6 +25,7 @@ export function classifyHttpStatus(status: number): {
   if (status === 529) return { code: 'overloaded', retryable: true };
   if (status >= 500 && status < 600) return { code: 'server_error', retryable: true };
   if (status === 408) return { code: 'timeout', retryable: true };
+  if (status === 413) return { code: 'context_overflow', retryable: false };
   if (status === 401 || status === 403) return { code: 'auth', retryable: false };
   if (status === 402) return { code: 'quota', retryable: false };
   if (status === 400) return { code: 'bad_request', retryable: false };
@@ -32,7 +34,11 @@ export function classifyHttpStatus(status: number): {
 }
 
 export function formatApiError(status: number, body: string): string {
-  const { code } = classifyHttpStatus(status);
+  const statusCode = classifyHttpStatus(status).code;
+  const code =
+    statusCode === 'bad_request' && isContextOverflowError(body)
+      ? ('context_overflow' as const)
+      : statusCode;
   const detail = safeErrorDetail(body);
   const base = `API Error: ${status}`;
   switch (code) {
@@ -48,9 +54,28 @@ export function formatApiError(status: number, body: string): string {
       return `${base} ${detail}. Check BOOK_API_KEY or run /login.`;
     case 'quota':
       return `${base} ${detail}. Check your usage/credits.`;
+    case 'context_overflow':
+      return `${base} ${detail || 'Input exceeds the model context window.'} Reduce the conversation or tool output and try again.`;
     default:
       return `${base} ${detail}`;
   }
+}
+
+/** Detect provider/router responses that mean the input, rather than transport, is too large. */
+export function isContextOverflowError(error: unknown): boolean {
+  const normalized = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    normalized.includes('413') ||
+    normalized.includes('context_length_exceeded') ||
+    /input\s+(?:token\s+count\s+)?exceeds?.*(?:context|limit|maximum)/.test(normalized) ||
+    /input\s+exceeds?.*(?:context\s+window|context\s+length|token\s+limit)/.test(normalized) ||
+    /maximum\s+context|context\s+(?:length|window|size).*(?:exceed|overflow|too\s+(?:long|large)|maximum)/.test(
+      normalized,
+    ) ||
+    /too\s+many\s+(?:input\s+)?tokens|prompt\s+(?:is\s+)?too\s+long|request\s+too\s+large.*token/.test(
+      normalized,
+    )
+  );
 }
 
 export async function fetchWithRetry(
