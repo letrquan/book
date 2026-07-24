@@ -31,7 +31,7 @@ const FILE_MENTION_DEBOUNCE_MS = 40;
 
 interface InputBarProps {
   onSubmit: (value: string) => void;
-  disabled: boolean;
+  submissionMode: 'submit' | 'queue' | 'blocked';
   mode: PermissionMode;
   onCycleMode: () => void;
   terminalWidth?: number;
@@ -47,10 +47,20 @@ interface InputBarProps {
    * the user confirming a permission accidentally interrupts the stream.
    */
   inputSuppressed?: boolean;
-  /** Called when the user presses Enter while `disabled` (agent running) — interrupts the stream. */
-  onInterrupt?: () => void;
   /** Allows immediate local commands such as /tasks while the parent is running. */
-  canSubmitWhileDisabled?: (value: string) => boolean;
+  canSubmitWhileBusy?: (value: string) => boolean;
+  /** Allows conversational input to be queued while the parent is running. */
+  canQueueWhileBusy?: (value: string) => boolean;
+  /** Receives accepted queued input. Return false when the queue is full. */
+  onQueue?: (value: string) => boolean;
+  /** Recalls the newest queued input when the composer is empty. */
+  onRecallQueued?: () => string | undefined;
+  /** Cancels the queued input currently being edited. */
+  onCancelQueuedEdit?: () => void;
+  /** True while the composer contains a recalled queued input. */
+  editingQueuedInput?: boolean;
+  /** Keeps the parent aware of the live draft for interrupt restoration. */
+  onDraftChange?: (value: string) => void;
   /** Moves focus from an empty prompt to the first background task when available. */
   onFocusBackgroundTask?: () => boolean;
   /** Forward unrecognized global keyboard shortcuts to the parent App. */
@@ -132,11 +142,16 @@ function extractCommandName(value: string): string | null {
  */
 export function InputBar({
   onSubmit,
-  disabled,
+  submissionMode,
   mode,
   onCycleMode,
-  onInterrupt,
-  canSubmitWhileDisabled,
+  canSubmitWhileBusy,
+  canQueueWhileBusy,
+  onQueue,
+  onRecallQueued,
+  onCancelQueuedEdit,
+  editingQueuedInput = false,
+  onDraftChange,
   onFocusBackgroundTask,
   onGlobalShortcut,
   inputSuppressed = false,
@@ -174,9 +189,21 @@ export function InputBar({
   const fileSelectedRef = useRef(0);
   const fileCandidatesRef = useRef<FileMentionCandidate[]>([]);
 
+  useEffect(() => {
+    onDraftChange?.(value);
+  }, [onDraftChange, value]);
+
   const filteredCmds = useMemo(
     () => getFilteredCommands(commands, menuFilter),
     [commands, menuFilter],
+  );
+  const resolveSubmissionAction = useCallback(
+    (candidate: string): 'submit' | 'queue' | 'blocked' => {
+      if (submissionMode === 'submit' || canSubmitWhileBusy?.(candidate)) return 'submit';
+      if (submissionMode === 'queue' && (canQueueWhileBusy?.(candidate) ?? true)) return 'queue';
+      return 'blocked';
+    },
+    [canQueueWhileBusy, canSubmitWhileBusy, submissionMode],
   );
   const workspace = process.env.BOOK_WORKSPACE || process.cwd();
 
@@ -354,6 +381,14 @@ export function InputBar({
       if (key.return) return;
     }
 
+    if (key.escape && editingQueuedInput) {
+      setValue('');
+      setHistoryIndex(-1);
+      onCancelQueuedEdit?.();
+      uiLog.event('input:Escape', { action: 'cancel-queued-edit' });
+      return;
+    }
+
     // ---- Normal mode (no menu) ----
     // Tab to accept suggestion when input is empty
     if (key.tab && !value) {
@@ -388,6 +423,15 @@ export function InputBar({
     if (key.downArrow && !value && historyIndex < 0 && onFocusBackgroundTask?.()) {
       uiLog.event('input:Down', { action: 'focus-background-task' });
       return;
+    }
+    if (key.upArrow && !value) {
+      const recalled = onRecallQueued?.();
+      if (recalled !== undefined) {
+        setHistoryIndex(-1);
+        setValue(recalled);
+        uiLog.event('input:Up', { action: 'recall-queued-input' });
+        return;
+      }
     }
     // Up arrow — navigate history backward
     if (key.upArrow && history.length > 0 && historyIndex < history.length - 1) {
@@ -464,19 +508,28 @@ export function InputBar({
         setFileMenuVisible(false);
         setFileMention(null);
         setFileCandidates([]);
-        setValue('');
         if (!commandValue) {
+          setValue('');
           uiLog.event('submit:menu', { result: 'no-command-value' });
           return;
         }
-        if (disabled && !canSubmitWhileDisabled?.(commandValue)) {
+        const action = resolveSubmissionAction(commandValue);
+        if (action === 'blocked') {
           uiLog.event('submit:menu', {
-            result: 'interrupt',
+            result: 'blocked',
             command: commandValue.slice(1),
-            disabled,
+            submissionMode,
           });
           setSubmitFlashKey((key) => key + 1);
-          onInterrupt?.();
+          setValue(commandValue);
+        } else if (action === 'queue') {
+          const accepted = onQueue?.(commandValue) ?? false;
+          uiLog.event('submit:menu', {
+            result: accepted ? 'queued' : 'queue-full',
+            command: commandValue.slice(1),
+          });
+          setSubmitFlashKey((key) => key + 1);
+          setValue(accepted ? '' : commandValue);
         } else {
           uiLog.event('submit:menu', {
             result: 'command',
@@ -487,6 +540,7 @@ export function InputBar({
           recordCommandUse(commandValue.slice(1));
           setSubmitFlashKey((key) => key + 1);
           onSubmit(commandValue);
+          setValue('');
         }
         return;
       }
@@ -508,16 +562,23 @@ export function InputBar({
         uiLog.event('submit:text', { result: 'empty' });
         return;
       }
-      // While the agent is running, Enter interrupts the stream instead of
-      // submitting — input stays live and focusable so the user can act.
-      if (disabled && !canSubmitWhileDisabled?.(normalized)) {
-        uiLog.event('submit:text', { result: 'interrupt', len: normalized.length });
+      const action = resolveSubmissionAction(normalized);
+      if (action === 'blocked') {
+        uiLog.event('submit:text', { result: 'blocked', len: normalized.length, submissionMode });
         setSubmitFlashKey((key) => key + 1);
-        onInterrupt?.();
-        setValue('');
         return;
       }
-      uiLog.event('submit:text', { result: 'submitted', len: normalized.length });
+      if (action === 'queue') {
+        const accepted = onQueue?.(normalized) ?? false;
+        uiLog.event('submit:text', {
+          result: accepted ? 'queued' : 'queue-full',
+          len: normalized.length,
+        });
+        setSubmitFlashKey((key) => key + 1);
+        if (!accepted) return;
+      } else {
+        uiLog.event('submit:text', { result: 'submitted', len: normalized.length });
+      }
       setHistory((h) => [normalized, ...h].slice(0, 100));
       setHistoryIndex(-1);
 
@@ -526,16 +587,26 @@ export function InputBar({
       if (cmdName) recordCommandUse(cmdName);
 
       setSubmitFlashKey((key) => key + 1);
-      onSubmit(normalized);
+      if (action === 'submit') onSubmit(normalized);
       setValue('');
     },
-    [acceptSelectedFileMention, canSubmitWhileDisabled, commands, disabled, onInterrupt, onSubmit],
+    [
+      acceptSelectedFileMention,
+      commands,
+      onQueue,
+      onSubmit,
+      resolveSubmissionAction,
+      submissionMode,
+    ],
   );
 
   const tokenKey = modeColorToken(mode);
   const baseBorderColor = theme[tokenKey];
   const motionDisabled = reducedMotion || screenReader;
-  const promptPulse = usePulse(!disabled && !inputSuppressed && !motionDisabled, 700);
+  const promptPulse = usePulse(
+    submissionMode === 'submit' && !inputSuppressed && !motionDisabled,
+    700,
+  );
   const submitFlash = useTimedFlash(submitFlashKey, 220, motionDisabled);
 
   const outerWidth = Math.max(20, Math.floor(terminalWidth));
@@ -544,11 +615,16 @@ export function InputBar({
   const inputWidth = Math.max(1, editorWidth - 2);
   const promptColor =
     submitFlash || (promptPulse && !compact) ? theme.brandShimmer : baseBorderColor;
-  const placeholder = disabled
-    ? compact
-      ? 'Enter interrupts'
-      : 'Press Enter to interrupt… (or keep typing)'
-    : suggestion;
+  const placeholder =
+    submissionMode === 'queue'
+      ? compact
+        ? 'Enter queues'
+        : 'Type a follow-up; Enter queues it'
+      : submissionMode === 'blocked'
+        ? compact
+          ? 'Please wait...'
+          : 'Input is temporarily unavailable'
+        : suggestion;
 
   const selIdx = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
   const fileSelIdx = Math.max(0, Math.min(fileSelected, fileCandidates.length - 1));
@@ -592,8 +668,8 @@ export function InputBar({
             onChange={safeOnChange}
             onSubmit={handleSubmit}
             placeholder={placeholder}
-            // Stay focused while disabled so Enter can route to the interrupt
-            // path; only yield to a modal (permission prompt). `focus` here maps
+            // Stay focused while busy so Enter can queue a follow-up; only yield
+            // to a modal (permission prompt). `focus` here maps
             // to InputBox's internal `useInput` isActive — see inputSuppressed.
             focus={!inputSuppressed}
           />

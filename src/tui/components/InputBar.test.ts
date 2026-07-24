@@ -38,7 +38,7 @@ function inputBar(
     { value: DEFAULT_THEME },
     React.createElement(InputBar, {
       onSubmit,
-      disabled: false,
+      submissionMode: 'submit',
       mode: 'default',
       onCycleMode: () => {},
       commands: [],
@@ -460,6 +460,69 @@ describe('InputBar command menu', () => {
     view.stdin.write('\r');
     await tick(20);
     expect(submitted).toEqual(['restored prompt']);
+  });
+});
+
+describe('InputBar queued follow-up input', () => {
+  it('queues Enter while busy and clears an accepted draft', async () => {
+    const onSubmit = vi.fn();
+    const onQueue = vi.fn(() => true);
+    const view = render(
+      inputBar(onSubmit, {
+        submissionMode: 'queue',
+        onQueue,
+        canQueueWhileBusy: (value) => !value.startsWith('/'),
+      }),
+    );
+
+    view.stdin.write('follow up');
+    await tick();
+    view.stdin.write('\r');
+    await tick();
+
+    expect(onQueue).toHaveBeenCalledWith('follow up');
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(stripAnsi(view.lastFrame())).not.toContain('follow up');
+  });
+
+  it('keeps the draft when the queue is full or submission is blocked', async () => {
+    const full = render(inputBar(() => {}, { submissionMode: 'queue', onQueue: () => false }));
+    full.stdin.write('keep this');
+    await tick();
+    full.stdin.write('\r');
+    await tick();
+    expect(stripAnsi(full.lastFrame())).toContain('keep this');
+    full.unmount();
+
+    const blocked = render(inputBar(() => {}, { submissionMode: 'blocked' }));
+    blocked.stdin.write('still here');
+    await tick();
+    blocked.stdin.write('\r');
+    await tick();
+    expect(stripAnsi(blocked.lastFrame())).toContain('still here');
+  });
+
+  it('recalls the newest queued input with Up and resubmits the edited value', async () => {
+    const onQueue = vi.fn(() => true);
+    const onRecallQueued = vi.fn(() => 'queued draft');
+    const props = {
+      submissionMode: 'queue' as const,
+      onQueue,
+      onRecallQueued,
+    };
+    const view = render(inputBar(() => {}, props));
+
+    view.stdin.write('\u001B[A');
+    await tick();
+    expect(stripAnsi(view.lastFrame())).toContain('queued draft');
+
+    view.rerender(inputBar(() => {}, { ...props, editingQueuedInput: true }));
+    view.stdin.write(' edited');
+    await tick();
+    view.stdin.write('\r');
+    await tick();
+
+    expect(onQueue).toHaveBeenCalledWith('queued draft edited');
   });
 });
 

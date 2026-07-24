@@ -180,7 +180,48 @@ describe('AgentSession', () => {
       callbacks: { onEvent: () => {}, onTurnStart: () => {} },
     });
 
-    expect(result).toMatchObject({ status: 'failed', phase: 'prepare', error });
+    expect(result).toMatchObject({
+      status: 'failed',
+      phase: 'prepare',
+      error,
+      userMessagePersisted: false,
+    });
+    expect(session.operations.activeKind).toBeNull();
+  });
+
+  it('marks preparation failures after the user timeline event as persisted', async () => {
+    const error = new Error('metadata update failed');
+    const session = new AgentSession();
+    const records: SessionRecord[] = [];
+    const result = await session.send({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      displayMessage: 'hello',
+      createUserMessage: () => ({
+        id: 'user-persisted-failure',
+        role: 'user',
+        content: 'hello',
+        includeInContext: true,
+        timestamp: 10,
+      }),
+      history: [],
+      sessionId: 'session-1',
+      timelineStore: {
+        append: (_id, record) => records.push(record),
+        patchMeta: () => {
+          throw error;
+        },
+      },
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+
+    expect(records.map((record) => record.type)).toEqual(['turn_checkpoint', 'user']);
+    expect(result).toMatchObject({
+      status: 'failed',
+      phase: 'prepare',
+      error,
+      userMessagePersisted: true,
+    });
     expect(session.operations.activeKind).toBeNull();
   });
 

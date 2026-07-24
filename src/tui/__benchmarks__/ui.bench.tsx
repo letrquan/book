@@ -204,7 +204,7 @@ bench
             sink += value.length;
             resolveSubmit?.();
           }}
-          disabled={false}
+          submissionMode="submit"
           mode="default"
           onCycleMode={() => {}}
           reducedMotion

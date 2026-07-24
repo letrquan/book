@@ -3,7 +3,9 @@ dist/
 coverage/
 .env
 *.log
+*.log.*
 .book/settings.local.json
+.book/migrations.json
 
 # Claude Code / Book local session state (worktrees, memory, scratch)
 .claude/

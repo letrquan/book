@@ -93,6 +93,7 @@ export interface AgentSessionPrepareSendRequest {
   signal?: AbortSignal;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
+  onUserMessagePersisted?: () => void;
 }
 
 export interface AgentSessionRecordUserRequest {
@@ -106,6 +107,7 @@ export interface AgentSessionRecordUserRequest {
   expandShellInput?: boolean;
   runtime?: SessionRuntime;
   signal?: AbortSignal;
+  onUserMessagePersisted?: () => void;
 }
 
 export interface AgentSessionSendControl {
@@ -145,7 +147,8 @@ export type AgentSessionSendResult =
   | { status: 'rejected'; activeKind: AgentSessionOperation['kind'] | null }
   | { status: 'cancelled' }
   | { status: 'completed'; messages: Message[] }
-  | { status: 'failed'; phase: 'before-prepare' | 'prepare' | 'run'; error: unknown };
+  | { status: 'failed'; phase: 'before-prepare' | 'run'; error: unknown }
+  | { status: 'failed'; phase: 'prepare'; error: unknown; userMessagePersisted: boolean };
 
 export interface AgentSessionCompactRequest {
   config: AgentConfig;
@@ -259,6 +262,7 @@ export class AgentSession {
       isCurrent: () => operation.isCurrent() && request.isCurrent?.() !== false,
     };
     const runtime = request.runtime ?? this.runtime;
+    let userMessagePersisted = false;
 
     try {
       try {
@@ -285,12 +289,15 @@ export class AgentSession {
           signal: control.signal,
           isCurrent: control.isCurrent,
           runtime,
+          onUserMessagePersisted: () => {
+            userMessagePersisted = true;
+          },
         });
         if (result.status === 'cancelled') return result;
         prepared = result;
         request.onPrepared?.(prepared, control);
       } catch (error) {
-        return { status: 'failed', phase: 'prepare', error };
+        return { status: 'failed', phase: 'prepare', error, userMessagePersisted };
       }
 
       try {
@@ -547,6 +554,7 @@ export class AgentSession {
         fileObservations: request.userMessage.fileObservations,
       },
     } satisfies SessionRecord);
+    if (request.timelineStore) request.onUserMessagePersisted?.();
 
     const sessionName = request.sessionName?.trim() || deriveSessionName(request.displayMessage);
     if (!request.sessionName?.trim()) {

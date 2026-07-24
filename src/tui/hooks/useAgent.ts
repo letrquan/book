@@ -494,7 +494,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       userMessage: string,
       commandContext?: CommandContext,
       messageOptions?: SendMessageOptions,
-    ): Promise<boolean> => {
+    ): Promise<AgentSessionSendResult> => {
       setCompactUi(null);
 
       const generation = sessionGenerationRef.current;
@@ -824,7 +824,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           reason: sendResult.activeKind === 'compact' ? 'compacting' : 'already-in-flight',
           len: userMessage.length,
         });
-        return false;
+        return sendResult;
       }
       if (hostStillCurrent && sendResult.status === 'completed') {
         // Nested tool traces remain display-only; the returned history is provider context.
@@ -852,7 +852,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         setStreamingMessageId(null);
       }
       uiLog.event('send:finally', { durationMs: Date.now() - turnStartRef.current });
-      return didSendMessageComplete(sendResult);
+      return sendResult;
     },
     [
       liveConfig,
@@ -867,7 +867,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
   const send = useCallback(
     async (userMessage: string, commandContext?: CommandContext) => {
-      await sendMessage(userMessage, commandContext);
+      return sendMessage(userMessage, commandContext);
     },
     [sendMessage],
   );
@@ -887,11 +887,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       );
       if (fresh.length === 0) return true;
       const built = fresh.map(buildAgentCompletionMessage);
-      return sendMessage(built.map((item) => item.displayMessage).join('\n'), undefined, {
-        contextMessage: built.map((item) => item.contextMessage).join('\n'),
-        kind: 'agent-notification',
-        agentNotifications: built.map((item) => item.display),
-      });
+      const result = await sendMessage(
+        built.map((item) => item.displayMessage).join('\n'),
+        undefined,
+        {
+          contextMessage: built.map((item) => item.contextMessage).join('\n'),
+          kind: 'agent-notification',
+          agentNotifications: built.map((item) => item.display),
+        },
+      );
+      return didSendMessageComplete(result);
     },
     [sendMessage],
   );

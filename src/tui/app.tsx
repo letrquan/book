@@ -2,6 +2,7 @@ import { Box, Text, useInput, useStdout, useApp } from 'ink';
 import { useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
+import { QueuedInputPreview } from './components/QueuedInputPreview.js';
 import { StatusLine } from './components/StatusLine.js';
 import { WorkingIndicator } from './components/WorkingIndicator.js';
 import { CompactDiffCard } from './components/CompactDiffCard.js';
@@ -71,6 +72,14 @@ import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
 import type { InteractiveAssets } from './interactive-assets.js';
 import { resolveContextLimit } from '../agent/compact.js';
+import {
+  createQueuedInput,
+  enqueueQueuedInput,
+  recallNewestQueuedInput,
+  restoreQueuedInputText,
+  shouldRequeueQueuedSend,
+  type QueuedInput,
+} from './queued-inputs.js';
 
 const uiLog = createUiDebugLogger('tui:app');
 
@@ -248,10 +257,25 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   const [showRewindPicker, setShowRewindPicker] = useState(false);
   const [isResolvingCommand, setIsResolvingCommand] = useState(false);
   const [draftRestore, setDraftRestore] = useState<{ key: number; value: string }>();
+  const [queuedInputs, setQueuedInputs] = useState<QueuedInput[]>([]);
+  const [editingQueuedInput, setEditingQueuedInput] = useState<QueuedInput | undefined>(undefined);
+  const [queueNotice, setQueueNotice] = useState<string | undefined>(undefined);
+  const [sendInFlight, setSendInFlight] = useState(false);
+  const [, setQueueDrainTick] = useState(0);
   const [followRequestKey, setFollowRequestKey] = useState(0);
   const [detailTaskPickerOpen, setDetailTaskPickerOpen] = useState(false);
-  const [detailTaskPickerAgentId, setDetailTaskPickerAgentId] = useState<string>();
+  const [detailTaskPickerAgentId, setDetailTaskPickerAgentId] = useState<string | undefined>(
+    undefined,
+  );
   const commandResolutionRef = useRef<AbortController | null>(null);
+  const queuedInputsRef = useRef<QueuedInput[]>([]);
+  const editingQueuedInputRef = useRef<QueuedInput | undefined>(undefined);
+  const dispatchingQueuedIdRef = useRef<string | undefined>(undefined);
+  const draftRef = useRef('');
+  const queueDrainRunningRef = useRef(false);
+  const queueDrainPausedRef = useRef(false);
+  const queueInterruptEpochRef = useRef(0);
+  const queueSessionRef = useRef(sessionId);
   const [currentTheme, setCurrentTheme] = useState<ResolvedTheme>(
     () =>
       interactiveAssets?.initialTheme ??
@@ -267,11 +291,78 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   const { tasks, addTask, updateTaskStatus, removeTask, clearTasks } = useTasks();
   const theme = currentTheme.tokens;
   const { exit: exitApp } = useApp();
+  const replaceQueuedInputs = useCallback((next: QueuedInput[]) => {
+    queuedInputsRef.current = next;
+    setQueuedInputs(next);
+  }, []);
+  const replaceEditingQueuedInput = useCallback((next?: QueuedInput) => {
+    editingQueuedInputRef.current = next;
+    setEditingQueuedInput(next);
+  }, []);
+  const dispatchAgentSend = useCallback(
+    async (value: string, commandContext?: CommandContext) => {
+      setSendInFlight(true);
+      try {
+        return commandContext === undefined ? await send(value) : await send(value, commandContext);
+      } finally {
+        setSendInFlight(false);
+      }
+    },
+    [send],
+  );
+  const enqueueFollowUp = useCallback(
+    (value: string): boolean => {
+      const edited = editingQueuedInputRef.current;
+      const input = createQueuedInput(value, sessionId, edited);
+      const result = enqueueQueuedInput(queuedInputsRef.current, input);
+      if (!result.accepted) {
+        setQueueNotice('Queue is full. Edit or clear a queued message before adding another.');
+        return false;
+      }
+      replaceQueuedInputs(result.queue);
+      replaceEditingQueuedInput(undefined);
+      queueDrainPausedRef.current = false;
+      setQueueNotice(undefined);
+      return true;
+    },
+    [replaceEditingQueuedInput, replaceQueuedInputs, sessionId],
+  );
+  const recallQueuedInput = useCallback((): string | undefined => {
+    const result = recallNewestQueuedInput(queuedInputsRef.current, dispatchingQueuedIdRef.current);
+    if (!result.recalled) return undefined;
+    replaceQueuedInputs(result.queue);
+    replaceEditingQueuedInput(result.recalled);
+    queueDrainPausedRef.current = true;
+    setQueueNotice('Editing queued input. Enter resubmits; Esc removes it.');
+    return result.recalled.value;
+  }, [replaceEditingQueuedInput, replaceQueuedInputs]);
+  const cancelQueuedEdit = useCallback(() => {
+    replaceEditingQueuedInput(undefined);
+    queueDrainPausedRef.current = false;
+    setQueueNotice('Queued input removed.');
+    setDraftRestore((current) => ({
+      key: (current?.key ?? 0) + 1,
+      value: '',
+    }));
+  }, [replaceEditingQueuedInput]);
   const interrupt = useCallback(() => {
+    queueInterruptEpochRef.current += 1;
     commandResolutionRef.current?.abort();
     commandResolutionRef.current = null;
+    const pending = queuedInputsRef.current;
+    if (pending.length > 0) {
+      const restored = restoreQueuedInputText(pending, draftRef.current);
+      replaceQueuedInputs([]);
+      setDraftRestore((current) => ({
+        key: (current?.key ?? 0) + 1,
+        value: restored,
+      }));
+      setQueueNotice('Queued inputs restored to the composer after interrupt.');
+    }
+    replaceEditingQueuedInput(undefined);
+    queueDrainPausedRef.current = true;
     cancel();
-  }, [cancel]);
+  }, [cancel, replaceEditingQueuedInput, replaceQueuedInputs]);
 
   useEffect(() => {
     return () => commandResolutionRef.current?.abort();
@@ -283,6 +374,19 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     managedAgents.setSurface('main');
     managedAgents.selectAgent(undefined);
   }, [managedAgents.selectAgent, managedAgents.setSurface, sessionId]);
+
+  useEffect(() => {
+    if (queueSessionRef.current === sessionId) return;
+    queueSessionRef.current = sessionId;
+    queueInterruptEpochRef.current += 1;
+    replaceQueuedInputs([]);
+    replaceEditingQueuedInput(undefined);
+    dispatchingQueuedIdRef.current = undefined;
+    queueDrainRunningRef.current = false;
+    queueDrainPausedRef.current = false;
+    setQueueNotice(undefined);
+    draftRef.current = '';
+  }, [replaceEditingQueuedInput, replaceQueuedInputs, sessionId]);
 
   useAgentCompletionDelivery({
     pending: managedAgents.pendingCompletions,
@@ -370,6 +474,20 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     (event) => event.type === 'agent_permission',
   );
   const childQuestion = managedAgents.pendingQuestions[0];
+  const queueDrainBlocked = Boolean(
+    isThinking ||
+    sendInFlight ||
+    isCompacting ||
+    isRewinding ||
+    isResolvingCommand ||
+    pendingPermission ||
+    pendingPlanApproval ||
+    pendingUserQuestion ||
+    childPermission ||
+    childQuestion ||
+    editingQueuedInput ||
+    managedAgents.surface !== 'main',
+  );
   const managedAgentTraces = useMemo(
     () => projectManagedAgentTraces(messages, managedAgents.records, managedAgents.activities),
     [managedAgents.activities, managedAgents.records, messages],
@@ -380,6 +498,72 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     managedAgents.setSurface('main');
     managedAgents.selectAgent(undefined);
   }, [managedAgents.selectAgent, managedAgents.setSurface]);
+
+  useEffect(() => {
+    if (
+      queueDrainBlocked ||
+      queueDrainRunningRef.current ||
+      queueDrainPausedRef.current ||
+      queuedInputs.length === 0
+    ) {
+      return;
+    }
+
+    const item = queuedInputsRef.current[0];
+    if (!item) return;
+    if (item.sessionId !== sessionId) {
+      replaceQueuedInputs(queuedInputsRef.current.slice(1));
+      setQueueNotice('Discarded a queued input from a previous session.');
+      return;
+    }
+
+    queueDrainRunningRef.current = true;
+    dispatchingQueuedIdRef.current = item.id;
+    const interruptEpoch = queueInterruptEpochRef.current;
+    replaceQueuedInputs(queuedInputsRef.current.slice(1));
+    setQueueNotice('Sending queued follow-up...');
+
+    void (async () => {
+      try {
+        const result = await dispatchAgentSend(item.value);
+        if (queueInterruptEpochRef.current !== interruptEpoch && shouldRequeueQueuedSend(result)) {
+          if (queueSessionRef.current === item.sessionId) {
+            const restored = restoreQueuedInputText([item], draftRef.current);
+            setDraftRestore((current) => ({
+              key: (current?.key ?? 0) + 1,
+              value: restored,
+            }));
+            setQueueNotice('Interrupted queued input restored to the composer.');
+          }
+          return;
+        }
+        if (shouldRequeueQueuedSend(result)) {
+          replaceQueuedInputs([item, ...queuedInputsRef.current]);
+          queueDrainPausedRef.current = true;
+          setQueueNotice(
+            'Queued send did not start. Press Up to edit it or Enter another message.',
+          );
+        } else if (result.status === 'failed') {
+          queueDrainPausedRef.current = true;
+          setQueueNotice('Queued send failed. Automatic queue dispatch is paused.');
+        } else {
+          setQueueNotice(undefined);
+        }
+      } catch (sendError) {
+        replaceQueuedInputs([item, ...queuedInputsRef.current]);
+        queueDrainPausedRef.current = true;
+        setQueueNotice(
+          `Queued send failed before dispatch: ${
+            sendError instanceof Error ? sendError.message : String(sendError)
+          }`,
+        );
+      } finally {
+        dispatchingQueuedIdRef.current = undefined;
+        queueDrainRunningRef.current = false;
+        setQueueDrainTick((tick) => tick + 1);
+      }
+    })();
+  }, [dispatchAgentSend, queueDrainBlocked, queuedInputs.length, replaceQueuedInputs, sessionId]);
 
   useDebugMount(uiLog, {
     workspace: config.workspace,
@@ -463,9 +647,15 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
       return;
     }
 
+    if (key.escape && editingQueuedInput) {
+      uiLog.event('input:Escape', { action: 'cancel-queued-edit' });
+      cancelQueuedEdit();
+      return;
+    }
+
     // Escape aborts an in-flight stream when no prompt owns the keyboard.
     if (key.escape) {
-      if (isThinking || isResolvingCommand) {
+      if (isThinking || sendInFlight || isResolvingCommand) {
         uiLog.event('input:Escape', { action: 'cancel-stream' });
         interrupt();
         return;
@@ -474,7 +664,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     }
     // Ctrl+C — cancel an in-flight stream; otherwise preserve normal terminal exit.
     if (key.ctrl && input === 'c') {
-      if (isThinking || isResolvingCommand) {
+      if (isThinking || sendInFlight || isResolvingCommand) {
         uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
         interrupt();
         return;
@@ -591,6 +781,23 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
       }
       // Coarse slash-command dispatch trace (one event per submit).
       const parsedSlash = parseSlashInput(value);
+      if (parsedSlash?.name === 'queue') {
+        const operation = parsedSlash.rawArguments.trim().toLowerCase();
+        if (operation === 'clear') {
+          replaceQueuedInputs([]);
+          replaceEditingQueuedInput(undefined);
+          queueDrainPausedRef.current = false;
+          setQueueNotice('Queued follow-up inputs cleared.');
+        } else {
+          const count = queuedInputsRef.current.length;
+          setQueueNotice(
+            count === 0
+              ? 'The follow-up queue is empty.'
+              : `${count} follow-up input${count === 1 ? '' : 's'} queued. Up edits the newest.`,
+          );
+        }
+        return;
+      }
       if (parsedSlash) {
         uiLog.event('slash:dispatch', {
           command: parsedSlash.name,
@@ -643,7 +850,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
           return;
         }
         if (effect?.type === 'send-prompt') {
-          void send(effect.prompt, effect.context);
+          void dispatchAgentSend(effect.prompt, effect.context);
           return;
         }
         if (effect?.type === 'local-message') {
@@ -871,17 +1078,18 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                   allowedTools: cmd.allowedTools,
                 }
               : undefined;
-          void send(resolved, ctx);
+          void dispatchAgentSend(resolved, ctx);
         } else {
           // Unknown command — send as-is (the model might handle it).
-          void send(value);
+          void dispatchAgentSend(value);
         }
       } else {
-        void send(value);
+        replaceEditingQueuedInput(undefined);
+        void dispatchAgentSend(value);
       }
     },
     [
-      send,
+      dispatchAgentSend,
       commandResolutionRef,
       clear,
       startNewConversation,
@@ -910,12 +1118,19 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
       builtinCommandRegistry,
       managedAgentManager,
       managedAgents,
+      replaceEditingQueuedInput,
+      replaceQueuedInputs,
     ],
   );
 
   const canSubmitWhileParentBusy = useCallback((value: string) => {
-    return parseSlashInput(value)?.name === 'tasks';
+    const name = parseSlashInput(value)?.name;
+    return name === 'tasks' || name === 'queue';
   }, []);
+  const canQueueWhileParentBusy = useCallback(
+    (value: string) => !value.trimStart().startsWith('/'),
+    [],
+  );
 
   const handleGlobalShortcut = useCallback(
     (
@@ -943,7 +1158,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
           uiLog.event('input:Ctrl+C', { action: 'noop-approval-active' });
           return true;
         }
-        if (isThinking || isResolvingCommand) {
+        if (isThinking || sendInFlight || isResolvingCommand) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
           interrupt();
           return true;
@@ -992,6 +1207,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
       endCurrentSession,
       exitApp,
       isThinking,
+      sendInFlight,
       isResolvingCommand,
       pendingPermission,
       pendingPlanApproval,
@@ -1646,17 +1862,34 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
             width={termWidth}
             marginTop={messages.length > 0 ? 1 : 0}
           >
+            <QueuedInputPreview
+              items={queuedInputs}
+              terminalWidth={termWidth}
+              notice={queueNotice}
+            />
             <InputBar
               key={sessionId}
               onSubmit={handleSubmit}
-              disabled={
-                managedAgents.surface !== 'detail' &&
-                (isThinking || isCompacting || isRewinding || isResolvingCommand)
+              submissionMode={
+                managedAgents.surface === 'detail'
+                  ? 'submit'
+                  : isThinking || sendInFlight
+                    ? 'queue'
+                    : isCompacting || isRewinding || isResolvingCommand
+                      ? 'blocked'
+                      : 'submit'
               }
               mode={mode}
               onCycleMode={cycleMode}
-              onInterrupt={interrupt}
-              canSubmitWhileDisabled={canSubmitWhileParentBusy}
+              canSubmitWhileBusy={canSubmitWhileParentBusy}
+              canQueueWhileBusy={canQueueWhileParentBusy}
+              onQueue={enqueueFollowUp}
+              onRecallQueued={managedAgents.surface === 'main' ? recallQueuedInput : undefined}
+              onCancelQueuedEdit={cancelQueuedEdit}
+              editingQueuedInput={Boolean(editingQueuedInput)}
+              onDraftChange={(value) => {
+                draftRef.current = value;
+              }}
               onFocusBackgroundTask={() => {
                 if (managedAgents.surface === 'detail') {
                   if (!managedAgentUiEnabled) return false;

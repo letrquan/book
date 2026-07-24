@@ -104,7 +104,7 @@ function pendingAgentState() {
     localProviderModelCounts: new Map<string, number>(),
     sessionId: 'session-test',
     sessionName: undefined,
-    send: vi.fn(),
+    send: vi.fn(async () => ({ status: 'completed' as const, messages: [] })),
     clear: vi.fn(),
     startNewConversation: vi.fn(async () => {}),
     resumeConversation: vi.fn(async () => {}),
@@ -246,6 +246,149 @@ describe('App session commands', () => {
     expect(stripAnsi(view.lastFrame())).toContain('Background tasks');
     expect(stripAnsi(view.lastFrame())).toContain('No background tasks.');
     expect(agentState.cancel).not.toHaveBeenCalled();
+  });
+
+  it('queues a follow-up while the parent is running and drains it when idle', async () => {
+    let agentState = { ...pendingAgentState(), pendingPlanApproval: null };
+    useAgentMock.mockImplementation(() => agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    await submit(view, 'check the retry path');
+
+    expect(agentState.send).not.toHaveBeenCalled();
+    expect(stripAnsi(view.lastFrame())).toContain('Queued follow-up inputs (1)');
+    expect(stripAnsi(view.lastFrame())).toContain('check the retry path');
+
+    agentState = { ...agentState, isThinking: false };
+    view.rerender(<App config={config()} session={testSession} />);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(agentState.send).toHaveBeenCalledWith('check the retry path');
+  });
+
+  it('requeues a follow-up when preparation fails before its user event is persisted', async () => {
+    const send = vi.fn().mockResolvedValue({
+      status: 'failed',
+      phase: 'prepare',
+      error: new Error('timeline unavailable'),
+      userMessagePersisted: false,
+    });
+    let agentState = { ...pendingAgentState(), pendingPlanApproval: null, send };
+    useAgentMock.mockImplementation(() => agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    await submit(view, 'preserve this follow-up');
+
+    agentState = { ...agentState, isThinking: false };
+    view.rerender(<App config={config()} session={testSession} />);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(send).toHaveBeenCalledWith('preserve this follow-up');
+    const frame = stripAnsi(view.lastFrame());
+    expect(frame).toContain('Queued follow-up inputs (1)');
+    expect(frame).toContain('preserve this follow-up');
+    expect(frame).toContain('Queued send did not start.');
+  });
+
+  it('waits for each queued send promise before dispatching the next item', async () => {
+    let resolveFirst: ((value: { status: 'completed'; messages: [] }) => void) | undefined;
+    const firstSend = new Promise<{ status: 'completed'; messages: [] }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const send = vi
+      .fn()
+      .mockImplementationOnce(() => firstSend)
+      .mockResolvedValue({ status: 'completed', messages: [] });
+    let agentState = { ...pendingAgentState(), pendingPlanApproval: null, send };
+    useAgentMock.mockImplementation(() => agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    await submit(view, 'first queued');
+    await submit(view, 'second queued');
+
+    agentState = { ...agentState, isThinking: false };
+    view.rerender(<App config={config()} session={testSession} />);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenNthCalledWith(1, 'first queued');
+
+    resolveFirst?.({ status: 'completed', messages: [] });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenNthCalledWith(2, 'second queued');
+  });
+
+  it('recalls the newest queued follow-up with Up and Esc removes it without interrupting', async () => {
+    const agentState = { ...pendingAgentState(), pendingPlanApproval: null };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    await submit(view, 'remove this follow-up');
+    view.stdin.write('\u001B[A');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    expect(stripAnsi(view.lastFrame())).toContain('remove this follow-up');
+    view.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(agentState.cancel).not.toHaveBeenCalled();
+    expect(stripAnsi(view.lastFrame())).toContain('Queued input removed.');
+    expect(stripAnsi(view.lastFrame())).not.toContain('Queued follow-up inputs (1)');
+  });
+
+  it('restores pending queued inputs ahead of the live draft on interrupt', async () => {
+    const agentState = { ...pendingAgentState(), pendingPlanApproval: null };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    await submit(view, 'queued first');
+    view.stdin.write('current draft');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    view.stdin.write('\x03');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const frame = stripAnsi(view.lastFrame());
+    expect(agentState.cancel).toHaveBeenCalled();
+    expect(frame).toContain('queued first');
+    expect(frame).toContain('current draft');
+    expect(frame.indexOf('queued first')).toBeLessThan(frame.indexOf('current draft'));
   });
 
   it('/agents gives configuration guidance instead of opening Agent Center', async () => {
