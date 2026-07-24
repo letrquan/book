@@ -72,6 +72,11 @@ export interface LoadConfigOptions {
   allowMissingApiKey?: boolean;
 }
 
+export function runConfigMigrations(workspace?: string): boolean {
+  const resolvedWorkspace = workspace || process.env.BOOK_WORKSPACE || process.cwd();
+  return migrateLegacyPermissions(resolvedWorkspace);
+}
+
 export function loadConfig(workspace?: string, options?: LoadConfigOptions): AgentConfig {
   const settingsOverridePath = options?.settingsOverridePath;
   const noSettings = options?.noSettings ?? false;
@@ -85,11 +90,6 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const settings = noSettings
     ? structuredClone(DEFAULT_SETTINGS)
     : resolveSettings(resolvedWorkspace, settingsOverridePath);
-
-  // Migrate any legacy ~/.book/permissions.json rules into .book/settings.local.json.
-  if (!noSettings) {
-    migrateLegacyPermissions(resolvedWorkspace);
-  }
 
   // Resolve retry configuration: env vars take precedence over settings.json.
   const retry: RetryConfig = {

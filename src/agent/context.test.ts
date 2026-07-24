@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, it, expect } from 'vitest';
-import { buildMessages, buildSystemPrompt, buildSystemPromptZones } from './context.js';
+import {
+  AgentContextCache,
+  buildMessages,
+  buildSystemPrompt,
+  buildSystemPromptZones,
+} from './context.js';
 import { getProjectMemoryDir } from '../memory-store.js';
 import type { SlashCommand } from '../types/commands.js';
 import type { ToolDefinition } from '../types/tools.js';
@@ -165,6 +170,65 @@ describe('buildMessages', () => {
       expect(out[0].content).toMatchObject({
         cachedPrefix: expect.stringContaining('Use the repo rules.'),
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('caches instruction discovery within a turn and invalidates it on the next turn', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-context-cache-'));
+    try {
+      const instructions = join(dir, 'CLAUDE.md');
+      writeFileSync(instructions, 'First instruction.', 'utf-8');
+      const contextCache = new AgentContextCache();
+      const first = await buildMessages(
+        defaultConfig({ workspace: dir }),
+        [userMsg('hi')],
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        contextCache,
+      );
+      writeFileSync(instructions, 'Second instruction.', 'utf-8');
+      const sameTurn = await buildMessages(
+        defaultConfig({ workspace: dir }),
+        [userMsg('hi')],
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        contextCache,
+      );
+      contextCache.invalidateWorkspace(dir);
+      const invalidated = await buildMessages(
+        defaultConfig({ workspace: dir }),
+        [userMsg('hi')],
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        contextCache,
+      );
+      contextCache.beginTurn();
+      const nextTurn = await buildMessages(
+        defaultConfig({ workspace: dir }),
+        [userMsg('hi')],
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        contextCache,
+      );
+
+      expect(systemPrefix(first)).toContain('First instruction.');
+      expect(systemPrefix(sameTurn)).toContain('First instruction.');
+      expect(systemPrefix(invalidated)).toContain('Second instruction.');
+      expect(systemPrefix(nextTurn)).toContain('Second instruction.');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

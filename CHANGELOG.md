@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Native `rg` streaming for `Grep`, bounded `WebFetch`/`WebSearch` responses, rotating debug logs, terminal-shell TTL/cap cleanup, and the explicit `DismissShell` action.
+- Repeatable `bench:runtime` coverage for snapshots, sessions, search, Grep, context construction, streaming updates, and retained resources.
 - Managed-agent hardening with an outstanding spawn cap, paginated `AgentRead` result recovery, context-budgeted and idempotent completion delivery, bounded retries, per-record version-3 persistence, managed Git artifact cleanup, and per-run telemetry generations.
 - Claude-style managed-agent contracts: purpose-named runs distinct from reusable profiles, durable automatic parent completion delivery, semantic lifecycle rows, a prompt-adjacent `/tasks` panel, resumable child transcripts, version-2 state migration, profile model resolution, compact lifecycle projections, advisory three-query Explore routing, actionable permission errors, multi-host runtime events, read-only non-Git Explore, and explicit third-party agent import previews.
 - Claude-style inline managed-agent activity blocks: live child tool calls in the main transcript, compact `+N tool uses` overflow, bounded realtime result previews, and full-history child detail navigation.
@@ -23,6 +25,9 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Session discovery now uses an atomic metadata index with linear JSONL replay and shared search/read indexes; rewind snapshots cache unchanged files, deduplicate manifest entry sets, and exclude workspace-local `.book/` state by default.
+- Static prompt discovery, tool schema estimates, Git context, and streaming transcript projection are cached or incrementally updated, with adaptive flushing and a bounded streaming transcript window.
+- Legacy permission migration runs during explicit startup, records a migration marker, skips identical settings writes, and serializes cross-process settings mutations.
 - Replaced the separate Agent Center and profile tab with Claude Code's in-session task workflow: `main` and child rows below the prompt, empty-prompt Down then Enter to open a child transcript, `/tasks` for explicit management, `x` to stop or dismiss, and Esc to return.
 - New sessions receive a short title from their first prompt, and the TUI shows session names instead of internal UUIDs.
 - Provider visibility, system-prompt tool summaries, command/skill capabilities, role restrictions, permission modes, runtime availability, and execution now share one resolved tool surface.
@@ -36,7 +41,7 @@ All notable changes to this project are documented in this file.
 ### Security
 
 - Managed snapshots include non-ignored untracked files in the local Git object database by default. Ignore secrets or set `agents.includeUntrackedInSnapshot` to `false` before delegation.
-- Rewind snapshots intentionally include hidden, gitignored, and secret-like workspace files for complete local restoration, but keep file contents out of session JSON, logs, and model context; `.git` is always excluded.
+- Rewind snapshots intentionally include hidden, gitignored, and secret-like workspace files for complete local restoration, but keep file contents out of session JSON, logs, and model context; `.git` and workspace-local `.book/` state are excluded by default.
 
 ### Fixed
 

@@ -114,6 +114,7 @@ export async function runAgentLoop(
   const newHistory = [...history];
   const retry = config.retry;
   const runtime = options?.runtime ?? new SessionRuntime();
+  runtime.agentContextCache.beginTurn();
   if (!registry.getTool('ToolSearch')) registry.registerAll(toolSearchTools);
 
   // Apply model override from command frontmatter.
@@ -314,6 +315,7 @@ export async function runAgentLoop(
         hideAgents: options?.hideAgents,
         toolCatalogSummary: toolSurface.catalogSummary(),
       },
+      runtime.agentContextCache,
     );
     let requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
     const reservedOutputTokens = Math.min(
@@ -362,6 +364,7 @@ export async function runAgentLoop(
                 hideAgents: options?.hideAgents,
                 toolCatalogSummary: toolSurface.catalogSummary(),
               },
+              runtime.agentContextCache,
             );
             requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
           }
@@ -388,6 +391,7 @@ export async function runAgentLoop(
             hideAgents: options?.hideAgents,
             toolCatalogSummary: toolSurface.catalogSummary(),
           },
+          runtime.agentContextCache,
         );
         requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
         log.info('preflight tool outputs clipped', { requestTokens, contextLimit });
@@ -761,6 +765,13 @@ export async function runAgentLoop(
         durationMs,
         outputLen: result.content.length,
       });
+      if (toolResultSucceeded(result)) {
+        if (result.artifacts?.fileMutation || canonName === 'Bash') {
+          runtime.agentContextCache.invalidateWorkspace(config.workspace);
+        } else if (canonName.startsWith('Git')) {
+          runtime.agentContextCache.invalidateGit(config.workspace);
+        }
+      }
 
       const modeAfterTool = toolContext.currentMode ?? effectiveMode;
       if (modeAfterTool !== effectiveMode) {

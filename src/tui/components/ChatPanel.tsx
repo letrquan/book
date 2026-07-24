@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import { useMemo } from 'react';
+import { useRef } from 'react';
 import { useTheme } from '../theme.js';
 import type { CompactBoundary } from '../../types/sessions.js';
 import type { Message } from '../../types/messages.js';
@@ -23,6 +23,8 @@ import { truncateDisplay } from './word-wrap.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
+const EMPTY_BOUNDARIES: CompactBoundary[] = [];
+const STREAMING_TIMELINE_WINDOW = 64;
 
 function formatTurnTime(timestamp: number): string {
   if (!timestamp) return '';
@@ -86,7 +88,7 @@ interface ChatPanelProps {
 export function ChatPanel({
   messages,
   managedAgentTraces,
-  compactBoundaries = [],
+  compactBoundaries = EMPTY_BOUNDARIES,
   streamingMessageId,
   pendingPermission,
   expandedToolCallId,
@@ -111,10 +113,12 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const density = useDensity();
   useDebugMount(uiLog, { model, mode, commandCount, skillCount });
-  const timeline = useMemo(
-    () => buildTimeline(messages, compactBoundaries, streamingMessageId),
-    [messages, compactBoundaries, streamingMessageId],
-  );
+  const timeline = useIncrementalTimeline(messages, compactBoundaries, streamingMessageId);
+  const hiddenTimelineEntries = streamingMessageId
+    ? Math.max(0, timeline.length - STREAMING_TIMELINE_WINDOW)
+    : 0;
+  const visibleTimeline =
+    hiddenTimelineEntries > 0 ? timeline.slice(hiddenTimelineEntries) : timeline;
   const selectedToolCallId =
     expandedToolCallId === undefined ? selectExpandedToolId(messages) : expandedToolCallId;
 
@@ -143,12 +147,19 @@ export function ChatPanel({
 
   return (
     <Box flexDirection="column">
-      {timeline.map((entry, index) => {
+      {hiddenTimelineEntries > 0 ? (
+        <Box marginLeft={2} marginBottom={density === 'tight' ? 0 : 1}>
+          <Text dimColor>
+            {hiddenTimelineEntries} older transcript entries hidden while streaming
+          </Text>
+        </Box>
+      ) : null}
+      {visibleTimeline.map((entry, index) => {
         if ('transcriptOrdinal' in entry) {
           return <CompactBoundaryRow key={`boundary-${entry.id}`} terminalWidth={terminalWidth} />;
         }
         const message = entry;
-        const previous = timeline[index - 1];
+        const previous = visibleTimeline[index - 1];
         if (message.role === 'user') {
           return (
             <Box
@@ -169,7 +180,7 @@ export function ChatPanel({
         }
 
         const isStreaming = message.id === streamingMessageId;
-        const next = timeline[index + 1];
+        const next = visibleTimeline[index + 1];
         const nextEntryIsUser = Boolean(next && 'role' in next && next.role === 'user');
         return (
           <Box
@@ -210,6 +221,47 @@ export function ChatPanel({
       })}
     </Box>
   );
+}
+
+interface TimelineCache {
+  streamingMessageId?: string | null;
+  prefixLength: number;
+  prefixLast?: Message;
+  boundaries?: CompactBoundary[];
+  prefix: Array<Message | CompactBoundary>;
+}
+
+function useIncrementalTimeline(
+  messages: Message[],
+  boundaries: CompactBoundary[],
+  streamingMessageId?: string | null,
+): Array<Message | CompactBoundary> {
+  const cache = useRef<TimelineCache>({ prefixLength: -1, prefix: [] });
+  if (!streamingMessageId) return buildTimeline(messages, boundaries, streamingMessageId);
+  const streamingIndex = messages.findIndex((message) => message.id === streamingMessageId);
+  if (streamingIndex < 0 || streamingIndex !== messages.length - 1) {
+    return buildTimeline(messages, boundaries, streamingMessageId);
+  }
+
+  const prefixLast = streamingIndex > 0 ? messages[streamingIndex - 1] : undefined;
+  if (
+    cache.current.streamingMessageId !== streamingMessageId ||
+    cache.current.prefixLength !== streamingIndex ||
+    cache.current.prefixLast !== prefixLast ||
+    cache.current.boundaries !== boundaries
+  ) {
+    cache.current = {
+      streamingMessageId,
+      prefixLength: streamingIndex,
+      prefixLast,
+      boundaries,
+      prefix: buildTimeline(messages.slice(0, streamingIndex), boundaries, streamingMessageId),
+    };
+  }
+  const active = messages[streamingIndex];
+  return active.kind === 'agent-notification'
+    ? cache.current.prefix
+    : [...cache.current.prefix, active];
 }
 
 function buildTimeline(

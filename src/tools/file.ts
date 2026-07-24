@@ -1,4 +1,5 @@
 import { open, readFile as readTextFile, writeFile as writeTextFile } from 'fs/promises';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { extname } from 'node:path';
 import fg from 'fast-glob';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
@@ -365,7 +366,10 @@ interface GrepFileMatches {
   lines?: string[];
 }
 
-async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+async function grepSearchPortable(
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
   const pattern = args.pattern as string;
   const includePattern = (args.include as string | undefined) ?? '**/*';
   const outputMode = (args.output_mode as 'content' | 'files_with_matches' | 'count') ?? 'content';
@@ -525,6 +529,220 @@ async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Prom
     data: { mode: outputMode, totalMatches, matches: serializedMatches },
     pagination: { truncated: totalMatches >= headLimit || outputTruncated },
   });
+}
+
+interface RipgrepJsonEvent {
+  type?: 'match' | 'context' | 'begin' | 'end' | 'summary';
+  data?: {
+    path?: { text?: string };
+    lines?: { text?: string };
+    line_number?: number;
+  };
+}
+
+type RipgrepOutcome = { kind: 'success'; result: ToolResult } | { kind: 'fallback' };
+
+function stopSearchProcess(proc: ChildProcess): void {
+  if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGTERM');
+}
+
+async function grepSearchWithRipgrep(
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<RipgrepOutcome> {
+  const pattern = args.pattern as string;
+  const includePattern = (args.include as string | undefined) ?? '**/*';
+  const outputMode = (args.output_mode as 'content' | 'files_with_matches' | 'count') ?? 'content';
+  const contextBefore = Math.max(0, Math.floor((args.B as number) ?? 0));
+  const contextAfter = Math.max(0, Math.floor((args.A as number) ?? 0));
+  const multiline = (args.multiline as boolean) ?? false;
+  const requestedHeadLimit = (args.head_limit as number) ?? GREP_MATCH_LIMIT;
+  const headLimit = Math.min(
+    GREP_MATCH_LIMIT,
+    Math.max(1, Number.isFinite(requestedHeadLimit) ? Math.floor(requestedHeadLimit) : 1),
+  );
+
+  const rgArgs = ['--json', '--hidden', '--regexp', pattern, '--glob', includePattern];
+  for (const ignored of GREP_DEFAULT_IGNORES) rgArgs.push('--glob', `!${ignored}`);
+  if (contextBefore > 0) rgArgs.push('--before-context', String(contextBefore));
+  if (contextAfter > 0) rgArgs.push('--after-context', String(contextAfter));
+  if (multiline) rgArgs.push('--multiline', '--multiline-dotall');
+  rgArgs.push('.');
+
+  return new Promise<RipgrepOutcome>((resolve, reject) => {
+    const proc = spawn('rg', rgArgs, {
+      cwd: ctx.workspaceRoot,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let settled = false;
+    let pending = '';
+    let totalMatches = 0;
+    let outputBytes = 0;
+    let outputTruncated = false;
+    const output: string[] = [];
+    const matchesByFile = new Map<string, GrepFileMatches>();
+    let aborting = false;
+
+    const finish = (outcome: RipgrepOutcome) => {
+      if (settled) return;
+      settled = true;
+      ctx.signal?.removeEventListener('abort', onAbort);
+      resolve(outcome);
+    };
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      ctx.signal?.removeEventListener('abort', onAbort);
+      reject(error);
+    };
+    const onAbort = () => {
+      if (aborting) return;
+      aborting = true;
+      stopSearchProcess(proc);
+      const reason = ctx.signal?.reason ?? new Error('Grep cancelled');
+      if (proc.exitCode !== null || proc.signalCode !== null) {
+        fail(reason);
+      } else {
+        proc.once('close', () => fail(reason));
+        setTimeout(() => fail(reason), 2_000).unref();
+      }
+    };
+    ctx.signal?.addEventListener('abort', onAbort, { once: true });
+    if (ctx.signal?.aborted) onAbort();
+
+    const appendOutput = (line: string): boolean => {
+      const clippedLine = clipGrepText(line);
+      const additionalBytes = Buffer.byteLength(clippedLine) + (output.length > 0 ? 1 : 0);
+      if (
+        outputBytes + additionalBytes >
+        GREP_OUTPUT_MAX_BYTES - GREP_OUTPUT_NOTICE_RESERVE_BYTES
+      ) {
+        outputTruncated = true;
+        stopSearchProcess(proc);
+        return false;
+      }
+      output.push(clippedLine);
+      outputBytes += additionalBytes;
+      return true;
+    };
+
+    const processEvent = (event: RipgrepJsonEvent) => {
+      if (totalMatches >= headLimit || outputTruncated) return;
+      if (event.type !== 'match' && event.type !== 'context') return;
+      const rawPath = event.data?.path?.text;
+      const lineNumber = event.data?.line_number;
+      const text = event.data?.lines?.text;
+      if (!rawPath || !lineNumber || text === undefined) return;
+      const resolved = resolveWorkspacePath(ctx.workspaceRoot, rawPath.replaceAll('\\', '/'));
+      if (!resolved) return;
+      const file = resolved.relativePath;
+
+      if (event.type === 'match') {
+        const fileMatches = matchesByFile.get(file) ?? { matches: [] };
+        fileMatches.matches.push({
+          line: lineNumber,
+          text: clipGrepText(text.replace(/\r?\n$/, '').replace(/\r?\n/g, '\\n')),
+        });
+        matchesByFile.set(file, fileMatches);
+        totalMatches++;
+      }
+
+      if (outputMode === 'content') {
+        const eventLines = text.replace(/\r?\n$/, '').split(/\r?\n/);
+        for (let index = 0; index < eventLines.length; index++) {
+          const marker = event.type === 'match' ? ':' : '-';
+          if (!appendOutput(`${file}:${lineNumber + index}${marker} ${eventLines[index]}`)) break;
+        }
+      }
+
+      if (totalMatches >= headLimit || outputTruncated) stopSearchProcess(proc);
+    };
+
+    proc.once('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') finish({ kind: 'fallback' });
+      else fail(error);
+    });
+    proc.stdout?.setEncoding('utf8');
+    proc.stdout?.on('data', (chunk: string) => {
+      pending += chunk;
+      let newline = pending.indexOf('\n');
+      while (newline >= 0) {
+        const line = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        if (line) {
+          try {
+            processEvent(JSON.parse(line) as RipgrepJsonEvent);
+          } catch {
+            stopSearchProcess(proc);
+            finish({ kind: 'fallback' });
+            return;
+          }
+        }
+        newline = pending.indexOf('\n');
+      }
+    });
+    proc.once('close', (code) => {
+      if (settled) return;
+      if (code !== 0 && code !== 1 && totalMatches === 0 && !outputTruncated) {
+        finish({ kind: 'fallback' });
+        return;
+      }
+      const serializedMatches = Object.fromEntries(
+        Array.from(matchesByFile.entries()).map(([file, result]) => [
+          file,
+          { matches: result.matches },
+        ]),
+      );
+      if (outputMode === 'count') {
+        const lines = Array.from(matchesByFile.entries()).map(
+          ([file, result]) => `${file}:${result.matches.length}`,
+        );
+        finish({
+          kind: 'success',
+          result: toolSuccess(lines.join('\n') || 'No matches found', {
+            data: { mode: outputMode, matches: serializedMatches },
+            pagination: { truncated: totalMatches >= headLimit },
+          }),
+        });
+        return;
+      }
+      if (outputMode === 'files_with_matches') {
+        const matchedFiles = Array.from(matchesByFile.keys());
+        finish({
+          kind: 'success',
+          result: toolSuccess(matchedFiles.join('\n') || 'No matches found', {
+            data: { mode: outputMode, files: matchedFiles },
+            pagination: { truncated: totalMatches >= headLimit },
+          }),
+        });
+        return;
+      }
+      const truncationNotice = outputTruncated
+        ? '\n... (truncated at 50 KB; refine pattern or include)'
+        : '';
+      finish({
+        kind: 'success',
+        result: toolSuccess((output.join('\n') || 'No matches found') + truncationNotice, {
+          data: { mode: outputMode, totalMatches, matches: serializedMatches },
+          pagination: { truncated: totalMatches >= headLimit || outputTruncated },
+        }),
+      });
+    });
+  });
+}
+
+async function grepSearch(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const pattern = args.pattern as string;
+  try {
+    new RegExp(pattern, (args.multiline as boolean) ? 'gms' : 'g');
+  } catch {
+    return toolFailure(`Invalid regex: ${pattern}`, { code: 'invalid_regex' });
+  }
+  throwIfAborted(ctx.signal);
+  if (ctx.env.BOOK_GREP_BACKEND === 'typescript') return grepSearchPortable(args, ctx);
+  const native = await grepSearchWithRipgrep(args, ctx);
+  return native.kind === 'success' ? native.result : grepSearchPortable(args, ctx);
 }
 
 export const fileTools: ToolDefinition[] = [

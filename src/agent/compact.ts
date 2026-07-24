@@ -212,6 +212,20 @@ function providerContentText(content: ProviderMessage['content']): string {
   return [zones.cachedPrefix, zones.dynamicSuffix].filter(Boolean).join('\n\n');
 }
 
+const toolTokenEstimateCache = new WeakMap<ToolDefinition, number>();
+
+function estimateToolDefinitionTokens(tool: ToolDefinition): number {
+  const cached = toolTokenEstimateCache.get(tool);
+  if (cached !== undefined) return cached;
+  const estimate =
+    estimateTextTokens(tool.name) +
+    estimateTextTokens(tool.description) +
+    estimateTextTokens(JSON.stringify(tool.inputSchema ?? tool.parameters)) +
+    TOOL_OVERHEAD_TOKENS;
+  toolTokenEstimateCache.set(tool, estimate);
+  return estimate;
+}
+
 /** Estimate the complete provider request, including system prompt and active tool schemas. */
 export function estimateProviderRequestTokens(
   messages: readonly ProviderMessage[],
@@ -224,11 +238,7 @@ export function estimateProviderRequestTokens(
     if (message.tool_call_id) tokens += estimateTextTokens(message.tool_call_id);
   }
   for (const tool of tools) {
-    tokens +=
-      estimateTextTokens(tool.name) +
-      estimateTextTokens(tool.description) +
-      estimateTextTokens(JSON.stringify(tool.inputSchema ?? tool.parameters)) +
-      TOOL_OVERHEAD_TOKENS;
+    tokens += estimateToolDefinitionTokens(tool);
   }
   return tokens;
 }

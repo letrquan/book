@@ -367,6 +367,17 @@ describe('grep', () => {
     expect(r.content).toMatch(/No matches/);
   });
 
+  it('preserves the portable TypeScript fallback backend', async () => {
+    writeFileSync(join(dir, 'fallback.txt'), 'portable-backend-marker');
+
+    const result = await grep.execute(
+      { pattern: 'portable-backend-marker', include: '*.txt' },
+      { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' } },
+    );
+
+    expect(result.content).toContain('fallback.txt:1: portable-backend-marker');
+  });
+
   it('preserves count, files-only, context, multiline, and limit behavior', async () => {
     writeFileSync(join(dir, 'a.ts'), 'before\nconst first = 1;\nafter\nconst second = 2;');
     writeFileSync(join(dir, 'b.ts'), 'const third = 3;');

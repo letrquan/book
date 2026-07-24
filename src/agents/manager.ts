@@ -127,6 +127,7 @@ export class AgentManager {
   private repoRoot?: string;
   private initialized?: Promise<void>;
   private readonly agents = new Map<string, AgentRecord>();
+  private readonly hydratedAgentIds = new Set<string>();
   private readonly plans = new Map<string, AgentPlanRecord>();
   private readonly evidence = new Map<string, EvidenceItem>();
   private readonly snapshots = new Map<string, AgentSnapshot>();
@@ -368,6 +369,20 @@ export class AgentManager {
     return this.initialized;
   }
 
+  private hydrateAgent(agentId: string): AgentRecord | undefined {
+    const current = this.agents.get(agentId);
+    if (!current || this.hydratedAgentIds.has(agentId) || !this.store) return current;
+    const detailed = this.store.loadAgent(agentId);
+    if (!detailed) return current;
+    this.agents.set(agentId, detailed);
+    this.hydratedAgentIds.add(agentId);
+    return detailed;
+  }
+
+  private agentListRecord(record: AgentRecord): AgentRecord {
+    return clone({ ...record, transcript: [] });
+  }
+
   dispose(): void {
     if (this.exitHandler) process.off('exit', this.exitHandler);
     for (const controller of this.controllers.values()) controller.abort('manager_disposed');
@@ -600,6 +615,7 @@ export class AgentManager {
       updatedAt: now,
     };
     this.agents.set(record.id, record);
+    this.hydratedAgentIds.add(record.id);
     this.store?.saveAgent(record);
     this.queue.push(record.id);
     this.emit({ type: 'agent_update', agent: clone(record) });
@@ -611,7 +627,7 @@ export class AgentManager {
     await this.ensureInitialized();
     return Array.from(this.agents.values())
       .sort((left, right) => right.updatedAt - left.updatedAt)
-      .map(clone);
+      .map((record) => this.agentListRecord(record));
   }
 
   async listProfiles(): Promise<
@@ -642,7 +658,7 @@ export class AgentManager {
 
   async get(agentId: string): Promise<AgentRecord | undefined> {
     await this.ensureInitialized();
-    const record = this.agents.get(agentId);
+    const record = this.hydrateAgent(agentId);
     return record ? clone(record) : undefined;
   }
 
@@ -655,6 +671,7 @@ export class AgentManager {
     }
     await (this.options.removeWorktree ?? removeAgentWorktree)(record, this.repoRoot);
     this.agents.delete(agentId);
+    this.hydratedAgentIds.delete(agentId);
     for (const evidence of Array.from(this.evidence.values())) {
       if (evidence.sourceAgentId === agentId) this.evidence.delete(evidence.id);
     }
@@ -677,7 +694,7 @@ export class AgentManager {
 
   async send(agentId: string, message: string, evidenceIds: string[] = []): Promise<AgentRecord> {
     await this.ensureInitialized();
-    const record = this.agents.get(agentId);
+    const record = this.hydrateAgent(agentId);
     if (!record) throw new Error(`Agent ${agentId} was not found.`);
     const trimmed = message.trim();
     if (!trimmed) throw new Error('AgentSend message must not be empty.');
@@ -722,7 +739,7 @@ export class AgentManager {
 
   async wait(agentId: string, timeoutMs = 0): Promise<AgentRecord> {
     await this.ensureInitialized();
-    const current = this.agents.get(agentId);
+    const current = this.hydrateAgent(agentId);
     if (!current) throw new Error(`Agent ${agentId} was not found.`);
     if (TERMINAL_STATUSES.has(current.status)) return clone(current);
 
@@ -904,7 +921,7 @@ export class AgentManager {
   private pump(): void {
     while (this.active < this.config.settings.agents.maxConcurrent && this.queue.length > 0) {
       const agentId = this.queue.shift()!;
-      const record = this.agents.get(agentId);
+      const record = this.hydrateAgent(agentId);
       if (!record || record.status !== 'queued') continue;
       this.active++;
       void this.run(record).finally(() => {

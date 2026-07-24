@@ -1,5 +1,5 @@
-import { existsSync } from 'fs';
-import { platform, release, hostname } from 'os';
+import { existsSync, readdirSync, statSync } from 'fs';
+import { platform, release, hostname, homedir } from 'os';
 import { dirname, join, parse, resolve } from 'path';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message } from '../types/messages.js';
@@ -18,6 +18,110 @@ import { runGit } from '../tools/git.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { resolveAgentProfile } from '../agents/profile-resolver.js';
 import { toolResultModelContent } from '../tools/result.js';
+
+interface StaticDiscovery {
+  fingerprint: string;
+  skills: ReturnType<typeof discoverSkills>;
+  commands: SlashCommand[];
+  claudeMd: string;
+  agents: SubagentDef[];
+}
+
+export class AgentContextCache {
+  private readonly discoveries = new Map<string, StaticDiscovery>();
+  private readonly turnFingerprints = new Map<string, string>();
+  private readonly turnGit = new Map<string, Promise<string>>();
+  private readonly toolListings = new Map<string, string>();
+
+  beginTurn(): void {
+    this.turnFingerprints.clear();
+    this.turnGit.clear();
+  }
+
+  invalidateGit(workspace: string): void {
+    this.turnGit.delete(workspace);
+  }
+
+  invalidateWorkspace(workspace: string): void {
+    this.turnFingerprints.delete(workspace);
+    this.turnGit.delete(workspace);
+  }
+
+  discovery(workspace: string): StaticDiscovery {
+    let fingerprint = this.turnFingerprints.get(workspace);
+    if (!fingerprint) {
+      fingerprint = contextSourceFingerprint(workspace);
+      this.turnFingerprints.set(workspace, fingerprint);
+    }
+    const cached = this.discoveries.get(workspace);
+    if (cached?.fingerprint === fingerprint) return cached;
+    const discovery: StaticDiscovery = {
+      fingerprint,
+      skills: discoverSkills(workspace),
+      commands: discoverCommands(workspace),
+      claudeMd: renderClaudeMd(discoverClaudeMd(workspace)),
+      agents: discoverAgents(workspace),
+    };
+    this.discoveries.set(workspace, discovery);
+    return discovery;
+  }
+
+  git(workspace: string, signal?: AbortSignal): Promise<string> {
+    let cached = this.turnGit.get(workspace);
+    if (!cached) {
+      cached = gitContext(workspace, signal);
+      this.turnGit.set(workspace, cached);
+    }
+    return cached;
+  }
+
+  toolListing(tools: ToolDefinition[]): string {
+    const key = JSON.stringify(tools.map((tool) => [tool.name, tool.description]));
+    let listing = this.toolListings.get(key);
+    if (listing === undefined) {
+      listing = generateToolListing(tools, 2048);
+      this.toolListings.set(key, listing);
+    }
+    return listing;
+  }
+}
+
+function contextSourceFingerprint(workspace: string): string {
+  const hash = createHash('sha256');
+  const visited = new Set<string>();
+  const addTree = (path: string, depth: number) => {
+    if (visited.has(path)) return;
+    visited.add(path);
+    try {
+      const info = statSync(path);
+      hash.update(`${path}:${info.size}:${info.mtimeMs}:${info.ctimeMs}:${info.mode}\n`);
+      if (!info.isDirectory() || depth <= 0) return;
+      for (const entry of readdirSync(path).sort()) addTree(join(path, entry), depth - 1);
+    } catch {
+      hash.update(`${path}:missing\n`);
+    }
+  };
+
+  const home = homedir();
+  addTree(join(home, '.book', 'skills'), 3);
+  addTree(join(home, '.book', 'commands'), 2);
+  addTree(join(home, '.book', 'agents'), 2);
+  addTree(join(home, '.claude', 'CLAUDE.md'), 0);
+  addTree(join(workspace, '.book', 'skills'), 3);
+  addTree(join(workspace, '.book', 'commands'), 2);
+  addTree(join(workspace, '.book', 'agents'), 2);
+  addTree(join(workspace, '.claude'), 3);
+  addTree(join(workspace, 'CLAUDE.local.md'), 0);
+
+  let current = resolve(workspace);
+  const root = parse(current).root;
+  while (true) {
+    addTree(join(current, 'CLAUDE.md'), 0);
+    if (current === root) break;
+    current = dirname(current);
+  }
+  return hash.digest('hex');
+}
 
 function compactList(
   title: string,
@@ -213,11 +317,15 @@ export async function buildSystemPromptZones(
   tools: ToolDefinition[] = [],
   signal?: AbortSignal,
   overrides?: { append?: string; hideAgents?: boolean; toolCatalogSummary?: string },
+  cache?: AgentContextCache,
 ): Promise<SystemPromptZones> {
-  const skills = discoverSkills(config.workspace);
-  const cmdList = mergeCommands(commands ?? discoverCommands(config.workspace));
-  const claudeMd = renderClaudeMd(discoverClaudeMd(config.workspace));
-  const git = await gitContext(config.workspace, signal);
+  const discovery = cache?.discovery(config.workspace);
+  const skills = discovery?.skills ?? discoverSkills(config.workspace);
+  const cmdList = mergeCommands(
+    commands ?? discovery?.commands ?? discoverCommands(config.workspace),
+  );
+  const claudeMd = discovery?.claudeMd ?? renderClaudeMd(discoverClaudeMd(config.workspace));
+  const git = await (cache?.git(config.workspace, signal) ?? gitContext(config.workspace, signal));
 
   const staticSections = [
     `You are Book, an AI coding agent working directly in the user's workspace. Help users understand, change, and verify software.`,
@@ -234,9 +342,9 @@ export async function buildSystemPromptZones(
     generateCommandListing(cmdList, 1536),
     overrides?.hideAgents || config.settings.agents.mode === 'off'
       ? ''
-      : generateAgentListing(config, discoverAgents(config.workspace), 1536),
+      : generateAgentListing(config, discovery?.agents ?? discoverAgents(config.workspace), 1536),
     overrides?.hideAgents ? '' : agentRoutingSection(config),
-    generateToolListing(tools, 2048),
+    cache?.toolListing(tools) ?? generateToolListing(tools, 2048),
     overrides?.toolCatalogSummary
       ? ['## Deferred tool catalog', overrides.toolCatalogSummary].join('\n')
       : '',
@@ -271,6 +379,7 @@ export async function buildMessages(
   commands?: SlashCommand[],
   signal?: AbortSignal,
   systemOverrides?: { append?: string; hideAgents?: boolean; toolCatalogSummary?: string },
+  cache?: AgentContextCache,
 ): Promise<ProviderMessage[]> {
   const messages: ProviderMessage[] = [];
 
@@ -283,6 +392,7 @@ export async function buildMessages(
       tools,
       signal,
       systemOverrides,
+      cache,
     ),
   });
 

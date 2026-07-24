@@ -116,10 +116,12 @@ describe('AgentStore recovery', () => {
     const restarted = new AgentStore('repo', root);
     restarted.markActiveInterrupted();
     const recovered = restarted.listAgents()[0];
+    const detailed = restarted.loadAgent(record.id)!;
     expect(recovered.status).toBe('interrupted');
     expect(recovered.stopReason).toBe('process_exit');
     expect(recovered.worktree).toBe('C:/worktree');
-    expect(recovered.transcript[0].content).toBe('partial');
+    expect(recovered.transcript).toEqual([]);
+    expect(detailed.transcript[0].content).toBe('partial');
     expect(recovered.completionSequence).toBe(1);
     expect(recovered.completionDeliveredSequence).toBe(0);
     expect(recovered.pendingPermission).toBeUndefined();

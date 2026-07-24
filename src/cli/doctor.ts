@@ -1,10 +1,11 @@
-import { loadConfig } from '../config.js';
+import { loadConfig, runConfigMigrations } from '../config.js';
 import { getPackageVersion } from '../version-info.js';
 import { collectAgentDiagnostics } from '../agents/diagnostics.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { discoverAgents } from '../subagent-discovery.js';
 
 export async function runDoctorCommand(workspace: string): Promise<void> {
+  runConfigMigrations(workspace);
   const config = loadConfig(workspace);
   const { resolveSettings } = await import('../settings-loader.js');
   const settings = resolveSettings(workspace);

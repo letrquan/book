@@ -41,11 +41,13 @@ export class AgentStore {
   readonly directory: string;
   private readonly statePath: string;
   private readonly agentsDirectory: string;
+  private readonly agentSummariesDirectory: string;
   private readonly plansDirectory: string;
   private readonly evidenceDirectory: string;
   private readonly snapshotsDirectory: string;
   private enabled: boolean;
   private readonly agents = new Map<string, AgentRecord>();
+  private readonly summaryAgentIds = new Set<string>();
   private readonly plans = new Map<string, AgentPlanRecord>();
   private readonly evidence = new Map<string, EvidenceItem>();
   private readonly snapshots = new Map<string, AgentSnapshot>();
@@ -55,6 +57,7 @@ export class AgentStore {
     this.directory = join(root, repoHash);
     this.statePath = join(this.directory, 'state.json');
     this.agentsDirectory = join(this.directory, 'records');
+    this.agentSummariesDirectory = join(this.directory, 'summaries');
     this.plansDirectory = join(this.directory, 'plans');
     this.evidenceDirectory = join(this.directory, 'evidence');
     this.snapshotsDirectory = join(this.directory, 'snapshots');
@@ -71,6 +74,7 @@ export class AgentStore {
 
   private ensureDirectories(): void {
     mkdirSync(this.agentsDirectory, { recursive: true });
+    mkdirSync(this.agentSummariesDirectory, { recursive: true });
     mkdirSync(this.plansDirectory, { recursive: true });
     mkdirSync(this.evidenceDirectory, { recursive: true });
     mkdirSync(this.snapshotsDirectory, { recursive: true });
@@ -121,7 +125,22 @@ export class AgentStore {
       if (parsed?.version !== 3) legacy = parsed;
     }
 
-    this.loadDirectory(this.agentsDirectory, this.agents, (agent) => this.migrateAgent(agent));
+    this.loadDirectory(this.agentSummariesDirectory, this.agents, (agent) =>
+      this.migrateAgent(agent),
+    );
+    for (const id of this.agents.keys()) this.summaryAgentIds.add(id);
+    for (const entry of readdirSync(this.agentsDirectory, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const id = decodeURIComponent(entry.name.replace(/\.json$/, ''));
+      if (this.agents.has(id)) continue;
+      const agent = this.readJson<AgentRecord>(join(this.agentsDirectory, entry.name));
+      if (!agent?.id) continue;
+      const migrated = this.migrateAgent(agent);
+      const summary = this.agentSummary(migrated);
+      this.agents.set(summary.id, summary);
+      this.summaryAgentIds.add(summary.id);
+      this.writeJson(this.agentSummaryPath(summary.id), summary);
+    }
     this.loadDirectory(this.plansDirectory, this.plans);
     this.loadDirectory(this.evidenceDirectory, this.evidence);
     this.loadDirectory(this.snapshotsDirectory, this.snapshots);
@@ -171,6 +190,14 @@ export class AgentStore {
     return join(this.agentsDirectory, encodedName(id));
   }
 
+  private agentSummaryPath(id: string): string {
+    return join(this.agentSummariesDirectory, encodedName(id));
+  }
+
+  private agentSummary(agent: AgentRecord): AgentRecord {
+    return structuredClone({ ...agent, transcript: [] });
+  }
+
   private planPath(id: string): string {
     return join(this.plansDirectory, encodedName(id));
   }
@@ -188,12 +215,18 @@ export class AgentStore {
     if (timer) clearTimeout(timer);
     this.pendingAgentSaves.delete(id);
     const agent = this.agents.get(id);
-    if (agent) this.writeJson(this.agentPath(id), agent);
+    if (agent) {
+      this.writeJson(this.agentPath(id), agent);
+      this.writeJson(this.agentSummaryPath(id), this.agentSummary(agent));
+    }
   }
 
   private flushAll(): void {
     this.writeJson(this.statePath, MANIFEST);
-    for (const agent of this.agents.values()) this.writeJson(this.agentPath(agent.id), agent);
+    for (const agent of this.agents.values()) {
+      this.writeJson(this.agentPath(agent.id), agent);
+      this.writeJson(this.agentSummaryPath(agent.id), this.agentSummary(agent));
+    }
     for (const plan of this.plans.values()) this.writeJson(this.planPath(plan.id), plan);
     for (const item of this.evidence.values()) this.writeJson(this.evidencePath(item.id), item);
     for (const snapshot of this.snapshots.values())
@@ -201,7 +234,19 @@ export class AgentStore {
   }
 
   listAgents(): AgentRecord[] {
-    return structuredClone(Array.from(this.agents.values()));
+    return Array.from(this.agents.values(), (agent) => {
+      this.summaryAgentIds.add(agent.id);
+      return this.agentSummary(agent);
+    });
+  }
+
+  loadAgent(id: string): AgentRecord | undefined {
+    const value = this.readJson<AgentRecord>(this.agentPath(id));
+    if (!value?.id) return undefined;
+    const migrated = this.migrateAgent(value);
+    this.agents.set(id, migrated);
+    this.summaryAgentIds.delete(id);
+    return structuredClone(migrated);
   }
 
   listPlans(): AgentPlanRecord[] {
@@ -217,7 +262,19 @@ export class AgentStore {
   }
 
   saveAgent(agent: AgentRecord, options: { defer?: boolean } = {}): void {
-    this.agents.set(agent.id, structuredClone(agent));
+    let persisted = structuredClone(agent);
+    if (this.summaryAgentIds.has(agent.id)) {
+      const detailed = this.readJson<AgentRecord>(this.agentPath(agent.id));
+      if (detailed) {
+        const migrated = this.migrateAgent(detailed);
+        persisted = {
+          ...migrated,
+          ...persisted,
+          transcript: persisted.transcript.length > 0 ? persisted.transcript : migrated.transcript,
+        };
+      }
+    }
+    this.agents.set(agent.id, persisted);
     if (!this.enabled) return;
     if (!options.defer) {
       this.flushAgent(agent.id);
@@ -234,7 +291,10 @@ export class AgentStore {
     if (timer) clearTimeout(timer);
     this.pendingAgentSaves.delete(agentId);
     this.agents.delete(agentId);
-    if (this.enabled) rmSync(this.agentPath(agentId), { force: true });
+    if (this.enabled) {
+      rmSync(this.agentPath(agentId), { force: true });
+      rmSync(this.agentSummaryPath(agentId), { force: true });
+    }
     for (const item of Array.from(this.evidence.values())) {
       if (item.sourceAgentId !== agentId) continue;
       this.evidence.delete(item.id);
@@ -264,13 +324,14 @@ export class AgentStore {
 
   markActiveInterrupted(): AgentRecord[] {
     const interrupted: AgentRecord[] = [];
-    for (const agent of this.agents.values()) {
+    for (const summary of Array.from(this.agents.values())) {
       if (
         !['queued', 'starting', 'running', 'waiting_input', 'waiting_permission'].includes(
-          agent.status,
+          summary.status,
         )
       )
         continue;
+      const agent = this.loadAgent(summary.id) ?? summary;
       const lastSeenAt = agent.updatedAt;
       agent.status = 'interrupted';
       agent.stopReason = 'process_exit';

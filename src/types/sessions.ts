@@ -287,6 +287,7 @@ export interface SessionStoreInterface {
   searchCurrent?(id: string, query: string, limit?: number): SessionHistorySearchResult[];
   readCurrent?(id: string, refs: string[]): Array<{ ref: string; content: string }>;
   listRewindTargets?(id: string): RewindTarget[];
+  listSnapshotReferences?(cwd: string): Set<string>;
   list(): SessionMeta[];
   findByName(name: string): SessionMeta | undefined;
   findById(id: string): SessionMeta | undefined;
