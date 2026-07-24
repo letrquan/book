@@ -156,6 +156,28 @@ describe('App session commands', () => {
     await new Promise((resolve) => setTimeout(resolve, 75));
   };
 
+  it('uses the context-window fallback for status usage when model metadata is absent', () => {
+    const liveConfig = { ...config(), maxTokens: 64_000, modelInfo: undefined };
+    useAgentMock.mockReturnValue({
+      ...pendingAgentState(),
+      isThinking: false,
+      pendingPlanApproval: null,
+      tokenCount: 136_000,
+      liveConfig,
+    });
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={liveConfig} session={testSession} />);
+
+    expect(stripAnsi(view.lastFrame())).toContain('ctx 50%');
+  });
+
   it('/new dispatches a new conversation', async () => {
     const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
     useAgentMock.mockReturnValue(agentState);
