@@ -52,6 +52,7 @@ export function buildAgentCompletionMessage(notification: AgentCompletionNotific
     error_truncated: completion.errorTruncated,
     evidence_ids: completion.evidenceIds,
     application_status: completion.applicationStatus,
+    durability_warning: completion.durabilityWarning,
     duration_ms: durationMs,
   };
 

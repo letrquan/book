@@ -139,6 +139,8 @@ export interface AgentRecord {
   runStartedAt?: number;
   runUsage?: Usage;
   runMetrics?: AgentRunMetrics;
+  /** Runtime-only warning when the latest state is waiting for durable storage. */
+  durabilityWarning?: string;
 }
 
 export interface AgentSummary {
@@ -160,6 +162,7 @@ export interface AgentSummary {
   startedAt?: number;
   updatedAt: number;
   finishedAt?: number;
+  durabilityWarning?: string;
 }
 
 export interface AgentCompletion extends AgentSummary {
@@ -211,6 +214,16 @@ export type AgentRuntimeEvent =
   | { type: 'agent_result'; agent: AgentRecord }
   | { type: 'agent_question'; agentId: string; request: UserQuestionRequest }
   | { type: 'evidence_update'; evidence: EvidenceItem }
+  | {
+      type: 'agent_persistence';
+      state: 'degraded' | 'recovered';
+      reason: 'busy' | 'unavailable';
+      errorCode?: string;
+      message: string;
+      agentId?: string;
+      retrying: boolean;
+      timestamp: number;
+    }
   | {
       type: 'agent_apply';
       agentId: string;

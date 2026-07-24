@@ -25,7 +25,15 @@
  *   log.debug('Sending request', { model: 'gpt-4' });
  */
 
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+} from 'fs';
 import { dirname, join } from 'path';
 
 // Core flag — provider, agent loop, and TUI lifecycle.
@@ -42,6 +50,7 @@ let debugLogPath: string | undefined;
 const debugLogSizes = new Map<string, number>();
 const DEFAULT_DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024;
 const DEFAULT_DEBUG_LOG_BACKUPS = 3;
+export const DEFAULT_LOCAL_DATA_RETENTION_DAYS = 30;
 
 function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
@@ -78,6 +87,32 @@ export function getDebugLogPath(): string | undefined {
   if (process.env.BOOK_DEBUG_FILE) return process.env.BOOK_DEBUG_FILE;
   if (process.stderr.isTTY) return defaultDebugLogPath();
   return undefined;
+}
+
+/** Remove expired rotated logs while always preserving the active log file. */
+export function cleanupDebugLogs(
+  days = DEFAULT_LOCAL_DATA_RETENTION_DAYS,
+  target = getDebugLogPath(),
+  now = Date.now(),
+): number {
+  if (!target) return 0;
+  const cutoff = now - Math.max(1, days) * 86_400_000;
+  const directory = dirname(target);
+  const prefix = `${target.split(/[\\/]/).pop()}.`;
+  let removed = 0;
+  try {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.startsWith(prefix)) continue;
+      const path = join(directory, entry.name);
+      if (statSync(path).mtimeMs >= cutoff) continue;
+      unlinkSync(path);
+      debugLogSizes.delete(path);
+      removed++;
+    }
+  } catch {
+    // Retention cleanup is best effort and must never block startup.
+  }
+  return removed;
 }
 
 function writeDebugLine(line: string): void {

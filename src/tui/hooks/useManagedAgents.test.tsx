@@ -81,6 +81,49 @@ function completionNotification(
 }
 
 describe('useManagedAgents', () => {
+  it('keeps one non-modal persistence warning and replaces it with recovery status', async () => {
+    let listener: ((event: AgentRuntimeEvent) => void) | undefined;
+    const manager = {
+      list: vi.fn(async () => []),
+      listPendingCompletions: vi.fn(async () => []),
+      subscribe: vi.fn((next: (event: AgentRuntimeEvent) => void) => {
+        listener = next;
+        return vi.fn();
+      }),
+      setInteractivePermissions: vi.fn(),
+    } as unknown as AgentManager;
+    let latest: ManagedAgentState | undefined;
+    function Harness() {
+      latest = useManagedAgents(manager);
+      return <Text>{latest.persistenceEvent?.message ?? 'healthy'}</Text>;
+    }
+
+    const view = render(<Harness />);
+    await vi.waitFor(() => expect(listener).toBeDefined());
+    listener?.({
+      type: 'agent_persistence',
+      state: 'degraded',
+      reason: 'busy',
+      message: 'Storage busy',
+      retrying: true,
+      timestamp: 1,
+    });
+    await wait(0);
+    expect(latest?.persistenceEvent).toMatchObject({ state: 'degraded', message: 'Storage busy' });
+
+    listener?.({
+      type: 'agent_persistence',
+      state: 'recovered',
+      reason: 'busy',
+      message: 'Storage recovered',
+      retrying: false,
+      timestamp: 2,
+    });
+    await wait(0);
+    expect(latest?.persistenceEvent).toMatchObject({ state: 'recovered' });
+    view.unmount();
+  });
+
   it('orders pending questions by request age and only unsubscribes on unmount', async () => {
     const records = [record('newer', 20), record('older', 10)];
     let listener: ((event: AgentRuntimeEvent) => void) | undefined;

@@ -533,4 +533,13 @@ describe('SessionStore', () => {
     expect(existsSync(join(dir, `${old}.jsonl`))).toBe(false);
     expect(existsSync(join(dir, `${fresh}.jsonl`))).toBe(true);
   });
+
+  it('preserves the active session even when its previous activity is beyond retention', () => {
+    const s = new SessionStore(dir);
+    const active = s.create({ cwd: '/proj' });
+    s.append(active, { type: 'user', timestamp: Date.now() - 40 * 86400_000, data: {} });
+
+    expect(s.cleanup(30, new Set([active]))).toBe(0);
+    expect(existsSync(join(dir, `${active}.jsonl`))).toBe(true);
+  });
 });

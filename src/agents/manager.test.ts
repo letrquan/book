@@ -7,6 +7,9 @@ import type { AgentConfig } from '../types/runtime.js';
 import type { Message } from '../types/messages.js';
 import { defaultConfig, toolResult } from '../test/fixtures.js';
 import { AgentManager } from './manager.js';
+import { AgentStore } from './store.js';
+import type { AtomicJsonWriter } from './atomic-json.js';
+import { repositoryHash } from './git-isolation.js';
 import type { AgentRuntimeEvent, AgentSnapshot } from './types.js';
 
 const tempRoots: string[] = [];
@@ -39,6 +42,194 @@ afterEach(() => {
 });
 
 describe('AgentManager lifecycle', () => {
+  it('rolls back an unstarted agent and returns a typed retryable error when initial persistence is busy', async () => {
+    const root = tempRoot();
+    const storeRoot = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+    const runLoop = vi.fn();
+    const removeSnapshot = vi.fn(async () => {});
+    const writer = {
+      write: vi.fn((target: string) =>
+        target.includes(`${join('records', '')}`)
+          ? {
+              status: 'busy' as const,
+              target,
+              operation: 'rename' as const,
+              attempts: 4,
+              elapsedMs: 500,
+            }
+          : { status: 'ok' as const, target, attempts: 1, elapsedMs: 0 },
+      ),
+    } as unknown as AtomicJsonWriter;
+    const manager = new AgentManager(config, [], {
+      storeRoot,
+      findGitRoot: async () => root,
+      createSnapshot: async () => snapshot(root),
+      removeSnapshot,
+      runLoop,
+      createStore: (repoHash, requestedRoot, enabled) =>
+        new AgentStore(repoHash, requestedRoot, enabled, { writer }),
+    });
+
+    await expect(manager.spawn({ agent: 'patcher', prompt: 'inspect' })).rejects.toMatchObject({
+      code: 'agent_store_busy',
+      retryable: true,
+    });
+    expect(await manager.list()).toEqual([]);
+    expect(await manager.listPlans()).toEqual([]);
+    expect(manager.getPersistenceState()).toBe('degraded_busy');
+    expect(runLoop).not.toHaveBeenCalled();
+    expect(removeSnapshot).toHaveBeenCalledWith(expect.objectContaining({ id: 'snapshot' }));
+    manager.dispose();
+  });
+
+  it('allows reading but rejects mutation of an agent owned by another live process', async () => {
+    const root = tempRoot();
+    const storeRoot = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+    const owner = new AgentStore(repositoryHash(root), storeRoot, true);
+    owner.saveAgent(
+      {
+        id: 'foreign-agent',
+        name: 'explorer',
+        role: 'explorer',
+        description: 'Explore',
+        status: 'running',
+        applicationStatus: 'not_applied',
+        prompt: 'inspect',
+        referencedEvidenceIds: [],
+        transcript: [],
+        pendingMessages: [],
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      { required: true },
+    );
+    const manager = new AgentManager(config, [], {
+      storeRoot,
+      findGitRoot: async () => undefined,
+    });
+
+    expect(await manager.get('foreign-agent')).toMatchObject({ status: 'running' });
+    await expect(manager.send('foreign-agent', 'continue')).rejects.toMatchObject({
+      code: 'agent_owned_by_other_process',
+    });
+    manager.dispose();
+    owner.dispose();
+  });
+
+  it('refreshes a cached foreign agent after its owner exits with a terminal update', async () => {
+    const root = tempRoot();
+    const storeRoot = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+    let now = 1;
+    const owner = new AgentStore(repositoryHash(root), storeRoot, true, {
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 111,
+      hostname: 'test-host',
+      now: () => now,
+    });
+    const foreign = {
+      id: 'foreign-terminal-agent',
+      name: 'explorer',
+      role: 'explorer' as const,
+      description: 'Explore',
+      status: 'running' as const,
+      applicationStatus: 'not_applied' as const,
+      prompt: 'inspect',
+      referencedEvidenceIds: [],
+      transcript: [],
+      pendingMessages: [],
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    owner.saveAgent(foreign, { required: true });
+    const manager = new AgentManager(config, [], {
+      storeRoot,
+      findGitRoot: async () => undefined,
+      createStore: (repoHash, requestedRoot, enabled) =>
+        new AgentStore(repoHash, requestedRoot, enabled, {
+          instanceId: '22222222-2222-4222-8222-222222222222',
+          pid: 222,
+          hostname: 'test-host',
+          now: () => now,
+          processAlive: () => false,
+        }),
+    });
+
+    expect(await manager.get(foreign.id)).toMatchObject({ status: 'running' });
+    now = 2;
+    owner.saveAgent(
+      {
+        ...foreign,
+        status: 'completed',
+        result: 'done',
+        completionSequence: 1,
+        updatedAt: now,
+      },
+      { required: true },
+    );
+    owner.dispose();
+    now = 100_000;
+
+    expect(await manager.list()).toEqual([
+      expect.objectContaining({ id: foreign.id, status: 'completed', result: 'done' }),
+    ]);
+    expect(await manager.get(foreign.id)).toMatchObject({ status: 'completed', result: 'done' });
+    manager.dispose();
+  });
+
+  it('delivers a useful terminal result with a durability warning while retry is pending', async () => {
+    const root = tempRoot();
+    const storeRoot = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+    let recordWrites = 0;
+    const writer = {
+      write: vi.fn((target: string) => {
+        if (target.includes(`${join('records', '')}`) && ++recordWrites > 1) {
+          return {
+            status: 'busy' as const,
+            target,
+            operation: 'rename' as const,
+            attempts: 4,
+            elapsedMs: 500,
+          };
+        }
+        return { status: 'ok' as const, target, attempts: 1, elapsedMs: 0 };
+      }),
+    } as unknown as AtomicJsonWriter;
+    const manager = new AgentManager(config, [], {
+      storeRoot,
+      findGitRoot: async () => undefined,
+      createStore: (repoHash, requestedRoot, enabled) =>
+        new AgentStore(repoHash, requestedRoot, enabled, { writer }),
+      runLoop: async (_config, _registry, _prompt, history) => [
+        ...history,
+        {
+          id: 'result',
+          role: 'assistant',
+          content: 'Completed in memory',
+          includeInContext: true,
+          timestamp: 1,
+        },
+      ],
+    });
+
+    const spawned = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+    const completed = await manager.wait(spawned.id, 1_000);
+
+    expect(completed).toMatchObject({
+      status: 'completed',
+      result: 'Completed in memory',
+    });
+    expect(completed.durabilityWarning).toContain('waiting for durable storage');
+    manager.dispose();
+  });
+
   it('dismisses terminal agents with their evidence, worktree, and unshared snapshot', async () => {
     const root = tempRoot();
     const config = defaultConfig({ workspace: root });

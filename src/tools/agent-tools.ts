@@ -1,5 +1,5 @@
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
-import { getOrCreateAgentManager } from '../agents/manager.js';
+import { AgentManagerError, getOrCreateAgentManager } from '../agents/manager.js';
 import type {
   AgentTopology,
   AgentSummary,
@@ -54,6 +54,14 @@ export function agentStatusPresentation(agent: AgentSummary, action?: string) {
 }
 
 function fail(error: unknown): ToolResult {
+  if (error instanceof AgentManagerError) {
+    return toolFailure(error.message, {
+      code: error.code,
+      retryable: error.retryable,
+      remediation: error.remediation,
+      details: error.details,
+    });
+  }
   return toolFailure(error instanceof Error ? error.message : String(error));
 }
 

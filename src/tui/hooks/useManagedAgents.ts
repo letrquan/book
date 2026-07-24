@@ -30,6 +30,7 @@ export interface ManagedAgentState {
     request: NonNullable<AgentRecord['pendingQuestion']>;
   }>;
   pendingCompletions: QueuedAgentCompletion[];
+  persistenceEvent?: Extract<AgentRuntimeEvent, { type: 'agent_persistence' }>;
   setSurface: (surface: ManagedAgentSurface) => void;
   selectAgent: (agentId?: string) => void;
   send: (message: string) => Promise<void>;
@@ -61,6 +62,9 @@ export function useManagedAgents(
   const [selectedAgentId, setSelectedAgentId] = useState<string>();
   const [surface, setSurface] = useState<ManagedAgentSurface>('main');
   const [pendingCompletions, setPendingCompletions] = useState<QueuedAgentCompletion[]>([]);
+  const [persistenceEvent, setPersistenceEvent] = useState<
+    Extract<AgentRuntimeEvent, { type: 'agent_persistence' }> | undefined
+  >();
   const seenCompletions = useRef(new Set<string>());
   const deferredDismissals = useRef(new Set<string>());
   const visibleAgentIds = useRef(new Set<string>());
@@ -126,12 +130,17 @@ export function useManagedAgents(
     setSelectedAgentId(undefined);
     setSurface('main');
     setPendingCompletions([]);
+    setPersistenceEvent(undefined);
     seenCompletions.current.clear();
     deferredDismissals.current.clear();
     visibleAgentIds.current.clear();
     void refresh().catch(() => {});
     const unsubscribe = manager.subscribe(
       (event) => {
+        if (event.type === 'agent_persistence') {
+          setPersistenceEvent(event);
+          return;
+        }
         if (event.type === 'agent_status') {
           if (!belongsToCurrentSession(event.parentSessionId)) return;
           visibleAgentIds.current.add(event.agent.agentId);
@@ -226,6 +235,12 @@ export function useManagedAgents(
       manager.setInteractivePermissions(false);
     };
   }, [belongsToCurrentSession, enqueueCompletion, manager, refresh]);
+
+  useEffect(() => {
+    if (persistenceEvent?.state !== 'recovered') return;
+    const timer = setTimeout(() => setPersistenceEvent(undefined), 3_000);
+    return () => clearTimeout(timer);
+  }, [persistenceEvent]);
 
   const pendingPermissions = useMemo(
     () =>
@@ -369,6 +384,7 @@ export function useManagedAgents(
     pendingPermissions,
     pendingQuestions,
     pendingCompletions,
+    persistenceEvent,
     setSurface: changeSurface,
     selectAgent: setSelectedAgentId,
     send,

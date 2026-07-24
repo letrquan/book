@@ -3,6 +3,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it } from 'vitest';
 import { AgentManager } from '../agents/manager.js';
+import { AgentStore } from '../agents/store.js';
+import type { AtomicJsonWriter } from '../agents/atomic-json.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { deriveToolPresentation } from '../tui/tool-presentation.js';
@@ -49,6 +51,60 @@ describe('managed-agent tool presentation', () => {
 });
 
 describe('managed-agent synchronous delivery', () => {
+  it('returns a retryable tool failure instead of throwing when AgentSpawn cannot persist', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'book-agent-tools-'));
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+    const writer = {
+      write: (target: string) =>
+        target.includes(`${join('records', '')}`)
+          ? {
+              status: 'busy' as const,
+              target,
+              operation: 'rename' as const,
+              attempts: 4,
+              elapsedMs: 500,
+            }
+          : { status: 'ok' as const, target, attempts: 1, elapsedMs: 0 },
+    } as unknown as AtomicJsonWriter;
+    const manager = new AgentManager(config, [], {
+      storeRoot: root,
+      findGitRoot: async () => undefined,
+      createStore: (repoHash, requestedRoot, enabled) =>
+        new AgentStore(repoHash, requestedRoot, enabled, { writer }),
+    });
+    const runtime = new SessionRuntime();
+    runtime.agentManager = manager;
+    const context: ToolContext = {
+      workspaceRoot: root,
+      env: {},
+      agentConfig: config,
+      availableTools: [],
+      currentMode: 'bypassPermissions',
+      runtime,
+    };
+
+    try {
+      const spawnTool = agentLifecycleTools.find((tool) => tool.name === 'AgentSpawn')!;
+      const result = await spawnTool.execute(
+        { agent: 'explorer', description: 'Inspect', prompt: 'inspect' },
+        context,
+      );
+
+      expect(result).toMatchObject({
+        status: 'error',
+        structuredError: {
+          code: 'agent_store_busy',
+          retryable: true,
+        },
+      });
+      expect(await manager.list()).toEqual([]);
+    } finally {
+      manager.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('acknowledges terminal results consumed by AgentWait and Task', async () => {
     const root = mkdtempSync(join(tmpdir(), 'book-agent-tools-'));
     const config = defaultConfig({ workspace: root });

@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -101,5 +109,43 @@ describe('debug logger output target', () => {
     expect(existsSync(`${logPath}.1`)).toBe(true);
     expect(readFileSync(`${logPath}.1`, 'utf8')).toContain('a'.repeat(80));
     expect(readFileSync(logPath, 'utf8')).toContain('b'.repeat(80));
+  });
+
+  it('clears expired rotated logs while preserving the active log', async () => {
+    const logPath = join(tempDir(), 'debug.log');
+    writeFileSync(logPath, 'active');
+    writeFileSync(`${logPath}.1`, 'expired');
+    writeFileSync(`${logPath}.2`, 'fresh');
+    const now = Date.now();
+    utimesSync(`${logPath}.1`, new Date(now - 40 * 86_400_000), new Date(now - 40 * 86_400_000));
+
+    const { cleanupDebugLogs } = await import('./debug-log.js');
+
+    expect(cleanupDebugLogs(30, logPath, now)).toBe(1);
+    expect(existsSync(logPath)).toBe(true);
+    expect(existsSync(`${logPath}.1`)).toBe(false);
+    expect(existsSync(`${logPath}.2`)).toBe(true);
+  });
+
+  it('cleans the resolved BOOK_DEBUG_FILE target without scanning the default workspace path', async () => {
+    const workspace = tempDir();
+    const customDirectory = tempDir();
+    const customLog = join(customDirectory, 'custom-debug.log');
+    const unrelatedLog = join(workspace, '.book', 'debug.log');
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(`${customLog}.1`, 'expired custom log');
+    writeFileSync(`${unrelatedLog}.1`, 'unrelated default log', { flag: 'w' });
+    const now = Date.now();
+    const expiredAt = new Date(now - 40 * 86_400_000);
+    utimesSync(`${customLog}.1`, expiredAt, expiredAt);
+    utimesSync(`${unrelatedLog}.1`, expiredAt, expiredAt);
+    vi.stubEnv('BOOK_DEBUG_FILE', customLog);
+    vi.stubEnv('BOOK_WORKSPACE', workspace);
+
+    const { cleanupDebugLogs } = await import('./debug-log.js');
+
+    expect(cleanupDebugLogs(30, undefined, now)).toBe(1);
+    expect(existsSync(`${customLog}.1`)).toBe(false);
+    expect(existsSync(`${unrelatedLog}.1`)).toBe(true);
   });
 });

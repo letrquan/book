@@ -1,5 +1,5 @@
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
-import { getOrCreateAgentManager } from '../agents/manager.js';
+import { AgentManagerError, getOrCreateAgentManager } from '../agents/manager.js';
 import { toolFailure, toolSuccess } from './result.js';
 import { deriveAgentDisplayName } from '../agents/naming.js';
 import { projectAgentCompletion } from '../agents/projections.js';
@@ -72,6 +72,14 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
       { data: projection },
     );
   } catch (error) {
+    if (error instanceof AgentManagerError) {
+      return toolFailure(error.message, {
+        code: error.code,
+        retryable: error.retryable,
+        remediation: error.remediation,
+        details: error.details,
+      });
+    }
     return toolFailure(error instanceof Error ? error.message : String(error));
   }
 }

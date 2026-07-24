@@ -25,7 +25,7 @@ import { resolveAgentProfile, usableAgentEffort } from './profile-resolver.js';
 import { deriveAgentDisplayName, uniqueAgentDisplayName } from './naming.js';
 import { projectAgentCompletion, projectAgentSummary } from './projections.js';
 import { projectToolResultForDisplay, redactToolCallForDisplay } from './activity.js';
-import { AgentStore } from './store.js';
+import { AgentStore, type AgentStoreWriteResult } from './store.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import type {
@@ -64,6 +64,7 @@ interface ManagerOptions {
   runtime?: SessionRuntime;
   permissionMode?: string;
   persistPermissionRule?: (rule: string) => void;
+  createStore?: (repoHash: string, root: string | undefined, enabled: boolean) => AgentStore;
 }
 
 interface SubscribeOptions {
@@ -78,6 +79,21 @@ interface PublishEvidenceInput {
 }
 
 const TERMINAL_STATUSES = new Set<AgentStatus>(['completed', 'failed', 'stopped', 'interrupted']);
+const DURABILITY_WARNING =
+  'The latest agent state is still waiting for durable storage; Book will retry in the background.';
+
+export class AgentManagerError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'agent_store_busy' | 'agent_store_unavailable' | 'agent_owned_by_other_process',
+    readonly retryable: boolean,
+    readonly remediation: string,
+    readonly details?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'AgentManagerError';
+  }
+}
 
 function lastAssistantText(history: Message[]): string {
   for (let index = history.length - 1; index >= 0; index--) {
@@ -89,6 +105,23 @@ function lastAssistantText(history: Message[]): string {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+function agentRevision(record: AgentRecord): [number, number, number] {
+  return [
+    record.completionSequence ?? 0,
+    record.updatedAt,
+    TERMINAL_STATUSES.has(record.status) ? 1 : 0,
+  ];
+}
+
+function isNewerAgentRecord(candidate: AgentRecord, current: AgentRecord): boolean {
+  const left = agentRevision(candidate);
+  const right = agentRevision(current);
+  for (let index = 0; index < left.length; index++) {
+    if (left[index] !== right[index]) return left[index] > right[index];
+  }
+  return false;
 }
 
 function permissionRuleForToolCall(call: ToolCall): string {
@@ -153,6 +186,8 @@ export class AgentManager {
   private readonly textTimers = new Map<string, NodeJS.Timeout>();
   private hookEventSink?: (event: string, payload: Record<string, unknown>) => void;
   private exitHandler?: () => void;
+  private disposed = false;
+  private persistenceState: 'healthy' | 'degraded_busy' | 'degraded_unavailable' = 'healthy';
 
   constructor(
     config: AgentConfig,
@@ -182,7 +217,9 @@ export class AgentManager {
   hasActiveProfile(profile: string): boolean {
     return Array.from(this.agents.values()).some(
       (record) =>
-        (record.profile ?? record.name) === profile && !TERMINAL_STATUSES.has(record.status),
+        (record.profile ?? record.name) === profile &&
+        !TERMINAL_STATUSES.has(record.status) &&
+        this.store?.isOwnedByCurrent(record.id) !== false,
     );
   }
 
@@ -226,6 +263,7 @@ export class AgentManager {
     response: 'allow' | 'deny' | 'always',
   ): Promise<AgentRecord> {
     await this.ensureInitialized();
+    this.assertMutable(agentId);
     const record = this.agents.get(agentId);
     if (!record) throw new Error(`Agent ${agentId} was not found.`);
     if (record.pendingPermission?.id !== requestId) {
@@ -246,6 +284,7 @@ export class AgentManager {
 
   async resolveQuestion(agentId: string, response: UserQuestionResponse): Promise<AgentRecord> {
     await this.ensureInitialized();
+    this.assertMutable(agentId);
     const record = this.agents.get(agentId);
     if (!record) throw new Error(`Agent ${agentId} was not found.`);
     if (!record.pendingQuestion) throw new Error(`Agent ${agentId} has no pending question.`);
@@ -299,6 +338,7 @@ export class AgentManager {
       (candidate) => `${candidate.id}:${candidate.completionSequence ?? 0}` === deliveryId,
     );
     if (!record) return;
+    this.assertMutable(record.id);
     const sequence = record.completionSequence ?? 0;
     if ((record.completionDeliveredSequence ?? 0) >= sequence) return;
     record.completionDeliveredSequence = sequence;
@@ -316,11 +356,15 @@ export class AgentManager {
     this.initialized = (async () => {
       this.repoRoot = await (this.options.findGitRoot ?? findGitRoot)(this.config.workspace);
       const hash = repositoryHash(this.repoRoot ?? this.config.workspace);
-      this.store = new AgentStore(
-        hash,
-        this.options.storeRoot,
-        this.config.settings.agents.persist,
-      );
+      this.store = this.options.createStore
+        ? this.options.createStore(
+            hash,
+            this.options.storeRoot,
+            this.config.settings.agents.persist,
+          )
+        : new AgentStore(hash, this.options.storeRoot, this.config.settings.agents.persist, {
+            eventSink: (event) => this.handlePersistenceEvent(event),
+          });
       const cleanup = this.store.cleanupDetailed(this.config.settings.agents.retentionDays);
       for (const agent of cleanup.agents) {
         await (this.options.removeWorktree ?? removeAgentWorktree)(agent, this.repoRoot);
@@ -328,7 +372,7 @@ export class AgentManager {
       for (const snapshot of cleanup.snapshots) {
         await (this.options.removeSnapshot ?? removeSnapshotRef)(snapshot);
       }
-      this.store.markActiveInterrupted();
+      this.store.recoverAbandonedAgents();
       for (const record of this.store.listAgents()) this.agents.set(record.id, record);
       for (const plan of this.store.listPlans()) this.plans.set(plan.id, plan);
       for (const item of this.store.listEvidence()) this.evidence.set(item.id, item);
@@ -355,6 +399,7 @@ export class AgentManager {
             )
           )
             continue;
+          if (!this.store?.isOwnedByCurrent(record.id)) continue;
           record.status = 'interrupted';
           record.stopReason = 'process_exit';
           record.pendingPermission = undefined;
@@ -380,11 +425,24 @@ export class AgentManager {
   }
 
   private agentListRecord(record: AgentRecord): AgentRecord {
-    return clone({ ...record, transcript: [] });
+    return this.recordForReturn({ ...record, transcript: [] });
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     if (this.exitHandler) process.off('exit', this.exitHandler);
+    for (const record of this.agents.values()) {
+      if (!this.store?.isOwnedByCurrent(record.id) || TERMINAL_STATUSES.has(record.status))
+        continue;
+      record.status = 'interrupted';
+      record.stopReason = 'process_exit';
+      record.pendingPermission = undefined;
+      record.updatedAt = Date.now();
+      record.finishedAt = record.updatedAt;
+      record.completionSequence = (record.completionSequence ?? 0) + 1;
+      this.store.saveAgent(record);
+    }
     for (const controller of this.controllers.values()) controller.abort('manager_disposed');
     for (const timer of this.textTimers.values()) clearTimeout(timer);
     this.textTimers.clear();
@@ -405,6 +463,86 @@ export class AgentManager {
   private emit(event: AgentRuntimeEvent): void {
     this.legacyEventSink?.(clone(event));
     for (const listener of this.subscribers) listener(clone(event));
+  }
+
+  private recordForReturn(record: AgentRecord): AgentRecord {
+    const result = clone(record);
+    if (this.store?.hasPendingAgent(record.id)) result.durabilityWarning = DURABILITY_WARNING;
+    else delete result.durabilityWarning;
+    return result;
+  }
+
+  private assertMutable(agentId: string): void {
+    if (!this.store?.isOwnedByLiveForeign(agentId)) return;
+    throw new AgentManagerError(
+      `Agent ${agentId} is owned by another live Book process.`,
+      'agent_owned_by_other_process',
+      true,
+      'Retry from the Book process that owns this agent, or wait for that process to exit.',
+      { agentId },
+    );
+  }
+
+  getPersistenceState(): 'healthy' | 'degraded_busy' | 'degraded_unavailable' {
+    return this.persistenceState;
+  }
+
+  private handlePersistenceEvent(
+    event: Extract<AgentRuntimeEvent, { type: 'agent_persistence' }>,
+  ): void {
+    this.persistenceState =
+      event.state === 'recovered'
+        ? 'healthy'
+        : event.reason === 'busy'
+          ? 'degraded_busy'
+          : 'degraded_unavailable';
+    this.emit(event);
+  }
+
+  private requirePersisted(result: AgentStoreWriteResult, operation: string): void {
+    if (result.status === 'ok') {
+      if (this.persistenceState !== 'healthy' && this.store?.getPersistenceState() === 'healthy') {
+        this.handlePersistenceEvent({
+          type: 'agent_persistence',
+          state: 'recovered',
+          reason: this.persistenceState === 'degraded_busy' ? 'busy' : 'unavailable',
+          message: 'Agent state storage has recovered.',
+          retrying: false,
+          timestamp: Date.now(),
+        });
+      }
+      return;
+    }
+    if (this.persistenceState === 'healthy') {
+      this.handlePersistenceEvent({
+        type: 'agent_persistence',
+        state: 'degraded',
+        reason: result.status === 'busy' ? 'busy' : 'unavailable',
+        errorCode: result.status === 'unavailable' ? result.errorCode : undefined,
+        message:
+          result.status === 'busy'
+            ? 'Agent state storage is temporarily busy.'
+            : 'Agent state storage is unavailable.',
+        retrying: false,
+        timestamp: Date.now(),
+      });
+    }
+    if (result.status === 'busy') {
+      throw new AgentManagerError(
+        `Agent state storage is busy while trying to ${operation}.`,
+        'agent_store_busy',
+        true,
+        'Retry after the other process or filesystem scanner releases the agent store.',
+        { operation: result.operation, attempts: result.attempts },
+      );
+    }
+    throw new AgentManagerError(
+      `Agent state storage is unavailable while trying to ${operation}.`,
+      'agent_store_unavailable',
+      false,
+      'Free disk space or restore write access, then retry the operation.',
+      { operation: result.operation, errorCode: result.errorCode },
+    );
   }
 
   private queueTextDelta(agentId: string, text: string): void {
@@ -432,10 +570,11 @@ export class AgentManager {
     }
     record.updatedAt = Date.now();
     this.store?.saveAgent(record, { defer: event !== 'result' });
+    const publicRecord = this.recordForReturn(record);
     this.notify(record);
     this.emit({
       type: 'agent_status',
-      agent: projectAgentSummary(record),
+      agent: projectAgentSummary(publicRecord),
       parentSessionId: record.parentSessionId,
     });
     if (event === 'result') {
@@ -444,7 +583,10 @@ export class AgentManager {
         notification: this.completionNotification(record),
       });
     }
-    this.emit({ type: event === 'result' ? 'agent_result' : 'agent_update', agent: clone(record) });
+    this.emit({
+      type: event === 'result' ? 'agent_result' : 'agent_update',
+      agent: publicRecord,
+    });
   }
 
   private completionNotification(record: AgentRecord): AgentCompletionNotification {
@@ -452,7 +594,7 @@ export class AgentManager {
     return {
       deliveryId: `${record.id}:${sequence}`,
       sequence,
-      completion: projectAgentCompletion(record),
+      completion: projectAgentCompletion(this.recordForReturn(record)),
       parentSessionId: record.parentSessionId,
     };
   }
@@ -460,7 +602,7 @@ export class AgentManager {
   private notify(record: AgentRecord): void {
     const waiters = this.waiters.get(record.id);
     if (!waiters) return;
-    for (const resolve of waiters) resolve(clone(record));
+    for (const resolve of waiters) resolve(this.recordForReturn(record));
     if (waiters.size === 0) this.waiters.delete(record.id);
   }
 
@@ -488,8 +630,8 @@ export class AgentManager {
       agentBudget: Math.max(0, Math.min(Math.floor(requestedBudget), 32)),
       createdAt: Date.now(),
     };
+    if (this.store) this.requirePersisted(this.store.savePlan(plan), 'create the agent plan');
     this.plans.set(plan.id, plan);
-    this.store?.savePlan(plan);
     return clone(plan);
   }
 
@@ -516,9 +658,16 @@ export class AgentManager {
         this.repoRoot,
         this.config.settings.agents.includeUntrackedInSnapshot,
       );
+      if (this.store) {
+        try {
+          this.requirePersisted(this.store.saveSnapshot(snapshot), 'save the agent snapshot');
+        } catch (error) {
+          await (this.options.removeSnapshot ?? removeSnapshotRef)(snapshot).catch(() => {});
+          throw error;
+        }
+      }
       this.snapshots.set(snapshot.id, snapshot);
       this.planSnapshots.set(planId, snapshot.id);
-      this.store?.saveSnapshot(snapshot);
       return snapshot;
     })();
     this.snapshotPromises.set(planId, creation);
@@ -554,7 +703,8 @@ export class AgentManager {
       );
     }
     const outstanding = Array.from(this.agents.values()).filter(
-      (record) => !TERMINAL_STATUSES.has(record.status),
+      (record) =>
+        !TERMINAL_STATUSES.has(record.status) && this.store?.isOwnedByCurrent(record.id) !== false,
     ).length;
     if (outstanding >= this.config.settings.agents.maxSpawned) {
       throw new Error(
@@ -564,6 +714,7 @@ export class AgentManager {
     const resolvedProfile = resolveAgentProfile(definition, this.config, request.model);
 
     let plan = request.planId ? this.plans.get(request.planId) : undefined;
+    const autoCreatedPlan = !request.planId;
     if (request.planId && !plan) throw new Error(`Agent plan ${request.planId} was not found.`);
     plan ??= await this.createPlan({
       taskShape: request.prompt.slice(0, 160),
@@ -579,6 +730,9 @@ export class AgentManager {
     if (existingForPlan >= plan.agentBudget) {
       throw new Error(`Agent plan ${plan.id} has exhausted its budget of ${plan.agentBudget}.`);
     }
+    const previousSnapshotId = this.planSnapshots.get(plan.id);
+    const preparedSnapshot =
+      definition.isolation === 'worktree' ? await this.snapshotForPlan(plan.id) : undefined;
     const now = Date.now();
     const requestedDisplayName =
       request.description?.trim() || deriveAgentDisplayName(request.prompt, definition.name);
@@ -611,12 +765,32 @@ export class AgentManager {
       producedEvidenceIds: [],
       transcript: [],
       pendingMessages: [],
+      snapshotId: preparedSnapshot?.id,
       createdAt: now,
       updatedAt: now,
     };
+    try {
+      if (this.store) {
+        this.requirePersisted(
+          this.store.saveAgent(record, { required: true }),
+          'create the initial agent record',
+        );
+      }
+    } catch (error) {
+      if (preparedSnapshot && !previousSnapshotId) {
+        this.snapshots.delete(preparedSnapshot.id);
+        this.planSnapshots.delete(plan.id);
+        this.store?.removeSnapshot(preparedSnapshot.id);
+        await (this.options.removeSnapshot ?? removeSnapshotRef)(preparedSnapshot).catch(() => {});
+      }
+      if (autoCreatedPlan) {
+        this.plans.delete(plan.id);
+        this.store?.removePlan(plan.id);
+      }
+      throw error;
+    }
     this.agents.set(record.id, record);
     this.hydratedAgentIds.add(record.id);
-    this.store?.saveAgent(record);
     this.queue.push(record.id);
     this.emit({ type: 'agent_update', agent: clone(record) });
     queueMicrotask(() => this.pump());
@@ -625,6 +799,17 @@ export class AgentManager {
 
   async list(): Promise<AgentRecord[]> {
     await this.ensureInitialized();
+    for (const refreshed of this.store?.listAgents() ?? []) {
+      const current = this.agents.get(refreshed.id);
+      if (
+        !current ||
+        this.store?.isOwnedByLiveForeign(refreshed.id) ||
+        isNewerAgentRecord(refreshed, current)
+      ) {
+        this.agents.set(refreshed.id, refreshed);
+        this.hydratedAgentIds.delete(refreshed.id);
+      }
+    }
     return Array.from(this.agents.values())
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .map((record) => this.agentListRecord(record));
@@ -658,12 +843,25 @@ export class AgentManager {
 
   async get(agentId: string): Promise<AgentRecord | undefined> {
     await this.ensureInitialized();
+    for (const refreshed of this.store?.listAgents() ?? []) {
+      if (refreshed.id !== agentId) continue;
+      const current = this.agents.get(agentId);
+      if (
+        !current ||
+        this.store?.isOwnedByLiveForeign(agentId) ||
+        isNewerAgentRecord(refreshed, current)
+      ) {
+        this.agents.set(agentId, refreshed);
+        this.hydratedAgentIds.delete(agentId);
+      }
+    }
     const record = this.hydrateAgent(agentId);
-    return record ? clone(record) : undefined;
+    return record ? this.recordForReturn(record) : undefined;
   }
 
   async dismiss(agentId: string): Promise<void> {
     await this.ensureInitialized();
+    this.assertMutable(agentId);
     const record = this.agents.get(agentId);
     if (!record) return;
     if (!TERMINAL_STATUSES.has(record.status)) {
@@ -694,6 +892,7 @@ export class AgentManager {
 
   async send(agentId: string, message: string, evidenceIds: string[] = []): Promise<AgentRecord> {
     await this.ensureInitialized();
+    this.assertMutable(agentId);
     const record = this.hydrateAgent(agentId);
     if (!record) throw new Error(`Agent ${agentId} was not found.`);
     const trimmed = message.trim();
@@ -715,13 +914,13 @@ export class AgentManager {
       this.questionResolvers.get(agentId)?.(response);
       this.questionResolvers.delete(agentId);
       this.persist(record);
-      return clone(record);
+      return this.recordForReturn(record);
     }
 
     if (['queued', 'starting', 'running'].includes(record.status)) {
       record.pendingMessages.push(trimmed);
       this.persist(record);
-      return clone(record);
+      return this.recordForReturn(record);
     }
 
     record.prompt = trimmed;
@@ -734,14 +933,14 @@ export class AgentManager {
     this.queue.push(record.id);
     this.persist(record);
     queueMicrotask(() => this.pump());
-    return clone(record);
+    return this.recordForReturn(record);
   }
 
   async wait(agentId: string, timeoutMs = 0): Promise<AgentRecord> {
     await this.ensureInitialized();
     const current = this.hydrateAgent(agentId);
     if (!current) throw new Error(`Agent ${agentId} was not found.`);
-    if (TERMINAL_STATUSES.has(current.status)) return clone(current);
+    if (TERMINAL_STATUSES.has(current.status)) return this.recordForReturn(current);
 
     return new Promise((resolvePromise) => {
       let timer: NodeJS.Timeout | undefined;
@@ -749,7 +948,7 @@ export class AgentManager {
         if (!TERMINAL_STATUSES.has(record.status)) return;
         if (timer) clearTimeout(timer);
         this.waiters.get(agentId)?.delete(finish);
-        resolvePromise(clone(record));
+        resolvePromise(this.recordForReturn(record));
       };
       const listeners = this.waiters.get(agentId) ?? new Set();
       listeners.add(finish);
@@ -758,7 +957,7 @@ export class AgentManager {
         timer = setTimeout(() => {
           listeners.delete(finish);
           if (listeners.size === 0) this.waiters.delete(agentId);
-          resolvePromise(clone(this.agents.get(agentId)!));
+          resolvePromise(this.recordForReturn(this.agents.get(agentId)!));
         }, timeoutMs);
       }
     });
@@ -766,9 +965,10 @@ export class AgentManager {
 
   async stop(agentId: string, reason = 'requested'): Promise<AgentRecord> {
     await this.ensureInitialized();
+    this.assertMutable(agentId);
     const record = this.agents.get(agentId);
     if (!record) throw new Error(`Agent ${agentId} was not found.`);
-    if (TERMINAL_STATUSES.has(record.status)) return clone(record);
+    if (TERMINAL_STATUSES.has(record.status)) return this.recordForReturn(record);
     record.stopReason = reason;
     record.status = 'stopped';
     record.finishedAt = Date.now();
@@ -787,11 +987,12 @@ export class AgentManager {
     if (queuedIndex >= 0) this.queue.splice(queuedIndex, 1);
     this.persist(record, 'result');
     this.notifyIdle();
-    return clone(record);
+    return this.recordForReturn(record);
   }
 
   async publishEvidence(agentId: string, input: PublishEvidenceInput): Promise<EvidenceItem> {
     await this.ensureInitialized();
+    this.assertMutable(agentId);
     if (!this.agents.has(agentId)) throw new Error(`Agent ${agentId} was not found.`);
     const now = Date.now();
     const requestedConfidence = Number.isFinite(input.confidence) ? input.confidence! : 0.5;
@@ -806,15 +1007,28 @@ export class AgentManager {
       createdAt: now,
       updatedAt: now,
     };
+    if (this.store) this.requirePersisted(this.store.saveEvidence(item), 'publish evidence');
     this.evidence.set(item.id, item);
     const record = this.agents.get(agentId);
     if (record) {
+      const previousProducedEvidenceIds = [...(record.producedEvidenceIds ?? [])];
       record.producedEvidenceIds = Array.from(
         new Set([...(record.producedEvidenceIds ?? []), item.id]),
       );
-      this.store?.saveAgent(record);
+      try {
+        if (this.store) {
+          this.requirePersisted(
+            this.store.saveAgent(record, { required: true }),
+            'link published evidence to the agent',
+          );
+        }
+      } catch (error) {
+        record.producedEvidenceIds = previousProducedEvidenceIds;
+        this.evidence.delete(item.id);
+        this.store?.removeEvidence(item.id);
+        throw error;
+      }
     }
-    this.store?.saveEvidence(item);
     this.emit({ type: 'evidence_update', evidence: clone(item) });
     return clone(item);
   }
@@ -850,6 +1064,7 @@ export class AgentManager {
     notes?: string,
   ): Promise<EvidenceItem> {
     await this.ensureInitialized();
+    this.assertMutable(reviewerAgentId);
     const reviewer = this.agents.get(reviewerAgentId);
     if (!reviewer) throw new Error(`Reviewer agent ${reviewerAgentId} was not found.`);
     if (reviewer.role !== 'validator')
@@ -861,20 +1076,23 @@ export class AgentManager {
     if (!reviewer.referencedEvidenceIds.includes(evidenceId)) {
       throw new Error('Validator was not explicitly assigned this unverified evidence item.');
     }
-    item.verdict = verdict;
-    item.verificationState =
+    const reviewed = clone(item);
+    reviewed.verdict = verdict;
+    reviewed.verificationState =
       verdict === 'pass' ? 'verified' : verdict === 'fail' ? 'rejected' : 'inconclusive';
-    item.reviewerAgentId = reviewerAgentId;
-    item.reviewNotes = notes;
-    item.reviewedAt = Date.now();
-    item.updatedAt = item.reviewedAt;
-    this.store?.saveEvidence(item);
-    this.emit({ type: 'evidence_update', evidence: clone(item) });
-    return clone(item);
+    reviewed.reviewerAgentId = reviewerAgentId;
+    reviewed.reviewNotes = notes;
+    reviewed.reviewedAt = Date.now();
+    reviewed.updatedAt = reviewed.reviewedAt;
+    if (this.store) this.requirePersisted(this.store.saveEvidence(reviewed), 'review evidence');
+    this.evidence.set(reviewed.id, reviewed);
+    this.emit({ type: 'evidence_update', evidence: clone(reviewed) });
+    return clone(reviewed);
   }
 
   async apply(agentId: string, evidenceId?: string): Promise<AgentApplyResult> {
     await this.ensureInitialized();
+    this.assertMutable(agentId);
     const record = this.agents.get(agentId);
     if (!record) throw new Error(`Agent ${agentId} was not found.`);
     const evidence = evidenceId
@@ -1321,7 +1539,7 @@ export class AgentManager {
             record.producedEvidenceIds = Array.from(
               new Set([...(record.producedEvidenceIds ?? []), item.id]),
             );
-            this.store?.saveEvidence(item);
+            this.store?.saveEvidence(item, { required: false });
             this.emit({ type: 'evidence_update', evidence: clone(item) });
           }
         }
@@ -1340,6 +1558,7 @@ export class AgentManager {
         }
       }
     } catch (error) {
+      if (this.disposed) return;
       if (record.status !== 'stopped') {
         this.flushTextDelta(record.id);
         record.status = controller.signal.aborted ? 'stopped' : 'failed';
@@ -1377,6 +1596,7 @@ export class AgentManager {
       ).catch(() => {});
 
       if (
+        !this.disposed &&
         record.pendingMessages.length > 0 &&
         record.status !== 'stopped' &&
         record.status !== 'queued'

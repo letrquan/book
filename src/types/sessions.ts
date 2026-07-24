@@ -292,5 +292,5 @@ export interface SessionStoreInterface {
   findByName(name: string): SessionMeta | undefined;
   findById(id: string): SessionMeta | undefined;
   mostRecentInCwd(cwd: string): SessionMeta | undefined;
-  cleanup(days: number): number;
+  cleanup(days: number, preserveIds?: ReadonlySet<string>): number;
 }

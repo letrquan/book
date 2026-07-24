@@ -6,6 +6,11 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Resilient managed-agent persistence with fsynced atomic writes, bounded Windows contention
+  retries, per-target locks, process leases, orphan-temp recovery, background coalescing, typed
+  retryable tool failures, and non-modal degraded/recovered storage events.
+- A clear 30-day local retention policy for expired sessions and rotated debug logs; the active
+  session and current debug log are always preserved.
 - Canonical `ApplyPatch` file mutation with exact contextual hunks, LF/CRLF and BOM preservation,
   multi-file staging, atomic verification, rollback, per-file artifacts, legacy permission/hook
   compatibility, and the `apply_patch` provider alias.

@@ -845,12 +845,13 @@ export class SessionStore {
     return this.list().find((meta) => meta.id === id);
   }
 
-  cleanup(days: number): number {
+  cleanup(days: number, preserveIds: ReadonlySet<string> = new Set()): number {
     const cutoff = Date.now() - days * 86400_000;
     let removed = 0;
     const removedIds: string[] = [];
     this.ensureIndex();
     for (const [id, entry] of this.metadataIndex) {
+      if (preserveIds.has(id)) continue;
       try {
         if (entry.meta.updatedAt < cutoff) {
           unlinkSync(this.path(id));

@@ -16,6 +16,11 @@ import {
   createUnavailableRewindSnapshotStore,
 } from '../rewind/snapshot-store.js';
 import { createEphemeralRewindEnvironment } from '../rewind/environment.js';
+import {
+  cleanupDebugLogs,
+  DEFAULT_LOCAL_DATA_RETENTION_DAYS,
+  getDebugLogPath,
+} from '../debug-log.js';
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
@@ -76,6 +81,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       }
     }
     freezeAgentConfig(config);
+    cleanupDebugLogs(DEFAULT_LOCAL_DATA_RETENTION_DAYS, getDebugLogPath());
 
     // Headless / print mode.
     if (options.print !== undefined) {
@@ -93,9 +99,6 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       const sessionStore = (options.sessionPersistence as boolean)
         ? new SessionStore(SESSION_ROOT)
         : undefined;
-      // Purge old sessions at startup.
-      sessionStore?.cleanup(30);
-
       const bootstrap = resolveSessionBootstrap(sessionStore, {
         cwd: config.workspace,
         resume: options.resume as string | undefined,
@@ -104,6 +107,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         sessionName: options.name as string | undefined,
         forkSession: options.forkSession as boolean | undefined,
       });
+      sessionStore?.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
 
       await runHeadless(config, registry, {
         prompt: typeof options.print === 'string' ? (options.print as string) : undefined,
@@ -143,7 +147,6 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     const sessionStore = (options.sessionPersistence as boolean)
       ? new SessionStore(SESSION_ROOT)
       : undefined;
-    sessionStore?.cleanup(30);
     const ephemeralRewind = sessionStore
       ? undefined
       : createEphemeralRewindEnvironment(config.workspace);
@@ -168,6 +171,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       sessionName: options.name as string | undefined,
       forkSession: options.forkSession as boolean | undefined,
     });
+    sessionStore?.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
     if (!sessionStore) {
       timelineStore.create({
         id: bootstrap.sessionId,

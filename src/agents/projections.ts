@@ -45,6 +45,7 @@ export function projectAgentSummary(record: AgentRecord): AgentSummary {
     startedAt: record.startedAt,
     updatedAt: record.updatedAt,
     finishedAt: terminal ? (record.finishedAt ?? record.updatedAt) : record.finishedAt,
+    durabilityWarning: record.durabilityWarning,
   };
 }
 

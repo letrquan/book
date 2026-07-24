@@ -29,7 +29,8 @@ export type AgentEvent =
           | 'agent_text_delta'
           | 'agent_message'
           | 'agent_completion'
-          | 'agent_permission';
+          | 'agent_permission'
+          | 'agent_persistence';
       }
     >
   | { type: 'evidence_update'; evidence: EvidenceItem }
@@ -119,6 +120,7 @@ export function reduceAgentSessionSnapshot(
     case 'agent_message':
     case 'agent_completion':
     case 'agent_permission':
+    case 'agent_persistence':
       return snapshot;
     case 'evidence_update':
       return { ...snapshot, evidence: upsertById(snapshot.evidence, event.evidence) };

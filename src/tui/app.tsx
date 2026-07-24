@@ -1837,6 +1837,17 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
 
           {isResolvingCommand ? <Text dimColor>Resolving command shell expansions...</Text> : null}
 
+          {managedAgents.persistenceEvent ? (
+            <Text
+              color={
+                managedAgents.persistenceEvent.state === 'degraded' ? theme.warning : theme.success
+              }
+            >
+              {managedAgents.persistenceEvent.state === 'degraded' ? '! ' : '✓ '}
+              {managedAgents.persistenceEvent.message}
+            </Text>
+          ) : null}
+
           <WorkingIndicator
             isThinking={isThinking}
             isCompacting={isCompacting}

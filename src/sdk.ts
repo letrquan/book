@@ -19,6 +19,11 @@ import { AgentManager } from './agents/manager.js';
 import { SessionStore } from './session/store.js';
 import { resolveSessionBootstrap } from './session/resolve.js';
 import type { AgentEvent } from './session/agent-events.js';
+import {
+  cleanupDebugLogs,
+  DEFAULT_LOCAL_DATA_RETENTION_DAYS,
+  getDebugLogPath,
+} from './debug-log.js';
 
 export type QueryEvent = AgentEvent;
 
@@ -102,6 +107,10 @@ export async function* query(
     cwd: config.workspace,
     sessionId: options.sessionId,
   });
+  if (persistSession && !options.sessionStore && sessionStore) {
+    cleanupDebugLogs(DEFAULT_LOCAL_DATA_RETENTION_DAYS, getDebugLogPath());
+    sessionStore.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
+  }
   const queue = new AsyncEventQueue<QueryEvent>();
   let connections: Awaited<ReturnType<typeof connectMcpServers>>['connections'] = [];
 
