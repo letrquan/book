@@ -34,7 +34,8 @@ describe('SessionPicker', () => {
       />,
     );
     expect(view.lastFrame()).toContain('feature');
-    expect(view.lastFrame()).toContain('22222222');
+    expect(view.lastFrame()).toContain('Untitled session');
+    expect(view.lastFrame()).not.toContain('22222222');
     view.stdin.write('\r');
     expect(onPick).toHaveBeenCalledWith(sessions[0]);
   });
@@ -49,6 +50,7 @@ describe('SessionPicker', () => {
       />,
     );
     expect(view.lastFrame()).not.toContain('feature');
-    expect(view.lastFrame()).toContain('22222222');
+    expect(view.lastFrame()).toContain('Untitled session');
+    expect(view.lastFrame()).not.toContain('22222222');
   });
 });

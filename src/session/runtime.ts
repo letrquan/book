@@ -1,12 +1,14 @@
 import type { ChildProcess } from 'node:child_process';
 import type { AgentTask, BackgroundShellStore } from '../types/runtime.js';
 import type { FileObservation, ToolDiscoveryState } from '../types/tools.js';
+import { AgentContextCache } from '../agent/context.js';
 
 export interface SessionRuntimeOptions {
   tasks?: AgentTask[];
   backgroundShells?: BackgroundShellStore;
   fileObservationLedger?: Map<string, FileObservation>;
   toolDiscoveryState?: ToolDiscoveryState;
+  agentContextCache?: AgentContextCache;
   traceId?: string;
 }
 
@@ -16,6 +18,7 @@ export class SessionRuntime {
   readonly backgroundShells: BackgroundShellStore;
   readonly fileObservationLedger: Map<string, FileObservation>;
   readonly toolDiscoveryState: ToolDiscoveryState;
+  readonly agentContextCache: AgentContextCache;
   readonly traceId: string;
   agentManager?: import('../agents/manager.js').AgentManager;
   private readonly abortControllers = new Set<AbortController>();
@@ -28,6 +31,7 @@ export class SessionRuntime {
     this.backgroundShells = options.backgroundShells ?? { nextId: 1, shells: new Map() };
     this.fileObservationLedger = options.fileObservationLedger ?? new Map();
     this.toolDiscoveryState = options.toolDiscoveryState ?? { clock: 0, loaded: new Map() };
+    this.agentContextCache = options.agentContextCache ?? new AgentContextCache();
     this.traceId = options.traceId ?? crypto.randomUUID();
   }
 
@@ -77,6 +81,7 @@ export class SessionRuntime {
     const ownedChildren = new Set(this.childProcesses);
     for (const shell of this.backgroundShells.shells.values()) {
       if (shell.timer) clearTimeout(shell.timer);
+      if (shell.retentionTimer) clearTimeout(shell.retentionTimer);
       if (shell.process) ownedChildren.add(shell.process);
     }
     for (const child of ownedChildren) {

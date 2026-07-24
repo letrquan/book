@@ -340,9 +340,11 @@ describe('TUI keyboard input', () => {
 
   it('wheel events do not enter the prompt', async () => {
     session = await startAndWait();
-    // Terminal-mode lifecycle is covered by run.test.ts. This test verifies
-    // the resulting mouse input routing through the active PTY.
+    // Full-screen mode enables SGR mouse reporting so wheel events reach the
+    // transcript instead of being translated into prompt-history arrows.
     expect(session.readRaw()).toContain('\x1b[?1049h');
+    // Windows ConPTY consumes mouse-mode control sequences before onData.
+    if (!IS_WINDOWS) expect(session.readRaw()).toContain('\x1b[?1000h');
 
     session.sendKey('MOUSE_DRAFT');
     await session.waitFor('MOUSE_DRAFT');

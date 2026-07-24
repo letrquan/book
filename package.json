@@ -60,6 +60,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage --config vitest.coverage.config.ts",
     "bench:ui": "tsx src/tui/__benchmarks__/ui.bench.tsx",
+    "bench:runtime": "tsx src/tui/__benchmarks__/runtime.bench.ts",
     "lint": "eslint src/ --ext .ts,.tsx --max-warnings 0",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
     "format:check": "prettier --check \"{src,scripts}/**/*.{ts,tsx}\" \"*.config.ts\"",

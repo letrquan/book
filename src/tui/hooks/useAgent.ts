@@ -43,14 +43,24 @@ import { updateEffortLevel } from '../../commands/effort.js';
 import { observationKey } from '../../tools/file-provenance.js';
 import type { SessionBootstrap } from '../../session/resolve.js';
 import { normalizeWorkspace } from '../../session/store.js';
-import { AgentSession, type AgentSessionSendControl } from '../../session/agent-session.js';
+import {
+  AgentSession,
+  type AgentSessionSendControl,
+  type AgentSessionSendResult,
+} from '../../session/agent-session.js';
 import { SessionRuntime } from '../../session/runtime.js';
 import { createInteractiveAgentSession } from '../../session/interactive-session.js';
+import type { AgentCompletionNotification } from '../../agents/types.js';
+import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
 
 const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
 import { createMessageAccumulator } from './message-accumulator.js';
 import type { MessageAccumulator } from './message-accumulator.js';
+
+export function didSendMessageComplete(result: AgentSessionSendResult): boolean {
+  return result.status === 'completed';
+}
 
 export interface UseAgentSessionOptions extends SessionBootstrap {
   store?: SessionStoreInterface;
@@ -152,6 +162,12 @@ function withoutRuntimeState(config: AgentConfig): AgentConfig {
   return { ...config };
 }
 
+interface SendMessageOptions {
+  contextMessage?: string;
+  kind?: Message['kind'];
+  agentNotifications?: Message['agentNotifications'];
+}
+
 export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const initialTranscript = session.transcript ?? session.history;
   const initialContext = session.contextHistory ?? session.history;
@@ -205,7 +221,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const messagesRef = useRef<Message[]>(initialTranscript);
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
+  const sessionNameRef = useRef(session.sessionName);
   const sessionGenerationRef = useRef(0);
+  const modeRef = useRef(mode);
   const liveConfigRef = useRef(liveConfig);
   const localProviderOwnershipRef = useRef(localProviderOwnership);
   const turnStartRef = useRef(Date.now());
@@ -226,6 +244,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   useEffect(() => {
     liveConfigRef.current = liveConfig;
   }, [liveConfig]);
+
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   useEffect(() => {
     localProviderOwnershipRef.current = localProviderOwnership;
@@ -333,6 +355,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       targets: RewindTarget[] = [],
     ) => {
       sessionIdRef.current = nextId;
+      sessionNameRef.current = nextName;
       messagesRef.current = transcript;
       contextHistoryRef.current = contextHistory;
       streamingIdRef.current = null;
@@ -466,8 +489,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [],
   );
 
-  const send = useCallback(
-    async (userMessage: string, commandContext?: CommandContext) => {
+  const sendMessage = useCallback(
+    async (
+      userMessage: string,
+      commandContext?: CommandContext,
+      messageOptions?: SendMessageOptions,
+    ): Promise<boolean> => {
       setCompactUi(null);
 
       const generation = sessionGenerationRef.current;
@@ -481,13 +508,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
       log.info('send message', {
         len: userMessage.length,
-        mode,
+        mode: modeRef.current,
         hasCommandContext: !!commandContext,
         sessionId: activeSessionId,
       });
       uiLog.event('send:start', {
         len: userMessage.length,
-        mode,
+        mode: modeRef.current,
         hasCommandContext: !!commandContext,
       });
 
@@ -522,7 +549,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               options: {
                 trigger: 'auto',
                 preContextTokens: usagePressureTokens(hostUsageRef.current),
-                upcomingUserIntent: userMessage,
+                upcomingUserIntent: messageOptions?.contextMessage ?? userMessage,
               },
             });
             const autoResult = autoOutcome.result;
@@ -555,8 +582,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       };
 
       const createUserMessage = () => {
-        const message = makeMessage('user', userMessage, undefined, true);
-        message.kind = 'conversation';
+        const message = makeMessage('user', userMessage, messageOptions?.contextMessage, true);
+        message.kind = messageOptions?.kind ?? 'conversation';
+        message.agentNotifications = messageOptions?.agentNotifications;
         activeUserMessage = message;
         return message;
       };
@@ -596,6 +624,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const projectPreparedSend = (
         prepared: Extract<Awaited<ReturnType<AgentSession['prepareSend']>>, { status: 'prepared' }>,
       ) => {
+        if (prepared.sessionName !== sessionNameRef.current) {
+          sessionNameRef.current = prepared.sessionName;
+          setSessionName(prepared.sessionName);
+        }
         setRewindTargets((current) => [prepared.rewindTarget, ...current]);
         activeAccumulator = createMessageAccumulator(placeholder!.id, setMessages, messagesRef, 16);
         accumulatorRef.current = activeAccumulator;
@@ -606,10 +638,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const sendResult = await agentSession.send({
         config: liveConfig,
         displayMessage: userMessage,
+        contextMessage: messageOptions?.contextMessage,
         createUserMessage,
         history: () => contextHistoryRef.current,
-        mode,
+        mode: modeRef.current,
         sessionId: activeSessionId,
+        sessionName: sessionNameRef.current,
         snapshotStore: session.snapshotStore,
         timelineStore,
         registryStore: timelineStore,
@@ -673,8 +707,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             lastHostCompactAttemptRef.current = null;
             setUsage(u);
           },
+          getMode: () => modeRef.current,
           onModeChange: (newMode: PermissionMode) => {
-            if (stillCurrent()) setMode(newMode);
+            if (!stillCurrent()) return;
+            modeRef.current = newMode;
+            setMode(newMode);
           },
           onCompact: async (history, usage) => {
             if (!stillCurrent()) {
@@ -682,37 +719,41 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             }
             // Flush display accumulator so it cannot overwrite a replacement.
             activeAccumulator?.stop();
-            const outcome = await agentSession.compact({
-              config: liveConfigRef.current,
-              history,
-              sessionId: activeSessionId,
-              transcriptOrdinal: messagesRef.current.length,
-              timelineStore,
-              isCurrent: stillCurrent,
-              onCommitted: projectCompactResult,
-              options: {
-                trigger: 'auto',
-                preContextTokens: usagePressureTokens(usage),
-              },
-            });
-            const result = outcome.result;
-            if (!stillCurrent()) return result;
-            if (result.status === 'compacted' && outcome.boundary) {
-              setCompactUi({
-                phase: 'diff',
-                trigger: 'auto',
-                preMessages: result.preMessageCount,
-                preContextTokens: result.preContextTokens,
-                message: result.degraded
-                  ? 'Conversation compacted with reduced fidelity'
-                  : 'Conversation compacted',
-                degraded: result.degraded,
-                warning: result.warning,
-                strategy: result.strategy,
-                modelCalls: result.modelCalls,
+            try {
+              const outcome = await agentSession.compact({
+                config: liveConfigRef.current,
+                history,
+                sessionId: activeSessionId,
+                transcriptOrdinal: messagesRef.current.length,
+                timelineStore,
+                isCurrent: stillCurrent,
+                onCommitted: projectCompactResult,
+                options: {
+                  trigger: 'auto',
+                  preContextTokens: usage ? usagePressureTokens(usage) : undefined,
+                },
               });
+              const result = outcome.result;
+              if (!stillCurrent()) return result;
+              if (result.status === 'compacted' && outcome.boundary) {
+                setCompactUi({
+                  phase: 'diff',
+                  trigger: 'auto',
+                  preMessages: result.preMessageCount,
+                  preContextTokens: result.preContextTokens,
+                  message: result.degraded
+                    ? 'Conversation compacted with reduced fidelity'
+                    : 'Conversation compacted',
+                  degraded: result.degraded,
+                  warning: result.warning,
+                  strategy: result.strategy,
+                  modelCalls: result.modelCalls,
+                });
+              }
+              return result;
+            } finally {
+              if (stillCurrent()) activeAccumulator?.start();
             }
-            return result;
           },
           onRetry: (phase, attempt, max, delayMs) => {
             if (!stillCurrent()) return;
@@ -783,7 +824,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           reason: sendResult.activeKind === 'compact' ? 'compacting' : 'already-in-flight',
           len: userMessage.length,
         });
-        return;
+        return false;
       }
       if (hostStillCurrent && sendResult.status === 'completed') {
         // Nested tool traces remain display-only; the returned history is provider context.
@@ -811,10 +852,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         setStreamingMessageId(null);
       }
       uiLog.event('send:finally', { durationMs: Date.now() - turnStartRef.current });
+      return didSendMessageComplete(sendResult);
     },
     [
       liveConfig,
-      mode,
       clearCountdown,
       finalizeStreamingMessages,
       timelineStore,
@@ -822,6 +863,37 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       session.snapshotStore,
       agentSession,
     ],
+  );
+
+  const send = useCallback(
+    async (userMessage: string, commandContext?: CommandContext) => {
+      await sendMessage(userMessage, commandContext);
+    },
+    [sendMessage],
+  );
+
+  const sendAgentCompletions = useCallback(
+    async (notifications: AgentCompletionNotification[]): Promise<boolean> => {
+      if (notifications.length === 0) return false;
+      const recordedDeliveryIds = new Set(
+        messagesRef.current.flatMap((message) =>
+          (message.agentNotifications ?? [])
+            .map((notification) => notification.deliveryId)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      );
+      const fresh = notifications.filter(
+        (notification) => !recordedDeliveryIds.has(notification.deliveryId),
+      );
+      if (fresh.length === 0) return true;
+      const built = fresh.map(buildAgentCompletionMessage);
+      return sendMessage(built.map((item) => item.displayMessage).join('\n'), undefined, {
+        contextMessage: built.map((item) => item.contextMessage).join('\n'),
+        kind: 'agent-notification',
+        agentNotifications: built.map((item) => item.display),
+      });
+    },
+    [sendMessage],
   );
 
   const resolvePermission = useCallback(
@@ -1123,10 +1195,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       'dontAsk',
       'bypassPermissions',
     ];
-    setMode((prev) => {
-      const idx = modes.indexOf(prev);
-      return modes[(idx + 1) % modes.length];
-    });
+    const idx = modes.indexOf(modeRef.current);
+    const nextMode = modes[(idx + 1) % modes.length];
+    modeRef.current = nextMode;
+    setMode(nextMode);
   }, []);
 
   // Surface a local-only assistant message WITHOUT an agent round-trip.
@@ -1373,6 +1445,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     sessionId,
     sessionName,
     send,
+    sendAgentCompletions,
     clear,
     startNewConversation,
     resumeConversation,

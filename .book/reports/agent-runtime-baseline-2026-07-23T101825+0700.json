@@ -1,0 +1,645 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-07-23T10:18:25.5134932+07:00",
+  "privacy": "Prompts, transcripts, results, evidence bodies, and raw errors are excluded.",
+  "workspace": {
+    "root": "I:\\MyProject\\02-AI-ML-Projects\\book",
+    "repoHash": "075ef1f9a5ef71e2f8b6",
+    "branch": "main",
+    "head": "c603837616a49aa2009413297bef43be11a1ffef",
+    "dirtyPathCount": 27,
+    "hasManagedAgentState": false
+  },
+  "summary": {
+    "active": 1,
+    "queued": 0,
+    "starting": 0,
+    "running": 1,
+    "waitingInput": 0,
+    "waitingPermission": 0,
+    "persistedAgents": 15,
+    "completed": 8,
+    "failed": 5,
+    "interrupted": 1,
+    "totalTokens": 8914149,
+    "telemetryEvents": 30,
+    "duplicateTerminalEvents": 3
+  },
+  "statusCounts": {
+    "completed": 8,
+    "failed": 5,
+    "running": 1,
+    "interrupted": 1
+  },
+  "roleCounts": {
+    "explorer": 13,
+    "patcher": 1,
+    "validator": 1
+  },
+  "modelCounts": {
+    "unknown": 1,
+    "9router/qc/glm-5.2": 7,
+    "9router/cx/gpt-5.6-sol": 7
+  },
+  "errorCounts": {
+    "http_413_request_too_large": 4,
+    "other": 1,
+    "stream_stall": 1
+  },
+  "telemetryEventCounts": {
+    "complete": 11,
+    "explorer_spawned": 11,
+    "failed": 6,
+    "explore_reminder": 2
+  },
+  "stores": [
+    {
+      "repoHash": "345a79909f1b069eec35",
+      "hasState": true,
+      "agentCount": 6,
+      "activeCount": 1,
+      "statusCounts": {
+        "completed": 1,
+        "failed": 4,
+        "running": 1
+      },
+      "roleCounts": {
+        "explorer": 6
+      },
+      "modelCounts": {
+        "unknown": 1,
+        "9router/qc/glm-5.2": 5
+      },
+      "totalTokens": 1907557,
+      "meanDurationMs": 79975.0,
+      "maxDurationMs": 136576.0,
+      "metricsEvents": 11,
+      "stateBytes": 10996427,
+      "metricsBytes": 2005,
+      "planCount": 7,
+      "evidenceCount": 1,
+      "snapshotCount": 1
+    },
+    {
+      "repoHash": "6d77da052a773bf0347a",
+      "hasState": true,
+      "agentCount": 9,
+      "activeCount": 0,
+      "statusCounts": {
+        "completed": 7,
+        "interrupted": 1,
+        "failed": 1
+      },
+      "roleCounts": {
+        "explorer": 7,
+        "patcher": 1,
+        "validator": 1
+      },
+      "modelCounts": {
+        "9router/cx/gpt-5.6-sol": 7,
+        "9router/qc/glm-5.2": 2
+      },
+      "totalTokens": 7006592,
+      "meanDurationMs": 6279642.0,
+      "maxDurationMs": 54129651.0,
+      "metricsEvents": 19,
+      "stateBytes": 8022019,
+      "metricsBytes": 3635,
+      "planCount": 12,
+      "evidenceCount": 1,
+      "snapshotCount": 1
+    },
+    {
+      "repoHash": "ab12381cdf261e5ef6c8",
+      "hasState": false
+    },
+    {
+      "repoHash": "dd5416a00bf16a495221",
+      "hasState": false
+    },
+    {
+      "repoHash": "edf5fdfec7d4e4ff424c",
+      "hasState": false
+    },
+    {
+      "repoHash": "fb7e54d0b26543c9bbda",
+      "hasState": false
+    }
+  ],
+  "agents": [
+    {
+      "repoHash": "345a79909f1b069eec35",
+      "agentId": "3b352214-9b83-443c-bb1a-bf1f46845912",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "completed",
+      "model": "unknown",
+      "provider": null,
+      "isolation": "worktree",
+      "totalTokens": 15399,
+      "createdAt": 1784598711005,
+      "startedAt": 1784598711007,
+      "updatedAt": 1784598747200,
+      "finishedAt": 1784598747200,
+      "durationMs": 36193,
+      "activityKind": null,
+      "errorClass": null
+    },
+    {
+      "repoHash": "345a79909f1b069eec35",
+      "agentId": "c2e7b9af-32f2-4f78-bc4e-96b927b54707",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "failed",
+      "model": "9router/qc/glm-5.2",
+      "provider": "9router",
+      "isolation": "workspace-readonly",
+      "totalTokens": 102913,
+      "createdAt": 1784775660390,
+      "startedAt": 1784775660394,
+      "updatedAt": 1784775796970,
+      "finishedAt": 1784775796970,
+      "durationMs": 136576,
+      "activityKind": null,
+      "errorClass": "http_413_request_too_large"
+    },
+    {
+      "repoHash": "345a79909f1b069eec35",
+      "agentId": "33cf6324-d689-4154-981f-a2ced0c62fff",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "failed",
+      "model": "9router/qc/glm-5.2",
+      "provider": "9router",
+      "isolation": "workspace-readonly",
+      "totalTokens": 90481,
+      "createdAt": 1784775660525,
+      "startedAt": 1784775660528,
+      "updatedAt": 1784775773071,
+      "finishedAt": 1784775773071,
+      "durationMs": 112543,
+      "activityKind": null,
+      "errorClass": "http_413_request_too_large"
+    },
+    {
+      "repoHash": "345a79909f1b069eec35",
+      "agentId": "d9dfc3ba-19d9-4c35-ac68-57e9afc5c568",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "failed",
+      "model": "9router/qc/glm-5.2",
+      "provider": "9router",
+      "isolation": "workspace-readonly",
+      "totalTokens": 226419,
+      "createdAt": 1784775660548,
+      "startedAt": 1784775660551,
+      "updatedAt": 1784775774377,
+      "finishedAt": 1784775774377,
+      "durationMs": 113826,
+      "activityKind": null,
+      "errorClass": "http_413_request_too_large"
+    },
+    {
+      "repoHash": "345a79909f1b069eec35",
+      "agentId": "e29c6beb-329b-44d8-8dce-1af4fc9581b3",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "failed",
+      "model": "9router/qc/glm-5.2",
+      "provider": "9router",
+      "isolation": "workspace-readonly",
+      "totalTokens": null,
+      "createdAt": 1784775660571,
+      "startedAt": 1784775773155,
+      "updatedAt": 1784775773890,
+      "finishedAt": 1784775773890,
+      "durationMs": 735,
+      "activityKind": null,
+      "errorClass": "http_413_request_too_large"
+    },
+    {
+      "repoHash": "345a79909f1b069eec35",
+      "agentId": "554b6c17-4d2d-4d36-b029-1b67fdf7bdcc",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "running",
+      "model": "9router/qc/glm-5.2",
+      "provider": "9router",
+      "isolation": "workspace-readonly",
+      "totalTokens": 1472345,
+      "createdAt": 1784776234138,
+      "startedAt": 1784776234194,
+      "updatedAt": 1784776670450,
+      "finishedAt": null,
+      "durationMs": null,
+      "activityKind": "thinking",
+      "errorClass": null
+    },
+    {
+      "repoHash": "6d77da052a773bf0347a",
+      "agentId": "57e039fd-cebc-4fd7-b100-5d6839a6fa49",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "completed",
+      "model": "9router/cx/gpt-5.6-sol",
+      "provider": "9router",
+      "isolation": "workspace-readonly",
+      "totalTokens": 1457537,
+      "createdAt": 1784697950424,
+      "startedAt": 1784697950426,
+      "updatedAt": 1784698260145,
+      "finishedAt": 1784698260145,
+      "durationMs": 309719,
+      "activityKind": null,
+      "errorClass": "other"
+    },
+    {
+      "repoHash": "6d77da052a773bf0347a",
+      "agentId": "03924c83-5313-460d-8089-dd22ee7cd334",
+      "profile": "patcher",
+      "role": "patcher",
+      "status": "completed",
+      "model": "9router/cx/gpt-5.6-sol",
+      "provider": "9router",
+      "isolation": "worktree",
+      "totalTokens": 1871871,
+      "createdAt": 1784698922821,
+      "startedAt": 1784698922830,
+      "updatedAt": 1784699287532,
+      "finishedAt": 1784699287531,
+      "durationMs": 364701,
+      "activityKind": null,
+      "errorClass": null
+    },
+    {
+      "repoHash": "6d77da052a773bf0347a",
+      "agentId": "97d2c5ae-8f37-4abf-823e-7378ae2be85f",
+      "profile": "validator",
+      "role": "validator",
+      "status": "completed",
+      "model": "9router/cx/gpt-5.6-sol",
+      "provider": "9router",
+      "isolation": "worktree",
+      "totalTokens": 1154027,
+      "createdAt": 1784698928905,
+      "startedAt": 1784698928914,
+      "updatedAt": 1784699402551,
+      "finishedAt": 1784699402551,
+      "durationMs": 473637,
+      "activityKind": null,
+      "errorClass": null
+    },
+    {
+      "repoHash": "6d77da052a773bf0347a",
+      "agentId": "13e961d3-6b24-440c-8cbb-5710fa3148c0",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "completed",
+      "model": "9router/cx/gpt-5.6-sol",
+      "provider": "9router",
+      "isolation": "workspace-readonly",
+      "totalTokens": 814422,
+      "createdAt": 1784701579335,
+      "startedAt": 1784701579351,
+      "updatedAt": 1784701817289,
+      "finishedAt": 1784701817289,
+      "durationMs": 237938,
+      "activityKind": null,
+      "errorClass": null
+    },
+    {
+      "repoHash": "6d77da052a773bf0347a",
+      "agentId": "c6cdc4a7-291e-4503-bee1-459418e9caa4",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "completed",
+      "model": "9router/cx/gpt-5.6-sol",
+      "provider": "9router",
+      "isolation": "workspace-readonly",
+      "totalTokens": 457269,
+      "createdAt": 1784705512186,
+      "startedAt": 1784705512207,
+      "updatedAt": 1784705639367,
+      "finishedAt": 1784705639367,
+      "durationMs": 127160,
+      "activityKind": null,
+      "errorClass": null
+    },
+    {
+      "repoHash": "6d77da052a773bf0347a",
+      "agentId": "849d18d0-a374-45fd-af5d-8f3d9ce0e5f5",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "completed",
+      "model": "9router/cx/gpt-5.6-sol",
+      "provider": "9router",
+      "isolation": "workspace-readonly",
+      "totalTokens": 729126,
+      "createdAt": 1784711488534,
+      "startedAt": 1784711488560,
+      "updatedAt": 1784711747267,
+      "finishedAt": 1784711747267,
+      "durationMs": 258707,
+      "activityKind": null,
+      "errorClass": null
+    },
+    {
+      "repoHash": "6d77da052a773bf0347a",
+      "agentId": "d82926e5-1933-437e-a5a0-61f75e9bc8f9",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "interrupted",
+      "model": "9router/cx/gpt-5.6-sol",
+      "provider": "9router",
+      "isolation": "workspace-readonly",
+      "totalTokens": 155109,
+      "createdAt": 1784714860188,
+      "startedAt": 1784714860221,
+      "updatedAt": 1784768989872,
+      "finishedAt": 1784768989872,
+      "durationMs": 54129651,
+      "activityKind": "thinking",
+      "errorClass": null
+    },
+    {
+      "repoHash": "6d77da052a773bf0347a",
+      "agentId": "f141d75c-eca9-44c4-9fb3-59e7aa7325c0",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "completed",
+      "model": "9router/qc/glm-5.2",
+      "provider": "9router",
+      "isolation": "workspace-readonly",
+      "totalTokens": 162043,
+      "createdAt": 1784770076575,
+      "startedAt": 1784770076610,
+      "updatedAt": 1784770436242,
+      "finishedAt": 1784770436242,
+      "durationMs": 359632,
+      "activityKind": null,
+      "errorClass": null
+    },
+    {
+      "repoHash": "6d77da052a773bf0347a",
+      "agentId": "9b58f46b-5f00-4895-9863-4831245e23a2",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "failed",
+      "model": "9router/qc/glm-5.2",
+      "provider": "9router",
+      "isolation": "workspace-readonly",
+      "totalTokens": 205188,
+      "createdAt": 1784770884787,
+      "startedAt": 1784770884826,
+      "updatedAt": 1784771140455,
+      "finishedAt": 1784771140455,
+      "durationMs": 255629,
+      "activityKind": null,
+      "errorClass": "stream_stall"
+    }
+  ],
+  "activeAgents": [
+    {
+      "repoHash": "345a79909f1b069eec35",
+      "agentId": "554b6c17-4d2d-4d36-b029-1b67fdf7bdcc",
+      "profile": "explorer",
+      "role": "explorer",
+      "status": "running",
+      "model": "9router/qc/glm-5.2",
+      "provider": "9router",
+      "isolation": "workspace-readonly",
+      "totalTokens": 1472345,
+      "createdAt": 1784776234138,
+      "startedAt": 1784776234194,
+      "updatedAt": 1784776670450,
+      "finishedAt": null,
+      "durationMs": null,
+      "activityKind": "thinking",
+      "errorClass": null
+    }
+  ],
+  "debugLog": {
+    "path": "I:\\MyProject\\02-AI-ML-Projects\\book\\.book\\debug.log",
+    "bytes": 23879562,
+    "lastWriteTime": "2026-07-23T10:16:15.2875475+07:00",
+    "latestUsageInTail": {
+      "promptTokens": 21696,
+      "completionTokens": 132,
+      "totalTokens": 21828
+    },
+    "latestAgentDurationMsInTail": 8566,
+    "latestStatusTokenCountInTail": 0,
+    "caveat": "The append-only log can interleave live sessions and tests."
+  },
+  "processAttributionCaveat": "Generic Node processes cannot be reliably attributed without command-line access.",
+  "processGroups": [
+    {
+      "name": "codex",
+      "count": 2,
+      "cpuSeconds": 45.48,
+      "workingSetBytes": 295043072
+    },
+    {
+      "name": "codex-code-mode-host",
+      "count": 2,
+      "cpuSeconds": 0.38,
+      "workingSetBytes": 34144256
+    },
+    {
+      "name": "codex-command-runner-0.145.0",
+      "count": 1,
+      "cpuSeconds": 0.02,
+      "workingSetBytes": 10203136
+    },
+    {
+      "name": "node",
+      "count": 15,
+      "cpuSeconds": 697.04,
+      "workingSetBytes": 3206017024
+    },
+    {
+      "name": "node_repl",
+      "count": 2,
+      "cpuSeconds": 0.03,
+      "workingSetBytes": 20099072
+    }
+  ],
+  "processes": [
+    {
+      "pid": 6552,
+      "name": "codex",
+      "cpuSeconds": 34.7,
+      "workingSetBytes": 155099136,
+      "startedAt": "2026-07-23T10:02:55.6242206+07:00",
+      "path": "I:\\Tools\\npm-global\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe"
+    },
+    {
+      "pid": 25156,
+      "name": "codex",
+      "cpuSeconds": 10.78,
+      "workingSetBytes": 139943936,
+      "startedAt": "2026-07-23T10:13:20.8701895+07:00",
+      "path": "I:\\Tools\\npm-global\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe"
+    },
+    {
+      "pid": 2384,
+      "name": "codex-code-mode-host",
+      "cpuSeconds": 0.08,
+      "workingSetBytes": 16617472,
+      "startedAt": "2026-07-23T10:14:04.8217941+07:00",
+      "path": "I:\\Tools\\npm-global\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex-code-mode-host.exe"
+    },
+    {
+      "pid": 28920,
+      "name": "codex-code-mode-host",
+      "cpuSeconds": 0.3,
+      "workingSetBytes": 17526784,
+      "startedAt": "2026-07-23T10:06:22.0932340+07:00",
+      "path": "I:\\Tools\\npm-global\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex-code-mode-host.exe"
+    },
+    {
+      "pid": 2632,
+      "name": "codex-command-runner-0.145.0",
+      "cpuSeconds": 0.02,
+      "workingSetBytes": 10203136,
+      "startedAt": "2026-07-23T10:18:24.0507046+07:00",
+      "path": "C:\\Users\\ADMIN\\.codex\\.sandbox-bin\\codex-command-runner-0.145.0.exe"
+    },
+    {
+      "pid": 9200,
+      "name": "node",
+      "cpuSeconds": 1.27,
+      "workingSetBytes": 98295808,
+      "startedAt": "2026-07-23T10:02:59.2318116+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 9500,
+      "name": "node",
+      "cpuSeconds": 192.22,
+      "workingSetBytes": 588574720,
+      "startedAt": "2026-07-23T09:57:08.7148782+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 9612,
+      "name": "node",
+      "cpuSeconds": 27.28,
+      "workingSetBytes": 303718400,
+      "startedAt": "2026-07-23T09:25:51.6903493+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 10936,
+      "name": "node",
+      "cpuSeconds": 2.83,
+      "workingSetBytes": 118013952,
+      "startedAt": "2026-07-23T10:13:21.3807481+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 11188,
+      "name": "node",
+      "cpuSeconds": 0.31,
+      "workingSetBytes": 52486144,
+      "startedAt": "2026-07-23T08:59:37.4515811+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 12684,
+      "name": "node",
+      "cpuSeconds": 1.02,
+      "workingSetBytes": 55304192,
+      "startedAt": "2026-07-23T09:25:50.9349643+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 17256,
+      "name": "node",
+      "cpuSeconds": 0.89,
+      "workingSetBytes": 59686912,
+      "startedAt": "2026-07-23T09:25:50.9442849+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 18100,
+      "name": "node",
+      "cpuSeconds": 0.53,
+      "workingSetBytes": 48467968,
+      "startedAt": "2026-07-23T09:25:52.1734130+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 23100,
+      "name": "node",
+      "cpuSeconds": 1.12,
+      "workingSetBytes": 98848768,
+      "startedAt": "2026-07-23T10:13:23.8685136+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 23312,
+      "name": "node",
+      "cpuSeconds": 425.92,
+      "workingSetBytes": 923340800,
+      "startedAt": "2026-07-23T08:59:39.2588091+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 24000,
+      "name": "node",
+      "cpuSeconds": 2.45,
+      "workingSetBytes": 78131200,
+      "startedAt": "2026-07-23T09:25:51.6770684+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 24432,
+      "name": "node",
+      "cpuSeconds": 3.09,
+      "workingSetBytes": 117960704,
+      "startedAt": "2026-07-23T10:02:56.2799282+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 25292,
+      "name": "node",
+      "cpuSeconds": 0.09,
+      "workingSetBytes": 61566976,
+      "startedAt": "2026-07-23T10:13:20.8270147+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 27808,
+      "name": "node",
+      "cpuSeconds": 37.86,
+      "workingSetBytes": 540180480,
+      "startedAt": "2026-07-23T09:25:50.9052319+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 28180,
+      "name": "node",
+      "cpuSeconds": 0.16,
+      "workingSetBytes": 61440000,
+      "startedAt": "2026-07-23T10:02:55.5767962+07:00",
+      "path": "C:\\Program Files\\nodejs\\node.exe"
+    },
+    {
+      "pid": 10736,
+      "name": "node_repl",
+      "cpuSeconds": 0.0,
+      "workingSetBytes": 10117120,
+      "startedAt": "2026-07-23T10:13:21.2494953+07:00",
+      "path": "C:\\Users\\ADMIN\\AppData\\Local\\OpenAI\\Codex\\runtimes\\cua_node\\03b1cdac8af3a530\\bin\\node_repl.exe"
+    },
+    {
+      "pid": 19904,
+      "name": "node_repl",
+      "cpuSeconds": 0.03,
+      "workingSetBytes": 9981952,
+      "startedAt": "2026-07-23T10:02:56.0993240+07:00",
+      "path": "C:\\Users\\ADMIN\\AppData\\Local\\OpenAI\\Codex\\runtimes\\cua_node\\03b1cdac8af3a530\\bin\\node_repl.exe"
+    }
+  ]
+}

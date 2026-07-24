@@ -6,7 +6,12 @@ import type { UserQuestionHandler } from './types/tools.js';
 import type { AgentConfig } from './types/runtime.js';
 import type { SessionStoreInterface } from './types/sessions.js';
 import type { HeadlessOptions } from './types/public-sdk.js';
-import { freezeAgentConfig, loadConfig, type LoadConfigOptions } from './config.js';
+import {
+  freezeAgentConfig,
+  loadConfig,
+  runConfigMigrations,
+  type LoadConfigOptions,
+} from './config.js';
 import { runHeadless } from './headless.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { connectMcpServers, disconnectMcpServers } from './mcp.js';
@@ -30,6 +35,8 @@ export interface QueryOptions {
   signal?: AbortSignal;
   onUserQuestionRequired?: UserQuestionHandler;
   agents?: 'adaptive' | 'manual' | 'off';
+  /** Forward high-volume managed-agent text deltas. Defaults to false. */
+  forwardSubagentText?: boolean;
 }
 
 class AsyncEventQueue<T> {
@@ -63,6 +70,7 @@ export async function* query(
   options: QueryOptions = {},
 ): AsyncGenerator<QueryEvent, void, undefined> {
   const workspace = options.workspace || process.cwd();
+  if (!options.noSettings) runConfigMigrations(workspace);
   const loadedConfig = loadConfig(workspace, {
     settingsOverridePath: options.settingsPath,
     noSettings: options.noSettings,
@@ -122,13 +130,15 @@ export async function* query(
         sessionCreated: bootstrap.created,
         signal: controller.signal,
         onUserQuestionRequired: options.onUserQuestionRequired,
+        forwardSubagentText: options.forwardSubagentText,
         stdout: { write: () => true },
         onAgentEvent: (event) => {
           if (
             event.type !== 'system' &&
             event.type !== 'session' &&
             event.type !== 'result' &&
-            event.type !== 'done'
+            event.type !== 'done' &&
+            (event.type !== 'agent_text_delta' || options.forwardSubagentText === true)
           ) {
             queue.push(event);
           }
@@ -192,7 +202,13 @@ export type {
   AgentPlanRecord,
   AgentApplyResult,
   AgentRecord,
+  AgentSummary,
+  AgentCompletion,
+  AgentCompletionNotification,
+  AgentProfile,
+  AgentActivity,
   AgentRuntimeEvent,
+  AgentRunMetrics,
   AgentSnapshot,
   AgentSpawnRequest,
   EvidenceItem,

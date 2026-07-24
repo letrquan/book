@@ -18,7 +18,20 @@ export type AgentEvent =
   | { type: 'agent_start'; agent: AgentRecord }
   | { type: 'agent_update'; agent: AgentRecord }
   | { type: 'agent_result'; agent: AgentRecord }
-  | Extract<AgentRuntimeEvent, { type: 'agent_question' | 'agent_apply' }>
+  | Extract<
+      AgentRuntimeEvent,
+      {
+        type:
+          | 'agent_question'
+          | 'agent_apply'
+          | 'agent_status'
+          | 'agent_activity'
+          | 'agent_text_delta'
+          | 'agent_message'
+          | 'agent_completion'
+          | 'agent_permission';
+      }
+    >
   | { type: 'evidence_update'; evidence: EvidenceItem }
   | { type: 'error'; error: string }
   | { type: 'result'; messages: Message[]; usage: Usage | null; sessionId: string }
@@ -100,6 +113,12 @@ export function reduceAgentSessionSnapshot(
       return { ...snapshot, agents: upsertById(snapshot.agents, event.agent) };
     case 'agent_question':
     case 'agent_apply':
+    case 'agent_status':
+    case 'agent_activity':
+    case 'agent_text_delta':
+    case 'agent_message':
+    case 'agent_completion':
+    case 'agent_permission':
       return snapshot;
     case 'evidence_update':
       return { ...snapshot, evidence: upsertById(snapshot.evidence, event.evidence) };

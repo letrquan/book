@@ -60,7 +60,19 @@ export function parseFrontmatter(raw: string): {
       } else {
         // Unquote if quoted.
         const unquoted = value.replace(/^["'](.*)["']$/, '$1');
-        frontmatter[key] = unquoted;
+        if (
+          (key === 'tools' || key === 'allowed-tools') &&
+          unquoted.startsWith('[') &&
+          unquoted.endsWith(']')
+        ) {
+          frontmatter[key] = unquoted
+            .slice(1, -1)
+            .split(',')
+            .map((item) => item.trim().replace(/^["'](.*)["']$/, '$1'))
+            .filter(Boolean);
+        } else {
+          frontmatter[key] = unquoted;
+        }
       }
     }
   }

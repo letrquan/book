@@ -169,27 +169,39 @@ describe('DiffBlock', () => {
     expect(DEFAULT_THEME.diffAdded).toBe('#243326');
   });
 
-  it('uses display-width truncation for long diff lines', () => {
-    const longLine = '+' + 'x'.repeat(160);
+  it('wraps long diff lines without hiding content', () => {
+    const longLine = `+start-${'x'.repeat(70)}-finish`;
+    const width = 40;
     const view = render(
-      withTheme(React.createElement(DiffBlock, { output: `@@ -1 +1 @@\n-old\n${longLine}` })),
+      withTheme(
+        React.createElement(DiffBlock, {
+          output: `@@ -1 +1 @@\n-old\n${longLine}`,
+          terminalWidth: width,
+        }),
+      ),
     );
     const rendered = frame(view.lastFrame);
 
-    expect(rendered).toContain('…');
-    expect(
-      displayWidth(rendered.split('\n').find((part) => part.includes('…')) ?? ''),
-    ).toBeLessThanOrEqual(120);
+    expect(rendered).toContain('start-');
+    expect(rendered).toContain('-finish');
+    expect(rendered).not.toContain('…');
+    for (const line of rendered.split('\n')) expect(displayWidth(line)).toBeLessThanOrEqual(width);
   });
 
   it('honors a narrow terminal width including indentation and prefix', () => {
     const width = 32;
-    const output = `@@ -1 +1 @@\n-${'old'.repeat(30)}\n+${'新🙂'.repeat(30)}`;
+    const output = `@@ -1 +1 @@\n-${'old'.repeat(30)}-removed-end\n+${'新🙂'.repeat(30)}終点🙂`;
     const view = render(
       withTheme(React.createElement(DiffBlock, { output, terminalWidth: width })),
     );
+    const rendered = frame(view.lastFrame);
 
-    for (const line of frame(view.lastFrame).split('\n')) {
+    expect(rendered).toContain('emoved-end');
+    expect(rendered).toContain('終点🙂');
+    expect(rendered).not.toContain('…');
+    expect([...rendered].filter((character) => character === '新')).toHaveLength(30);
+    expect([...rendered].filter((character) => character === '🙂')).toHaveLength(31);
+    for (const line of rendered.split('\n')) {
       expect(displayWidth(line)).toBeLessThanOrEqual(width);
     }
   });
@@ -207,16 +219,32 @@ describe('DiffBlock', () => {
     for (const line of rendered.split('\n')) expect(displayWidth(line)).toBeLessThanOrEqual(width);
   });
 
-  it('applies the expanded row ceiling and reports exact omitted rows', () => {
+  it('renders every row in an expanded diff', () => {
     const changedRows = Array.from({ length: 2100 }, (_, index) => `+line ${index + 1}`);
     const output = ['@@ -0,0 +1,2100 @@', ...changedRows].join('\n');
     const view = render(withTheme(React.createElement(DiffBlock, { output, terminalWidth: 80 })));
     const rendered = frame(view.lastFrame);
 
-    expect(rendered).toContain('101 rows');
-    expect(rendered).toContain('omitted');
-    expect(rendered).not.toContain('+ line 2100');
+    expect(rendered).toContain('+ line 1050');
+    expect(rendered).toContain('+ line 2100');
+    expect(rendered).not.toContain('omitted');
   });
+
+  it('does not truncate expanded diffs by byte size', () => {
+    const changedRows = Array.from(
+      { length: 25 },
+      (_, index) => `+row-${index + 1}-${'x'.repeat(9 * 1024)}`,
+    );
+    const output = ['@@ -0,0 +1,25 @@', ...changedRows].join('\n');
+    const view = render(
+      withTheme(React.createElement(DiffBlock, { output, terminalWidth: 10_000 })),
+    );
+    const rendered = frame(view.lastFrame);
+
+    expect(Buffer.byteLength(output, 'utf8')).toBeGreaterThan(200 * 1024);
+    expect(rendered).toContain('+ row-25-');
+    expect(rendered).not.toContain('omitted');
+  }, 15_000);
 });
 
 describe('inferDiffLanguage', () => {

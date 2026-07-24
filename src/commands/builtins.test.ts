@@ -79,9 +79,13 @@ describe('built-in command contract', () => {
       type: 'add-task',
       subject: 'Investigate failure',
     });
-    expect(registry.execute('agents', '', context())).toEqual({
+    expect(registry.execute('tasks', '', context())).toEqual({
       type: 'managed-agent',
       operation: 'list',
+    });
+    expect(registry.execute('agents', '', context())).toEqual({
+      type: 'local-message',
+      content: expect.stringContaining('/tasks'),
     });
     expect(registry.execute('agent', 'send agent-1 status update', context())).toEqual({
       type: 'managed-agent',

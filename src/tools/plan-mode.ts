@@ -24,6 +24,7 @@ export const READ_ONLY_PLAN_TOOLS = new Set([
   'AskUserQuestion',
   'AgentList',
   'AgentGet',
+  'AgentRead',
   'AgentWait',
   'AgentPlan',
   'AgentSpawn',

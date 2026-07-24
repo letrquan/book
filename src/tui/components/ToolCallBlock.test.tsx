@@ -202,33 +202,24 @@ describe('ToolCallBlock', () => {
     expect(rendered.split('\n')).toHaveLength(1);
   });
 
-  it('renders a bounded expanded file diff preview', () => {
-    const output = [
-      '@@ -1,8 +1,8 @@',
-      '-old 1',
-      '+new 1',
-      '-old 2',
-      '+new 2',
-      '-old 3',
-      '+new 3',
-      '-old 4',
-      '+new 4',
-    ].join('\n');
+  it('renders the complete file diff when the mutation row is expanded', () => {
+    const changedRows = Array.from({ length: 100 }, (_, index) => `+new ${index + 1}`);
+    const output = ['@@ -1 +1,100 @@', '-old', ...changedRows].join('\n');
     const view = render(
       withTheme(
         <ToolCallBlock
           name="Edit"
           args={{
             filePath: 'src/a.ts',
-            oldString: 'old 1',
-            newString: 'new 1',
+            oldString: 'old',
+            newString: changedRows.join('\n'),
             replaceAll: false,
           }}
           result={successResult('call-diff', output, {
             kind: 'update',
             filePath: 'src/a.ts',
-            addedLines: 3,
-            removedLines: 3,
+            addedLines: 100,
+            removedLines: 1,
           })}
           isExpanded
           reducedMotion
@@ -237,8 +228,11 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered).toContain('- old 2');
-    expect(rendered).toContain('- old 4');
+    expect(rendered).toContain('- old');
+    expect(rendered).toContain('+ new 50');
+    expect(rendered).toContain('+ new 100');
+    expect(rendered).not.toContain('rows omitted');
+    expect(rendered).not.toContain('Ctrl+E shows all');
     expect(rendered).not.toContain('filePath:');
     expect(rendered).not.toContain('oldString:');
     expect(rendered).not.toContain('newString:');
@@ -323,6 +317,37 @@ describe('ToolCallBlock', () => {
     expect(rendered).toContain('Create(src/new-file.txt)');
     expect(rendered).toContain('· +2');
     expect(rendered.split('\n')).toHaveLength(1);
+  });
+
+  it('wraps complete created-file diff lines when expanded', () => {
+    const content = `start-${'x'.repeat(80)}-created-end`;
+    const width = 42;
+    const view = render(
+      withTheme(
+        <ToolCallBlock
+          name="Write"
+          args={{ filePath: 'src/new-file.txt' }}
+          result={successResult('call-create-wrap', `@@ -0,0 +1 @@\n+${content}`, {
+            kind: 'create',
+            filePath: 'src/new-file.txt',
+            addedLines: 1,
+            removedLines: 0,
+          })}
+          isExpanded
+          reducedMotion
+          terminalWidth={width}
+        />,
+      ),
+    );
+
+    const rendered = frame(view.lastFrame);
+    expect(rendered).toContain('start-');
+    expect(rendered).toContain('d-end');
+    expect(rendered).not.toContain('…');
+    const diffRows = rendered.split('\n').filter((line) => line.includes('│'));
+    expect(diffRows.join('')).toContain('-create');
+    expect(diffRows.join('').match(/x/g)).toHaveLength(80);
+    for (const line of rendered.split('\n')) expect(displayWidth(line)).toBeLessThanOrEqual(width);
   });
 
   it('renders error messages below the custom file edit block on failure', () => {

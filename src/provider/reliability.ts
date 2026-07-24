@@ -7,6 +7,7 @@ interface RetryLogger {
 export type ProviderErrorCode =
   | 'network'
   | 'timeout'
+  | 'context_overflow'
   | 'rate_limited'
   | 'overloaded'
   | 'server_error'
@@ -20,6 +21,7 @@ export function classifyHttpStatus(status: number): {
   code: ProviderErrorCode;
   retryable: boolean;
 } {
+  if (status === 413) return { code: 'context_overflow', retryable: false };
   if (status === 429) return { code: 'rate_limited', retryable: true };
   if (status === 529) return { code: 'overloaded', retryable: true };
   if (status >= 500 && status < 600) return { code: 'server_error', retryable: true };
@@ -32,10 +34,16 @@ export function classifyHttpStatus(status: number): {
 }
 
 export function formatApiError(status: number, body: string): string {
-  const { code } = classifyHttpStatus(status);
+  const statusCode = classifyHttpStatus(status).code;
+  const code =
+    statusCode === 'bad_request' && isContextOverflowError(body)
+      ? ('context_overflow' as const)
+      : statusCode;
   const detail = safeErrorDetail(body);
   const base = `API Error: ${status}`;
   switch (code) {
+    case 'context_overflow':
+      return `${base} ${detail || 'Input exceeds the model context window.'} Reduce the conversation or tool output and try again.`;
     case 'rate_limited':
       return `${base} ${detail}. This may be a temporary capacity issue. Try again in a moment.`;
     case 'overloaded':
@@ -51,6 +59,30 @@ export function formatApiError(status: number, body: string): string {
     default:
       return `${base} ${detail}`;
   }
+}
+
+/** Detect provider/router responses that mean the input, rather than transport, is too large. */
+export function isContextOverflowError(error: unknown): boolean {
+  const normalized = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    /\b(?:api error:\s*)?413\b/.test(normalized) ||
+    normalized.includes('request entity too large') ||
+    normalized.includes('payload too large') ||
+    normalized.includes('request too large') ||
+    normalized.includes('context_length_exceeded') ||
+    normalized.includes('maximum context length') ||
+    normalized.includes('context window') ||
+    normalized.includes('prompt too long') ||
+    /prompt\s+is\s+too\s+long/.test(normalized) ||
+    /input\s+(?:is\s+)?too\s+long/.test(normalized) ||
+    normalized.includes('too many tokens') ||
+    /input\s+(?:token\s+count\s+)?exceeds?.*(?:context|limit|maximum)/.test(normalized) ||
+    /input\s+exceeds?.*(?:context\s+window|context\s+length|token\s+limit)/.test(normalized) ||
+    /maximum\s+context|context\s+(?:length|window|size).*(?:exceed|overflow|too\s+(?:long|large)|maximum)/.test(
+      normalized,
+    ) ||
+    /too\s+many\s+(?:input\s+)?tokens|request\s+too\s+large.*token/.test(normalized)
+  );
 }
 
 export async function fetchWithRetry(

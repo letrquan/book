@@ -6,6 +6,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeSync,
 } from 'fs';
@@ -33,6 +34,7 @@ export type SettingsMutationResult =
       path: string;
       document: Record<string, unknown>;
       values: Record<string, unknown>;
+      changed: boolean;
     }
   | { ok: false; path: string; diagnostics: SettingsDiagnostic[] };
 
@@ -153,6 +155,53 @@ export class SettingsRepository {
     mutation: (candidate: Record<string, unknown>) => void,
     values: Record<string, unknown>,
   ): SettingsMutationResult {
+    let lock: number | undefined;
+    try {
+      lock = this.acquireLock();
+      return this.mutateLocked(mutation, values);
+    } catch (error) {
+      return {
+        ok: false,
+        path: this.path,
+        diagnostics: [{ path: this.path, message: safeMessage(error) }],
+      };
+    } finally {
+      if (lock !== undefined) this.releaseLock(lock);
+    }
+  }
+
+  private acquireLock(): number {
+    mkdirSync(dirname(this.path), { recursive: true });
+    const lockPath = `${this.path}.lock`;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      try {
+        return openSync(lockPath, 'wx', 0o600);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        try {
+          if (Date.now() - statSync(lockPath).mtimeMs > 10_000) unlinkSync(lockPath);
+        } catch {
+          // Another process may have released or replaced the lock.
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+    }
+    throw new Error(`Timed out waiting for settings lock: ${lockPath}`);
+  }
+
+  private releaseLock(descriptor: number): void {
+    closeSync(descriptor);
+    try {
+      unlinkSync(`${this.path}.lock`);
+    } catch {
+      // A stale-lock recovery may already have removed it.
+    }
+  }
+
+  private mutateLocked(
+    mutation: (candidate: Record<string, unknown>) => void,
+    values: Record<string, unknown>,
+  ): SettingsMutationResult {
     const source = this.read();
     if (source.status === 'malformed' || source.status === 'non-object') {
       return {
@@ -184,11 +233,14 @@ export class SettingsRepository {
     if (diagnostics.length > 0) return { ok: false, path: this.path, diagnostics };
 
     try {
-      this.writeAtomic(this.path, JSON.stringify(candidate, null, 2) + '\n');
+      const changed =
+        source.status !== 'valid' || JSON.stringify(source.document) !== JSON.stringify(candidate);
+      if (changed) this.writeAtomic(this.path, JSON.stringify(candidate, null, 2) + '\n');
       return {
         ok: true,
         path: this.path,
         document: candidate,
+        changed,
         values: Object.fromEntries(
           Object.entries(values).map(([key, value]) => [key, redactSettingValue(key, value)]),
         ),

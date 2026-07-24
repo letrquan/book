@@ -16,12 +16,23 @@ import {
   indexNestedToolInvocations,
   type NestedToolChildren,
 } from '../tool-traces.js';
-import { shouldExpandTool, type TranscriptMode } from '../tool-presentation.js';
+import {
+  getFileMutationDisplaySummary,
+  type FileMutationDisplaySummary,
+} from '../file-mutation-display.js';
+import {
+  shouldDefaultExpandTool,
+  shouldExpandTool,
+  type TranscriptMode,
+} from '../tool-presentation.js';
+import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
+import { ManagedAgentActivityBlock } from './ManagedAgentActivityBlock.js';
 
 const renderLog = createRenderDebugLogger('tui:agentmsg');
 
 interface AgentMessageProps {
   message: Message;
+  managedAgentTraces?: ReadonlyMap<string, ManagedAgentTrace>;
   isStreaming: boolean;
   pendingPermission?: PendingPermissionRequest | null;
   expandedToolCallId?: string | null;
@@ -93,6 +104,7 @@ function NestedToolRows({
             mode: transcriptMode,
             toolId: invocation.traceId,
             automaticToolId: automaticToolCallId,
+            defaultExpanded: shouldDefaultExpandTool(invocation.call.name, invocation.result),
             expansionOverrides: toolExpansionOverrides,
             screenReader,
           })}
@@ -265,6 +277,7 @@ function ThinkBlock({
  */
 export function AgentMessageInner({
   message,
+  managedAgentTraces,
   isStreaming,
   pendingPermission,
   expandedToolCallId,
@@ -285,7 +298,18 @@ export function AgentMessageInner({
 }: AgentMessageProps) {
   const theme = useTheme();
   const { toolRowGap } = useDensityMetrics();
-  const displayContent = isStreaming ? trimPartialClosingFences(message.content) : message.content;
+  const toolCalls = message.toolCalls ?? [];
+  const suppressDelegationNarration = toolCalls.some((call) => {
+    if (call.name !== 'AgentSpawn') return false;
+    const result = message.toolResults?.find((candidate) => candidate.toolCallId === call.id);
+    return !result || result.status === 'success';
+  });
+  // AgentSpawn has its own activity row. Keep the model text in history/context,
+  // but avoid showing duplicated delegation narration in the user transcript.
+  const rawDisplayContent = isStreaming
+    ? trimPartialClosingFences(message.content)
+    : message.content;
+  const displayContent = suppressDelegationNarration ? '' : rawDisplayContent;
 
   renderLog.event('render', {
     id: message.id.slice(-8),
@@ -296,7 +320,6 @@ export function AgentMessageInner({
     retry: retryPhase,
   });
 
-  const toolCalls = message.toolCalls ?? [];
   const childrenByParent = useMemo(
     () => indexNestedToolInvocations(message.nestedToolInvocations ?? []),
     [message.nestedToolInvocations],
@@ -316,12 +339,16 @@ export function AgentMessageInner({
   const contentParts = useMemo(() => splitThinkBlocks(displayContent), [displayContent]);
   const topLevelInvocations = useMemo(
     () =>
-      toolCalls.map((call) => ({
-        id: call.id,
-        name: call.name,
-        call,
-        result: message.toolResults?.find((result) => result.toolCallId === call.id),
-      })),
+      toolCalls.map((call) => {
+        const result = message.toolResults?.find((candidate) => candidate.toolCallId === call.id);
+        return {
+          id: call.id,
+          name: call.name,
+          call,
+          result,
+          mutation: getFileMutationDisplaySummary(call.name, call.arguments, result),
+        };
+      }),
     [message.toolResults, toolCalls],
   );
   const selectedAutomaticToolId = automaticToolCallId ?? expandedToolCallId;
@@ -400,29 +427,84 @@ export function AgentMessageInner({
         const marginTop = index === 0 ? (displayContent ? toolRowGap : 0) : toolRowGap;
         const tc = invocation.call;
         const result = invocation.result;
+        const mutation = invocation.mutation;
+        const previousMutation = topLevelInvocations[index - 1]?.mutation;
+        let mutationGroup:
+          | {
+              summaries: FileMutationDisplaySummary[];
+              fileCount: number;
+              addedLines: number;
+              removedLines: number;
+              createdOnly: boolean;
+            }
+          | undefined;
+        if (mutation && !previousMutation) {
+          const summaries: FileMutationDisplaySummary[] = [];
+          for (let groupIndex = index; groupIndex < topLevelInvocations.length; groupIndex++) {
+            const summary = topLevelInvocations[groupIndex].mutation;
+            if (!summary) break;
+            summaries.push(summary);
+          }
+          mutationGroup = {
+            summaries,
+            fileCount: new Set(summaries.map((summary) => summary.filePath)).size,
+            addedLines: summaries.reduce((total, summary) => total + summary.addedLines, 0),
+            removedLines: summaries.reduce((total, summary) => total + summary.removedLines, 0),
+            createdOnly: summaries.every((summary) => summary.kind === 'create'),
+          };
+        }
         const isPending = pendingPermission?.toolCall.id === tc.id;
+        const managedAgentTrace = managedAgentTraces?.get(tc.id);
         return (
-          <Box key={tc.id || `tool-${index}`} flexDirection="column" marginTop={marginTop}>
-            <ToolCallBlock
-              toolId={tc.id}
-              name={tc.name}
-              args={tc.arguments}
-              result={result}
-              isExpanded={shouldExpandTool({
-                mode: transcriptMode,
-                toolId: tc.id,
-                automaticToolId: selectedAutomaticToolId,
-                expansionOverrides: toolExpansionOverrides,
-                screenReader,
-              })}
-              isPending={isPending}
-              nestedActivityCount={countNestedToolInvocations(childrenByParent, tc.id)}
-              reducedMotion={reducedMotion}
-              screenReader={screenReader}
-              showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(tc.id)}
-              terminalWidth={terminalWidth}
-            />
-            {childrenByParent.has(tc.id) ? (
+          <Box
+            key={tc.id || `tool-${index}`}
+            flexDirection="column"
+            marginTop={mutation && previousMutation ? 0 : marginTop}
+          >
+            {mutationGroup ? (
+              <Box marginLeft={2}>
+                <Text color={theme.success}>• </Text>
+                <Text color={theme.text} bold>
+                  {mutationGroup.createdOnly ? 'Created' : 'Edited'} {mutationGroup.fileCount}{' '}
+                  {mutationGroup.fileCount === 1 ? 'file' : 'files'}
+                </Text>
+                <Text color={theme.subtle}>
+                  {' '}
+                  (+{mutationGroup.addedLines} -{mutationGroup.removedLines})
+                </Text>
+              </Box>
+            ) : null}
+            {managedAgentTrace ? (
+              <ManagedAgentActivityBlock
+                trace={managedAgentTrace}
+                reducedMotion={reducedMotion}
+                screenReader={screenReader}
+                terminalWidth={terminalWidth}
+              />
+            ) : (
+              <ToolCallBlock
+                toolId={tc.id}
+                name={tc.name}
+                args={tc.arguments}
+                result={result}
+                isExpanded={shouldExpandTool({
+                  mode: transcriptMode,
+                  toolId: tc.id,
+                  automaticToolId: selectedAutomaticToolId,
+                  defaultExpanded: shouldDefaultExpandTool(tc.name, result),
+                  expansionOverrides: toolExpansionOverrides,
+                  screenReader,
+                })}
+                isPending={isPending}
+                nestedActivityCount={countNestedToolInvocations(childrenByParent, tc.id)}
+                reducedMotion={reducedMotion}
+                screenReader={screenReader}
+                showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(tc.id)}
+                summaryVariant={mutation ? 'file-child' : 'default'}
+                terminalWidth={terminalWidth}
+              />
+            )}
+            {!managedAgentTrace && childrenByParent.has(tc.id) ? (
               <NestedToolRows
                 childrenByParent={childrenByParent}
                 parentTraceId={tc.id}
@@ -456,6 +538,7 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
   // Fast path: same references for the most common props.
   if (
     prev.isStreaming === next.isStreaming &&
+    prev.managedAgentTraces === next.managedAgentTraces &&
     prev.expandedToolCallId === next.expandedToolCallId &&
     prev.transcriptMode === next.transcriptMode &&
     prev.automaticToolCallId === next.automaticToolCallId &&
