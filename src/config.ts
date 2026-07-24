@@ -9,6 +9,8 @@ import { loadMemoryContext } from './memory-store.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
+/** Conservative per-request output budget when a model provides no metadata. */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 64_000;
 
 const legacyConfigSchema = z.object({
   model: z.string().optional(),
@@ -72,6 +74,11 @@ export interface LoadConfigOptions {
   allowMissingApiKey?: boolean;
 }
 
+export function runConfigMigrations(workspace?: string): boolean {
+  const resolvedWorkspace = workspace || process.env.BOOK_WORKSPACE || process.cwd();
+  return migrateLegacyPermissions(resolvedWorkspace);
+}
+
 export function loadConfig(workspace?: string, options?: LoadConfigOptions): AgentConfig {
   const settingsOverridePath = options?.settingsOverridePath;
   const noSettings = options?.noSettings ?? false;
@@ -85,11 +92,6 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const settings = noSettings
     ? structuredClone(DEFAULT_SETTINGS)
     : resolveSettings(resolvedWorkspace, settingsOverridePath);
-
-  // Migrate any legacy ~/.book/permissions.json rules into .book/settings.local.json.
-  if (!noSettings) {
-    migrateLegacyPermissions(resolvedWorkspace);
-  }
 
   // Resolve retry configuration: env vars take precedence over settings.json.
   const retry: RetryConfig = {
@@ -129,7 +131,8 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
   const defaultApiKey = process.env.BOOK_API_KEY || '';
   const defaultBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl || DEFAULT_OPENAI_BASE_URL;
-  const defaultMaxTokens = envMaxTokens ?? settings.maxTokens ?? legacy?.maxTokens ?? 272_000;
+  const defaultMaxTokens =
+    envMaxTokens ?? settings.maxTokens ?? legacy?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const defaultEffort = validateEffort(process.env.BOOK_EFFORT) || settings.effort || 'high';
   const defaultProvider = validateProvider(process.env.BOOK_PROVIDER) || 'auto';
 

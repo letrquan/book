@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ToolContext } from '../types/tools.js';
 import { createRegistry } from './registry.js';
 import {
   normalizeToolResult,
+  boundToolResultOutput,
   replaceToolResult,
   toolFailure,
   toolResultModelContent,
@@ -55,6 +59,72 @@ describe('ToolResult V2', () => {
     const result = toolSuccess('2 matches', { data: { matches: ['a', 'b'] } });
     expect(toolResultModelContent(result)).toBe('2 matches');
     expect(result.data).toEqual({ matches: ['a', 'b'] });
+  });
+
+  it('bounds oversized output and preserves the complete text as an artifact', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-tool-result-'));
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'book-tool-output-'));
+    const fullOutput = 'large output\n' + 'x'.repeat(80_000);
+    try {
+      const result = await boundToolResultOutput(
+        toolSuccess(fullOutput, { presentation: { details: fullOutput } }),
+        workspace,
+        undefined,
+        artifactRoot,
+      );
+
+      expect(Buffer.byteLength(result.content)).toBeLessThanOrEqual(50 * 1024);
+      expect(result.content).toContain('Full output:');
+      expect(result.presentation?.details).toContain('Full output:');
+      expect(result.artifacts?.outputPath).toContain(artifactRoot.replace(/\\/g, '/'));
+      const outputPath = result.artifacts!.outputPath!;
+      expect(existsSync(outputPath)).toBe(true);
+      expect(readFileSync(outputPath, 'utf8')).toBe(fullOutput);
+      expect(outputPath.startsWith(workspace)).toBe(false);
+      expect(existsSync(join(workspace, '.book', 'tool-output'))).toBe(false);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds a large structured error before model serialization', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-tool-error-'));
+    const message = 'stderr: ' + 'e'.repeat(80_000);
+    try {
+      const result = await boundToolResultOutput(
+        toolFailure(message, { code: 'command_failed' }),
+        workspace,
+        undefined,
+        join(workspace, 'local-tool-output'),
+      );
+
+      expect(Buffer.byteLength(toolResultModelContent(result))).toBeLessThanOrEqual(50 * 1024);
+      expect(result.structuredError?.message).toContain('Output truncated');
+      expect(result.artifacts?.outputPath).toBeTruthy();
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('still clips output when local artifact persistence is unavailable', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-tool-readonly-'));
+    const blocker = join(workspace, 'not-a-directory');
+    writeFileSync(blocker, 'blocker');
+    try {
+      const result = await boundToolResultOutput(
+        toolSuccess('x'.repeat(80_000)),
+        workspace,
+        undefined,
+        blocker,
+      );
+
+      expect(Buffer.byteLength(toolResultModelContent(result))).toBeLessThanOrEqual(50 * 1024);
+      expect(result.content).toContain('Full output unavailable');
+      expect(result.artifacts?.outputPath).toBeUndefined();
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('keeps machine-readable data on failure envelopes', () => {

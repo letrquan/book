@@ -86,10 +86,12 @@ export type BuiltinCommandEffect =
   | { type: 'reload-assets' }
   | {
       type: 'managed-agent';
-      operation: 'list' | 'get' | 'send' | 'stop' | 'apply';
+      operation: 'list' | 'get' | 'send' | 'stop' | 'apply' | 'import';
       agentId?: string;
       message?: string;
       evidenceId?: string;
+      importPath?: string;
+      confirmed?: boolean;
     };
 
 export type BuiltinCommandDefinition = CommandDefinition<
@@ -416,7 +418,27 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   },
   {
     name: 'agents',
-    description: 'List managed agents',
+    description: 'Configure subagents or import agent definitions',
+    argumentHint: '[import [--confirm] <path>]',
+    execute: ({ rawArguments }) => {
+      const parts = rawArguments.split(/\s+/).filter(Boolean);
+      if (parts[0] !== 'import') {
+        return {
+          type: 'local-message',
+          content:
+            'Subagents run from the prompt-adjacent task panel. Use /tasks to inspect them; configure definitions in .book/agents or ~/.book/agents.',
+        };
+      }
+      const confirmed = parts[1] === '--confirm';
+      const importPath = parts.slice(confirmed ? 2 : 1).join(' ');
+      return importPath
+        ? { type: 'managed-agent', operation: 'import', importPath, confirmed }
+        : { type: 'local-message', content: 'Usage: /agents import [--confirm] <path>' };
+    },
+  },
+  {
+    name: 'tasks',
+    description: 'View and manage background subagents in this session',
     execute: () => ({ type: 'managed-agent', operation: 'list' }),
   },
   {

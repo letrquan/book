@@ -1,6 +1,8 @@
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { getOrCreateAgentManager } from '../agents/manager.js';
 import { toolFailure, toolSuccess } from './result.js';
+import { deriveAgentDisplayName } from '../agents/naming.js';
+import { projectAgentCompletion } from '../agents/projections.js';
 
 async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const agentName = args.agent as string;
@@ -31,23 +33,43 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
       eventSink: ctx.onAgentEvent,
       hookEventSink: ctx.onHookEvent,
       runtime: ctx.runtime,
+      permissionMode: ctx.currentMode,
     });
     const spawned = await manager.spawn({
       agent: agentName,
+      description: deriveAgentDisplayName(prompt, agentName),
       prompt,
       parentSessionId: ctx.parentSessionId,
     });
     const completed = await manager.wait(spawned.id);
+    if (['completed', 'failed', 'stopped', 'interrupted'].includes(completed.status)) {
+      await manager.acknowledgeCompletion(`${completed.id}:${completed.completionSequence ?? 0}`);
+    }
+    const projection = projectAgentCompletion(completed);
+    const resultField = completed.status === 'completed' || !completed.error ? 'summary' : 'error';
+    const resultText =
+      resultField === 'summary' ? projection.summary : (projection.error ?? projection.summary);
+    const resultTruncated =
+      resultField === 'summary'
+        ? projection.summaryTruncated
+        : (projection.errorTruncated ?? projection.summaryTruncated);
+    const resultCharacters =
+      resultField === 'summary'
+        ? projection.summaryCharacters
+        : (projection.errorCharacters ?? projection.summaryCharacters);
+    const recovery = resultTruncated
+      ? `\n\n[Result truncated at ${resultText?.length ?? 0} of ${resultCharacters} characters. Use AgentRead with agentId ${completed.id} and field ${resultField}.]`
+      : '';
     if (completed.status !== 'completed') {
-      return toolFailure(completed.error ?? `Subagent ended with status ${completed.status}`, {
-        content: completed.result ?? '',
+      return toolFailure(resultText ?? `Subagent ended with status ${completed.status}`, {
+        content: `${resultText ?? ''}${recovery}`,
         code: 'subagent_failed',
-        data: completed,
+        data: projection,
       });
     }
     return toolSuccess(
-      `## Subagent result: ${completed.name}\n\n${completed.result || '(no output)'}`,
-      { data: completed },
+      `## Subagent result: ${completed.displayName ?? completed.name}\n\n${resultText || '(no output)'}${recovery}`,
+      { data: projection },
     );
   } catch (error) {
     return toolFailure(error instanceof Error ? error.message : String(error));

@@ -145,8 +145,43 @@ describe('ChatPanel Ink rendering', () => {
     const output = frame(view.lastFrame);
     expect(output).toContain('before compact');
     expect(output).toContain('after compact');
-    expect(output).toContain('Context compacted · full transcript retained');
+    expect(output).toContain('✓ Compact conversation');
+    expect(output).not.toContain('context messages');
+    expect(output).not.toContain('recent');
+    expect(output).not.toContain('tokens');
+    expect(output).not.toContain('Context compacted · full transcript retained');
     expect(output).not.toContain('Historical conversation checkpoint');
+  });
+
+  it('keeps automatic child completion notifications out of the visible transcript', () => {
+    const notification: Message = {
+      id: 'notification-1',
+      role: 'user',
+      content: 'Atlas completed: Found three gaps',
+      includeInContext: true,
+      kind: 'agent-notification',
+      agentNotifications: [
+        {
+          agentId: 'atlas',
+          displayName: 'Atlas',
+          status: 'completed',
+          summary: 'Found three gaps',
+          evidenceIds: ['e1'],
+          durationMs: 1200,
+        },
+      ],
+      timestamp: 1,
+    };
+    const visible = msg('assistant-1', 'assistant', 'Here is the explorer report.');
+    const view = render(
+      withTheme(<ChatPanel messages={[notification, visible]} terminalWidth={80} reducedMotion />),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('Here is the explorer report.');
+    expect(output).not.toContain('Agent update');
+    expect(output).not.toContain('Atlas completed');
+    expect(output).not.toContain('Found three gaps');
   });
 
   it('renders a submitted user message, assistant placeholder, then streamed text without overwriting older messages', () => {
@@ -1049,7 +1084,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(frame(view.lastFrame)).toContain('Called slack(post)');
   });
 
-  it('collapses completed file mutation output while keeping diffstats visible', () => {
+  it('expands completed file mutation output by default and preserves manual collapse', () => {
     const diffOutput = ['@@ -1 +1 @@', '-old line', '+new line'].join('\n');
     const messages: Message[] = [
       {
@@ -1074,13 +1109,26 @@ describe('ChatPanel Ink rendering', () => {
     const output = frame(view.lastFrame);
     expect(output).toContain('I will update it.');
     expect(output).toContain('Done.');
-    expect(output).toContain('Update(src/a.ts)');
-    expect(output).toContain('· +1 -1');
-    expect(output).not.toContain('- old line');
-    expect(output).not.toContain('+ new line');
+    expect(output).toContain('Edited 1 file (+1 -1)');
+    expect(output).toContain('└ src/a.ts (+1 -1)');
+    expect(output).toContain('- old line');
+    expect(output).toContain('+ new line');
+
+    view.rerender(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          toolExpansionOverrides={new Map([['call-1', false]])}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+    expect(frame(view.lastFrame)).not.toContain('- old line');
+    expect(frame(view.lastFrame)).not.toContain('+ new line');
   });
 
-  it('collapses an older file preview when a newer non-file tool turn completes', () => {
+  it('keeps an older file preview expanded when a newer non-file tool turn completes', () => {
     const messages: Message[] = [
       {
         ...msg('a1', 'assistant', 'Editing the first file.'),
@@ -1106,9 +1154,74 @@ describe('ChatPanel Ink rendering', () => {
     );
     const output = frame(view.lastFrame);
 
-    expect(output).toContain('Update(src/a.ts)');
-    expect(output).not.toContain('-old marker');
-    expect(output).not.toContain('+new marker');
+    expect(output).toContain('Edited 1 file (+1 -1)');
+    expect(output).toContain('└ src/a.ts (+1 -1)');
+    expect(output).toContain('- old marker');
+    expect(output).toContain('+ new marker');
+  });
+
+  it('shows the complete diff for a default-expanded file mutation', () => {
+    const changedRows = Array.from({ length: 100 }, (_, index) => `+new ${index + 1}`);
+    const message: Message = {
+      ...msg('a1', 'assistant', ''),
+      toolCalls: [{ id: 'edit', name: 'Edit', arguments: { filePath: 'src/a.ts' } }],
+      toolResults: [
+        successResult('edit', ['@@ -1 +1,100 @@', '-old', ...changedRows].join('\n'), {
+          kind: 'update',
+          filePath: 'src/a.ts',
+          addedLines: 100,
+          removedLines: 1,
+        }),
+      ],
+    };
+
+    const view = render(
+      withTheme(<ChatPanel messages={[message]} terminalWidth={100} reducedMotion />),
+    );
+    const output = frame(view.lastFrame);
+
+    expect(output).toContain('Edited 1 file (+100 -1)');
+    expect(output).toContain('└ src/a.ts (+100 -1)');
+    expect(output).toContain('+ new 50');
+    expect(output).toContain('+ new 100');
+    expect(output).not.toContain('rows omitted');
+    expect(output).not.toContain('Ctrl+E shows all');
+  });
+
+  it('groups adjacent mutations into a Codex-style changed-files summary', () => {
+    const message: Message = {
+      ...msg('a1', 'assistant', ''),
+      toolCalls: [
+        { id: 'first', name: 'Edit', arguments: { filePath: 'src/first.ts' } },
+        { id: 'second', name: 'Edit', arguments: { filePath: 'src/second.ts' } },
+      ],
+      toolResults: [
+        successResult('first', '@@ -1 +1,2 @@\n-old first\n+new first\n+extra first', {
+          kind: 'update',
+          filePath: 'src/first.ts',
+          addedLines: 2,
+          removedLines: 1,
+        }),
+        successResult('second', '@@ -1,2 +1 @@\n-old second\n-old extra\n+new second', {
+          kind: 'update',
+          filePath: 'src/second.ts',
+          addedLines: 1,
+          removedLines: 2,
+        }),
+      ],
+    };
+
+    const view = render(
+      withTheme(<ChatPanel messages={[message]} terminalWidth={100} reducedMotion />),
+    );
+    const output = frame(view.lastFrame);
+
+    expect(output).toContain('Edited 2 files (+3 -3)');
+    expect(output).toContain('└ src/first.ts (+2 -1)');
+    expect(output).toContain('└ src/second.ts (+1 -2)');
+    expect(output).toContain('- old first');
+    expect(output).toContain('+ new second');
+    expect(output.match(/Edited 2 files/g)).toHaveLength(1);
   });
 
   it('merges adjacent assistant messages where later has no content (tool-call-only turn)', () => {

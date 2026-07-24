@@ -39,15 +39,19 @@ import {
 } from './agent-events.js';
 import { selectSession, type SessionBootstrap } from './resolve.js';
 import { SessionRuntime, type SessionRuntimeOptions } from './runtime.js';
+import { deriveSessionName } from './name.js';
 
 export type AgentLoopRunner = typeof runAgentLoop;
 type AgentLoopOptions = NonNullable<Parameters<AgentLoopRunner>[6]>;
+type SessionTimelineStore = Pick<SessionStoreInterface, 'append'> &
+  Partial<Pick<SessionStoreInterface, 'patchMeta'>>;
 
 export interface AgentSessionRunCallbacks {
   onEvent: (event: AgentEvent) => void;
   onTurnStart: AgentLoopCallbacks['onTurnStart'];
   onDone?: AgentLoopCallbacks['onDone'];
   onUsage?: AgentLoopCallbacks['onUsage'];
+  getMode?: AgentLoopCallbacks['getMode'];
   onModeChange?: AgentLoopCallbacks['onModeChange'];
   onCompact?: AgentLoopCallbacks['onCompact'];
   onAssistantMessageComplete?: AgentLoopCallbacks['onAssistantMessageComplete'];
@@ -81,9 +85,11 @@ export interface AgentSessionPrepareSendRequest {
   config: AgentConfig;
   sessionId: string;
   displayMessage: string;
+  contextMessage?: string;
   userMessage: Message;
+  sessionName?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
-  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+  timelineStore?: SessionTimelineStore;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
@@ -93,8 +99,10 @@ export interface AgentSessionRecordUserRequest {
   config: AgentConfig;
   sessionId: string;
   displayMessage: string;
+  contextMessage?: string;
   userMessage: Message;
-  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+  sessionName?: string;
+  timelineStore?: SessionTimelineStore;
   expandShellInput?: boolean;
   runtime?: SessionRuntime;
   signal?: AbortSignal;
@@ -109,12 +117,14 @@ export interface AgentSessionSendRequest {
   config: AgentConfig;
   registry?: ToolRegistry;
   displayMessage: string;
+  contextMessage?: string;
   createUserMessage: () => Message;
   history: Message[] | (() => Message[]);
   mode?: PermissionMode;
   sessionId: string;
+  sessionName?: string;
   snapshotStore?: Pick<RewindSnapshotStoreInterface, 'capture' | 'captureAsync'>;
-  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+  timelineStore?: SessionTimelineStore;
   registryStore?: SessionStoreInterface;
   callbacks: AgentSessionRunCallbacks;
   options?: Omit<
@@ -157,7 +167,12 @@ export interface AgentSessionCompactOutcome {
 }
 
 export type AgentSessionPrepareSendResult =
-  | { status: 'prepared'; contextMessage: string; rewindTarget: RewindTarget }
+  | {
+      status: 'prepared';
+      contextMessage: string;
+      rewindTarget: RewindTarget;
+      sessionName: string;
+    }
   | { status: 'cancelled' };
 
 export interface AgentSessionCancelResult {
@@ -262,7 +277,9 @@ export class AgentSession {
           config: request.config,
           sessionId: request.sessionId,
           displayMessage: request.displayMessage,
+          contextMessage: request.contextMessage,
           userMessage,
+          sessionName: request.sessionName,
           snapshotStore: request.snapshotStore,
           timelineStore: request.timelineStore,
           signal: control.signal,
@@ -302,6 +319,8 @@ export class AgentSession {
             userMessageId: userMessage.id,
             userMessageTimestamp: userMessage.timestamp,
             userFileObservations: userMessage.fileObservations,
+            userMessageKind: userMessage.kind,
+            skipUserPromptHooks: userMessage.kind === 'agent-notification',
           },
           signal: control.signal,
           isCurrent: control.isCurrent,
@@ -485,26 +504,32 @@ export class AgentSession {
     } satisfies SessionRecord);
 
     // Expansion follows checkpoint capture so its side effects belong to this rewind boundary.
-    const { contextMessage } = await this.recordUserMessage(request);
+    const { contextMessage, sessionName } = await this.recordUserMessage(request);
 
-    return { status: 'prepared', contextMessage, rewindTarget };
+    return { status: 'prepared', contextMessage, rewindTarget, sessionName };
   }
 
   async recordUserMessage(
     request: AgentSessionRecordUserRequest,
-  ): Promise<{ contextMessage: string }> {
-    const expandedMentions = expandAtMentions(request.displayMessage, request.config.workspace);
+  ): Promise<{ contextMessage: string; sessionName: string }> {
+    const expandedMentions =
+      request.contextMessage === undefined
+        ? expandAtMentions(request.displayMessage, request.config.workspace)
+        : request.contextMessage;
     const contextMessage =
-      request.expandShellInput === false
+      request.contextMessage !== undefined || request.expandShellInput === false
         ? expandedMentions
         : await expandShellCommands(expandedMentions, request.config.workspace, request.signal);
     request.userMessage.contextContent =
       contextMessage === request.displayMessage ? undefined : contextMessage;
-    request.userMessage.fileObservations = collectAtMentionObservations(
-      request.displayMessage,
-      request.config.workspace,
-      request.userMessage.id,
-    );
+    request.userMessage.fileObservations =
+      request.contextMessage === undefined
+        ? collectAtMentionObservations(
+            request.displayMessage,
+            request.config.workspace,
+            request.userMessage.id,
+          )
+        : [];
     const observationLedger = (request.runtime ?? this.runtime).fileObservationLedger;
     for (const observation of request.userMessage.fileObservations) {
       observationLedger.set(observationKey(observation.workspaceId, observation.path), observation);
@@ -517,12 +542,18 @@ export class AgentSession {
         id: request.userMessage.id,
         content: request.displayMessage,
         contextContent: request.userMessage.contextContent,
-        kind: 'conversation',
+        kind: request.userMessage.kind ?? 'conversation',
+        agentNotifications: request.userMessage.agentNotifications,
         fileObservations: request.userMessage.fileObservations,
       },
     } satisfies SessionRecord);
 
-    return { contextMessage };
+    const sessionName = request.sessionName?.trim() || deriveSessionName(request.displayMessage);
+    if (!request.sessionName?.trim()) {
+      request.timelineStore?.patchMeta?.(request.sessionId, { name: sessionName });
+    }
+
+    return { contextMessage, sessionName };
   }
 
   async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {
@@ -645,6 +676,7 @@ export class AgentSession {
             usage = nextUsage;
             callbacks.onUsage?.(nextUsage);
           },
+          getMode: callbacks.getMode,
           onModeChange: callbacks.onModeChange,
           onCompact: callbacks.onCompact,
           onAssistantMessageComplete: (message) => {

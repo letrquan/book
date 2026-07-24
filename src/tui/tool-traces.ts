@@ -1,5 +1,6 @@
 import type { Message } from '../types/messages.js';
 import type { NestedToolInvocation } from '../types/tools.js';
+import { shouldDefaultExpandTool } from './tool-presentation.js';
 
 export type NestedToolChildren = ReadonlyMap<string, readonly NestedToolInvocation[]>;
 
@@ -62,11 +63,32 @@ export function selectLatestToolId(messages: readonly Message[]): string | null 
   return null;
 }
 
+/** Resolve the default expansion state used when the user toggles a tool row. */
+export function shouldDefaultExpandToolId(messages: readonly Message[], toolId: string): boolean {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role !== 'assistant') continue;
+
+    const nested = message.nestedToolInvocations?.find(
+      (invocation) => invocation.traceId === toolId,
+    );
+    if (nested) return shouldDefaultExpandTool(nested.call.name, nested.result);
+
+    const call = message.toolCalls?.find((candidate) => candidate.id === toolId);
+    if (call) {
+      const result = message.toolResults?.find((candidate) => candidate.toolCallId === toolId);
+      return shouldDefaultExpandTool(call.name, result);
+    }
+  }
+
+  return false;
+}
+
 /**
  * Select the one tool row whose body should be visible in the transcript.
  *
- * Only unfinished invocations expand automatically. Completed output remains
- * available through explicit expansion or detailed transcript mode.
+ * This selects the latest unfinished invocation. Completed file mutations use
+ * the separate default-expansion policy in tool-presentation.
  */
 export function selectExpandedToolId(messages: readonly Message[]): string | null {
   for (let index = messages.length - 1; index >= 0; index--) {

@@ -25,7 +25,7 @@
  *   log.debug('Sending request', { model: 'gpt-4' });
  */
 
-import { appendFileSync, mkdirSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'fs';
 import { dirname, join } from 'path';
 
 // Core flag — provider, agent loop, and TUI lifecycle.
@@ -39,6 +39,35 @@ const RENDER_DEBUG_ENABLED = process.env.BOOK_DEBUG_RENDER === '1';
 const FLOW_DEBUG_ENABLED = process.env.BOOK_DEBUG_FLOW === '1';
 
 let debugLogPath: string | undefined;
+const debugLogSizes = new Map<string, number>();
+const DEFAULT_DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024;
+const DEFAULT_DEBUG_LOG_BACKUPS = 3;
+
+function positiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function rotateDebugLog(target: string, incomingBytes: number): void {
+  if (!existsSync(target)) {
+    debugLogSizes.set(target, 0);
+    return;
+  }
+  const maxBytes = positiveInteger(process.env.BOOK_DEBUG_MAX_BYTES, DEFAULT_DEBUG_LOG_MAX_BYTES);
+  const currentBytes = debugLogSizes.get(target) ?? statSync(target).size;
+  debugLogSizes.set(target, currentBytes);
+  if (currentBytes + incomingBytes <= maxBytes) return;
+
+  const backups = positiveInteger(process.env.BOOK_DEBUG_BACKUPS, DEFAULT_DEBUG_LOG_BACKUPS);
+  const oldest = `${target}.${backups}`;
+  if (existsSync(oldest)) unlinkSync(oldest);
+  for (let index = backups - 1; index >= 1; index--) {
+    const source = `${target}.${index}`;
+    if (existsSync(source)) renameSync(source, `${target}.${index + 1}`);
+  }
+  renameSync(target, `${target}.1`);
+  debugLogSizes.set(target, 0);
+}
 
 function defaultDebugLogPath(): string {
   return join(process.env.BOOK_WORKSPACE || process.cwd(), '.book', 'debug.log');
@@ -60,7 +89,10 @@ function writeDebugLine(line: string): void {
 
   try {
     mkdirSync(dirname(target), { recursive: true });
+    const lineBytes = Buffer.byteLength(line);
+    rotateDebugLog(target, lineBytes);
     appendFileSync(target, line, 'utf8');
+    debugLogSizes.set(target, (debugLogSizes.get(target) ?? 0) + lineBytes);
   } catch {
     process.stderr.write(line);
   }

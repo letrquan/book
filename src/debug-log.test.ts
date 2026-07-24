@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -83,5 +83,23 @@ describe('debug logger output target', () => {
     createDebugLogger('test').warn('hello');
 
     expect(readFileSync(logPath, 'utf8')).toContain('[test] [WARN] hello');
+  });
+
+  it('rotates bounded debug logs before appending more output', async () => {
+    const logPath = join(tempDir(), 'bounded-debug.log');
+    vi.stubEnv('BOOK_DEBUG', '1');
+    vi.stubEnv('BOOK_DEBUG_FILE', logPath);
+    vi.stubEnv('BOOK_DEBUG_MAX_BYTES', '120');
+    vi.stubEnv('BOOK_DEBUG_BACKUPS', '2');
+    setStderrIsTTY(true);
+
+    const { createDebugLogger } = await import('./debug-log.js');
+    const logger = createDebugLogger('rotation');
+    logger.debug('a'.repeat(80));
+    logger.debug('b'.repeat(80));
+
+    expect(existsSync(`${logPath}.1`)).toBe(true);
+    expect(readFileSync(`${logPath}.1`, 'utf8')).toContain('a'.repeat(80));
+    expect(readFileSync(logPath, 'utf8')).toContain('b'.repeat(80));
   });
 });

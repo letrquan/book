@@ -7,6 +7,7 @@ import {
   selectActiveToolId,
   selectExpandedToolId,
   selectLatestToolId,
+  shouldDefaultExpandToolId,
 } from './tool-traces.js';
 import { isRenderableFileMutationDiff } from './file-mutation-display.js';
 
@@ -141,7 +142,7 @@ describe('file mutation preview selection', () => {
     ).toBe(false);
   });
 
-  it('does not reopen a completed mutation after its result arrives', () => {
+  it('does not select a completed mutation as the active tool', () => {
     const edit = assistant({
       toolCalls: [{ id: 'edit', name: 'Edit', arguments: {} }],
       toolResults: [result('edit', { output: DIFF })],
@@ -150,7 +151,7 @@ describe('file mutation preview selection', () => {
     expect(selectExpandedToolId([edit])).toBeNull();
   });
 
-  it('keeps completed tools collapsed through later text-only assistant turns', () => {
+  it('does not select completed tools through later text-only assistant turns', () => {
     const edit = assistant({
       id: 'edit-turn',
       toolCalls: [{ id: 'edit', name: 'Edit', arguments: {} }],
@@ -161,7 +162,7 @@ describe('file mutation preview selection', () => {
     expect(selectExpandedToolId([edit, finalText])).toBeNull();
   });
 
-  it('lets the latest tool-bearing turn supersede an older mutation preview', () => {
+  it('does not select an older mutation after a later tool-bearing turn', () => {
     const edit = assistant({
       id: 'edit-turn',
       toolCalls: [{ id: 'edit', name: 'Edit', arguments: {} }],
@@ -213,6 +214,17 @@ describe('file mutation preview selection', () => {
     });
 
     expect(selectExpandedToolId([task])).toBeNull();
+    expect(shouldDefaultExpandToolId([task], 'task/1:edit')).toBe(true);
+  });
+
+  it('defaults successful top-level file mutations to expanded', () => {
+    const edit = assistant({
+      toolCalls: [{ id: 'edit', name: 'edit_file', arguments: {} }],
+      toolResults: [result('edit', { output: DIFF })],
+    });
+
+    expect(shouldDefaultExpandToolId([edit], 'edit')).toBe(true);
+    expect(shouldDefaultExpandToolId([edit], 'missing')).toBe(false);
   });
 
   it('does not preview failed, skipped, no-op, or hook-rewritten mutation results', () => {
@@ -222,14 +234,15 @@ describe('file mutation preview selection', () => {
       result('edit', { output: 'File edited successfully (no textual change)' }),
       result('edit', { output: 'Hook replaced the output' }),
     ]) {
-      expect(
-        selectExpandedToolId([
-          assistant({
-            toolCalls: [{ id: 'edit', name: 'Edit', arguments: {} }],
-            toolResults: [mutationResult],
-          }),
-        ]),
-      ).toBeNull();
+      const messages = [
+        assistant({
+          toolCalls: [{ id: 'edit', name: 'Edit', arguments: {} }],
+          toolResults: [mutationResult],
+        }),
+      ];
+
+      expect(selectExpandedToolId(messages)).toBeNull();
+      expect(shouldDefaultExpandToolId(messages, 'edit')).toBe(false);
     }
   });
 });

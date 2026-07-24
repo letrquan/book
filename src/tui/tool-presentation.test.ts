@@ -162,7 +162,17 @@ describe('tool expansion policy', () => {
         mode: 'compact',
         toolId: 'other',
         automaticToolId: 'active',
+        defaultExpanded: true,
         expansionOverrides: overrides,
+      }),
+    ).toBe(true);
+    expect(
+      shouldExpandTool({
+        mode: 'compact',
+        toolId: 'other',
+        automaticToolId: 'active',
+        defaultExpanded: true,
+        expansionOverrides: new Map([['other', false]]),
       }),
     ).toBe(false);
     expect(

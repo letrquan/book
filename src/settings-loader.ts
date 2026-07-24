@@ -7,7 +7,9 @@ import {
   type BookSettings,
   type ResolvedSettings,
 } from './settings.js';
-import { SettingsRepository } from './settings-repository.js';
+import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
+
+const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
 
 /**
  * Deep-merge two settings objects. For arrays, concatenate (used for
@@ -167,6 +169,15 @@ export { loadSettingsFile };
 export function migrateLegacyPermissions(workspace: string, home = homedir()): boolean {
   const legacyPath = join(home, '.book', 'permissions.json');
   if (!existsSync(legacyPath)) return false;
+  const markerPath = join(workspace, '.book', 'migrations.json');
+  try {
+    const marker = JSON.parse(readFileSync(markerPath, 'utf-8')) as {
+      legacyPermissions?: number;
+    };
+    if ((marker.legacyPermissions ?? 0) >= LEGACY_PERMISSIONS_MIGRATION_VERSION) return false;
+  } catch {
+    // Missing or malformed markers are safely rebuilt after a successful migration.
+  }
 
   let legacyRules: Array<{ toolName: string; pattern?: string; effect: string }> = [];
   try {
@@ -201,6 +212,12 @@ export function migrateLegacyPermissions(workspace: string, home = homedir()): b
     existing.permissions = permissions;
   });
   if (!result.ok) return false;
+
+  writeFileAtomic(
+    markerPath,
+    `${JSON.stringify({ legacyPermissions: LEGACY_PERMISSIONS_MIGRATION_VERSION }, null, 2)}\n`,
+  );
+  if (!result.changed) return false;
 
   console.warn(
     `⚠  Migrated ${legacyRules.length} permission rule(s) from ~/.book/permissions.json to ${localPath}. ` +

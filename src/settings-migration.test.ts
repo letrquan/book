@@ -53,6 +53,9 @@ describe('migrateLegacyPermissions', () => {
     expect(local.permissions.deny).toContain('Bash(rm *)');
     expect(local.permissions.ask).toContain('Bash(git push *)');
     expect(local.permissions.allow).toContain('WebFetch');
+    expect(JSON.parse(readFileSync(join(dir, '.book', 'migrations.json'), 'utf-8'))).toEqual({
+      legacyPermissions: 1,
+    });
   });
 
   it('preserves existing settings.local.json keys', () => {
@@ -88,8 +91,8 @@ describe('migrateLegacyPermissions', () => {
       }),
     );
 
-    migrateLegacyPermissions(dir, fakeHome);
-    migrateLegacyPermissions(dir, fakeHome); // second run should not duplicate
+    expect(migrateLegacyPermissions(dir, fakeHome)).toBe(true);
+    expect(migrateLegacyPermissions(dir, fakeHome)).toBe(false);
 
     const local = JSON.parse(readFileSync(join(dir, '.book', 'settings.local.json'), 'utf-8'));
     const allowRules = local.permissions.allow.filter((r: string) => r === 'Bash(ls)');

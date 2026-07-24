@@ -1,7 +1,40 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
-import { join, extname } from 'path';
+import { join, extname, relative } from 'path';
 import { homedir } from 'os';
 import { parseFrontmatter } from './frontmatter.js';
+import { canonicalToolName } from './tools/aliases.js';
+
+const KNOWN_AGENT_TOOLS = new Set([
+  '*',
+  'AskUserQuestion',
+  'Bash',
+  'Check',
+  'Edit',
+  'EvidenceList',
+  'EvidencePublish',
+  'EvidenceReview',
+  'GitBranch',
+  'GitDiff',
+  'GitLog',
+  'GitStatus',
+  'Glob',
+  'Grep',
+  'MultiEdit',
+  'NotebookEdit',
+  'Read',
+  'ToolSearch',
+  'WebFetch',
+  'WebSearch',
+  'Write',
+]);
+
+export function normalizeAgentTool(tool: string): string | undefined {
+  const match = tool.trim().match(/^([^()]+)(\(.*\))?$/);
+  if (!match) return undefined;
+  const canonical = canonicalToolName(match[1].trim());
+  if (!KNOWN_AGENT_TOOLS.has(canonical) && !canonical.startsWith('mcp__')) return undefined;
+  return `${canonical}${match[2] ?? ''}`;
+}
 
 /**
  * A subagent definition loaded from .book/agents/<name>.md or
@@ -18,6 +51,10 @@ export interface SubagentDef {
   model?: string;
   /** Maximum turns for this subagent. Undefined = unlimited. */
   maxTurns?: number;
+  effort?: string;
+  isolation?: 'workspace-readonly' | 'worktree';
+  color?: string;
+  unknownTools?: string[];
   /** The raw Markdown body — injected as the subagent's system prompt. */
   body: string;
   /** Source directory. */
@@ -27,18 +64,33 @@ export interface SubagentDef {
 /**
  * Load a single subagent .md file. Returns null if not found or malformed.
  */
-function loadAgentFile(filePath: string, source: 'user' | 'project'): SubagentDef | null {
+export function loadAgentFile(filePath: string, source: 'user' | 'project'): SubagentDef | null {
   if (!existsSync(filePath) || extname(filePath) !== '.md') return null;
   const raw = readFileSync(filePath, 'utf-8');
   const { body, frontmatter } = parseFrontmatter(raw);
   const name = String(frontmatter.name || filePath.split(/[/\\]/).pop()!.replace(/\.md$/, ''));
   if (!name) return null;
 
+  const toolsValue = frontmatter.tools ?? frontmatter['allowed-tools'];
+  const requestedTools = Array.isArray(toolsValue)
+    ? toolsValue
+        .map(String)
+        .map((tool) => tool.trim())
+        .filter(Boolean)
+    : typeof toolsValue === 'string'
+      ? toolsValue
+          .split(',')
+          .map((tool) => tool.trim())
+          .filter(Boolean)
+      : [];
+  const allowedTools = requestedTools.map((tool) => normalizeAgentTool(tool) ?? tool);
+  const model = typeof frontmatter.model === 'string' ? frontmatter.model.trim() : undefined;
+  const unknownTools = requestedTools.filter((tool) => !normalizeAgentTool(tool));
   return {
     name,
     description: (frontmatter.description as string) || name,
-    allowedTools: Array.isArray(frontmatter.tools) ? (frontmatter.tools as string[]) : [],
-    model: frontmatter.model as string | undefined,
+    allowedTools,
+    model: model === 'inherit' ? undefined : model,
     maxTurns:
       typeof frontmatter.maxTurns === 'number'
         ? (frontmatter.maxTurns as number)
@@ -47,7 +99,27 @@ function loadAgentFile(filePath: string, source: 'user' | 'project'): SubagentDe
           : undefined,
     body,
     source,
+    effort: typeof frontmatter.effort === 'string' ? frontmatter.effort : undefined,
+    isolation:
+      frontmatter.isolation === 'workspace-readonly' || frontmatter.isolation === 'worktree'
+        ? frontmatter.isolation
+        : undefined,
+    color: typeof frontmatter.color === 'string' ? frontmatter.color : undefined,
+    unknownTools,
   };
+}
+
+function markdownFiles(root: string): string[] {
+  const files: string[] = [];
+  const visit = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const fullPath = join(directory, entry.name);
+      if (entry.isDirectory()) visit(fullPath);
+      else if (entry.isFile() && extname(entry.name) === '.md') files.push(fullPath);
+    }
+  };
+  visit(root);
+  return files.sort((left, right) => relative(root, left).localeCompare(relative(root, right)));
 }
 
 /**
@@ -67,13 +139,11 @@ export function discoverAgents(workspace: string): SubagentDef[] {
     if (!existsSync(dir)) continue;
     let entries: string[];
     try {
-      entries = readdirSync(dir);
+      entries = markdownFiles(dir);
     } catch {
       continue;
     }
-    for (const entry of entries) {
-      if (!entry.endsWith('.md')) continue;
-      const fullPath = join(dir, entry);
+    for (const fullPath of entries) {
       let stat;
       try {
         stat = statSync(fullPath);

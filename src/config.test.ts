@@ -51,12 +51,12 @@ describe('loadConfig retry defaults', () => {
 });
 
 describe('loadConfig model defaults', () => {
-  it('uses the product default 272k context budget when none is configured', () => {
+  it('uses the 64k output budget when no model limit is configured', () => {
     const config = loadConfig(workspace, { noSettings: true });
 
     expect(config.model).toBe('gpt-4o');
-    expect(config.maxTokens).toBe(272_000);
-    expect(config.defaultMaxTokens).toBe(272_000);
+    expect(config.maxTokens).toBe(64_000);
+    expect(config.defaultMaxTokens).toBe(64_000);
     expect(config.maxTokensExplicit).toBe(false);
   });
 });
@@ -360,6 +360,14 @@ describe('loadConfig provider registry', () => {
 
     const switched = applyModelDefaults(resolveModelProviderConfig(config, 'openrouter/bar'));
     expect(switched.maxTokens).toBe(4096);
+  });
+
+  it('uses the 64k output budget for models without metadata', () => {
+    const config = defaultConfig({ maxTokens: 64_000, defaultMaxTokens: 64_000 });
+    const switched = applyModelDefaults(resolveModelProviderConfig(config, 'unknown/model'));
+
+    expect(switched.modelInfo).toBeUndefined();
+    expect(switched.maxTokens).toBe(64_000);
   });
 
   it('rejects zero env max tokens', () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SessionStore } from './store.js';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
+import { appendFileSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -348,6 +348,73 @@ describe('SessionStore', () => {
     expect(list[1].id).toBe(a);
   });
 
+  it('lists indexed metadata without replaying session transcripts', () => {
+    const writer = new SessionStore(dir);
+    const id = writer.create({ cwd: '/proj', name: 'indexed' });
+    writer.append(id, { type: 'user', timestamp: 10, data: { content: 'hello' } });
+    appendFileSync(join(dir, `${id}.jsonl`), '{malformed json that listing must not parse}\n');
+
+    const reader = new SessionStore(dir);
+
+    expect(reader.list()).toEqual([
+      expect.objectContaining({ id, name: 'indexed', updatedAt: 10, messageCount: 1 }),
+    ]);
+  });
+
+  it('builds a persistent metadata index for legacy session files', () => {
+    const id = 'legacy-session';
+    writeFileSync(
+      join(dir, `${id}.jsonl`),
+      [
+        JSON.stringify({
+          type: 'session_meta',
+          timestamp: 1,
+          data: {
+            kind: 'session_meta',
+            id,
+            cwd: '/proj',
+            createdAt: 1,
+            updatedAt: 1,
+            messageCount: 0,
+          },
+        }),
+        JSON.stringify({ type: 'user', timestamp: 2, data: { content: 'legacy prompt' } }),
+        '',
+      ].join('\n'),
+    );
+
+    const store = new SessionStore(dir);
+
+    expect(store.list()[0]).toMatchObject({
+      id,
+      name: 'Legacy prompt',
+      updatedAt: 2,
+      messageCount: 1,
+    });
+    expect(existsSync(join(dir, 'session-index.json'))).toBe(true);
+  });
+
+  it('collects rewind snapshot references from indexed metadata', () => {
+    const writer = new SessionStore(dir);
+    const id = writer.create({ cwd: '/proj' });
+    writer.append(id, {
+      type: 'turn_checkpoint',
+      timestamp: 2,
+      data: {
+        version: 1,
+        checkpointId: 'checkpoint-1',
+        userEventId: 'user-1',
+        prompt: 'prompt',
+        checkpoint: { snapshotId: 'snapshot-1' },
+      },
+    });
+    appendFileSync(join(dir, `${id}.jsonl`), '{malformed}\n');
+
+    const reader = new SessionStore(dir);
+
+    expect(reader.listSnapshotReferences('/proj')).toEqual(new Set(['snapshot-1']));
+  });
+
   it('finds most recent session in a cwd (--continue)', () => {
     const s = new SessionStore(dir);
     const a = s.create({ cwd: '/proj' });
@@ -364,6 +431,19 @@ describe('SessionStore', () => {
     const id = s.create({ cwd: '/proj', name: 'feature-x' });
     s.append(id, { type: 'user', timestamp: 1, data: { content: 'a' } });
     expect(s.findByName('feature-x')?.id).toBe(id);
+  });
+
+  it('derives a display name for legacy sessions without name metadata', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, {
+      type: 'user',
+      timestamp: 1,
+      data: { content: 'investigate legacy session labels' },
+    });
+
+    expect(s.load(id).meta.name).toBe('Investigate legacy session labels');
+    expect(s.findByName('Investigate legacy session labels')?.id).toBe(id);
   });
 
   it('applies append-only metadata patches without counting them as messages', () => {

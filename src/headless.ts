@@ -3,6 +3,7 @@ import type { CompactResult, CompactBoundary } from './types/sessions.js';
 import type { Message, Usage } from './types/messages.js';
 import type { HeadlessOptions, HeadlessResult } from './types/public-sdk.js';
 import type { UserQuestionResponse } from './types/tools.js';
+import type { AgentCompletionNotification } from './agents/types.js';
 import { resolveContextLimit, shouldCompact, usagePressureTokens } from './agent/compact.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { observationKey } from './tools/file-provenance.js';
@@ -12,8 +13,12 @@ import {
   type StreamJsonDiagnostic,
   type StreamJsonEvent,
 } from './stream-json.js';
-import { AgentSession } from './session/agent-session.js';
+import { AgentSession, type AgentSessionRunRequest } from './session/agent-session.js';
 import type { AgentEvent } from './session/agent-events.js';
+import {
+  buildAgentCompletionMessage,
+  takeAgentCompletionBatch,
+} from './agents/completion-notification.js';
 
 export async function runHeadless(
   config: AgentConfig,
@@ -44,10 +49,14 @@ export async function runHeadless(
     if (store && sessionId && opts.forkSession) {
       sessionId = undefined; // start a new session, copy history only
     }
+    let sessionName = opts.sessionName;
     let sessionCreated = opts.sessionCreated === true;
     if (store && !sessionId) {
-      sessionId = store.create({ cwd: config.workspace, name: opts.sessionName });
+      sessionId = store.create({ cwd: config.workspace, name: sessionName });
       sessionCreated = true;
+    }
+    if (store && sessionId && !sessionName) {
+      sessionName = store.findById(sessionId)?.name;
     }
     if (sessionCreated && sessionId && opts.outputFormat === 'stream-json') {
       emit({ type: 'session', session_id: sessionId });
@@ -89,6 +98,112 @@ export async function runHeadless(
         }
       }
     }
+
+    const loopConfig: AgentConfig = {
+      ...config,
+      maxTurns: opts.maxTurns ?? config.maxTurns,
+    };
+    const createRunCallbacks = (): AgentSessionRunRequest['callbacks'] => ({
+      onEvent: (event) => emitAgentEvent(event, opts, emit),
+      // No header rewrite at turn boundaries: load() derives updatedAt from
+      // the last appended record, so the on-disk header is never authoritative.
+      onTurnStart: () => {},
+      onDone: () => {},
+      onPermissionRequired: permissionRequired,
+      onModeChange: (newMode) => {
+        if (opts.outputFormat === 'stream-json') {
+          emit({ type: 'mode_change', mode: newMode });
+        }
+      },
+      onPlanApprovalRequired: async () => {
+        const approved = opts.mode === 'bypassPermissions';
+        if (opts.outputFormat === 'stream-json') {
+          emit({ type: 'plan_approval', status: approved ? 'approve' : 'reject' });
+        }
+        return approved ? 'approve' : 'reject';
+      },
+      onUserQuestionRequired: async (request, context): Promise<UserQuestionResponse> => {
+        try {
+          return opts.onUserQuestionRequired
+            ? await opts.onUserQuestionRequired(request, context)
+            : {
+                action: 'decline',
+                message: 'User input is unavailable in non-interactive mode.',
+              };
+        } catch (error) {
+          return {
+            action: 'cancel',
+            message: `User question handler failed: ${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
+      },
+      userQuestionStatus: opts.onUserQuestionRequired ? 'pending' : 'unavailable',
+      onHookEvent: createHookEventHandler(opts, emit),
+      onUsage: (nextUsage) => {
+        lastUsage = nextUsage;
+        lastHostCompactAttemptKey = null;
+      },
+      onCompact: async (history, usage) => {
+        const outcome = await agentSession.compact({
+          config,
+          history,
+          sessionId,
+          transcriptOrdinal: transcript.length,
+          timelineStore: store,
+          onCommitted: (_result, boundary) => compactBoundaries.push(boundary),
+          options: {
+            trigger: 'auto',
+            preContextTokens: usage ? usagePressureTokens(usage) : undefined,
+            signal: opts.signal,
+            onHookEvent: createHookEventHandler(opts, emit),
+          },
+        });
+        if (outcome.result.status === 'compacted') {
+          emitCompactBoundary(opts.outputFormat, emit, outcome.result);
+          lastUsage = null;
+        }
+        return outcome.result;
+      },
+      onAssistantMessageComplete: (message) => {
+        if (!transcript.some((item) => item.id === message.id)) transcript.push(message);
+      },
+    });
+    const runParentTurn = async (
+      prompt: string,
+      displayMessage: string,
+      userMessage: Message,
+    ): Promise<void> => {
+      const updated = await agentSession.run({
+        config: loopConfig,
+        registry,
+        prompt,
+        history: contextHistory,
+        mode: opts.mode,
+        sessionId: runtimeSessionId,
+        timelineStore: store,
+        signal: opts.signal,
+        callbacks: createRunCallbacks(),
+        options: {
+          displayMessage,
+          userMessageId: userMessage.id,
+          userMessageTimestamp: userMessage.timestamp,
+          userFileObservations: userMessage.fileObservations,
+          userMessageKind: userMessage.kind,
+          manageSessionHooks: sessionId ? false : undefined,
+          // Completion messages are host-generated notifications, not user
+          // prompts. Keep UserPromptSubmit hooks from rewriting or blocking them.
+          skipUserPromptHooks: userMessage.kind === 'agent-notification',
+          parentSessionId: runtimeSessionId,
+          runtime,
+        },
+      });
+      const priorIds = new Set(transcript.map((message) => message.id));
+      transcript.push(
+        ...updated.filter((message) => !priorIds.has(message.id) && message.role === 'assistant'),
+      );
+      contextHistory.length = 0;
+      contextHistory.push(...updated);
+    };
 
     // Collect prompts: text input -> single prompt; stream-json -> read stdin.
     const prompts: string[] = [];
@@ -169,108 +284,79 @@ export async function runHeadless(
         sessionId: runtimeSessionId,
         displayMessage: prompt,
         userMessage,
+        sessionName,
         timelineStore: store && sessionId ? store : undefined,
         expandShellInput: false,
         runtime,
         signal: opts.signal,
       });
+      sessionName = recorded.sessionName;
       const contextMessage = recorded.contextMessage;
       transcript.push(userMessage);
-      const loopConfig: AgentConfig = {
-        ...config,
-        maxTurns: opts.maxTurns ?? config.maxTurns,
-      };
-      const updated = await agentSession.run({
-        config: loopConfig,
-        registry,
-        prompt: contextMessage,
-        history: contextHistory,
-        mode: opts.mode,
-        sessionId: runtimeSessionId,
-        timelineStore: store,
-        signal: opts.signal,
-        callbacks: {
-          onEvent: (event) => emitAgentEvent(event, opts, emit),
-          // No header rewrite at turn boundaries: load() derives updatedAt from
-          // the last appended record, so the on-disk header is never the source
-          // of truth for activity ordering.
-          onTurnStart: () => {},
-          onDone: () => {},
-          onPermissionRequired: permissionRequired,
-          onModeChange: (newMode) => {
-            if (opts.outputFormat === 'stream-json') {
-              emit({ type: 'mode_change', mode: newMode });
-            }
-          },
-          onPlanApprovalRequired: async () => {
-            const approved = opts.mode === 'bypassPermissions';
-            if (opts.outputFormat === 'stream-json') {
-              emit({ type: 'plan_approval', status: approved ? 'approve' : 'reject' });
-            }
-            return approved ? 'approve' : 'reject';
-          },
-          onUserQuestionRequired: async (request, context): Promise<UserQuestionResponse> => {
-            try {
-              return opts.onUserQuestionRequired
-                ? await opts.onUserQuestionRequired(request, context)
-                : {
-                    action: 'decline',
-                    message: 'User input is unavailable in non-interactive mode.',
-                  };
-            } catch (error) {
-              return {
-                action: 'cancel',
-                message: `User question handler failed: ${error instanceof Error ? error.message : String(error)}`,
-              };
-            }
-          },
-          userQuestionStatus: opts.onUserQuestionRequired ? 'pending' : 'unavailable',
-          onHookEvent: createHookEventHandler(opts, emit),
-          onUsage: (u) => {
-            lastUsage = u;
-            lastHostCompactAttemptKey = null;
-          },
-          onCompact: async (history, usage) => {
-            const outcome = await agentSession.compact({
-              config,
-              history,
-              sessionId,
-              transcriptOrdinal: transcript.length,
-              timelineStore: store,
-              onCommitted: (_result, boundary) => compactBoundaries.push(boundary),
-              options: {
-                trigger: 'auto',
-                preContextTokens: usagePressureTokens(usage),
-                signal: opts.signal,
-                onHookEvent: createHookEventHandler(opts, emit),
-              },
-            });
-            if (outcome.result.status === 'compacted') {
-              emitCompactBoundary(opts.outputFormat, emit, outcome.result);
-              lastUsage = null;
-            }
-            return outcome.result;
-          },
-          onAssistantMessageComplete: (message) => {
-            if (!transcript.some((item) => item.id === message.id)) transcript.push(message);
-          },
-        },
-        options: {
-          displayMessage: prompt,
-          userMessageId: userMessage.id,
-          userMessageTimestamp: userMessage.timestamp,
-          userFileObservations: userMessage.fileObservations,
-          manageSessionHooks: sessionId ? false : undefined,
-          parentSessionId: sessionId,
-          runtime,
-        },
-      });
-      const priorIds = new Set(transcript.map((message) => message.id));
-      transcript.push(
-        ...updated.filter((message) => !priorIds.has(message.id) && message.role === 'assistant'),
+      await runParentTurn(contextMessage, prompt, userMessage);
+    }
+
+    // Background children outlive the root tool call. Keep the runtime alive,
+    // feed each completion back through the parent model, and acknowledge only
+    // after that continuation turn succeeds.
+    const managedAgentManager = runtime.agentManager;
+    if (managedAgentManager) {
+      const deliveredCompletionIds = new Set(
+        transcript.flatMap((message) =>
+          (message.agentNotifications ?? [])
+            .map((notification) => notification.deliveryId)
+            .filter((id): id is string => Boolean(id)),
+        ),
       );
-      contextHistory.length = 0;
-      contextHistory.push(...updated);
+      while (true) {
+        await managedAgentManager.waitForIdle();
+        const pending = (await managedAgentManager.listPendingCompletions()).filter(
+          (notification) => notification.parentSessionId === runtimeSessionId,
+        );
+        if (pending.length === 0) break;
+        const alreadyDelivered = pending.filter((notification) =>
+          deliveredCompletionIds.has(notification.deliveryId),
+        );
+        for (const notification of alreadyDelivered) {
+          await managedAgentManager.acknowledgeCompletion(notification.deliveryId);
+        }
+        const fresh = pending.filter(
+          (notification) => !deliveredCompletionIds.has(notification.deliveryId),
+        );
+        if (fresh.length === 0) continue;
+        const batch = takeAgentCompletionBatch(fresh);
+        const built = batch.map((notification: AgentCompletionNotification) =>
+          buildAgentCompletionMessage(notification),
+        );
+        const displayMessage = built.map((item) => item.displayMessage).join('\n');
+        const userMessage: Message = {
+          id: crypto.randomUUID(),
+          role: 'user',
+          content: displayMessage,
+          contextContent: built.map((item) => item.contextMessage).join('\n'),
+          includeInContext: true,
+          kind: 'agent-notification',
+          agentNotifications: built.map((item) => item.display),
+          timestamp: Date.now(),
+        };
+        const recorded = await agentSession.recordUserMessage({
+          config,
+          sessionId: runtimeSessionId,
+          displayMessage,
+          contextMessage: userMessage.contextContent,
+          userMessage,
+          timelineStore: store && sessionId ? store : undefined,
+          expandShellInput: false,
+          runtime,
+          signal: opts.signal,
+        });
+        transcript.push(userMessage);
+        await runParentTurn(recorded.contextMessage, displayMessage, userMessage);
+        for (const notification of batch) {
+          deliveredCompletionIds.add(notification.deliveryId);
+          await managedAgentManager.acknowledgeCompletion(notification.deliveryId);
+        }
+      }
     }
 
     const result: HeadlessResult = {
@@ -362,6 +448,7 @@ function createHookEventHandler(
 }
 
 function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: HeadlessEmit): void {
+  if (event.type === 'agent_text_delta' && opts.forwardSubagentText !== true) return;
   opts.onAgentEvent?.(event);
   if (event.type === 'error') {
     if (opts.outputFormat === 'stream-json') emit({ type: 'error', error: event.error });
@@ -394,6 +481,12 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
     case 'agent_update':
     case 'agent_result':
     case 'agent_question':
+    case 'agent_status':
+    case 'agent_activity':
+    case 'agent_text_delta':
+    case 'agent_message':
+    case 'agent_completion':
+    case 'agent_permission':
     case 'agent_apply':
     case 'evidence_update':
       emit(event);

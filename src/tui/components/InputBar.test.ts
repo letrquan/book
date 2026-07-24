@@ -581,6 +581,49 @@ function simulateInputHandler(
 }
 
 describe('keyboard shortcut filtering', () => {
+  it('moves focus to a background task with Down from an empty fresh prompt', async () => {
+    const onFocusBackgroundTask = vi.fn(() => true);
+    const view = render(inputBar(() => {}, { onFocusBackgroundTask }));
+    await tick();
+
+    view.stdin.write('\x1b[B');
+    await tick(20);
+
+    expect(onFocusBackgroundTask).toHaveBeenCalledOnce();
+  });
+
+  it('keeps Down in the prompt when text is present', async () => {
+    const onFocusBackgroundTask = vi.fn(() => true);
+    const view = render(inputBar(() => {}, { onFocusBackgroundTask }));
+    await tick();
+
+    view.stdin.write('draft');
+    await tick(20);
+    view.stdin.write('\x1b[B');
+    await tick(20);
+
+    expect(onFocusBackgroundTask).not.toHaveBeenCalled();
+  });
+
+  it('uses Down for active prompt history before background tasks', async () => {
+    const onFocusBackgroundTask = vi.fn(() => true);
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value), { onFocusBackgroundTask }));
+    await tick();
+
+    view.stdin.write('previous');
+    await tick(20);
+    view.stdin.write('\r');
+    await tick(20);
+    view.stdin.write('\x1b[A');
+    await tick(20);
+    view.stdin.write('\x1b[B');
+    await tick(20);
+
+    expect(submitted).toEqual(['previous']);
+    expect(onFocusBackgroundTask).not.toHaveBeenCalled();
+  });
+
   it('keeps the editor draft unchanged when an SGR wheel report arrives', async () => {
     const view = render(inputBar(() => {}));
     await tick();

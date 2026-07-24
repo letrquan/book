@@ -15,7 +15,7 @@ function fakeStdout(isTTY: boolean) {
 }
 
 describe('enterInteractiveScreen', () => {
-  it('enters alternate screen and enables SGR mouse reporting for TTY output', () => {
+  it('enters alternate screen with SGR mouse reporting for wheel scrolling', () => {
     const { stdout, writes } = fakeStdout(true);
     const restore = enterInteractiveScreen(stdout);
 

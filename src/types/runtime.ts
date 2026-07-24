@@ -59,6 +59,7 @@ export interface BackgroundShellRecord {
   startedAt: number;
   finishedAt?: number;
   timer?: NodeJS.Timeout;
+  retentionTimer?: NodeJS.Timeout;
   sandboxed?: boolean;
 }
 

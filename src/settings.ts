@@ -131,12 +131,31 @@ export const memorySettingsSchema = z.object({
 export const agentSettingsSchema = z.object({
   mode: z.enum(['adaptive', 'manual', 'off']).default('adaptive'),
   maxConcurrent: z.number().int().min(1).max(16).default(3),
+  maxSpawned: z.number().int().min(1).max(64).default(8),
   maxDepth: z.literal(1).default(1),
   persist: z.boolean().default(true),
   includeUntrackedInSnapshot: z.boolean().default(true),
   telemetry: z.boolean().default(true),
   retentionDays: z.number().int().min(1).max(3650).default(30),
   checks: z.record(z.union([z.string().min(1), z.array(z.string().min(1)).min(1)])).default({}),
+  profiles: z
+    .record(
+      z.object({
+        model: z.string().min(1).optional(),
+        effort: effortLevelSchema.optional(),
+        maxTurns: z.number().int().min(1).optional(),
+        color: z.string().optional(),
+      }),
+    )
+    .default({}),
+  ui: z.object({ enabled: z.boolean().default(true) }).default({}),
+  routing: z
+    .object({
+      inlineSearchBudget: z.number().int().min(1).max(20).default(3),
+      exploreReminder: z.boolean().default(true),
+    })
+    .default({}),
+  forwardTextEvents: z.boolean().default(false),
 });
 
 export const toolDiscoverySettingsSchema = z.object({
@@ -258,12 +277,17 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   agents: {
     mode: 'adaptive',
     maxConcurrent: 3,
+    maxSpawned: 8,
     maxDepth: 1,
     persist: true,
     includeUntrackedInSnapshot: true,
     telemetry: true,
     retentionDays: 30,
     checks: {},
+    profiles: {},
+    ui: { enabled: true },
+    routing: { inlineSearchBudget: 3, exploreReminder: true },
+    forwardTextEvents: false,
   },
   toolDiscovery: {
     mode: 'auto',

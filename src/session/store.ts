@@ -1,12 +1,18 @@
 import {
   mkdirSync,
   appendFileSync,
+  closeSync,
   existsSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
+  renameSync,
   unlinkSync,
   statSync,
+  writeFileSync,
 } from 'fs';
+import { StringDecoder } from 'string_decoder';
 import { join, normalize, resolve } from 'path';
 import type {
   CompactBoundary,
@@ -22,6 +28,7 @@ import type {
 import type { Message } from '../types/messages.js';
 import { createDebugLogger } from '../debug-log.js';
 import { normalizeToolResult } from '../tools/result.js';
+import { deriveSessionName } from './name.js';
 
 export type { SessionMeta } from '../types/sessions.js';
 
@@ -32,6 +39,37 @@ const SEARCH_PREVIEW_CHARS = 400;
 const READ_REF_LIMIT = 8;
 const READ_TOTAL_CHARS = 16_000;
 const TOOL_RESULT_PREVIEW_CHARS = 4_000;
+const SESSION_INDEX_FILE = 'session-index.json';
+const JSONL_READ_BUFFER_BYTES = 64 * 1024;
+
+interface SessionIndexEntry {
+  meta: SessionMeta;
+  lastMessageRole?: Message['role'];
+  snapshotIds?: string[];
+}
+
+interface PersistedSessionIndex {
+  version: 1;
+  sessions: Record<string, SessionIndexEntry>;
+}
+
+interface ParsedSessionCache {
+  size: number;
+  mtimeMs: number;
+  records: SessionRecord[];
+  loaded?: LoadedSession;
+  activeEventIds?: Set<string>;
+  activeRecords?: IndexedSessionRecord[];
+  recordsByActiveId?: Map<string, IndexedSessionRecord>;
+}
+
+interface IndexedSessionRecord {
+  eventId: string;
+  record: SessionRecord;
+  searchText: string;
+  displayText: string;
+  toolResults?: Message['toolResults'];
+}
 
 interface ReplayLink<T> {
   value: T;
@@ -62,12 +100,154 @@ function normalizeWorkspace(cwd: string): string {
  * records into a Message[] history the agent loop can resume from.
  */
 export class SessionStore {
+  private readonly metadataIndex = new Map<string, SessionIndexEntry>();
+  private readonly parsedSessions = new Map<string, ParsedSessionCache>();
+  private indexInitialized = false;
+  private buildingIndex = false;
+  private indexMtimeMs = 0;
+
   constructor(private root: string) {
     mkdirSync(root, { recursive: true });
+    this.loadPersistedIndex();
   }
 
   private path(id: string): string {
     return join(this.root, `${id}.jsonl`);
+  }
+
+  private indexPath(): string {
+    return join(this.root, SESSION_INDEX_FILE);
+  }
+
+  private loadPersistedIndex(): void {
+    try {
+      const parsed = JSON.parse(readFileSync(this.indexPath(), 'utf-8')) as PersistedSessionIndex;
+      if (parsed.version !== 1 || !parsed.sessions || typeof parsed.sessions !== 'object') return;
+      this.metadataIndex.clear();
+      for (const [id, entry] of Object.entries(parsed.sessions)) {
+        if (!entry?.meta || entry.meta.id !== id) continue;
+        this.metadataIndex.set(id, entry);
+      }
+      this.indexMtimeMs = statSync(this.indexPath()).mtimeMs;
+    } catch {
+      // The index is a rebuildable acceleration structure.
+    }
+  }
+
+  private readPersistedIndexEntries(): Record<string, SessionIndexEntry> {
+    try {
+      const parsed = JSON.parse(readFileSync(this.indexPath(), 'utf-8')) as PersistedSessionIndex;
+      return parsed.version === 1 && parsed.sessions && typeof parsed.sessions === 'object'
+        ? parsed.sessions
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private persistIndex(deletedIds: string[] = [], changedIds?: string[]): void {
+    if (this.buildingIndex) return;
+    const lock = this.acquireIndexLock();
+    try {
+      const sessions = this.readPersistedIndexEntries();
+      const ids = changedIds ?? Array.from(this.metadataIndex.keys());
+      for (const id of ids) {
+        const entry = this.metadataIndex.get(id);
+        if (entry) sessions[id] = entry;
+      }
+      for (const id of deletedIds) delete sessions[id];
+      const target = this.indexPath();
+      const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
+      try {
+        writeFileSync(temporary, JSON.stringify({ version: 1, sessions }), 'utf-8');
+        renameSync(temporary, target);
+        this.indexMtimeMs = statSync(target).mtimeMs;
+        this.metadataIndex.clear();
+        for (const [id, entry] of Object.entries(sessions)) this.metadataIndex.set(id, entry);
+      } finally {
+        if (existsSync(temporary)) unlinkSync(temporary);
+      }
+    } finally {
+      this.releaseIndexLock(lock);
+    }
+  }
+
+  private acquireIndexLock(): number {
+    const path = `${this.indexPath()}.lock`;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      try {
+        return openSync(path, 'wx', 0o600);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        try {
+          if (Date.now() - statSync(path).mtimeMs > 10_000) unlinkSync(path);
+        } catch {
+          // Another process may have released the lock.
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+    }
+    throw new Error(`Timed out waiting for session index lock: ${path}`);
+  }
+
+  private releaseIndexLock(descriptor: number): void {
+    closeSync(descriptor);
+    try {
+      unlinkSync(`${this.indexPath()}.lock`);
+    } catch {
+      // Stale-lock recovery may already have removed it.
+    }
+  }
+
+  private ensureIndex(): void {
+    if (this.indexInitialized) {
+      try {
+        if (statSync(this.indexPath()).mtimeMs !== this.indexMtimeMs) this.loadPersistedIndex();
+      } catch {
+        // A concurrently replaced index is retried on the next metadata operation.
+      }
+      return;
+    }
+    this.buildingIndex = true;
+    let changed = false;
+    try {
+      const sessionIds = new Set(
+        readdirSync(this.root)
+          .filter((file) => file.endsWith('.jsonl'))
+          .map((file) => file.replace(/\.jsonl$/, '')),
+      );
+      for (const id of this.metadataIndex.keys()) {
+        if (!sessionIds.has(id)) {
+          this.metadataIndex.delete(id);
+          changed = true;
+        }
+      }
+      for (const id of sessionIds) {
+        if (this.metadataIndex.has(id)) continue;
+        try {
+          this.load(id);
+          changed = true;
+        } catch {
+          // Skip corrupt session files while retaining other index entries.
+        }
+      }
+    } finally {
+      this.buildingIndex = false;
+      this.indexInitialized = true;
+    }
+    if (changed || !existsSync(this.indexPath())) this.persistIndex();
+  }
+
+  private setIndexEntry(
+    meta: SessionMeta,
+    lastMessageRole?: Message['role'],
+    snapshotIds = this.metadataIndex.get(meta.id)?.snapshotIds ?? [],
+  ): void {
+    const next = { meta: { ...meta }, lastMessageRole, snapshotIds } satisfies SessionIndexEntry;
+    const current = this.metadataIndex.get(meta.id);
+    if (current && JSON.stringify(current) === JSON.stringify(next)) return;
+    this.metadataIndex.set(meta.id, next);
+    this.persistIndex([], [meta.id]);
   }
 
   create(meta: { cwd: string; name?: string; id?: string }): string {
@@ -87,26 +267,115 @@ export class SessionStore {
       },
     };
     appendFileSync(this.path(id), JSON.stringify(header) + '\n', 'utf-8');
+    this.setIndexEntry(header.data as SessionMeta);
     return id;
   }
 
   append(id: string, record: SessionRecord): void {
-    appendFileSync(this.path(id), JSON.stringify(record) + '\n', 'utf-8');
+    const serialized = JSON.stringify(record) + '\n';
+    appendFileSync(this.path(id), serialized, 'utf-8');
+    const cached = this.parsedSessions.get(id);
+    if (cached) {
+      const stat = statSync(this.path(id));
+      cached.records.push(record);
+      cached.size = stat.size;
+      cached.mtimeMs = stat.mtimeMs;
+      cached.loaded = undefined;
+      cached.activeEventIds = undefined;
+      cached.activeRecords = undefined;
+      cached.recordsByActiveId = undefined;
+    }
+    this.updateIndexAfterAppend(id, record);
   }
 
   readRecords(id: string): SessionRecord[] {
     const p = this.path(id);
     if (!existsSync(p)) throw new Error(`Session not found: ${id}`);
+    const stat = statSync(p);
+    const cached = this.parsedSessions.get(id);
+    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+      return cached.records;
+    }
     const records: SessionRecord[] = [];
-    for (const [index, line] of readFileSync(p, 'utf-8').split('\n').entries()) {
-      if (!line) continue;
+    const descriptor = openSync(p, 'r');
+    const buffer = Buffer.allocUnsafe(JSONL_READ_BUFFER_BYTES);
+    const decoder = new StringDecoder('utf8');
+    let pending = '';
+    let lineNumber = 0;
+    const parseLine = (line: string) => {
+      lineNumber++;
+      if (!line) return;
       try {
         records.push(JSON.parse(line) as SessionRecord);
       } catch {
-        log.warn('ignoring corrupt session record', { id, line: index + 1 });
+        log.warn('ignoring corrupt session record', { id, line: lineNumber });
       }
+    };
+    try {
+      let bytesRead: number;
+      while ((bytesRead = readSync(descriptor, buffer, 0, buffer.byteLength, null)) > 0) {
+        pending += decoder.write(buffer.subarray(0, bytesRead));
+        let newline = pending.indexOf('\n');
+        while (newline >= 0) {
+          parseLine(pending.slice(0, newline));
+          pending = pending.slice(newline + 1);
+          newline = pending.indexOf('\n');
+        }
+      }
+      pending += decoder.end();
+      if (pending) parseLine(pending);
+    } finally {
+      closeSync(descriptor);
     }
+    this.parsedSessions.set(id, {
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      records,
+    });
     return records;
+  }
+
+  private updateIndexAfterAppend(id: string, record: SessionRecord): void {
+    const entry = this.metadataIndex.get(id);
+    if (!entry) {
+      try {
+        this.load(id);
+      } catch {
+        // A corrupt append target remains discoverable through a later index rebuild.
+      }
+      return;
+    }
+
+    const data = (record.data ?? {}) as {
+      kind?: string;
+      name?: string;
+      content?: string;
+      complete?: boolean;
+    };
+    entry.meta.updatedAt = record.timestamp;
+    if (data.kind === 'session_meta_patch') {
+      if (Object.prototype.hasOwnProperty.call(data, 'name')) entry.meta.name = data.name;
+    } else if (record.type === 'user') {
+      entry.meta.messageCount++;
+      entry.lastMessageRole = 'user';
+      if (!entry.meta.name && data.content) entry.meta.name = deriveSessionName(data.content);
+    } else if (record.type === 'local') {
+      entry.meta.messageCount++;
+      entry.lastMessageRole = 'assistant';
+    } else if (record.type === 'assistant') {
+      if (data.complete || entry.lastMessageRole !== 'assistant') entry.meta.messageCount++;
+      entry.lastMessageRole = 'assistant';
+    } else if (record.type === 'turn_checkpoint') {
+      const snapshotId = (record.data as TurnCheckpointRecordData)?.checkpoint?.snapshotId;
+      if (snapshotId && !entry.snapshotIds?.includes(snapshotId)) {
+        entry.snapshotIds = [...(entry.snapshotIds ?? []), snapshotId];
+      }
+    } else if (record.type === 'rewind') {
+      const loaded = this.load(id);
+      this.setIndexEntry(loaded.meta, loaded.transcript.at(-1)?.role);
+      return;
+    }
+    this.persistIndex([], [id]);
   }
 
   patchMeta(id: string, patch: { name?: string }): void {
@@ -127,6 +396,8 @@ export class SessionStore {
 
   load(id: string): LoadedSession {
     const records = this.readRecords(id);
+    const parsedCache = this.parsedSessions.get(id);
+    if (parsedCache?.loaded) return cloneLoadedSession(parsedCache.loaded);
 
     const metaRec = records.find(
       (record) => (record.data as { kind?: string })?.kind === 'session_meta',
@@ -141,24 +412,26 @@ export class SessionStore {
       ...(storedMeta?.name === undefined ? {} : { name: storedMeta.name }),
     };
 
-    let transcript: Message[] = [];
+    const transcript: Message[] = [];
     let contextHistory: Message[] = [];
-    let compactBoundaries: CompactBoundary[] = [];
+    const compactBoundaries: CompactBoundary[] = [];
     let activeEventTail: ReplayLink<string> | undefined;
     let activeTargetTail: ReplayLink<string> | undefined;
     const targets = new Map<string, RewindTarget>();
     const targetStates = new Map<
       string,
       {
-        transcript: Message[];
+        transcriptLength: number;
         contextHistory: Message[];
-        compactBoundaries: CompactBoundary[];
+        contextHistoryLength: number;
+        compactBoundariesLength: number;
         activeEventTail?: ReplayLink<string>;
         activeTargetTail?: ReplayLink<string>;
         count: number;
       }
     >();
     const checkpointByUserEventId = new Map<string, string>();
+    const snapshotIds = new Set<string>();
     let count = 0;
     for (let lineIndex = 0; lineIndex < records.length; lineIndex++) {
       const record = records[lineIndex];
@@ -179,6 +452,7 @@ export class SessionStore {
         id?: string;
         includeInContext?: boolean;
         fileObservations?: Message['fileObservations'];
+        agentNotifications?: Message['agentNotifications'];
       };
 
       if (data.kind === 'session_meta_patch') {
@@ -209,10 +483,12 @@ export class SessionStore {
           ),
         };
         targets.set(target.id, target);
+        if (checkpoint.checkpoint.snapshotId) snapshotIds.add(checkpoint.checkpoint.snapshotId);
         targetStates.set(target.id, {
-          transcript,
+          transcriptLength: transcript.length,
           contextHistory,
-          compactBoundaries,
+          contextHistoryLength: contextHistory.length,
+          compactBoundariesLength: compactBoundaries.length,
           activeEventTail,
           activeTargetTail,
           count,
@@ -239,9 +515,10 @@ export class SessionStore {
             log.warn('ignoring rewind with unknown target', { id, eventId });
             continue;
           }
-          transcript = state.transcript;
+          transcript.length = state.transcriptLength;
           contextHistory = state.contextHistory;
-          compactBoundaries = state.compactBoundaries;
+          contextHistory.length = state.contextHistoryLength;
+          compactBoundaries.length = state.compactBoundariesLength;
           activeEventTail = state.activeEventTail;
           activeTargetTail = state.activeTargetTail;
           count = state.count;
@@ -273,7 +550,7 @@ export class SessionStore {
                 compactData.trigger,
               );
         contextHistory = replacement;
-        compactBoundaries = [...compactBoundaries, boundary];
+        compactBoundaries.push(boundary);
         activeEventTail = appendReplayLink(activeEventTail, eventId);
         continue;
       }
@@ -292,9 +569,10 @@ export class SessionStore {
           };
           targets.set(targetId, legacyTarget);
           targetStates.set(targetId, {
-            transcript,
+            transcriptLength: transcript.length,
             contextHistory,
-            compactBoundaries,
+            contextHistoryLength: contextHistory.length,
+            compactBoundariesLength: compactBoundaries.length,
             activeEventTail,
             activeTargetTail,
             count,
@@ -308,26 +586,24 @@ export class SessionStore {
           contextContent: data.contextContent,
           includeInContext: data.includeInContext ?? true,
           kind: (data.kind as Message['kind']) ?? 'conversation',
+          agentNotifications: data.agentNotifications,
           fileObservations: data.fileObservations,
           timestamp: record.timestamp,
         };
-        transcript = [...transcript, message];
-        if (message.includeInContext) contextHistory = [...contextHistory, message];
+        transcript.push(message);
+        if (message.includeInContext) contextHistory.push(message);
         activeEventTail = appendReplayLink(activeEventTail, eventId);
         activeTargetTail = appendReplayLink(activeTargetTail, targetId);
       } else if (record.type === 'local') {
         count++;
-        transcript = [
-          ...transcript,
-          {
-            id: data.id ?? eventId,
-            role: 'assistant',
-            content: data.content ?? '',
-            includeInContext: false,
-            kind: 'local',
-            timestamp: record.timestamp,
-          },
-        ];
+        transcript.push({
+          id: data.id ?? eventId,
+          role: 'assistant',
+          content: data.content ?? '',
+          includeInContext: false,
+          kind: 'local',
+          timestamp: record.timestamp,
+        });
         activeEventTail = appendReplayLink(activeEventTail, eventId);
       } else if (record.type === 'assistant') {
         if (data.complete) {
@@ -339,22 +615,23 @@ export class SessionStore {
             contextContent: data.contextContent,
             includeInContext: data.includeInContext ?? true,
             kind: (data.kind as Message['kind']) ?? 'conversation',
+            agentNotifications: data.agentNotifications,
             toolCalls: data.toolCalls,
             toolResults: normalizePersistedToolResults(data.toolResults),
             fileObservations: data.fileObservations,
             timestamp: record.timestamp,
           };
-          transcript = [...transcript, message];
-          if (message.includeInContext) contextHistory = [...contextHistory, message];
+          transcript.push(message);
+          if (message.includeInContext) contextHistory.push(message);
           activeEventTail = appendReplayLink(activeEventTail, eventId);
         } else {
           const last = transcript[transcript.length - 1];
           if (last?.role === 'assistant') {
             const updated = { ...last, content: last.content + (data.content ?? '') };
-            transcript = [...transcript.slice(0, -1), updated];
+            transcript[transcript.length - 1] = updated;
             const contextLast = contextHistory[contextHistory.length - 1];
             if (contextLast?.id === last.id) {
-              contextHistory = [...contextHistory.slice(0, -1), updated];
+              contextHistory[contextHistory.length - 1] = updated;
             }
           } else {
             count++;
@@ -366,8 +643,8 @@ export class SessionStore {
               kind: 'conversation',
               timestamp: record.timestamp,
             };
-            transcript = [...transcript, message];
-            contextHistory = [...contextHistory, message];
+            transcript.push(message);
+            contextHistory.push(message);
           }
           activeEventTail = appendReplayLink(activeEventTail, eventId);
         }
@@ -376,13 +653,19 @@ export class SessionStore {
 
     if (records.length) meta.updatedAt = records[records.length - 1].timestamp;
     meta.messageCount = count;
+    if (!meta.name) {
+      const firstUserPrompt = transcript.find(
+        (message) => message.role === 'user' && message.kind !== 'local',
+      )?.content;
+      if (firstUserPrompt) meta.name = deriveSessionName(firstUserPrompt);
+    }
     const activeTargetIds = replayLinkValues(activeTargetTail);
     const activeEventIds = replayLinkValues(activeEventTail);
     const rewindTargets = activeTargetIds
       .map((targetId) => targets.get(targetId))
       .filter((target): target is RewindTarget => Boolean(target))
       .reverse();
-    return {
+    const loaded: LoadedSession = {
       transcript,
       contextHistory,
       compactBoundaries,
@@ -391,6 +674,14 @@ export class SessionStore {
       meta,
       history: contextHistory,
     };
+    if (parsedCache) parsedCache.loaded = loaded;
+    if (parsedCache) {
+      parsedCache.activeEventIds = new Set(activeEventIds);
+      parsedCache.activeRecords = undefined;
+      parsedCache.recordsByActiveId = undefined;
+    }
+    this.setIndexEntry(meta, transcript.at(-1)?.role, [...snapshotIds]);
+    return cloneLoadedSession(loaded);
   }
 
   fork(sourceId: string, meta: { cwd: string; name?: string; id?: string }): string {
@@ -415,29 +706,14 @@ export class SessionStore {
     if (!needle) return [];
     const capped = Math.max(1, Math.min(SEARCH_LIMIT_MAX, limit));
     const results: SessionHistorySearchResult[] = [];
-    const activeEventIds = new Set(this.load(id).activeEventIds);
-    for (const [index, record] of this.readRecords(id).entries()) {
+    for (const indexed of this.activeRecordIndex(id)) {
+      const { eventId, record, searchText, displayText } = indexed;
       if (!['user', 'assistant', 'local'].includes(record.type)) continue;
-      const eventId = record.eventId ?? `legacy-line-${index + 1}`;
-      if (!activeEventIds.has(eventId)) continue;
-      const data = record.data as {
-        content?: string;
-        contextContent?: string;
-        toolCalls?: Message['toolCalls'];
-        toolResults?: PersistedToolResult[];
-      };
-      const toolResults = normalizePersistedToolResults(data.toolResults);
-      const haystack = [
-        data.content ?? '',
-        data.contextContent ?? '',
-        ...(data.toolCalls ?? []).flatMap((call) => [call.name, JSON.stringify(call.arguments)]),
-        ...(toolResults ?? []).map((result) => result.content),
-      ].join('\n');
-      if (!haystack.toLowerCase().includes(needle)) continue;
+      if (!searchText.includes(needle)) continue;
       results.push({
         ref: `session://current/event/${eventId}`,
         role: record.type === 'user' ? 'user' : 'assistant',
-        preview: clipPreview(haystack, SEARCH_PREVIEW_CHARS),
+        preview: clipPreview(displayText, SEARCH_PREVIEW_CHARS),
         timestamp: record.timestamp,
       });
       if (results.length >= capped) break;
@@ -448,26 +724,21 @@ export class SessionStore {
   readCurrent(id: string, refs: string[]): Array<{ ref: string; content: string }> {
     if (refs.length > READ_REF_LIMIT)
       throw new Error(`At most ${READ_REF_LIMIT} references per call.`);
-    const records = this.readRecords(id);
-    const activeEventIds = new Set(this.load(id).activeEventIds);
-    const byId = new Map(
-      records
-        .map((record, index) => [record.eventId ?? `legacy-line-${index + 1}`, record] as const)
-        .filter(([eventId]) => activeEventIds.has(eventId)),
-    );
+    const byId = this.activeRecordMap(id);
     const output: Array<{ ref: string; content: string }> = [];
     let remaining = READ_TOTAL_CHARS;
     for (const ref of refs) {
       const parsed = parseCurrentSessionRef(ref);
-      const record = byId.get(parsed.eventId);
-      if (!record) throw new Error(`Unknown session history reference: ${ref}`);
+      const indexed = byId.get(parsed.eventId);
+      if (!indexed) throw new Error(`Unknown session history reference: ${ref}`);
+      const record = indexed.record;
       const data = record.data as {
         content?: string;
         contextContent?: string;
         toolCalls?: Message['toolCalls'];
         toolResults?: PersistedToolResult[];
       };
-      const toolResults = normalizePersistedToolResults(data.toolResults);
+      const toolResults = indexed.toolResults;
       let content: string;
       if (parsed.toolCallId) {
         const result = toolResults?.find((item) => item.toolCallId === parsed.toolCallId);
@@ -499,22 +770,66 @@ export class SessionStore {
     return output;
   }
 
-  list(): SessionMeta[] {
-    const metas: SessionMeta[] = [];
-    for (const file of readdirSync(this.root)) {
-      if (!file.endsWith('.jsonl')) continue;
-      const id = file.replace(/\.jsonl$/, '');
-      try {
-        metas.push(this.load(id).meta);
-      } catch {
-        // Skip corrupt files.
-      }
+  private activeRecordIndex(id: string): IndexedSessionRecord[] {
+    let cache = this.parsedSessions.get(id);
+    if (!cache?.activeEventIds) {
+      this.load(id);
+      cache = this.parsedSessions.get(id);
     }
-    return metas.sort((a, b) => b.updatedAt - a.updatedAt);
+    if (!cache) return [];
+    if (cache.activeRecords) return cache.activeRecords;
+    const activeEventIds = cache.activeEventIds ?? new Set<string>();
+    cache.activeRecords = cache.records.flatMap((record, index) => {
+      const eventId = record.eventId ?? `legacy-line-${index + 1}`;
+      if (!activeEventIds.has(eventId)) return [];
+      const data = record.data as {
+        content?: string;
+        contextContent?: string;
+        toolCalls?: Message['toolCalls'];
+        toolResults?: PersistedToolResult[];
+      };
+      const toolResults = normalizePersistedToolResults(data.toolResults);
+      const displayText = [
+        data.content ?? '',
+        data.contextContent ?? '',
+        ...(data.toolCalls ?? []).flatMap((call) => [call.name, JSON.stringify(call.arguments)]),
+        ...(toolResults ?? []).map((result) => result.content),
+      ].join('\n');
+      return [{ eventId, record, displayText, searchText: displayText.toLowerCase(), toolResults }];
+    });
+    return cache.activeRecords;
+  }
+
+  private activeRecordMap(id: string): Map<string, IndexedSessionRecord> {
+    const cache = this.parsedSessions.get(id);
+    if (cache?.recordsByActiveId) return cache.recordsByActiveId;
+    const records = this.activeRecordIndex(id);
+    const refreshed = this.parsedSessions.get(id);
+    const byId = new Map(records.map((record) => [record.eventId, record]));
+    if (refreshed) refreshed.recordsByActiveId = byId;
+    return byId;
+  }
+
+  list(): SessionMeta[] {
+    this.ensureIndex();
+    return Array.from(this.metadataIndex.values(), (entry) => ({ ...entry.meta })).sort(
+      (a, b) => b.updatedAt - a.updatedAt,
+    );
   }
 
   listRewindTargets(id: string): RewindTarget[] {
     return this.load(id).rewindTargets;
+  }
+
+  listSnapshotReferences(cwd: string): Set<string> {
+    const normalized = normalizeWorkspace(cwd);
+    this.ensureIndex();
+    const references = new Set<string>();
+    for (const entry of this.metadataIndex.values()) {
+      if (entry.meta.cwd !== normalized) continue;
+      for (const snapshotId of entry.snapshotIds ?? []) references.add(snapshotId);
+    }
+    return references;
   }
 
   mostRecentInCwd(cwd: string): SessionMeta | undefined {
@@ -533,24 +848,43 @@ export class SessionStore {
   cleanup(days: number): number {
     const cutoff = Date.now() - days * 86400_000;
     let removed = 0;
-    for (const file of readdirSync(this.root)) {
-      if (!file.endsWith('.jsonl')) continue;
-      const id = file.replace(/\.jsonl$/, '');
+    const removedIds: string[] = [];
+    this.ensureIndex();
+    for (const [id, entry] of this.metadataIndex) {
       try {
-        const { meta } = this.load(id);
-        if (meta.updatedAt < cutoff) {
+        if (entry.meta.updatedAt < cutoff) {
           unlinkSync(this.path(id));
+          this.metadataIndex.delete(id);
+          this.parsedSessions.delete(id);
+          removedIds.push(id);
           removed++;
         }
       } catch {
-        if (statSync(this.path(id)).mtimeMs < cutoff) {
+        if (existsSync(this.path(id)) && statSync(this.path(id)).mtimeMs < cutoff) {
           unlinkSync(this.path(id));
+          this.metadataIndex.delete(id);
+          this.parsedSessions.delete(id);
+          removedIds.push(id);
           removed++;
         }
       }
     }
+    if (removedIds.length > 0) this.persistIndex(removedIds, []);
     return removed;
   }
+}
+
+function cloneLoadedSession(session: LoadedSession): LoadedSession {
+  const contextHistory = [...session.contextHistory];
+  return {
+    transcript: [...session.transcript],
+    contextHistory,
+    compactBoundaries: [...session.compactBoundaries],
+    rewindTargets: [...session.rewindTargets],
+    activeEventIds: [...session.activeEventIds],
+    meta: { ...session.meta },
+    history: contextHistory,
+  };
 }
 
 function restoreMessage(message: Message, fallbackId: string, timestamp: number): Message {
