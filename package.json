@@ -74,15 +74,15 @@
   },
   "dependencies": {
     "chalk": "^5.4.0",
-    "commander": "^14.0.0",
+    "commander": "^15.0.0",
     "fast-glob": "^3.3.0",
-    "fuse.js": "^7.4.2",
-    "ignore": "^7.0.0",
-    "ink": "^6.0.0",
+    "fuse.js": "^7.5.0",
+    "ignore": "^7.0.6",
+    "ink": "^7.1.1",
     "ink-text-input": "^6.0.0",
-    "marked": "^18.0.5",
-    "react": "^19.0.0",
-    "zod": "^3.24.0"
+    "marked": "^18.0.7",
+    "react": "^19.2.8",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

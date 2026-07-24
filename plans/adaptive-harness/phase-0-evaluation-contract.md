@@ -2,7 +2,7 @@
 
 - **Parent plan:** [Adaptive Harness Implementation Plan](../adaptive-harness-implementation-plan.md)
 - **Status:** Not started
-- **Depends on:** None
+- **Depends on:** Parent-plan Pre-Phase-0 Runtime Preconditions verified
 - **Tracking rule:** Update this status and the parent plan ledger in the same change.
 
 > The parent plan's original intent, non-negotiable invariants, architecture boundaries, stop conditions, and anti-drift review apply to every task in this phase.
@@ -34,13 +34,24 @@ Create a versioned manifest format for every evaluation case. A case should decl
 ```ts
 interface HarnessEvaluationCase {
   schemaVersion: 1;
+  corpusVersion: string;
+  evaluatorVersion: string;
   id: string;
   taskClass: 'read-only' | 'simple-edit' | 'bug-fix' | 'multi-file' | 'review' | 'research' | 'long-horizon';
   prompt: string;
   fixture: {
     source: string;
     revision: string;
-    setupCommand?: string;
+    treeDigest: string;
+    setup?: TrustedCommand;
+    reset?: TrustedCommand;
+    cleanup?: TrustedCommand;
+  };
+  model: {
+    provider: string;
+    requestedModel: string;
+    resolvedModel?: string;
+    configDigest: string;
   };
   compatibility: {
     runtimeFingerprint: string;
@@ -52,9 +63,12 @@ interface HarnessEvaluationCase {
   expectedArtifacts?: string[];
   verifiers: Array<{
     id: string;
-    command?: string;
+    command?: TrustedCommand;
     kind: 'command' | 'file' | 'diff' | 'human-rubric';
     required: boolean;
+    timeoutMs?: number;
+    expectedExitCodes?: number[];
+    expectedDigest?: string;
   }>;
   budgets: {
     maxTurns?: number;
@@ -64,13 +78,22 @@ interface HarnessEvaluationCase {
   };
   tags: string[];
 }
+
+interface TrustedCommand {
+  argv: string[];
+  cwd: string;
+  envAllowlist: string[];
+  network: 'off' | 'restricted' | 'required';
+}
 ```
 
 The schema is a contract, not necessarily the final runtime type. Phase 0 may represent it as JSON/Markdown fixtures before Phase 1 adds shared TypeScript contracts.
 
 ##### 0.2 Build the initial fixture matrix
 
-Create at least one deterministic case for each initial task class that Book can verify automatically. Prefer tiny fixture repositories or frozen repository revisions over mocks that bypass real file and tool behavior.
+Create at least one deterministic fixture for each machine-verifiable task class and at least one
+explicitly observational or human-rubric case for subjective classes. Prefer tiny fixture repositories
+or frozen repository revisions over mocks that bypass real file and tool behavior.
 
 Each fixture should define:
 
@@ -91,6 +114,10 @@ The initial corpus must also contain targeted cases for:
 
 Do not use personal session transcripts in the initial corpus.
 
+Machine-verifiable, human-rubric, and observational cases must be labeled separately. A
+deterministic fixture does not make model execution deterministic; every model-backed case must
+declare a repeated-trial rule even when temperature is zero or a provider seed is available.
+
 ##### 0.3 Define baseline execution arms
 
 Document how each case is run under:
@@ -101,6 +128,10 @@ Document how each case is run under:
 - `D/candidate`: evolved workflow, introduced only in Phase 8.
 
 All arms must use the same model version, provider settings, tool-surface fingerprint, runtime/environment profile, repository revision, budgets, and evaluator version.
+
+The initial corpus must also lock `settings.agents.mode`, normally to `off`, so the harness workflow
+is not confounded with Book's existing adaptive delegation. Capture a golden provider-message and
+session-behavior baseline for `A/base`; do not assume a later `minimal` workflow is equivalent.
 
 ##### 0.4 Freeze metrics and decision rules
 
@@ -113,6 +144,11 @@ For every task class, declare:
 - paired-run or repeated-control rule and the minimum detectable effect above infrastructure noise;
 - tie-breaking rule;
 - treatment of timeouts, evaluator failures, and unknown outcomes.
+- experimental/randomization unit and cluster dependencies;
+- estimand, minimum detectable effect, alpha/power or minimum-sample rule;
+- non-inferiority margins for guardrails and multiplicity handling across slices/metrics;
+- missingness policy, including when unknown/evaluator failure differs by arm;
+- trial-order, cache, rate-limit, clock, seed, and network controls.
 
 Do not require one universal scalar score. A candidate may be rejected because it improves correctness while violating a guardrail. When results are equivalent within the declared uncertainty/noise band, the simpler workflow wins.
 
@@ -163,6 +199,10 @@ Define stable, redacted fingerprints for:
 
 Run repeated base/control cases to estimate setup failures, latency variance, and success-rate variance before setting promotion thresholds. If the observed noise can explain the measured effect, report insufficient evidence.
 
+Keep component-level compatibility fields beside any aggregate digest. One opaque fingerprint is
+insufficient for diagnosing whether a model, tool schema, evaluator, runtime, or incidental machine
+property caused invalidation. Canonicalize structured inputs before hashing.
+
 ##### 0.8 Define external benchmark adapters and HarnessCard output
 
 Allow optional adapters for a small coding benchmark and a long-horizon terminal benchmark. Adapters must lock the same compatibility fields as local fixtures, preserve the benchmark's evaluator, and keep results separate from the primary Book corpus.
@@ -184,6 +224,14 @@ evals/harness/reports/        # generated and gitignored unless curated
 
 If the project chooses a different location, record the decision before Phase 1 and use it consistently.
 
+#### Phase 0 Research Closure Gate
+
+Before implementation, answer the Phase 0 questions in
+[research-grounding.md](research-grounding.md): trusted command execution, experimental unit,
+repeated-trial design, missingness, multiplicity, human-rubric reliability, exact identity, and
+external-runner isolation. Adversarial setup/verifier fixtures cannot run in Book's unsandboxed
+Windows shell path.
+
 #### Phase 0 Test Matrix
 
 - Valid and invalid evaluation manifests.
@@ -198,6 +246,9 @@ If the project chooses a different location, record the decision before Phase 1 
 - A report cannot compare arms with different model, budget, fixture revision, environment, tool surface, runtime, or evaluator versions without marking the comparison invalid.
 - Repeated base runs produce a recorded noise floor and minimum detectable effect.
 - External benchmark adapters cannot replace or weaken local held-out promotion criteria.
+- Manifest schemas reject unknown fields recursively instead of stripping them.
+- Fixture materialization matches the declared tree digest and rejects symlink/path escapes.
+- Root and child tokens/costs are cumulative; unknown pricing remains unknown rather than zero.
 
 **Verification:**
 

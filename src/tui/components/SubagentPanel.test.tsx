@@ -27,17 +27,17 @@ const agent: AgentSummary = {
 };
 
 describe('SubagentPanel', () => {
-  it('renders purpose, profile, model, and activity on wide terminals', () => {
+  it('renders each task as a compact title and elapsed-time row', () => {
     const view = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <SubagentPanel agents={[agent]} width={100} reducedMotion />
       </ThemeContext.Provider>,
     );
     const output = view.lastFrame() ?? '';
-    expect(output).toContain('Trace authentication flow');
-    expect(output).toContain('explorer');
-    expect(output).toContain('gateway/fast-model');
-    expect(output).toContain('Searching src/auth');
+    expect(output).toMatch(/Trace authentication flow \| \d+s/);
+    expect(output).not.toContain('explorer');
+    expect(output).not.toContain('gateway/fast-model');
+    expect(output).not.toContain('Searching src/auth');
     expect(output).toContain('Background tasks');
     expect(output).toContain('main');
   });
@@ -81,7 +81,8 @@ describe('SubagentPanel', () => {
       </ThemeContext.Provider>,
     );
     const output = view.lastFrame() ?? '';
-    expect(output).toContain('Trace authentication flow');
+    expect(output).toContain('Trace authentication');
+    expect(output).toMatch(/\| \d+s/);
     expect(output).toContain('+1 more tasks');
   });
 
@@ -98,7 +99,7 @@ describe('SubagentPanel', () => {
     await vi.waitFor(() => expect(onClose).toHaveBeenCalledOnce());
   });
 
-  it('freezes terminal duration and replaces stale running activity with the result', () => {
+  it('freezes terminal duration on the task title row', () => {
     const view = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <SubagentRow
@@ -122,8 +123,8 @@ describe('SubagentPanel', () => {
       </ThemeContext.Provider>,
     );
     const output = view.lastFrame() ?? '';
-    expect(output).toContain('Found the lifecycle gap');
-    expect(output).toContain('5s');
+    expect(output).toContain('Trace authentication flow | 5s');
+    expect(output).not.toContain('Found the lifecycle gap');
     expect(output).not.toContain('Thinking');
   });
 

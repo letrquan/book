@@ -1,4 +1,4 @@
-import { Box, Text } from 'ink';
+import { Text } from 'ink';
 import { useEffect, useState } from 'react';
 import type { AgentSummary } from '../../agents/types.js';
 import { useTheme } from '../theme.js';
@@ -90,23 +90,15 @@ export function SubagentRow({
     );
   }
 
-  const narrow = width < 64;
-  const tiny = width < 42;
-  const model = tiny ? '' : truncateDisplay(agent.resolvedModel, narrow ? 14 : 24);
+  const elapsedLabel = formatElapsedDuration(elapsed);
+  const elapsedSuffix = ` | ${elapsedLabel}`;
+  const displayNameWidth = Math.max(1, width - 8 - elapsedSuffix.length);
   return (
-    <Box flexDirection="column" width={width} paddingX={1}>
-      <Text color={selected ? theme.text : color} bold={selected}>
-        {selected ? '›' : ' '} {statusGlyph(agent.status, reducedMotion)}{' '}
-        {truncateDisplay(agent.displayName, Math.max(12, width - 8))}
-      </Text>
-      {!tiny ? (
-        <Text color={theme.subtle}>
-          {'   '}
-          {agent.profile}
-          {model ? ` | ${model}` : ''} | {truncateDisplay(activity, narrow ? 22 : 36)}
-          {` | ${formatElapsedDuration(elapsed)}`}
-        </Text>
-      ) : null}
-    </Box>
+    <Text color={selected ? theme.text : color} bold={selected}>
+      {' '}
+      {selected ? '›' : ' '} {statusGlyph(agent.status, reducedMotion)}{' '}
+      {truncateDisplay(agent.displayName, displayNameWidth)}
+      <Text color={theme.subtle}>{elapsedSuffix}</Text>
+    </Text>
   );
 }

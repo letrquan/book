@@ -45,6 +45,7 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Use a 64,000-token output fallback for models without published output metadata instead of consuming the entire fallback context window.
 - Prevent context-window failures from oversized tool output by skipping binary `Grep` inputs, bounding search and generic tool results, preflighting complete provider requests, and compacting or clipping once before retrying recognized overflow errors.
 - Apply interactive permission-mode changes immediately to the active agent loop.
 - Keep mouse-wheel transcript scrolling while allowing terminal copy with Shift+drag.
