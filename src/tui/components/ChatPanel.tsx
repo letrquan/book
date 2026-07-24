@@ -182,12 +182,19 @@ export function ChatPanel({
         const isStreaming = message.id === streamingMessageId;
         const next = visibleTimeline[index + 1];
         const nextEntryIsUser = Boolean(next && 'role' in next && next.role === 'user');
+        const followsToolCall = Boolean(
+          previous &&
+          'role' in previous &&
+          previous.role === 'assistant' &&
+          previous.toolCalls?.length,
+        );
         return (
           <Box
             key={message.id}
             flexDirection="column"
             marginTop={
-              previous && 'role' in previous && previous.role === 'user' && density !== 'tight'
+              density !== 'tight' &&
+              (followsToolCall || (previous && 'role' in previous && previous.role === 'user'))
                 ? 1
                 : 0
             }

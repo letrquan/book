@@ -679,6 +679,25 @@ describe('ChatPanel Ink rendering', () => {
     );
   });
 
+  it('adds one blank row between a tool call and following assistant prose', () => {
+    const messages: Message[] = [
+      {
+        ...msg('a1', 'assistant', ''),
+        toolCalls: [{ id: 'call-1', name: 'Read', arguments: { filePath: 'src/a.ts' } }],
+        toolResults: [successResult('call-1', 'file contents')],
+      },
+      msg('a2', 'assistant', 'FOLLOWUP_MESSAGE_MARKER'),
+    ];
+    const view = render(
+      withTheme(<ChatPanel messages={messages} terminalWidth={100} reducedMotion />),
+    );
+    const lines = frame(view.lastFrame).split('\n');
+    const toolLine = lines.findIndex((line) => line.includes('Read(src/a.ts)'));
+    const followupLine = lines.findIndex((line) => line.includes('FOLLOWUP_MESSAGE_MARKER'));
+
+    expect(lines.slice(toolLine + 1, followupLine)).toEqual(['']);
+  });
+
   it('marks a pending permission on the matching assistant tool row', () => {
     const toolCall: ToolCall = {
       id: 'call-pending',

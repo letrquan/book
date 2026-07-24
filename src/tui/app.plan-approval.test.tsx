@@ -178,6 +178,39 @@ describe('App session commands', () => {
     expect(stripAnsi(view.lastFrame())).toContain('ctx 50%');
   });
 
+  it('leaves one blank row between transcript output and the input bar', () => {
+    const agentState = {
+      ...pendingAgentState(),
+      isThinking: false,
+      pendingPlanApproval: null,
+      messages: [
+        {
+          id: 'assistant-spacing',
+          role: 'assistant' as const,
+          content: 'TRANSCRIPT_SPACING_MARKER',
+          timestamp: 1,
+          includeInContext: true,
+        },
+      ],
+    };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    const lines = stripAnsi(view.lastFrame()).split('\n');
+    const inputLine = lines.findIndex((line) => line.includes('Ask me anything'));
+
+    expect(lines).toContainEqual(expect.stringContaining('TRANSCRIPT_SPACING_MARKER'));
+    expect(inputLine).toBeGreaterThan(1);
+    expect(lines[inputLine - 2]).toBe('');
+  });
+
   it('/new dispatches a new conversation', async () => {
     const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
     useAgentMock.mockReturnValue(agentState);

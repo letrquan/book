@@ -1640,7 +1640,12 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
           />
 
           {/* Input bar — above the status line. Command menu is built into InputBar. */}
-          <Box flexDirection="column" flexShrink={0} width={termWidth}>
+          <Box
+            flexDirection="column"
+            flexShrink={0}
+            width={termWidth}
+            marginTop={density !== 'tight' && messages.length > 0 ? 1 : 0}
+          >
             <InputBar
               key={sessionId}
               onSubmit={handleSubmit}
