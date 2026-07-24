@@ -102,6 +102,7 @@ export function groupConsecutiveMcpCalls<TCall>(
 }
 const LABELS: Record<string, string> = {
   Read: 'Read',
+  ApplyPatch: 'Apply patch',
   Write: 'Write',
   Edit: 'Edit',
   MultiEdit: 'Edit',
@@ -187,7 +188,12 @@ function fileMutationPresentation(
     result?.artifacts?.fileMutation?.filePath ??
     stringArg(args, 'filePath', 'file_path', 'notebook_path', 'path') ??
     getPrimaryArg(args);
-  const action = result?.artifacts?.fileMutation?.kind === 'create' ? 'Create' : 'Update';
+  const action =
+    result?.artifacts?.fileMutation?.kind === 'create'
+      ? 'Create'
+      : result?.artifacts?.fileMutation?.kind === 'delete'
+        ? 'Delete'
+        : 'Update';
   const metadata: string[] = [];
   const mutation =
     result?.artifacts?.fileMutation ??
@@ -272,7 +278,8 @@ export function deriveToolPresentation(
             : 'none';
     const mutation = result.artifacts?.fileMutation;
     if (mutation) {
-      title = mutation.kind === 'create' ? 'Create' : 'Update';
+      title =
+        mutation.kind === 'create' ? 'Create' : mutation.kind === 'delete' ? 'Delete' : 'Update';
       filePath = mutation.filePath;
       target = mutation.filePath;
     }

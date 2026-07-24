@@ -21,7 +21,7 @@ function nearestExistingPath(inputPath: string): string | null {
 export function resolveWorkspacePath(
   workspaceRoot: string,
   inputPath: string,
-): { filePath: string; relativePath: string } | null {
+): { filePath: string; canonicalPath: string; relativePath: string } | null {
   const lexicalRoot = resolve(workspaceRoot);
   const filePath = resolve(isAbsolute(inputPath) ? inputPath : resolve(lexicalRoot, inputPath));
   if (isOutside(lexicalRoot, filePath)) return null;
@@ -39,8 +39,11 @@ export function resolveWorkspacePath(
   }
   if (isOutside(realRoot, realExisting)) return null;
 
+  const canonicalPath = resolve(realExisting, relative(existingPath, filePath));
+  if (isOutside(realRoot, canonicalPath)) return null;
+
   const rel = relative(lexicalRoot, filePath);
-  return { filePath, relativePath: rel.replace(/\\/g, '/') };
+  return { filePath, canonicalPath, relativePath: rel.replace(/\\/g, '/') };
 }
 
 export function pathOutsideWorkspaceResult(inputPath: unknown): ToolResult {

@@ -447,7 +447,9 @@ export function AgentMessageInner({
           }
           mutationGroup = {
             summaries,
-            fileCount: new Set(summaries.map((summary) => summary.filePath)).size,
+            fileCount: summaries.some((summary) => (summary.fileCount ?? 1) > 1)
+              ? summaries.reduce((total, summary) => total + (summary.fileCount ?? 1), 0)
+              : new Set(summaries.map((summary) => summary.filePath)).size,
             addedLines: summaries.reduce((total, summary) => total + summary.addedLines, 0),
             removedLines: summaries.reduce((total, summary) => total + summary.removedLines, 0),
             createdOnly: summaries.every((summary) => summary.kind === 'create'),

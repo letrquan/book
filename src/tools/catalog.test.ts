@@ -143,6 +143,20 @@ describe('tool surface discovery', () => {
     });
   });
 
+  it('keeps ApplyPatch in the core filesystem/write surface', () => {
+    const surface = createToolSurface({
+      config: config(),
+      context: context(),
+      definitions: [definition('ApplyPatch')],
+    });
+    expect(surface.activeDefinitions().map((tool) => tool.name)).toContain('ApplyPatch');
+    expect(surface.activeDefinitions()[0]?.catalog).toMatchObject({
+      category: 'filesystem',
+      exposure: 'core',
+      effects: ['write'],
+    });
+  });
+
   it('retains higher-ranked activations when the loaded-tool cap is smaller than the match set', () => {
     const runtimeConfig = config();
     runtimeConfig.settings.toolDiscovery.mode = 'deferred';

@@ -6,6 +6,9 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Canonical `ApplyPatch` file mutation with exact contextual hunks, LF/CRLF and BOM preservation,
+  multi-file staging, atomic verification, rollback, per-file artifacts, legacy permission/hook
+  compatibility, and the `apply_patch` provider alias.
 - Native `rg` streaming for `Grep`, bounded `WebFetch`/`WebSearch` responses, rotating debug logs, terminal-shell TTL/cap cleanup, and the explicit `DismissShell` action.
 - Claude Code-style queued follow-up input: Enter queues while a turn is running, Up recalls the newest queued message, Enter resubmits edits, and Esc cancels queue editing without interrupting the active turn.
 - Repeatable `bench:runtime` coverage for snapshots, sessions, search, Grep, context construction, streaming updates, and retained resources.

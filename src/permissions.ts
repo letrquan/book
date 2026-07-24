@@ -1,6 +1,7 @@
 import type { ResolvedSettings } from './settings.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex } from './tools/glob-regex.js';
+import { parsePatch, type PatchOperation } from './tools/patch.js';
 
 /**
  * Parse a permission rule string like "Bash(git *)" or "Read(./.env)" into
@@ -59,6 +60,32 @@ function ruleMatches(rule: ParsedRule, toolName: string, primaryArg: string): bo
   return globToRegex(normalizedPattern).test(normalizedArg);
 }
 
+function patchOperations(args: Record<string, unknown>): PatchOperation[] {
+  const parsed = parsePatch(args.patch);
+  return 'operations' in parsed ? parsed.operations : [];
+}
+
+function ruleMatchesPatch(rule: ParsedRule, path: string): boolean {
+  return ruleMatches(rule, rule.toolName, path);
+}
+
+function patchRuleSupportsOperation(rule: ParsedRule, operation: PatchOperation): boolean {
+  if (rule.toolName === 'ApplyPatch') return true;
+  if (rule.toolName === 'Edit') return operation.kind === 'update';
+  if (rule.toolName === 'Write') return operation.kind === 'update' || operation.kind === 'add';
+  return false;
+}
+
+function compatiblePatchRuleMatches(rule: ParsedRule, operations: PatchOperation[]): boolean {
+  if (!['ApplyPatch', 'Edit', 'Write'].includes(rule.toolName)) return false;
+  if (rule.toolName === 'ApplyPatch' && rule.pattern === null) return true;
+  return operations.some(
+    (operation) =>
+      patchRuleSupportsOperation(rule, operation) &&
+      (rule.pattern === null || ruleMatchesPatch(rule, operation.path)),
+  );
+}
+
 /**
  * Extract the primary argument from a tool call for rule matching.
  * Delegates to the shared getPrimaryArg utility.
@@ -88,6 +115,48 @@ export function evaluatePermissionDetail(
 ): PermissionVerdict {
   const primaryArg = primaryArgForRule(toolName, args);
   const { deny, ask, allow } = settings.permissions;
+
+  // ApplyPatch is the canonical mutation surface, but existing Edit/Write rules
+  // remain valid for compatibility. A multi-file patch is allowed only when every
+  // target is covered; a deny on any target wins.
+  if (toolName === 'ApplyPatch') {
+    const operations = patchOperations(args);
+    const compatible = (ruleStr: string) => {
+      const rule = parseRule(ruleStr);
+      return (
+        rule.toolName === 'ApplyPatch' || rule.toolName === 'Edit' || rule.toolName === 'Write'
+      );
+    };
+    for (const ruleStr of deny) {
+      if (!compatible(ruleStr)) continue;
+      const rule = parseRule(ruleStr);
+      if (compatiblePatchRuleMatches(rule, operations))
+        return { decision: 'deny', matchedRule: ruleStr, source: 'deny' };
+    }
+    for (const ruleStr of ask) {
+      if (!compatible(ruleStr)) continue;
+      const rule = parseRule(ruleStr);
+      if (compatiblePatchRuleMatches(rule, operations))
+        return { decision: 'ask', matchedRule: ruleStr, source: 'ask' };
+    }
+    const allowRules = allow.filter(compatible).map(parseRule);
+    if (
+      operations.length > 0 &&
+      operations.every((operation) =>
+        allowRules.some(
+          (rule) =>
+            patchRuleSupportsOperation(rule, operation) &&
+            (rule.pattern === null || ruleMatchesPatch(rule, operation.path)),
+        ),
+      )
+    ) {
+      return { decision: 'allow', matchedRule: allow.find(compatible), source: 'allow' };
+    }
+    if (allowRules.some((rule) => rule.toolName === 'ApplyPatch' && rule.pattern === null)) {
+      return { decision: 'allow', matchedRule: allow.find(compatible), source: 'allow' };
+    }
+    return { decision: 'ask', source: 'default' };
+  }
 
   // Deny rules first.
   for (const ruleStr of deny) {

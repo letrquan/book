@@ -1,6 +1,7 @@
 import { exec } from 'child_process';
 import type { HookEntry, HookEvent } from './settings.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
+import { parsePatch } from './tools/patch.js';
 
 /** Context passed to every hook invocation. */
 export interface HookContext {
@@ -146,8 +147,33 @@ function matchesHookMatcher(
       }
     }
 
-    if (ruleTool !== toolName) return false;
+    const patchTargets =
+      toolName === 'ApplyPatch' && args
+        ? (() => {
+            const parsed = parsePatch(args.patch);
+            return 'operations' in parsed
+              ? parsed.operations.map((operation) => operation.path)
+              : [];
+          })()
+        : [];
+    const compatibleTool =
+      ruleTool === toolName ||
+      (toolName === 'ApplyPatch' && (ruleTool === 'Edit' || ruleTool === 'Write'));
+    if (!compatibleTool) return false;
     if (pattern === null) return true; // match-all
+
+    if (patchTargets.length > 0 && (ruleTool === 'Edit' || ruleTool === 'Write')) {
+      return patchTargets.some((path) => {
+        const normalizedPath = path.startsWith('./') ? path.slice(2) : path;
+        const normalizedPattern = pattern.startsWith('./') ? pattern.slice(2) : pattern;
+        const reStr = normalizedPattern
+          .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+          .replace(/\*\*/g, '.*')
+          .replace(/ \*$/g, '( .*)?')
+          .replace(/\*/g, '.*');
+        return new RegExp(`^${reStr}$`).test(normalizedPath);
+      });
+    }
 
     // Extract primary arg from tool arguments using shared utility.
     let primaryArg = getPrimaryArg(args);

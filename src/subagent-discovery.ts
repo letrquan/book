@@ -7,6 +7,7 @@ import { canonicalToolName } from './tools/aliases.js';
 const KNOWN_AGENT_TOOLS = new Set([
   '*',
   'AskUserQuestion',
+  'ApplyPatch',
   'Bash',
   'Check',
   'Edit',

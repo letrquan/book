@@ -44,6 +44,7 @@ export const BUILTIN_AGENTS: ManagedAgentDef[] = [
       'Glob',
       'Grep',
       'Write',
+      'ApplyPatch',
       'Edit',
       'MultiEdit',
       'NotebookEdit',

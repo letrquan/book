@@ -54,6 +54,7 @@ function isDiffOutput(toolName: string, result: ToolResult | undefined): boolean
 function toolLabel(name: string): string {
   const labels: Record<string, string> = {
     Read: 'Read file',
+    ApplyPatch: 'Apply patch',
     Write: 'Write file',
     Edit: 'Edit file',
     MultiEdit: 'Edit file',

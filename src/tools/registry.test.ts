@@ -22,6 +22,7 @@ describe('createDefaultRegistry — canonical CC tool names', () => {
     const names = new Set(r.getDefinitions().map((t) => t.name));
     for (const n of [
       'Read',
+      'ApplyPatch',
       'Write',
       'Edit',
       'Glob',
@@ -46,7 +47,15 @@ describe('createDefaultRegistry — canonical CC tool names', () => {
     const r = createDefaultRegistry();
     const names = r.getDefinitions().map((t) => t.name);
     // Legacy names must not appear as model-facing tools (they're aliases only).
-    for (const legacy of ['read_file', 'write_file', 'edit_file', 'glob', 'grep', 'bash']) {
+    for (const legacy of [
+      'read_file',
+      'write_file',
+      'edit_file',
+      'apply_patch',
+      'glob',
+      'grep',
+      'bash',
+    ]) {
       expect(names, `legacy ${legacy} should be alias-only`).not.toContain(legacy);
     }
   });
@@ -60,6 +69,10 @@ describe('createDefaultRegistry — canonical CC tool names', () => {
       ctx,
     );
     return expect(result).resolves.toMatchObject({ status: 'success' });
+  });
+
+  it('resolves apply_patch to the canonical ApplyPatch tool', () => {
+    expect(createDefaultRegistry().getTool('apply_patch')?.name).toBe('ApplyPatch');
   });
 });
 
@@ -272,7 +285,7 @@ describe('tool cancellation and timeout', () => {
 
 describe('tool capabilities', () => {
   it('classifies all file-mutating tools from one source of truth', () => {
-    for (const name of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+    for (const name of ['ApplyPatch', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
       expect(isFileMutatingTool(name), `expected ${name} file-mutating`).toBe(true);
     }
     for (const name of ['Read', 'Bash', 'GitCommit']) {
