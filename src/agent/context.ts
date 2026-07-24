@@ -1,5 +1,5 @@
-import { existsSync } from 'fs';
-import { platform, release, hostname } from 'os';
+import { existsSync, readdirSync, statSync } from 'fs';
+import { platform, release, hostname, homedir } from 'os';
 import { dirname, join, parse, resolve } from 'path';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message } from '../types/messages.js';
@@ -16,7 +16,112 @@ import { discoverClaudeMd, renderClaudeMd } from '../claude-md.js';
 import { discoverAgents, type SubagentDef } from '../subagent-discovery.js';
 import { runGit } from '../tools/git.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
+import { resolveAgentProfile } from '../agents/profile-resolver.js';
 import { toolResultModelContent } from '../tools/result.js';
+
+interface StaticDiscovery {
+  fingerprint: string;
+  skills: ReturnType<typeof discoverSkills>;
+  commands: SlashCommand[];
+  claudeMd: string;
+  agents: SubagentDef[];
+}
+
+export class AgentContextCache {
+  private readonly discoveries = new Map<string, StaticDiscovery>();
+  private readonly turnFingerprints = new Map<string, string>();
+  private readonly turnGit = new Map<string, Promise<string>>();
+  private readonly toolListings = new Map<string, string>();
+
+  beginTurn(): void {
+    this.turnFingerprints.clear();
+    this.turnGit.clear();
+  }
+
+  invalidateGit(workspace: string): void {
+    this.turnGit.delete(workspace);
+  }
+
+  invalidateWorkspace(workspace: string): void {
+    this.turnFingerprints.delete(workspace);
+    this.turnGit.delete(workspace);
+  }
+
+  discovery(workspace: string): StaticDiscovery {
+    let fingerprint = this.turnFingerprints.get(workspace);
+    if (!fingerprint) {
+      fingerprint = contextSourceFingerprint(workspace);
+      this.turnFingerprints.set(workspace, fingerprint);
+    }
+    const cached = this.discoveries.get(workspace);
+    if (cached?.fingerprint === fingerprint) return cached;
+    const discovery: StaticDiscovery = {
+      fingerprint,
+      skills: discoverSkills(workspace),
+      commands: discoverCommands(workspace),
+      claudeMd: renderClaudeMd(discoverClaudeMd(workspace)),
+      agents: discoverAgents(workspace),
+    };
+    this.discoveries.set(workspace, discovery);
+    return discovery;
+  }
+
+  git(workspace: string, signal?: AbortSignal): Promise<string> {
+    let cached = this.turnGit.get(workspace);
+    if (!cached) {
+      cached = gitContext(workspace, signal);
+      this.turnGit.set(workspace, cached);
+    }
+    return cached;
+  }
+
+  toolListing(tools: ToolDefinition[]): string {
+    const key = JSON.stringify(tools.map((tool) => [tool.name, tool.description]));
+    let listing = this.toolListings.get(key);
+    if (listing === undefined) {
+      listing = generateToolListing(tools, 2048);
+      this.toolListings.set(key, listing);
+    }
+    return listing;
+  }
+}
+
+function contextSourceFingerprint(workspace: string): string {
+  const hash = createHash('sha256');
+  const visited = new Set<string>();
+  const addTree = (path: string, depth: number) => {
+    if (visited.has(path)) return;
+    visited.add(path);
+    try {
+      const info = statSync(path);
+      hash.update(`${path}:${info.size}:${info.mtimeMs}:${info.ctimeMs}:${info.mode}\n`);
+      if (!info.isDirectory() || depth <= 0) return;
+      for (const entry of readdirSync(path).sort()) addTree(join(path, entry), depth - 1);
+    } catch {
+      hash.update(`${path}:missing\n`);
+    }
+  };
+
+  const home = homedir();
+  addTree(join(home, '.book', 'skills'), 3);
+  addTree(join(home, '.book', 'commands'), 2);
+  addTree(join(home, '.book', 'agents'), 2);
+  addTree(join(home, '.claude', 'CLAUDE.md'), 0);
+  addTree(join(workspace, '.book', 'skills'), 3);
+  addTree(join(workspace, '.book', 'commands'), 2);
+  addTree(join(workspace, '.book', 'agents'), 2);
+  addTree(join(workspace, '.claude'), 3);
+  addTree(join(workspace, 'CLAUDE.local.md'), 0);
+
+  let current = resolve(workspace);
+  const root = parse(current).root;
+  while (true) {
+    addTree(join(current, 'CLAUDE.md'), 0);
+    if (current === root) break;
+    current = dirname(current);
+  }
+  return hash.digest('hex');
+}
 
 function compactList(
   title: string,
@@ -105,36 +210,44 @@ function memorySection(config: AgentConfig): string {
   ].join('\n');
 }
 
-function generateAgentListing(agents: SubagentDef[], budgetChars = 1024): string {
+function generateAgentListing(
+  config: AgentConfig,
+  agents: SubagentDef[],
+  budgetChars = 1024,
+): string {
   return compactList(
     'Available subagents',
-    'Use the Task tool to delegate bounded, independent work to one of these agents.',
-    agents.map((agent) => ({ name: agent.name, description: agent.description })),
+    'Use AgentSpawn to delegate bounded, independent work to one of these profiles.',
+    withBuiltInAgents(agents).map((agent) => {
+      const resolved = resolveAgentProfile(agent, config);
+      return {
+        name: agent.name,
+        description: `${agent.description} Model: ${resolved.resolvedModel}; isolation: ${agent.isolation}.`,
+      };
+    }),
     budgetChars,
   );
 }
 
 function agentRoutingSection(config: AgentConfig): string {
   if (config.settings.agents.mode === 'off') return '';
-  if (!isInGitWorktree(config.workspace)) {
-    return [
-      '## Managed delegation',
-      'This workspace is not a Git worktree, so adaptive routing must remain single-agent.',
-      'Do not call AgentSpawn unless the user first initializes and commits the repository.',
-    ].join('\n');
-  }
   if (config.settings.agents.mode === 'manual') {
     return [
       '## Managed delegation',
-      `Mode: manual; concurrency: ${config.settings.agents.maxConcurrent}; depth: ${config.settings.agents.maxDepth}.`,
-      'Use managed agents only when the user explicitly requests delegation. Record an AgentPlan before spawning.',
+      `Mode: manual; concurrency: ${config.settings.agents.maxConcurrent}; outstanding spawn cap: ${config.settings.agents.maxSpawned}; depth: ${config.settings.agents.maxDepth}.`,
+      'Use managed agents only when the user explicitly requests delegation.',
+      'Explorer works read-only without Git. Patcher and validator require Git worktree isolation.',
       'Patch work remains isolated and requires a distinct validator pass before AgentApply.',
     ].join('\n');
   }
   return [
     '## Managed delegation',
-    `Mode: ${config.settings.agents.mode}; concurrency: ${config.settings.agents.maxConcurrent}; depth: ${config.settings.agents.maxDepth}.`,
-    'Before spawning, call AgentPlan with task shape, issue quality, topology, rationale, and budget.',
+    `Mode: ${config.settings.agents.mode}; concurrency: ${config.settings.agents.maxConcurrent}; outstanding spawn cap: ${config.settings.agents.maxSpawned}; depth: ${config.settings.agents.maxDepth}.`,
+    'Use AgentSpawn with the explorer profile for broad codebase exploration or research expected to require more than three discovery queries.',
+    'When invoking AgentSpawn, do not narrate the delegation in assistant text; the host renders the managed-agent activity and delivers its result automatically.',
+    'Give each child a self-contained prompt with one objective, a narrow scope, and an explicit concise deliverable. Ask for a short referenced handoff, not a repository tour or raw search output.',
+    'Search directly when the target file or symbol is known and the work should take three queries or fewer. Explorer work stays outside the parent context and returns compact referenced findings. Do not repeat searches already delegated to an explorer.',
+    'A single explorer can use the implicit bounded plan. Use AgentPlan for parallel_research, explore_then_patch, or patch_validate topologies.',
     'Keep sequential or tool-dependent work single-agent. Use parallel_research for decomposable research, explore_then_patch for ambiguous implementation, and patch_validate for clear implementation.',
     'For patch_validate, a validator may plan concurrently; after the patch candidate exists, pass its evidence ID through AgentSpawn or AgentSend before requesting the final verdict.',
     'Patch work remains isolated and cannot be applied until a distinct validator passes the exact candidate commit.',
@@ -204,11 +317,15 @@ export async function buildSystemPromptZones(
   tools: ToolDefinition[] = [],
   signal?: AbortSignal,
   overrides?: { append?: string; hideAgents?: boolean; toolCatalogSummary?: string },
+  cache?: AgentContextCache,
 ): Promise<SystemPromptZones> {
-  const skills = discoverSkills(config.workspace);
-  const cmdList = mergeCommands(commands ?? discoverCommands(config.workspace));
-  const claudeMd = renderClaudeMd(discoverClaudeMd(config.workspace));
-  const git = await gitContext(config.workspace, signal);
+  const discovery = cache?.discovery(config.workspace);
+  const skills = discovery?.skills ?? discoverSkills(config.workspace);
+  const cmdList = mergeCommands(
+    commands ?? discovery?.commands ?? discoverCommands(config.workspace),
+  );
+  const claudeMd = discovery?.claudeMd ?? renderClaudeMd(discoverClaudeMd(config.workspace));
+  const git = await (cache?.git(config.workspace, signal) ?? gitContext(config.workspace, signal));
 
   const staticSections = [
     `You are Book, an AI coding agent working directly in the user's workspace. Help users understand, change, and verify software.`,
@@ -225,9 +342,9 @@ export async function buildSystemPromptZones(
     generateCommandListing(cmdList, 1536),
     overrides?.hideAgents || config.settings.agents.mode === 'off'
       ? ''
-      : generateAgentListing(withBuiltInAgents(discoverAgents(config.workspace)), 1536),
+      : generateAgentListing(config, discovery?.agents ?? discoverAgents(config.workspace), 1536),
     overrides?.hideAgents ? '' : agentRoutingSection(config),
-    generateToolListing(tools, 2048),
+    cache?.toolListing(tools) ?? generateToolListing(tools, 2048),
     overrides?.toolCatalogSummary
       ? ['## Deferred tool catalog', overrides.toolCatalogSummary].join('\n')
       : '',
@@ -262,6 +379,7 @@ export async function buildMessages(
   commands?: SlashCommand[],
   signal?: AbortSignal,
   systemOverrides?: { append?: string; hideAgents?: boolean; toolCatalogSummary?: string },
+  cache?: AgentContextCache,
 ): Promise<ProviderMessage[]> {
   const messages: ProviderMessage[] = [];
 
@@ -274,6 +392,7 @@ export async function buildMessages(
       tools,
       signal,
       systemOverrides,
+      cache,
     ),
   });
 

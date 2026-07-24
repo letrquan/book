@@ -26,7 +26,8 @@
 
 ##### 1.1 Add the harness mode setting
 
-Extend `src/settings.ts` and settings resolution with:
+Extend `src/settings.ts` and settings resolution with a nested harness setting (do not reuse the
+existing managed-agent `settings.agents.mode` key) with:
 
 ```ts
 type HarnessMode = 'off' | 'observe' | 'shadow' | 'active' | 'learn';
@@ -41,7 +42,9 @@ Rules:
 - `learn` may generate candidates but cannot promote them without Phase 8 gates;
 - invalid values fail configuration validation rather than silently falling back.
 
-Only `off` is available in Phase 1. Later phases enable the other modes one at a time; requesting an unavailable mode must fail clearly rather than silently changing behavior.
+Only `off` is available in Phase 1. Later phases enable the other modes one at a time through an
+explicit availability gate; requesting a valid-but-unavailable mode must fail before provider calls,
+storage creation, or environment inspection rather than silently changing behavior.
 
 Update redaction and configuration display so the mode is inspectable and contains no sensitive evidence.
 
@@ -63,7 +66,8 @@ interface HarnessRunContext {
 interface WorkflowDecision {
   id: string;
   version: number;
-  reason: string;
+  reasonCode: string;
+  explanation?: string; // bounded, redacted display text only
   source: 'baseline' | 'manual' | 'fixed' | 'adaptive' | 'candidate';
 }
 
@@ -75,6 +79,9 @@ interface HarnessCoordinator {
 ```
 
 Avoid importing provider, TUI, or tool implementations into the contracts module.
+
+In `off` mode the harness context/coordinator is absent and no run ID is generated. The required
+run context applies only after observation is enabled; this preserves the stated no-op behavior.
 
 ##### 1.3 Thread an optional frozen context through execution
 
@@ -91,7 +98,9 @@ Do not place the evidence store, learner, or mutable policy object on `AgentConf
 
 ##### 1.4 Add a no-op coordinator
 
-Create a coordinator implementation that returns the baseline decision and drops all events. Use it when mode is `off` so call sites do not need repeated conditionals.
+Create a no-op facade that returns a typed disabled result with no run context or run ID and drops all
+events. It may simplify host call sites, but it must not invoke enabled-mode preparation or fabricate
+a baseline run.
 
 The no-op path must not:
 
@@ -100,6 +109,10 @@ The no-op path must not:
 - write harness storage;
 - alter callback timing;
 - change error behavior.
+
+For enabled modes, define an asynchronous observer lifecycle (`enqueue`, `flush`, `close`) with
+bounded queues, dropped-event counters, backpressure policy, and shutdown semantics. Split the
+immutable initial decision from any later typed transition state.
 
 ##### 1.5 Define the trusted kernel contract
 
@@ -117,6 +130,10 @@ Document fields and actions that workflow configuration cannot control:
 - prompt-injection defenses and trust/provenance rules;
 - checkpoint, compaction, resume, cancellation, and retry correctness;
 - trace identity and evidence-integrity rules.
+
+Current legacy subagents run with a fixed `bypassPermissions` loop mode and a restricted capability
+registry. Treat that as an existing runtime security decision to audit, fingerprint, and test; no
+workflow may select or broaden it, and initial single-agent harness evaluation keeps managed agents off.
 
 Represent requested versus effective values separately when later workflows request a posture that the kernel clamps.
 
@@ -155,6 +172,16 @@ interface ToolSurfaceDescriptor {
 
 These contracts identify compatibility; they do not authorize the harness to redefine tools or runtime behavior. Fingerprint collection begins only in later observe/evaluation phases and must remain absent from the Phase 1 `off` path.
 
+##### 1.8 Publish the workflow capability matrix
+
+Before Phase 3, map every proposed workflow field to a concrete enforcement point and classify it
+as `kernel-enforced request`, `prompt-only guidance`, or `unsupported/clamped`. Initial Book does not
+yet provide enforceable controls for several proposed fields, including input-context ceilings,
+handoff, edit-scope limits, trusted verifier execution, or workflow-specific retry logic.
+
+Also decide whether the first harness release is available through the public SDK/headless options.
+If it is, include `src/sdk.ts` and `src/types/public-sdk.ts`; otherwise record CLI/settings-only scope.
+
 #### Phase 1 File Plan
 
 ```text
@@ -166,7 +193,10 @@ Modify src/settings-loader.test.ts
 Modify src/settings-redaction.test.ts
 Modify src/agent/loop.ts                # optional context only
 Modify src/agent/loop.test.ts
-Modify src/types.ts                     # only if a type is truly shared
+Modify src/types/*                       # only if truly shared; `src/types.ts` is forbidden
+Modify src/session/agent-session.ts     # shared root-request lifecycle boundary
+Modify src/session/agent-events.ts      # lossless terminal reason/event semantics
+Modify src/settings-repository.ts       # settings key enumeration/precedence
 ```
 
 #### Phase 1 Test Matrix
@@ -180,6 +210,9 @@ Modify src/types.ts                     # only if a type is truly shared
 - Aborted and failed runs behave exactly as before in `off` mode.
 - Workflow-facing types cannot redefine tool schemas, retries, cancellation, checkpoint/resume mechanics, provenance rules, or security enforcement.
 - Compatibility fields are optional and do not trigger environment inspection in `off` mode.
+- Future modes are rejected by capability availability, not only enum parsing.
+- Workflow-facing contracts classify each field as kernel-enforced, guidance-only, or unsupported/clamped.
+- Runtime failure and cancellation semantics remain lossless through session finalization.
 
 **Verification:**
 
@@ -192,9 +225,9 @@ Modify src/types.ts                     # only if a type is truly shared
 
 ```powershell
 npm run typecheck
-npm test -- src/agent/loop.test.ts
-npm test -- src/agent/context.test.ts
-npm test -- src/settings-loader.test.ts
+npm run test:unit -- src/agent/loop.test.ts
+npm run test:unit -- src/agent/context.test.ts
+npm run test:unit -- src/settings-loader.test.ts
 npm test
 ```
 

@@ -79,6 +79,55 @@ describe('RewindSnapshotStore', () => {
     expect(readFileSync(join(workspace, 'tracked.txt'), 'utf-8')).toBe('before');
   });
 
+  it('excludes workspace-local Book state unless explicitly opted in', () => {
+    const { workspace, store } = fixture();
+    mkdirSync(join(workspace, '.book', 'tool-output'), { recursive: true });
+    writeFileSync(join(workspace, '.book', 'settings.local.json'), '{"apiKey":"secret"}');
+    writeFileSync(join(workspace, '.book', 'debug.log'), 'large diagnostic output');
+    writeFileSync(join(workspace, '.book', 'tool-output', 'result.txt'), 'tool output');
+    writeFileSync(join(workspace, 'tracked.txt'), 'tracked');
+
+    const result = store.capture();
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.entries.map((entry) => entry.path)).toEqual(['tracked.txt']);
+  });
+
+  it('allows selected workspace-local Book files to be explicitly opted in', () => {
+    const { workspace, store } = fixture();
+    mkdirSync(join(workspace, '.book', 'commands'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'rewindignore'),
+      '.book/*\n!.book/commands/\n!.book/commands/review.md\n',
+    );
+    writeFileSync(join(workspace, '.book', 'commands', 'review.md'), 'include');
+    writeFileSync(join(workspace, '.book', 'settings.local.json'), 'exclude');
+
+    const result = store.capture();
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.entries.map((entry) => entry.path)).toEqual([
+      '.book/commands/review.md',
+    ]);
+  });
+
+  it('reuses cached hashes for unchanged files', async () => {
+    const { workspace, store } = fixture();
+    const path = join(workspace, 'tracked.txt');
+    writeFileSync(path, 'original!');
+    const first = await store.captureAsync();
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = await store.captureAsync();
+
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.manifest.entries[0].blobHash).toBe(first.manifest.entries[0].blobHash);
+  });
+
   it('allows .book/rewindignore negation to override default exclusions', () => {
     const { workspace, store } = fixture();
     mkdirSync(join(workspace, '.book'));
@@ -121,6 +170,17 @@ describe('RewindSnapshotStore', () => {
 
     expect(readdirSync(join(storage, 'blobs'))).toHaveLength(1);
     expect(readdirSync(join(storage, 'manifests'))).toHaveLength(2);
+  });
+
+  it('deduplicates unchanged manifest entry sets across checkpoints', async () => {
+    const { workspace, storage, store } = fixture();
+    writeFileSync(join(workspace, 'same.txt'), 'same');
+    expect((await store.captureAsync()).ok).toBe(true);
+    expect((await store.captureAsync()).ok).toBe(true);
+
+    expect(
+      readdirSync(join(storage, 'entry-sets')).filter((file) => file.endsWith('.json')),
+    ).toHaveLength(1);
   });
 
   it('captures symlinks without following their targets', () => {
@@ -179,9 +239,13 @@ describe('RewindSnapshotStore', () => {
     expect(captured.ok).toBe(true);
     if (!captured.ok) return;
     const manifestPath = join(storage, 'manifests', `${captured.manifest.id}.json`);
-    const tampered = JSON.parse(readFileSync(manifestPath, 'utf-8'));
-    tampered.entries[0].path = '../escaped.txt';
-    writeFileSync(manifestPath, JSON.stringify(tampered));
+    const storedManifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+      entrySetHash: string;
+    };
+    const entrySetPath = join(storage, 'entry-sets', `${storedManifest.entrySetHash}.json`);
+    const tampered = JSON.parse(readFileSync(entrySetPath, 'utf-8'));
+    tampered[0].path = '../escaped.txt';
+    writeFileSync(entrySetPath, JSON.stringify(tampered));
     writeFileSync(join(workspace, 'safe.txt'), 'current');
 
     const restored = store.restore(captured.manifest.id);

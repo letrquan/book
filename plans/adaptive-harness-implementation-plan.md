@@ -5,6 +5,10 @@
 - **Scope:** Agent-runtime integration, context and tool-surface contracts, workflow selection, run evidence, evaluation, and safe workflow evolution
 - **Goal:** Improve Book's task outcomes over time by selecting and evolving workflows for the current model, project, user context, and task without degrading models that perform best with minimal scaffolding.
 
+**Research review:** [Adaptive Harness Research Grounding](adaptive-harness/research-grounding.md)
+is a required input to Phase 0. Its preconditions and unresolved questions must be closed in
+the relevant verification packet rather than treated as optional follow-up work.
+
 ---
 
 ## Roadmap at a Glance
@@ -31,6 +35,24 @@ Recommended reading order:
 5. Implementation Tracking Ledger and the phase verification packet.
 
 Do not treat later-phase detail as authorization to implement it early. The exit gates define the allowed sequence.
+
+## Pre-Phase-0 Runtime Preconditions
+
+The repository audit found runtime issues that would invalidate attribution if evaluation started
+immediately. Resolve or explicitly block on these before collecting promotion evidence:
+
+- preserve failed, aborted, cancelled, timed-out, interrupted, and completed terminal states through
+  `AgentSession` without later reducer events overwriting them;
+- define one harness run per root user request, including resume and child-run linkage;
+- enforce cumulative root-and-child usage, cost, and budget accounting with a versioned pricing source;
+- keep `harness.mode` separate from the existing `agents.mode`, and normally force
+  `agents.mode = off` in the initial single-agent corpus;
+- capture the effective provider/model identity or record it as unverifiable;
+- freeze or version ambient prompt/config/tool inputs and isolate Book home state for every arm;
+- use a disposable process/container boundary for adversarial fixtures, especially on Windows;
+- extend architecture checks to enforce the harness/runtime/evaluator/proposer dependency rules.
+
+These are runtime correctness prerequisites, not permission to introduce selection or learning early.
 
 ## Original Intent
 
@@ -116,6 +138,10 @@ C. Adaptive workflow selected by the harness
 ```
 
 Generated or evolved workflows must also be compared with the currently promoted adaptive policy, not only with an intentionally weak baseline.
+
+Every arm must also lock the existing managed-agent routing mode. `HarnessMode` and the existing
+`agents.mode` are separate experimental axes. Initial harness evidence should normally keep managed
+agents off; any later combined workflow-and-delegation experiment requires its own evaluation contract.
 
 ### Outcome Dimensions
 
@@ -222,10 +248,12 @@ src/harness/
 
 Likely integration points:
 
-- `src/types.ts`: shared runtime-facing types only when they are genuinely cross-cutting;
+- `src/types/*`: shared runtime-facing domain types only when they are genuinely cross-cutting;
 - `src/settings.ts`: feature flags and explicit harness controls;
 - `src/agent/context.ts`: render the selected workflow into the dynamic prompt zone;
 - `src/agent/loop.ts`: emit structured runtime observations without owning learning;
+- `src/session/agent-session.ts`: own root-request prepare/finalize and the shared lifecycle bridge;
+- `src/session/agent-events.ts`: preserve typed terminal reasons and harness-visible lifecycle events;
 - `src/headless.ts`: create/finalize runs for headless and CI execution;
 - `src/tui/app.tsx`: create/finalize interactive runs and expose user controls;
 - `src/session/store.ts`: retain transcript references, not duplicate full traces;
@@ -238,13 +266,25 @@ The adaptive layer may choose only among tested runtime capabilities:
 | Fixed runtime responsibility | Adaptive workflow surface |
 | --- | --- |
 | Permission, sandbox, secret, and prompt-injection enforcement | Requested approval posture, subject to kernel clamps |
-| Tool schemas, error semantics, cancellation, and retry correctness | Retry posture and bounded parallelism |
+| Tool schemas, error semantics, cancellation, and retry correctness | Retry posture within kernel ceilings |
 | Checkpoint, compaction, and resume mechanics | Context depth, failure/decision retention, and supported compaction policy |
 | Verifier definitions and evaluator integrity | Which declared verifiers to request |
 | Trace/evidence integrity and retention policy | Evidence level and explanation detail |
 | Absolute budgets and model/provider identity | Planning, edit scope, and verification posture |
 
 Workflow definitions cannot add runtime primitives, arbitrary tools, free-form prompts, or security policy.
+
+Before Phase 3, publish a capability matrix classifying every workflow field as:
+
+```text
+kernel-enforced request
+prompt-only guidance
+unsupported and explicitly clamped
+```
+
+Do not ship an initial workflow field whose runtime effect is only assumed. Parallelism remains outside
+the first harness workflow surface unless an independently evaluated existing managed-agent capability
+is deliberately brought into scope.
 
 ### HarnessCard and Compatibility Identity
 
@@ -348,6 +388,7 @@ Update this table in the same pull request that changes a phase status. Do not m
 
 | Phase | Status | Owner | PR/commit | Verification evidence | Decision/notes |
 | --- | --- | --- | --- | --- | --- |
+| [Preconditions](adaptive-harness/research-grounding.md#required-pre-phase-0-preconditions) | Not started | - | - | - | Terminal status, run boundary, accounting, identity, isolation, and dependency rules |
 | [0. Evaluation contract](adaptive-harness/phase-0-evaluation-contract.md) | Not started | - | - | - | - |
 | [1. Contracts and disabled boundary](adaptive-harness/phase-1-contracts-boundary.md) | Not started | - | - | - | - |
 | [2. Observation ledger](adaptive-harness/phase-2-run-evidence-ledger.md) | Not started | - | - | - | - |
@@ -469,11 +510,13 @@ For TUI-visible behavior, also run the relevant render/integration tests and man
 - No evaluator, permission, budget, or model changes by candidate workflows.
 - No automatic cross-project learning by default.
 - No multi-agent orchestration solely for the appearance of sophistication.
+- Existing Task/managed-agent features are not harness learning evidence by default; combined
+  multi-agent adaptation remains separately gated.
 - No claim of recursive self-improvement without held-out outcome evidence.
 - No requirement that every model improve; the system must identify where adaptation is neutral or harmful.
 - No use of adaptive workflows to compensate for missing runtime correctness or security controls.
 - No external benchmark replaces the deterministic local corpus; benchmark adapters are portability checks only.
-- No multi-agent coordination in the initial delivery; it remains a separately gated future track.
+- No new harness-controlled multi-agent coordination in the initial delivery; existing Task/managed-agent capabilities are locked as a separate experimental axis and future adaptive coordination remains separately gated.
 
 ## Final Product Test
 

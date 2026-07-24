@@ -47,6 +47,30 @@ describe('WebFetch', () => {
     expect(r.status).toBe('error');
     expect(r.structuredError?.message).toMatch(/http/i);
   });
+
+  it('rejects declared responses above the byte limit without reading the body', async () => {
+    const cancel = vi.fn(async () => undefined);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const response = new Response('ignored', {
+          status: 200,
+          headers: { 'content-length': String(300 * 1024) },
+        });
+        Object.defineProperty(response, 'body', {
+          configurable: true,
+          value: { cancel },
+        });
+        return response;
+      }),
+    );
+
+    const result = await fetchTool.execute({ url: 'https://example.com/large' }, ctx);
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toContain('262144-byte limit');
+    expect(cancel).toHaveBeenCalled();
+  });
 });
 
 describe('WebSearch', () => {
@@ -81,5 +105,29 @@ describe('WebSearch', () => {
     const r = await searchTool.execute({ query: 'test query' }, ctx);
     expect(r.status).toBe('error');
     expect(r.structuredError?.message).toMatch(/no search backend/i);
+  });
+
+  it('limits result count and field sizes', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          results: Array.from({ length: 15 }, (_, index) => ({
+            title: `Result ${index}`,
+            url: `https://example.com/${index}`,
+            snippet: 'x'.repeat(5_000),
+          })),
+        }),
+      ),
+    );
+
+    const result = await searchTool.execute(
+      { query: 'bounded', backend: 'https://search.example.com/api' },
+      ctx,
+    );
+
+    expect((result.data as { results: unknown[] }).results).toHaveLength(10);
+    expect(result.pagination).toMatchObject({ truncated: true, omittedItems: 5 });
+    expect(result.content.length).toBeLessThan(50_000);
   });
 });

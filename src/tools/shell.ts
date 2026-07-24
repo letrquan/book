@@ -1,5 +1,9 @@
 import { exec, spawn, type ChildProcess } from 'child_process';
-import type { BackgroundShellRecord, BackgroundShellStatus } from '../types/runtime.js';
+import type {
+  BackgroundShellRecord,
+  BackgroundShellStatus,
+  BackgroundShellStore,
+} from '../types/runtime.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { createSandbox } from '../sandbox.js';
 import { globToRegex } from './glob-regex.js';
@@ -10,6 +14,8 @@ const MAX_FOREGROUND_BUFFER = 1024 * 1024 * 10;
 const MAX_BACKGROUND_BUFFER = 1024 * 1024 * 5;
 const MAX_OUTPUT_RESULT = 32_000;
 const TERMINATE_GRACE_MS = 1_500;
+const MAX_RETAINED_TERMINAL_SHELLS = 20;
+const TERMINAL_SHELL_TTL_MS = 15 * 60_000;
 
 /**
  * Check whether a command matches any of the `excludedCommands` glob patterns.
@@ -61,7 +67,41 @@ function readBoolean(args: Record<string, unknown>, snake: string, camel?: strin
 
 function shellStore(ctx: ToolContext) {
   ctx.backgroundShells ??= ctx.runtime?.backgroundShells ?? { nextId: 1, shells: new Map() };
+  pruneTerminalShells(ctx.backgroundShells);
   return ctx.backgroundShells;
+}
+
+function deleteShellRecord(store: BackgroundShellStore, shellId: string): void {
+  const shell = store.shells.get(shellId);
+  if (shell?.retentionTimer) clearTimeout(shell.retentionTimer);
+  store.shells.delete(shellId);
+}
+
+function pruneTerminalShells(store: BackgroundShellStore, now = Date.now()): void {
+  const terminal = Array.from(store.shells.values())
+    .filter((shell) => isTerminalStatus(shell.status))
+    .sort((a, b) => (a.finishedAt ?? 0) - (b.finishedAt ?? 0));
+  for (const shell of terminal) {
+    if (shell.finishedAt !== undefined && now - shell.finishedAt >= TERMINAL_SHELL_TTL_MS) {
+      deleteShellRecord(store, shell.id);
+    }
+  }
+  const retained = terminal.filter((shell) => store.shells.has(shell.id));
+  for (const shell of retained.slice(0, -MAX_RETAINED_TERMINAL_SHELLS)) {
+    deleteShellRecord(store, shell.id);
+  }
+}
+
+function scheduleShellRetention(store: BackgroundShellStore, shell: BackgroundShellRecord): void {
+  if (!isTerminalStatus(shell.status)) return;
+  if (shell.retentionTimer) clearTimeout(shell.retentionTimer);
+  pruneTerminalShells(store);
+  if (!store.shells.has(shell.id)) return;
+  shell.retentionTimer = setTimeout(
+    () => deleteShellRecord(store, shell.id),
+    TERMINAL_SHELL_TTL_MS,
+  );
+  shell.retentionTimer.unref();
 }
 
 function nextShellId(ctx: ToolContext): string {
@@ -368,6 +408,7 @@ async function bashBackground(
   proc.on('error', (err) => {
     appendOutput(shell, `${err.message}\n`);
     finishShell(shell, 'failed');
+    scheduleShellRetention(shellStore(ctx), shell);
   });
   proc.on('close', (code, signal) => {
     if (shell.status === 'stopping') {
@@ -378,11 +419,12 @@ async function bashBackground(
       return;
     }
     finishShell(shell, code === 0 ? 'exited' : 'failed', code, signal);
+    scheduleShellRetention(shellStore(ctx), shell);
   });
 
   const startupError = await startup;
   if (startupError) {
-    shellStore(ctx).shells.delete(id);
+    deleteShellRecord(shellStore(ctx), id);
     return fail(startupError.message);
   }
 
@@ -394,6 +436,8 @@ async function bashBackground(
         void terminateShell(shell, 'timed_out').then((stopped) => {
           if (!stopped) {
             appendOutput(shell, '[timed out; process did not exit after termination attempts]\n');
+          } else {
+            scheduleShellRetention(shellStore(ctx), shell);
           }
         });
       }, timeout);
@@ -416,7 +460,7 @@ async function bashOutput(args: Record<string, unknown>, ctx: ToolContext): Prom
   const shellId = readString(args, 'shell_id', 'shellId')?.trim();
   if (!shellId) return fail('shell_id must be a non-empty string');
 
-  const shell = ctx.backgroundShells?.shells.get(shellId);
+  const shell = shellStore(ctx).shells.get(shellId);
   if (!shell) return fail(`Shell ${shellId} not found`);
 
   const lines = [statusLine(shell)];
@@ -431,7 +475,7 @@ async function killShell(args: Record<string, unknown>, ctx: ToolContext): Promi
   const shellId = readString(args, 'shell_id', 'shellId')?.trim();
   if (!shellId) return fail('shell_id must be a non-empty string');
 
-  const shell = ctx.backgroundShells?.shells.get(shellId);
+  const shell = shellStore(ctx).shells.get(shellId);
   if (!shell) return fail(`Shell ${shellId} not found`);
 
   if (isTerminalStatus(shell.status)) {
@@ -442,7 +486,21 @@ async function killShell(args: Record<string, unknown>, ctx: ToolContext): Promi
   if (!stopped) {
     return fail(`Sent termination to shell ${shell.id}, but it is still stopping.`);
   }
+  scheduleShellRetention(shellStore(ctx), shell);
   return ok(`Killed shell ${shell.id}${shell.pid ? ` (pid ${shell.pid})` : ''}.`);
+}
+
+async function dismissShell(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const shellId = readString(args, 'shell_id', 'shellId')?.trim();
+  if (!shellId) return fail('shell_id must be a non-empty string');
+  const store = shellStore(ctx);
+  const shell = store.shells.get(shellId);
+  if (!shell) return fail(`Shell ${shellId} not found`);
+  if (!isTerminalStatus(shell.status)) {
+    return fail(`Shell ${shellId} is still ${shell.status}; stop it before dismissing the record.`);
+  }
+  deleteShellRecord(store, shellId);
+  return ok(`Dismissed shell ${shellId}.`);
 }
 
 export const shellTools: ToolDefinition[] = [
@@ -488,5 +546,17 @@ export const shellTools: ToolDefinition[] = [
       required: ['shell_id'],
     },
     execute: killShell,
+  },
+  {
+    name: 'DismissShell',
+    description: 'Remove a completed background shell record and release its retained output',
+    parameters: {
+      type: 'object',
+      properties: {
+        shell_id: { type: 'string', description: 'Completed background shell ID to dismiss' },
+      },
+      required: ['shell_id'],
+    },
+    execute: dismissShell,
   },
 ];

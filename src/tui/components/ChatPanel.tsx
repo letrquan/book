@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import { useMemo } from 'react';
+import { useRef } from 'react';
 import { useTheme } from '../theme.js';
 import type { CompactBoundary } from '../../types/sessions.js';
 import type { Message } from '../../types/messages.js';
@@ -18,9 +18,13 @@ import { useDensity } from '../density.js';
 import { mergeAssistantMessages } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
 import type { TranscriptMode } from '../tool-presentation.js';
+import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
+import { truncateDisplay } from './word-wrap.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
+const EMPTY_BOUNDARIES: CompactBoundary[] = [];
+const STREAMING_TIMELINE_WINDOW = 64;
 
 function formatTurnTime(timestamp: number): string {
   if (!timestamp) return '';
@@ -47,6 +51,7 @@ function ScreenReaderRoleLabel({
 
 interface ChatPanelProps {
   messages: Message[];
+  managedAgentTraces?: ReadonlyMap<string, ManagedAgentTrace>;
   compactBoundaries?: CompactBoundary[];
   streamingMessageId?: string | null;
   pendingPermission?: PendingPermissionRequest | null;
@@ -82,7 +87,8 @@ interface ChatPanelProps {
 /** Dynamically renders transcript content. TranscriptView owns clipping and navigation. */
 export function ChatPanel({
   messages,
-  compactBoundaries = [],
+  managedAgentTraces,
+  compactBoundaries = EMPTY_BOUNDARIES,
   streamingMessageId,
   pendingPermission,
   expandedToolCallId,
@@ -107,10 +113,12 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const density = useDensity();
   useDebugMount(uiLog, { model, mode, commandCount, skillCount });
-  const timeline = useMemo(
-    () => buildTimeline(messages, compactBoundaries, streamingMessageId),
-    [messages, compactBoundaries, streamingMessageId],
-  );
+  const timeline = useIncrementalTimeline(messages, compactBoundaries, streamingMessageId);
+  const hiddenTimelineEntries = streamingMessageId
+    ? Math.max(0, timeline.length - STREAMING_TIMELINE_WINDOW)
+    : 0;
+  const visibleTimeline =
+    hiddenTimelineEntries > 0 ? timeline.slice(hiddenTimelineEntries) : timeline;
   const selectedToolCallId =
     expandedToolCallId === undefined ? selectExpandedToolId(messages) : expandedToolCallId;
 
@@ -139,12 +147,19 @@ export function ChatPanel({
 
   return (
     <Box flexDirection="column">
-      {timeline.map((entry, index) => {
+      {hiddenTimelineEntries > 0 ? (
+        <Box marginLeft={2} marginBottom={density === 'tight' ? 0 : 1}>
+          <Text dimColor>
+            {hiddenTimelineEntries} older transcript entries hidden while streaming
+          </Text>
+        </Box>
+      ) : null}
+      {visibleTimeline.map((entry, index) => {
         if ('transcriptOrdinal' in entry) {
-          return <CompactBoundaryRow key={`boundary-${entry.id}`} boundary={entry} />;
+          return <CompactBoundaryRow key={`boundary-${entry.id}`} terminalWidth={terminalWidth} />;
         }
         const message = entry;
-        const previous = timeline[index - 1];
+        const previous = visibleTimeline[index - 1];
         if (message.role === 'user') {
           return (
             <Box
@@ -165,7 +180,7 @@ export function ChatPanel({
         }
 
         const isStreaming = message.id === streamingMessageId;
-        const next = timeline[index + 1];
+        const next = visibleTimeline[index + 1];
         const nextEntryIsUser = Boolean(next && 'role' in next && next.role === 'user');
         return (
           <Box
@@ -182,6 +197,7 @@ export function ChatPanel({
             ) : null}
             <AgentMessage
               message={message}
+              managedAgentTraces={managedAgentTraces}
               isStreaming={isStreaming}
               pendingPermission={pendingPermission}
               expandedToolCallId={selectedToolCallId}
@@ -205,6 +221,47 @@ export function ChatPanel({
       })}
     </Box>
   );
+}
+
+interface TimelineCache {
+  streamingMessageId?: string | null;
+  prefixLength: number;
+  prefixLast?: Message;
+  boundaries?: CompactBoundary[];
+  prefix: Array<Message | CompactBoundary>;
+}
+
+function useIncrementalTimeline(
+  messages: Message[],
+  boundaries: CompactBoundary[],
+  streamingMessageId?: string | null,
+): Array<Message | CompactBoundary> {
+  const cache = useRef<TimelineCache>({ prefixLength: -1, prefix: [] });
+  if (!streamingMessageId) return buildTimeline(messages, boundaries, streamingMessageId);
+  const streamingIndex = messages.findIndex((message) => message.id === streamingMessageId);
+  if (streamingIndex < 0 || streamingIndex !== messages.length - 1) {
+    return buildTimeline(messages, boundaries, streamingMessageId);
+  }
+
+  const prefixLast = streamingIndex > 0 ? messages[streamingIndex - 1] : undefined;
+  if (
+    cache.current.streamingMessageId !== streamingMessageId ||
+    cache.current.prefixLength !== streamingIndex ||
+    cache.current.prefixLast !== prefixLast ||
+    cache.current.boundaries !== boundaries
+  ) {
+    cache.current = {
+      streamingMessageId,
+      prefixLength: streamingIndex,
+      prefixLast,
+      boundaries,
+      prefix: buildTimeline(messages.slice(0, streamingIndex), boundaries, streamingMessageId),
+    };
+  }
+  const active = messages[streamingIndex];
+  return active.kind === 'agent-notification'
+    ? cache.current.prefix
+    : [...cache.current.prefix, active];
 }
 
 function buildTimeline(
@@ -231,31 +288,22 @@ function buildTimeline(
       flush();
       timeline.push(...markers.sort((a, b) => a.timestamp - b.timestamp));
     }
-    if (index < messages.length) segment.push(messages[index]);
+    if (index < messages.length && messages[index].kind !== 'agent-notification') {
+      segment.push(messages[index]);
+    }
   }
   flush();
   return timeline;
 }
 
-function CompactBoundaryRow({ boundary }: { boundary: CompactBoundary }) {
+function CompactBoundaryRow({ terminalWidth = 80 }: { terminalWidth?: number }) {
   const theme = useTheme();
-  const removed = Math.max(0, boundary.preContextCount - boundary.postContextCount);
-  const tokens =
-    boundary.preContextTokens !== undefined && boundary.postContextTokens !== undefined
-      ? ` · ~${formatCompactNumber(boundary.preContextTokens)} → ~${formatCompactNumber(boundary.postContextTokens)} tokens`
-      : '';
   return (
-    <Box flexDirection="column" marginY={1} paddingX={1}>
-      <Text color={theme.subtle}>Context compacted · full transcript retained</Text>
-      <Text color={theme.subtle} dimColor>
-        −{removed} context messages → checkpoint + {Math.max(0, boundary.postContextCount - 1)}{' '}
-        recent messages{tokens} · generation {boundary.generation}
+    <Box marginLeft={2} width={Math.max(12, Math.floor(terminalWidth) - 2)}>
+      <Text color={theme.success}>✓ </Text>
+      <Text color={theme.text}>
+        {truncateDisplay('Compact conversation', Math.max(8, Math.floor(terminalWidth) - 6))}
       </Text>
     </Box>
   );
-}
-
-function formatCompactNumber(value: number): string {
-  if (value < 1_000) return String(Math.round(value));
-  return `${Math.round(value / 1_000)}k`;
 }

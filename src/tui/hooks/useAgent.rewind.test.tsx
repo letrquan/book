@@ -152,6 +152,18 @@ afterEach(() => {
 });
 
 describe('useAgent rewind integration', () => {
+  it('names a new session from its first recorded prompt', async () => {
+    const { config, timeline, sessionId } = fixture();
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    await latest!.send('fix session labels instead of showing ids');
+    await tick();
+
+    expect(latest!.sessionName).toBe('Fix session labels instead of showing ids');
+    expect(timeline.load(sessionId).meta.name).toBe('Fix session labels instead of showing ids');
+  });
+
   it('renders the submitted message while an asynchronous snapshot is still pending', async () => {
     const { config, timeline, sessionId } = fixture();
     let finishCapture!: () => void;

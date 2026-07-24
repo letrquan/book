@@ -74,6 +74,11 @@ Events should contain summaries and references. Do not persist raw prompts, comp
 - Treat trace/span IDs as observability correlation, not permission or policy authority.
 - Finalization must be idempotent.
 
+Root request preparation/finalization belongs at `src/session/agent-session.ts`, which is the shared
+lifecycle bridge for headless and TUI execution. Headless/TUI adapters should not create duplicate
+run boundaries. A process serving multiple requests must create one root ID inside the request loop.
+Resume must record whether it continues the same run or creates a new linked run.
+
 ##### 2.3 Implement the project-scoped store
 
 Use an append-only store aligned with Book's existing project storage conventions. The initial proposal is:
@@ -94,17 +99,24 @@ Requirements:
 - retain compatibility fingerprints and provenance references needed to judge replay validity;
 - apply retention without deleting promoted verification evidence unexpectedly.
 
+Use the normalized workspace hash as the authoritative project key, optionally paired with a
+readable slug. A slug alone can collide. Existing managed-agent `EvidenceItem` and telemetry records
+are agent-authored operational data; retain their provenance as untrusted references and never treat
+them as evaluator truth.
+
 ##### 2.4 Build callback adapters
 
 Create `src/harness/observer.ts` to wrap `AgentLoopCallbacks`. It should forward the original callback first or in the documented order, then emit a bounded event without swallowing callback errors.
 
-Integrate at host boundaries:
+Integrate at the shared lifecycle boundary and host boundaries:
 
+- `src/session/agent-session.ts` for root request ownership and terminal finalization;
+- `src/session/agent-events.ts` for typed terminal reasons;
 - `src/headless.ts` for headless, SDK, and CI runs;
 - `src/tui/app.tsx` or the existing TUI agent hook for interactive runs;
 - subagent invocation through explicit parent run metadata.
 
-Avoid adding persistence calls throughout every branch in `src/agent/loop.ts` unless an event cannot be observed reliably from callbacks.
+Avoid adding persistence calls throughout every branch in `src/agent/loop.ts` unless an event cannot be observed reliably from callbacks. Current callbacks do not expose actual tool start or automatic permission resolution, so add narrow runtime events for those facts rather than inferring them from `onToolCall`.
 
 ##### 2.5 Add redaction and payload policy
 
@@ -133,6 +145,10 @@ Define a stable mapping from run/turn/tool/permission/evaluator events to OpenTe
 
 Do not emit raw prompts, complete tool output, secrets, or sensitive file contents merely to satisfy telemetry conventions.
 
+Use valid W3C/OTel trace and span IDs for telemetry and keep Book/UI trace strings separate. Pin the
+semantic-conventions version and enforce bounded attribute counts/value sizes; current GenAI content
+attributes are sensitive opt-in data, not a reason to copy prompts into the ledger.
+
 ##### 2.7 Handle lifecycle edge cases
 
 Cover:
@@ -149,6 +165,9 @@ Cover:
 
 Evidence failure should be visible but should not corrupt the user task. In `observe` mode, a storage failure should normally degrade observation, not fail the agent execution.
 
+Every terminal run must report observer completeness, dropped-event count, flush status, and storage
+errors so a degraded ledger cannot silently become learning-eligible.
+
 ##### 2.8 Add inspection and cleanup surfaces
 
 Initially provide programmatic helpers or a simple CLI report for:
@@ -158,6 +177,10 @@ Initially provide programmatic helpers or a simple CLI report for:
 - show storage location and size;
 - delete project-scoped evidence explicitly;
 - run retention cleanup.
+
+The store design must state its writer model, file-locking/sequence strategy, fsync or durability
+level, crash-safe cleanup, index rebuild behavior, and pinned verification references. JSONL is fine
+for a single-writer append log only if these guarantees are explicit and tested.
 
 #### Phase 2 File Plan
 
@@ -174,6 +197,8 @@ Modify src/headless.ts
 Modify src/headless.test.ts
 Modify src/tui/app.tsx or src/tui/hooks/useAgent.ts
 Modify src/subagent.ts
+Modify src/session/agent-session.ts
+Modify src/session/agent-events.ts
 ```
 
 #### Phase 2 Test Matrix
@@ -205,10 +230,10 @@ Modify src/subagent.ts
 
 ```powershell
 npm run typecheck
-npm test -- src/harness/run-store.test.ts
-npm test -- src/harness/observer.test.ts
-npm test -- src/headless.test.ts
-npm test -- src/session/store.test.ts
+npm run test:unit -- src/harness/run-store.test.ts
+npm run test:unit -- src/harness/observer.test.ts
+npm run test:unit -- src/headless.test.ts
+npm run test:unit -- src/session/store.test.ts
 npm test
 ```
 

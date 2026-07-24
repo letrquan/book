@@ -221,13 +221,14 @@ async function runSingleHook(
         if (error) {
           // Exit code 2 = block per CC's hook contract.
           if (error.code === 2) {
-            // Try to parse a message from stdout.
-            let message = '';
-            try {
-              const parsed = JSON.parse(stdout.trim());
-              message = parsed.message ?? stdout.trim();
-            } catch {
-              message = stdout.trim() || 'Blocked by hook';
+            let message = stderr.trim();
+            if (!message) {
+              try {
+                const parsed = JSON.parse(stdout.trim());
+                message = parsed.message ?? stdout.trim();
+              } catch {
+                message = stdout.trim() || 'Blocked by hook';
+              }
             }
             settle({
               entry,

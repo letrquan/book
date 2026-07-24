@@ -1,15 +1,15 @@
 import { render } from 'ink';
 import { createElement } from 'react';
-import { freezeAgentConfig, loadConfig } from '../config.js';
+import { freezeAgentConfig, loadConfig, runConfigMigrations } from '../config.js';
 import { runHeadless } from '../headless.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { SessionStore } from '../session/store.js';
 import { connectMcpServers } from '../mcp.js';
 import { exit } from './exit.js';
-import { join, resolve } from 'path';
+import { join } from 'path';
 import { homedir } from 'os';
 import type { AgentConfig } from '../types/runtime.js';
-import type { RewindSnapshotStoreInterface, TurnCheckpointRecordData } from '../types/sessions.js';
+import type { RewindSnapshotStoreInterface } from '../types/sessions.js';
 import { resolveSessionBootstrap } from '../session/resolve.js';
 import {
   createRewindSnapshotStore,
@@ -19,25 +19,14 @@ import { createEphemeralRewindEnvironment } from '../rewind/environment.js';
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
+const ENABLE_MOUSE_TRACKING = '\x1b[?1000h';
+const ENABLE_SGR_MOUSE = '\x1b[?1006h';
 const DISABLE_SGR_MOUSE = '\x1b[?1006l';
 const DISABLE_MOUSE_TRACKING = '\x1b[?1000l';
 const EXIT_ALT_SCREEN = '\x1b[?1049l';
 
 function collectSnapshotReferences(store: SessionStore, cwd: string): Set<string> {
-  const ids = new Set<string>();
-  for (const session of store.list().filter((meta) => meta.cwd === normalizeCwd(cwd))) {
-    for (const record of store.readRecords(session.id)) {
-      if (record.type !== 'turn_checkpoint') continue;
-      const snapshotId = (record.data as TurnCheckpointRecordData)?.checkpoint?.snapshotId;
-      if (snapshotId) ids.add(snapshotId);
-    }
-  }
-  return ids;
-}
-
-function normalizeCwd(cwd: string): string {
-  const normalized = resolve(cwd);
-  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  return store.listSnapshotReferences(cwd);
 }
 
 export function enterInteractiveScreen(
@@ -53,15 +42,18 @@ export function enterInteractiveScreen(
     process.off('exit', restore);
   };
 
-  // Leave mouse reporting disabled so the terminal owns drag selection and copy.
-  stdout.write(ENTER_ALT_SCREEN + DISABLE_SGR_MOUSE + DISABLE_MOUSE_TRACKING);
+  // Shift+drag remains available for terminal-native selection while mouse
+  // reporting keeps transcript wheel scrolling and tool-row clicks working.
+  stdout.write(ENTER_ALT_SCREEN + ENABLE_MOUSE_TRACKING + ENABLE_SGR_MOUSE);
   process.once('exit', restore);
   return restore;
 }
 
 export async function runMainAction(options: Record<string, unknown>): Promise<void> {
   try {
-    const config = loadConfig(options.workspace as string | undefined, {
+    const requestedWorkspace = options.workspace as string | undefined;
+    if (options.settings !== false) runConfigMigrations(requestedWorkspace);
+    const config = loadConfig(requestedWorkspace, {
       settingsOverridePath: options.settings as string | undefined,
       noSettings: options.settings === false,
       modelOverride: options.model as string | undefined,

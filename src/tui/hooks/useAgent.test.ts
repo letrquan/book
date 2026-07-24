@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { RetryPhase, AgentConfig } from '../../types/runtime.js';
-import { resolveConfigAfterProviderRemoval } from './useAgent.js';
+import { didSendMessageComplete, resolveConfigAfterProviderRemoval } from './useAgent.js';
+import type { AgentSessionSendResult } from '../../session/agent-session.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from '../../settings.js';
 import { defaultConfig } from '../../test/fixtures.js';
 
@@ -132,6 +133,15 @@ describe('useAgent retry state machine', () => {
 });
 
 describe('useAgent error/isThinking state transitions', () => {
+  it('does not treat a failed run as a delivered completion turn', () => {
+    const failed: AgentSessionSendResult = {
+      status: 'failed',
+      phase: 'run',
+      error: new Error('provider failed'),
+    };
+    expect(didSendMessageComplete(failed)).toBe(false);
+  });
+
   it('after error, isThinking should be false (input bar enabled)', () => {
     // Terminal AgentSession snapshots stop thinking after an error or cancellation.
     // This verifies the projected state transition independently from React rendering.

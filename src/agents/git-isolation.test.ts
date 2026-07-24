@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -9,6 +9,8 @@ import {
   commitAgentWork,
   createAgentWorktree,
   createSyntheticSnapshot,
+  removeAgentWorktree,
+  removeSnapshotRef,
 } from './git-isolation.js';
 
 const roots: string[] = [];
@@ -150,5 +152,35 @@ describe('synthetic agent snapshots', () => {
     expect(applied.status).toBe('applied');
     expect(applied.commit).toBe(git(root, 'rev-parse', 'HEAD'));
     expect(git(root, 'status', '--short')).toBe('');
+  });
+
+  it('removes managed worktrees, branches, and snapshot refs', async () => {
+    const root = repository();
+    const snapshot = await createSyntheticSnapshot(root, true);
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'book-cleanup-wt-'));
+    roots.push(worktreeRoot);
+    const worktree = await createAgentWorktree(snapshot, 'cleanup-agent', worktreeRoot);
+    const record = {
+      id: 'cleanup-agent',
+      name: 'patcher',
+      role: 'patcher',
+      description: 'cleanup',
+      status: 'completed',
+      applicationStatus: 'not_applied',
+      worktree: worktree.path,
+      branch: worktree.branch,
+      prompt: 'cleanup',
+      referencedEvidenceIds: [],
+      transcript: [],
+      pendingMessages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } satisfies AgentRecord;
+
+    await removeAgentWorktree(record, root);
+    expect(existsSync(worktree.path)).toBe(false);
+    expect(() => git(root, 'show-ref', '--verify', `refs/heads/${worktree.branch}`)).toThrow();
+    await removeSnapshotRef(snapshot);
+    expect(() => git(root, 'show-ref', '--verify', snapshot.ref)).toThrow();
   });
 });
