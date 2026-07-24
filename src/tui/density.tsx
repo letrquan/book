@@ -32,7 +32,7 @@ const TIGHT_METRICS: DensityMetrics = {
   ...COMPACT_METRICS,
   headingGapBefore: 0,
   majorBlockGap: 0,
-  toolRowGap: 0,
+  toolRowGap: 1,
   showOptionalHelp: false,
 };
 

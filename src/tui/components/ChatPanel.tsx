@@ -193,8 +193,8 @@ export function ChatPanel({
             key={message.id}
             flexDirection="column"
             marginTop={
-              density !== 'tight' &&
-              (followsToolCall || (previous && 'role' in previous && previous.role === 'user'))
+              followsToolCall ||
+              (density !== 'tight' && previous && 'role' in previous && previous.role === 'user')
                 ? 1
                 : 0
             }

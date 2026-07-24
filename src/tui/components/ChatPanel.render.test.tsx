@@ -488,7 +488,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(lines.slice(first + 1, second)).toEqual(['']);
   });
 
-  it('removes action gaps in tight density', () => {
+  it('keeps action gaps in tight density', () => {
     const message: Message = {
       ...msg('a1', 'assistant', 'Inspecting.'),
       toolCalls: [
@@ -508,8 +508,8 @@ describe('ChatPanel Ink rendering', () => {
     const first = lines.findIndex((line) => line.includes('Read(src/a.ts)'));
     const second = lines.findIndex((line) => line.includes('Read(src/b.ts)'));
 
-    expect(first).toBe(narration + 1);
-    expect(second).toBe(first + 1);
+    expect(lines.slice(narration + 1, first)).toEqual(['']);
+    expect(lines.slice(first + 1, second)).toEqual(['']);
   });
 
   it('applies the same sibling spacing to nested actions', () => {
