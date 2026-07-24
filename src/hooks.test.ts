@@ -182,6 +182,25 @@ describe('runHooks — matcher filtering', () => {
     expect(results.length).toBe(1);
     expect(results[0].action).toBe('block');
   });
+
+  it('matches legacy Edit path rules against ApplyPatch targets', async () => {
+    const hook: HookEntry = {
+      matcher: 'Edit(src/**)',
+      command: process.platform === 'win32' ? 'exit 2' : 'exit 2',
+      env: {},
+    };
+    const results = await runHooks(
+      [hook],
+      'PreToolUse',
+      ctx({
+        toolName: 'ApplyPatch',
+        toolArgs: {
+          patch: '*** Begin Patch\n*** Update File: src/main.ts\n@@\n-old\n+new\n*** End Patch',
+        },
+      }),
+    );
+    expect(results[0].action).toBe('block');
+  });
 });
 
 describe('runHooks — env vars', () => {

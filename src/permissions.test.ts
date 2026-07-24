@@ -150,4 +150,72 @@ describe('evaluatePermission', () => {
     expect(evaluatePermission('Bash', { command: 'pwd' }, s)).toBe('allow');
     expect(evaluatePermission('Bash', { command: 'cat /etc/passwd' }, s)).toBe('ask');
   });
+
+  it('applies legacy Edit and Write rules to ApplyPatch targets', () => {
+    const patch = '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+new\n*** End Patch';
+    expect(evaluatePermission('ApplyPatch', { patch }, settings({ allow: ['Edit(src/**)'] }))).toBe(
+      'allow',
+    );
+    expect(
+      evaluatePermission('ApplyPatch', { patch }, settings({ deny: ['Write(src/a.ts)'] })),
+    ).toBe('deny');
+  });
+
+  it('limits legacy ApplyPatch compatibility to the granted mutation capability', () => {
+    const update = '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+new\n*** End Patch';
+    const add = '*** Begin Patch\n*** Add File: src/a.ts\n+new\n*** End Patch';
+    const del = '*** Begin Patch\n*** Delete File: src/a.ts\n*** End Patch';
+
+    expect(
+      evaluatePermission('ApplyPatch', { patch: update }, settings({ allow: ['Edit(src/**)'] })),
+    ).toBe('allow');
+    expect(
+      evaluatePermission('ApplyPatch', { patch: add }, settings({ allow: ['Edit(src/**)'] })),
+    ).toBe('ask');
+    expect(
+      evaluatePermission('ApplyPatch', { patch: del }, settings({ allow: ['Edit(src/**)'] })),
+    ).toBe('ask');
+    expect(
+      evaluatePermission('ApplyPatch', { patch: update }, settings({ allow: ['Write(src/**)'] })),
+    ).toBe('allow');
+    expect(
+      evaluatePermission('ApplyPatch', { patch: add }, settings({ allow: ['Write(src/**)'] })),
+    ).toBe('allow');
+    expect(
+      evaluatePermission('ApplyPatch', { patch: del }, settings({ allow: ['Write(src/**)'] })),
+    ).toBe('ask');
+    expect(
+      evaluatePermission('ApplyPatch', { patch: del }, settings({ allow: ['ApplyPatch(src/**)'] })),
+    ).toBe('allow');
+  });
+
+  it('does not apply legacy deny rules to unsupported patch operations', () => {
+    const add = '*** Begin Patch\n*** Add File: src/a.ts\n+new\n*** End Patch';
+    const del = '*** Begin Patch\n*** Delete File: src/a.ts\n*** End Patch';
+    const s = settings({
+      deny: ['Edit(src/**)', 'Write(src/**)'],
+      allow: ['ApplyPatch(src/**)'],
+    });
+
+    expect(evaluatePermission('ApplyPatch', { patch: add }, s)).toBe('deny');
+    expect(
+      evaluatePermission(
+        'ApplyPatch',
+        { patch: del },
+        settings({ deny: ['Write(src/**)'], allow: ['ApplyPatch(src/**)'] }),
+      ),
+    ).toBe('allow');
+  });
+
+  it('applies a direct match-all ApplyPatch deny before patch validation', () => {
+    expect(evaluatePermission('ApplyPatch', {}, settings({ deny: ['ApplyPatch'] }))).toBe('deny');
+  });
+
+  it('requires every ApplyPatch target to be covered by a path allow rule', () => {
+    const patch =
+      '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+new\n*** Update File: docs/a.md\n@@\n-old\n+new\n*** End Patch';
+    expect(evaluatePermission('ApplyPatch', { patch }, settings({ allow: ['Edit(src/**)'] }))).toBe(
+      'ask',
+    );
+  });
 });

@@ -44,6 +44,20 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
   }));
 }
 
+export function convertTools(tools: ToolDefinition[]): Array<{
+  type: 'function';
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+}> {
+  return tools.map((tool) => ({
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputSchema ?? tool.parameters,
+    },
+  }));
+}
+
 export async function* chatCompletionStream(
   config: AgentConfig,
   messages: ProviderMessage[],
@@ -72,14 +86,7 @@ export async function* chatCompletionStream(
   }
 
   if (tools.length > 0) {
-    body.tools = tools.map((t) => ({
-      type: 'function',
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema ?? t.parameters,
-      },
-    }));
+    body.tools = convertTools(tools);
   }
 
   log.debug('chatCompletionStream request', {

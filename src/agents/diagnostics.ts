@@ -13,7 +13,15 @@ export interface AgentDiagnostic {
   message: string;
 }
 
-const MUTATION_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'Check']);
+const MUTATION_TOOLS = new Set([
+  'ApplyPatch',
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+  'Bash',
+  'Check',
+]);
 
 function validateModel(
   profile: string,

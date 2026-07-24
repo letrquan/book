@@ -16,6 +16,10 @@ export function getPrimaryArg(args: Record<string, unknown>): string {
   if (typeof args.task_id === 'string') return args.task_id;
   if (typeof args.filePath === 'string') return args.filePath;
   if (typeof args.file_path === 'string') return args.file_path;
+  if (typeof args.patch === 'string') {
+    const match = args.patch.match(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/m);
+    if (match) return match[1].trim();
+  }
   if (typeof args.notebook_path === 'string') return args.notebook_path;
   if (typeof args.path === 'string') return args.path;
   if (typeof args.pattern === 'string') return args.pattern;

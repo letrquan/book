@@ -70,6 +70,7 @@ describe('plan mode tools', () => {
 
     for (const name of [
       'Write',
+      'ApplyPatch',
       'Edit',
       'MultiEdit',
       'NotebookEdit',

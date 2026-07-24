@@ -30,6 +30,7 @@ const CHILD_WILDCARD_EXCLUSIONS = new Set(['AskUserQuestion', ...CHILD_LIFECYCLE
 
 const READONLY_DENIED_TOOLS = new Set([
   'Write',
+  'ApplyPatch',
   'Edit',
   'MultiEdit',
   'NotebookEdit',

@@ -1,4 +1,5 @@
 import { fileTools } from './file.js';
+import { patchTools } from './patch.js';
 import { shellTools } from './shell.js';
 import { gitTools } from './git.js';
 import { todoTools } from './todo.js';
@@ -25,6 +26,7 @@ export function createDefaultRegistry(capabilities?: {
   const registry = createRegistry();
   registry.registerAll([
     ...toolSearchTools,
+    ...patchTools,
     ...fileTools,
     ...shellTools,
     ...gitTools,

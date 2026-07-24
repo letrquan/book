@@ -477,6 +477,10 @@ describe('SessionStore', () => {
               addedLines: 1,
               removedLines: 1,
             },
+            fileMutations: [
+              { kind: 'update', filePath: 'a.ts', addedLines: 1, removedLines: 1 },
+              { kind: 'create', filePath: 'b.ts', addedLines: 2, removedLines: 0 },
+            ],
           },
         ],
       },
@@ -494,6 +498,10 @@ describe('SessionStore', () => {
           addedLines: 1,
           removedLines: 1,
         },
+        fileMutations: [
+          { kind: 'update', filePath: 'a.ts', addedLines: 1, removedLines: 1 },
+          { kind: 'create', filePath: 'b.ts', addedLines: 2, removedLines: 0 },
+        ],
       },
     });
     expect(assistant.toolResults?.[0]).not.toHaveProperty('success');

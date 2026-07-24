@@ -39,6 +39,7 @@ interface LegacyToolResult {
   durationMs?: number;
   retryAttempt?: number;
   fileMutation?: ToolResultArtifacts['fileMutation'];
+  fileMutations?: ToolResultArtifacts['fileMutations'];
   fileObservations?: ToolResultArtifacts['fileObservations'];
   eventRef?: string;
   outputPath?: string;
@@ -292,9 +293,14 @@ export function normalizeToolResult(result: ToolResult | LegacyToolResult): Tool
         };
   const artifacts: ToolResultArtifacts | undefined =
     result.artifacts ??
-    (legacy.fileMutation || legacy.fileObservations || legacy.eventRef || legacy.outputPath
+    (legacy.fileMutation ||
+    legacy.fileMutations ||
+    legacy.fileObservations ||
+    legacy.eventRef ||
+    legacy.outputPath
       ? {
           fileMutation: legacy.fileMutation,
+          fileMutations: legacy.fileMutations,
           fileObservations: legacy.fileObservations,
           eventRef: legacy.eventRef,
           outputPath: legacy.outputPath,
@@ -347,7 +353,7 @@ export function enrichToolResultPresentation(
     if (inferKind) {
       kind = result.artifacts?.fileMutation ? 'file' : /^@@/m.test(content) ? 'diff' : 'file';
     }
-    const mutation = result.artifacts?.fileMutation;
+    const mutation = result.artifacts?.fileMutation ?? result.artifacts?.fileMutations?.[0];
     if (mutation) {
       if (inferMetadata) {
         if (mutation.addedLines) metadata.push(`+${mutation.addedLines}`);
@@ -355,7 +361,7 @@ export function enrichToolResultPresentation(
         if (!mutation.addedLines && !mutation.removedLines) metadata.push('no changes');
       }
       if (inferSummary) {
-        summary = `${mutation.kind === 'create' ? 'Created' : 'Updated'} ${mutation.filePath}`;
+        summary = `${mutation.kind === 'create' ? 'Created' : mutation.kind === 'delete' ? 'Deleted' : 'Updated'} ${mutation.filePath}`;
       }
     }
   } else if (name === 'Read') {

@@ -3,7 +3,14 @@ import { basename, extname, join } from 'path';
 import { parseFrontmatter } from '../frontmatter.js';
 import { normalizeAgentTool } from '../subagent-discovery.js';
 
-const MUTATION_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash']);
+const MUTATION_TOOLS = new Set([
+  'ApplyPatch',
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+  'Bash',
+]);
 const SAFE_AGENT_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
 function assertSafeAgentName(name: string): void {
