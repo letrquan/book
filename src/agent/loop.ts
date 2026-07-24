@@ -13,7 +13,7 @@ import type {
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import { createProvider, type Provider } from '../provider/index.js';
 import { buildMessages } from './context.js';
-import type { ToolRegistry } from '../tools/registry.js';
+import type { PreparedToolCall, ToolRegistry } from '../tools/registry.js';
 import { loadGitignore } from '../tools/gitignore.js';
 import {
   clipHistoryToolResults,
@@ -115,6 +115,7 @@ export async function runAgentLoop(
   const newHistory = [...history];
   const retry = config.retry;
   const runtime = options?.runtime ?? new SessionRuntime();
+  runtime.toolExecutionScheduler.setLimit(config.settings.toolExecution.maxConcurrent);
   runtime.agentContextCache.beginTurn();
   if (!registry.getTool('ToolSearch')) registry.registerAll(toolSearchTools);
 
@@ -612,30 +613,80 @@ export async function runAgentLoop(
       callbacks.onUsage?.(turnUsage);
     }
 
-    const toolResults: ToolResult[] = [];
-    for (let callIndex = 0; callIndex < toolCalls.length; callIndex++) {
-      const call = toolCalls[callIndex];
+    const publishResult = (callIndex: number, result: ToolResult): void => {
+      callbacks.onToolResult(result);
       const nestedTraceId = nestedTraceIds[callIndex];
-      const publishResult = (result: ToolResult): void => {
-        callbacks.onToolResult(result);
-        if (nestedTraceId && options?.nestedToolObserver) {
-          options.nestedToolObserver.onToolResult(nestedTraceId, result);
-        }
+      if (nestedTraceId && options?.nestedToolObserver) {
+        options.nestedToolObserver.onToolResult(nestedTraceId, result);
+      }
+    };
+
+    const duplicateIds = [
+      ...new Set(
+        toolCalls.map((call) => call.id).filter((id, index, ids) => ids.indexOf(id) !== index),
+      ),
+    ];
+    if (duplicateIds.length > 0) {
+      const message = `Provider returned duplicate tool call IDs: ${duplicateIds.join(', ')}. The batch was rejected before execution.`;
+      for (let index = 0; index < toolCalls.length; index++) {
+        publishResult(
+          index,
+          toolFailure(message, {
+            toolCallId: toolCalls[index].id,
+            code: 'duplicate_tool_call_id',
+            status: 'blocked',
+            remediation: 'Retry with a unique ID for every tool call in the assistant turn.',
+          }),
+        );
+      }
+      callbacks.onError(message);
+      const malformedMessage: Message = {
+        id: options?.assistantMessageId?.(turn) ?? crypto.randomUUID(),
+        role: 'assistant',
+        content: [assistantContent, `[Tool batch rejected: ${message}]`]
+          .filter(Boolean)
+          .join('\n\n'),
+        includeInContext: true,
+        timestamp: Date.now(),
       };
+      newHistory.push(malformedMessage);
+      callbacks.onAssistantMessageComplete?.(malformedMessage);
+      break;
+    }
+
+    type PreparedLoopCall = {
+      index: number;
+      call: ToolCall;
+      canonName: string;
+      nestedTraceId?: string;
+      prepared: PreparedToolCall;
+      context: ToolContext;
+      parallel: boolean;
+      modeAtPreparation: PermissionMode;
+      previousModeAtPreparation: PermissionMode | undefined;
+      pendingPlanApprovalAtPreparation: ToolContext['pendingPlanApproval'];
+      pendingUserQuestionAtPreparation: ToolContext['pendingUserQuestion'];
+    };
+
+    const toolResults: Array<ToolResult | undefined> = new Array(toolCalls.length);
+    const prepareToolCall = async (
+      callIndex: number,
+      parallel: boolean,
+    ): Promise<PreparedLoopCall | undefined> => {
+      const originalCall = toolCalls[callIndex];
       if (signal?.aborted) {
-        const cancelledResult = toolFailure('CANCELLED: Agent execution was interrupted', {
-          toolCallId: call.id,
+        toolResults[callIndex] = toolFailure('CANCELLED: Agent execution was interrupted', {
+          toolCallId: originalCall.id,
           code: 'cancelled',
           status: 'cancelled',
         });
-        toolResults.push(cancelledResult);
-        publishResult(cancelledResult);
-        continue;
+        return undefined;
       }
-      toolContext.currentToolTraceId = nestedTraceId ?? call.id;
-      const canonName = canonicalToolName(call.name);
 
-      // PreToolUse hook — can block the tool before execution.
+      const call = originalCall;
+      const canonName = canonicalToolName(registry.getTool(call.name)?.name ?? call.name);
+      const nestedTraceId = nestedTraceIds[callIndex];
+
       const preHookResults = await runHooks(
         config.settings.hooks.PreToolUse,
         'PreToolUse',
@@ -647,17 +698,13 @@ export async function runAgentLoop(
         },
         { onHookEvent: callbacks.onHookEvent, signal },
       );
-      const blocked = preHookResults.find((r) => r.action === 'block');
+      const blocked = preHookResults.find((result) => result.action === 'block');
       if (blocked) {
-        toolResults.push(
-          toolFailure(`SKIPPED: Blocked by hook${blocked.message ? `: ${blocked.message}` : ''}`, {
-            toolCallId: call.id,
-            code: 'hook_blocked',
-            status: 'blocked',
-          }),
+        toolResults[callIndex] = toolFailure(
+          `SKIPPED: Blocked by hook${blocked.message ? `: ${blocked.message}` : ''}`,
+          { toolCallId: call.id, code: 'hook_blocked', status: 'blocked' },
         );
-        publishResult(toolResults[toolResults.length - 1]);
-        continue;
+        return undefined;
       }
 
       syncHostMode();
@@ -672,83 +719,59 @@ export async function runAgentLoop(
         managedLifecycle;
 
       if (isUserQuestion && effectiveMode === 'dontAsk') {
-        const blockedResult = toolFailure('SKIPPED: User questions are disabled in dontAsk mode', {
-          toolCallId: call.id,
-          code: 'user_questions_disabled',
-          status: 'blocked',
-        });
-        toolResults.push(blockedResult);
-        publishResult(blockedResult);
-        continue;
+        toolResults[callIndex] = toolFailure(
+          'SKIPPED: User questions are disabled in dontAsk mode',
+          { toolCallId: call.id, code: 'user_questions_disabled', status: 'blocked' },
+        );
+        return undefined;
       }
 
       if (isFileMutatingTool(canonName)) {
         const hardDeny = evaluatePermissionDetail(canonName, call.arguments, config.settings);
         if (hardDeny.decision === 'deny') {
-          const deniedResult = toolFailure('SKIPPED: Permission denied', {
+          toolResults[callIndex] = toolFailure('SKIPPED: Permission denied', {
             toolCallId: call.id,
             code: 'permission_denied',
             status: 'blocked',
             content: permissionDeniedError(canonName, hardDeny.matchedRule),
           });
-          toolResults.push(deniedResult);
-          publishResult(deniedResult);
-          continue;
+          return undefined;
         }
       }
 
       if (
         needsPermissionCheck(effectiveMode) &&
-        !approveAll.includes(call.name) &&
+        !approveAll.includes(canonName) &&
         !autoSafeTool &&
         effectiveMode !== 'plan'
       ) {
-        // File-mutating tools are automatically allowed in accept-edits mode.
         const autoApproved = effectiveMode === 'accept-edits' && isFileMutatingTool(canonName);
-
         if (!autoApproved) {
-          // Consult the resolved permission rules from settings (deny → ask → allow).
           let permission: 'allow' | 'deny' | 'always' | undefined;
           if (effectiveMode !== 'dontAsk') {
             const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
-            if (verdict.decision === 'allow') {
-              permission = 'allow';
-            } else if (verdict.decision === 'deny') {
-              permission = 'deny';
-            }
-            // 'ask' falls through to the interactive prompt below
+            if (verdict.decision === 'allow') permission = 'allow';
+            else if (verdict.decision === 'deny') permission = 'deny';
           }
-
-          if (permission === undefined) {
-            permission = await callbacks.onPermissionRequired(call);
-          }
+          permission ??= await callbacks.onPermissionRequired(call);
 
           if (permission === 'deny') {
             log.debug('permission denied', { tool: canonName });
             const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
-            const actionable = permissionDeniedError(canonName, verdict.matchedRule);
-            const deniedResult = toolFailure('SKIPPED: Permission denied', {
+            toolResults[callIndex] = toolFailure('SKIPPED: Permission denied', {
               toolCallId: call.id,
               code: 'permission_denied',
               status: 'blocked',
-              content: actionable,
+              content: permissionDeniedError(canonName, verdict.matchedRule),
             });
-            toolResults.push(deniedResult);
-            publishResult(deniedResult);
-            continue;
+            return undefined;
           }
           if (permission === 'always') {
             log.debug('permission always', { tool: canonName });
-            approveAll.push(call.name);
-            // Persist a precise Tool(specifier) rule for future sessions
-            // (CC-aligned "don't ask again" flow). The in-session approveAll
-            // above stays keyed on the bare name; this only writes settings
-            // when the host supplies onPersistPermissionRule (TUI), so
-            // headless/SDK paths keep the old in-memory-only behavior.
+            approveAll.push(canonName);
             if (callbacks.onPersistPermissionRule) {
               const primary = getPrimaryArg(call.arguments);
-              const rule = primary ? `${canonName}(${primary})` : canonName;
-              callbacks.onPersistPermissionRule(rule);
+              callbacks.onPersistPermissionRule(primary ? `${canonName}(${primary})` : canonName);
             }
           }
         }
@@ -756,25 +779,94 @@ export async function runAgentLoop(
 
       if (effectiveMode === 'plan' && !READ_ONLY_PLAN_TOOLS.has(canonName)) {
         log.debug('plan mode blocked mutating tool', { tool: canonName });
-        const blockedResult = toolFailure(
+        toolResults[callIndex] = toolFailure(
           `SKIPPED: Tool "${canonName}" is not allowed in plan mode. Call ExitPlanMode with your plan and wait for approval before making changes.`,
-          {
-            toolCallId: call.id,
-            code: 'plan_mode_blocked',
-            status: 'blocked',
-          },
+          { toolCallId: call.id, code: 'plan_mode_blocked', status: 'blocked' },
         );
-        toolResults.push(blockedResult);
-        publishResult(blockedResult);
-        continue;
+        return undefined;
       }
 
+      const preparedResult = registry.prepare(call, toolContext);
+      if (preparedResult.status === 'rejected') {
+        toolResults[callIndex] = preparedResult.result;
+        return undefined;
+      }
+      const prepared = preparedResult.prepared;
+
+      const context = parallel
+        ? {
+            ...toolContext,
+            currentToolTraceId: nestedTraceId ?? prepared.call.id,
+            todos: toolContext.todos ? [...toolContext.todos] : undefined,
+            tasks: toolContext.tasks ? [...toolContext.tasks] : undefined,
+            agentPath: toolContext.agentPath ? [...toolContext.agentPath] : undefined,
+          }
+        : toolContext;
+      if (!parallel) context.currentToolTraceId = nestedTraceId ?? prepared.call.id;
+
+      return {
+        index: callIndex,
+        call: prepared.call,
+        canonName,
+        nestedTraceId,
+        prepared,
+        context,
+        parallel,
+        modeAtPreparation: effectiveMode,
+        previousModeAtPreparation: context.previousMode,
+        pendingPlanApprovalAtPreparation: context.pendingPlanApproval,
+        pendingUserQuestionAtPreparation: context.pendingUserQuestion,
+      };
+    };
+
+    const executeToolCall = async (entry: PreparedLoopCall): Promise<ToolResult> => {
       const toolStartMs = Date.now();
-      log.debug('tool start', { name: canonName, id: call.id, args: Object.keys(call.arguments) });
-      let result = await registry.execute(call, toolContext, retry.toolRetries);
-      result.toolCallId = call.id;
-      const durationMs = Date.now() - toolStartMs;
-      result.metrics = { ...result.metrics, durationMs };
+      log.debug('tool start', {
+        name: entry.canonName,
+        id: entry.call.id,
+        args: Object.keys(entry.call.arguments),
+        parallel: entry.parallel,
+      });
+      try {
+        const execute = () =>
+          registry.executePrepared(entry.prepared, entry.context, retry.toolRetries);
+        const result = entry.parallel
+          ? await runtime.toolExecutionScheduler.run(execute, signal)
+          : await execute();
+        result.toolCallId = entry.call.id;
+        result.metrics = { ...result.metrics, durationMs: Date.now() - toolStartMs };
+        return result;
+      } catch (error) {
+        return toolFailure(error instanceof Error ? error.message : String(error), {
+          toolCallId: entry.call.id,
+          code: signal?.aborted ? 'cancelled' : 'tool_exception',
+          status: signal?.aborted ? 'cancelled' : 'error',
+        });
+      }
+    };
+
+    const finalizeToolCall = async (
+      entry: PreparedLoopCall,
+      initialResult: ToolResult,
+    ): Promise<ToolResult> => {
+      const { call, canonName, context, nestedTraceId } = entry;
+      let result = initialResult;
+      const durationMs = result.metrics?.durationMs ?? 0;
+
+      if (
+        entry.parallel &&
+        (context.currentMode !== entry.modeAtPreparation ||
+          context.previousMode !== entry.previousModeAtPreparation ||
+          context.pendingPlanApproval !== entry.pendingPlanApprovalAtPreparation ||
+          context.pendingUserQuestion !== entry.pendingUserQuestionAtPreparation)
+      ) {
+        result = toolFailure(`Parallel-safe tool ${canonName} mutated serial agent state`, {
+          toolCallId: call.id,
+          code: 'parallel_state_mutation',
+          remediation: `Mark ${canonName} serial until its state mutation is removed.`,
+        });
+      }
+
       log.info('tool done', {
         model: config.model,
         canonicalTool: canonName,
@@ -794,7 +886,9 @@ export async function runAgentLoop(
             : undefined,
         durationMs,
         outputLen: result.content.length,
+        parallel: entry.parallel,
       });
+
       if (toolResultSucceeded(result)) {
         if (
           result.artifacts?.fileMutation ||
@@ -807,31 +901,30 @@ export async function runAgentLoop(
         }
       }
 
-      const modeAfterTool = toolContext.currentMode ?? effectiveMode;
+      const modeAfterTool = context.currentMode ?? effectiveMode;
       if (modeAfterTool !== effectiveMode) {
         effectiveMode = modeAfterTool;
         callbacks.onModeChange?.(effectiveMode);
       }
 
-      if (toolResultSucceeded(result) && toolContext.pendingPlanApproval) {
-        const plan = toolContext.pendingPlanApproval.plan;
+      if (toolResultSucceeded(result) && context.pendingPlanApproval) {
         const approval = callbacks.onPlanApprovalRequired
-          ? await callbacks.onPlanApprovalRequired(plan)
-          : toolContext.previousMode === 'bypassPermissions'
+          ? await callbacks.onPlanApprovalRequired(context.pendingPlanApproval.plan)
+          : context.previousMode === 'bypassPermissions'
             ? 'approve'
             : 'reject';
 
         if (approval === 'approve') {
-          const restoredMode = toolContext.previousMode ?? 'default';
-          toolContext.currentMode = restoredMode;
-          toolContext.previousMode = undefined;
-          toolContext.pendingPlanApproval = undefined;
+          const restoredMode = context.previousMode ?? 'default';
+          context.currentMode = restoredMode;
+          context.previousMode = undefined;
+          context.pendingPlanApproval = undefined;
           result = replaceToolResult(result, {
             content: `${result.content}\n\nPlan approved. Exited plan mode; mode restored to ${restoredMode}.`,
           });
         } else {
-          toolContext.currentMode = 'plan';
-          toolContext.pendingPlanApproval = undefined;
+          context.currentMode = 'plan';
+          context.pendingPlanApproval = undefined;
           const message =
             approval === 'reject'
               ? 'SKIPPED: Plan was not approved. Revise the plan and call ExitPlanMode again.'
@@ -848,18 +941,18 @@ export async function runAgentLoop(
           });
         }
 
-        const modeAfterApproval = toolContext.currentMode ?? effectiveMode;
+        const modeAfterApproval = context.currentMode ?? effectiveMode;
         if (modeAfterApproval !== effectiveMode) {
           effectiveMode = modeAfterApproval;
           callbacks.onModeChange?.(effectiveMode);
         }
       }
 
-      if (toolResultSucceeded(result) && toolContext.pendingUserQuestion) {
-        const agentPath = toolContext.agentPath ?? [];
+      if (toolResultSucceeded(result) && context.pendingUserQuestion) {
+        const agentPath = context.agentPath ?? [];
         const request: UserQuestionRequest = {
           id: crypto.randomUUID(),
-          questions: toolContext.pendingUserQuestion.questions,
+          questions: context.pendingUserQuestion.questions,
           source:
             agentPath.length > 0
               ? { kind: 'subagent', agentPath: [...agentPath], traceId: nestedTraceId }
@@ -869,10 +962,7 @@ export async function runAgentLoop(
         let response: UserQuestionResponse;
         try {
           if (!callbacks.onUserQuestionRequired) {
-            response = {
-              action: 'decline',
-              message: 'User input is unavailable in this host.',
-            };
+            response = { action: 'decline', message: 'User input is unavailable in this host.' };
           } else if (signal?.aborted) {
             response = { action: 'cancel', message: 'Agent execution was interrupted.' };
           } else {
@@ -902,18 +992,17 @@ export async function runAgentLoop(
             message: `User question handler failed: ${error instanceof Error ? error.message : String(error)}`,
           };
         } finally {
-          toolContext.pendingUserQuestion = undefined;
+          context.pendingUserQuestion = undefined;
         }
 
         const validationError = validateUserQuestionResponse(request, response);
         if (validationError) {
-          const message = `Invalid user question response: ${validationError}`;
           result = replaceToolResult(result, {
             status: 'error',
             content: '',
             error: {
               code: 'invalid_user_question_response',
-              message,
+              message: `Invalid user question response: ${validationError}`,
               retryable: false,
             },
           });
@@ -935,7 +1024,6 @@ export async function runAgentLoop(
         }
       }
 
-      // PostToolUse hook — can modify the result output.
       const postHookResults = await runHooks(
         config.settings.hooks.PostToolUse,
         'PostToolUse',
@@ -950,9 +1038,9 @@ export async function runAgentLoop(
         },
         { onHookEvent: callbacks.onHookEvent, signal },
       );
-      for (const r of postHookResults) {
-        if (r.action === 'modify' && r.modifiedOutput !== undefined) {
-          result = replaceToolResult(result, { content: r.modifiedOutput });
+      for (const hookResult of postHookResults) {
+        if (hookResult.action === 'modify' && hookResult.modifiedOutput !== undefined) {
+          result = replaceToolResult(result, { content: hookResult.modifiedOutput });
         }
       }
 
@@ -988,20 +1076,74 @@ export async function runAgentLoop(
         });
       }
 
-      const normalizedResult = await boundToolResultOutput(
+      return boundToolResultOutput(
         enrichToolResultPresentation(result, canonName, call.arguments),
-        toolContext.workspaceRoot,
+        context.workspaceRoot,
         undefined,
         options?.toolOutputRoot,
       );
-      toolResults.push(normalizedResult);
-      publishResult(normalizedResult);
+    };
 
-      // Sync the agent todo list after each tool execution.
-      if (callbacks.onTodos && toolContext.todos) {
-        callbacks.onTodos(toolContext.todos);
+    const finishCall = async (entry: PreparedLoopCall, result: ToolResult): Promise<void> => {
+      const normalized = await finalizeToolCall(entry, result);
+      toolResults[entry.index] = normalized;
+    };
+    const resultAt = (index: number): ToolResult => {
+      const result = toolResults[index];
+      if (result) return result;
+      const fallback = toolFailure('Tool execution finished without a result', {
+        toolCallId: toolCalls[index].id,
+        code: 'missing_tool_result',
+      });
+      toolResults[index] = fallback;
+      return fallback;
+    };
+
+    for (let callIndex = 0; callIndex < toolCalls.length;) {
+      const definition = registry.getTool(toolCalls[callIndex].name);
+      const parallel = definition?.policy?.concurrency === 'parallel';
+      if (!parallel) {
+        const entry = await prepareToolCall(callIndex, false);
+        if (entry) await finishCall(entry, await executeToolCall(entry));
+        publishResult(callIndex, resultAt(callIndex));
+        if (callbacks.onTodos && toolContext.todos) callbacks.onTodos(toolContext.todos);
+        callIndex++;
+        continue;
+      }
+
+      const waveStart = callIndex;
+      while (
+        callIndex < toolCalls.length &&
+        registry.getTool(toolCalls[callIndex].name)?.policy?.concurrency === 'parallel'
+      ) {
+        callIndex++;
+      }
+      const entries: PreparedLoopCall[] = [];
+      for (let index = waveStart; index < callIndex; index++) {
+        const entry = await prepareToolCall(index, true);
+        if (entry) entries.push(entry);
+      }
+      const settled = await Promise.allSettled(entries.map((entry) => executeToolCall(entry)));
+      for (let index = 0; index < entries.length; index++) {
+        const execution = settled[index];
+        const result =
+          execution.status === 'fulfilled'
+            ? execution.value
+            : toolFailure(
+                execution.reason instanceof Error
+                  ? execution.reason.message
+                  : String(execution.reason),
+                { toolCallId: entries[index].call.id, code: 'tool_exception' },
+              );
+        await finishCall(entries[index], result);
+      }
+      for (let index = waveStart; index < callIndex; index++) {
+        publishResult(index, resultAt(index));
+        if (callbacks.onTodos && toolContext.todos) callbacks.onTodos(toolContext.todos);
       }
     }
+
+    const orderedToolResults = toolResults.map((_result, index) => resultAt(index));
 
     // Stop hook — fire-and-forget after each turn.
     runHooks(
@@ -1021,8 +1163,10 @@ export async function runAgentLoop(
       includeInContext: true,
       kind: 'conversation',
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      toolResults: toolResults.length > 0 ? toolResults : undefined,
-      fileObservations: toolResults.flatMap((result) => result.artifacts?.fileObservations ?? []),
+      toolResults: orderedToolResults.length > 0 ? orderedToolResults : undefined,
+      fileObservations: orderedToolResults.flatMap(
+        (result) => result.artifacts?.fileObservations ?? [],
+      ),
       timestamp: Date.now(),
     };
     newHistory.push(assistantMessage);

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { shellTools } from './shell.js';
@@ -87,6 +87,30 @@ describe('Bash shell tools', () => {
     expect(result.content).toContain('foreground-ok');
     expect(c.backgroundShells).toBeUndefined();
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'cancels a foreground Bash process through the tool signal',
+    async () => {
+      const controller = new AbortController();
+      const c = { ...ctx(), workspaceRoot: process.cwd(), signal: controller.signal };
+      const marker = join(dir, 'cancelled-process-survived.txt');
+      const command = nodeCommand(
+        'cancel-foreground.cjs',
+        `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 250);\nsetInterval(() => {}, 1000);\n`,
+      );
+      const startedAt = Date.now();
+      const pending = bash.execute({ command }, c);
+
+      setTimeout(() => controller.abort('stop foreground shell'), 50);
+      const result = await pending;
+
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      expect(result.status).toBe('error');
+      expect(result.structuredError?.message).toMatch(/cancel/i);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(existsSync(marker)).toBe(false);
+    },
+  );
 
   it('starts a background shell and returns a shell ID quickly', async () => {
     const c = ctx();

@@ -266,22 +266,22 @@ function waitForClose(shell: BackgroundShellRecord, timeoutMs: number): Promise<
 }
 
 async function requestProcessTreeTermination(
-  shell: BackgroundShellRecord,
+  proc: ChildProcess | undefined,
+  pid: number | undefined,
   signal: NodeJS.Signals,
 ): Promise<void> {
-  const proc = shell.process;
-  if (!proc || shell.pid === undefined) return;
+  if (!proc || pid === undefined) return;
 
   if (process.platform === 'win32') {
     await new Promise<void>((resolve) => {
-      exec(`taskkill /PID ${shell.pid} /T /F`, () => resolve());
+      exec(`taskkill /PID ${pid} /T /F`, () => resolve());
     });
     if (!proc.killed) proc.kill();
     return;
   }
 
   try {
-    process.kill(-shell.pid, signal);
+    process.kill(-pid, signal);
   } catch {
     proc.kill(signal);
   }
@@ -296,11 +296,11 @@ async function terminateShell(
   clearShellTimer(shell);
   shell.status = 'stopping';
 
-  await requestProcessTreeTermination(shell, 'SIGTERM');
+  await requestProcessTreeTermination(shell.process, shell.pid, 'SIGTERM');
   let closed = await waitForClose(shell, TERMINATE_GRACE_MS);
 
   if (!closed && process.platform !== 'win32') {
-    await requestProcessTreeTermination(shell, 'SIGKILL');
+    await requestProcessTreeTermination(shell.process, shell.pid, 'SIGKILL');
     closed = await waitForClose(shell, TERMINATE_GRACE_MS);
   }
 
@@ -328,15 +328,47 @@ async function bashForeground(
   const timeout = readNumber(args, 'timeout') ?? DEFAULT_TIMEOUT_MS;
 
   return new Promise((resolve) => {
-    const proc = exec(built.effectiveCommand, {
-      cwd: built.workdir,
-      timeout,
-      maxBuffer: MAX_FOREGROUND_BUFFER,
-      env: { ...process.env, ...ctx.env },
-    });
+    let proc: ChildProcess;
+    try {
+      proc = exec(built.effectiveCommand, {
+        cwd: built.workdir,
+        timeout,
+        maxBuffer: MAX_FOREGROUND_BUFFER,
+        env: { ...process.env, ...ctx.env },
+      });
+      ctx.runtime?.trackChildProcess(proc);
+    } catch (error) {
+      resolve(fail(error instanceof Error ? error.message : String(error)));
+      return;
+    }
 
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    let cancelled = false;
+    let termination: Promise<void> | undefined;
+
+    const cleanup = () => {
+      ctx.signal?.removeEventListener('abort', onAbort);
+      ctx.runtime?.releaseChildProcess(proc);
+    };
+    const finish = async (result: ToolResult) => {
+      if (settled) return;
+      settled = true;
+      try {
+        await termination;
+      } catch {
+        // The tool still returns cancellation if the process exited during teardown.
+      }
+      cleanup();
+      resolve(result);
+    };
+    const onAbort = () => {
+      if (cancelled) return;
+      cancelled = true;
+      termination = requestProcessTreeTermination(proc, proc.pid, 'SIGTERM');
+      void finish(fail('Command cancelled'));
+    };
 
     proc.stdout?.on('data', (data) => {
       stdout += data;
@@ -346,16 +378,23 @@ async function bashForeground(
     });
 
     proc.on('close', (code) => {
+      if (cancelled) {
+        void finish(fail('Command cancelled'));
+        return;
+      }
       if (code === 0) {
-        resolve(ok((built.sandboxed ? '[sandboxed] ' : '') + (stdout || '(no output)')));
+        void finish(ok((built.sandboxed ? '[sandboxed] ' : '') + (stdout || '(no output)')));
       } else {
-        resolve(fail(stderr || `Exit code: ${code}`, stdout));
+        void finish(fail(stderr || `Exit code: ${code}`, stdout));
       }
     });
 
     proc.on('error', (err) => {
-      resolve(fail(err.message));
+      void finish(fail(cancelled ? 'Command cancelled' : err.message));
     });
+
+    ctx.signal?.addEventListener('abort', onAbort, { once: true });
+    if (ctx.signal?.aborted) onAbort();
   });
 }
 

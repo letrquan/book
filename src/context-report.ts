@@ -81,7 +81,7 @@ export function buildContextReport(
     commandCount: number;
     subagentCount?: number;
     hasMemoryIndex?: boolean;
-    /** Whether CLAUDE.md instructions were found for this workspace. */
+    /** Whether CLAUDE.md or AGENTS.md instructions were found for this workspace. */
     hasClaudeMdLoader: boolean;
   },
 ): string {
@@ -140,9 +140,9 @@ export function buildContextReport(
     );
   }
   if (ambient.hasClaudeMdLoader) {
-    lines.push('  CLAUDE.md       : loaded (Phase 1b)');
+    lines.push('  Project rules   : loaded (CLAUDE.md / AGENTS.md)');
   } else {
-    lines.push('  CLAUDE.md       : none found (Phase 1b loader active)');
+    lines.push('  Project rules   : none found (CLAUDE.md / AGENTS.md loader active)');
   }
   lines.push('');
   lines.push(

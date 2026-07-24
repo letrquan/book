@@ -6,7 +6,7 @@ AI coding agent CLI with rich terminal UI. An open-source, provider-agnostic alt
 
 - **Interactive TUI** (Ink/React) plus **print mode** (`-p`) with `text` / `json` / `stream-json` output for CI.
 - **Providers**: Anthropic Messages API (prompt caching, adaptive thinking, `--effort`) and any OpenAI-compatible endpoint, auto-detected from `baseUrl` / `--provider`.
-- **Project context**: walks the tree to load `CLAUDE.md` (user-global → project → local → `.claude/rules/*.md`), injects git status, platform info, and discovered skills, slash commands, and subagents into a two-zone system prompt (cacheable static prefix + dynamic per-turn suffix).
+- **Project context**: walks the tree to load Codex-style `AGENTS.md` and Claude-style `CLAUDE.md` instructions (user-global → broad project → specific project → local/rules), injects git status, platform info, and discovered skills, slash commands, and subagents into a two-zone system prompt (cacheable static prefix + dynamic per-turn suffix).
 - **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
 - **Sessions**: append-only JSONL persistence with automatic titles from the first prompt plus `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, reference-aware `/compact`, and Claude-style `/rewind` for conversation, code, or both. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, and remembered file facts are freshness-checked before reuse.
 - **Tools**: a provider-neutral capability catalog keeps a practical core loaded and uses `ToolSearch` to activate up to five authorized git, web, session, skill, agent, notebook, or MCP definitions on the next model turn. File, shell, task, clarification, and plan tools stay immediately available when permitted. Existing names such as `Read`, `Bash`, and `AgentSpawn` remain stable.
@@ -161,6 +161,9 @@ The `apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not sile
     "maxLoadedTools": 15,
     "searchLimit": 5
   },
+  "toolExecution": {
+    "maxConcurrent": 4
+  },
   "agents": {
     "mode": "adaptive",
     "maxConcurrent": 3,
@@ -179,6 +182,8 @@ The `apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not sile
 ```
 
 `toolDiscovery.mode` accepts `auto`, `eager`, or `deferred`. Auto mode sends all authorized definitions only when there are at most ten and their schemas fit the configured budget; otherwise the provider receives the practical core plus `ToolSearch`. Search never returns tools outside the current command, skill, agent-role, permission-mode, or runtime-state capability intersection.
+
+Tool execution is serial by default. Consecutive calls explicitly reviewed as parallel-safe (`Read`, `Glob`, `Grep`, `GitStatus`, `GitDiff`, `GitLog`, and `GitBranch`) run as bounded ordered waves; every other call is a barrier. Preparation, hooks, mode checks, and permission prompts remain sequential, while wave results are published in provider order without discarding successful siblings when another fails. `toolExecution.maxConcurrent` sets the session-wide limit shared by the root and managed children (default `4`, maximum `8`).
 
 ### Managed agents
 

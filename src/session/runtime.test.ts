@@ -33,6 +33,13 @@ describe('SessionRuntime', () => {
     expect(second.traceId).not.toBe(first.traceId);
   });
 
+  it('can share one tool execution scheduler with a managed child runtime', () => {
+    const parent = new SessionRuntime();
+    const child = new SessionRuntime({ toolExecutionScheduler: parent.toolExecutionScheduler });
+
+    expect(child.toolExecutionScheduler).toBe(parent.toolExecutionScheduler);
+  });
+
   it('disposes registered controllers, timers, children, and background shells once', () => {
     vi.useFakeTimers();
     try {

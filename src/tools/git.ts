@@ -74,6 +74,7 @@ export const gitTools: ToolDefinition[] = [
   {
     name: 'GitStatus',
     idempotent: true,
+    policy: { concurrency: 'parallel' },
     description: 'Show the working tree status (git status --short)',
     parameters: { type: 'object', properties: {}, required: [] },
     execute: gitStatus,
@@ -81,6 +82,7 @@ export const gitTools: ToolDefinition[] = [
   {
     name: 'GitDiff',
     idempotent: true,
+    policy: { concurrency: 'parallel' },
     description: 'Show changes between commits, commit and working tree, etc.',
     parameters: { type: 'object', properties: {}, required: [] },
     execute: gitDiff,
@@ -88,6 +90,7 @@ export const gitTools: ToolDefinition[] = [
   {
     name: 'GitLog',
     idempotent: true,
+    policy: { concurrency: 'parallel' },
     description: 'Show recent commit logs (last 20, oneline)',
     parameters: { type: 'object', properties: {}, required: [] },
     execute: gitLog,
@@ -105,6 +108,7 @@ export const gitTools: ToolDefinition[] = [
   {
     name: 'GitBranch',
     idempotent: true,
+    policy: { concurrency: 'parallel' },
     description: 'List branches',
     parameters: { type: 'object', properties: {}, required: [] },
     execute: gitBranch,

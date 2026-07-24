@@ -159,13 +159,17 @@ describe('buildMessages', () => {
     expect(out.find((m) => m.role === 'tool')).toBeUndefined();
   });
 
-  it('injects workspace CLAUDE.md instructions into the system prompt', async () => {
+  it('injects workspace CLAUDE.md and AGENTS.md instructions into the system prompt', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'book-context-'));
     try {
+      writeFileSync(join(dir, 'AGENTS.md'), 'Use the agent rules.', 'utf-8');
       writeFileSync(join(dir, 'CLAUDE.md'), 'Use the repo rules.', 'utf-8');
       const out = await buildMessages(defaultConfig({ workspace: dir }), [userMsg('hi')], []);
       expect(out[0].content).toMatchObject({
-        cachedPrefix: expect.stringContaining('## CLAUDE.md instructions'),
+        cachedPrefix: expect.stringContaining('## Project instructions'),
+      });
+      expect(out[0].content).toMatchObject({
+        cachedPrefix: expect.stringContaining('Use the agent rules.'),
       });
       expect(out[0].content).toMatchObject({
         cachedPrefix: expect.stringContaining('Use the repo rules.'),
@@ -367,9 +371,20 @@ describe('buildMessages', () => {
     const zones = await buildSystemPromptZones(config, [], [], []);
 
     expect(zones.cachedPrefix).toContain('Work as an agent, not a chatbot');
+    expect(zones.cachedPrefix).toContain("Collaborate until the user's goal is genuinely handled");
+    expect(zones.cachedPrefix).toContain('inspect rather than guess');
+    expect(zones.cachedPrefix).toContain('do not repeat the same call unchanged');
     expect(zones.cachedPrefix).toContain('Act directly when the task is small and clear');
     expect(zones.cachedPrefix).toContain('Solve root causes rather than suppressing symptoms');
+    expect(zones.cachedPrefix).toContain('avoid unrelated cleanup, speculative abstractions');
+    expect(zones.cachedPrefix).toContain('Batch independent read-only calls in one response');
+    expect(zones.cachedPrefix).toContain('issue AgentSpawn calls together');
+    expect(zones.cachedPrefix).toContain('retry only the failed call');
+    expect(zones.cachedPrefix).toContain('exercise the affected behavior when possible');
+    expect(zones.cachedPrefix).toContain('review the changed files or diff');
     expect(zones.cachedPrefix).toContain('Do not claim success without evidence');
+    expect(zones.cachedPrefix).toContain('project instructions as trusted workspace policy');
+    expect(zones.cachedPrefix).toContain('approval once does not authorize');
     expect(zones.cachedPrefix).toContain(
       'Do not create commits, push branches, open pull requests',
     );

@@ -1213,7 +1213,9 @@ export class AgentManager {
       return;
     }
 
-    const runtime = new SessionRuntime();
+    const runtime = new SessionRuntime({
+      toolExecutionScheduler: this.options.runtime?.toolExecutionScheduler,
+    });
     const controller = runtime.trackAbortController(new AbortController());
     this.controllers.set(record.id, controller);
     try {

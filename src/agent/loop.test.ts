@@ -919,14 +919,24 @@ describe('runAgentLoop error handling', () => {
 });
 
 describe('runAgentLoop retry config passthrough', () => {
-  it('passes retry.toolRetries to registry.execute', async () => {
+  it('passes retry.toolRetries to prepared tool execution', async () => {
     const registry = createRegistry();
-    // Spy on execute to verify toolRetries is passed.
-    const origExecute = registry.execute;
+    registry.register({
+      name: 'Read',
+      description: 'Read',
+      parameters: {
+        type: 'object',
+        properties: { filePath: { type: 'string' } },
+        required: ['filePath'],
+      },
+      idempotent: true,
+      execute: async () => toolSuccess('read'),
+    });
+    const origExecutePrepared = registry.executePrepared;
     const executeCalls: number[] = [];
-    registry.execute = async (call, ctx, maxRetries) => {
+    registry.executePrepared = async (prepared, ctx, maxRetries) => {
       executeCalls.push(maxRetries ?? -1);
-      return origExecute(call, ctx, maxRetries);
+      return origExecutePrepared(prepared, ctx, maxRetries);
     };
 
     vi.stubGlobal(
@@ -988,6 +998,298 @@ function toolCallStream(
     },
   });
 }
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe('runAgentLoop concurrent tool execution', () => {
+  it('overlaps parallel-safe calls, preserves result order, and honors serial barriers', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              { id: 'parallel-a', name: 'ParallelA', arguments: '{}' },
+              { id: 'parallel-b', name: 'ParallelB', arguments: '{}' },
+              { id: 'serial-c', name: 'SerialC', arguments: '{}' },
+              { id: 'parallel-d', name: 'ParallelD', arguments: '{}' },
+            ]),
+            { status: 200 },
+          ),
+      ),
+    );
+    const registry = createRegistry();
+    const waveRelease = deferred();
+    const bothStarted = deferred();
+    const events: string[] = [];
+    let firstWaveStarted = 0;
+    const parallel = (name: string) => ({
+      name,
+      description: name,
+      parameters: { type: 'object', properties: {} },
+      policy: { concurrency: 'parallel' as const },
+      execute: async () => {
+        events.push(`start:${name}`);
+        if (name === 'ParallelA' || name === 'ParallelB') {
+          firstWaveStarted++;
+          if (firstWaveStarted === 2) bothStarted.resolve();
+          await waveRelease.promise;
+        }
+        events.push(`end:${name}`);
+        return toolSuccess(name);
+      },
+    });
+    registry.register(parallel('ParallelA'));
+    registry.register(parallel('ParallelB'));
+    registry.register({
+      name: 'SerialC',
+      description: 'SerialC',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        events.push('start:SerialC', 'end:SerialC');
+        return toolSuccess('SerialC');
+      },
+    });
+    registry.register(parallel('ParallelD'));
+    const results: ToolResult[] = [];
+
+    const run = runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'run tools',
+      [],
+      noopCallbacks({ onToolResult: (result) => results.push(result) }),
+      'bypassPermissions',
+    );
+    await bothStarted.promise;
+    expect(events).toEqual(expect.arrayContaining(['start:ParallelA', 'start:ParallelB']));
+    expect(events.some((event) => event.startsWith('end:'))).toBe(false);
+    waveRelease.resolve();
+    await run;
+
+    const firstWaveEnd = Math.max(events.indexOf('end:ParallelA'), events.indexOf('end:ParallelB'));
+    expect(events.indexOf('start:SerialC')).toBeGreaterThan(firstWaveEnd);
+    expect(events.indexOf('start:ParallelD')).toBeGreaterThan(events.indexOf('end:SerialC'));
+    expect(results.map((result) => result.toolCallId)).toEqual([
+      'parallel-a',
+      'parallel-b',
+      'serial-c',
+      'parallel-d',
+    ]);
+  });
+
+  it('publishes reverse-completing siblings in provider order', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              { id: 'slow-first', name: 'SlowFirst', arguments: '{}' },
+              { id: 'fast-second', name: 'FastSecond', arguments: '{}' },
+            ]),
+            { status: 200 },
+          ),
+      ),
+    );
+    const registry = createRegistry();
+    const slowRelease = deferred();
+    const fastFinished = deferred();
+    registry.register({
+      name: 'SlowFirst',
+      description: 'SlowFirst',
+      parameters: { type: 'object', properties: {} },
+      policy: { concurrency: 'parallel' },
+      execute: async () => {
+        await slowRelease.promise;
+        return toolSuccess('slow');
+      },
+    });
+    registry.register({
+      name: 'FastSecond',
+      description: 'FastSecond',
+      parameters: { type: 'object', properties: {} },
+      policy: { concurrency: 'parallel' },
+      execute: async () => {
+        fastFinished.resolve();
+        return toolSuccess('fast');
+      },
+    });
+    const results: ToolResult[] = [];
+    const run = runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'run tools',
+      [],
+      noopCallbacks({ onToolResult: (result) => results.push(result) }),
+      'bypassPermissions',
+    );
+
+    await fastFinished.promise;
+    expect(results).toEqual([]);
+    slowRelease.resolve();
+    await run;
+    expect(results.map((result) => result.toolCallId)).toEqual(['slow-first', 'fast-second']);
+  });
+
+  it('keeps successful siblings when another parallel call fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              { id: 'failed', name: 'FailingRead', arguments: '{}' },
+              { id: 'succeeded', name: 'SuccessfulRead', arguments: '{}' },
+            ]),
+            { status: 200 },
+          ),
+      ),
+    );
+    const registry = createRegistry();
+    registry.register({
+      name: 'FailingRead',
+      description: 'FailingRead',
+      parameters: { type: 'object', properties: {} },
+      policy: { concurrency: 'parallel' },
+      execute: async () => {
+        throw new Error('read failed');
+      },
+    });
+    registry.register({
+      name: 'SuccessfulRead',
+      description: 'SuccessfulRead',
+      parameters: { type: 'object', properties: {} },
+      policy: { concurrency: 'parallel' },
+      execute: async () => toolSuccess('kept'),
+    });
+    const results: ToolResult[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'run tools',
+      [],
+      noopCallbacks({ onToolResult: (result) => results.push(result) }),
+      'bypassPermissions',
+    );
+
+    expect(results.map((result) => result.status)).toEqual(['error', 'success']);
+    expect(results[1].content).toBe('kept');
+  });
+
+  it('rejects duplicate tool-call IDs before executing any sibling', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              { id: 'duplicate', name: 'FirstRead', arguments: '{}' },
+              { id: 'duplicate', name: 'SecondRead', arguments: '{}' },
+            ]),
+            { status: 200 },
+          ),
+      ),
+    );
+    const registry = createRegistry();
+    const execute = vi.fn(async () => toolSuccess('unexpected'));
+    for (const name of ['FirstRead', 'SecondRead']) {
+      registry.register({
+        name,
+        description: name,
+        parameters: { type: 'object', properties: {} },
+        policy: { concurrency: 'parallel' },
+        execute,
+      });
+    }
+    const results: ToolResult[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'run tools',
+      [],
+      noopCallbacks({ onToolResult: (result) => results.push(result) }),
+      'bypassPermissions',
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(results).toHaveLength(2);
+    expect(
+      results.every((result) => result.structuredError?.code === 'duplicate_tool_call_id'),
+    ).toBe(true);
+  });
+
+  it('serializes permission preparation and gives parallel calls distinct trace IDs', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              { id: 'first', name: 'PermissionReadA', arguments: '{}' },
+              { id: 'second', name: 'PermissionReadB', arguments: '{}' },
+            ]),
+            { status: 200 },
+          ),
+      ),
+    );
+    const registry = createRegistry();
+    const traceIds: string[] = [];
+    for (const name of ['PermissionReadA', 'PermissionReadB']) {
+      registry.register({
+        name,
+        description: name,
+        parameters: { type: 'object', properties: {} },
+        policy: { concurrency: 'parallel' },
+        execute: async (_args, context) => {
+          traceIds.push(context.currentToolTraceId ?? '');
+          return toolSuccess(name);
+        },
+      });
+    }
+    const permissionResolvers: Array<(result: 'allow') => void> = [];
+    let activePrompts = 0;
+    let maxActivePrompts = 0;
+    const run = runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'run tools',
+      [],
+      noopCallbacks({
+        onPermissionRequired: () => {
+          activePrompts++;
+          maxActivePrompts = Math.max(maxActivePrompts, activePrompts);
+          return new Promise((resolve) => {
+            permissionResolvers.push((result) => {
+              activePrompts--;
+              resolve(result);
+            });
+          });
+        },
+      }),
+      'default',
+    );
+
+    await vi.waitFor(() => expect(permissionResolvers).toHaveLength(1));
+    permissionResolvers[0]('allow');
+    await vi.waitFor(() => expect(permissionResolvers).toHaveLength(2));
+    permissionResolvers[1]('allow');
+    await run;
+
+    expect(maxActivePrompts).toBe(1);
+    expect(traceIds).toHaveLength(2);
+    expect(traceIds[0]).not.toBe(traceIds[1]);
+    expect(traceIds.every(Boolean)).toBe(true);
+  });
+});
 
 describe('runAgentLoop accept-edits mode', () => {
   for (const toolName of ['ApplyPatch', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {

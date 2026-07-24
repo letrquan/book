@@ -413,7 +413,7 @@ function ContextPanelBody({
     data.ambient.skillCount === undefined ? null : `skills ${data.ambient.skillCount}`,
     data.ambient.subagentCount === undefined ? null : `agents ${data.ambient.subagentCount}`,
     `memory ${data.ambient.hasMemoryIndex ? 'loaded' : 'none'}`,
-    `CLAUDE.md ${data.ambient.hasClaudeMdLoader ? 'loaded' : 'none'}`,
+    `rules ${data.ambient.hasClaudeMdLoader ? 'loaded' : 'none'}`,
   ].filter((item): item is string => Boolean(item));
 
   return (

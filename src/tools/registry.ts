@@ -17,7 +17,7 @@ import { toolSearchTools } from './tool-search.js';
 import { createRegistry, type ToolRegistry } from './registry-core.js';
 
 export { createRegistry } from './registry-core.js';
-export type { ToolRegistry } from './registry-core.js';
+export type { PreparedToolCall, ToolRegistry } from './registry-core.js';
 
 export function createDefaultRegistry(capabilities?: {
   sessionHistory?: SessionHistoryCapability;

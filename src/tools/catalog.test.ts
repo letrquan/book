@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AgentConfig } from '../types/runtime.js';
 import type { ToolContext, ToolDefinition } from '../types/tools.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
-import { createToolSurface } from './catalog.js';
+import { createToolSurface, normalizeToolDefinition } from './catalog.js';
 import { createDefaultRegistry, createRegistry } from './registry.js';
 import { toolSuccess } from './result.js';
 import { SessionRuntime } from '../session/runtime.js';
@@ -50,6 +50,17 @@ function context(): ToolContext {
 }
 
 describe('tool surface discovery', () => {
+  it('keeps idempotence separate from explicit concurrency safety', () => {
+    const idempotent = normalizeToolDefinition({ ...definition('SafeRetry'), idempotent: true });
+    const parallel = normalizeToolDefinition({
+      ...definition('ReviewedRead'),
+      policy: { concurrency: 'parallel' },
+    });
+
+    expect(idempotent.policy).toMatchObject({ idempotent: true, concurrency: 'serial' });
+    expect(parallel.policy?.concurrency).toBe('parallel');
+  });
+
   it('defers large catalogs and activates search matches on the next surface snapshot', () => {
     const definitions = [
       definition('Read'),

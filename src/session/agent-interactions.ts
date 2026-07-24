@@ -64,6 +64,7 @@ function snapshotOf(
 /** Owns interactive request promises independently from any UI framework. */
 export class AgentInteractionController {
   private pendingPermission: PendingPermission | null = null;
+  private pendingPermissionQueue: PendingPermission[] = [];
   private pendingPlanApproval: PendingPlanApproval | null = null;
   private pendingUserQuestions: PendingUserQuestion[] = [];
   private snapshot = snapshotOf(null, null, []);
@@ -79,11 +80,20 @@ export class AgentInteractionController {
   }
 
   requestPermission(toolCall: ToolCall): Promise<PermissionResult> {
-    if (this.pendingPermission) this.settlePermission('deny', 'superseded');
     return new Promise((resolve) => {
-      this.pendingPermission = { toolCall, resolve };
-      this.publish();
-      log.event('permission:pending', { tool: toolCall.name, id: toolCall.id });
+      const request = { toolCall, resolve };
+      if (this.pendingPermission) {
+        this.pendingPermissionQueue.push(request);
+        log.event('permission:queued', {
+          tool: toolCall.name,
+          id: toolCall.id,
+          queueLength: this.pendingPermissionQueue.length,
+        });
+      } else {
+        this.pendingPermission = request;
+        this.publish();
+        log.event('permission:pending', { tool: toolCall.name, id: toolCall.id });
+      }
     });
   }
 
@@ -93,7 +103,7 @@ export class AgentInteractionController {
       log.event('permission:settled:noop', { reason: 'no-pending', result, via });
       return false;
     }
-    this.pendingPermission = null;
+    this.pendingPermission = this.pendingPermissionQueue.shift() ?? null;
     this.publish();
     log.event('permission:settled', {
       tool: pending.toolCall.name,
@@ -102,6 +112,20 @@ export class AgentInteractionController {
       via,
     });
     pending.resolve(result);
+    return true;
+  }
+
+  private cancelPermissions(via: string): boolean {
+    const pending = [
+      ...(this.pendingPermission ? [this.pendingPermission] : []),
+      ...this.pendingPermissionQueue,
+    ];
+    if (pending.length === 0) return false;
+    this.pendingPermission = null;
+    this.pendingPermissionQueue = [];
+    this.publish();
+    for (const request of pending) request.resolve('deny');
+    log.event('permission:cancelled-all', { via, count: pending.length });
     return true;
   }
 
@@ -183,7 +207,7 @@ export class AgentInteractionController {
 
   cancelAll(via: string): CancelInteractionResult {
     return {
-      permission: this.settlePermission('deny', via),
+      permission: this.cancelPermissions(via),
       planApproval: this.settlePlanApproval('reject', via),
       userQuestions: this.cancelUserQuestions(via),
     };

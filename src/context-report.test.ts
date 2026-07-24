@@ -75,10 +75,10 @@ describe('buildContextReport', () => {
     expect(report).toContain('100,000');
     expect(report).toContain('Slash commands  : 5');
     expect(report).toContain('Git/workspace   : branch, status, OS, date');
-    expect(report).toContain('none found (Phase 1b loader active)');
+    expect(report).toContain('none found (CLAUDE.md / AGENTS.md loader active)');
   });
 
-  it('reports when CLAUDE.md instructions are loaded', () => {
+  it('reports when project instructions are loaded', () => {
     const report = buildContextReport([], {
       model: 'claude-sonnet-5',
       maxTokens: 100000,
@@ -88,7 +88,7 @@ describe('buildContextReport', () => {
       hasClaudeMdLoader: true,
     });
 
-    expect(report).toContain('CLAUDE.md       : loaded (Phase 1b)');
+    expect(report).toContain('Project rules   : loaded (CLAUDE.md / AGENTS.md)');
     expect(report).toContain('Subagents       : 2 discoverable');
     expect(report).toContain('Memory index    : loaded');
   });

@@ -168,6 +168,13 @@ export const toolDiscoverySettingsSchema = z.object({
 
 export type ToolDiscoverySettings = z.infer<typeof toolDiscoverySettingsSchema>;
 
+export const toolExecutionSettingsSchema = z.object({
+  /** Shared across the root loop and managed children for parallel-safe tools. */
+  maxConcurrent: z.number().int().min(1).max(8).default(4),
+});
+
+export type ToolExecutionSettings = z.infer<typeof toolExecutionSettingsSchema>;
+
 export type ProviderModelConfig = z.infer<typeof providerModelSchema>;
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;
 
@@ -198,6 +205,7 @@ export const bookSettingsSchema = z.object({
   memory: memorySettingsSchema.default({}),
   agents: agentSettingsSchema.default({}),
   toolDiscovery: toolDiscoverySettingsSchema.default({}),
+  toolExecution: toolExecutionSettingsSchema.default({}),
 });
 
 export type BookSettings = z.infer<typeof bookSettingsSchema>;
@@ -295,5 +303,8 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     schemaTokenBudget: 8000,
     maxLoadedTools: 15,
     searchLimit: 5,
+  },
+  toolExecution: {
+    maxConcurrent: 4,
   },
 };

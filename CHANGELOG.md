@@ -6,6 +6,11 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Bounded, session-wide concurrent execution for explicitly reviewed read-only file and Git tools,
+  with ordered serial barriers, all-settled sibling results, duplicate-call rejection, and shared
+  root/managed-child scheduling.
+- Codex-style `AGENTS.md` project-instruction discovery alongside the existing Claude-style
+  `CLAUDE.md` and `.claude/rules` loader.
 - Resilient managed-agent persistence with fsynced atomic writes, bounded Windows contention
   retries, per-target locks, process leases, orphan-temp recovery, background coalescing, typed
   retryable tool failures, and non-modal degraded/recovered storage events.
@@ -34,6 +39,12 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Tool concurrency is now an explicit policy rather than an idempotence side effect; preparation,
+  hooks, permission prompts, interactive tools, mutations, shell commands, and lifecycle actions
+  remain serial by default.
+- Strengthened the stable agent system prompt with end-to-end persistence, evidence-first tool
+  use, failed-call recovery, tighter scope control, behavior-level verification, final diff review,
+  and explicit authorization scope.
 - Session discovery now uses an atomic metadata index with linear JSONL replay and shared search/read indexes; rewind snapshots cache unchanged files, deduplicate manifest entry sets, and exclude workspace-local `.book/` state by default.
 - Static prompt discovery, tool schema estimates, Git context, and streaming transcript projection are cached or incrementally updated, with adaptive flushing and a bounded streaming transcript window.
 - Legacy permission migration runs during explicit startup, records a migration marker, skips identical settings writes, and serializes cross-process settings mutations.
@@ -54,6 +65,9 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Queue concurrent permission requests instead of superseding earlier prompts, propagate
+  cancellation into foreground shell processes, and give aborted tools a bounded cooperative
+  teardown window before releasing their execution slot.
 - Use a 64,000-token output fallback for models without published output metadata instead of consuming the entire fallback context window.
 - Prevent context-window failures from oversized tool output by skipping binary `Grep` inputs, bounding search and generic tool results, preflighting complete provider requests, and compacting or clipping once before retrying recognized overflow errors.
 - Apply interactive permission-mode changes immediately to the active agent loop.

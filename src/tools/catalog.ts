@@ -141,7 +141,7 @@ export function normalizeToolDefinition(definition: ToolDefinition): ToolDefinit
     },
     policy: {
       idempotent: definition.idempotent,
-      concurrency: definition.idempotent ? 'parallel' : 'serial',
+      concurrency: 'serial',
       ...definition.policy,
     },
   };

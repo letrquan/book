@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { discoverClaudeMd, renderClaudeMd } from './claude-md.js';
+import { discoverProjectInstructions, renderProjectInstructions } from './claude-md.js';
 
 let dir: string;
 let home: string;
@@ -24,29 +24,39 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe('discoverClaudeMd', () => {
-  it('returns no sources when no CLAUDE.md files exist in the test tree', () => {
-    const sources = discoverClaudeMd(workspace, home).filter((s) => s.path.startsWith(dir));
+describe('discoverProjectInstructions', () => {
+  it('returns no sources when no instruction files exist in the test tree', () => {
+    const sources = discoverProjectInstructions(workspace, home).filter((s) =>
+      s.path.startsWith(dir),
+    );
     expect(sources).toEqual([]);
   });
 
-  it('loads user instructions before project instructions', () => {
+  it('loads user instructions before broad and specific project instructions', () => {
     write(join(home, '.claude', 'CLAUDE.md'), 'user rules');
+    write(join(home, '.book', 'AGENTS.md'), 'book user rules');
+    write(join(dir, 'repo', 'AGENTS.md'), 'repo agent rules');
     write(join(dir, 'repo', 'CLAUDE.md'), 'repo rules');
     write(join(workspace, 'CLAUDE.md'), 'workspace rules');
 
-    const bodies = discoverClaudeMd(workspace, home)
+    const bodies = discoverProjectInstructions(workspace, home)
       .filter((s) => s.path.startsWith(dir))
       .map((s) => s.body);
 
-    expect(bodies).toEqual(['user rules', 'repo rules', 'workspace rules']);
+    expect(bodies).toEqual([
+      'user rules',
+      'book user rules',
+      'repo agent rules',
+      'repo rules',
+      'workspace rules',
+    ]);
   });
 
   it('loads .claude/CLAUDE.md after CLAUDE.md in the same directory', () => {
     write(join(workspace, 'CLAUDE.md'), 'top-level');
     write(join(workspace, '.claude', 'CLAUDE.md'), 'dot-claude');
 
-    const bodies = discoverClaudeMd(workspace, home)
+    const bodies = discoverProjectInstructions(workspace, home)
       .filter((s) => s.path.startsWith(dir))
       .map((s) => s.body);
 
@@ -59,7 +69,7 @@ describe('discoverClaudeMd', () => {
     write(join(workspace, '.claude', 'rules', 'b.md'), 'rule b');
     write(join(workspace, '.claude', 'rules', 'a.md'), 'rule a');
 
-    const bodies = discoverClaudeMd(workspace, home)
+    const bodies = discoverProjectInstructions(workspace, home)
       .filter((s) => s.path.startsWith(dir))
       .map((s) => s.body);
 
@@ -67,14 +77,14 @@ describe('discoverClaudeMd', () => {
   });
 });
 
-describe('renderClaudeMd', () => {
+describe('renderProjectInstructions', () => {
   it('renders a labeled instruction block', () => {
-    const rendered = renderClaudeMd([
-      { path: '/x/CLAUDE.md', layer: 'project', body: 'Use short diffs.' },
+    const rendered = renderProjectInstructions([
+      { path: '/x/AGENTS.md', layer: 'project', body: 'Use short diffs.' },
     ]);
 
-    expect(rendered).toContain('## CLAUDE.md instructions');
-    expect(rendered).toContain('### project: /x/CLAUDE.md');
+    expect(rendered).toContain('## Project instructions');
+    expect(rendered).toContain('### project: /x/AGENTS.md');
     expect(rendered).toContain('Use short diffs.');
   });
 });

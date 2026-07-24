@@ -2,6 +2,7 @@ import type { ChildProcess } from 'node:child_process';
 import type { AgentTask, BackgroundShellStore } from '../types/runtime.js';
 import type { FileObservation, ToolDiscoveryState } from '../types/tools.js';
 import { AgentContextCache } from '../agent/context.js';
+import { ToolExecutionScheduler } from '../tools/execution-scheduler.js';
 
 export interface SessionRuntimeOptions {
   tasks?: AgentTask[];
@@ -9,6 +10,7 @@ export interface SessionRuntimeOptions {
   fileObservationLedger?: Map<string, FileObservation>;
   toolDiscoveryState?: ToolDiscoveryState;
   agentContextCache?: AgentContextCache;
+  toolExecutionScheduler?: ToolExecutionScheduler;
   traceId?: string;
 }
 
@@ -19,6 +21,7 @@ export class SessionRuntime {
   readonly fileObservationLedger: Map<string, FileObservation>;
   readonly toolDiscoveryState: ToolDiscoveryState;
   readonly agentContextCache: AgentContextCache;
+  readonly toolExecutionScheduler: ToolExecutionScheduler;
   readonly traceId: string;
   agentManager?: import('../agents/manager.js').AgentManager;
   private readonly abortControllers = new Set<AbortController>();
@@ -32,6 +35,7 @@ export class SessionRuntime {
     this.fileObservationLedger = options.fileObservationLedger ?? new Map();
     this.toolDiscoveryState = options.toolDiscoveryState ?? { clock: 0, loaded: new Map() };
     this.agentContextCache = options.agentContextCache ?? new AgentContextCache();
+    this.toolExecutionScheduler = options.toolExecutionScheduler ?? new ToolExecutionScheduler();
     this.traceId = options.traceId ?? crypto.randomUUID();
   }
 

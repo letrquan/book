@@ -42,6 +42,33 @@ describe('AgentInteractionController', () => {
     expect(listener).toHaveBeenCalledTimes(2);
   });
 
+  it('queues permission requests without superseding the visible request', async () => {
+    const controller = new AgentInteractionController();
+    const secondCall: ToolCall = { ...toolCall, id: 'tc-2', name: 'Write' };
+    const first = controller.requestPermission(toolCall);
+    const second = controller.requestPermission(secondCall);
+
+    expect(controller.getSnapshot().pendingPermission).toEqual({ toolCall });
+    expect(controller.settlePermission('allow', 'resolve')).toBe(true);
+    await expect(first).resolves.toBe('allow');
+    expect(controller.getSnapshot().pendingPermission).toEqual({ toolCall: secondCall });
+
+    expect(controller.settlePermission('deny', 'resolve')).toBe(true);
+    await expect(second).resolves.toBe('deny');
+    expect(controller.getSnapshot().pendingPermission).toBeNull();
+  });
+
+  it('denies the visible and queued permission requests during cleanup', async () => {
+    const controller = new AgentInteractionController();
+    const first = controller.requestPermission(toolCall);
+    const second = controller.requestPermission({ ...toolCall, id: 'tc-2' });
+
+    expect(controller.cancelAll('unmount').permission).toBe(true);
+    await expect(first).resolves.toBe('deny');
+    await expect(second).resolves.toBe('deny');
+    expect(controller.getSnapshot().pendingPermission).toBeNull();
+  });
+
   it('rejects a superseded plan request instead of leaving its promise pending', async () => {
     const controller = new AgentInteractionController();
     const first = controller.requestPlanApproval('first');

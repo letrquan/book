@@ -2,15 +2,15 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, parse, resolve } from 'path';
 
-export type ClaudeMdLayer = 'user' | 'project' | 'local' | 'rule';
+export type ProjectInstructionLayer = 'user' | 'project' | 'local' | 'rule';
 
-export interface ClaudeMdSource {
+export interface ProjectInstructionSource {
   path: string;
-  layer: ClaudeMdLayer;
+  layer: ProjectInstructionLayer;
   body: string;
 }
 
-function readSource(path: string, layer: ClaudeMdLayer): ClaudeMdSource | null {
+function readSource(path: string, layer: ProjectInstructionLayer): ProjectInstructionSource | null {
   try {
     if (!existsSync(path) || !statSync(path).isFile()) return null;
     const body = readFileSync(path, 'utf-8').trim();
@@ -34,17 +34,22 @@ function ancestorsFromRoot(workspace: string): string[] {
   return dirs.reverse();
 }
 
-export function discoverClaudeMd(workspace: string, homeDir = homedir()): ClaudeMdSource[] {
-  const sources: ClaudeMdSource[] = [];
+export function discoverProjectInstructions(
+  workspace: string,
+  homeDir = homedir(),
+): ProjectInstructionSource[] {
+  const sources: ProjectInstructionSource[] = [];
   const workspaceRoot = resolve(workspace);
-  const add = (path: string, layer: ClaudeMdLayer) => {
+  const add = (path: string, layer: ProjectInstructionLayer) => {
     const source = readSource(path, layer);
     if (source) sources.push(source);
   };
 
   add(join(homeDir, '.claude', 'CLAUDE.md'), 'user');
+  add(join(homeDir, '.book', 'AGENTS.md'), 'user');
 
   for (const dir of ancestorsFromRoot(workspaceRoot)) {
+    add(join(dir, 'AGENTS.md'), 'project');
     add(join(dir, 'CLAUDE.md'), 'project');
     add(join(dir, '.claude', 'CLAUDE.md'), 'project');
   }
@@ -67,11 +72,11 @@ export function discoverClaudeMd(workspace: string, homeDir = homedir()): Claude
   return sources;
 }
 
-export function renderClaudeMd(sources: ClaudeMdSource[]): string {
+export function renderProjectInstructions(sources: ProjectInstructionSource[]): string {
   if (sources.length === 0) return '';
 
   const lines = [
-    '## CLAUDE.md instructions',
+    '## Project instructions',
     'Loaded in merge order; later sections override earlier sections.',
   ];
 
@@ -81,3 +86,9 @@ export function renderClaudeMd(sources: ClaudeMdSource[]): string {
 
   return lines.join('\n');
 }
+
+// Compatibility aliases for callers that imported the original CLAUDE.md-only API.
+export const discoverClaudeMd = discoverProjectInstructions;
+export const renderClaudeMd = renderProjectInstructions;
+export type ClaudeMdLayer = ProjectInstructionLayer;
+export type ClaudeMdSource = ProjectInstructionSource;
