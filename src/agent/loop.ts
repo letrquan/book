@@ -1,4 +1,5 @@
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
+import { createHash } from 'node:crypto';
 import type { Message, Usage } from '../types/messages.js';
 import type { SlashCommand } from '../types/commands.js';
 import type {
@@ -681,6 +682,21 @@ export async function runAgentLoop(
         continue;
       }
 
+      if (isFileMutatingTool(canonName)) {
+        const hardDeny = evaluatePermissionDetail(canonName, call.arguments, config.settings);
+        if (hardDeny.decision === 'deny') {
+          const deniedResult = toolFailure('SKIPPED: Permission denied', {
+            toolCallId: call.id,
+            code: 'permission_denied',
+            status: 'blocked',
+            content: permissionDeniedError(canonName, hardDeny.matchedRule),
+          });
+          toolResults.push(deniedResult);
+          publishResult(deniedResult);
+          continue;
+        }
+      }
+
       if (
         needsPermissionCheck(effectiveMode) &&
         !approveAll.includes(call.name) &&
@@ -760,13 +776,31 @@ export async function runAgentLoop(
       const durationMs = Date.now() - toolStartMs;
       result.metrics = { ...result.metrics, durationMs };
       log.info('tool done', {
-        name: canonName,
+        model: config.model,
+        canonicalTool: canonName,
         success: toolResultSucceeded(result),
+        status: result.status,
+        errorCode: result.structuredError?.code,
+        retryCount: Math.max(0, (result.metrics?.retryAttempt ?? 1) - 1),
+        hunkCount:
+          canonName === 'ApplyPatch' && typeof call.arguments.patch === 'string'
+            ? (call.arguments.patch.match(/^@@/gm) ?? []).length
+            : undefined,
+        changedFileCount:
+          result.artifacts?.fileMutations?.length ?? (result.artifacts?.fileMutation ? 1 : 0),
+        patchFingerprint:
+          canonName === 'ApplyPatch' && typeof call.arguments.patch === 'string'
+            ? createHash('sha256').update(call.arguments.patch).digest('hex').slice(0, 16)
+            : undefined,
         durationMs,
         outputLen: result.content.length,
       });
       if (toolResultSucceeded(result)) {
-        if (result.artifacts?.fileMutation || canonName === 'Bash') {
+        if (
+          result.artifacts?.fileMutation ||
+          result.artifacts?.fileMutations ||
+          canonName === 'Bash'
+        ) {
           runtime.agentContextCache.invalidateWorkspace(config.workspace);
         } else if (canonName.startsWith('Git')) {
           runtime.agentContextCache.invalidateGit(config.workspace);

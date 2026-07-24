@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  lstatSync,
   readFileSync,
   symlinkSync,
   writeFileSync,
@@ -159,6 +160,35 @@ describe('write_file', () => {
     });
   });
 
+  it('normalizes CRLF replacement content before preserving CRLF', async () => {
+    const path = join(dir, 'windows.txt');
+    writeFileSync(path, 'old\r\ncontent\r\n');
+
+    const result = await write.execute(
+      { filePath: 'windows.txt', content: 'new\r\ncontent\r\n' },
+      ctx,
+    );
+
+    expect(result.status).toBe('success');
+    expect(readFileSync(path, 'utf8')).toBe('new\r\ncontent\r\n');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'updates a file symlink target without replacing the symlink',
+    async () => {
+      const target = join(dir, 'target.txt');
+      const link = join(dir, 'link.txt');
+      writeFileSync(target, 'old\n');
+      symlinkSync(target, link, 'file');
+
+      const result = await write.execute({ filePath: 'link.txt', content: 'new\n' }, ctx);
+
+      expect(result.status).toBe('success');
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(readFileSync(target, 'utf8')).toBe('new\n');
+    },
+  );
+
   it('does not write when cancellation arrives during a large diff', async () => {
     const path = join(dir, 'large.txt');
     const before = Array.from({ length: 500 }, (_, index) => `old ${index}`).join('\n');
@@ -187,6 +217,47 @@ describe('write_file', () => {
 });
 
 describe('edit_file', () => {
+  it.skipIf(process.platform === 'win32')(
+    'edits a file symlink target without replacing the symlink',
+    async () => {
+      const target = join(dir, 'target.txt');
+      const link = join(dir, 'link.txt');
+      writeFileSync(target, 'old value\n');
+      symlinkSync(target, link, 'file');
+
+      const result = await edit.execute(
+        { filePath: 'link.txt', oldString: 'old', newString: 'new' },
+        ctx,
+      );
+
+      expect(result.status).toBe('success');
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(readFileSync(target, 'utf8')).toBe('new value\n');
+    },
+  );
+
+  it('matches LF model text against CRLF files and preserves CRLF', async () => {
+    const path = join(dir, 'windows.txt');
+    writeFileSync(path, 'one\r\ntwo\r\nthree\r\n');
+    const result = await edit.execute(
+      { filePath: 'windows.txt', oldString: 'one\ntwo', newString: 'one\nchanged' },
+      ctx,
+    );
+    expect(result.status).toBe('success');
+    expect(readFileSync(path, 'utf8')).toBe('one\r\nchanged\r\nthree\r\n');
+  });
+
+  it('preserves a UTF-8 BOM when editing CRLF text', async () => {
+    const path = join(dir, 'bom.txt');
+    writeFileSync(path, Buffer.from('\ufeffalpha\r\nbeta\r\n', 'utf8'));
+    const result = await edit.execute(
+      { filePath: 'bom.txt', oldString: 'alpha\nbeta', newString: 'alpha\ngamma' },
+      ctx,
+    );
+    expect(result.status).toBe('success');
+    expect(readFileSync(path, 'utf8')).toBe('\ufeffalpha\r\ngamma\r\n');
+  });
+
   it('blocks a stale mutation until an explicit reread refreshes provenance', async () => {
     const path = join(dir, 'stale.txt');
     writeFileSync(path, 'original');
@@ -252,6 +323,31 @@ describe('edit_file', () => {
       removedLines: 1,
     });
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'applies MultiEdit through a file symlink without replacing it',
+    async () => {
+      const target = join(dir, 'target.txt');
+      const link = join(dir, 'link.txt');
+      writeFileSync(target, 'first second\n');
+      symlinkSync(target, link, 'file');
+
+      const result = await multiEditTool.execute(
+        {
+          filePath: 'link.txt',
+          edits: [
+            { oldString: 'first', newString: 'FIRST' },
+            { oldString: 'second', newString: 'SECOND' },
+          ],
+        },
+        ctx,
+      );
+
+      expect(result.status).toBe('success');
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(readFileSync(target, 'utf8')).toBe('FIRST SECOND\n');
+    },
+  );
 });
 
 describe('glob', () => {

@@ -1,4 +1,4 @@
-import { open, readFile as readTextFile, writeFile as writeTextFile } from 'fs/promises';
+import { open, readFile as readTextFile } from 'fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { extname } from 'node:path';
 import fg from 'fast-glob';
@@ -8,6 +8,12 @@ import { renderDiffWithStatsAsync } from './diff.js';
 import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
 import { observeFile, requireFreshObservation } from './file-provenance.js';
 import { toolFailure, toolSuccess } from './result.js';
+import {
+  readTextSnapshot,
+  restoreTextEncoding,
+  withMutationLocks,
+  writeFileAtomically,
+} from './mutation.js';
 
 const GLOB_OUTPUT_LIMIT = 1000;
 const PATH_YIELD_INTERVAL = 128;
@@ -144,113 +150,131 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
 async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
-  const { filePath, relativePath } = resolved;
-  const stale = await requireFreshObservation(ctx, filePath, relativePath);
-  if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
-  let existed = true;
-  let oldContent = '';
-  try {
-    oldContent = await readTextFile(filePath, 'utf-8');
-  } catch (error) {
-    if (isMissingFile(error)) {
-      existed = false;
-    } else {
+  const { filePath, canonicalPath, relativePath } = resolved;
+  return withMutationLocks([canonicalPath], async () => {
+    const stale = await requireFreshObservation(ctx, filePath, relativePath);
+    if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
+    let before;
+    try {
+      before = await readTextSnapshot(filePath, true);
+    } catch (error) {
       return toolFailure(
         `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-  }
-
-  const newContent = args.content as string;
-  const { diff, stats } = await renderDiffWithStatsAsync(oldContent, newContent, 3, ctx.signal);
-  throwIfAborted(ctx.signal);
-  try {
-    await writeTextFile(filePath, newContent, 'utf-8');
-  } catch (error) {
-    return toolFailure(
-      `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  const observation = await observeFile(ctx, filePath, existed ? 'write' : 'create');
-  return toolSuccess(diff || 'File written successfully', {
-    artifacts: {
-      fileMutation: {
-        kind: existed ? 'update' : 'create',
-        filePath: relativePath,
-        addedLines: stats.addedLines,
-        removedLines: stats.removedLines,
+    if (before.binary)
+      return toolFailure(`Binary file is unsupported: ${relativePath}`, {
+        code: 'binary_file_unsupported',
+      });
+    const inputContent = args.content as string;
+    const newContent = before.exists ? inputContent.replace(/\r\n/g, '\n') : inputContent;
+    const { diff, stats } = await renderDiffWithStatsAsync(before.text, newContent, 3, ctx.signal);
+    try {
+      await writeFileAtomically(
+        canonicalPath,
+        before.exists ? restoreTextEncoding(newContent, before) : Buffer.from(newContent, 'utf8'),
+        ctx.signal,
+        before.mode,
+      );
+      const after = await readTextSnapshot(filePath);
+      if (
+        !after.bytes.equals(
+          before.exists ? restoreTextEncoding(newContent, before) : Buffer.from(newContent, 'utf8'),
+        )
+      )
+        return toolFailure('Post-write verification failed', { code: 'filesystem_error' });
+    } catch (error) {
+      return toolFailure(
+        `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const observation = await observeFile(ctx, filePath, before.exists ? 'write' : 'create');
+    return toolSuccess(diff || 'File written successfully', {
+      artifacts: {
+        fileMutation: {
+          kind: before.exists ? 'update' : 'create',
+          filePath: relativePath,
+          addedLines: stats.addedLines,
+          removedLines: stats.removedLines,
+        },
+        fileObservations: [observation],
       },
-      fileObservations: [observation],
-    },
+    });
   });
 }
 
 async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
-  const { filePath, relativePath } = resolved;
-  const stale = await requireFreshObservation(ctx, filePath, relativePath);
-  if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
-
-  let content: string;
-  try {
-    content = await readTextFile(filePath, 'utf-8');
-  } catch (error) {
-    return toolFailure(
-      isMissingFile(error)
-        ? `File not found: ${args.filePath}`
-        : `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-
-  const oldStr = args.oldString as string;
-  const newStr = args.newString as string;
-  const replaceAll = (args.replaceAll as boolean) ?? false;
-
-  if (!content.includes(oldStr)) {
-    return toolFailure('oldString not found in file', { code: 'text_not_found' });
-  }
-
-  const occurrences = await countOccurrences(content, oldStr, ctx.signal);
-  if (occurrences > 1 && !replaceAll) {
-    return toolFailure(
-      `oldString matches ${occurrences} times; set replaceAll: true to replace all, or make oldString more specific`,
-      { code: 'ambiguous_text_match' },
-    );
-  }
-
-  const newContent = replaceAll
-    ? content.split(oldStr).join(newStr)
-    : content.replace(oldStr, newStr);
-  const { diff, stats } = await renderDiffWithStatsAsync(content, newContent, 3, ctx.signal);
-  throwIfAborted(ctx.signal);
-  try {
-    await writeTextFile(filePath, newContent, 'utf-8');
-  } catch (error) {
-    return toolFailure(
-      `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  const observation = await observeFile(ctx, filePath, 'edit');
-  return toolSuccess(diff || 'File edited successfully (no textual change)', {
-    artifacts: {
-      fileMutation: {
-        kind: 'update',
-        filePath: relativePath,
-        addedLines: stats.addedLines,
-        removedLines: stats.removedLines,
+  const { filePath, canonicalPath, relativePath } = resolved;
+  return withMutationLocks([canonicalPath], async () => {
+    const stale = await requireFreshObservation(ctx, filePath, relativePath);
+    if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
+    let snapshot;
+    try {
+      snapshot = await readTextSnapshot(filePath);
+    } catch (error) {
+      return toolFailure(
+        isMissingFile(error)
+          ? `File not found: ${args.filePath}`
+          : `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (snapshot.binary)
+      return toolFailure(`Binary file is unsupported: ${relativePath}`, {
+        code: 'binary_file_unsupported',
+      });
+    if (snapshot.mixedLineEndings)
+      return toolFailure(`Mixed line endings are unsupported for Edit: ${relativePath}`, {
+        code: 'text_conflict',
+      });
+    const content = snapshot.text;
+    const oldStr = (args.oldString as string).replace(/\r\n/g, '\n');
+    const newStr = (args.newString as string).replace(/\r\n/g, '\n');
+    const replaceAll = (args.replaceAll as boolean) ?? false;
+    if (!content.includes(oldStr))
+      return toolFailure('oldString not found in file', { code: 'text_not_found' });
+    const occurrences = await countOccurrences(content, oldStr, ctx.signal);
+    if (occurrences > 1 && !replaceAll)
+      return toolFailure(
+        `oldString matches ${occurrences} times; set replaceAll: true to replace all, or make oldString more specific`,
+        { code: 'ambiguous_text_match' },
+      );
+    const newContent = replaceAll
+      ? content.split(oldStr).join(newStr)
+      : content.replace(oldStr, newStr);
+    const { diff, stats } = await renderDiffWithStatsAsync(content, newContent, 3, ctx.signal);
+    try {
+      await writeFileAtomically(
+        canonicalPath,
+        restoreTextEncoding(newContent, snapshot),
+        ctx.signal,
+        snapshot.mode,
+      );
+    } catch (error) {
+      return toolFailure(
+        `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const observation = await observeFile(ctx, filePath, 'edit');
+    return toolSuccess(diff || 'File edited successfully (no textual change)', {
+      artifacts: {
+        fileMutation: {
+          kind: 'update',
+          filePath: relativePath,
+          addedLines: stats.addedLines,
+          removedLines: stats.removedLines,
+        },
+        fileObservations: [observation],
       },
-      fileObservations: [observation],
-    },
+    });
   });
 }
 
 async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, args.filePath as string);
   if (!resolved) return pathOutsideWorkspaceResult(args.filePath);
-  const { filePath, relativePath } = resolved;
-  const stale = await requireFreshObservation(ctx, filePath, relativePath);
-  if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
+  const { filePath, canonicalPath, relativePath } = resolved;
   const edits =
     (args.edits as Array<{
       oldString: string;
@@ -261,61 +285,67 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
     return toolFailure('No edits provided');
   }
 
-  let content: string;
-  try {
-    content = await readTextFile(filePath, 'utf-8');
-  } catch (error) {
-    return toolFailure(
-      isMissingFile(error)
-        ? `File not found: ${args.filePath}`
-        : `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  const original = content;
-
-  for (let i = 0; i < edits.length; i++) {
-    const edit = edits[i];
-    if (!content.includes(edit.oldString)) {
+  return withMutationLocks([canonicalPath], async () => {
+    const stale = await requireFreshObservation(ctx, filePath, relativePath);
+    if (stale) return toolFailure(stale, { code: 'stale_file_observation' });
+    const snapshot = await readTextSnapshot(filePath).catch(() => null);
+    if (!snapshot) return toolFailure(`File not found: ${args.filePath}`);
+    if (snapshot.binary)
+      return toolFailure(`Binary file is unsupported: ${relativePath}`, {
+        code: 'binary_file_unsupported',
+      });
+    if (snapshot.mixedLineEndings)
+      return toolFailure(`Mixed line endings are unsupported for MultiEdit: ${relativePath}`, {
+        code: 'text_conflict',
+      });
+    const original = snapshot.text;
+    let content = original;
+    for (let i = 0; i < edits.length; i++) {
+      const edit = edits[i];
+      const oldString = edit.oldString.replace(/\r\n/g, '\n');
+      const newString = edit.newString.replace(/\r\n/g, '\n');
+      if (!content.includes(oldString))
+        return toolFailure(
+          `Edit ${i + 1}: oldString not found (no changes applied — MultiEdit is atomic)`,
+          { code: 'text_not_found' },
+        );
+      if (edit.replaceAll) content = content.split(oldString).join(newString);
+      else {
+        const occurrences = await countOccurrences(content, oldString, ctx.signal);
+        if (occurrences > 1)
+          return toolFailure(
+            `Edit ${i + 1}: oldString matches ${occurrences} times; set replaceAll: true or be more specific (no changes applied — MultiEdit is atomic)`,
+            { code: 'ambiguous_text_match' },
+          );
+        content = content.replace(oldString, newString);
+      }
+      await yieldToEventLoop(ctx.signal);
+    }
+    const { diff, stats } = await renderDiffWithStatsAsync(original, content, 3, ctx.signal);
+    try {
+      await writeFileAtomically(
+        canonicalPath,
+        restoreTextEncoding(content, snapshot),
+        ctx.signal,
+        snapshot.mode,
+      );
+    } catch (error) {
       return toolFailure(
-        `Edit ${i + 1}: oldString not found (no changes applied — MultiEdit is atomic)`,
-        { code: 'text_not_found' },
+        `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    if (edit.replaceAll) {
-      content = content.split(edit.oldString).join(edit.newString);
-    } else {
-      const occurrences = await countOccurrences(content, edit.oldString, ctx.signal);
-      if (occurrences > 1) {
-        return toolFailure(
-          `Edit ${i + 1}: oldString matches ${occurrences} times; set replaceAll: true or be more specific (no changes applied — MultiEdit is atomic)`,
-          { code: 'ambiguous_text_match' },
-        );
-      }
-      content = content.replace(edit.oldString, edit.newString);
-    }
-    await yieldToEventLoop(ctx.signal);
-  }
-
-  const { diff, stats } = await renderDiffWithStatsAsync(original, content, 3, ctx.signal);
-  throwIfAborted(ctx.signal);
-  try {
-    await writeTextFile(filePath, content, 'utf-8');
-  } catch (error) {
-    return toolFailure(
-      `Failed to write file: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  const observation = await observeFile(ctx, filePath, 'edit');
-  return toolSuccess(diff || 'File edited successfully (no textual change)', {
-    artifacts: {
-      fileMutation: {
-        kind: 'update',
-        filePath: relativePath,
-        addedLines: stats.addedLines,
-        removedLines: stats.removedLines,
+    const observation = await observeFile(ctx, filePath, 'edit');
+    return toolSuccess(diff || 'File edited successfully (no textual change)', {
+      artifacts: {
+        fileMutation: {
+          kind: 'update',
+          filePath: relativePath,
+          addedLines: stats.addedLines,
+          removedLines: stats.removedLines,
+        },
+        fileObservations: [observation],
       },
-      fileObservations: [observation],
-    },
+    });
   });
 }
 

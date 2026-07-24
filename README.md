@@ -108,6 +108,31 @@ Writes use an atomic sibling-file replacement, and malformed or non-object
 `.book/settings.local.json` files are never overwritten. The reported error includes the file and
 invalid setting path; provider secrets are redacted.
 
+### File mutations
+
+`ApplyPatch` is Book's preferred source-mutation tool. It accepts a compact Codex-style envelope:
+
+```text
+*** Begin Patch
+*** Update File: src/example.ts
+@@
+ const answer = 41
+-return answer
++return answer + 1
+*** End Patch
+```
+
+Use `*** Add File: path` with `+`-prefixed lines for new files and `*** Delete File: path` for
+deletions. Update hunks use exact, unique context; reread the affected range and regenerate the
+hunk after a `patch_context_not_found` or `ambiguous_patch_context` error. Patches preserve an
+existing file's LF/CRLF convention and UTF-8 BOM, validate all files before writing, verify the
+post-state, and roll back earlier files if a later commit fails. Binary and mixed-line-ending
+updates are rejected rather than guessed.
+
+`Write` remains appropriate for generated or intentional full-file replacement. `Edit` and
+`MultiEdit` remain available for compatibility and preserve their existing permission rules.
+The `apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not silently reinterpreted.
+
 ### Example `.book/settings.json`
 
 ```json

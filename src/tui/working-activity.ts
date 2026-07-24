@@ -117,6 +117,12 @@ export function toolActivityText(call: ToolCall): string {
         ['Putting ink to', 'Drafting a fresh page in', 'Filling the blank page in'],
         stringArg(args, 'filePath', 'file_path', 'path') ?? primary,
       );
+    case 'ApplyPatch':
+      return playfulTarget(
+        call,
+        ['Applying a patch to', 'Reworking', 'Updating'],
+        'workspace files',
+      );
     case 'Edit':
     case 'MultiEdit':
       return playfulTarget(

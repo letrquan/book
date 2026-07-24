@@ -25,7 +25,7 @@ import { toolSearchTools } from './tool-search.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
 
 const ALWAYS_CORE = new Set(['Read', 'Glob', 'Grep', 'AskUserQuestion', 'TodoWrite', 'ToolSearch']);
-const MUTATION_CORE = new Set(['Write', 'Edit', 'MultiEdit', 'Bash']);
+const MUTATION_CORE = new Set(['ApplyPatch', 'Write', 'Edit', 'MultiEdit', 'Bash']);
 const MANAGED_TASK_CORE = new Set(['TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate']);
 const RUNTIME_CORE = new Set(['BashOutput', 'KillShell']);
 const ROOT_ONLY = new Set([
@@ -43,7 +43,8 @@ const CHILD_ONLY = new Set(['EvidencePublish', 'EvidenceReview']);
 
 function categoryFor(name: string): ToolCategory {
   if (name.startsWith('mcp__')) return 'mcp';
-  if (['Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep'].includes(name)) return 'filesystem';
+  if (['Read', 'ApplyPatch', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep'].includes(name))
+    return 'filesystem';
   if (['Bash', 'BashOutput', 'KillShell'].includes(name)) return 'shell';
   if (name.startsWith('Git')) return 'git';
   if (name.startsWith('Web')) return 'web';

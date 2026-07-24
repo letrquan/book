@@ -4,6 +4,7 @@ export const TOOL_ALIASES: Record<string, string> = {
   write_file: 'Write',
   edit_file: 'Edit',
   multi_edit: 'MultiEdit',
+  apply_patch: 'ApplyPatch',
   glob: 'Glob',
   grep: 'Grep',
   bash: 'Bash',

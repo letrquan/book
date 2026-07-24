@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { chatCompletionStream } from './openai-compatible.js';
+import { chatCompletionStream, convertTools } from './openai-compatible.js';
+import { patchTools } from '../tools/patch.js';
 import { defaultConfig } from '../test/fixtures.js';
 
 const config = defaultConfig({ maxTurns: 25, baseUrl: 'http://localhost/v1' });
@@ -743,6 +744,60 @@ describe('chatCompletionStream usage', () => {
       promptTokens: 10,
       completionTokens: 5,
       totalTokens: 15,
+    });
+  });
+});
+describe('OpenAI-compatible tool contracts', () => {
+  it('preserves the compact ApplyPatch string schema', () => {
+    const converted = convertTools(patchTools);
+    expect(converted[0].function).toMatchObject({
+      name: 'ApplyPatch',
+      parameters: {
+        type: 'object',
+        required: ['patch'],
+        properties: { patch: { type: 'string' } },
+      },
+    });
+  });
+
+  it('preserves ApplyPatch text in streamed tool arguments', async () => {
+    const patch = '*** Begin Patch\n*** Update File: a.ts\n@@\n-old\n+new\n*** End Patch';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const payload = JSON.stringify({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'patch-1',
+                    function: { name: 'ApplyPatch', arguments: JSON.stringify({ patch }) },
+                  },
+                ],
+              },
+            },
+          ],
+        });
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`data: ${payload}\n\ndata: [DONE]\n\n`));
+            controller.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+    const events = [];
+    for await (const event of chatCompletionStream(
+      config,
+      [{ role: 'user', content: 'patch' }],
+      patchTools,
+    ))
+      events.push(event);
+    expect(events.find((event) => event.type === 'tool_call')?.toolCall?.arguments).toEqual({
+      patch,
     });
   });
 });

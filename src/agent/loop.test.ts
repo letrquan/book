@@ -990,7 +990,7 @@ function toolCallStream(
 }
 
 describe('runAgentLoop accept-edits mode', () => {
-  for (const toolName of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+  for (const toolName of ['ApplyPatch', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
     it(`auto-allows ${toolName} without prompting`, async () => {
       vi.stubGlobal(
         'fetch',
@@ -1032,6 +1032,35 @@ describe('runAgentLoop accept-edits mode', () => {
       expect(executed).toBe(true);
     });
   }
+
+  it('enforces hard-deny rules for ApplyPatch in accept-edits mode', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(toolCallStream([{ id: 'patch_1', name: 'ApplyPatch', arguments: '{}' }]), {
+            status: 200,
+          }),
+      ),
+    );
+    const registry = createRegistry();
+    let executed = false;
+    registry.register({
+      name: 'ApplyPatch',
+      description: 'Apply patch',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        executed = true;
+        return toolSuccess('ok');
+      },
+    });
+    const cfg = defaultConfig({ maxTurns: 1 });
+    cfg.settings.permissions.deny = ['ApplyPatch'];
+
+    await runAgentLoop(cfg, registry, 'edit', [], noopCallbacks(), 'accept-edits');
+
+    expect(executed).toBe(false);
+  });
 });
 
 describe('runAgentLoop AskUserQuestion', () => {

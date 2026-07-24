@@ -1,6 +1,49 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildSystemBlocks, chatCompletionStream, convertMessages } from './anthropic.js';
+import {
+  buildSystemBlocks,
+  chatCompletionStream,
+  convertMessages,
+  convertTools,
+} from './anthropic.js';
 import { defaultConfig } from '../test/fixtures.js';
+import { patchTools } from '../tools/patch.js';
+
+describe('Anthropic tool contracts', () => {
+  it('preserves the compact ApplyPatch string schema', () => {
+    const converted = convertTools(patchTools);
+    expect(converted[0]).toMatchObject({
+      name: 'ApplyPatch',
+      input_schema: {
+        type: 'object',
+        required: ['patch'],
+        properties: { patch: { type: 'string' } },
+      },
+    });
+  });
+
+  it('preserves ApplyPatch text when converting assistant tool calls', () => {
+    const patch = '*** Begin Patch\n*** Update File: a.ts\n@@\n-old\n+new\n*** End Patch';
+    const converted = convertMessages([
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: 'patch-1',
+            type: 'function',
+            function: { name: 'ApplyPatch', arguments: JSON.stringify({ patch }) },
+          },
+        ],
+      },
+    ]);
+    expect(converted.messages[0]).toMatchObject({
+      role: 'assistant',
+      content: expect.arrayContaining([
+        expect.objectContaining({ type: 'tool_use', name: 'ApplyPatch', input: { patch } }),
+      ]),
+    });
+  });
+});
 
 // Anthropic request-body assembly is mostly covered indirectly by convertMessages:
 // zoned system prompts are carried through so chatCompletionStream can place

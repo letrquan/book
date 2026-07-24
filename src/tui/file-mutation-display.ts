@@ -6,9 +6,10 @@ import { isUnifiedDiffLike } from './components/Diff.js';
 
 export interface FileMutationDisplaySummary {
   filePath: string;
-  kind: 'create' | 'update';
+  kind: 'create' | 'update' | 'delete';
   addedLines: number;
   removedLines: number;
+  fileCount?: number;
 }
 
 export function isRenderableFileMutationDiff(
@@ -26,6 +27,17 @@ export function getFileMutationDisplaySummary(
 ): FileMutationDisplaySummary | undefined {
   if (!isRenderableFileMutationDiff(toolName, result)) return undefined;
 
+  const mutations = result?.artifacts?.fileMutations ?? [];
+  if (mutations.length > 1) {
+    const kinds = new Set(mutations.map((mutation) => mutation.kind));
+    return {
+      filePath: `${mutations.length} files`,
+      kind: kinds.size === 1 ? mutations[0].kind : 'update',
+      addedLines: mutations.reduce((total, mutation) => total + mutation.addedLines, 0),
+      removedLines: mutations.reduce((total, mutation) => total + mutation.removedLines, 0),
+      fileCount: new Set(mutations.map((mutation) => mutation.filePath)).size,
+    };
+  }
   const mutation = result?.artifacts?.fileMutation;
   const filePath =
     mutation?.filePath ??
@@ -47,5 +59,6 @@ export function getFileMutationDisplaySummary(
     kind: mutation?.kind ?? 'update',
     addedLines,
     removedLines,
+    fileCount: 1,
   };
 }

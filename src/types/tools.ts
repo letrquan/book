@@ -62,7 +62,7 @@ export interface NestedToolObserver {
 }
 
 export interface FileMutationSummary {
-  kind: 'create' | 'update';
+  kind: 'create' | 'update' | 'delete';
   filePath: string;
   addedLines: number;
   removedLines: number;
@@ -88,6 +88,8 @@ export interface ToolResultPresentation {
 
 export interface ToolResultArtifacts {
   fileMutation?: FileMutationSummary;
+  /** All mutations produced by a transactional multi-file tool call. */
+  fileMutations?: FileMutationSummary[];
   fileObservations?: FileObservation[];
   eventRef?: string;
   /** User-local file containing the complete output when model-facing content is clipped. */
