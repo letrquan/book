@@ -61,6 +61,19 @@ export interface UsageCommandDisplay {
   estimatedCostUsd?: number;
 }
 
+/** Compact completion metadata rendered as a host notification. */
+export interface AgentNotificationDisplay {
+  deliveryId?: string;
+  sequence?: number;
+  agentId: string;
+  displayName: string;
+  status: 'completed' | 'failed' | 'stopped' | 'interrupted';
+  summary?: string;
+  error?: string;
+  evidenceIds: string[];
+  durationMs?: number;
+}
+
 export type LocalCommandDisplay =
   ConfigCommandDisplay | ContextCommandDisplay | UsageCommandDisplay;
 
@@ -73,7 +86,9 @@ export interface Message {
   contextContent?: string;
   /** Whether this message is included in provider and compaction context. */
   includeInContext: boolean;
-  kind?: 'conversation' | 'checkpoint' | 'local';
+  kind?: 'conversation' | 'checkpoint' | 'local' | 'agent-notification';
+  /** Structured display data for automatically delivered child completions. */
+  agentNotifications?: AgentNotificationDisplay[];
   toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
   /** UI-only subagent activity. Never serialized as provider tool calls. */

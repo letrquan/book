@@ -1,3 +1,6 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import type {
   ToolResult,
   ToolResultArtifacts,
@@ -8,6 +11,9 @@ import type {
 import { canonicalToolName } from './aliases.js';
 import { getPrimaryArg } from './primary-arg.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
+
+export const TOOL_RESULT_MAX_BYTES = 50 * 1024;
+const TOOL_OUTPUT_DIRECTORY = join(homedir(), '.book', 'tool-output');
 
 interface ToolResultOptions<TData> {
   toolCallId?: string;
@@ -35,6 +41,7 @@ interface LegacyToolResult {
   fileMutation?: ToolResultArtifacts['fileMutation'];
   fileObservations?: ToolResultArtifacts['fileObservations'];
   eventRef?: string;
+  outputPath?: string;
   pagination?: ToolResult['pagination'];
 }
 
@@ -113,11 +120,122 @@ export function toolResultErrorMessage(result: ToolResult): string | undefined {
   return result.structuredError?.message;
 }
 
-export function toolResultModelContent(result: ToolResult): string {
+function rawToolResultModelContent(result: ToolResult): string {
   const content = result.content;
   if (toolResultSucceeded(result)) return content;
   const detail = content ? `\n${content}` : '';
   return `ERROR [${result.structuredError?.code ?? result.status}]: ${toolResultErrorMessage(result) ?? 'tool failed'}${detail}`;
+}
+
+export function toolResultModelContent(result: ToolResult): string {
+  const raw = rawToolResultModelContent(result);
+  if (Buffer.byteLength(raw) <= TOOL_RESULT_MAX_BYTES) return raw;
+  return clippedOutputPreview(raw, result.artifacts?.outputPath, TOOL_RESULT_MAX_BYTES);
+}
+
+function utf8Prefix(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
+  const bytes = Buffer.from(text);
+  if (bytes.byteLength <= maxBytes) return text;
+  return bytes
+    .subarray(0, maxBytes)
+    .toString('utf8')
+    .replace(/\uFFFD$/u, '');
+}
+
+function clippedOutputPreview(
+  content: string,
+  outputPath: string | undefined,
+  maxBytes: number,
+): string {
+  const notice = outputPath
+    ? `\n\n[Output truncated at ${maxBytes} bytes. Full output: ${outputPath}]`
+    : `\n\n[Output truncated at ${maxBytes} bytes. Full output unavailable.]`;
+  const previewBudget = Math.max(0, maxBytes - Buffer.byteLength(notice));
+  return `${utf8Prefix(content, previewBudget).trimEnd()}${notice}`;
+}
+
+/**
+ * Bound every provider-facing tool result at the execution boundary. Complete output is stored in
+ * Book's user-local data directory when possible, never in the tracked workspace.
+ */
+export async function boundToolResultOutput(
+  input: ToolResult,
+  _workspaceRoot: string,
+  maxBytes = TOOL_RESULT_MAX_BYTES,
+  artifactRoot = TOOL_OUTPUT_DIRECTORY,
+): Promise<ToolResult> {
+  const result = normalizeToolResult(input);
+  const modelContent = rawToolResultModelContent(result);
+  const modelContentBytes = Buffer.byteLength(modelContent);
+  const contentBytes = Buffer.byteLength(result.content);
+  const details = result.presentation?.details;
+  const detailsBytes = details === undefined ? 0 : Buffer.byteLength(details);
+  if (modelContentBytes <= maxBytes && detailsBytes <= maxBytes) return result;
+
+  let outputPath = result.artifacts?.outputPath;
+  if (!outputPath) {
+    const outputFile = join(artifactRoot, `${crypto.randomUUID()}.txt`);
+    try {
+      await mkdir(dirname(outputFile), { recursive: true });
+      await writeFile(
+        outputFile,
+        detailsBytes > modelContentBytes && details ? details : modelContent,
+        'utf8',
+      );
+      outputPath = outputFile.replace(/\\/g, '/');
+    } catch {
+      // Clipping must still succeed in read-only or otherwise restricted environments.
+    }
+  }
+
+  const modelOverflow = modelContentBytes > maxBytes;
+  const content = toolResultSucceeded(result)
+    ? contentBytes > maxBytes
+      ? clippedOutputPreview(result.content, outputPath, maxBytes)
+      : result.content
+    : modelOverflow
+      ? ''
+      : result.content;
+  const errorPrefix = `ERROR [${result.structuredError?.code ?? result.status}]: `;
+  const errorSource = `${toolResultErrorMessage(result) ?? 'tool failed'}${result.content ? `\n${result.content}` : ''}`;
+  const structuredError = result.structuredError
+    ? {
+        ...result.structuredError,
+        message: modelOverflow
+          ? clippedOutputPreview(
+              errorSource,
+              outputPath,
+              Math.max(1, maxBytes - Buffer.byteLength(errorPrefix)),
+            )
+          : result.structuredError.message,
+      }
+    : result.structuredError;
+  const clippedDetails = details
+    ? detailsBytes > maxBytes
+      ? clippedOutputPreview(details, outputPath, maxBytes)
+      : details
+    : toolResultSucceeded(result)
+      ? content
+      : structuredError?.message;
+
+  return {
+    ...result,
+    content,
+    structuredError,
+    presentation: result.presentation
+      ? { ...result.presentation, details: clippedDetails }
+      : result.presentation,
+    artifacts: outputPath ? { ...result.artifacts, outputPath } : result.artifacts,
+    pagination: {
+      ...result.pagination,
+      truncated: true,
+      omittedBytes: Math.max(
+        result.pagination?.omittedBytes ?? 0,
+        Math.max(modelContentBytes, contentBytes, detailsBytes) - maxBytes,
+      ),
+    },
+  };
 }
 
 export function replaceToolResult(
@@ -174,11 +292,12 @@ export function normalizeToolResult(result: ToolResult | LegacyToolResult): Tool
         };
   const artifacts: ToolResultArtifacts | undefined =
     result.artifacts ??
-    (legacy.fileMutation || legacy.fileObservations || legacy.eventRef
+    (legacy.fileMutation || legacy.fileObservations || legacy.eventRef || legacy.outputPath
       ? {
           fileMutation: legacy.fileMutation,
           fileObservations: legacy.fileObservations,
           eventRef: legacy.eventRef,
+          outputPath: legacy.outputPath,
         }
       : undefined);
   const metrics =

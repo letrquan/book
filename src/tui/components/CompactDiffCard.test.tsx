@@ -9,30 +9,57 @@ function stripAnsi(value: string | undefined): string {
 
 afterEach(() => cleanup());
 
+function renderCard(state: React.ComponentProps<typeof CompactDiffCard>['state']) {
+  return render(
+    <ThemeContext.Provider value={DEFAULT_THEME}>
+      <CompactDiffCard state={state} terminalWidth={80} reducedMotion />
+    </ThemeContext.Provider>,
+  );
+}
+
 describe('CompactDiffCard', () => {
-  it('renders degraded compaction as a successful warning with retrieval guidance', () => {
-    const view = render(
-      <ThemeContext.Provider value={DEFAULT_THEME}>
-        <CompactDiffCard
-          state={{
-            phase: 'done',
-            trigger: 'manual',
-            preMessages: 20,
-            message: 'Conversation compacted with reduced fidelity',
-            degraded: true,
-            warning: 'Compaction omitted older coverage. Exact history remains searchable.',
-            strategy: 'multi-pass',
-            modelCalls: 15,
-          }}
-          terminalWidth={80}
-          reducedMotion
-        />
-      </ThemeContext.Provider>,
+  it('renders successful compaction as a concise tool-style result row', () => {
+    const output = stripAnsi(
+      renderCard({
+        phase: 'done',
+        trigger: 'manual',
+        preMessages: 20,
+        preContextTokens: 12_340,
+      }).lastFrame(),
     );
 
-    const output = stripAnsi(view.lastFrame());
-    expect(output).toContain('Conversation compacted with reduced fidelity');
-    expect(output).toContain('Exact history remains searchable');
-    expect(output).not.toContain('error');
+    expect(output).toContain('✓ Compact conversation');
+    expect(output).toContain('20 messages');
+    expect(output).toContain('~12.3k context');
+    expect(output).not.toContain('older conversation turns');
+    expect(output).not.toContain('Structured summary');
+  });
+
+  it('keeps reduced-fidelity retrieval guidance visible', () => {
+    const output = stripAnsi(
+      renderCard({
+        phase: 'done',
+        trigger: 'manual',
+        preMessages: 20,
+        degraded: true,
+        warning: 'Exact history remains searchable.',
+      }).lastFrame(),
+    );
+
+    expect(output).toContain('Compact conversation · reduced fidelity');
+    expect(output).toContain('Exact history remains searchable.');
+  });
+
+  it('renders failures without a popup card', () => {
+    const output = stripAnsi(
+      renderCard({
+        phase: 'error',
+        trigger: 'manual',
+        message: 'Provider unavailable.',
+      }).lastFrame(),
+    );
+
+    expect(output).toContain('× Provider unavailable.');
+    expect(output).not.toContain('╭');
   });
 });

@@ -189,6 +189,24 @@ export async function createAgentWorktree(
   return { path, branch };
 }
 
+export async function removeAgentWorktree(
+  record: AgentRecord,
+  repoRoot = record.worktree,
+): Promise<void> {
+  if (!record.worktree || !record.branch) return;
+  const root = repoRoot ?? record.worktree;
+  await git(root, ['worktree', 'remove', '--force', record.worktree], {
+    allowExitCodes: [128],
+  }).catch(() => {});
+  await git(root, ['branch', '-D', record.branch], { allowExitCodes: [1, 128] }).catch(() => {});
+}
+
+export async function removeSnapshotRef(snapshot: AgentSnapshot): Promise<void> {
+  await git(snapshot.repoRoot, ['update-ref', '-d', snapshot.ref], { allowExitCodes: [1] }).catch(
+    () => {},
+  );
+}
+
 export async function checkoutAgentCommit(worktree: string, commit: string): Promise<void> {
   await git(worktree, ['reset', '--hard', commit]);
 }

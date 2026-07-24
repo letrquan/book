@@ -90,6 +90,8 @@ export interface ToolResultArtifacts {
   fileMutation?: FileMutationSummary;
   fileObservations?: FileObservation[];
   eventRef?: string;
+  /** User-local file containing the complete output when model-facing content is clipped. */
+  outputPath?: string;
 }
 
 /** V2 result contract shared by runtime, persistence, SDK, and TUI. */

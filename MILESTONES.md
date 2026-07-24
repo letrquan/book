@@ -46,6 +46,10 @@ Book now builds a structured Claude-Code-style prompt from local project context
 - [x] Inject skill listing with descriptions
 - [x] Inject slash command listing
 - [x] Inject subagent listing
+- [x] Purpose-named managed-agent runs with profile/model metadata and compact parent projections
+- [x] Read-only Explore routing works outside Git; patch/validation retain worktree safeguards
+- [x] Claude-style prompt-adjacent task panel, child transcript navigation, and automatic completion delivery
+- [x] Durable automatic child completion delivery with semantic transcript notifications and direct child follow-ups
 - [x] Inject agent todo list (when non-empty)
 - [x] Inject MCP tool descriptions (via active ToolDefinition descriptions)
 - [x] Two-zone: cached static prefix + dynamic per-turn suffix — `buildSystemPromptZones()` emits cached prefix + dynamic suffix; Anthropic caches only the static system block.
@@ -118,7 +122,7 @@ The STUB commands now do the real thing locally (no longer delegate to the agent
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | `/init`            | ✅ real (tool-restricted prompt → agent analyzes + writes CLAUDE.md)                                                               | Generates CLAUDE.md from codebase analysis                  |
 | `/model`           | ✅ real (arrow-key picker + effort axis; `/model <name>` switches)                                                                 | Opens model picker UI with effort level                     |
-| `/effort`          | ✅ real (direct level selection or dedicated arrow-key picker; persists the project-local default)                                | Changes thinking effort without opening `/model`            |
+| `/effort`          | ✅ real (direct level selection or dedicated arrow-key picker; persists the project-local default)                                 | Changes thinking effort without opening `/model`            |
 | `/config`          | ✅ real (no-arg dump, `key=value` persist to settings.local.json, `--help`)                                                        | Opens settings interface, supports key=value                |
 | `/permissions`     | ✅ real (toggle view of mode + allow/ask/deny rules)                                                                               | Interactive dialog: add/remove rules, view scopes           |
 | `/cost`            | ✅ real (token counts + local USD estimate from PRICING table)                                                                     | Shows real session cost with per-model breakdown            |

@@ -36,6 +36,7 @@ export interface RewindSnapshotLimits {
 }
 
 const DEFAULT_IGNORE_PATTERNS = [
+  '.book/',
   'node_modules/',
   '.pnpm-store/',
   '.npm/',
@@ -303,7 +304,16 @@ type WalkedEntry = {
   kind: RewindSnapshotEntry['kind'];
   byteSize: number;
   mode: number;
+  mtimeMs: number;
 };
+
+interface CachedSnapshotEntry {
+  kind: RewindSnapshotEntry['kind'];
+  byteSize: number;
+  mode: number;
+  mtimeMs: number;
+  snapshotEntry: RewindSnapshotEntry;
+}
 
 function walkIncludedEntries(
   workspace: string,
@@ -322,12 +332,12 @@ function walkIncludedEntries(
       if (child.name === '.git') continue;
       const path = prefix ? `${prefix}/${child.name}` : child.name;
       const absolutePath = join(directory, child.name);
-      const stat = lstatSync(absolutePath);
-      if (stat.isDirectory()) {
+      if (child.isDirectory()) {
         if (!matcher.ignores(`${path}/`) || hasNegations) visit(absolutePath, path);
         continue;
       }
       if (matcher.ignores(path)) continue;
+      const stat = lstatSync(absolutePath);
       if (!stat.isFile() && !stat.isSymbolicLink()) continue;
       entries.push({
         path,
@@ -335,6 +345,7 @@ function walkIncludedEntries(
         kind: stat.isSymbolicLink() ? 'symlink' : 'file',
         byteSize: stat.isSymbolicLink() ? Buffer.byteLength(readlinkSync(absolutePath)) : stat.size,
         mode: stat.mode,
+        mtimeMs: stat.mtimeMs,
       });
       if (entries.length > maxEntries) {
         throw new Error(`Code rewind unavailable: checkpoint exceeds ${maxEntries} entries.`);
@@ -359,16 +370,23 @@ async function walkIncludedEntriesAsync(
     const children = (await readdir(directory, { withFileTypes: true })).sort((a, b) =>
       a.name.localeCompare(b.name),
     );
+    const files: Array<{ child: (typeof children)[number]; path: string; absolutePath: string }> =
+      [];
     for (const child of children) {
       if (child.name === '.git') continue;
       const path = prefix ? `${prefix}/${child.name}` : child.name;
       const absolutePath = join(directory, child.name);
-      const stat = await lstat(absolutePath);
-      if (stat.isDirectory()) {
+      if (child.isDirectory()) {
         if (!matcher.ignores(`${path}/`) || hasNegations) await visit(absolutePath, path);
         continue;
       }
       if (matcher.ignores(path)) continue;
+      files.push({ child, path, absolutePath });
+    }
+    const stats = await Promise.all(files.map(({ absolutePath }) => lstat(absolutePath)));
+    for (let index = 0; index < files.length; index++) {
+      const { path, absolutePath } = files[index];
+      const stat = stats[index];
       if (!stat.isFile() && !stat.isSymbolicLink()) continue;
       entries.push({
         path,
@@ -378,6 +396,7 @@ async function walkIncludedEntriesAsync(
           ? Buffer.byteLength(await readlink(absolutePath, { encoding: 'utf-8' }))
           : stat.size,
         mode: stat.mode,
+        mtimeMs: stat.mtimeMs,
       });
       if (entries.length > maxEntries) {
         throw new Error(`Code rewind unavailable: checkpoint exceeds ${maxEntries} entries.`);
@@ -422,9 +441,11 @@ async function pathExistsAsync(path: string): Promise<boolean> {
 
 export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
   private readonly manifestsRoot: string;
+  private readonly entrySetsRoot: string;
   private readonly blobsRoot: string;
   private readonly workspace: string;
   private readonly limits: RewindSnapshotLimits;
+  private fileCache = new Map<string, CachedSnapshotEntry>();
 
   constructor(
     workspace: string,
@@ -438,8 +459,10 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
       maxLogicalBytes: limits.maxLogicalBytes ?? REWIND_MAX_LOGICAL_BYTES,
     };
     this.manifestsRoot = join(root, 'manifests');
+    this.entrySetsRoot = join(root, 'entry-sets');
     this.blobsRoot = join(root, 'blobs');
     mkdirSync(this.manifestsRoot, { recursive: true });
+    mkdirSync(this.entrySetsRoot, { recursive: true });
     mkdirSync(this.blobsRoot, { recursive: true });
   }
 
@@ -456,11 +479,30 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
 
       let logicalBytes = 0;
       const entries: RewindSnapshotEntry[] = [];
+      const nextCache = new Map<string, CachedSnapshotEntry>();
       for (const entry of walked) {
         if (entry.byteSize > this.limits.maxFileBytes) {
           throw new Error(
             `Code rewind unavailable: ${entry.path} exceeds the ${this.limits.maxFileBytes}-byte per-file limit.`,
           );
+        }
+        const cached = this.fileCache.get(entry.path);
+        if (
+          cached &&
+          cached.kind === entry.kind &&
+          cached.byteSize === entry.byteSize &&
+          cached.mode === entry.mode &&
+          cached.mtimeMs === entry.mtimeMs
+        ) {
+          logicalBytes += cached.snapshotEntry.byteSize;
+          if (logicalBytes > this.limits.maxLogicalBytes) {
+            throw new Error(
+              `Code rewind unavailable: checkpoint exceeds ${this.limits.maxLogicalBytes} bytes of file content.`,
+            );
+          }
+          entries.push(cached.snapshotEntry);
+          nextCache.set(entry.path, cached);
+          continue;
         }
         const contents =
           entry.kind === 'symlink'
@@ -480,12 +522,20 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
         const blobHash = sha256(contents);
         const blobPath = join(this.blobsRoot, blobHash);
         if (!existsSync(blobPath)) writeAtomic(blobPath, contents);
-        entries.push({
+        const snapshotEntry: RewindSnapshotEntry = {
           path: entry.path.replaceAll('\\', '/'),
           kind: entry.kind,
           blobHash,
           byteSize: contents.byteLength,
           mode: entry.mode,
+        };
+        entries.push(snapshotEntry);
+        nextCache.set(entry.path, {
+          kind: entry.kind,
+          byteSize: entry.byteSize,
+          mode: entry.mode,
+          mtimeMs: entry.mtimeMs,
+          snapshotEntry,
         });
       }
 
@@ -499,7 +549,8 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
         entries,
         logicalBytes,
       };
-      writeAtomic(join(this.manifestsRoot, `${manifest.id}.json`), JSON.stringify(manifest));
+      this.writeManifest(manifest);
+      this.fileCache = nextCache;
       return { ok: true, manifest };
     } catch (error) {
       return {
@@ -529,11 +580,30 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
 
       let logicalBytes = 0;
       const entries: RewindSnapshotEntry[] = [];
+      const nextCache = new Map<string, CachedSnapshotEntry>();
       for (const entry of walked) {
         if (entry.byteSize > this.limits.maxFileBytes) {
           throw new Error(
             `Code rewind unavailable: ${entry.path} exceeds the ${this.limits.maxFileBytes}-byte per-file limit.`,
           );
+        }
+        const cached = this.fileCache.get(entry.path);
+        if (
+          cached &&
+          cached.kind === entry.kind &&
+          cached.byteSize === entry.byteSize &&
+          cached.mode === entry.mode &&
+          cached.mtimeMs === entry.mtimeMs
+        ) {
+          logicalBytes += cached.snapshotEntry.byteSize;
+          if (logicalBytes > this.limits.maxLogicalBytes) {
+            throw new Error(
+              `Code rewind unavailable: checkpoint exceeds ${this.limits.maxLogicalBytes} bytes of file content.`,
+            );
+          }
+          entries.push(cached.snapshotEntry);
+          nextCache.set(entry.path, cached);
+          continue;
         }
         const contents =
           entry.kind === 'symlink'
@@ -553,12 +623,20 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
         const blobHash = sha256(contents);
         const blobPath = join(this.blobsRoot, blobHash);
         if (!(await pathExistsAsync(blobPath))) await writeAtomicAsync(blobPath, contents);
-        entries.push({
+        const snapshotEntry: RewindSnapshotEntry = {
           path: entry.path.replaceAll('\\', '/'),
           kind: entry.kind,
           blobHash,
           byteSize: contents.byteLength,
           mode: entry.mode,
+        };
+        entries.push(snapshotEntry);
+        nextCache.set(entry.path, {
+          kind: entry.kind,
+          byteSize: entry.byteSize,
+          mode: entry.mode,
+          mtimeMs: entry.mtimeMs,
+          snapshotEntry,
         });
       }
 
@@ -572,10 +650,8 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
         entries,
         logicalBytes,
       };
-      await writeAtomicAsync(
-        join(this.manifestsRoot, `${manifest.id}.json`),
-        JSON.stringify(manifest),
-      );
+      await this.writeManifestAsync(manifest);
+      this.fileCache = nextCache;
       return { ok: true, manifest };
     } catch (error) {
       return {
@@ -591,7 +667,21 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
     const path = join(this.manifestsRoot, `${id}.json`);
     if (!existsSync(path)) return undefined;
     try {
-      const manifest = JSON.parse(readFileSync(path, 'utf-8')) as RewindSnapshotManifest;
+      const stored = JSON.parse(readFileSync(path, 'utf-8')) as RewindSnapshotManifest & {
+        entrySetHash?: string;
+      };
+      let manifest: RewindSnapshotManifest = stored;
+      if (!Array.isArray(stored.entries) && stored.entrySetHash) {
+        if (!/^[a-f0-9]{64}$/.test(stored.entrySetHash)) return undefined;
+        const entriesPath = join(this.entrySetsRoot, `${stored.entrySetHash}.json`);
+        if (!existsSync(entriesPath)) return undefined;
+        const serializedEntries = readFileSync(entriesPath, 'utf-8');
+        if (sha256(serializedEntries) !== stored.entrySetHash) return undefined;
+        manifest = {
+          ...stored,
+          entries: JSON.parse(serializedEntries) as RewindSnapshotEntry[],
+        };
+      }
       if (
         manifest.version !== 1 ||
         manifest.id !== id ||
@@ -670,6 +760,36 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
     if (existsSync(path)) unlinkSync(path);
   }
 
+  private writeManifest(manifest: RewindSnapshotManifest): void {
+    const entriesHash = sha256(JSON.stringify(manifest.entries));
+    const entriesPath = join(this.entrySetsRoot, `${entriesHash}.json`);
+    if (!existsSync(entriesPath)) writeAtomic(entriesPath, JSON.stringify(manifest.entries));
+    const metadata = { ...manifest } as Partial<RewindSnapshotManifest> & {
+      entrySetHash?: string;
+    };
+    delete metadata.entries;
+    writeAtomic(
+      join(this.manifestsRoot, `${manifest.id}.json`),
+      JSON.stringify({ ...metadata, entrySetHash: entriesHash }),
+    );
+  }
+
+  private async writeManifestAsync(manifest: RewindSnapshotManifest): Promise<void> {
+    const entriesHash = sha256(JSON.stringify(manifest.entries));
+    const entriesPath = join(this.entrySetsRoot, `${entriesHash}.json`);
+    if (!(await pathExistsAsync(entriesPath))) {
+      await writeAtomicAsync(entriesPath, JSON.stringify(manifest.entries));
+    }
+    const metadata = { ...manifest } as Partial<RewindSnapshotManifest> & {
+      entrySetHash?: string;
+    };
+    delete metadata.entries;
+    await writeAtomicAsync(
+      join(this.manifestsRoot, `${manifest.id}.json`),
+      JSON.stringify({ ...metadata, entrySetHash: entriesHash }),
+    );
+  }
+
   cleanup(referencedSnapshotIds: Set<string>, days: number) {
     const cutoff = Date.now() - days * 86_400_000;
     let manifests = 0;
@@ -686,10 +806,24 @@ export class RewindSnapshotStore implements RewindSnapshotStoreInterface {
     }
 
     const referencedBlobs = new Set<string>();
+    const referencedEntrySets = new Set<string>();
     for (const file of readdirSync(this.manifestsRoot)) {
       if (!file.endsWith('.json')) continue;
-      const manifest = this.getManifest(file.slice(0, -5));
+      const id = file.slice(0, -5);
+      const manifest = this.getManifest(id);
+      try {
+        const stored = JSON.parse(readFileSync(join(this.manifestsRoot, file), 'utf-8')) as {
+          entrySetHash?: string;
+        };
+        if (stored.entrySetHash) referencedEntrySets.add(stored.entrySetHash);
+      } catch {
+        // Corrupt manifests are removed or ignored above.
+      }
       for (const entry of manifest?.entries ?? []) referencedBlobs.add(entry.blobHash);
+    }
+    for (const file of readdirSync(this.entrySetsRoot)) {
+      if (!file.endsWith('.json') || referencedEntrySets.has(file.slice(0, -5))) continue;
+      rmSync(join(this.entrySetsRoot, file), { force: true });
     }
     for (const file of readdirSync(this.blobsRoot)) {
       if (referencedBlobs.has(file)) continue;

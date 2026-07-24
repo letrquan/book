@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AgentLoopRunner } from './agent-session.js';
 import { AgentSession } from './agent-session.js';
 import type { ToolRegistry } from '../tools/registry.js';
@@ -214,6 +214,7 @@ describe('AgentSession', () => {
   it('prepares checkpoint and user timeline records outside the host layer', async () => {
     const session = new AgentSession();
     const records: SessionRecord[] = [];
+    const metaPatches: Array<[string, { name?: string }]> = [];
     const config = defaultConfig();
     const userMessage: Message = {
       id: 'user-1',
@@ -228,12 +229,16 @@ describe('AgentSession', () => {
       sessionId: 'session-1',
       displayMessage: 'hello',
       userMessage,
-      timelineStore: { append: (_id, record) => records.push(record) },
+      timelineStore: {
+        append: (_id, record) => records.push(record),
+        patchMeta: (id, patch) => metaPatches.push([id, patch]),
+      },
     });
 
     expect(result).toMatchObject({
       status: 'prepared',
       contextMessage: 'hello',
+      sessionName: 'Hello',
       rewindTarget: {
         userEventId: 'user-1',
         prompt: 'hello',
@@ -242,8 +247,31 @@ describe('AgentSession', () => {
       },
     });
     expect(records.map((record) => record.type)).toEqual(['turn_checkpoint', 'user']);
+    expect(metaPatches).toEqual([['session-1', { name: 'Hello' }]]);
     expect(userMessage.contextContent).toBeUndefined();
     expect(userMessage.fileObservations).toEqual([]);
+  });
+
+  it('preserves an explicit session name when recording the first prompt', async () => {
+    const patchMeta = vi.fn();
+    const result = await new AgentSession().recordUserMessage({
+      config: defaultConfig(),
+      sessionId: 'session-1',
+      sessionName: 'Release work',
+      displayMessage: 'fix the release workflow',
+      userMessage: {
+        id: 'user-named',
+        role: 'user',
+        content: 'fix the release workflow',
+        includeInContext: true,
+        timestamp: 10,
+      },
+      timelineStore: { append: () => {}, patchMeta },
+      expandShellInput: false,
+    });
+
+    expect(result.sessionName).toBe('Release work');
+    expect(patchMeta).not.toHaveBeenCalled();
   });
 
   it('records checkpoint-free host input without enabling shell expansion', async () => {
@@ -268,6 +296,88 @@ describe('AgentSession', () => {
     expect(result.contextMessage).toBe('!echo should-not-run');
     expect(userMessage.contextContent).toBeUndefined();
     expect(records.map((record) => record.type)).toEqual(['user']);
+  });
+
+  it('persists synthetic agent notifications with separate provider context', async () => {
+    const records: SessionRecord[] = [];
+    const userMessage: Message = {
+      id: 'notification-1',
+      role: 'user',
+      content: 'Atlas completed: Found three gaps',
+      contextContent: '<subagent_notification>{"agent_id":"atlas"}</subagent_notification>',
+      includeInContext: true,
+      kind: 'agent-notification',
+      agentNotifications: [
+        {
+          agentId: 'atlas',
+          displayName: 'Atlas',
+          status: 'completed',
+          summary: 'Found three gaps',
+          evidenceIds: [],
+        },
+      ],
+      timestamp: 10,
+    };
+
+    const result = await new AgentSession().recordUserMessage({
+      config: defaultConfig(),
+      sessionId: 'session-1',
+      displayMessage: userMessage.content,
+      contextMessage: userMessage.contextContent,
+      userMessage,
+      timelineStore: { append: (_id, record) => records.push(record) },
+    });
+
+    expect(result.contextMessage).toBe(userMessage.contextContent);
+    expect(userMessage.fileObservations).toEqual([]);
+    expect(records[0]).toMatchObject({
+      type: 'user',
+      data: {
+        kind: 'agent-notification',
+        contextContent: userMessage.contextContent,
+        agentNotifications: userMessage.agentNotifications,
+      },
+    });
+  });
+
+  it('routes synthetic completion context through the send pipeline without user hooks', async () => {
+    let prompt = '';
+    let options: Parameters<AgentLoopRunner>[6];
+    const session = new AgentSession({
+      runLoop: async (_config, _registry, nextPrompt, history, _callbacks, _mode, nextOptions) => {
+        prompt = nextPrompt;
+        options = nextOptions;
+        return history;
+      },
+    });
+    const contextMessage = '<subagent_notification>{"agent_id":"atlas"}</subagent_notification>';
+
+    const result = await session.send({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      displayMessage: 'Atlas completed',
+      contextMessage,
+      createUserMessage: () => ({
+        id: 'notification-send',
+        role: 'user',
+        content: 'Atlas completed',
+        contextContent: contextMessage,
+        includeInContext: true,
+        kind: 'agent-notification',
+        timestamp: 10,
+      }),
+      history: [],
+      sessionId: 'session-1',
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+
+    expect(result.status).toBe('completed');
+    expect(prompt).toBe(contextMessage);
+    expect(options).toMatchObject({
+      displayMessage: 'Atlas completed',
+      userMessageKind: 'agent-notification',
+      skipUserPromptHooks: true,
+    });
   });
 
   it('persists finalized assistant messages outside host layers', async () => {

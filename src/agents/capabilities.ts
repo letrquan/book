@@ -1,4 +1,5 @@
 import type { ToolCall, ToolDefinition, ToolResult } from '../types/tools.js';
+import type { AgentIsolation } from './types.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { toolFailure } from '../tools/result.js';
 import { createRegistry, type ToolRegistry } from '../tools/registry-core.js';
@@ -17,6 +18,7 @@ const CHILD_LIFECYCLE_TOOLS = new Set([
   'AgentSpawn',
   'AgentList',
   'AgentGet',
+  'AgentRead',
   'AgentSend',
   'AgentWait',
   'AgentStop',
@@ -26,9 +28,26 @@ const CHILD_LIFECYCLE_TOOLS = new Set([
 
 const CHILD_WILDCARD_EXCLUSIONS = new Set(['AskUserQuestion', ...CHILD_LIFECYCLE_TOOLS]);
 
-function denied(call: ToolCall): ToolResult {
+const READONLY_DENIED_TOOLS = new Set([
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+  'Bash',
+  'Check',
+  'GitCommit',
+]);
+
+function denied(call: ToolCall, profile?: string, isolation?: AgentIsolation): ToolResult {
+  const canonical = canonicalToolName(call.name);
+  if (isolation === 'workspace-readonly') {
+    return toolFailure(
+      `${canonical} is unavailable to the ${profile ?? 'read-only'} profile because this agent is read-only.\n\nReport the required change to the parent with EvidencePublish. The parent can delegate implementation to a patcher if the user authorized modifications.`,
+      { toolCallId: call.id, code: 'capability_denied', status: 'blocked' },
+    );
+  }
   return toolFailure(
-    `Capability denied: ${canonicalToolName(call.name)} is outside this agent's tool policy`,
+    `Capability denied: ${canonical} is outside this agent's tool policy. Report the blocked step and required capability to the parent.`,
     { toolCallId: call.id, code: 'capability_denied', status: 'blocked' },
   );
 }
@@ -38,12 +57,18 @@ function denied(call: ToolCall): ToolResult {
  * definitions are filtered for model visibility and re-check every call's
  * canonical name and primary argument at execution time.
  */
-export function createCapabilityRegistry(parent: ToolRegistry, rawRules: string[]): ToolRegistry {
+export function createCapabilityRegistry(
+  parent: ToolRegistry,
+  rawRules: string[],
+  options: { isolation?: AgentIsolation; profile?: string } = {},
+): ToolRegistry {
   const rules = parseCapabilityRules(rawRules);
   const registry = createRegistry();
 
   for (const definition of parent.getDefinitions()) {
     const canonical = canonicalToolName(definition.name);
+    if (options.isolation === 'workspace-readonly' && READONLY_DENIED_TOOLS.has(canonical))
+      continue;
     if (
       canonical !== 'ToolSearch' &&
       !isToolDefinitionAllowed(
@@ -69,7 +94,7 @@ export function createCapabilityRegistry(parent: ToolRegistry, rawRules: string[
           canonical !== 'ToolSearch' &&
           !isToolCallAllowed(rules, call, CHILD_WILDCARD_EXCLUSIONS)
         )
-          return denied(call);
+          return denied(call, options.profile, options.isolation);
         return definition.execute(args, context);
       },
     };

@@ -73,7 +73,7 @@ export async function runSubagent(
         onCompact: (compactHistory, usage) =>
           runCompact(subConfig, compactHistory, {
             trigger: 'auto',
-            preContextTokens: usagePressureTokens(usage),
+            preContextTokens: usage ? usagePressureTokens(usage) : undefined,
             signal: options?.signal,
           }),
         onUserQuestionRequired: options?.onUserQuestionRequired,

@@ -109,6 +109,22 @@ const largeTranscript: Message[] = Array.from({ length: 60 }, (_, index) => [
     timestamp: index * 2 + 1,
   },
 ]).flat();
+const streamingTranscript: Message[] = [
+  ...Array.from({ length: 999 }, (_, index) => ({
+    id: `stream-history-${index}`,
+    role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+    content: `${index % 2 === 0 ? 'Question' : 'Answer'} ${index}`,
+    includeInContext: true,
+    timestamp: index,
+  })),
+  {
+    id: 'stream-active',
+    role: 'assistant' as const,
+    content: '',
+    includeInContext: true,
+    timestamp: 1_000,
+  },
+];
 
 const bench = new Bench({ time: 500, iterations: 16, warmupTime: 100, warmupIterations: 8 });
 
@@ -206,6 +222,50 @@ bench
 await bench.run();
 
 console.table(bench.table());
+
+const streamingView = render(
+  <ThemeContext.Provider value={DEFAULT_THEME}>
+    <ChatPanel
+      messages={streamingTranscript}
+      streamingMessageId="stream-active"
+      reducedMotion
+      terminalWidth={TERMINAL_WIDTH}
+      terminalHeight={40}
+    />
+  </ThemeContext.Provider>,
+);
+const streamingUpdateMs: number[] = [];
+let activeContent = '';
+for (let index = 0; index < 50; index++) {
+  activeContent += 'x'.repeat(20);
+  const next = streamingTranscript.slice();
+  next[next.length - 1] = { ...next[next.length - 1], content: activeContent };
+  const startedAt = performance.now();
+  streamingView.rerender(
+    <ThemeContext.Provider value={DEFAULT_THEME}>
+      <ChatPanel
+        messages={next}
+        streamingMessageId="stream-active"
+        reducedMotion
+        terminalWidth={TERMINAL_WIDTH}
+        terminalHeight={40}
+      />
+    </ThemeContext.Provider>,
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  streamingUpdateMs.push(performance.now() - startedAt);
+}
+streamingView.unmount();
+cleanup();
+streamingUpdateMs.sort((left, right) => left - right);
+const streamingP95 = streamingUpdateMs[Math.floor(streamingUpdateMs.length * 0.95)];
+console.log(
+  `1000-message streaming update (1000 coalesced deltas): ${streamingP95.toFixed(2)}ms p95 (budget 33ms).`,
+);
+if (streamingP95 > 33) {
+  console.error('1000-message streaming update exceeded its 33ms p95 latency budget.');
+  process.exitCode = 1;
+}
 
 const legacyMean = getMeanMs(bench, 'legacy wrap + marked.lexer');
 const optimizedMean = getMeanMs(bench, 'optimized wrapParagraphLines');

@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import { useMemo, useState } from 'react';
 import type { SessionMeta } from '../../types/sessions.js';
+import { displaySessionName } from '../../session/name.js';
 import { useTheme } from '../theme.js';
 import { useDensityMetrics } from '../density.js';
 
@@ -63,7 +64,7 @@ export function SessionPicker({
               color={isSelected ? theme.selectionText : theme.subtle}
               bold={isSelected}
             >
-              {isSelected ? '›' : ' '} {session.name ?? session.id.slice(0, 8)} ·{' '}
+              {isSelected ? '›' : ' '} {displaySessionName(session.name)} ·{' '}
               {formatAge(session.updatedAt)} · {session.messageCount} messages
             </Text>
           );

@@ -99,6 +99,24 @@ describe('managed agent capabilities', () => {
     );
   });
 
+  it('hard-filters mutation tools from workspace-readonly profiles', () => {
+    const parent = createRegistry();
+    parent.registerAll([
+      tool('Read'),
+      tool('Write'),
+      tool('Bash'),
+      tool('Check'),
+      tool('GitCommit'),
+    ]);
+    const names = createCapabilityRegistry(parent, ['*'], {
+      isolation: 'workspace-readonly',
+      profile: 'explorer',
+    })
+      .getDefinitions()
+      .map((definition) => definition.name);
+    expect(names).toEqual(['Read']);
+  });
+
   it('allows ToolSearch to inspect only the already-restricted child catalog', async () => {
     const parent = createRegistry();
     parent.registerAll([...toolSearchTools, tool('Read')]);

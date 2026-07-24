@@ -1,4 +1,12 @@
-import { mkdtempSync, rmSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -13,6 +21,67 @@ afterEach(() => {
 });
 
 describe('AgentStore recovery', () => {
+  it('quarantines corrupt version 3 record files and loads the remaining store', () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const directory = join(root, 'repo');
+    const records = join(directory, 'records');
+    mkdirSync(records, { recursive: true });
+    writeFileSync(join(directory, 'state.json'), JSON.stringify({ version: 3 }));
+    writeFileSync(join(records, 'broken.json'), '{not valid json');
+
+    const store = new AgentStore('repo', root);
+
+    expect(store.listAgents()).toEqual([]);
+    expect(readdirSync(records).some((name) => name.startsWith('broken.json.corrupt-'))).toBe(true);
+  });
+
+  it('migrates monolithic records to version 3 per-record storage', () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const directory = join(root, 'repo');
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      join(directory, 'state.json'),
+      JSON.stringify({
+        version: 1,
+        plans: [],
+        evidence: [],
+        snapshots: [],
+        agents: [
+          {
+            id: 'old',
+            name: 'explorer',
+            role: 'explorer',
+            description: 'Explore',
+            status: 'completed',
+            applicationStatus: 'not_applied',
+            prompt: 'Trace authentication flow.',
+            referencedEvidenceIds: [],
+            transcript: [],
+            pendingMessages: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      }),
+    );
+    const store = new AgentStore('repo', root);
+    const [record] = store.listAgents();
+    expect(record.profile).toBe('explorer');
+    expect(record.displayName).toBe('Trace authentication flow');
+    expect(record.resolvedModel).toBe('unknown');
+    expect(record.producedEvidenceIds).toEqual([]);
+    expect(record.finishedAt).toBe(1);
+    expect(record.completionSequence).toBe(1);
+    expect(record.completionDeliveredSequence).toBe(1);
+    store.saveAgent(record);
+    expect(JSON.parse(readFileSync(join(directory, 'state.json'), 'utf8')).version).toBe(3);
+    expect(existsSync(join(directory, 'records', 'old.json'))).toBe(true);
+    expect(JSON.parse(readFileSync(join(directory, 'records', 'old.json'), 'utf8'))).toMatchObject({
+      id: 'old',
+      profile: 'explorer',
+    });
+  });
+
   it('marks active persisted agents interrupted while preserving transcript and worktree references', () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const store = new AgentStore('repo', root);
@@ -21,7 +90,7 @@ describe('AgentStore recovery', () => {
       name: 'patcher',
       role: 'patcher',
       description: 'patch',
-      status: 'running',
+      status: 'waiting_permission',
       applicationStatus: 'not_applied',
       worktree: 'C:/worktree',
       branch: 'book-agent/test',
@@ -31,6 +100,14 @@ describe('AgentStore recovery', () => {
         { id: 'a', role: 'assistant', content: 'partial', includeInContext: true, timestamp: 1 },
       ],
       pendingMessages: [],
+      pendingPermission: {
+        id: 'permission-1',
+        agentId: 'agent-1',
+        displayName: 'Patcher',
+        toolName: 'Read',
+        toolCall: { id: 'read-1', name: 'Read', arguments: { filePath: 'README.md' } },
+        createdAt: 1,
+      },
       createdAt: 1,
       updatedAt: 1,
     };
@@ -39,9 +116,14 @@ describe('AgentStore recovery', () => {
     const restarted = new AgentStore('repo', root);
     restarted.markActiveInterrupted();
     const recovered = restarted.listAgents()[0];
+    const detailed = restarted.loadAgent(record.id)!;
     expect(recovered.status).toBe('interrupted');
     expect(recovered.stopReason).toBe('process_exit');
     expect(recovered.worktree).toBe('C:/worktree');
-    expect(recovered.transcript[0].content).toBe('partial');
+    expect(recovered.transcript).toEqual([]);
+    expect(detailed.transcript[0].content).toBe('partial');
+    expect(recovered.completionSequence).toBe(1);
+    expect(recovered.completionDeliveredSequence).toBe(0);
+    expect(recovered.pendingPermission).toBeUndefined();
   });
 });

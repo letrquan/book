@@ -15,17 +15,17 @@ function fakeStdout(isTTY: boolean) {
 }
 
 describe('enterInteractiveScreen', () => {
-  it('enters alternate screen without capturing terminal text selection', () => {
+  it('enters alternate screen with SGR mouse reporting for wheel scrolling', () => {
     const { stdout, writes } = fakeStdout(true);
     const restore = enterInteractiveScreen(stdout);
 
-    expect(writes).toEqual(['\x1b[?1049h\x1b[?1006l\x1b[?1000l']);
+    expect(writes).toEqual(['\x1b[?1049h\x1b[?1000h\x1b[?1006h']);
 
     restore();
     restore();
 
     expect(writes).toEqual([
-      '\x1b[?1049h\x1b[?1006l\x1b[?1000l',
+      '\x1b[?1049h\x1b[?1000h\x1b[?1006h',
       '\x1b[?1006l\x1b[?1000l\x1b[?1049l',
     ]);
   });

@@ -1,7 +1,11 @@
-import { loadConfig } from '../config.js';
+import { loadConfig, runConfigMigrations } from '../config.js';
 import { getPackageVersion } from '../version-info.js';
+import { collectAgentDiagnostics } from '../agents/diagnostics.js';
+import { withBuiltInAgents } from '../agents/profiles.js';
+import { discoverAgents } from '../subagent-discovery.js';
 
 export async function runDoctorCommand(workspace: string): Promise<void> {
+  runConfigMigrations(workspace);
   const config = loadConfig(workspace);
   const { resolveSettings } = await import('../settings-loader.js');
   const settings = resolveSettings(workspace);
@@ -66,6 +70,31 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   console.log('Sandbox:');
   console.log('  Enabled: ' + settings.sandbox.enabled);
   console.log('  Available: ' + (sandbox !== null));
+  console.log();
+
+  // Managed agents.
+  console.log('Managed agents:');
+  const agentDiagnostics = collectAgentDiagnostics(
+    config,
+    withBuiltInAgents(discoverAgents(config.workspace)),
+  );
+  if (agentDiagnostics.length === 0) {
+    console.log('  [x] Profiles and overrides look valid');
+  } else {
+    for (const diagnostic of agentDiagnostics) {
+      console.log(`  [!] ${diagnostic.message}`);
+    }
+  }
+  for (const directory of [
+    join(config.workspace, '.claude', 'agents'),
+    join(config.workspace, '.agents', 'agents'),
+  ]) {
+    if (existsSync(directory)) {
+      console.log(
+        `  [!] Third-party definitions found at ${directory}; preview them with /agents import ${directory}.`,
+      );
+    }
+  }
   console.log();
 
   // Environment.

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SettingsRepository, readSettingsDocument } from './settings-repository.js';
@@ -14,6 +14,24 @@ function fixture(): { dir: string; path: string; cleanup: () => void } {
 }
 
 describe('SettingsRepository', () => {
+  it('skips atomic writes when an update leaves the document unchanged', () => {
+    const item = fixture();
+    try {
+      mkdirSync(join(item.dir, '.book'));
+      writeFileSync(item.path, JSON.stringify({ maxTurns: 3 }));
+      const writeAtomic = vi.fn();
+      const repository = new SettingsRepository(item.path, { writeAtomic });
+
+      const result = repository.update((candidate) => {
+        candidate.maxTurns = 3;
+      });
+
+      expect(result).toMatchObject({ ok: true, changed: false });
+      expect(writeAtomic).not.toHaveBeenCalled();
+    } finally {
+      item.cleanup();
+    }
+  });
   it('rejects invalid values without creating a settings file', () => {
     const item = fixture();
     try {

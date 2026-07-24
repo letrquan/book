@@ -25,6 +25,7 @@ function tool(name: string): ToolDefinition {
 const bash = tool('Bash');
 const bashOutput = tool('BashOutput');
 const killShell = tool('KillShell');
+const dismissShell = tool('DismissShell');
 
 function shellQuote(value: string): string {
   if (process.platform === 'win32') return `"${value.replace(/"/g, '\\"')}"`;
@@ -160,6 +161,46 @@ describe('Bash shell tools', () => {
     expect(output.structuredError?.message).toMatch(/not found/i);
     expect(killed.status).toBe('error');
     expect(killed.structuredError?.message).toMatch(/not found/i);
+  });
+
+  it('dismisses completed shell records and their retained output', async () => {
+    const c = ctx();
+    const command = nodeCommand('dismiss.cjs', `console.log('done');\n`);
+    const start = await bash.execute({ command, run_in_background: true }, c);
+    const shellId = shellIdFrom(start);
+    await waitForOutput(c, shellId, /Shell shell_\d+: exited|Shell shell_\d+: failed/);
+
+    const dismissed = await dismissShell.execute({ shell_id: shellId }, c);
+
+    expect(dismissed.status).toBe('success');
+    expect(c.backgroundShells?.shells.has(shellId)).toBe(false);
+  });
+
+  it('prunes old terminal records to the retained-shell cap', async () => {
+    const store: BackgroundShellStore = { nextId: 30, shells: new Map() };
+    const now = Date.now();
+    for (let index = 0; index < 30; index++) {
+      store.shells.set(`shell_${index}`, {
+        id: `shell_${index}`,
+        command: 'done',
+        effectiveCommand: 'done',
+        workdir: dir,
+        status: 'exited',
+        output: 'retained',
+        readOffset: 0,
+        truncatedBytes: 0,
+        startedAt: index,
+        finishedAt: now + index,
+      });
+    }
+    const c: ToolContext = { workspaceRoot: dir, env: {}, backgroundShells: store };
+    contexts.push(c);
+
+    await bashOutput.execute({ shell_id: 'shell_29' }, c);
+
+    expect(store.shells.size).toBe(20);
+    expect(store.shells.has('shell_0')).toBe(false);
+    expect(store.shells.has('shell_29')).toBe(true);
   });
 
   it('shares configured background shell state across contexts', async () => {

@@ -74,6 +74,26 @@ describe('StatusLine', () => {
     expect(output.split('\n')).toHaveLength(1);
   });
 
+  it('prioritizes managed agents needing input', () => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="main-model"
+          tokenCount={0}
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          agentCount={3}
+          activeAgentCount={2}
+          needsInputAgentCount={1}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+    expect(stripAnsi(view.lastFrame())).toContain('agents 2 | 1 needs input');
+  });
+
   it('keeps narrow output within terminal width', () => {
     const width = 36;
     const view = render(

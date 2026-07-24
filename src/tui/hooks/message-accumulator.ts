@@ -56,6 +56,7 @@ interface AccumulatorState {
   queue: AccumulatorOp[];
   timerId: ReturnType<typeof setTimeout> | null;
   stopped: boolean;
+  intervalMs: number;
 }
 
 /**
@@ -72,14 +73,19 @@ export function createMessageAccumulator(
   messagesRef: { current: Message[] },
   flushIntervalMs = 16,
 ): MessageAccumulator {
-  const state: AccumulatorState = { queue: [], timerId: null, stopped: false };
+  const state: AccumulatorState = {
+    queue: [],
+    timerId: null,
+    stopped: false,
+    intervalMs: flushIntervalMs,
+  };
 
   function scheduleNext(): void {
     if (state.stopped) return;
     state.timerId = setTimeout(() => {
       flush();
       scheduleNext();
-    }, flushIntervalMs);
+    }, state.intervalMs);
   }
 
   function flush(): void {
@@ -108,24 +114,47 @@ export function createMessageAccumulator(
 
     if (coalesced.length === 0) return;
 
+    const startedAt = performance.now();
     setMessages((prev: Message[]) => {
-      let next = prev;
-      for (const op of coalesced) {
-        if (op.type === 'text') {
-          next = appendContentToMessage(next, messageId, op.content);
-        } else if (op.type === 'toolCall') {
-          next = appendToolCallToMessage(next, messageId, op.call);
-        } else if (op.type === 'toolResult') {
-          next = appendToolResultToMessage(next, messageId, op.result);
-        } else if (op.type === 'nestedToolCall') {
-          next = appendNestedToolInvocationToMessage(next, messageId, op.invocation);
-        } else {
-          next = appendNestedToolResultToMessage(next, messageId, op.traceId, op.result);
+      let messageIndex = -1;
+      for (let index = prev.length - 1; index >= 0; index--) {
+        if (prev[index].id === messageId) {
+          messageIndex = index;
+          break;
         }
       }
+      if (messageIndex < 0) return prev;
+
+      let active = [prev[messageIndex]];
+      for (const op of coalesced) {
+        if (op.type === 'text') {
+          active = appendContentToMessage(active, messageId, op.content);
+        } else if (op.type === 'toolCall') {
+          active = appendToolCallToMessage(active, messageId, op.call);
+        } else if (op.type === 'toolResult') {
+          active = appendToolResultToMessage(active, messageId, op.result);
+        } else if (op.type === 'nestedToolCall') {
+          active = appendNestedToolInvocationToMessage(active, messageId, op.invocation);
+        } else {
+          active = appendNestedToolResultToMessage(active, messageId, op.traceId, op.result);
+        }
+      }
+      if (active[0] === prev[messageIndex]) return prev;
+      const next = prev.slice();
+      next[messageIndex] = active[0];
       messagesRef.current = next;
       return next;
     });
+    const renderPressure = performance.now() - startedAt;
+    const transcriptPressure = Math.floor(messagesRef.current.length / 250) * 8;
+    state.intervalMs = Math.min(
+      48,
+      Math.max(
+        flushIntervalMs,
+        Math.ceil(renderPressure * 1.5),
+        flushIntervalMs + transcriptPressure,
+      ),
+    );
   }
 
   function addText(content: string): void {
