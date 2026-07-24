@@ -55,13 +55,23 @@ Do not infer that every successful shell command is a test. Add project/evaluati
 interface VerifierDefinition {
   id: string;
   kind: 'test' | 'typecheck' | 'lint' | 'build' | 'artifact' | 'custom';
-  command?: string;
+  command?: {
+    argv: string[];
+    cwd: string;
+    envAllowlist: string[];
+    network: 'off' | 'restricted' | 'required';
+  };
   required: boolean;
   timeoutMs?: number;
   successExitCodes?: number[];
   scope?: string[];
 }
 ```
+
+Verifier definitions are trusted evaluator inputs, not arbitrary project settings. They must include
+an immutable evaluator digest, allowed argv/cwd/env/network policy, timeout, expected exit/artifact
+results, protected paths, and initial/final workspace hashes. Existing `agents.checks` may be adapted
+for diagnostics but cannot become promotion truth.
 
 The trusted kernel owns verifier definitions during evaluation. A workflow may request a declared verifier, but cannot rewrite its command or required status.
 
@@ -82,6 +92,10 @@ interface OutcomeDimension {
 ```
 
 Store dimensions for correctness, reliability, regression, user alignment, maintainability, cost, latency, long-horizon stability, and harness complexity.
+
+Define a machine-readable aggregation contract per task class, including missingness and unknown
+handling. A failed or unevaluable dimension must remain visible; excluding unknowns because they are
+inconvenient can create arm-dependent bias.
 
 ##### 5.4 Define run-level completion rules
 
@@ -123,10 +137,10 @@ Record reviewer identity or role, rubric version, per-dimension ratings, disagre
 Provide an inspectable feedback flow, for example:
 
 ```text
-/feedback good
-/feedback bad
-/feedback correction "Changed too many files"
-/feedback prefer project "Ask before dependency changes"
+/harness feedback good
+/harness feedback bad
+/harness feedback correction "Changed too many files"
+/harness feedback prefer project "Ask before dependency changes"
 ```
 
 The UI should show:
@@ -137,6 +151,11 @@ The UI should show:
 - how to inspect or delete it.
 
 Do not ask for feedback after every run. Make it available and consider low-friction prompts only for selected evaluation/canary cases.
+
+The repository already uses `/feedback` for bug-report snapshots. Use a distinct outcome command or
+an explicit backward-compatible subcommand grammar so existing reports, redaction, and retention
+behavior do not change silently. Feedback records need source authentication, idempotency keys,
+scope/expiry, inspect/delete controls, and replay-safe provenance.
 
 ##### 5.7 Interpret implicit signals conservatively
 
@@ -163,6 +182,10 @@ Every derived outcome records the evaluator version. When logic changes:
 - recompute into a new version;
 - avoid comparing runs scored by incompatible evaluator versions unless normalized;
 - record migrations in reports.
+
+Keep agent-authored evidence and validator-reviewed patch evidence separate from trusted verifier
+facts. A model summary or managed-agent `evidence_update` cannot convert a failing or unknown
+verifier into success.
 
 ##### 5.9 Add outcome inspection
 
@@ -206,6 +229,8 @@ Modify src/headless.ts or stream-json input for explicit feedback events
 - Equivalent outcome quality with higher harness complexity remains visible for tie-breaking.
 - Recomputed outcome under a new evaluator version preserves prior results.
 - Unknown outcome remains ineligible for automatic promotion.
+- Human-rubric agreement, calibration, blinding, adjudication, and reviewer privacy rules are executable rather than a free-form `agreementRule` string.
+- Required verifier manifests are immutable outside the project workspace and record protected-file and hash evidence.
 
 **Verification:**
 
@@ -220,10 +245,10 @@ Modify src/headless.ts or stream-json input for explicit feedback events
 
 ```powershell
 npm run typecheck
-npm test -- src/harness/outcomes.test.ts
-npm test -- src/harness/user-signals.test.ts
-npm test -- src/tools/shell.test.ts
-npm test -- src/headless.test.ts
+npm run test:unit -- src/harness/outcomes.test.ts
+npm run test:unit -- src/harness/user-signals.test.ts
+npm run test:integration -- src/tools/shell.test.ts
+npm run test:unit -- src/headless.test.ts
 npm test
 ```
 

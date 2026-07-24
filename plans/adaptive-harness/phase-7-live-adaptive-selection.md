@@ -57,6 +57,10 @@ Requirements:
 - project-local canaries do not silently become global rollouts;
 - assignment is recorded before execution.
 
+Define the randomization unit, a secret rotation/assignment salt, session/project spillover rules,
+explicit opt-out, and sample-ratio-mismatch checks. Project-only assignment can cluster every task
+from a project into one arm and hide contamination.
+
 ##### 7.3 Resolve the final workflow
 
 Final precedence:
@@ -71,6 +75,9 @@ minimal fallback
 ```
 
 Produce a `ResolvedWorkflow` with all clamps and provenance before calling the agent loop.
+
+Freeze the decision at the root-run boundary. In the initial release, an interactive override applies
+to the next run unless a separate thread-safe transition channel is implemented.
 
 ##### 7.4 Add user-facing inspection and override
 
@@ -110,6 +117,11 @@ For each rollout, track:
 
 Do not combine results across incompatible workflow, policy, model, runtime, environment, tool-surface, context-capability, sandbox, or evaluator versions.
 
+Declare numerical primary/guardrail margins, minimum concurrent control allocation, delayed-label and
+censoring policy, and a sequential-monitoring method (confidence sequence or alpha spending) before
+live peeking. A fixed-horizon confidence interval is not a rollback policy for continuously monitored
+canaries.
+
 ##### 7.6 Implement automatic pause and rollback
 
 Predeclare rollback triggers such as:
@@ -133,6 +145,10 @@ record reason and responsible threshold
 retain previous registry version
 ```
 
+Registry updates must be authenticated, canonicalized, atomically published, and fail closed to the
+last known fixed workflow when unavailable. Existing runs retain their recorded decision; future runs
+must stop adaptive assignment immediately after a rollback signal.
+
 ##### 7.7 Handle compatibility and project change invalidation
 
 - Exact model version changes invalidate or downgrade eligibility.
@@ -153,6 +169,10 @@ Promotion requires:
 - recorded approval authority.
 
 Even after promotion, `minimal` remains available and automatic rollback remains armed.
+
+High-risk promotion requires a separately recorded approval authority or gate version. A valid result
+of this phase is `hold` or `reject`; "preserves metrics" is not sufficient when complexity is higher
+without a declared Pareto benefit.
 
 #### Phase 7 File Plan
 
@@ -197,14 +217,14 @@ Modify src/settings.ts for kill switches and canary controls
 
 ```powershell
 npm run typecheck
-npm test -- src/harness/coordinator.test.ts
-npm test -- src/harness/policy.test.ts
-npm test -- src/headless.test.ts
-npm test -- src/tui/app.plan-approval.test.tsx
+npm run test:unit -- src/harness/coordinator.test.ts
+npm run test:unit -- src/harness/policy.test.ts
+npm run test:unit -- src/headless.test.ts
+npm run test:unit -- src/tui/app.plan-approval.test.tsx
 npm test
 ```
 
-**Exit gate:** Live adaptive selection improves or preserves the declared metrics and can automatically retreat to the best fixed workflow.
+**Exit gate:** Live adaptive selection clears the predeclared benefit and non-inferiority margins versus concurrent control, justifies its complexity, and can automatically retreat to the best fixed workflow. Otherwise hold or roll back the slice.
 
 **Rollback:** Set harness mode to `shadow`, `observe`, or `off`; mark the workflow version inactive in the registry.
 

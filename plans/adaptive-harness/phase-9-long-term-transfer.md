@@ -29,6 +29,10 @@ Potential work:
 
 Treat each item below as a separate future proposal with its own Phase 0-style evaluation contract.
 
+Every proposal must quantify its entry evidence: minimum compatible runs, observation duration,
+detectable effect, maximum acceptable harm, schema/evaluator stability, and rollback exercise. "Enough
+real usage" is not an executable gate.
+
 ##### 9.1 Cross-model priors
 
 - Transfer only aggregate workflow evidence, never trust state.
@@ -46,6 +50,10 @@ Treat each item below as a separate future proposal with its own Phase 0-style e
 - Never globalize permissions or safety-sensitive behavior through inference.
 - Test contradictory project modes and one-off behavior changes.
 
+Global inference requires explicit consent, encryption/access controls, TTL, export/delete propagation
+through indexes and backups, and a rule that deletion also removes derived training/aggregate inputs
+where technically promised.
+
 ##### 9.3 User-mode change detection
 
 - Model user behavior as multiple contextual modes, not one identity profile.
@@ -53,6 +61,9 @@ Treat each item below as a separate future proposal with its own Phase 0-style e
 - Lower confidence before creating a new mode.
 - Make the active mode inspectable and overridable.
 - Evaluate whether mode detection reduces correction without increasing unwanted assumptions.
+
+Specify the change-point model, hazard/prior, false-alarm target, cooldown/hysteresis, and safety
+features excluded from inference.
 
 ##### 9.4 Background evaluation workers
 
@@ -70,9 +81,16 @@ Treat each item below as a separate future proposal with its own Phase 0-style e
 - Provide project-level opt-out and deletion.
 - Demonstrate benefit over project-local cold start.
 
+"Privacy-preserving aggregates" requires a threat model and formal mechanism: for example differential
+privacy parameters/composition, minimum cohort size, membership-inference testing, consent, and
+deletion semantics. Aggregation alone is not a privacy guarantee.
+
 ##### 9.6 Multi-agent coordination
 
 This track remains out of the initial delivery. Entry requires evidence that a single-agent workflow cannot meet the target outcome efficiently and that coordination has a falsifiable benefit claim.
+
+Book already contains user-controlled Task and managed-agent capabilities. This research track means
+harness-coordinated adaptive multi-agent policy and transfer, not the mere existence of child agents.
 
 If explored:
 
@@ -95,6 +113,10 @@ If explored:
 - prevent access to evaluator, permissions, registry, budgets, and history;
 - deploy only through the same canary and rollback system;
 - maintain a last-known-good binary/configuration independent of the evolved code.
+
+Require a versioned plugin/API boundary, signed and reproducible build provenance, ABI compatibility,
+isolated deployment, independent promotion authority, and an out-of-band kill switch before code-level
+evolution can enter a canary.
 
 #### Phase 9 Entry Checklist
 
