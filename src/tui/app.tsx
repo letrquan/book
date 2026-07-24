@@ -70,6 +70,7 @@ import {
 import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
 import type { InteractiveAssets } from './interactive-assets.js';
+import { resolveContextLimit } from '../agent/compact.js';
 
 const uiLog = createUiDebugLogger('tui:app');
 
@@ -1740,7 +1741,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
             <StatusLine
               model={liveConfig.modelSelection ?? liveConfig.model}
               tokenCount={tokenCount}
-              maxTokens={liveConfig.modelInfo?.contextWindow ?? liveConfig.maxTokens}
+              maxTokens={resolveContextLimit(liveConfig)}
               mode={mode}
               taskCount={tasks.length}
               activeTaskCount={tasks.filter((t) => t.status === 'in_progress').length}
