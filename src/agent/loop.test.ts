@@ -78,6 +78,68 @@ function noopCallbacks(overrides: Partial<AgentLoopCallbacks> = {}): AgentLoopCa
 }
 
 describe('runAgentLoop streaming render callbacks', () => {
+  it('continues the active turn after between-turn auto compaction', async () => {
+    let providerCalls = 0;
+    const seenMessageContents: string[][] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        providerCalls++;
+        seenMessageContents.push(messages.map((message) => String(message.content)));
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'echo-1', name: 'Echo', arguments: { value: 'ok' } },
+          };
+          yield {
+            type: 'done',
+            usage: {
+              promptTokens: 90_000,
+              completionTokens: 100,
+              totalTokens: 90_100,
+              contextTokens: 90_000,
+            },
+          };
+          return;
+        }
+        yield { type: 'text', content: 'continued after compact' };
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    registry.register({
+      name: 'Echo',
+      description: 'Return the provided value',
+      parameters: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+        required: ['value'],
+      },
+      execute: async (args) => toolSuccess(String(args.value ?? '')),
+    });
+    const compact = vi.fn(async () => compactedForRetry());
+
+    const result = await runAgentLoop(
+      defaultConfig({
+        maxTurns: 2,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+        modelInfo: { contextWindow: 100_000 },
+      }),
+      registry,
+      'hello',
+      [],
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(providerCalls).toBe(2);
+    expect(seenMessageContents[1]).toContain('compact summary');
+    expect(result.at(-1)?.content).toBe('continued after compact');
+  });
+
   it('compacts and retries once when the provider rejects an oversized context', async () => {
     let providerCalls = 0;
     const seenMessageContents: string[][] = [];

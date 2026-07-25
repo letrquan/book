@@ -11,7 +11,14 @@ import { defaultConfig } from '../../test/fixtures.js';
 import { SessionStore } from '../../session/store.js';
 
 const callOrder = vi.hoisted(() => [] as string[]);
-const agentLoopState = vi.hoisted(() => ({ nextError: null as Error | null }));
+const compactMockState = vi.hoisted(() => ({
+  result: undefined as unknown,
+  results: [] as unknown[],
+}));
+const agentLoopState = vi.hoisted(() => ({
+  nextError: null as Error | null,
+  compactDuringRun: false,
+}));
 
 vi.mock('../../agent/compact.js', () => ({
   resolveContextLimit: () => 100,
@@ -19,7 +26,10 @@ vi.mock('../../agent/compact.js', () => ({
   usagePressureTokens: () => 1,
   runCompact: vi.fn(async () => {
     callOrder.push('compact');
-    return { status: 'skipped', reason: 'small', message: 'small' } as const;
+    return (
+      compactMockState.results.shift() ??
+      compactMockState.result ?? { status: 'skipped', reason: 'small', message: 'small' }
+    );
   }),
   runPostCompactHooks: vi.fn(async () => {}),
 }));
@@ -38,10 +48,33 @@ vi.mock('../../input/input-expansion.js', () => ({
 
 vi.mock('../../agent/loop.js', () => ({
   runAgentLoop: vi.fn(
-    async (_config: unknown, _registry: unknown, _message: string, history: unknown[]) => {
+    async (
+      _config: unknown,
+      _registry: unknown,
+      _message: string,
+      history: unknown[],
+      callbacks: {
+        onText: (content: string) => void;
+        onTurnStart: (turn: number) => void;
+        onCompact?: (history: unknown[], usage: unknown) => Promise<unknown>;
+      },
+    ) => {
       const error = agentLoopState.nextError;
       agentLoopState.nextError = null;
       if (error) throw error;
+      if (agentLoopState.compactDuringRun) {
+        agentLoopState.compactDuringRun = false;
+        callbacks.onTurnStart(1);
+        callbacks.onText('before compact');
+        await callbacks.onCompact?.(history, {
+          promptTokens: 90,
+          completionTokens: 10,
+          totalTokens: 100,
+          contextTokens: 90,
+        });
+        callbacks.onTurnStart(2);
+        callbacks.onText('continued after compact');
+      }
       return history;
     },
   ),
@@ -147,6 +180,9 @@ afterEach(() => {
   latest = undefined;
   callOrder.length = 0;
   agentLoopState.nextError = null;
+  agentLoopState.compactDuringRun = false;
+  compactMockState.result = undefined;
+  compactMockState.results.length = 0;
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -225,6 +261,64 @@ describe('useAgent rewind integration', () => {
 
     expect(latest!.isThinking).toBe(false);
     expect(latest!.error).toBe('provider failed');
+  });
+
+  it('keeps streaming after auto compaction during an active run', async () => {
+    const { config, timeline, sessionId } = fixture();
+    compactMockState.results.push(
+      { status: 'skipped', reason: 'small', message: 'small' },
+      {
+        status: 'compacted',
+        trigger: 'auto',
+        replacementHistory: [
+          {
+            id: 'checkpoint-1',
+            role: 'assistant',
+            content: 'compact summary',
+            kind: 'checkpoint',
+            includeInContext: true,
+            timestamp: 1,
+          },
+        ],
+        summary: 'compact summary',
+        compactId: 'compact-1',
+        generation: 1,
+        checkpoint: {
+          version: 2,
+          generation: 1,
+          state: { summary: 'compact summary', status: 'active' },
+          constraints: [],
+          files: [],
+          episodes: [],
+          openThreads: [],
+          statistics: {
+            summarizedMessages: 1,
+            retainedMessages: 0,
+            preTokens: 100,
+            postTokens: 10,
+          },
+        },
+        checkpointVersion: 2,
+        summarizedCount: 1,
+        retainedCount: 0,
+        preContextTokens: 100,
+        postContextTokens: 10,
+        preMessageCount: 2,
+        strategy: 'single-pass',
+        modelCalls: 1,
+      },
+    );
+    agentLoopState.compactDuringRun = true;
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    await latest!.send('keep going');
+    await tick();
+
+    expect(latest!.messages.map((message) => message.content)).toContain('before compact');
+    expect(latest!.messages.map((message) => message.content)).toContain('continued after compact');
+    expect(latest!.compactBoundaries).toHaveLength(1);
+    expect(latest!.compactUi).toMatchObject({ phase: 'diff', trigger: 'auto' });
   });
 
   it('captures after pre-turn compaction and before @/! expansion', async () => {

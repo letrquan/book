@@ -717,43 +717,37 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             if (!stillCurrent()) {
               return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
             }
-            // Flush display accumulator so it cannot overwrite a replacement.
-            activeAccumulator?.stop();
-            try {
-              const outcome = await agentSession.compact({
-                config: liveConfigRef.current,
-                history,
-                sessionId: activeSessionId,
-                transcriptOrdinal: messagesRef.current.length,
-                timelineStore,
-                isCurrent: stillCurrent,
-                onCommitted: projectCompactResult,
-                options: {
-                  trigger: 'auto',
-                  preContextTokens: usage ? usagePressureTokens(usage) : undefined,
-                },
+            const outcome = await agentSession.compact({
+              config: liveConfigRef.current,
+              history,
+              sessionId: activeSessionId,
+              transcriptOrdinal: messagesRef.current.length,
+              timelineStore,
+              isCurrent: stillCurrent,
+              onCommitted: projectCompactResult,
+              options: {
+                trigger: 'auto',
+                preContextTokens: usage ? usagePressureTokens(usage) : undefined,
+              },
+            });
+            const result = outcome.result;
+            if (!stillCurrent()) return result;
+            if (result.status === 'compacted' && outcome.boundary) {
+              setCompactUi({
+                phase: 'diff',
+                trigger: 'auto',
+                preMessages: result.preMessageCount,
+                preContextTokens: result.preContextTokens,
+                message: result.degraded
+                  ? 'Conversation compacted with reduced fidelity'
+                  : 'Conversation compacted',
+                degraded: result.degraded,
+                warning: result.warning,
+                strategy: result.strategy,
+                modelCalls: result.modelCalls,
               });
-              const result = outcome.result;
-              if (!stillCurrent()) return result;
-              if (result.status === 'compacted' && outcome.boundary) {
-                setCompactUi({
-                  phase: 'diff',
-                  trigger: 'auto',
-                  preMessages: result.preMessageCount,
-                  preContextTokens: result.preContextTokens,
-                  message: result.degraded
-                    ? 'Conversation compacted with reduced fidelity'
-                    : 'Conversation compacted',
-                  degraded: result.degraded,
-                  warning: result.warning,
-                  strategy: result.strategy,
-                  modelCalls: result.modelCalls,
-                });
-              }
-              return result;
-            } finally {
-              if (stillCurrent()) activeAccumulator?.start();
             }
+            return result;
           },
           onRetry: (phase, attempt, max, delayMs) => {
             if (!stillCurrent()) return;
