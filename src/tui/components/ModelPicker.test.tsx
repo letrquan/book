@@ -70,7 +70,7 @@ describe('ModelPicker', () => {
   it('renders custom models and the add-BYOK action', () => {
     const { view } = renderPicker();
     expect(view.lastFrame()).toContain('Models & BYOK providers');
-    expect(view.lastFrame()).toContain('Custom  gateway  [local BYOK]');
+    expect(view.lastFrame()).toContain('Custom  gateway  [BYOK]');
     expect(view.lastFrame()).toContain('Add BYOK provider');
     expect(view.lastFrame()).toContain('Alt+A add');
     expect(view.lastFrame()).toContain('Alt+D remove BYOK');
@@ -93,7 +93,7 @@ describe('ModelPicker', () => {
     await write(view, 'gateway');
 
     expect(view.lastFrame()).toContain('Filter: gateway');
-    expect(view.lastFrame()).toContain('Custom  gateway  [local BYOK]');
+    expect(view.lastFrame()).toContain('Custom  gateway  [BYOK]');
     expect(view.lastFrame()).not.toContain('Built In');
 
     await write(view, '\r');
@@ -144,7 +144,7 @@ describe('ModelPicker', () => {
     expect(onPickEffort).toHaveBeenCalledWith('high');
   });
 
-  it('opens provider-level confirmation for a workspace-local BYOK row', async () => {
+  it('opens provider-level confirmation for a removable BYOK row', async () => {
     const { view } = renderPicker({
       currentModel: 'gateway/custom',
       removableProviderModelCounts: new Map([['gateway', 3]]),
@@ -177,7 +177,7 @@ describe('ModelPicker', () => {
 
     expect(onRemoveProvider).not.toHaveBeenCalled();
     expect(view.lastFrame()).toContain('Models & BYOK providers');
-    expect(view.lastFrame()).toContain('Custom  gateway  [local BYOK]');
+    expect(view.lastFrame()).toContain('Custom  gateway  [BYOK]');
   });
 
   it.each(['\r', 'y'])('confirms removal exactly once with %j', async (key) => {
@@ -217,7 +217,7 @@ describe('ModelPicker', () => {
     await write(view, '\x1bd');
 
     expect(onRemoveProvider).not.toHaveBeenCalled();
-    expect(view.lastFrame()).toContain('Only workspace-local BYOK providers can be removed.');
+    expect(view.lastFrame()).toContain('Only BYOK providers you added can be removed.');
   });
 
   it('restores the same filter and selected row after cancellation', async () => {

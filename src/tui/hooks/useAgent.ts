@@ -29,11 +29,13 @@ import { makeMessage, removeTrailingEmptyAssistantPlaceholder } from './streamin
 import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-log.js';
 import { loadMemoryContext } from '../../memory-store.js';
 import {
-  readSettingsLocal,
-  removeProviderLocal,
+  readSettingsGlobal,
+  removeProviderGlobal,
   persistSettingLocal,
-  persistSettingsLocal,
+  persistSettingGlobal,
+  persistSettingsGlobal,
   persistPermissionRuleLocal,
+  clearLocalSettings,
 } from '../persist.js';
 import { DEFAULT_SETTINGS, providerConfigSchema, type ResolvedSettings } from '../../settings.js';
 import { resolveSettings } from '../../settings-loader.js';
@@ -73,12 +75,16 @@ function providerIdFromSelection(selection: string): string | undefined {
   return slash > 0 ? selection.slice(0, slash) : undefined;
 }
 
-function readLocalProviderOwnership(workspace: string): {
+// BYOK providers are persisted to the user-global ~/.book/settings.json so they
+// are shared across every project. Only providers present in that file were
+// added by the user and are therefore removable; providers inherited from a
+// project layer or --settings override are not.
+function readOwnedProviders(): {
   ids: Set<string>;
   modelCounts: Map<string, number>;
 } {
-  const local = readSettingsLocal(workspace);
-  const provider = local.provider;
+  const global = readSettingsGlobal();
+  const provider = global.provider;
   if (typeof provider !== 'object' || provider === null || Array.isArray(provider)) {
     return { ids: new Set(), modelCounts: new Map() };
   }
@@ -218,9 +224,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   // mutate liveConfig so subsequent runAgentLoop calls pick up the change.
   // Without this, /model would silently no-op (send closes over `config`).
   const [liveConfig, setLiveConfig] = useState<AgentConfig>(() => withoutRuntimeState(config));
-  const [localProviderOwnership, setLocalProviderOwnership] = useState(() =>
-    readLocalProviderOwnership(config.workspace),
-  );
+  const [ownedProviders, setOwnedProviders] = useState(() => readOwnedProviders());
   const [agentSession] = useState(() =>
     createInteractiveAgentSession({
       runtime: new SessionRuntime({
@@ -252,7 +256,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const sessionGenerationRef = useRef(0);
   const modeRef = useRef(mode);
   const liveConfigRef = useRef(liveConfig);
-  const localProviderOwnershipRef = useRef(localProviderOwnership);
+  const ownedProvidersRef = useRef(ownedProviders);
   const turnStartRef = useRef(Date.now());
   // Countdown timer ref for retry countdown.
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -280,8 +284,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   }, [mode]);
 
   useEffect(() => {
-    localProviderOwnershipRef.current = localProviderOwnership;
-  }, [localProviderOwnership]);
+    ownedProvidersRef.current = ownedProviders;
+  }, [ownedProviders]);
 
   const settlePermission = useCallback(
     (result: PermissionResult, via: string) => {
@@ -1323,7 +1327,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   );
 
   // Switch the active model for the rest of the session, optionally persisting
-  // it to the local settings layer. BOOK_MODEL can still override settings on
+  // it to the user-global settings layer (~/.book/settings.json) so the choice
+  // follows the user across projects. BOOK_MODEL can still override settings on
   // the next startup; app.tsx surfaces that warning.
   const setModel = useCallback(
     (name: string, options: { persist?: boolean } = {}) => {
@@ -1334,8 +1339,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
       if (options.persist !== false) {
-        const result = persistSettingLocal(config.workspace, 'model', name);
+        const result = persistSettingGlobal('model', name);
         if (!result.ok) return result;
+        // Drop any stale per-project model override so this folder uses the
+        // global default we just wrote (local wins over global otherwise).
+        clearLocalSettings(config.workspace, ['model']);
       }
       setLiveConfig(next);
       return { ok: true };
@@ -1358,11 +1366,18 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
       const selection = `${providerId}/${request.activeModelId}`;
       const activate = request.activate !== false;
-      const result = persistSettingsLocal(config.workspace, {
+      const result = persistSettingsGlobal({
         [`provider.${providerId}`]: savedProvider,
         ...(activate ? { model: selection } : {}),
       });
       if (!result.ok) return result;
+      // Drop any stale per-project entries for this provider (and the active
+      // model when we just set it) so this folder inherits the global value
+      // instead of a local override shadowing it.
+      clearLocalSettings(config.workspace, [
+        `provider.${providerId}`,
+        ...(activate ? ['model'] : []),
+      ]);
 
       setLiveConfig((current) => {
         const withProvider: AgentConfig = {
@@ -1380,15 +1395,15 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           ? applyModelDefaults(resolveModelProviderConfig(withProvider, selection))
           : withProvider;
       });
-      const nextLocalProviderOwnership = {
-        ids: new Set(localProviderOwnershipRef.current.ids).add(providerId),
-        modelCounts: new Map(localProviderOwnershipRef.current.modelCounts).set(
+      const nextOwnedProviders = {
+        ids: new Set(ownedProvidersRef.current.ids).add(providerId),
+        modelCounts: new Map(ownedProvidersRef.current.modelCounts).set(
           providerId,
           Object.keys(savedProvider.models).length,
         ),
       };
-      localProviderOwnershipRef.current = nextLocalProviderOwnership;
-      setLocalProviderOwnership(nextLocalProviderOwnership);
+      ownedProvidersRef.current = nextOwnedProviders;
+      setOwnedProviders(nextOwnedProviders);
       return { ok: true };
     },
     [config.workspace],
@@ -1396,11 +1411,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
   const removeProvider = useCallback(
     (providerId: string): ProviderRemovalResult => {
-      if (!localProviderOwnershipRef.current.ids.has(providerId)) {
-        return { ok: false, error: 'Only workspace-local BYOK providers can be removed.' };
+      if (!ownedProvidersRef.current.ids.has(providerId)) {
+        return { ok: false, error: 'Only BYOK providers you added can be removed.' };
       }
 
-      const persisted = removeProviderLocal(config.workspace, providerId);
+      const persisted = removeProviderGlobal(providerId);
       if (!persisted.ok) return { ok: false, error: persisted.error };
 
       let resolvedSettings: ResolvedSettings;
@@ -1420,16 +1435,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
       liveConfigRef.current = resolvedRuntime.config;
       setLiveConfig(resolvedRuntime.config);
-      const nextLocalProviderIds = new Set(localProviderOwnershipRef.current.ids);
-      const nextLocalProviderModelCounts = new Map(localProviderOwnershipRef.current.modelCounts);
-      nextLocalProviderIds.delete(providerId);
-      nextLocalProviderModelCounts.delete(providerId);
-      const nextLocalProviderOwnership = {
-        ids: nextLocalProviderIds,
-        modelCounts: nextLocalProviderModelCounts,
+      const nextOwnedProviderIds = new Set(ownedProvidersRef.current.ids);
+      const nextOwnedProviderModelCounts = new Map(ownedProvidersRef.current.modelCounts);
+      nextOwnedProviderIds.delete(providerId);
+      nextOwnedProviderModelCounts.delete(providerId);
+      const nextOwnedProviders = {
+        ids: nextOwnedProviderIds,
+        modelCounts: nextOwnedProviderModelCounts,
       };
-      localProviderOwnershipRef.current = nextLocalProviderOwnership;
-      setLocalProviderOwnership(nextLocalProviderOwnership);
+      ownedProvidersRef.current = nextOwnedProviders;
+      setOwnedProviders(nextOwnedProviders);
 
       return {
         ok: true,
@@ -1521,8 +1536,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     retryCountdownMs,
     liveConfig,
     runtime: agentSession.getRuntime(),
-    localProviderIds: localProviderOwnership.ids,
-    localProviderModelCounts: localProviderOwnership.modelCounts,
+    removableProviderIds: ownedProviders.ids,
+    removableProviderModelCounts: ownedProviders.modelCounts,
     sessionId,
     sessionName,
     send,

@@ -384,7 +384,9 @@ export function ByokWizard({
           <Field
             label="API key"
             hint={
-              showOptionalHelp ? 'Stored in .book/settings.local.json (gitignored).' : undefined
+              showOptionalHelp
+                ? 'Stored in ~/.book/settings.json (shared across all your projects).'
+                : undefined
             }
             value={apiKey}
             onChange={setApiKey}
@@ -461,7 +463,7 @@ export function ByokWizard({
               value={type === 'openai' ? 'OpenAI-compatible' : 'Anthropic'}
             />
             <Summary label="Base URL" value={baseURL} />
-            <Summary label="API key" value="•••••••• (stored locally)" />
+            <Summary label="API key" value="•••••••• (stored in ~/.book)" />
             <Summary label="Models" value={`${selectedIds.length} selected`} />
             <Summary label="Active" value={activeModelId} />
             {label && <Summary label="Label" value={label} />}

@@ -1,12 +1,16 @@
 /**
- * Persist settings to the project-local layer (.book/settings.local.json).
+ * Persist settings from inside the Ink TUI without killing the app.
  *
- * Mirrors the write path of cli/config-cmd.ts but is safe to call from inside
- * the Ink TUI: it returns {ok, error?} instead of calling console.log /
- * process.exit() (which would kill the app). Settings are layered user →
- * project → local; we write to the local (highest-priority, gitignored) layer.
+ * Mirrors the write path of cli/config-cmd.ts but returns {ok, error?} instead
+ * of calling console.log / process.exit(). Settings are layered user (global) →
+ * project → local. Two write targets are exposed:
+ *  - `*Local`  → <workspace>/.book/settings.local.json (per-project, gitignored)
+ *  - `*Global` → ~/.book/settings.json (shared across every project)
+ * Provider registries, API keys, and the active model are persisted globally so
+ * they follow the user across folders rather than being re-entered per project.
  */
 import { existsSync } from 'fs';
+import { homedir } from 'os';
 import { join } from 'path';
 import {
   formatSettingsDiagnostics,
@@ -16,6 +20,21 @@ import {
 
 const LOCAL_DIR = '.book';
 const LOCAL_FILE = 'settings.local.json';
+const GLOBAL_FILE = 'settings.json';
+
+/** Absolute path to the per-project local settings file. */
+function localSettingsPath(workspace: string): string {
+  return join(workspace, LOCAL_DIR, LOCAL_FILE);
+}
+
+/** Absolute path to the user-global settings file (~/.book/settings.json). */
+function globalSettingsPath(): string {
+  return join(homedir(), LOCAL_DIR, GLOBAL_FILE);
+}
+
+/** Human-readable labels used in provider-removal diagnostics. */
+const LOCAL_LABEL = `${LOCAL_DIR}/${LOCAL_FILE}`;
+const GLOBAL_LABEL = `~/${LOCAL_DIR}/${GLOBAL_FILE}`;
 
 export type RemoveLocalProviderResult =
   | {
@@ -34,28 +53,52 @@ export type RemoveLocalProviderResult =
       error: string;
     };
 
-/** Read the local settings.local.json as a plain object ({} if absent/invalid). */
-export function readSettingsLocal(workspace: string): Record<string, unknown> {
-  const localPath = join(workspace, LOCAL_DIR, LOCAL_FILE);
-  const result = readSettingsDocument(localPath);
+/** Read a settings document at `path` as a plain object ({} if absent/invalid). */
+function readSettingsAt(path: string): Record<string, unknown> {
+  const result = readSettingsDocument(path);
   return result.status === 'valid' ? result.document : {};
 }
 
+/** Read the project-local settings.local.json as a plain object. */
+export function readSettingsLocal(workspace: string): Record<string, unknown> {
+  return readSettingsAt(localSettingsPath(workspace));
+}
+
+/** Read the user-global ~/.book/settings.json as a plain object. */
+export function readSettingsGlobal(): Record<string, unknown> {
+  return readSettingsAt(globalSettingsPath());
+}
+
 /**
- * Set a single dot-path key in the local settings layer and persist it.
+ * Set one or more dot-path keys in the settings file at `path` and persist it.
  * Returns {ok:false, error} on a filesystem or write failure (never throws).
- * `value` is stored verbatim (string) — number/bool/object callers should
- * pre-serialize, but a non-string is also stored as-is.
+ * Values are stored verbatim — number/bool/object callers should pre-serialize,
+ * but a non-string is also stored as-is.
  */
+function persistSettingsAt(
+  path: string,
+  values: Record<string, unknown>,
+): { ok: boolean; error?: string } {
+  const result = new SettingsRepository(path).set(values);
+  return result.ok
+    ? { ok: true }
+    : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+}
+
+/** Persist keys to the project-local layer (.book/settings.local.json). */
 export function persistSettingsLocal(
   workspace: string,
   values: Record<string, unknown>,
 ): { ok: boolean; error?: string } {
-  const localPath = join(workspace, LOCAL_DIR, LOCAL_FILE);
-  const result = new SettingsRepository(localPath).set(values);
-  return result.ok
-    ? { ok: true }
-    : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+  return persistSettingsAt(localSettingsPath(workspace), values);
+}
+
+/** Persist keys to the user-global layer (~/.book/settings.json). */
+export function persistSettingsGlobal(values: Record<string, unknown>): {
+  ok: boolean;
+  error?: string;
+} {
+  return persistSettingsAt(globalSettingsPath(), values);
 }
 
 export function persistSettingLocal(
@@ -66,23 +109,46 @@ export function persistSettingLocal(
   return persistSettingsLocal(workspace, { [key]: value });
 }
 
-/** Remove one workspace-local provider and any local default that targets it. */
-export function removeProviderLocal(
+export function persistSettingGlobal(key: string, value: unknown): { ok: boolean; error?: string } {
+  return persistSettingsGlobal({ [key]: value });
+}
+
+/**
+ * Remove dot-path keys from the project-local layer if present. Used after a
+ * value has been written to the global layer to clear a stale per-project
+ * override that would otherwise shadow the new global value (local wins for
+ * scalars during resolution). A no-op when the local file is absent; never
+ * throws. Empty parent objects (e.g. an emptied provider registry) are pruned.
+ */
+export function clearLocalSettings(
   workspace: string,
+  paths: string[],
+): { ok: boolean; error?: string } {
+  const path = localSettingsPath(workspace);
+  if (!existsSync(path)) return { ok: true };
+  const result = new SettingsRepository(path).remove(paths);
+  return result.ok
+    ? { ok: true }
+    : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+}
+
+/** Remove one provider from the settings file at `path` and any default targeting it. */
+function removeProviderAt(
+  path: string,
+  label: string,
   providerId: string,
 ): RemoveLocalProviderResult {
-  const localPath = join(workspace, LOCAL_DIR, LOCAL_FILE);
-  if (!existsSync(localPath)) {
+  if (!existsSync(path)) {
     return {
       ok: false,
       providerId,
       removedModelCount: 0,
       localDefaultCleared: false,
       localProviderExisted: false,
-      error: `Provider "${providerId}" is not configured in ${LOCAL_DIR}/${LOCAL_FILE}.`,
+      error: `Provider "${providerId}" is not configured in ${label}.`,
     };
   }
-  const source = readSettingsDocument(localPath);
+  const source = readSettingsDocument(path);
   if (source.status !== 'valid') {
     return {
       ok: false,
@@ -90,7 +156,7 @@ export function removeProviderLocal(
       removedModelCount: 0,
       localDefaultCleared: false,
       localProviderExisted: false,
-      error: source.status === 'absent' ? 'Local settings are absent.' : source.error,
+      error: source.status === 'absent' ? `${label} settings are absent.` : source.error,
     };
   }
   const existing = source.document;
@@ -108,7 +174,7 @@ export function removeProviderLocal(
       removedModelCount: 0,
       localDefaultCleared: false,
       localProviderExisted: false,
-      error: `Provider "${providerId}" is not configured in ${LOCAL_DIR}/${LOCAL_FILE}.`,
+      error: `Provider "${providerId}" is not configured in ${label}.`,
     };
   }
 
@@ -124,7 +190,7 @@ export function removeProviderLocal(
   const localDefaultCleared =
     typeof existing.model === 'string' && existing.model.startsWith(`${providerId}/`);
 
-  const result = new SettingsRepository(localPath).update((candidate) => {
+  const result = new SettingsRepository(path).update((candidate) => {
     const candidateProviders = candidate.provider as Record<string, unknown>;
     delete candidateProviders[providerId];
     if (Object.keys(candidateProviders).length === 0) delete candidate.provider;
@@ -147,6 +213,19 @@ export function removeProviderLocal(
     localProviderExisted: true,
     error: formatSettingsDiagnostics(result.diagnostics),
   };
+}
+
+/** Remove one workspace-local provider and any local default that targets it. */
+export function removeProviderLocal(
+  workspace: string,
+  providerId: string,
+): RemoveLocalProviderResult {
+  return removeProviderAt(localSettingsPath(workspace), LOCAL_LABEL, providerId);
+}
+
+/** Remove one user-global provider and any global default that targets it. */
+export function removeProviderGlobal(providerId: string): RemoveLocalProviderResult {
+  return removeProviderAt(globalSettingsPath(), GLOBAL_LABEL, providerId);
 }
 
 /**
