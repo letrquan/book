@@ -63,6 +63,11 @@ interface InputBarProps {
   onDraftChange?: (value: string) => void;
   /** Moves focus from an empty prompt to the first background task when available. */
   onFocusBackgroundTask?: () => boolean;
+  /**
+   * Cycles focus through main + spawned agents on Tab from an empty prompt.
+   * Returns false when there are no agents so Tab falls back to its default.
+   */
+  onCycleAgentFocus?: () => boolean;
   /** Forward unrecognized global keyboard shortcuts to the parent App. */
   onGlobalShortcut?: (
     input: string,
@@ -153,6 +158,7 @@ export function InputBar({
   editingQueuedInput = false,
   onDraftChange,
   onFocusBackgroundTask,
+  onCycleAgentFocus,
   onGlobalShortcut,
   inputSuppressed = false,
   commands = [],
@@ -390,8 +396,14 @@ export function InputBar({
     }
 
     // ---- Normal mode (no menu) ----
-    // Tab to accept suggestion when input is empty
+    // Tab from an empty prompt cycles focus through main + spawned agents
+    // (Claude-Code-style flat switching). Falls back to accepting the
+    // placeholder suggestion when there are no agents to cycle.
     if (key.tab && !value) {
+      if (onCycleAgentFocus?.()) {
+        uiLog.event('input:Tab', { action: 'cycle-agent-focus' });
+        return;
+      }
       setValue(normalizeInput(suggestion));
       uiLog.event('input:Tab', { action: 'accept-suggestion' });
       return;

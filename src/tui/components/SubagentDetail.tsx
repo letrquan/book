@@ -19,6 +19,9 @@ export function SubagentDetail({
   screenReader?: boolean;
 }) {
   const theme = useTheme();
+  const terminal = ['completed', 'failed', 'stopped', 'interrupted'].includes(record.status);
+  const hasTranscript = record.transcript.length > 0;
+  const streaming = Boolean(liveText) && !terminal;
   return (
     <Box flexDirection="column" width={width}>
       <Box flexDirection="column" paddingX={1} marginBottom={1}>
@@ -33,9 +36,15 @@ export function SubagentDetail({
           <Text color={theme.subtle}>Evidence: {record.referencedEvidenceIds.join(', ')}</Text>
         ) : null}
         <Text color={theme.subtle}>
-          Type a follow-up to resume this child · ↓ then Enter main · Esc main · /tasks list
+          Type a follow-up to resume this child · Tab switch · Esc main · /tasks list
         </Text>
       </Box>
+      {/*
+        ChatPanel renders nothing for an empty managed transcript, so the
+        placeholder / live stream below owns the empty state. Ordering: live
+        stream while the child is producing output, then a status placeholder
+        only when there is no transcript yet.
+      */}
       <ChatPanel
         messages={record.transcript}
         terminalWidth={width}
@@ -45,9 +54,15 @@ export function SubagentDetail({
         model={record.resolvedModel}
         mode="managed"
       />
-      {liveText && !['completed', 'failed', 'stopped', 'interrupted'].includes(record.status) ? (
+      {streaming ? (
         <Box paddingX={1}>
-          <Text color={theme.subtle}>{liveText.slice(-1000)}</Text>
+          <Text color={theme.subtle}>{liveText!.slice(-1000)}</Text>
+        </Box>
+      ) : !hasTranscript ? (
+        <Box paddingX={1}>
+          <Text color={theme.subtle}>
+            {terminal ? 'No transcript recorded.' : 'Waiting for the subagent to produce output…'}
+          </Text>
         </Box>
       ) : null}
     </Box>

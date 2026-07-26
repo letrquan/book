@@ -74,6 +74,34 @@ describe('SubagentPanel', () => {
     await vi.waitFor(() => expect(onCancel).toHaveBeenCalled());
   });
 
+  it('advances selection with Tab in the active panel', async () => {
+    const onSelect = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <SubagentPanel agents={[agent]} width={80} reducedMotion isActive onSelect={onSelect} />
+      </ThemeContext.Provider>,
+    );
+
+    view.stdin.write('\t');
+    await vi.waitFor(() => expect(onSelect).toHaveBeenLastCalledWith('a1'));
+  });
+
+  it('keeps the focused agent visible when the list overflows the window', () => {
+    const many: AgentSummary[] = Array.from({ length: 8 }, (_, index) => ({
+      ...agent,
+      agentId: `a${index}`,
+      displayName: `Agent number ${index}`,
+      updatedAt: Date.now() - index,
+    }));
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <SubagentPanel agents={many} width={100} reducedMotion selectedAgentId="a7" />
+      </ThemeContext.Provider>,
+    );
+    const output = view.lastFrame() ?? '';
+    expect(output).toContain('Agent number 7');
+  });
+
   it('keeps the purpose visible in tiny mode', () => {
     const view = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>

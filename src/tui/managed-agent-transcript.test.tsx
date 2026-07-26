@@ -204,6 +204,6 @@ describe('managed agent transcript projection', () => {
 
     expect(output).toContain('Subagent explorer, Trace authentication');
     expect(output).toContain('3 earlier tool uses hidden');
-    expect(output).toContain('Down then Enter');
+    expect(output).toContain('Press Tab to open');
   });
 });

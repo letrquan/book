@@ -48,7 +48,7 @@ All notable changes to this project are documented in this file.
 - Session discovery now uses an atomic metadata index with linear JSONL replay and shared search/read indexes; rewind snapshots cache unchanged files, deduplicate manifest entry sets, and exclude workspace-local `.book/` state by default.
 - Static prompt discovery, tool schema estimates, Git context, and streaming transcript projection are cached or incrementally updated, with adaptive flushing and a bounded streaming transcript window.
 - Legacy permission migration runs during explicit startup, records a migration marker, skips identical settings writes, and serializes cross-process settings mutations.
-- Replaced the separate Agent Center and profile tab with Claude Code's in-session task workflow: `main` and child rows below the prompt, empty-prompt Down then Enter to open a child transcript, `/tasks` for explicit management, `x` to stop or dismiss, and Esc to return.
+- Replaced the separate Agent Center and profile tab with Claude Code's in-session task workflow: a flat `main`-plus-children panel below the prompt, empty-prompt Tab to cycle focus straight into each child's transcript (wrapping back to `main`), `/tasks` for explicit management, `x` to stop or dismiss, and Esc to return.
 - New sessions receive a short title from their first prompt, and the TUI shows session names instead of internal UUIDs.
 - Provider visibility, system-prompt tool summaries, command/skill capabilities, role restrictions, permission modes, runtime availability, and execution now share one resolved tool surface.
 - Tool schemas are closed and centrally validated; model-visible sandbox bypass, backend selection, and generic timeout controls moved back to host configuration.
@@ -65,6 +65,7 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Show a lightweight placeholder (or the live stream) instead of the main welcome screen when opening a child transcript that has not produced output yet.
 - Queue concurrent permission requests instead of superseding earlier prompts, propagate
   cancellation into foreground shell processes, and give aborted tools a bounded cooperative
   teardown window before releasing their execution slot.

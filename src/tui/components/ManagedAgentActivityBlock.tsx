@@ -88,7 +88,7 @@ export function ManagedAgentActivityBlock({
           );
         })}
         {hiddenCount > 0 ? <Text>{hiddenCount} earlier tool uses hidden.</Text> : null}
-        <Text>Use Down then Enter to open the complete subagent transcript.</Text>
+        <Text>Press Tab to open the complete subagent transcript.</Text>
       </Box>
     );
   }
@@ -158,9 +158,7 @@ export function ManagedAgentActivityBlock({
       ) : null}
       <Text color={theme.subtle} dimColor>
         {'  '}
-        {terminal
-          ? 'Transcript retained · ↓ then Enter to open'
-          : 'Running in background · ↓ then Enter to open'}
+        {terminal ? 'Transcript retained · Tab to open' : 'Running in background · Tab to open'}
       </Text>
     </Box>
   );
