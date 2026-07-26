@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
 
 jobs:
   check:
@@ -72,3 +78,26 @@ jobs:
       - run: npm run test:coverage
 
       - run: npm run bench:ui
+
+  stability-policy:
+    name: Stability policy
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run stabilization:check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STABILIZATION_REQUIRED_GREEN_RUNS: '3'
+          STABILIZATION_WORKFLOW: ci.yml
+          STABILIZATION_BRANCH: main
+          STABILIZATION_REGRESSION_LABELS: regression:lifecycle,regression:accounting

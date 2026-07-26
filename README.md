@@ -337,6 +337,9 @@ npm run format:check
 npm run bench:ui     # TUI micro-benchmarks
 ```
 
+Main-branch runtime work also follows the [stabilization gate](docs/stabilization.md): three
+consecutive green full CI runs and no open lifecycle or accounting regression issues.
+
 ## License
 
 MIT

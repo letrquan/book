@@ -1,0 +1,43 @@
+name: Stabilization
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+
+concurrency:
+  group: stabilization-main
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Stabilization gate
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run stabilization:check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STABILIZATION_REQUIRED_GREEN_RUNS: '3'
+          STABILIZATION_WORKFLOW: ci.yml
+          STABILIZATION_BRANCH: main
+          STABILIZATION_REGRESSION_LABELS: regression:lifecycle,regression:accounting
