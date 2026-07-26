@@ -177,6 +177,19 @@ export const toolExecutionSettingsSchema = z.object({
 
 export type ToolExecutionSettings = z.infer<typeof toolExecutionSettingsSchema>;
 
+export const observabilitySettingsSchema = z.object({
+  /** Persist a per-tool-call JSONL record for `book tool-stats`. */
+  toolTelemetry: z.boolean().default(true),
+  /**
+   * Default reporting window (in days) for `book tool-stats` and the target for
+   * `book tool-stats --prune`. Disk use is bounded by size-based log rotation;
+   * records are only deleted when they rotate out or are explicitly pruned.
+   */
+  toolTelemetryRetentionDays: z.number().int().min(1).max(3650).default(30),
+});
+
+export type ObservabilitySettings = z.infer<typeof observabilitySettingsSchema>;
+
 export type ProviderModelConfig = z.infer<typeof providerModelSchema>;
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;
 
@@ -208,6 +221,7 @@ export const bookSettingsSchema = z.object({
   agents: agentSettingsSchema.default({}),
   toolDiscovery: toolDiscoverySettingsSchema.default({}),
   toolExecution: toolExecutionSettingsSchema.default({}),
+  observability: observabilitySettingsSchema.default({}),
 });
 
 export type BookSettings = z.infer<typeof bookSettingsSchema>;
@@ -308,5 +322,9 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   },
   toolExecution: {
     maxConcurrent: 4,
+  },
+  observability: {
+    toolTelemetry: true,
+    toolTelemetryRetentionDays: 30,
   },
 };

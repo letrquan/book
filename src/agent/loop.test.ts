@@ -9,6 +9,7 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
 import { askUserQuestionTools } from '../tools/ask-user-question.js';
 import { toolSuccess } from '../tools/result.js';
+import { readToolUseRecords } from '../tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import type { Provider } from '../provider/index.js';
 import type { CompactResult } from '../types/sessions.js';
@@ -1973,5 +1974,107 @@ describe('runAgentLoop tool-call statistics', () => {
     expect(echo?.calls).toBe(2);
     expect(echo?.failures.invalid_arguments).toBe(1);
     runtime.dispose();
+  });
+
+  it('persists a tool-use telemetry record per call with final-status failure semantics', async () => {
+    const telemetryRoot = mkdtempSync(join(tmpdir(), 'book-loop-tel-'));
+    try {
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          yield {
+            type: 'tool_call' as const,
+            toolCall: { id: 'tel-1', name: 'Echo', arguments: { value: 'ok' } },
+          };
+          yield {
+            type: 'tool_call' as const,
+            toolCall: { id: 'tel-2', name: 'Echo', arguments: { unexpected: true } },
+          };
+          yield { type: 'done' as const };
+        },
+      };
+      const registry = createRegistry();
+      registry.register({
+        name: 'Echo',
+        description: 'Return the provided value',
+        parameters: {
+          type: 'object',
+          properties: { value: { type: 'string' } },
+          required: ['value'],
+        },
+        execute: async (args) => toolSuccess(String(args.value ?? '')),
+      });
+      const runtime = new SessionRuntime();
+
+      await runAgentLoop(
+        defaultConfig({ maxTurns: 1, model: 'test-model' }),
+        registry,
+        'hello',
+        [],
+        noopCallbacks(),
+        'default',
+        { provider, isNewSession: false, runtime, toolTelemetryRoot: telemetryRoot },
+      );
+
+      // Telemetry is written fire-and-forget; poll until the append settles.
+      let records = await readToolUseRecords(telemetryRoot);
+      for (let attempt = 0; attempt < 40 && records.length < 2; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        records = await readToolUseRecords(telemetryRoot);
+      }
+      expect(records).toHaveLength(2);
+      expect(records.every((r) => r.tool === 'Echo' && r.session === runtime.traceId)).toBe(true);
+      expect(records.every((r) => r.model === 'test-model')).toBe(true);
+      const ok = records.find((r) => r.status === 'success');
+      const failed = records.find((r) => r.isFailure);
+      expect(ok?.isFailure).toBe(false);
+      expect(failed?.status).toBe('error');
+      expect(failed?.errorCode).toBe('invalid_arguments');
+      runtime.dispose();
+    } finally {
+      rmSync(telemetryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not persist telemetry when observability.toolTelemetry is disabled', async () => {
+    const telemetryRoot = mkdtempSync(join(tmpdir(), 'book-loop-tel-off-'));
+    try {
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          yield {
+            type: 'tool_call' as const,
+            toolCall: { id: 'off-1', name: 'Echo', arguments: { value: 'ok' } },
+          };
+          yield { type: 'done' as const };
+        },
+      };
+      const registry = createRegistry();
+      registry.register({
+        name: 'Echo',
+        description: 'Return the provided value',
+        parameters: {
+          type: 'object',
+          properties: { value: { type: 'string' } },
+          required: ['value'],
+        },
+        execute: async (args) => toolSuccess(String(args.value ?? '')),
+      });
+      const config = defaultConfig({ maxTurns: 1 });
+      config.settings.observability.toolTelemetry = false;
+      const runtime = new SessionRuntime();
+
+      await runAgentLoop(config, registry, 'hello', [], noopCallbacks(), 'default', {
+        provider,
+        isNewSession: false,
+        runtime,
+        toolTelemetryRoot: telemetryRoot,
+      });
+
+      expect(await readToolUseRecords(telemetryRoot)).toEqual([]);
+      runtime.dispose();
+    } finally {
+      rmSync(telemetryRoot, { recursive: true, force: true });
+    }
   });
 });
