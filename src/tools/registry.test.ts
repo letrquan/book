@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createDefaultRegistry, createRegistry } from './registry.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
+import { SessionRuntime } from '../session/runtime.js';
 import type { ToolContext } from '../types/tools.js';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -123,11 +124,12 @@ describe('tool argument validation', () => {
     ).resolves.toMatchObject({ status: 'error' });
   });
 
-  it('normalizes supported argument aliases before closed-schema validation', async () => {
+  it('normalizes definition-declared argument aliases before closed-schema validation', async () => {
     const registry = createRegistry();
     registry.register({
       name: 'TaskGet',
       description: 'Read a task',
+      argumentAliases: { task_id: 'taskId' },
       parameters: {
         type: 'object',
         properties: { taskId: { type: 'string' } },
@@ -138,6 +140,7 @@ describe('tool argument validation', () => {
     registry.register({
       name: 'Bash',
       description: 'Run a command',
+      argumentAliases: { runInBackground: 'run_in_background' },
       parameters: {
         type: 'object',
         properties: {
@@ -151,6 +154,7 @@ describe('tool argument validation', () => {
     registry.register({
       name: 'BashOutput',
       description: 'Read shell output',
+      argumentAliases: { shellId: 'shell_id' },
       parameters: {
         type: 'object',
         properties: { shell_id: { type: 'string' } },
@@ -182,6 +186,149 @@ describe('tool argument validation', () => {
       data: { command: 'echo ok', run_in_background: true },
     });
     expect(output).toMatchObject({ status: 'success', data: { shell_id: 'shell_1' } });
+  });
+});
+
+describe('cross-harness argument compatibility', () => {
+  it('accepts Claude Code-style snake_case arguments for Edit', async () => {
+    const r = createDefaultRegistry();
+    writeFileSync(join(dir, 'a.txt'), 'foo bar baz');
+    const result = await r.execute(
+      {
+        id: 'c1',
+        name: 'Edit',
+        arguments: { file_path: 'a.txt', old_string: 'bar', new_string: 'qux' },
+      },
+      ctx,
+    );
+    expect(result.status).toBe('success');
+    expect(readFileSync(join(dir, 'a.txt'), 'utf-8')).toBe('foo qux baz');
+  });
+
+  it('normalizes nested MultiEdit edits[] items', async () => {
+    const r = createDefaultRegistry();
+    writeFileSync(join(dir, 'a.txt'), 'one two three');
+    const result = await r.execute(
+      {
+        id: 'c1',
+        name: 'MultiEdit',
+        arguments: {
+          file_path: 'a.txt',
+          edits: [
+            { old_string: 'one', new_string: '1' },
+            { old_string: 'three', new_string: '3', replace_all: true },
+          ],
+        },
+      },
+      ctx,
+    );
+    expect(result.status).toBe('success');
+    expect(readFileSync(join(dir, 'a.txt'), 'utf-8')).toBe('1 two 3');
+  });
+
+  it('prefers canonical keys when both spellings are present', async () => {
+    const r = createDefaultRegistry();
+    writeFileSync(join(dir, 'a.txt'), 'foo bar');
+    const result = await r.execute(
+      {
+        id: 'c1',
+        name: 'Edit',
+        arguments: {
+          filePath: 'a.txt',
+          file_path: 'ignored.txt',
+          oldString: 'bar',
+          old_string: 'ignored',
+          newString: 'baz',
+          new_string: 'ignored',
+        },
+      },
+      ctx,
+    );
+    expect(result.status).toBe('success');
+    expect(readFileSync(join(dir, 'a.txt'), 'utf-8')).toBe('foo baz');
+  });
+
+  it('accepts Read file_path and path spellings', async () => {
+    const r = createDefaultRegistry();
+    writeFileSync(join(dir, 'a.txt'), 'hello');
+    await expect(
+      r.execute({ id: 'c1', name: 'Read', arguments: { file_path: 'a.txt' } }, ctx),
+    ).resolves.toMatchObject({ status: 'success' });
+    await expect(
+      r.execute({ id: 'c2', name: 'Read', arguments: { path: 'a.txt' } }, ctx),
+    ).resolves.toMatchObject({ status: 'success' });
+  });
+
+  it('lists allowed arguments on invalid_arguments failures', async () => {
+    const r = createDefaultRegistry();
+    const result = await r.execute(
+      { id: 'c1', name: 'Grep', arguments: { pattern: 'x', nonsense: true } },
+      ctx,
+    );
+    expect(result.structuredError?.code).toBe('invalid_arguments');
+    expect(result.structuredError?.message).toMatch(/Allowed arguments: .*pattern/);
+  });
+});
+
+describe('repeated identical failure escalation', () => {
+  it('escalates remediation when an identical call fails twice', async () => {
+    const registry = createRegistry();
+    registry.register({
+      name: 'Flaky',
+      description: 'always fails',
+      parameters: { type: 'object', properties: { a: { type: 'string' } } },
+      execute: async () => toolFailure('boom', { code: 'tool_error' }),
+    });
+    const runtime = new SessionRuntime();
+    const context: ToolContext = { workspaceRoot: dir, env: {}, runtime };
+
+    const first = await registry.execute(
+      { id: 'c1', name: 'Flaky', arguments: { a: 'x' } },
+      context,
+    );
+    const second = await registry.execute(
+      { id: 'c2', name: 'Flaky', arguments: { a: 'x' } },
+      context,
+    );
+    const different = await registry.execute(
+      { id: 'c3', name: 'Flaky', arguments: { a: 'y' } },
+      context,
+    );
+
+    expect(first.structuredError?.remediation).toBeUndefined();
+    expect(second.structuredError?.remediation).toMatch(/already failed 1 time/);
+    expect(different.structuredError?.remediation).toBeUndefined();
+    runtime.dispose();
+  });
+
+  it('escalates repeated invalid_arguments rejections while preserving the original remediation', async () => {
+    const runtime = new SessionRuntime();
+    const context: ToolContext = { workspaceRoot: dir, env: {}, runtime };
+    const r = createDefaultRegistry();
+    const args = { pattern: 'x', nonsense: true };
+    await r.execute({ id: 'c1', name: 'Grep', arguments: args }, context);
+    const second = await r.execute({ id: 'c2', name: 'Grep', arguments: args }, context);
+    expect(second.structuredError?.remediation).toMatch(/Do not retry it unchanged/);
+    expect(second.structuredError?.remediation).toMatch(/Correct only this failed call/);
+    runtime.dispose();
+  });
+
+  it('does not escalate retryable transient failures', async () => {
+    const registry = createRegistry();
+    registry.register({
+      name: 'Transient',
+      description: 'always fails retryably',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => toolFailure('temporary outage', { code: 'tool_error', retryable: true }),
+    });
+    const runtime = new SessionRuntime();
+    const context: ToolContext = { workspaceRoot: dir, env: {}, runtime };
+
+    await registry.execute({ id: 'r1', name: 'Transient', arguments: {} }, context);
+    const second = await registry.execute({ id: 'r2', name: 'Transient', arguments: {} }, context);
+
+    expect(second.structuredError?.remediation).toBeUndefined();
+    runtime.dispose();
   });
 });
 

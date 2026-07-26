@@ -31,6 +31,9 @@ const multiEditTool = fileTools.find((t) => t.name === 'MultiEdit')!;
 const glob = fileTools.find((t) => t.name === 'Glob')!;
 const grep = fileTools.find((t) => t.name === 'Grep')!;
 
+/** Mutations require a prior observation; tests Read once to satisfy the contract. */
+const observeFirst = (name: string) => read.execute({ filePath: name }, ctx);
+
 describe('read_file', () => {
   it('reads a file by workspace-relative path', async () => {
     writeFileSync(join(dir, 'a.txt'), 'hello');
@@ -149,6 +152,7 @@ describe('write_file', () => {
 
   it('returns update metadata for existing files', async () => {
     writeFileSync(join(dir, 'a.txt'), 'old\nkeep');
+    await observeFirst('a.txt');
     const r = await write.execute({ filePath: 'a.txt', content: 'new\nkeep\nextra' }, ctx);
 
     expect(r.status).toBe('success');
@@ -163,6 +167,7 @@ describe('write_file', () => {
   it('normalizes CRLF replacement content before preserving CRLF', async () => {
     const path = join(dir, 'windows.txt');
     writeFileSync(path, 'old\r\ncontent\r\n');
+    await observeFirst('windows.txt');
 
     const result = await write.execute(
       { filePath: 'windows.txt', content: 'new\r\ncontent\r\n' },
@@ -180,6 +185,7 @@ describe('write_file', () => {
       const link = join(dir, 'link.txt');
       writeFileSync(target, 'old\n');
       symlinkSync(target, link, 'file');
+      await observeFirst('link.txt');
 
       const result = await write.execute({ filePath: 'link.txt', content: 'new\n' }, ctx);
 
@@ -194,6 +200,7 @@ describe('write_file', () => {
     const before = Array.from({ length: 500 }, (_, index) => `old ${index}`).join('\n');
     const after = Array.from({ length: 500 }, (_, index) => `new ${index}`).join('\n');
     writeFileSync(path, before);
+    await observeFirst('large.txt');
     const controller = new AbortController();
     const pending = write.execute(
       { filePath: 'large.txt', content: after },
@@ -224,6 +231,7 @@ describe('edit_file', () => {
       const link = join(dir, 'link.txt');
       writeFileSync(target, 'old value\n');
       symlinkSync(target, link, 'file');
+      await observeFirst('link.txt');
 
       const result = await edit.execute(
         { filePath: 'link.txt', oldString: 'old', newString: 'new' },
@@ -239,6 +247,7 @@ describe('edit_file', () => {
   it('matches LF model text against CRLF files and preserves CRLF', async () => {
     const path = join(dir, 'windows.txt');
     writeFileSync(path, 'one\r\ntwo\r\nthree\r\n');
+    await observeFirst('windows.txt');
     const result = await edit.execute(
       { filePath: 'windows.txt', oldString: 'one\ntwo', newString: 'one\nchanged' },
       ctx,
@@ -250,6 +259,7 @@ describe('edit_file', () => {
   it('preserves a UTF-8 BOM when editing CRLF text', async () => {
     const path = join(dir, 'bom.txt');
     writeFileSync(path, Buffer.from('\ufeffalpha\r\nbeta\r\n', 'utf8'));
+    await observeFirst('bom.txt');
     const result = await edit.execute(
       { filePath: 'bom.txt', oldString: 'alpha\nbeta', newString: 'alpha\ngamma' },
       ctx,
@@ -282,6 +292,7 @@ describe('edit_file', () => {
   });
   it('replaces the single occurrence when oldString is unique', async () => {
     writeFileSync(join(dir, 'a.txt'), 'foo bar baz');
+    await observeFirst('a.txt');
     const r = await edit.execute({ filePath: 'a.txt', oldString: 'bar', newString: 'qux' }, ctx);
     expect(r.status).toBe('success');
     expect(r.artifacts?.fileMutation).toEqual({
@@ -296,14 +307,112 @@ describe('edit_file', () => {
 
   it('fails when oldString is absent', async () => {
     writeFileSync(join(dir, 'a.txt'), 'hello');
+    await observeFirst('a.txt');
     const r = await edit.execute({ filePath: 'a.txt', oldString: 'nope', newString: 'x' }, ctx);
     expect(r.status).toBe('error');
     expect(r.structuredError?.message).toMatch(/not found/);
     expect(r.artifacts?.fileMutation).toBeUndefined();
   });
 
+  it('recovers when the file has trailing whitespace inside a multi-line target', async () => {
+    writeFileSync(join(dir, 'a.ts'), 'alpha();  \nbeta();\ngamma();');
+    await observeFirst('a.ts');
+    const r = await edit.execute(
+      { filePath: 'a.ts', oldString: 'alpha();\nbeta();', newString: 'merged();' },
+      ctx,
+    );
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('whitespace tolerance (trailing-whitespace)');
+    expect(readFileSync(join(dir, 'a.ts'), 'utf-8')).toBe('merged();\ngamma();');
+  });
+
+  it('recovers from a uniform indentation mismatch and re-indents newString', async () => {
+    writeFileSync(join(dir, 'a.ts'), 'block {\n    inner();\n}');
+    await observeFirst('a.ts');
+    const r = await edit.execute(
+      { filePath: 'a.ts', oldString: '        inner();', newString: '        changed();' },
+      ctx,
+    );
+    expect(r.status).toBe('success');
+    expect(r.content).toContain('whitespace tolerance (indent-shift)');
+    expect(readFileSync(join(dir, 'a.ts'), 'utf-8')).toBe('block {\n    changed();\n}');
+  });
+
+  it('fails as ambiguous when relaxation matches multiple sites', async () => {
+    writeFileSync(join(dir, 'a.ts'), '  same();\n  same();');
+    await observeFirst('a.ts');
+    const r = await edit.execute(
+      { filePath: 'a.ts', oldString: 'same();\t', newString: 'other();' },
+      ctx,
+    );
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.code).toBe('ambiguous_text_match');
+    expect(r.structuredError?.message).toMatch(/whitespace-tolerant/);
+  });
+
+  it('does not relax matching for replaceAll edits', async () => {
+    writeFileSync(join(dir, 'a.ts'), '  same();\n  same();');
+    await observeFirst('a.ts');
+    const r = await edit.execute(
+      { filePath: 'a.ts', oldString: 'same();\t', newString: 'other();', replaceAll: true },
+      ctx,
+    );
+    expect(r.status).toBe('error');
+    expect(r.structuredError?.code).toBe('text_not_found');
+  });
+
+  it('inserts $-containing newString literally on the exact path', async () => {
+    writeFileSync(join(dir, 'dollar.sh'), 'echo home\nnext line');
+    await observeFirst('dollar.sh');
+    const r = await edit.execute(
+      { filePath: 'dollar.sh', oldString: 'echo home', newString: 'echo "$$HOME" and $& and $`' },
+      ctx,
+    );
+    expect(r.status).toBe('success');
+    expect(readFileSync(join(dir, 'dollar.sh'), 'utf-8')).toBe(
+      'echo "$$HOME" and $& and $`\nnext line',
+    );
+  });
+
+  it.skipIf(process.platform !== 'win32')(
+    'accepts differently-cased paths to the same observed file on Windows',
+    async () => {
+      writeFileSync(join(dir, 'CaseFile.txt'), 'original');
+      await observeFirst('CaseFile.txt');
+      const r = await edit.execute(
+        { filePath: 'casefile.txt', oldString: 'original', newString: 'changed' },
+        ctx,
+      );
+      expect(r.status).toBe('success');
+      expect(readFileSync(join(dir, 'CaseFile.txt'), 'utf-8')).toBe('changed');
+    },
+  );
+
+  it('fails a mutation on a file that was never observed', async () => {
+    writeFileSync(join(dir, 'unseen.txt'), 'content');
+    const editResult = await edit.execute(
+      { filePath: 'unseen.txt', oldString: 'content', newString: 'changed' },
+      ctx,
+    );
+    expect(editResult.status).toBe('error');
+    expect(editResult.structuredError?.code).toBe('file_not_observed');
+    expect(editResult.structuredError?.message).toMatch(/has not been read/);
+
+    const writeResult = await write.execute({ filePath: 'unseen.txt', content: 'clobber' }, ctx);
+    expect(writeResult.structuredError?.code).toBe('file_not_observed');
+    expect(readFileSync(join(dir, 'unseen.txt'), 'utf-8')).toBe('content');
+
+    await observeFirst('unseen.txt');
+    const allowed = await edit.execute(
+      { filePath: 'unseen.txt', oldString: 'content', newString: 'changed' },
+      ctx,
+    );
+    expect(allowed.status).toBe('success');
+  });
+
   it('returns aggregate update metadata for MultiEdit', async () => {
     writeFileSync(join(dir, 'a.txt'), 'first\nsecond\nthird');
+    await observeFirst('a.txt');
     const r = await multiEditTool.execute(
       {
         filePath: 'a.txt',
@@ -331,6 +440,7 @@ describe('edit_file', () => {
       const link = join(dir, 'link.txt');
       writeFileSync(target, 'first second\n');
       symlinkSync(target, link, 'file');
+      await observeFirst('link.txt');
 
       const result = await multiEditTool.execute(
         {
@@ -504,6 +614,66 @@ describe('grep', () => {
 
     const limited = await grep.execute({ pattern: 'const', include: '*.ts', head_limit: 1 }, ctx);
     expect(limited.content.split('\n')).toHaveLength(1);
+  });
+
+  it('scopes the search to a subdirectory via path on both backends', async () => {
+    mkdirSync(join(dir, 'sub', 'inner'), { recursive: true });
+    writeFileSync(join(dir, 'root.ts'), 'const marker = 1;');
+    writeFileSync(join(dir, 'sub', 'inner', 'scoped.ts'), 'const marker = 2;');
+
+    for (const env of [{}, { BOOK_GREP_BACKEND: 'typescript' }] as Record<string, string>[]) {
+      const result = await grep.execute(
+        { pattern: 'marker', include: '**/*.ts', path: 'sub' },
+        { ...ctx, env },
+      );
+      expect(result.status).toBe('success');
+      expect(result.content).toContain('sub/inner/scoped.ts:1: const marker = 2;');
+      expect(result.content).not.toContain('root.ts');
+    }
+  });
+
+  it('scopes the search to a single file via path', async () => {
+    writeFileSync(join(dir, 'one.ts'), 'needle one');
+    writeFileSync(join(dir, 'two.ts'), 'needle two');
+    const result = await grep.execute({ pattern: 'needle', path: 'one.ts' }, ctx);
+    expect(result.status).toBe('success');
+    expect(result.content).toContain('one.ts:1: needle one');
+    expect(result.content).not.toContain('two.ts');
+  });
+
+  it('rejects a path outside the workspace and reports unknown paths', async () => {
+    const outside = await grep.execute({ pattern: 'x', path: '..' }, ctx);
+    expect(outside.structuredError?.code).toBe('path_outside_workspace');
+
+    const missing = await grep.execute({ pattern: 'x', path: 'nope-dir' }, ctx);
+    expect(missing.structuredError?.code).toBe('path_not_found');
+  });
+
+  it('keeps root-anchored gitignore patterns effective under a path scope (portable)', async () => {
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    writeFileSync(join(dir, 'sub', 'secret.ts'), 'const hidden = 1;');
+    writeFileSync(join(dir, 'sub', 'visible.ts'), 'const hidden = 2;');
+
+    const result = await grep.execute(
+      { pattern: 'hidden', include: '**/*.ts', path: 'sub' },
+      { ...ctx, env: { BOOK_GREP_BACKEND: 'typescript' }, gitignorePatterns: ['sub/secret.ts'] },
+    );
+
+    expect(result.content).toContain('sub/visible.ts');
+    expect(result.content).not.toContain('secret.ts');
+  });
+
+  it('applies C as symmetric context on both backends', async () => {
+    writeFileSync(join(dir, 'context.ts'), 'before\ntarget\nafter');
+    for (const env of [{}, { BOOK_GREP_BACKEND: 'typescript' }] as Record<string, string>[]) {
+      const result = await grep.execute(
+        { pattern: 'target', include: '*.ts', C: 1 },
+        { ...ctx, env },
+      );
+      expect(result.content).toContain('context.ts:1- before');
+      expect(result.content).toContain('context.ts:2: target');
+      expect(result.content).toContain('context.ts:3- after');
+    }
   });
 
   it('keeps timers responsive and observes abort during a broad scan', async () => {

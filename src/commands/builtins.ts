@@ -28,7 +28,7 @@ import {
   listMemoryCandidates,
   loadMemoryContext,
 } from '../memory-store.js';
-import { costReport, PRICING, usageReport } from '../pricing.js';
+import { costReport, failureTotal, PRICING, usageReport } from '../pricing.js';
 import { buildContextBreakdown, buildContextReport } from '../context-report.js';
 
 export interface BuiltinCommand {
@@ -56,6 +56,8 @@ export interface BuiltinCommandContext {
   compactBoundaries: CompactBoundary[];
   commandCount: number;
   skillCount: number;
+  /** Per-session tool call/failure counters keyed by canonical tool name. */
+  toolCallStats?: ReadonlyMap<string, { calls: number; failures: Record<string, number> }>;
   resolveAmbientContext: () => {
     subagentCount: number;
     hasMemoryIndex: boolean;
@@ -290,13 +292,30 @@ function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffec
       ? (context.usage.promptTokens * rate.in + context.usage.completionTokens * rate.out) /
         1_000_000
       : undefined;
+  const toolCallStats =
+    context.toolCallStats && context.toolCallStats.size > 0
+      ? [...context.toolCallStats.entries()]
+          .map(([tool, stats]) => ({
+            tool,
+            calls: stats.calls,
+            failures: { ...stats.failures },
+          }))
+          // Failing tools first so a low-volume failing tool is never hidden
+          // behind read-heavy tools in the capped TUI card.
+          .sort((a, b) => failureTotal(b.failures) - failureTotal(a.failures) || b.calls - a.calls)
+      : undefined;
   return {
     type: 'local-message',
-    content: usageReport(context.runtimeConfig.model, context.usage, {
-      currentTurn: context.currentTurn,
-      messageCount: context.messages.length,
-      turnDurationMs: context.turnDurationMs,
-    }),
+    content: usageReport(
+      context.runtimeConfig.model,
+      context.usage,
+      {
+        currentTurn: context.currentTurn,
+        messageCount: context.messages.length,
+        turnDurationMs: context.turnDurationMs,
+      },
+      toolCallStats,
+    ),
     display: {
       kind: 'usage',
       model: context.runtimeConfig.model,
@@ -306,6 +325,7 @@ function usageCommandEffect(context: BuiltinCommandContext): BuiltinCommandEffec
       usage: context.usage,
       rate: rate ? { inputPerMillion: rate.in, outputPerMillion: rate.out } : undefined,
       estimatedCostUsd,
+      toolCallStats,
     },
   };
 }

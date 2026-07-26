@@ -103,6 +103,8 @@ export const providerModelSchema = z.object({
   label: z.string().optional(),
   contextWindow: z.number().int().positive().optional(),
   maxOutputTokens: z.number().int().positive().optional(),
+  /** Mutation-tool preference for this model; defaults to a family-level prior. */
+  editFormat: z.enum(['patch', 'replace', 'whole']).optional(),
   effort: z
     .union([
       z.literal(false),

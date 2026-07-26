@@ -110,7 +110,19 @@ invalid setting path; provider secrets are redacted.
 
 ### File mutations
 
-`ApplyPatch` is Book's preferred source-mutation tool. It accepts a compact Codex-style envelope:
+Book exposes the same mutation tools to every model — `ApplyPatch`, `Edit`, `MultiEdit`, and
+`Write` — but the system prompt's recommended tool is **model-conditional**: GPT/Codex-family
+models (trained on the V4A patch envelope) are steered to `ApplyPatch`, and every other model
+(Claude, Qwen, GLM, Gemini, Grok, unknown) is steered to exact-replace `Edit`/`MultiEdit`, the
+format with the best cross-model compliance in published evals. Override per model in settings:
+
+```json
+{ "provider": { "myrouter": { "models": { "qc/qwen3.7-max": { "editFormat": "replace" } } } } }
+```
+
+`editFormat` accepts `patch`, `replace`, or `whole` (whole-file `Write`-first guidance).
+
+`ApplyPatch` accepts a compact Codex-style envelope:
 
 ```text
 *** Begin Patch
@@ -129,9 +141,28 @@ existing file's LF/CRLF convention and UTF-8 BOM, validate all files before writ
 post-state, and roll back earlier files if a later commit fails. Binary and mixed-line-ending
 updates are rejected rather than guessed.
 
-`Write` remains appropriate for generated or intentional full-file replacement. `Edit` and
-`MultiEdit` remain available for compatibility and preserve their existing permission rules.
-The `apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not silently reinterpreted.
+Mutation reliability guardrails, tuned for heterogeneous models:
+
+- **Read-before-edit is enforced.** `Edit`/`MultiEdit` (and `Write` over an existing file) fail
+  with `file_not_observed` until the file has been Read or `@`-mentioned this session, and fail
+  with `stale_file_observation` when it changed since last observed.
+- **Whitespace-tolerant recovery.** When an exact `oldString` match fails, Book tries two
+  deterministic relaxations — trailing-whitespace-insensitive and uniform-indent-shift — and
+  applies one only when it matches a single location; the result notes the tolerance used.
+  `replaceAll` always requires exact matches.
+- **Cross-harness argument aliases.** Claude Code-style spellings (`file_path`, `old_string`,
+  `new_string`, `replace_all`, Grep `glob`/`-A`/`-B`/`-C`, ApplyPatch `input`) are normalized to
+  Book's canonical arguments before validation, and `invalid_arguments` errors list the allowed
+  argument names.
+- **Retry-loop braking.** Repeating a call that already failed with identical arguments returns
+  escalated guidance instead of the same error; structured `Fix:` remediation lines are rendered
+  into the model-facing error text.
+- **Reliability visibility.** `/usage` shows per-tool call and failure counters for the session,
+  and `npm run eval:edit` runs a deterministic ~25-task edit-reliability eval against the
+  configured model, writing a report to `.book/reports/`.
+
+`Write` remains appropriate for generated or intentional full-file replacement. The
+`apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not silently reinterpreted.
 
 ### Example `.book/settings.json`
 

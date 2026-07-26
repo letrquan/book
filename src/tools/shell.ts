@@ -545,6 +545,7 @@ async function dismissShell(args: Record<string, unknown>, ctx: ToolContext): Pr
 export const shellTools: ToolDefinition[] = [
   {
     name: 'Bash',
+    argumentAliases: { runInBackground: 'run_in_background' },
     description: 'Execute a shell command in the workspace',
     parameters: {
       type: 'object',
@@ -563,6 +564,7 @@ export const shellTools: ToolDefinition[] = [
   },
   {
     name: 'BashOutput',
+    argumentAliases: { shellId: 'shell_id' },
     description:
       'Read new output and status from a background shell started by Bash(run_in_background)',
     parameters: {
@@ -576,6 +578,7 @@ export const shellTools: ToolDefinition[] = [
   },
   {
     name: 'KillShell',
+    argumentAliases: { shellId: 'shell_id' },
     description: 'Terminate a background shell started by Bash(run_in_background)',
     parameters: {
       type: 'object',

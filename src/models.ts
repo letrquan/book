@@ -42,3 +42,28 @@ export function modelSupportsEffort(model: string): boolean {
   const found = AVAILABLE_MODELS.find((m) => m.id === model);
   return found ? Boolean(found.effort) : true;
 }
+
+/** Mutation-tool preference rendered into the system prompt guidance. */
+export type EditFormat = 'patch' | 'replace' | 'whole';
+
+/**
+ * Built-in mutation-format prior by model family. GPT/Codex-family models are
+ * trained on the V4A patch envelope (ApplyPatch); everything else — Claude,
+ * Qwen, GLM, Gemini, Grok, and unknown models — is safest with exact-replace
+ * editing (Edit/MultiEdit). Known picker models use their provider metadata;
+ * unknown ids fall back to a deliberately narrow family pattern (community
+ * models like gpt-j / gpt-neox merely contain "gpt" and must stay on replace).
+ * Per-model overrides belong in settings
+ * (provider.<name>.models.<id>.editFormat), never in this table.
+ */
+export function editFormatFor(model: string): EditFormat {
+  const known = AVAILABLE_MODELS.find((m) => m.id === model);
+  if (known) return known.provider === 'openai' ? 'patch' : 'replace';
+  const family = model.split('/').pop()?.toLowerCase() ?? '';
+  return /^(gpt-\d|gpt-oss|chatgpt|codex|o\d)(?![a-z])/.test(family) ? 'patch' : 'replace';
+}
+
+/** Settings override wins; otherwise the family prior. */
+export function resolveEditFormat(model: string, override?: EditFormat): EditFormat {
+  return override ?? editFormatFor(model);
+}

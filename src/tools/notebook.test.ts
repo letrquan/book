@@ -44,6 +44,21 @@ function writeNotebook(value: Record<string, unknown>, name = 'test.ipynb'): str
   return path;
 }
 
+describe('NotebookEdit read-before-edit gate', () => {
+  it('requires a prior observation when an observation ledger exists', async () => {
+    writeNotebook(notebook([codeCell('cell-1')]));
+    const gated: ToolContext = { ...ctx, fileObservationLedger: new Map() };
+
+    const result = await edit.execute(
+      { notebook_path: 'test.ipynb', cell_id: 'cell-1', new_source: 'print(2)' },
+      gated,
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.code).toBe('file_not_observed');
+  });
+});
+
 function readNotebook(name = 'test.ipynb'): Record<string, unknown> & {
   cells: Array<Record<string, unknown>>;
 } {

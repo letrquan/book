@@ -203,6 +203,10 @@ export interface ToolDefinition {
   parameters: Record<string, unknown>;
   /** Typed provider schema. `parameters` remains accepted while tools migrate. */
   inputSchema?: JsonSchemaObject;
+  /** Cross-harness argument-name aliases (alias → canonical), applied before validation. */
+  argumentAliases?: Record<string, string>;
+  /** Per-item argument aliases for array arguments (argument name → alias → canonical). */
+  arrayItemArgumentAliases?: Record<string, Record<string, string>>;
   catalog?: ToolCatalogMetadata;
   policy?: ToolPolicy;
   /** When true, the tool is safe to retry once on transient failure (Read, Grep, WebFetch, etc.). */

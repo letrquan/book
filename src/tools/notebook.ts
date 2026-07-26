@@ -5,7 +5,11 @@ import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js'
 import { throwIfAborted, yieldToEventLoop } from '../async.js';
 import { renderDiffWithStatsAsync } from './diff.js';
 import { pathOutsideWorkspaceResult, resolveWorkspacePath } from './path-utils.js';
-import { observeFile, requireFreshObservation } from './file-provenance.js';
+import {
+  observeFile,
+  requireFreshObservation,
+  requireObservationForMutation,
+} from './file-provenance.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 type CellType = 'code' | 'markdown';
@@ -185,6 +189,8 @@ async function notebookEdit(args: Record<string, unknown>, ctx: ToolContext): Pr
   const { filePath, relativePath } = resolved;
   const stale = await requireFreshObservation(ctx, filePath, relativePath);
   if (stale) return fail(stale);
+  const unobserved = requireObservationForMutation(ctx, relativePath, 'notebook edit');
+  if (unobserved) return unobserved;
 
   let original: string;
   try {

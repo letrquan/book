@@ -1,7 +1,8 @@
 import type { AgentConfig } from './types/runtime.js';
 import type { Message } from './types/messages.js';
-import type { NestedToolObserver, UserQuestionHandler } from './types/tools.js';
+import type { FileObservation, NestedToolObserver, UserQuestionHandler } from './types/tools.js';
 import { runAgentLoop } from './agent/loop.js';
+import { SessionRuntime } from './session/runtime.js';
 import { applyModelDefaults, resolveModelProviderConfig } from './config.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import type { SubagentDef } from './subagent-discovery.js';
@@ -31,6 +32,8 @@ export async function runSubagent(
     nestedToolObserver?: NestedToolObserver;
     onUserQuestionRequired?: UserQuestionHandler;
     agentPath?: string[];
+    /** Parent file observations, copied so same-workspace edits need no re-Read. */
+    fileObservationSeed?: ReadonlyMap<string, FileObservation>;
   },
 ): Promise<{ content: string; error?: string }> {
   const registry = createCapabilityRegistry(fullRegistry, def.allowedTools);
@@ -48,6 +51,9 @@ export async function runSubagent(
   // The agent body becomes the system prompt; the Task prompt is the first user message.
   const history: Message[] = [];
 
+  const runtime = new SessionRuntime({
+    fileObservationLedger: new Map(options?.fileObservationSeed ?? []),
+  });
   let result = '';
   let error: string | undefined;
 
@@ -83,6 +89,7 @@ export async function runSubagent(
         signal: options?.signal,
         isNewSession: true,
         isSubagent: true,
+        runtime,
         nestedToolObserver: options?.nestedToolObserver,
         parentToolTraceId: options?.parentToolTraceId,
         agentPath: options?.agentPath,
@@ -101,6 +108,8 @@ export async function runSubagent(
     }
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
+  } finally {
+    runtime.dispose();
   }
 
   // Max turns reached is not a fatal error if the subagent produced output.

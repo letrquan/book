@@ -537,8 +537,9 @@ async function applyPatch(args: Record<string, unknown>, ctx: ToolContext): Prom
 export const patchTools: ToolDefinition[] = [
   {
     name: 'ApplyPatch',
+    argumentAliases: { input: 'patch' },
     description:
-      'Preferred file mutation tool. Apply a Codex-style patch with Update File, Add File, or Delete File operations. Read the target first; use exact contextual hunks, and regenerate after a context mismatch. Use Write only for generated or intentional full-file replacement; Edit and MultiEdit are compatibility fallbacks.',
+      'Apply a Codex-style patch with Update File, Add File, or Delete File operations across one or more files atomically. Read the targets first; use exact contextual hunks, and regenerate the patch after a context mismatch instead of resending it unchanged.',
     parameters: {
       type: 'object',
       properties: {

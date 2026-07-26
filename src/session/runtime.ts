@@ -23,6 +23,10 @@ export class SessionRuntime {
   readonly agentContextCache: AgentContextCache;
   readonly toolExecutionScheduler: ToolExecutionScheduler;
   readonly traceId: string;
+  /** Advisory memory of recent identical tool failures (registry circuit breaker). */
+  readonly recentToolFailures = new Map<string, number>();
+  /** Per-session tool call/failure counters keyed by canonical tool name. */
+  readonly toolCallStats = new Map<string, { calls: number; failures: Record<string, number> }>();
   agentManager?: import('../agents/manager.js').AgentManager;
   private readonly abortControllers = new Set<AbortController>();
   private readonly timers = new Set<NodeJS.Timeout>();

@@ -53,6 +53,23 @@ describe('ToolResult V2', () => {
       remediation: 'Pass a non-empty query.',
     });
     expect(toolResultModelContent(result)).toContain('ERROR [invalid_arguments]: Bad input');
+    expect(toolResultModelContent(result)).toContain('Fix: Pass a non-empty query.');
+  });
+
+  it('preserves the Fix line when clipping oversized error messages', async () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'book-fix-reserve-'));
+    try {
+      const huge = toolFailure('x'.repeat(80_000), {
+        code: 'tool_error',
+        remediation: 'Re-read the target and adjust.',
+      });
+      const bounded = await boundToolResultOutput(huge, process.cwd(), undefined, artifactRoot);
+      const content = toolResultModelContent(bounded);
+      expect(Buffer.byteLength(content)).toBeLessThanOrEqual(50 * 1024);
+      expect(content).toContain('Fix: Re-read the target and adjust.');
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
   });
 
   it('keeps model content independent from structured data', () => {

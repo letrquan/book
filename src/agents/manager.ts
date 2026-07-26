@@ -1215,6 +1215,11 @@ export class AgentManager {
 
     const runtime = new SessionRuntime({
       toolExecutionScheduler: this.options.runtime?.toolExecutionScheduler,
+      // Children inherit a copy of the parent's file observations so files the
+      // parent already Read (or the user @-mentioned) stay editable without a
+      // redundant re-Read. Worktree children key by their own workspace, so
+      // parent entries are simply inert there.
+      fileObservationLedger: new Map(this.options.runtime?.fileObservationLedger ?? []),
     });
     const controller = runtime.trackAbortController(new AbortController());
     this.controllers.set(record.id, controller);

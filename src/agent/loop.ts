@@ -316,6 +316,7 @@ export async function runAgentLoop(
         append: options?.systemPromptAppend,
         hideAgents: options?.hideAgents,
         toolCatalogSummary: toolSurface.catalogSummary(),
+        planMode: effectiveMode === 'plan',
       },
       runtime.agentContextCache,
     );
@@ -667,6 +668,13 @@ export async function runAgentLoop(
       pendingPlanApprovalAtPreparation: ToolContext['pendingPlanApproval'];
       pendingUserQuestionAtPreparation: ToolContext['pendingUserQuestion'];
     };
+
+    // Canonicalize tool names and argument spellings once, before hooks,
+    // permission evaluation, primary-arg display, and persistence see the call —
+    // aliased arguments must not bypass path-scoped permission rules.
+    for (let index = 0; index < toolCalls.length; index++) {
+      toolCalls[index] = registry.normalizeCall(toolCalls[index]);
+    }
 
     const toolResults: Array<ToolResult | undefined> = new Array(toolCalls.length);
     const prepareToolCall = async (
@@ -1144,6 +1152,23 @@ export async function runAgentLoop(
     }
 
     const orderedToolResults = toolResults.map((_result, index) => resultAt(index));
+
+    const toolStats = toolContext.runtime?.toolCallStats;
+    if (toolStats) {
+      for (let index = 0; index < toolCalls.length; index++) {
+        const name = canonicalToolName(toolCalls[index].name);
+        const entry = toolStats.get(name) ?? { calls: 0, failures: {} };
+        entry.calls++;
+        const result = orderedToolResults[index];
+        // Blocked (policy/user decision) and cancelled outcomes are not tool
+        // failures; only real errors and timeouts count against reliability.
+        if (result.status === 'error' || result.status === 'timed_out') {
+          const code = result.structuredError?.code ?? result.status;
+          entry.failures[code] = (entry.failures[code] ?? 0) + 1;
+        }
+        toolStats.set(name, entry);
+      }
+    }
 
     // Stop hook — fire-and-forget after each turn.
     runHooks(

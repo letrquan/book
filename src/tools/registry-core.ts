@@ -1,19 +1,12 @@
+import { createHash } from 'node:crypto';
 import type { ToolDefinition, ToolContext, ToolResult, ToolCall } from '../types/tools.js';
 import { TOOL_ALIASES } from './aliases.js';
 import { normalizeToolDefinition } from './catalog.js';
 import { validateToolArguments } from './schema.js';
 import { enrichToolResultPresentation, normalizeToolResult, toolFailure } from './result.js';
 
-const TOOL_ARGUMENT_ALIASES: Record<string, Record<string, string>> = {
-  Bash: { runInBackground: 'run_in_background' },
-  BashOutput: { shellId: 'shell_id' },
-  KillShell: { shellId: 'shell_id' },
-  TaskGet: { task_id: 'taskId' },
-  TaskUpdate: { task_id: 'taskId' },
-  TaskStop: { task_id: 'taskId' },
-};
-
 const TOOL_ABORT_GRACE_MS = 250;
+const REPEATED_FAILURE_MEMORY_CAP = 32;
 
 export interface PreparedToolCall {
   call: ToolCall;
@@ -24,17 +17,83 @@ export interface PreparedToolCall {
 export type PrepareToolCallResult =
   { status: 'ready'; prepared: PreparedToolCall } | { status: 'rejected'; result: ToolResult };
 
-function normalizeToolArguments(
-  toolName: string,
-  args: Record<string, unknown>,
+function applyAliasKeys(
+  target: Record<string, unknown>,
+  aliases: Record<string, string>,
 ): Record<string, unknown> {
-  const normalized = { ...args };
-  for (const [alias, canonical] of Object.entries(TOOL_ARGUMENT_ALIASES[toolName] ?? {})) {
+  const normalized = { ...target };
+  for (const [alias, canonical] of Object.entries(aliases)) {
     if (!(canonical in normalized) && alias in normalized)
       normalized[canonical] = normalized[alias];
     delete normalized[alias];
   }
   return normalized;
+}
+
+/** Apply the definition-declared argument aliases (top-level and per array item). */
+function normalizeToolArguments(
+  tool: ToolDefinition,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const normalized = applyAliasKeys(args, tool.argumentAliases ?? {});
+  for (const [argName, itemAliases] of Object.entries(tool.arrayItemArgumentAliases ?? {})) {
+    const items = normalized[argName];
+    if (!Array.isArray(items)) continue;
+    normalized[argName] = items.map((item) =>
+      item && typeof item === 'object' && !Array.isArray(item)
+        ? applyAliasKeys(item as Record<string, unknown>, itemAliases)
+        : item,
+    );
+  }
+  return normalized;
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * Advisory circuit breaker: when the model repeats a call that already failed
+ * with the same arguments and error, escalate the remediation instead of
+ * letting an identical-retry loop run. Never blocks the call itself.
+ */
+function noteRepeatedFailure(context: ToolContext, call: ToolCall, result: ToolResult): ToolResult {
+  const memory = context.runtime?.recentToolFailures;
+  if (!memory || result.status !== 'error' || !result.structuredError) return result;
+  const significantArgs = { ...call.arguments };
+  delete significantArgs.timeout;
+  const signature = `${call.name}:${result.structuredError.code}:${createHash('sha256')
+    .update(stableStringify(significantArgs))
+    .digest('hex')}`;
+  const previousFailures = memory.get(signature) ?? 0;
+  memory.delete(signature);
+  memory.set(signature, previousFailures + 1);
+  while (memory.size > REPEATED_FAILURE_MEMORY_CAP) {
+    const oldest = memory.keys().next().value;
+    if (oldest === undefined) break;
+    memory.delete(oldest);
+  }
+  // Escalate only genuine repeats; a retryable transient failure may legitimately
+  // be retried unchanged, and the tool's own remediation must stay visible.
+  if (previousFailures === 0 || result.structuredError.retryable) return result;
+  const escalation = `This exact ${call.name} call already failed ${previousFailures} time(s) with the same arguments. Do not retry it unchanged: re-read the target, revise the arguments, or use a different tool.`;
+  const existing = result.structuredError.remediation;
+  return {
+    ...result,
+    structuredError: {
+      ...result.structuredError,
+      remediation: existing ? `${existing} ${escalation}` : escalation,
+    },
+  };
 }
 
 async function executeWithTimeout(
@@ -183,7 +242,15 @@ async function waitForSettlement(settled: Promise<void>, timeoutMs: number): Pro
 export function createRegistry() {
   const tools = new Map<string, ToolDefinition>();
 
+  /** Canonicalize a call's tool name and argument spellings without executing it. */
+  const normalizeCall = (call: ToolCall): ToolCall => {
+    const tool = tools.get(TOOL_ALIASES[call.name] ?? call.name);
+    if (!tool) return call;
+    return { ...call, name: tool.name, arguments: normalizeToolArguments(tool, call.arguments) };
+  };
+
   return {
+    normalizeCall,
     register(tool: ToolDefinition): void {
       const normalized = normalizeToolDefinition(tool);
       tools.set(normalized.name, normalized);
@@ -202,18 +269,22 @@ export function createRegistry() {
       if (!tool) {
         return {
           status: 'rejected',
-          result: toolFailure(`Unknown tool: ${call.name}`, {
-            toolCallId: call.id,
-            code: 'unknown_tool',
-            remediation: 'Call ToolSearch or use a provider-visible tool name.',
-          }),
+          result: noteRepeatedFailure(
+            context,
+            call,
+            toolFailure(`Unknown tool: ${call.name}`, {
+              toolCallId: call.id,
+              code: 'unknown_tool',
+              remediation: 'Call ToolSearch or use a provider-visible tool name.',
+            }),
+          ),
         };
       }
 
       const normalizedCall: ToolCall = {
         ...call,
         name: tool.name,
-        arguments: normalizeToolArguments(tool.name, call.arguments),
+        arguments: normalizeToolArguments(tool, call.arguments),
       };
       if (context.toolDiscovery && !context.toolDiscovery.canExecute(normalizedCall)) {
         return {
@@ -231,15 +302,23 @@ export function createRegistry() {
       delete providerArguments.timeout;
       const validationErrors = validateToolArguments(providerArguments, tool.inputSchema!);
       if (validationErrors.length > 0) {
+        const allowedKeys = Object.keys(tool.inputSchema?.properties ?? {});
+        const allowedSuffix = allowedKeys.length
+          ? ` Allowed arguments: ${allowedKeys.join(', ')}.`
+          : '';
         return {
           status: 'rejected',
-          result: toolFailure(
-            `Invalid arguments for ${tool.name}: ${validationErrors.join('; ')}`,
-            {
-              toolCallId: call.id,
-              code: 'invalid_arguments',
-              remediation: 'Correct only this failed call; do not repeat successful siblings.',
-            },
+          result: noteRepeatedFailure(
+            context,
+            normalizedCall,
+            toolFailure(
+              `Invalid arguments for ${tool.name}: ${validationErrors.join('; ')}.${allowedSuffix}`,
+              {
+                toolCallId: call.id,
+                code: 'invalid_arguments',
+                remediation: 'Correct only this failed call; do not repeat successful siblings.',
+              },
+            ),
           ),
         };
       }
@@ -285,7 +364,7 @@ export function createRegistry() {
         if (attempt < retries)
           await new Promise((resolve) => setTimeout(resolve, 250 + Math.random() * 500));
       }
-      return lastResult!;
+      return noteRepeatedFailure(context, normalizedCall, lastResult!);
     },
     async execute(
       call: ToolCall,

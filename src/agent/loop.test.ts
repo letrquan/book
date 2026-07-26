@@ -1,14 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runAgentLoop } from './loop.js';
-import { createRegistry } from '../tools/registry.js';
+import { createDefaultRegistry, createRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
 import { askUserQuestionTools } from '../tools/ask-user-question.js';
 import { toolSuccess } from '../tools/result.js';
+import { SessionRuntime } from '../session/runtime.js';
 import type { Provider } from '../provider/index.js';
 import type { CompactResult } from '../types/sessions.js';
 
@@ -1823,5 +1824,96 @@ describe('runAgentLoop plan mode', () => {
       'Keep the migration backward compatible.',
     );
     expect(results[0].structuredError?.message).toContain('call ExitPlanMode again');
+  });
+});
+
+describe('runAgentLoop alias-normalized permission enforcement', () => {
+  it('applies path-scoped deny rules to alias-spelled ApplyPatch calls and does not count the block as a failure', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-alias-perm-'));
+    try {
+      writeFileSync(join(workspace, 'secret.txt'), 'top secret\n');
+      const patchText =
+        '*** Begin Patch\n*** Update File: secret.txt\n@@\n-top secret\n+leaked\n*** End Patch';
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          yield {
+            type: 'tool_call' as const,
+            toolCall: { id: 'alias-1', name: 'ApplyPatch', arguments: { input: patchText } },
+          };
+          yield { type: 'done' as const };
+        },
+      };
+      const config = defaultConfig({ maxTurns: 1, workspace });
+      config.settings.permissions.deny = ['ApplyPatch(secret.txt)'];
+      const runtime = new SessionRuntime();
+
+      const history = await runAgentLoop(
+        config,
+        createDefaultRegistry(),
+        'apply the patch',
+        [],
+        noopCallbacks(),
+        'default',
+        { provider, isNewSession: false, runtime },
+      );
+
+      const result = history.at(-1)?.toolResults?.[0];
+      expect(result?.status).toBe('blocked');
+      expect(result?.structuredError?.code).toBe('permission_denied');
+      expect(readFileSync(join(workspace, 'secret.txt'), 'utf-8')).toBe('top secret\n');
+      // A user/policy block is not a tool failure in the reliability counters.
+      expect(runtime.toolCallStats.get('ApplyPatch')?.calls).toBe(1);
+      expect(runtime.toolCallStats.get('ApplyPatch')?.failures).toEqual({});
+      runtime.dispose();
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('runAgentLoop tool-call statistics', () => {
+  it('records per-tool call and failure counters on the session runtime', async () => {
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield {
+          type: 'tool_call' as const,
+          toolCall: { id: 'stat-1', name: 'Echo', arguments: { value: 'ok' } },
+        };
+        yield {
+          type: 'tool_call' as const,
+          toolCall: { id: 'stat-2', name: 'Echo', arguments: { unexpected: true } },
+        };
+        yield { type: 'done' as const };
+      },
+    };
+    const registry = createRegistry();
+    registry.register({
+      name: 'Echo',
+      description: 'Return the provided value',
+      parameters: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+        required: ['value'],
+      },
+      execute: async (args) => toolSuccess(String(args.value ?? '')),
+    });
+    const runtime = new SessionRuntime();
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'hello',
+      [],
+      noopCallbacks(),
+      'default',
+      { provider, isNewSession: false, runtime },
+    );
+
+    const echo = runtime.toolCallStats.get('Echo');
+    expect(echo?.calls).toBe(2);
+    expect(echo?.failures.invalid_arguments).toBe(1);
+    runtime.dispose();
   });
 });

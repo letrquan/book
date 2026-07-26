@@ -60,10 +60,23 @@ export function costReport(
  * estimate. Alias /stats maps to the same report. Unknown models label clearly
  * rather than guess a rate (same honesty rule as costReport).
  */
+/** Render a failure-code count map as "code ×N, code ×M" (shared by all /usage surfaces). */
+export function formatFailureCounts(failures: Record<string, number>): string {
+  return Object.entries(failures)
+    .map(([code, count]) => `${code} ×${count}`)
+    .join(', ');
+}
+
+/** Sum a failure-code count map. */
+export function failureTotal(failures: Record<string, number>): number {
+  return Object.values(failures).reduce((sum, count) => sum + count, 0);
+}
+
 export function usageReport(
   model: string,
   usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null,
   session: { currentTurn: number; messageCount: number; turnDurationMs: number },
+  toolCallStats?: Array<{ tool: string; calls: number; failures: Record<string, number> }>,
 ): string {
   const lines: string[] = ['Session usage', ''];
   lines.push(`Model: ${model}`);
@@ -89,6 +102,21 @@ export function usageReport(
     lines.push(`Est. cost: $${usd}  (local estimate — $${rate.in}/M in, $${rate.out}/M out)`);
   } else {
     lines.push(`Est. cost: (pricing unknown for "${model}" — add it to PRICING in src/pricing.ts)`);
+  }
+  if (toolCallStats && toolCallStats.length > 0) {
+    const totalCalls = toolCallStats.reduce((sum, entry) => sum + entry.calls, 0);
+    const totalFailures = toolCallStats.reduce(
+      (sum, entry) => sum + failureTotal(entry.failures),
+      0,
+    );
+    lines.push('');
+    lines.push(`Tool calls: ${totalCalls} total  •  ${totalFailures} failed`);
+    for (const entry of toolCallStats) {
+      const failed = failureTotal(entry.failures);
+      const failureDetail =
+        failed > 0 ? ` (${failed} failed: ${formatFailureCounts(entry.failures)})` : '';
+      lines.push(`  ${entry.tool}: ${entry.calls}${failureDetail}`);
+    }
   }
   lines.push('');
   lines.push(

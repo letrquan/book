@@ -828,6 +828,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
           compactBoundaries,
           commandCount: commands.length,
           skillCount: skills.length,
+          toolCallStats: runtime?.toolCallStats,
           resolveAmbientContext: () => ({
             subagentCount: discoverAgents(config.workspace).length,
             hasMemoryIndex: Boolean(

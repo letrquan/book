@@ -404,3 +404,39 @@ describe('buildMessages', () => {
     expect(prompt).toContain('[ ] Ship milestone');
   });
 });
+
+describe('model-conditional mutation guidance', () => {
+  it('prefers Edit for non-GPT-family models', async () => {
+    const replaceConfig = defaultConfig();
+    replaceConfig.model = 'qwen3.7-max';
+    const prompt = await buildSystemPrompt(replaceConfig, [], undefined, []);
+    expect(prompt).toContain('Prefer Edit (or MultiEdit');
+    expect(prompt).not.toContain('Prefer ApplyPatch');
+  });
+
+  it('prefers ApplyPatch for GPT-family models', async () => {
+    const patchConfig = defaultConfig();
+    patchConfig.model = 'gpt-5';
+    const prompt = await buildSystemPrompt(patchConfig, [], undefined, []);
+    expect(prompt).toContain('Prefer ApplyPatch');
+  });
+
+  it('lets a per-model settings override select the whole-file guidance', async () => {
+    const overrideConfig = defaultConfig();
+    overrideConfig.model = 'gpt-5';
+    overrideConfig.modelInfo = { editFormat: 'whole' };
+    const prompt = await buildSystemPrompt(overrideConfig, [], undefined, []);
+    expect(prompt).toContain('Prefer Write with the complete file content');
+    expect(prompt).not.toContain('Prefer ApplyPatch');
+  });
+
+  it('replaces mutation guidance with ExitPlanMode direction in plan mode', async () => {
+    const prompt = await buildSystemPrompt(defaultConfig(), [], undefined, [], undefined, {
+      planMode: true,
+    });
+    expect(prompt).toContain('Plan mode is active');
+    expect(prompt).toContain('ExitPlanMode');
+    expect(prompt).not.toContain('Prefer ApplyPatch');
+    expect(prompt).not.toContain('Prefer Edit');
+  });
+});

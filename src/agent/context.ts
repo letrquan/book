@@ -18,6 +18,7 @@ import { runGit } from '../tools/git.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { resolveAgentProfile } from '../agents/profile-resolver.js';
 import { toolResultModelContent } from '../tools/result.js';
+import { resolveEditFormat, type EditFormat } from '../models.js';
 
 interface StaticDiscovery {
   fingerprint: string;
@@ -284,7 +285,43 @@ function todoSection(
   ].join('\n');
 }
 
-function operatingPrinciplesSection(): string {
+const MUTATION_REREAD_LINE =
+  '- Read a target before mutating it unless the current user turn supplied a fresh observation. After a match or context failure, reread the relevant range and regenerate the change instead of repeating it unchanged.';
+
+/** Per-format preference line plus the tool name shared guidance refers to. */
+const MUTATION_GUIDANCE: Record<EditFormat, { prefer: string; primaryTool: string }> = {
+  patch: {
+    prefer:
+      '- Prefer ApplyPatch for normal source edits, related multi-file changes, additions, and deletions. Use Write only for generated files or intentional full-file replacement; Edit and MultiEdit are compatibility fallbacks.',
+    primaryTool: 'ApplyPatch',
+  },
+  whole: {
+    prefer:
+      '- Prefer Write with the complete file content for source edits: Read the whole file first, then write it back in full without eliding any section. Use Edit for very small targeted changes; ApplyPatch is available for related multi-file changes.',
+    primaryTool: 'Write',
+  },
+  replace: {
+    prefer:
+      '- Prefer Edit (or MultiEdit for several changes in one file) for source edits: copy oldString exactly from the file, including whitespace, without line-number prefixes. Use Write for new files or intentional full-file replacement, and ApplyPatch for related multi-file changes that should apply atomically.',
+    primaryTool: 'Edit',
+  },
+};
+
+function mutationGuidanceLines(editFormat: EditFormat, planMode: boolean): string[] {
+  if (planMode) {
+    return [
+      '- Plan mode is active: mutation tools are unavailable. Explore read-only, then call ExitPlanMode with your plan and wait for approval before making any file changes.',
+    ];
+  }
+  const guidance = MUTATION_GUIDANCE[editFormat];
+  return [
+    guidance.prefer,
+    MUTATION_REREAD_LINE,
+    `- Do not use shell commands, Python, or stream editors for ordinary file mutation when ${guidance.primaryTool} is available.`,
+  ];
+}
+
+function operatingPrinciplesSection(editFormat: EditFormat, planMode: boolean): string {
   return [
     '## Operating principles',
     "- Work as an agent, not a chatbot. Collaborate until the user's goal is genuinely handled. For change requests, carry the work through inspection, implementation, verification, and a clear outcome; do not stop at a proposal or half-finished fix.",
@@ -297,9 +334,7 @@ function operatingPrinciplesSection(): string {
     '- Keep context lean. Search before broad reads, inspect only relevant files, and avoid repeating or dumping large tool outputs.',
     '- Batch independent read-only calls in one response so the harness can run parallel-capable tools concurrently. Prefer Read, Glob, Grep, and dedicated Git read tools over Bash for concurrent exploration. Keep dependent calls, mutations, permission-sensitive actions, user interactions, mode changes, and synchronization tools sequential.',
     '- For independent managed-agent work, issue AgentSpawn calls together. AgentSpawn returns after queueing each child; use AgentWait only at a real dependency barrier. If one sibling tool fails, preserve successful sibling results and retry only the failed call.',
-    '- Prefer ApplyPatch for normal source edits, related multi-file changes, additions, and deletions. Use Write only for generated files or intentional full-file replacement; Edit and MultiEdit are compatibility fallbacks.',
-    '- Read a target before patching it unless the current user turn supplied a fresh observation. After a context mismatch, reread the relevant range and regenerate the hunk instead of repeating it unchanged.',
-    '- Do not use shell commands, Python, or stream editors for ordinary file mutation when ApplyPatch is available.',
+    ...mutationGuidanceLines(editFormat, planMode),
     '- Use the strongest practical feedback loop available: exercise the affected behavior when possible, then run focused tests, type checks, lint, builds, or visual checks as relevant. Fix failures caused by your changes.',
     '- Before finishing, review the changed files or diff for requested scope, edge cases, security issues, and accidental edits. Do not claim success without evidence; if verification is incomplete or blocked, state what ran and what remains uncertain.',
     '',
@@ -328,7 +363,12 @@ export async function buildSystemPromptZones(
   commands?: SlashCommand[],
   tools: ToolDefinition[] = [],
   signal?: AbortSignal,
-  overrides?: { append?: string; hideAgents?: boolean; toolCatalogSummary?: string },
+  overrides?: {
+    append?: string;
+    hideAgents?: boolean;
+    toolCatalogSummary?: string;
+    planMode?: boolean;
+  },
   cache?: AgentContextCache,
 ): Promise<SystemPromptZones> {
   const discovery = cache?.discovery(config.workspace);
@@ -343,7 +383,10 @@ export async function buildSystemPromptZones(
 
   const staticSections = [
     `You are Book, an AI coding agent working directly in the user's workspace. Help users understand, change, and verify software.`,
-    operatingPrinciplesSection(),
+    operatingPrinciplesSection(
+      resolveEditFormat(config.model, config.modelInfo?.editFormat),
+      overrides?.planMode ?? false,
+    ),
     projectInstructions,
     [
       '## Workspace context',
@@ -379,7 +422,12 @@ export async function buildSystemPrompt(
   commands?: SlashCommand[],
   tools: ToolDefinition[] = [],
   signal?: AbortSignal,
-  overrides?: { append?: string; hideAgents?: boolean; toolCatalogSummary?: string },
+  overrides?: {
+    append?: string;
+    hideAgents?: boolean;
+    toolCatalogSummary?: string;
+    planMode?: boolean;
+  },
 ): Promise<string> {
   const zones = await buildSystemPromptZones(config, todos, commands, tools, signal, overrides);
   return [zones.cachedPrefix, zones.dynamicSuffix].filter(Boolean).join('\n\n');
@@ -392,7 +440,12 @@ export async function buildMessages(
   todos?: Array<{ content: string; status: string; activeForm?: string }>,
   commands?: SlashCommand[],
   signal?: AbortSignal,
-  systemOverrides?: { append?: string; hideAgents?: boolean; toolCatalogSummary?: string },
+  systemOverrides?: {
+    append?: string;
+    hideAgents?: boolean;
+    toolCatalogSummary?: string;
+    planMode?: boolean;
+  },
   cache?: AgentContextCache,
 ): Promise<ProviderMessage[]> {
   const messages: ProviderMessage[] = [];

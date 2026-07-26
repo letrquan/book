@@ -6,6 +6,32 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Model-conditional mutation guidance: the system prompt recommends `ApplyPatch` to GPT/Codex-family
+  models (known picker models resolve by provider metadata) and exact-replace `Edit`/`MultiEdit` to
+  everything else, with a per-model `editFormat` (`patch` | `replace` | `whole`) settings override
+  under `provider.<name>.models.<id>`. In plan mode the guidance instead directs the model to
+  explore read-only and call `ExitPlanMode`.
+- Cross-harness tool-argument aliases, declared on each tool definition: Claude Code-style
+  spellings (`file_path`, `old_string`, `new_string`, `replace_all`, nested MultiEdit `edits[]`
+  keys, Grep `glob`/`-A`/`-B`/`-C`, ApplyPatch `input`) normalize to canonical arguments before
+  hook and permission evaluation — aliased spellings cannot bypass path-scoped permission rules —
+  and `invalid_arguments` errors list the allowed argument names.
+- Grep `path` (directory or file scope) and `C` (symmetric context) parameters on both the native
+  `rg` and portable backends; scoped portable searches still honor root-anchored `.gitignore`
+  patterns.
+- Whitespace-tolerant Edit/MultiEdit recovery: trailing-whitespace and uniform-indent-shift
+  relaxations apply only on a unique match, re-indent the replacement (rejecting matches whose
+  replacement cannot shift consistently), annotate the result, never apply to `replaceAll`, and
+  yield to the event loop with abort support on large files.
+- An advisory identical-retry circuit breaker that appends escalated guidance to the tool's own
+  remediation when a call repeats with the same arguments and error (retryable transient failures
+  exempt), plus structured remediation now rendered into model-facing error text as `Fix:` lines —
+  preserved even when oversized errors are clipped.
+- Per-session tool call/failure counters surfaced in `/usage` (text report and TUI card, with
+  totals and failing tools listed first). Only real errors and timeouts count as failures; user
+  denials, plan-mode blocks, and cancellations do not.
+- `npm run eval:edit` — a deterministic edit-reliability eval (~25 fixture tasks) run against the
+  configured model via the SDK, reporting per-task results to `.book/reports/`.
 - Bounded, session-wide concurrent execution for explicitly reviewed read-only file and Git tools,
   with ordered serial barriers, all-settled sibling results, duplicate-call rejection, and shared
   root/managed-child scheduling.
@@ -39,6 +65,13 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Breaking:** `Edit`/`MultiEdit`/`NotebookEdit` — and `Write` over an existing file — now require
+  the file to have been Read or `@`-mentioned in the session first (`file_not_observed`);
+  previously only staleness after an observation was checked. `ApplyPatch` is exempt (context
+  hunks self-anchor), contexts without an observation ledger are unaffected, observation keys are
+  case-folded on Windows, and child agents inherit a copy of the parent's observations.
+- `ApplyPatch` is no longer described as the universally preferred mutation tool; the preference is
+  model-conditional (see Added) and tool descriptions are neutral.
 - Tool concurrency is now an explicit policy rather than an idempotence side effect; preparation,
   hooks, permission prompts, interactive tools, mutations, shell commands, and lifecycle actions
   remain serial by default.

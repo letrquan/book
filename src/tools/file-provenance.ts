@@ -1,7 +1,13 @@
 import { createHash } from 'crypto';
 import { readFile, stat } from 'fs/promises';
 import { normalize, relative, resolve } from 'path';
-import type { FileObservation, FileObservationOperation, ToolContext } from '../types/tools.js';
+import type {
+  FileObservation,
+  FileObservationOperation,
+  ToolContext,
+  ToolResult,
+} from '../types/tools.js';
+import { toolFailure } from './result.js';
 
 export function workspaceIdentity(workspaceRoot: string): string {
   const root = normalize(resolve(workspaceRoot));
@@ -10,7 +16,10 @@ export function workspaceIdentity(workspaceRoot: string): string {
 }
 
 export function observationKey(workspaceId: string, path: string): string {
-  return `${workspaceId}:${path.replace(/\\/g, '/')}`;
+  const normalized = path.replace(/\\/g, '/');
+  // Case-insensitive filesystems (Windows) must key differently-cased spellings
+  // of the same file identically, mirroring workspaceIdentity's root folding.
+  return `${workspaceId}:${process.platform === 'win32' ? normalized.toLowerCase() : normalized}`;
 }
 
 export async function observeFile(
@@ -59,4 +68,29 @@ export async function requireFreshObservation(
 
 function staleMessage(path: string): string {
   return `SKIPPED: ${path} changed or disappeared since it was last shown to the model. Call Read (or mention the file again) before modifying it.`;
+}
+
+/**
+ * Require that the file was observed this session (Read, mention, or a prior
+ * mutation) before it may be mutated. Contexts without an observation ledger
+ * (bare harnesses, low-level embedding) are exempt. Returns a ready ToolResult
+ * failure so every mutating tool reports the same code and remediation.
+ */
+export function requireObservationForMutation(
+  ctx: ToolContext,
+  relativePath: string,
+  retryVerb: string,
+): ToolResult | undefined {
+  const ledger = ctx.fileObservationLedger;
+  if (!ledger) return undefined;
+  const workspaceId = workspaceIdentity(ctx.workspaceRoot);
+  const normalizedPath = relativePath.replace(/\\/g, '/');
+  if (ledger.has(observationKey(workspaceId, normalizedPath))) return undefined;
+  return toolFailure(
+    `SKIPPED: ${normalizedPath} has not been read in this session. Call Read (or mention the file) before modifying it.`,
+    {
+      code: 'file_not_observed',
+      remediation: `Read the file first, then retry the ${retryVerb}.`,
+    },
+  );
 }

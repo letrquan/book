@@ -369,6 +369,7 @@ export const taskTools: ToolDefinition[] = [
   },
   {
     name: 'TaskGet',
+    argumentAliases: { task_id: 'taskId' },
     description: 'Get full details for one agent task by ID.',
     parameters: {
       type: 'object',
@@ -379,6 +380,7 @@ export const taskTools: ToolDefinition[] = [
   },
   {
     name: 'TaskUpdate',
+    argumentAliases: { task_id: 'taskId' },
     description:
       'Update an agent task status, fields, metadata, and dependencies. Use status "deleted" to remove a task from active listings.',
     parameters: {
@@ -419,6 +421,7 @@ export const taskTools: ToolDefinition[] = [
   },
   {
     name: 'TaskStop',
+    argumentAliases: { task_id: 'taskId' },
     description:
       'Stop a tool-managed agent task by ID. This resets in_progress tasks to pending; background process stopping will be wired after BashOutput/KillShell and background agents exist.',
     parameters: {

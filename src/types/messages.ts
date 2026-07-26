@@ -59,6 +59,8 @@ export interface UsageCommandDisplay {
   usage: Usage | null;
   rate?: { inputPerMillion: number; outputPerMillion: number };
   estimatedCostUsd?: number;
+  /** Per-tool call/failure counters for this session, ordered by call count. */
+  toolCallStats?: Array<{ tool: string; calls: number; failures: Record<string, number> }>;
 }
 
 /** Compact completion metadata rendered as a host notification. */

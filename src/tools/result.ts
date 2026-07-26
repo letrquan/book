@@ -124,8 +124,10 @@ export function toolResultErrorMessage(result: ToolResult): string | undefined {
 function rawToolResultModelContent(result: ToolResult): string {
   const content = result.content;
   if (toolResultSucceeded(result)) return content;
+  const remediation = result.structuredError?.remediation;
+  const fix = remediation ? `\nFix: ${remediation}` : '';
   const detail = content ? `\n${content}` : '';
-  return `ERROR [${result.structuredError?.code ?? result.status}]: ${toolResultErrorMessage(result) ?? 'tool failed'}${detail}`;
+  return `ERROR [${result.structuredError?.code ?? result.status}]: ${toolResultErrorMessage(result) ?? 'tool failed'}${fix}${detail}`;
 }
 
 export function toolResultModelContent(result: ToolResult): string {
@@ -200,6 +202,11 @@ export async function boundToolResultOutput(
       : result.content;
   const errorPrefix = `ERROR [${result.structuredError?.code ?? result.status}]: `;
   const errorSource = `${toolResultErrorMessage(result) ?? 'tool failed'}${result.content ? `\n${result.content}` : ''}`;
+  // Reserve room for the "\nFix: <remediation>" line appended at render time so
+  // the remediation survives instead of being re-clipped off the tail.
+  const fixReserve = result.structuredError?.remediation
+    ? Buffer.byteLength(`\nFix: ${result.structuredError.remediation}`)
+    : 0;
   const structuredError = result.structuredError
     ? {
         ...result.structuredError,
@@ -207,7 +214,7 @@ export async function boundToolResultOutput(
           ? clippedOutputPreview(
               errorSource,
               outputPath,
-              Math.max(1, maxBytes - Buffer.byteLength(errorPrefix)),
+              Math.max(1, maxBytes - Buffer.byteLength(errorPrefix) - fixReserve),
             )
           : result.structuredError.message,
       }

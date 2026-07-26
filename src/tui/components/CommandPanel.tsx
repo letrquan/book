@@ -13,6 +13,7 @@ import type {
 } from '../../types/messages.js';
 import { useStaggeredReveal } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
+import { failureTotal, formatFailureCounts } from '../../pricing.js';
 import { padDisplay, truncateDisplay, wordWrap } from './word-wrap.js';
 
 interface CommandPanelProps {
@@ -550,6 +551,38 @@ function UsagePanelBody({
           <Text color={theme.subtle}>No model response recorded in this session yet.</Text>
         </Box>
       )}
+      {data.toolCallStats && data.toolCallStats.length > 0 ? (
+        <Box flexDirection="column">
+          <SectionLabel>tool calls</SectionLabel>
+          <Text color={theme.subtle}>
+            {`${data.toolCallStats.reduce((sum, entry) => sum + entry.calls, 0)} total`}
+            {(() => {
+              const failed = data.toolCallStats.reduce(
+                (sum, entry) => sum + failureTotal(entry.failures),
+                0,
+              );
+              return failed > 0 ? ` · ${failed} failed` : '';
+            })()}
+            {data.toolCallStats.length > 8
+              ? ` · showing 8 of ${data.toolCallStats.length} tools`
+              : ''}
+          </Text>
+          {data.toolCallStats.slice(0, 8).map((entry) => {
+            const failed = failureTotal(entry.failures);
+            return (
+              <Box key={entry.tool} flexWrap="nowrap">
+                <Text color={step >= 8 ? theme.text : theme.subtle}>
+                  {padDisplay(entry.tool, narrow ? 12 : 16)}
+                  {String(entry.calls)}
+                </Text>
+                {failed > 0 ? (
+                  <Text color={theme.error}> · {formatFailureCounts(entry.failures)}</Text>
+                ) : null}
+              </Box>
+            );
+          })}
+        </Box>
+      ) : null}
       <Text color={theme.subtle} dimColor>
         Cost is a local estimate for the active model, not a billing statement.
       </Text>
