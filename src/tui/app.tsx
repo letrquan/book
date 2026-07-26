@@ -499,6 +499,28 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     managedAgents.selectAgent(undefined);
   }, [managedAgents.selectAgent, managedAgents.setSurface]);
 
+  // Tab cycles focus flatly through [main, ...spawned agents], opening each
+  // child's transcript directly. Wrapping past the last agent returns to main.
+  // Returns false when there is nothing to cycle so InputBar can fall back to
+  // its default Tab behavior.
+  const cycleAgentFocus = useCallback((): boolean => {
+    if (!managedAgentUiEnabled) return false;
+    const agents = managedAgents.summaries;
+    if (agents.length === 0) return false;
+    const rows: Array<string | undefined> = [undefined, ...agents.map((agent) => agent.agentId)];
+    const currentId =
+      managedAgents.surface === 'detail' ? managedAgents.selectedAgentId : undefined;
+    const currentIndex = currentId ? rows.indexOf(currentId) : 0;
+    const next = rows[((currentIndex < 0 ? 0 : currentIndex) + 1) % rows.length];
+    if (next === undefined) {
+      returnToMain();
+    } else {
+      managedAgents.selectAgent(next);
+      managedAgents.setSurface('detail');
+    }
+    return true;
+  }, [managedAgentUiEnabled, managedAgents, returnToMain]);
+
   useEffect(() => {
     if (
       queueDrainBlocked ||
@@ -1252,17 +1274,25 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                   <Text color={theme.error}>✕ {error}</Text>
                 </Box>
               )}
-              {managedAgents.surface === 'detail' &&
-              managedAgents.selectedAgentId &&
-              managedAgents.records.get(managedAgents.selectedAgentId) ? (
-                <SubagentDetail
-                  record={managedAgents.records.get(managedAgents.selectedAgentId)!}
-                  liveText={managedAgents.liveText.get(managedAgents.selectedAgentId)}
-                  width={termWidth}
-                  height={termHeight}
-                  reducedMotion={motionDisabled}
-                  screenReader={screenReader}
-                />
+              {managedAgents.surface === 'detail' && managedAgents.selectedAgentId ? (
+                // Viewing a child: never fall back to the main conversation.
+                // The record can briefly lag its summary (a status event lists
+                // an agent before its record is stored), so show a loading
+                // placeholder until it arrives rather than the parent transcript.
+                managedAgents.records.get(managedAgents.selectedAgentId) ? (
+                  <SubagentDetail
+                    record={managedAgents.records.get(managedAgents.selectedAgentId)!}
+                    liveText={managedAgents.liveText.get(managedAgents.selectedAgentId)}
+                    width={termWidth}
+                    height={termHeight}
+                    reducedMotion={motionDisabled}
+                    screenReader={screenReader}
+                  />
+                ) : (
+                  <Box paddingX={1}>
+                    <Text color={theme.subtle}>Loading subagent…</Text>
+                  </Box>
+                )
               ) : (
                 <ChatPanel
                   messages={messages}
@@ -1902,6 +1932,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
               onDraftChange={(value) => {
                 draftRef.current = value;
               }}
+              onCycleAgentFocus={cycleAgentFocus}
               onFocusBackgroundTask={() => {
                 if (managedAgents.surface === 'detail') {
                   if (!managedAgentUiEnabled) return false;

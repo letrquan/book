@@ -63,7 +63,7 @@ export function SubagentPanel({
         selectedIndexRef.current = next;
         setSelectedIndex(next);
         onSelect?.(rows[next]);
-      } else if (key.downArrow) {
+      } else if (key.downArrow || key.tab) {
         const next = (selectedIndexRef.current + 1) % rows.length;
         selectedIndexRef.current = next;
         setSelectedIndex(next);
@@ -80,11 +80,24 @@ export function SubagentPanel({
     { isActive },
   );
   const tiny = width < 42;
+  const maxVisible = 5;
+  // Keep the focused agent inside the window so Tab-cycling never highlights a
+  // row that has scrolled out of view.
+  const focusedAgentIndex = selectedAgentId
+    ? orderedAgents.findIndex((agent) => agent.agentId === selectedAgentId)
+    : -1;
+  const windowStart =
+    focusedAgentIndex < 0
+      ? 0
+      : Math.min(
+          Math.max(0, focusedAgentIndex - (maxVisible - 1)),
+          Math.max(0, orderedAgents.length - maxVisible),
+        );
   const visible = tiny
     ? [orderedAgents.find((agent) => agent.agentId === selectedAgentId) ?? orderedAgents[0]].filter(
         (agent): agent is AgentSummary => Boolean(agent),
       )
-    : orderedAgents.slice(0, 5);
+    : orderedAgents.slice(windowStart, windowStart + maxVisible);
   const activeRowId = rows[selectedIndex];
   const selectedMain = activeRowId === undefined;
   if (agents.length === 0 && !isActive) return null;
@@ -95,6 +108,7 @@ export function SubagentPanel({
       </Text>
       <Box>
         <Text color={selectedMain ? theme.text : theme.subtle} bold={selectedMain}>
+          {' '}
           {selectedMain ? '›' : ' '} ● main
         </Text>
         <Text color={theme.subtle}> current conversation</Text>
@@ -115,8 +129,8 @@ export function SubagentPanel({
       ) : null}
       <Text color={theme.subtle}>
         {isActive
-          ? ' ↑↓ select · Enter open · x stop/dismiss · Esc cancel'
-          : ' ↓ select task · /tasks manage'}
+          ? ' Tab/↑↓ select · Enter open · x stop/dismiss · Esc cancel'
+          : ' Tab switch agent · /tasks manage'}
       </Text>
     </Box>
   );

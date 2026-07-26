@@ -21,9 +21,20 @@ interface PlanApprovalActionsProps extends PlanApprovalProps {
 
 const BUTTONS = [
   { label: 'Approve plan', value: 'approve' as const, key: 'a', colorKey: 'success' as const },
+  {
+    label: 'Approve, fresh context',
+    value: 'approve-fresh' as const,
+    key: 'f',
+    colorKey: 'success' as const,
+  },
   { label: 'Adjust plan', value: 'revise' as const, key: 'e', colorKey: 'warning' as const },
   { label: 'Reject plan', value: 'reject' as const, key: 'r', colorKey: 'error' as const },
 ];
+
+// Minimum terminal width to lay the buttons out in a row; below this they stack.
+// Derived from the labels (each renders as "<prefix><label> (<Key>)" with a margin)
+// so it scales automatically when buttons are added or renamed.
+const ROW_LAYOUT_MIN_WIDTH = BUTTONS.reduce((sum, button) => sum + button.label.length + 8, 0) + 4;
 
 function countSteps(lines: string[]): number {
   return lines.filter((line) => /^\d+[\.\)]\s/.test(line)).length;
@@ -139,8 +150,10 @@ export function PlanApprovalActions({
       resolveOnce('reject');
     } else if (input.toLowerCase() === 'a') {
       resolveOnce('approve');
+    } else if (input.toLowerCase() === 'f') {
+      resolveOnce('approve-fresh');
     } else if (input.toLowerCase() === 'e') {
-      setSelected(1);
+      setSelected(BUTTONS.findIndex((button) => button.value === 'revise'));
       feedbackModeRef.current = true;
       setFeedbackMode(true);
       setFeedbackError(null);
@@ -152,8 +165,8 @@ export function PlanApprovalActions({
   if (screenReader && !feedbackMode) {
     return (
       <Text>
-        Plan approval required. Press A to approve, E to request adjustments, or R or Escape to
-        reject.
+        Plan approval required. Press A to approve, F to approve and implement with a fresh context,
+        E to request adjustments, or R or Escape to reject.
       </Text>
     );
   }
@@ -194,14 +207,20 @@ export function PlanApprovalActions({
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.planMode} paddingX={1}>
-      <Box flexDirection={terminalWidth !== undefined && terminalWidth < 72 ? 'column' : 'row'}>
+      <Box
+        flexDirection={
+          terminalWidth !== undefined && terminalWidth < ROW_LAYOUT_MIN_WIDTH ? 'column' : 'row'
+        }
+      >
         {BUTTONS.map((button, index) => {
           const active = index === selected;
           const color = theme[button.colorKey];
           return (
             <Box
               key={button.value}
-              marginRight={terminalWidth !== undefined && terminalWidth < 72 ? 0 : 2}
+              marginRight={
+                terminalWidth !== undefined && terminalWidth < ROW_LAYOUT_MIN_WIDTH ? 0 : 2
+              }
             >
               <Text
                 backgroundColor={active ? theme.surfaceActive : undefined}
@@ -216,7 +235,10 @@ export function PlanApprovalActions({
         })}
       </Box>
       <Text color={theme.subtle} dimColor>
-        ← → to select · Enter to confirm · A/E/R shortcuts · Esc to reject
+        ← → to select · Enter to confirm · A/F/E/R shortcuts · Esc to reject
+      </Text>
+      <Text color={theme.subtle} dimColor>
+        Fresh context (F) discards the planning conversation and implements the plan clean.
       </Text>
     </Box>
   );

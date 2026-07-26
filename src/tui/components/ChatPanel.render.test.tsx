@@ -80,6 +80,28 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('/help');
   });
 
+  it('renders no welcome banner for an empty managed child transcript', () => {
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={[]}
+          terminalWidth={80}
+          terminalHeight={24}
+          workspace="/tmp/book"
+          model="model-x"
+          mode="managed"
+          commandCount={10}
+          skillCount={2}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).not.toContain('╭ BOOK');
+    expect(output).not.toContain('Your coding workspace, indexed.');
+  });
+
   it('re-emits completed Static history when the viewport epoch changes', () => {
     const messages = [msg('u1', 'user', 'history marker'), msg('a1', 'assistant', 'answer marker')];
     const view = render(

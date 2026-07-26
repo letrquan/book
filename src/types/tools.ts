@@ -6,7 +6,8 @@ import type { AgentConfig, AgentTask, BackgroundShellStore, PermissionMode } fro
 
 export type PermissionResult = 'allow' | 'deny' | 'always';
 
-export type PlanApprovalResult = 'approve' | 'reject' | { decision: 'revise'; feedback: string };
+export type PlanApprovalResult =
+  'approve' | 'approve-fresh' | 'reject' | { decision: 'revise'; feedback: string };
 
 export interface UserQuestionOption {
   label: string;

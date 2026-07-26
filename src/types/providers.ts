@@ -55,6 +55,12 @@ export interface AgentLoopCallbacks {
   onModeChange?: (mode: PermissionMode) => void;
   /** Called when ExitPlanMode submits a plan for host approval. */
   onPlanApprovalRequired?: (plan: string) => Promise<PlanApprovalResult>;
+  /**
+   * Called when the user approves a plan with "fresh context" (`approve-fresh`).
+   * The loop restores the pre-plan mode and stops the current turn; the host is
+   * responsible for reseeding a fresh context with the approved plan.
+   */
+  onPlanHandoff?: (handoff: { plan: string; mode: PermissionMode }) => void;
   /** Called when the root agent or a Task subagent needs structured user input. */
   onUserQuestionRequired?: UserQuestionHandler;
   /**

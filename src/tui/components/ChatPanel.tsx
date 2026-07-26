@@ -129,6 +129,9 @@ export function ChatPanel({
   });
 
   if (timeline.length === 0) {
+    // A managed child transcript must never fall back to the main welcome
+    // banner; callers render their own empty/waiting state around this panel.
+    if (mode === 'managed') return null;
     return (
       <WelcomeScreen
         terminalWidth={terminalWidth ?? 80}

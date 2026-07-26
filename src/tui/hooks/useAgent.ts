@@ -168,6 +168,23 @@ interface SendMessageOptions {
   agentNotifications?: Message['agentNotifications'];
 }
 
+/** Short transcript line shown for a fresh-context handoff (the full plan is the context). */
+const HANDOFF_DISPLAY_MESSAGE = 'Implementing the approved plan with a fresh context.';
+
+/** Frames the approved plan as authoritative task intent for the reseeded implementation turn. */
+function buildHandoffPrompt(plan: string): string {
+  return [
+    'You are implementing a plan that was just approved in a planning session.',
+    'This is a handoff to a fresh context: the plan below is your complete and',
+    'authoritative source of task intent. Implement it step by step. If a step is',
+    'ambiguous, make the reasonable choice and keep going.',
+    '',
+    '<approved-plan>',
+    plan,
+    '</approved-plan>',
+  ].join('\n');
+}
+
 export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const initialTranscript = session.transcript ?? session.history;
   const initialContext = session.contextHistory ?? session.history;
@@ -186,6 +203,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const [usage, setUsage] = useState<Usage | null>(null);
   const [mode, setMode] = useState<PermissionMode>('default');
   const [agentTodos, setAgentTodos] = useState<Todo[]>([]);
+  // Set when the user approves a plan with "fresh context"; a post-send effect
+  // starts a new conversation seeded with the approved plan.
+  const [pendingHandoff, setPendingHandoff] = useState<{
+    plan: string;
+    mode: PermissionMode;
+    generation: number;
+  } | null>(null);
+  // Guards single execution of the handoff reseed. State (not a ref) so releasing it
+  // re-runs the effect to pick up a handoff raised during a prior reseed.
+  const [handoffInFlight, setHandoffInFlight] = useState(false);
   // R1: liveConfig is the mutable config the agent loop reads. `config` (the
   // prop) is the startup snapshot; setModel/setEffort/persistPermissionRule
   // mutate liveConfig so subsequent runAgentLoop calls pick up the change.
@@ -233,6 +260,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const accumulatorRef = useRef<MessageAccumulator | null>(null);
   const hostUsageRef = useRef<Usage | null>(null);
   const lastHostCompactAttemptRef = useRef<string | null>(null);
+  // Plan-handoff request captured from the loop's onPlanHandoff callback, consumed
+  // once the plan-approving send settles.
+  const pendingHandoffRef = useRef<{ plan: string; mode: PermissionMode } | null>(null);
   const timelineStore = session.timelineStore ?? session.store;
 
   useEffect(() => interactions.subscribe(setInteractionSnapshot), [interactions]);
@@ -713,6 +743,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             modeRef.current = newMode;
             setMode(newMode);
           },
+          onPlanHandoff: (handoff) => {
+            if (!stillCurrent()) return;
+            // Consumed after this send settles (see the pending-handoff effect).
+            pendingHandoffRef.current = handoff;
+          },
           onCompact: async (history, usage) => {
             if (!stillCurrent()) {
               return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
@@ -824,6 +859,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         // Nested tool traces remain display-only; the returned history is provider context.
         contextHistoryRef.current = sendResult.messages;
       }
+      // A fresh-context plan approval sets this late in the loop. Always drop it on any
+      // terminal outcome of this send so it can't leak into a later turn; reseed only
+      // when this send completed as the current generation.
+      if (pendingHandoffRef.current) {
+        const handoff = pendingHandoffRef.current;
+        pendingHandoffRef.current = null;
+        if (hostStillCurrent && sendResult.status === 'completed') {
+          setPendingHandoff({ ...handoff, generation });
+        }
+      }
       if (
         hostStillCurrent &&
         (sendResult.status === 'cancelled' ||
@@ -865,6 +910,43 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     },
     [sendMessage],
   );
+
+  // Fresh-context plan handoff: once the plan-approving turn settles, start a new
+  // conversation and reseed it with only the approved plan (like Codex/Claude Code).
+  useEffect(() => {
+    if (!pendingHandoff || handoffInFlight) return;
+    // Abandon if the session moved on (clear/resume/rewind) before we could reseed.
+    if (sessionGenerationRef.current !== pendingHandoff.generation) {
+      setPendingHandoff(null);
+      return;
+    }
+    const handoff = pendingHandoff;
+    setHandoffInFlight(true);
+    const { plan, mode: handoffMode } = handoff;
+    void (async () => {
+      try {
+        log.info('plan handoff: starting fresh conversation');
+        await startNewConversation();
+        modeRef.current = handoffMode;
+        setMode(handoffMode);
+        await sendMessage(HANDOFF_DISPLAY_MESSAGE, undefined, {
+          contextMessage: buildHandoffPrompt(plan),
+          kind: 'conversation',
+        });
+      } catch (err) {
+        log.warn('plan handoff failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        // Surface the loss: the approved plan was not implemented.
+        setError('Failed to start fresh-context implementation; the approved plan was not run.');
+      } finally {
+        // Clear only this request, so a handoff raised during the reseed above survives
+        // and is picked up when handoffInFlight is released.
+        setPendingHandoff((current) => (current === handoff ? null : current));
+        setHandoffInFlight(false);
+      }
+    })();
+  }, [pendingHandoff, handoffInFlight, startNewConversation, sendMessage]);
 
   const sendAgentCompletions = useCallback(
     async (notifications: AgentCompletionNotification[]): Promise<boolean> => {

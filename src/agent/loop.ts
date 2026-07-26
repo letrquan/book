@@ -246,6 +246,8 @@ export async function runAgentLoop(
   let retrySameTurn = false;
   let forcedCompactTurn: number | null = null;
   let effectiveMode = initialMode;
+  /** Set when the user approves a plan with fresh context; ends the turn so the host can reseed. */
+  let handoffRequested: { plan: string; mode: PermissionMode } | null = null;
   const syncHostMode = (): void => {
     const hostMode = callbacks.getMode?.();
     if (hostMode !== undefined) toolContext.currentMode = hostMode;
@@ -922,14 +924,23 @@ export async function runAgentLoop(
             ? 'approve'
             : 'reject';
 
-        if (approval === 'approve') {
+        if (approval === 'approve' || approval === 'approve-fresh') {
           const restoredMode = context.previousMode ?? 'default';
+          const approvedPlan = context.pendingPlanApproval.plan;
           context.currentMode = restoredMode;
           context.previousMode = undefined;
           context.pendingPlanApproval = undefined;
-          result = replaceToolResult(result, {
-            content: `${result.content}\n\nPlan approved. Exited plan mode; mode restored to ${restoredMode}.`,
-          });
+          if (approval === 'approve-fresh') {
+            handoffRequested = { plan: approvedPlan, mode: restoredMode };
+            callbacks.onPlanHandoff?.(handoffRequested);
+            result = replaceToolResult(result, {
+              content: `${result.content}\n\nPlan approved. Handing off to a fresh context to implement (mode: ${restoredMode}).`,
+            });
+          } else {
+            result = replaceToolResult(result, {
+              content: `${result.content}\n\nPlan approved. Exited plan mode; mode restored to ${restoredMode}.`,
+            });
+          }
         } else {
           context.currentMode = 'plan';
           context.pendingPlanApproval = undefined;
@@ -1204,7 +1215,7 @@ export async function runAgentLoop(
       toolResultCount: toolResults.length,
     });
 
-    if (toolCalls.length === 0 || signal?.aborted) {
+    if (toolCalls.length === 0 || signal?.aborted || handoffRequested) {
       break;
     }
   }
