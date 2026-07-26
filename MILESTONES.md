@@ -109,8 +109,8 @@ Plan mode is enforced in the agent loop: read-only exploration/status tools auto
 **Other tools** [PARTIAL ✅ 2026-07-11]:
 
 - [x] `NotebookEdit` — replace/delete cells by ID, insert at the beginning or after a target, preserve unrelated notebook data, and return file mutation diffs
+- [x] `ToolSearch` — deferred/adaptive tool loading to keep initial context lean (`src/tools/tool-search.ts`, `catalog.ts`; capability-scoped next-turn activation)
 - [ ] `ReportFindings` — structured code-review findings output
-- [ ] `ToolSearch` — deferred tool loading to keep initial context lean
 - [ ] `Workflow` — multi-agent orchestration scripts (pipeline/parallel)
 - [ ] `Monitor` — run command in background, react to each output line
 
@@ -224,7 +224,7 @@ Book's Pi-style terminal scrollback and visible per-invocation tool UI are now s
 - [x] Ctrl+L and terminal resize clear and replay the viewport without duplicating completed messages
 - [x] Spinner help no longer advertises unsupported application-level scrolling keys
 
-**Verification:** 713 tests passed (4 skipped), typecheck and production build passed, targeted formatting and diff checks passed, and the UI benchmark showed no material regression. Real Windows ConPTY replay verified a 40-column CJK table, wrapped fenced code, unique completion output, Ctrl+L redraw, resize behavior, and model-picker input isolation. ESLint remains blocked repository-wide because ESLint 10 requires a flat `eslint.config.js` while Book still uses legacy configuration.
+**Verification:** 713 tests passed (4 skipped), typecheck and production build passed, targeted formatting and diff checks passed, and the UI benchmark showed no material regression. Real Windows ConPTY replay verified a 40-column CJK table, wrapped fenced code, unique completion output, Ctrl+L redraw, resize behavior, and model-picker input isolation. (ESLint has since been unblocked: Book migrated to a flat `eslint.config.js`, and `npm run lint` runs clean as part of `npm run check`.)
 
 ---
 
@@ -277,5 +277,5 @@ The `query()` SDK parses its own stdout JSON. Fix it to emit typed events direct
 - **Bundled skills** — `/batch`, `/code-review`, `/simplify`, `/init` (real implementation)
 - **Auth/OAuth** — `/login`, credential management
 - **Observability** — OpenTelemetry, structured logging
-- **Concurrent tool execution** — parallelize independent tool calls
-- **Worktree isolation** — subagents in isolated git worktrees
+- **Concurrent tool execution** ✅ — parallel-safe tool calls run in bounded ordered waves (`src/tools/execution-scheduler.ts`)
+- **Worktree isolation** ✅ — managed patcher/validator agents run in isolated git worktrees (`src/agents/git-isolation.ts`)

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-Application code lives in `src/`. The CLI entry point is `src/index.ts`; reusable SDK exports are in `src/sdk.ts`. Feature areas are grouped by responsibility, including `src/agent/`, `src/cli/`, `src/commands/`, `src/provider/`, `src/session/`, `src/tools/`, and the Ink/React interface in `src/tui/`. Tests are co-located with implementation files as `*.test.ts` or `*.test.tsx`. Documentation and design material live in `docs/` and `plans/`. Build output is generated in `dist/` and should not be edited directly. Repository-local runtime settings belong under `.book/`.
+Application code lives in `src/`. The CLI entry point is `src/index.ts`; reusable SDK exports are in `src/sdk.ts`. Feature areas are grouped by responsibility, including `src/agent/` (core loop), `src/agents/` (managed subagents), `src/cli/`, `src/commands/`, `src/provider/`, `src/session/`, `src/tools/`, `src/rewind/`, shared domain types in `src/types/`, and the Ink/React interface in `src/tui/`. Tests are co-located with implementation files as `*.test.ts` or `*.test.tsx`. Documentation and design material live in `docs/` and `plans/`. Build output is generated in `dist/` and should not be edited directly. Repository-local runtime settings belong under `.book/`.
 
 ## Build, Test, and Development Commands
 
@@ -10,7 +10,9 @@ Application code lives in `src/`. The CLI entry point is `src/index.ts`; reusabl
 - `npm run dev` runs the CLI directly from `src/index.ts` with `tsx`.
 - `npm run build` bundles JavaScript and declarations into `dist/` with `tsup`.
 - `npm run typecheck` checks strict TypeScript types without emitting files.
-- `npm test` builds first, then runs the complete Vitest suite once.
+- `npm test` builds first, then runs the unit, contract, and integration Vitest tiers in sequence.
+- `npm run test:unit` / `npm run test:contract` / `npm run test:integration` run a single tier (skip the build while iterating).
+- `npm run check` is the fast pre-commit gate: format:check, lint, typecheck, architecture:check, unit, and contract.
 - `npm run test:watch` runs tests interactively during development.
 - `npm run test:coverage` produces V8 coverage results.
 - `npm run lint` and `npm run format:check` validate ESLint and Prettier rules.

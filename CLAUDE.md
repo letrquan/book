@@ -1,36 +1,33 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## Project: Book — AI Coding Agent CLI
 
 Book is an open-source, provider-agnostic alternative to Claude Code. It provides an interactive terminal UI (TUI) and headless/CI mode for AI-assisted coding.
 
-**Tech stack**: TypeScript, ES2022/ESM, React (via Ink v6) for TUI, tsup for building, Vitest for testing, Zod for config validation.
+**Tech stack**: TypeScript (ES2022/ESM, `moduleResolution: bundler`), React 19 via Ink v7 for the TUI, tsup for building, Vitest for testing, Zod v4 for config validation. Node.js 20+.
 
-**Version**: `0.1.0` (see `package.json` / `CHANGELOG.md`). Roadmap lives in `MILESTONES.md`.
+**Version**: `0.1.0` (see `package.json` / `CHANGELOG.md`). Roadmap lives in `MILESTONES.md`. `README.md` is the most detailed and current product reference — consult it when a surface here looks thin.
 
 ## Architecture
 
 ```
 src/
   index.ts              CLI entry (Commander.js) — flags + `doctor` / `config` subcommands
-  cli/
-    run.ts              Main interactive / headless action wiring
-    doctor.ts           `book doctor`
-    config-cmd.ts       `book config` get/set/list
-    scrollback.ts       Terminal-native scrollback mode
-    exit.ts             Process exit abstraction
-    utils.ts            Shared CLI helpers
   sdk.ts                Programmatic SDK (`query()` async generator)
-  types.ts              All shared types (no runtime imports)
+  cli/                  run.ts (interactive/headless wiring), doctor.ts, config-cmd.ts,
+                        scrollback.ts, exit.ts (process.exit abstraction), utils.ts
+  types/                Shared domain types (no runtime imports). NOTE: a top-level
+                        src/types.ts hub is FORBIDDEN by the architecture check.
   config.ts             Config loading (env vars, settings.json, legacy .bookrc.json)
-  settings.ts           Zod schemas for settings
-  settings-loader.ts    Layered settings resolver (~/.book → .book → .book/settings.local.json)
-  settings-redaction.ts Redact secrets when dumping settings
+  settings*.ts          settings.ts (Zod schemas), settings-loader.ts (layered resolver),
+                        settings-redaction.ts (redact secrets on dump)
   frontmatter.ts        Shared YAML frontmatter parser
   permissions.ts        Permission rule parsing/evaluation
   hooks.ts              Lifecycle hook runner (JSON-over-stdio contract)
   sandbox.ts            Bash sandbox via bubblewrap
-  claude-md.ts          CLAUDE.md / rules tree-walk loader
+  claude-md.ts          CLAUDE.md / AGENTS.md / rules tree-walk loader
   skills.ts             Skill discovery from .book/skills/
   subagent.ts           Subagent runner
   subagent-discovery.ts Subagent discovery from .book/agents/
@@ -44,21 +41,27 @@ src/
   debug-log.ts          Debug logging (BOOK_DEBUG*)
   secret-detect.ts      Reject secret/unfit text before memory writes
   async.ts              Small async utilities
-  memory-store.ts       File-based auto-memory store + MEMORY.md index
-  memory-autosave.ts    Detect/capture memory candidates from user turns
-  memory-display.ts     /memory rendering helpers
+  memory-*.ts           memory-store.ts (file store + MEMORY.md index),
+                        memory-autosave.ts (capture candidates), memory-display.ts (/memory)
   agent/
     loop.ts             Core agent loop (runAgentLoop)
     context.ts          System prompt builder (two-zone cache split), message formatter
     compact.ts          Context compaction logic
+    tool-discovery.ts   Capability-scoped tool activation / ToolSearch gating
+  agents/               Managed-agent subsystem (explorer/patcher/validator profiles):
+                        manager.ts, store.ts (atomic JSON state), profiles.ts,
+                        profile-resolver.ts, capabilities.ts, git-isolation.ts (worktrees),
+                        check.ts, evaluation.ts, completion-notification.ts, importer.ts,
+                        activity.ts, projections.ts, diagnostics.ts, naming.ts, types.ts
+  rewind/               /rewind snapshots: snapshot-store.ts, environment.ts
+  input/                file-mentions.ts (@file), input-expansion.ts
   commands/
     builtins.ts         Built-in slash command catalog
     builtins-prompts.ts Prompt bodies for agent-backed commands (/init, /review, …)
     init-prompt.ts      /init prompt template
     loader.ts           Slash command discovery from .book/commands/*.md
     resolve.ts          Argument parsing, variable/shell substitution, env var resolution
-    filter.ts           Command menu filtering
-    recent.ts           Recent-command helpers
+    filter.ts / recent.ts  Command menu filtering, recent-command helpers
   provider/
     index.ts            Provider auto-detect (anthropic vs openai-compatible)
     anthropic.ts        Anthropic Messages SSE client (caching, thinking, effort)
@@ -69,121 +72,111 @@ src/
     resolve.ts          Launch-time session resolution (--resume/--continue/…)
     lifecycle.ts        Session start/end hooks + generation guards
   tools/
-    registry.ts         Tool registry (createRegistry, createDefaultRegistry)
-    aliases.ts          Tool name aliases (legacy → canonical)
-    primary-arg.ts      Extract primary arg from tool args
-    glob-regex.ts       Glob-to-regex converter
-    path-utils.ts       Path safety helpers
+    registry.ts / registry-core.ts  Tool registry (createRegistry, createDefaultRegistry)
+    catalog.ts          Provider-neutral capability catalog
+    tool-search.ts      ToolSearch (activate authorized tools on next turn)
+    capability-rules.ts Capability intersection (command/skill/agent/mode/state)
     tool-capabilities.ts  Read-only / mutating / plan-mode capability flags
+    execution-scheduler.ts  Parallel-safe wave scheduling (see conventions)
+    aliases.ts          Tool name aliases (legacy → canonical)
+    primary-arg.ts / path-utils.ts / glob-regex.ts / gitignore.ts / schema.ts  helpers
     file.ts             Read/Write/Edit/MultiEdit/Glob/Grep
-    notebook.ts         NotebookEdit
+    patch.ts            ApplyPatch (preferred source-mutation tool; Codex-style envelope)
+    mutation.ts / patch-rollback  Mutation orchestration + rollback
+    file-provenance.ts  File freshness tracking for compaction reuse
     shell.ts            Bash / BashOutput / KillShell (+ run_in_background)
     git.ts              Git tools
-    web.ts              WebFetch/WebSearch
-    todo.ts             TodoWrite tool
+    web.ts              WebFetch / WebSearch
+    todo.ts             TodoWrite
     tasks.ts            TaskCreate/List/Get/Update/Stop
-    plan-mode.ts        EnterPlanMode / ExitPlanMode
-    ask-user-question.ts AskUserQuestion validation and pending-request tool
-    diff.ts             Unified diff generator
-    gitignore.ts        .gitignore loader
-    skills-tool.ts      InvokeSkill tool
+    agent-tools.ts      Managed-agent lifecycle tools (AgentSpawn/Read/Wait, Check, …)
     task-tool.ts        Task (subagent) tool
-  tui/
-    app.tsx             Root Ink/React component (slash-command dispatch, overlays)
-    theme.ts            Theme context and custom theme loader
-    status-indicators.ts  Shared status icons
-    mode-style.ts       Permission-mode labels/colors
-    model-options.ts    Model picker data
-    file-mentions.ts    @file mention resolution
-    input-expansion.ts  Input expansion helpers
-    mouse.ts            Mouse / scroll handling
-    persist.ts          TUI-side session persistence helpers
-    debug.ts            TUI debug instrumentation
-    tool-traces.ts      Nested tool-trace bookkeeping
-    transcript-scroll.ts  In-app transcript scrolling
-    hooks/
-      useAgent.ts       Core agent state hook
-      useAnimation.ts   Animation hook
-      useGitStatus.ts   Git status polling
-      useTasks.ts       User task list hook
-      message-accumulator.ts  Streaming message accumulation
-      streaming-state.ts      Stream phase state
-    components/
-      CommandMenu.tsx         / command autocomplete menu
-      FileMentionMenu.tsx     @ mention picker
-      ChatPanel.tsx           Message list renderer
-      TranscriptView.tsx      Transcript viewport
-      InputBar.tsx            Text input with mode indicator
-      StatusLine.tsx          Status bar
-      ToolCallBlock.tsx       Collapsible tool call display
-      tool-output.ts          Tool output formatting
-      PermissionButtons.tsx   Permission prompt UI
-      PlanApprovalButtons.tsx Plan-mode approval UI
-      AskUserQuestionWizard.tsx Structured root/subagent question wizard
-      AgentMessage.tsx        Assistant message renderer
-      UserMessage.tsx         User message renderer
-      MarkdownBlock.tsx       Markdown (tables, code, highlight)
-      markdown-layout.ts      Width-aware markdown layout
-      syntax-highlight.ts     Code fence highlighting
-      word-wrap.ts            Display-width wrapping
-      AgentTodoList.tsx       Agent todo list (TodoWrite)
-      TaskList.tsx            User task list
-      Bookplate.tsx           Compact editorial BOOK mark
-      WelcomeScreen.tsx       Responsive startup welcome
-      Spinner.tsx / WorkingIndicator.tsx
-      Diff.tsx                Diff rendering
-      ModelPicker.tsx         Model + effort picker
-      ThemePicker.tsx         /theme palette picker
-      ByokWizard.tsx          BYOK provider setup
-      SessionPicker.tsx       /resume session picker
-      ErrorBoundary.tsx       React error boundary for TUI
-      transcript-messages.ts  Shared transcript message mapping
+    session-history.ts  Session-reference retrieval for compacted context
+    plan-mode.ts        EnterPlanMode / ExitPlanMode
+    ask-user-question.ts  AskUserQuestion validation + pending-request tool
+    notebook.ts         NotebookEdit
+    skills-tool.ts      InvokeSkill
+    diff.ts             Unified diff generator
+  test/                 Shared test doubles (scripted-provider, async-event-collector)
+  tui/                  Ink/React TUI (see below) — a leaf of the import graph
+  __benchmarks__/       ui.bench.tsx (bench:ui), runtime.bench.ts (bench:runtime)
 ```
+
+The `tui/` tree (root `app.tsx`, `hooks/`, and `components/`) is broad but discoverable; browse it directly. Key entry points: `tui/app.tsx` (slash-command dispatch, overlays), `tui/hooks/useAgent.ts` (core agent state), `tui/components/ChatPanel.tsx` / `TranscriptView.tsx` (rendering).
 
 ## Key conventions
 
-- **No circular imports**: Entry points (`index.ts`, `sdk.ts`) are never imported by modules. TUI modules are leaves of the import graph.
+`scripts/check-architecture.ts` (run via `npm run architecture:check`, part of `npm run check`) enforces these as hard rules — a violation fails the build:
+
+- **No `src/types.ts` hub**: shared domain types live in `src/types/*`. A top-level `types.ts` file is rejected outright.
+- **No import cycles** anywhere in `src/`.
+- **Entry points are never imported**: implementation modules must not import `index.ts` or `sdk.ts`.
+- **`tui/` is a leaf**: non-TUI code must not import from `tui/`.
+- **No blocking child-process APIs**: production code must not use `execFileSync` / `execSync` / `spawnSync`. Use async spawns.
+
+Other conventions:
+
 - **Shared utilities live in dedicated files**: `frontmatter.ts`, `tools/aliases.ts`, `tools/primary-arg.ts`, `tools/glob-regex.ts`, `tui/status-indicators.ts`, `tui/mode-style.ts`.
-- **Module-level mutable state is eliminated**: State flows through `ToolContext`, `AgentConfig`, or explicit parameters (session task/shell maps live on config for continuity).
-- **Tool names**: PascalCase (Read, Write, GitStatus, WebFetch, TaskCreate, EnterPlanMode, …). Legacy snake_case names handled via `tools/aliases.ts` for execution only — not exposed as model-facing tools.
+- **Module-level mutable state is eliminated**: state flows through `ToolContext`, `AgentConfig`, or explicit parameters (session task/shell maps live on config for continuity).
+- **Tool names**: PascalCase (Read, Write, GitStatus, WebFetch, TaskCreate, ApplyPatch, EnterPlanMode, …). Legacy snake_case names (e.g. `apply_patch`) map to canonical names via `tools/aliases.ts` for execution only — not exposed as model-facing tools.
+- **`ApplyPatch` is the preferred source-mutation tool** (Codex-style `*** Begin Patch` envelope). `Write` is for full-file replacement; `Edit`/`MultiEdit` remain for compatibility. See README "File mutations".
+- **Tool discovery**: a practical core stays loaded; `ToolSearch` activates up to five authorized tools on the next turn, always within the current command/skill/agent-role/permission-mode/state capability intersection (`tools/capability-rules.ts`).
+- **Tool execution is serial by default**; only an explicitly reviewed parallel-safe set (`Read`, `Glob`, `Grep`, `GitStatus`, `GitDiff`, `GitLog`, `GitBranch`) runs in bounded ordered waves via `tools/execution-scheduler.ts`.
 - **Permission modes** (internal): `default` | `auto` | `plan` | `accept-edits` | `dontAsk` | `bypassPermissions`. CLI/settings accept `acceptEdits` and normalize to `accept-edits`.
 - **System prompt**: `buildSystemPromptZones()` produces a cacheable static prefix + dynamic per-turn suffix (Anthropic prompt caching).
-- **`process.exit()` should use the `cli/exit.ts` abstraction** (allows test injection).
+- **`process.exit()` goes through the `cli/exit.ts` abstraction** (allows test injection).
 
 ## Testing
 
-- Framework: Vitest
-- Run: `npm test` (single run), `npm run test:watch` (watch mode)
-- Coverage: `npm run test:coverage`
-- Tests are co-located with source (`*.test.ts` / `*.test.tsx`)
-- Use `mkdtempSync` for temp directories (cleanup via `afterEach`)
-- UI micro-benchmarks: `npm run bench:ui`
+Framework: Vitest, with a shared `vitest.config.ts` base and three tiers (each its own config):
+
+- `npm run test:unit` — deterministic unit suite (`vitest.unit.config.ts`, `maxWorkers: 4`). Excludes contract tests and a few heavy integration tests.
+- `npm run test:contract` — `*.contract.test.ts` only (`vitest.contract.config.ts`).
+- `npm run test:integration` — the heavy PTY/process/git-isolation tests, pinned to one worker (`vitest.integration.config.ts`, `maxWorkers: 1`).
+- `npm test` — runs `pretest` (a full `npm run build`) then all three tiers in sequence. Prefer a single tier while iterating; the build step makes the full run slow.
+
+Run a single test file or name (skip the build by targeting a config directly):
+
+```bash
+npx vitest run --config vitest.unit.config.ts src/pricing.test.ts
+npx vitest run --config vitest.unit.config.ts -t "redacts provider secrets"
+npm run test:watch     # watch mode (base config)
+```
+
+- Tests are co-located with source (`*.test.ts` / `*.test.tsx`; contract tests are `*.contract.test.ts`).
+- Use `mkdtempSync` for temp directories (cleanup via `afterEach`).
+- Shared test doubles live in `src/test/` (`scripted-provider`, `async-event-collector`).
 
 ## Development
 
 ```bash
-npm run typecheck    # Type-check only
-npm test             # Run tests
-npm run test:watch   # Watch mode
-npm run build        # Build (tsup → dist/)
-npm run dev          # Run directly via tsx
-npm run lint         # ESLint
-npm run format       # Prettier format
-npm run format:check # Check formatting
-npm run bench:ui     # TUI benchmarks
+npm run typecheck          # tsc --noEmit
+npm run check              # format:check + lint + typecheck + architecture:check + unit + contract
+                           #   (the closest thing to a pre-commit gate)
+npm run architecture:check # enforce the layering rules above
+npm run lint               # ESLint (--max-warnings 0)
+npm run format             # Prettier write
+npm run format:check       # Prettier check
+npm run build              # tsup → dist/
+npm run dev                # run directly via tsx (src/index.ts)
+npm run bench:ui           # TUI micro-benchmarks
+npm run bench:runtime      # runtime benchmarks
 ```
+
+`npm run check` is the fast gate (no integration tests, no build). Run `npm test` before a release-grade change. Release tooling: `npm run release:check` (version + audit + package smoke).
 
 ## Configuration
 
 Settings are loaded in priority order (last wins):
+
 1. `~/.book/settings.json` (user-global)
 2. `.book/settings.json` (project)
 3. `.book/settings.local.json` (local, gitignored)
 4. `--settings <path>` CLI flag
 
-Legacy `.bookrc.json` is still supported but deprecated. `--no-settings` skips all `settings.json` layers.
+Scalar values take the highest-priority layer. Permission rules, hook lists, and `additionalDirectories` accumulate across layers; other arrays are replaced by the highest layer that defines them. Legacy `.bookrc.json` is still supported but deprecated. `--no-settings` skips all `settings.json` layers. Local writes are atomic and validate the whole document before replacing the file.
 
-Env overrides commonly used in development: `BOOK_API_KEY`, `BOOK_BASE_URL`, `BOOK_MODEL`, `BOOK_PROVIDER`, `BOOK_EFFORT`, `BOOK_DEBUG*`.
+Env overrides commonly used in development: `BOOK_API_KEY`, `BOOK_BASE_URL`, `BOOK_MODEL`, `BOOK_PROVIDER`, `BOOK_EFFORT`, `BOOK_WORKSPACE`, `BOOK_DEBUG*`.
 
 ## Notable product surfaces (keep docs in sync)
 
@@ -192,5 +185,7 @@ When changing these, update `README.md` / `CHANGELOG.md` / `MILESTONES.md` as ap
 - CLI flags and subcommands in `src/index.ts` + `src/cli/`
 - Built-in slash commands in `src/commands/builtins.ts` (+ dispatch in `src/tui/app.tsx`)
 - Default tool set in `src/tools/registry.ts` `createDefaultRegistry()`
-- Permission modes in `src/types.ts` `PermissionMode`
+- Permission modes: `PermissionMode` in `src/types/runtime.ts`
 - Memory paths and approval flow in `src/memory-store.ts` / `src/memory-autosave.ts`
+- Managed-agent behavior in `src/agents/` (README "Managed agents" is the detailed spec)
+```
