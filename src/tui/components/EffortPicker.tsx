@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from 'ink';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTheme } from '../theme.js';
 import type { EffortLevel, EffortResult } from '../../commands/effort.js';
 
@@ -24,13 +24,16 @@ export function EffortPicker({ current, availableLevels, onSelect, onCancel }: E
     const currentIndex = current ? availableLevels.indexOf(current) : -1;
     return currentIndex >= 0 ? currentIndex : 0;
   });
+  const selectedRef = useRef(selected);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
     const currentIndex = current ? availableLevels.indexOf(current) : -1;
     setSelected((index) => {
-      if (currentIndex >= 0) return currentIndex;
-      return Math.min(index, Math.max(0, availableLevels.length - 1));
+      const next =
+        currentIndex >= 0 ? currentIndex : Math.min(index, Math.max(0, availableLevels.length - 1));
+      selectedRef.current = next;
+      return next;
     });
   }, [availableLevels, current]);
 
@@ -41,17 +44,25 @@ export function EffortPicker({ current, availableLevels, onSelect, onCancel }: E
     }
     if (availableLevels.length === 0) return;
     if (key.upArrow) {
-      setSelected((index) => (index - 1 + availableLevels.length) % availableLevels.length);
+      setSelected((index) => {
+        const next = (index - 1 + availableLevels.length) % availableLevels.length;
+        selectedRef.current = next;
+        return next;
+      });
       setError(undefined);
       return;
     }
     if (key.downArrow) {
-      setSelected((index) => (index + 1) % availableLevels.length);
+      setSelected((index) => {
+        const next = (index + 1) % availableLevels.length;
+        selectedRef.current = next;
+        return next;
+      });
       setError(undefined);
       return;
     }
     if (key.return) {
-      const level = availableLevels[selected];
+      const level = availableLevels[selectedRef.current];
       if (!level) return;
       const result = onSelect(level);
       if (!result.ok) setError(result.error ?? 'Could not save the selected effort level.');

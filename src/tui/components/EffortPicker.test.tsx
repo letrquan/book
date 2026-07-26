@@ -53,6 +53,16 @@ describe('EffortPicker', () => {
     expect(onSelect).toHaveBeenCalledWith('xhigh');
   });
 
+  it('selects the latest level when Enter immediately follows navigation', async () => {
+    const { view, onSelect } = renderPicker();
+
+    view.stdin.write('\x1b[B');
+    view.stdin.write('\r');
+    await wait(75);
+
+    expect(onSelect).toHaveBeenCalledWith('xhigh');
+  });
+
   it('wraps within a restricted level list', async () => {
     const { view, onSelect } = renderPicker({
       current: 'high',
