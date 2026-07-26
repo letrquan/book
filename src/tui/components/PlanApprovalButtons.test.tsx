@@ -42,6 +42,28 @@ describe('PlanApprovalButtons', () => {
     expect(onResolve).toHaveBeenCalledWith('approve');
   });
 
+  it('resolves approve-fresh with the F shortcut', () => {
+    const onResolve = vi.fn();
+    const view = render(
+      withTheme(<PlanApprovalButtons plan="Review the proposed changes." onResolve={onResolve} />),
+    );
+
+    view.stdin.write('f');
+
+    expect(onResolve).toHaveBeenCalledOnce();
+    expect(onResolve).toHaveBeenCalledWith('approve-fresh');
+  });
+
+  it('offers the fresh-context approval option', () => {
+    const view = render(
+      withTheme(<PlanApprovalButtons plan="Review the proposed changes." onResolve={vi.fn()} />),
+    );
+
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain('Approve, fresh context');
+    expect(output).toContain('(F)');
+  });
+
   it('collects feedback when the user requests plan adjustments', async () => {
     const onResolve = vi.fn();
     const view = render(

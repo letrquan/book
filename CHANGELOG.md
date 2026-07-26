@@ -6,6 +6,9 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Fresh-context plan handoff: an "Approve, fresh context" option (shortcut `F`) at the plan-approval
+  prompt stops the planning turn and starts a new conversation seeded with only the approved plan —
+  the implementation runs with a clean context window, like Codex/Claude Code handoff.
 - Bounded, session-wide concurrent execution for explicitly reviewed read-only file and Git tools,
   with ordered serial barriers, all-settled sibling results, duplicate-call rejection, and shared
   root/managed-child scheduling.

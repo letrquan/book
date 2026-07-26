@@ -1718,6 +1718,64 @@ describe('runAgentLoop plan mode', () => {
     expect(results[0].content).toMatch(/Plan approved/);
   });
 
+  it('hands off to a fresh context and stops the turn when approval is approve-fresh', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          toolCallStream([{ id: 'exit_1', name: 'ExitPlanMode', arguments: '{"plan":"Do it."}' }]),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const registry = createRegistry();
+    registry.register({
+      name: 'ExitPlanMode',
+      description: 'Exit plan mode',
+      parameters: {
+        type: 'object',
+        properties: { plan: { type: 'string' } },
+        required: ['plan'],
+      },
+      execute: async (_args, ctx) => {
+        ctx.previousMode = 'default';
+        ctx.pendingPlanApproval = { plan: 'Do it.' };
+        return toolSuccess('submitted');
+      },
+    });
+
+    const modes: string[] = [];
+    const handoffs: Array<{ plan: string; mode: string }> = [];
+    const results: ToolResult[] = [];
+    let approvalCalls = 0;
+    // maxTurns:5 so a non-handoff approval WOULD re-invoke the model; the handoff
+    // must stop after the first turn instead.
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 5 }),
+      registry,
+      'plan',
+      [],
+      noopCallbacks({
+        onModeChange: (newMode: string) => modes.push(newMode),
+        onPlanApprovalRequired: async () => {
+          approvalCalls++;
+          return 'approve-fresh';
+        },
+        onPlanHandoff: (handoff) => handoffs.push(handoff),
+        onToolResult: (result: ToolResult) => results.push(result),
+      }),
+      'plan',
+    );
+
+    expect(approvalCalls).toBe(1);
+    // The turn ended after ExitPlanMode; the model was not called again in stale context.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(handoffs).toEqual([{ plan: 'Do it.', mode: 'default' }]);
+    expect(modes).toEqual(['default']);
+    expect(results[0]).toMatchObject({ status: 'success' });
+    expect(results[0].content).toMatch(/Handing off to a fresh context/);
+  });
+
   it('ExitPlanMode keeps plan mode when approval is rejected', async () => {
     vi.stubGlobal(
       'fetch',

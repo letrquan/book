@@ -63,6 +63,7 @@ export interface AgentSessionRunCallbacks {
   onHookEvent?: AgentLoopCallbacks['onHookEvent'];
   onPermissionRequired?: AgentLoopCallbacks['onPermissionRequired'];
   onPlanApprovalRequired?: AgentLoopCallbacks['onPlanApprovalRequired'];
+  onPlanHandoff?: AgentLoopCallbacks['onPlanHandoff'];
   onUserQuestionRequired?: AgentLoopCallbacks['onUserQuestionRequired'];
   userQuestionStatus?: 'pending' | 'unavailable';
 }
@@ -686,6 +687,7 @@ export class AgentSession {
           },
           getMode: callbacks.getMode,
           onModeChange: callbacks.onModeChange,
+          onPlanHandoff: callbacks.onPlanHandoff,
           onCompact: callbacks.onCompact,
           onAssistantMessageComplete: (message) => {
             if (request.isCurrent?.() === false) return;
