@@ -107,7 +107,7 @@ describe('managed agent transcript projection', () => {
     expect(rootMessage.nestedToolInvocations).toBeUndefined();
   });
 
-  it('shows the newest three calls and summarizes older tool uses', () => {
+  it('shows only the newest call and summarizes older tool uses', () => {
     const traces = projectManagedAgentTraces(
       [rootMessage],
       new Map([['agent-1', childRecord()]]),
@@ -136,10 +136,10 @@ describe('managed agent transcript projection', () => {
     const output = view.lastFrame() ?? '';
 
     expect(output).not.toContain('first-command');
-    expect(output).toContain('second-command');
-    expect(output).toContain('third-command');
+    expect(output).not.toContain('second-command');
+    expect(output).not.toContain('third-command');
     expect(output).toContain('fourth-command');
-    expect(output).toContain('+1 tool use');
+    expect(output).toContain('+3 tool uses');
   });
 
   it('reconciles live activity with transcript results without duplicate rows', () => {
@@ -203,7 +203,7 @@ describe('managed agent transcript projection', () => {
     const output = view.lastFrame() ?? '';
 
     expect(output).toContain('Subagent explorer, Trace authentication');
-    expect(output).toContain('1 earlier tool uses hidden');
+    expect(output).toContain('3 earlier tool uses hidden');
     expect(output).toContain('Down then Enter');
   });
 });

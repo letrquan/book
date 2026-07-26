@@ -6,7 +6,7 @@ import { useTheme } from '../theme.js';
 import { truncateDisplay } from './word-wrap.js';
 import { Spinner } from './Spinner.js';
 
-const MAX_VISIBLE_TOOL_USES = 3;
+const MAX_VISIBLE_TOOL_USES = 1;
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'stopped', 'interrupted']);
 
 function useCurrentTime(active: boolean): number {
