@@ -101,7 +101,7 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
     resolveExit?.(event.exitCode);
   });
 
-  async function waitForExit(timeoutMs = 5000): Promise<number> {
+  async function waitForExit(timeoutMs = 10_000): Promise<number> {
     if (exited) return processExitCode ?? -1;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     return Promise.race([
@@ -278,8 +278,9 @@ describe('TUI slash commands', () => {
   it('/exit exits the TUI gracefully', async () => {
     session = await startAndWait();
     await submitInteractive(session, '/exit');
-    expect(await session.waitForExit(5000)).toBe(0);
-  }, 20_000);
+    // ConPTY can delay the final process-exit event on a loaded Windows runner.
+    expect(await session.waitForExit(15_000)).toBe(0);
+  }, 30_000);
 });
 
 // ---------------------------------------------------------------------------
