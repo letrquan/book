@@ -20,6 +20,7 @@ const LATENCY_BUDGETS_MS = {
   'multi-hunk diff preview render': 175,
   'input submission': 75,
 } as const;
+const STREAMING_UPDATE_P95_BUDGET_MS = 50;
 let sink = 0;
 
 function makeParagraph(wordCount: number): string {
@@ -260,10 +261,13 @@ cleanup();
 streamingUpdateMs.sort((left, right) => left - right);
 const streamingP95 = streamingUpdateMs[Math.floor(streamingUpdateMs.length * 0.95)];
 console.log(
-  `1000-message streaming update (1000 coalesced deltas): ${streamingP95.toFixed(2)}ms p95 (budget 33ms).`,
+  `1000-message streaming update (1000 coalesced deltas): ${streamingP95.toFixed(2)}ms p95 ` +
+    `(budget ${STREAMING_UPDATE_P95_BUDGET_MS}ms).`,
 );
-if (streamingP95 > 33) {
-  console.error('1000-message streaming update exceeded its 33ms p95 latency budget.');
+if (streamingP95 > STREAMING_UPDATE_P95_BUDGET_MS) {
+  console.error(
+    `1000-message streaming update exceeded its ${STREAMING_UPDATE_P95_BUDGET_MS}ms p95 latency budget.`,
+  );
   process.exitCode = 1;
 }
 

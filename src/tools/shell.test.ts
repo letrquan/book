@@ -112,6 +112,25 @@ describe('Bash shell tools', () => {
     },
   );
 
+  it.skipIf(process.platform === 'win32')(
+    'terminates the foreground process tree after a timeout',
+    async () => {
+      const c = { ...ctx(), workspaceRoot: process.cwd() };
+      const marker = join(dir, 'timed-out-process-survived.txt');
+      const command = nodeCommand(
+        'timeout-foreground.cjs',
+        `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 250);\nsetInterval(() => {}, 1000);\n`,
+      );
+
+      const result = await bash.execute({ command, timeout: 50 }, c);
+
+      expect(result.status).toBe('error');
+      expect(result.structuredError?.message).toMatch(/timed out/i);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(existsSync(marker)).toBe(false);
+    },
+  );
+
   it('starts a background shell and returns a shell ID quickly', async () => {
     const c = ctx();
     const command = nodeCommand(

@@ -247,10 +247,16 @@ function waitForClose(shell: BackgroundShellRecord, timeoutMs: number): Promise<
   const proc = shell.process;
   if (!proc) return Promise.resolve(true);
 
+  return waitForProcessClose(proc, timeoutMs);
+}
+
+function waitForProcessClose(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve(true);
+
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       cleanup();
-      resolve(shell.finishedAt !== undefined);
+      resolve(proc.exitCode !== null || proc.signalCode !== null);
     }, timeoutMs);
     const onClose = () => {
       cleanup();
@@ -285,6 +291,15 @@ async function requestProcessTreeTermination(
   } catch {
     proc.kill(signal);
   }
+}
+
+async function terminateForegroundProcess(proc: ChildProcess): Promise<void> {
+  await requestProcessTreeTermination(proc, proc.pid, 'SIGTERM');
+  if (await waitForProcessClose(proc, TERMINATE_GRACE_MS)) return;
+  if (process.platform === 'win32') return;
+
+  await requestProcessTreeTermination(proc, proc.pid, 'SIGKILL');
+  await waitForProcessClose(proc, TERMINATE_GRACE_MS);
 }
 
 async function terminateShell(
@@ -330,11 +345,12 @@ async function bashForeground(
   return new Promise((resolve) => {
     let proc: ChildProcess;
     try {
-      proc = exec(built.effectiveCommand, {
+      proc = spawn(built.effectiveCommand, {
         cwd: built.workdir,
-        timeout,
-        maxBuffer: MAX_FOREGROUND_BUFFER,
         env: { ...process.env, ...ctx.env },
+        shell: true,
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
       ctx.runtime?.trackChildProcess(proc);
     } catch (error) {
@@ -346,9 +362,17 @@ async function bashForeground(
     let stderr = '';
     let settled = false;
     let cancelled = false;
+    let timedOut = false;
+    let bufferExceeded = false;
     let termination: Promise<void> | undefined;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      termination ??= terminateForegroundProcess(proc);
+      void finish(fail(`Command timed out after ${timeout}ms`, stdout));
+    }, timeout);
 
     const cleanup = () => {
+      clearTimeout(timer);
       ctx.signal?.removeEventListener('abort', onAbort);
       ctx.runtime?.releaseChildProcess(proc);
     };
@@ -366,22 +390,26 @@ async function bashForeground(
     const onAbort = () => {
       if (cancelled) return;
       cancelled = true;
-      termination = requestProcessTreeTermination(proc, proc.pid, 'SIGTERM');
+      termination = terminateForegroundProcess(proc);
       void finish(fail('Command cancelled'));
     };
 
-    proc.stdout?.on('data', (data) => {
-      stdout += data;
-    });
-    proc.stderr?.on('data', (data) => {
-      stderr += data;
-    });
+    const append = (target: 'stdout' | 'stderr', data: unknown) => {
+      const chunk = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
+      if (target === 'stdout') stdout += chunk;
+      else stderr += chunk;
+      if (stdout.length + stderr.length <= MAX_FOREGROUND_BUFFER || bufferExceeded) return;
+
+      bufferExceeded = true;
+      termination ??= terminateForegroundProcess(proc);
+      void finish(fail(`Command output exceeded ${MAX_FOREGROUND_BUFFER} characters`, stdout));
+    };
+
+    proc.stdout?.on('data', (data) => append('stdout', data));
+    proc.stderr?.on('data', (data) => append('stderr', data));
 
     proc.on('close', (code) => {
-      if (cancelled) {
-        void finish(fail('Command cancelled'));
-        return;
-      }
+      if (cancelled || timedOut || bufferExceeded) return;
       if (code === 0) {
         void finish(ok((built.sandboxed ? '[sandboxed] ' : '') + (stdout || '(no output)')));
       } else {
@@ -390,7 +418,8 @@ async function bashForeground(
     });
 
     proc.on('error', (err) => {
-      void finish(fail(cancelled ? 'Command cancelled' : err.message));
+      if (cancelled || timedOut || bufferExceeded) return;
+      void finish(fail(err.message));
     });
 
     ctx.signal?.addEventListener('abort', onAbort, { once: true });

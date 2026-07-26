@@ -17,7 +17,8 @@ export default mergeConfig(
         'src/tools/shell.test.ts',
         'src/tui/tui-integration.test.ts',
       ],
-      maxWorkers: 4,
+      // Ink and process-lifecycle tests share host-level stdin/listener state.
+      maxWorkers: 1,
     },
   }),
 );
