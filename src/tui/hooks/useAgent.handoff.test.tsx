@@ -106,7 +106,7 @@ describe('useAgent plan handoff', () => {
     handoffState.plansToFire = ['Refactor the parser and add tests.'];
 
     await latest!.send('please plan this');
-    await waitFor(() => loopCalls.length >= 2);
+    await waitFor(() => loopCalls.length >= 2 && latest!.sessionId !== sessionId);
 
     // A brand-new conversation was started for the implementation.
     expect(latest!.sessionId).not.toBe(sessionId);
@@ -145,7 +145,7 @@ describe('useAgent plan handoff', () => {
     handoffState.plansToFire = ['PLAN_1', 'PLAN_2'];
 
     await latest!.send('please plan this');
-    await waitFor(() => loopCalls.length >= 3);
+    await waitFor(() => loopCalls.length >= 3 && latest!.sessionId !== sessionId);
 
     // Three loop runs: planning, PLAN_1 impl (which re-plans), PLAN_2 impl.
     expect(loopCalls).toHaveLength(3);

@@ -101,8 +101,9 @@ describe('MCP connection safety', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const item = fixture({ healthy: 'success', silent: 'silence' });
     const result = await connectMcpServers(item.workspace, {
-      initializationTimeoutMs: 50,
-      requestTimeoutMs: 100,
+      // Two child processes can take longer to start on a loaded Windows runner.
+      initializationTimeoutMs: 250,
+      requestTimeoutMs: 250,
     });
 
     expect(result.connections.map((connection) => connection.name)).toEqual(['healthy']);
