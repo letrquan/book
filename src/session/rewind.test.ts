@@ -8,7 +8,7 @@ import type {
   SessionRecord,
   TurnCheckpointRecordData,
 } from '../types/sessions.js';
-import type { Message } from '../types/messages.js';
+import type { ImageAttachment, Message } from '../types/messages.js';
 import { SessionStore } from './store.js';
 
 const roots: string[] = [];
@@ -25,12 +25,18 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function user(store: SessionStore, id: string, eventId: string, content: string) {
+function user(
+  store: SessionStore,
+  id: string,
+  eventId: string,
+  content: string,
+  attachments?: ImageAttachment[],
+) {
   store.append(id, {
     type: 'user',
     eventId,
     timestamp: Date.now(),
-    data: { id: eventId, content, kind: 'conversation' },
+    data: { id: eventId, content, kind: 'conversation', attachments },
   });
 }
 
@@ -119,6 +125,21 @@ describe('session rewind replay', () => {
 
     rewind(store, id, target.id, target.userEventId, 'conversation');
     expect(store.load(id).transcript).toEqual([]);
+  });
+
+  it('recovers attachments from user records when an older checkpoint lacks them', () => {
+    const { store, id } = fixture();
+    const attachment: ImageAttachment = {
+      id: 'image-1',
+      sha256: '1'.repeat(64),
+      storageKey: `${'1'.repeat(64)}.png`,
+      mediaType: 'image/png',
+      byteSize: 3,
+    };
+    checkpoint(store, id, 'cp1', 'u1', 'prompt');
+    user(store, id, 'u1', 'prompt', [attachment]);
+
+    expect(store.listRewindTargets(id)[0].attachments).toEqual([attachment]);
   });
 
   it('restores the active branch and excludes abandoned events from history tools', () => {

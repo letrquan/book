@@ -34,6 +34,7 @@ import {
   type ResolvedTheme,
 } from './theme.js';
 import type { AgentConfig } from '../types/runtime.js';
+import type { ImageAttachment } from '../types/messages.js';
 import type { CommandContext } from '../types/commands.js';
 import type { RewindSnapshotStoreInterface, SessionStoreInterface } from '../types/sessions.js';
 import type { SessionBootstrap } from '../session/resolve.js';
@@ -76,10 +77,12 @@ import {
   createQueuedInput,
   enqueueQueuedInput,
   recallNewestQueuedInput,
+  restoreQueuedInputAttachments,
   restoreQueuedInputText,
   shouldRequeueQueuedSend,
   type QueuedInput,
 } from './queued-inputs.js';
+import { readClipboardImage } from '../input/clipboard-image.js';
 
 const uiLog = createUiDebugLogger('tui:app');
 
@@ -163,6 +166,7 @@ interface AppProps {
  *   Shift+drag — select terminal text for copying
  *   Alt+M    — cycle permission mode
  *   Alt+P    — open model picker
+ *   Alt+V    — attach clipboard image
  *   Shift+Tab — cycle permission mode
  *   Ctrl+/   — toggle keyboard shortcuts reference
  */
@@ -256,7 +260,11 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [showRewindPicker, setShowRewindPicker] = useState(false);
   const [isResolvingCommand, setIsResolvingCommand] = useState(false);
-  const [draftRestore, setDraftRestore] = useState<{ key: number; value: string }>();
+  const [draftRestore, setDraftRestore] = useState<{
+    key: number;
+    value: string;
+    attachments?: ImageAttachment[];
+  }>();
   const [queuedInputs, setQueuedInputs] = useState<QueuedInput[]>([]);
   const [editingQueuedInput, setEditingQueuedInput] = useState<QueuedInput | undefined>(undefined);
   const [queueNotice, setQueueNotice] = useState<string | undefined>(undefined);
@@ -272,6 +280,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   const editingQueuedInputRef = useRef<QueuedInput | undefined>(undefined);
   const dispatchingQueuedIdRef = useRef<string | undefined>(undefined);
   const draftRef = useRef('');
+  const draftAttachmentsRef = useRef<ImageAttachment[]>([]);
   const queueDrainRunningRef = useRef(false);
   const queueDrainPausedRef = useRef(false);
   const queueInterruptEpochRef = useRef(0);
@@ -300,9 +309,12 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     setEditingQueuedInput(next);
   }, []);
   const dispatchAgentSend = useCallback(
-    async (value: string, commandContext?: CommandContext) => {
+    async (value: string, commandContext?: CommandContext, attachments?: ImageAttachment[]) => {
       setSendInFlight(true);
       try {
+        if (attachments && attachments.length > 0) {
+          return await send(value, commandContext, attachments);
+        }
         return commandContext === undefined ? await send(value) : await send(value, commandContext);
       } finally {
         setSendInFlight(false);
@@ -311,9 +323,9 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     [send],
   );
   const enqueueFollowUp = useCallback(
-    (value: string): boolean => {
+    (value: string, attachments: ImageAttachment[] = []): boolean => {
       const edited = editingQueuedInputRef.current;
-      const input = createQueuedInput(value, sessionId, edited);
+      const input = createQueuedInput(value, sessionId, attachments, edited);
       const result = enqueueQueuedInput(queuedInputsRef.current, input);
       if (!result.accepted) {
         setQueueNotice('Queue is full. Edit or clear a queued message before adding another.');
@@ -327,14 +339,15 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     },
     [replaceEditingQueuedInput, replaceQueuedInputs, sessionId],
   );
-  const recallQueuedInput = useCallback((): string | undefined => {
+  const recallQueuedInput = useCallback(():
+    { value: string; attachments?: ImageAttachment[] } | undefined => {
     const result = recallNewestQueuedInput(queuedInputsRef.current, dispatchingQueuedIdRef.current);
     if (!result.recalled) return undefined;
     replaceQueuedInputs(result.queue);
     replaceEditingQueuedInput(result.recalled);
     queueDrainPausedRef.current = true;
     setQueueNotice('Editing queued input. Enter resubmits; Esc removes it.');
-    return result.recalled.value;
+    return { value: result.recalled.value, attachments: result.recalled.attachments };
   }, [replaceEditingQueuedInput, replaceQueuedInputs]);
   const cancelQueuedEdit = useCallback(() => {
     replaceEditingQueuedInput(undefined);
@@ -345,6 +358,27 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
       value: '',
     }));
   }, [replaceEditingQueuedInput]);
+  const pasteClipboardImage = useCallback(async (): Promise<ImageAttachment> => {
+    if (liveConfig.modelInfo?.vision === false) {
+      throw new Error(`${liveConfig.model} does not support image input.`);
+    }
+    const store = session.timelineStore ?? session.store;
+    if (!store?.saveImageAttachment) {
+      throw new Error('Session attachment storage is unavailable.');
+    }
+    const image = await readClipboardImage();
+    return store.saveImageAttachment(sessionId, {
+      bytes: image.bytes,
+      mediaType: image.mediaType,
+      displayName: `clipboard-${Date.now()}.${image.mediaType.split('/')[1]}`,
+    });
+  }, [
+    liveConfig.model,
+    liveConfig.modelInfo?.vision,
+    session.store,
+    session.timelineStore,
+    sessionId,
+  ]);
   const interrupt = useCallback(() => {
     queueInterruptEpochRef.current += 1;
     commandResolutionRef.current?.abort();
@@ -356,6 +390,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
       setDraftRestore((current) => ({
         key: (current?.key ?? 0) + 1,
         value: restored,
+        attachments: restoreQueuedInputAttachments(pending, draftAttachmentsRef.current),
       }));
       setQueueNotice('Queued inputs restored to the composer after interrupt.');
     }
@@ -547,13 +582,14 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
 
     void (async () => {
       try {
-        const result = await dispatchAgentSend(item.value);
+        const result = await dispatchAgentSend(item.value, undefined, item.attachments);
         if (queueInterruptEpochRef.current !== interruptEpoch && shouldRequeueQueuedSend(result)) {
           if (queueSessionRef.current === item.sessionId) {
             const restored = restoreQueuedInputText([item], draftRef.current);
             setDraftRestore((current) => ({
               key: (current?.key ?? 0) + 1,
               value: restored,
+              attachments: restoreQueuedInputAttachments([item], draftAttachmentsRef.current),
             }));
             setQueueNotice('Interrupted queued input restored to the composer.');
           }
@@ -785,14 +821,33 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   );
 
   const handleSubmit = useCallback(
-    async (value: string) => {
+    async (value: string, attachments: ImageAttachment[] = []) => {
+      if (attachments.length > 0 && liveConfig.modelInfo?.vision === false) {
+        addLocalMessage(`${liveConfig.model} does not support image input.`);
+        setDraftRestore((current) => ({
+          key: (current?.key ?? 0) + 1,
+          value,
+          attachments,
+        }));
+        return;
+      }
       setFollowRequestKey((key) => key + 1);
       const selectedChild = managedAgents.selectedAgentId
         ? managedAgents.records.get(managedAgents.selectedAgentId)
         : undefined;
-      if (managedAgents.surface === 'detail' && !value.startsWith('/') && selectedChild) {
+      if (
+        managedAgents.surface === 'detail' &&
+        !value.startsWith('/') &&
+        selectedChild &&
+        attachments.length === 0
+      ) {
         await managedAgents.send(value);
         return;
+      }
+      if (managedAgents.surface === 'detail' && attachments.length > 0) {
+        addLocalMessage('Image attachments are sent to the main conversation.');
+        managedAgents.setSurface('main');
+        managedAgents.selectAgent(undefined);
       }
       if (managedAgents.surface === 'detail' && !value.startsWith('/') && !selectedChild) {
         managedAgents.setSurface('main');
@@ -803,6 +858,10 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
       }
       // Coarse slash-command dispatch trace (one event per submit).
       const parsedSlash = parseSlashInput(value);
+      if (parsedSlash && attachments.length > 0) {
+        addLocalMessage('✕ Image attachments cannot be combined with slash commands.');
+        return;
+      }
       if (parsedSlash?.name === 'queue') {
         const operation = parsedSlash.rawArguments.trim().toLowerCase();
         if (operation === 'clear') {
@@ -1108,7 +1167,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
         }
       } else {
         replaceEditingQueuedInput(undefined);
-        void dispatchAgentSend(value);
+        void dispatchAgentSend(value, undefined, attachments);
       }
     },
     [
@@ -1654,6 +1713,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                     <HelpRow label="Ctrl+L" description="Redraw screen" theme={theme} />
                     <HelpRow label="Alt+M" description="Cycle permission mode" theme={theme} />
                     <HelpRow label="Alt+P" description="Open model picker" theme={theme} />
+                    <HelpRow label="Alt+V" description="Attach clipboard image" theme={theme} />
                     <HelpRow label="Up/Down" description="Navigate input history" theme={theme} />
                     <HelpRow label="PgUp/PgDn" description="Scroll transcript" theme={theme} />
                     <HelpRow
@@ -1765,6 +1825,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                     setDraftRestore((current) => ({
                       key: (current?.key ?? 0) + 1,
                       value: result.restoredPrompt!,
+                      attachments: result.restoredAttachments,
                     }));
                   }
                   setShowRewindPicker(false);
@@ -1912,6 +1973,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
             <InputBar
               key={sessionId}
               onSubmit={handleSubmit}
+              onPasteImage={pasteClipboardImage}
               submissionMode={
                 managedAgents.surface === 'detail'
                   ? 'submit'
@@ -1929,8 +1991,9 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
               onRecallQueued={managedAgents.surface === 'main' ? recallQueuedInput : undefined}
               onCancelQueuedEdit={cancelQueuedEdit}
               editingQueuedInput={Boolean(editingQueuedInput)}
-              onDraftChange={(value) => {
+              onDraftChange={(value, attachments) => {
                 draftRef.current = value;
+                draftAttachmentsRef.current = attachments ?? [];
               }}
               onCycleAgentFocus={cycleAgentFocus}
               onFocusBackgroundTask={() => {

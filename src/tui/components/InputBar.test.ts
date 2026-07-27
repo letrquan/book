@@ -8,6 +8,7 @@ import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { InputBar } from './InputBar.js';
 import { MODE_COLOR_TOKENS } from '../mode-style.js';
 import { displayWidth } from './word-wrap.js';
+import type { ImageAttachment } from '../../types/messages.js';
 
 /**
  * Tests for InputBar: responsive editor box, bottom-pinning layout,
@@ -30,7 +31,7 @@ function makeWorkspace(): string {
 }
 
 function inputBar(
-  onSubmit: (value: string) => void,
+  onSubmit: (value: string, attachments?: ImageAttachment[]) => void,
   props: Partial<React.ComponentProps<typeof InputBar>> = {},
 ) {
   return React.createElement(
@@ -644,6 +645,33 @@ function simulateInputHandler(
 }
 
 describe('keyboard shortcut filtering', () => {
+  it('uses Alt+V to attach an image without typing into the prompt', async () => {
+    const submitted: Array<{ text: string; attachments?: unknown[] }> = [];
+    const attachment = {
+      id: 'image-1',
+      sha256: 'hash',
+      storageKey: 'hash.png',
+      mediaType: 'image/png' as const,
+      byteSize: 123,
+    };
+    const view = render(
+      inputBar((value, attachments) => submitted.push({ text: value, attachments }), {
+        onPasteImage: async () => attachment,
+      }),
+    );
+    await tick();
+
+    view.stdin.write('\x1bv');
+    await tick(30);
+    expect(stripAnsi(view.lastFrame())).toContain('[image 1 0 KB]');
+
+    view.stdin.write('describe');
+    await tick(20);
+    view.stdin.write('\r');
+    await tick(20);
+    expect(submitted).toEqual([{ text: 'describe', attachments: [attachment] }]);
+  });
+
   it('moves focus to a background task with Down from an empty fresh prompt', async () => {
     const onFocusBackgroundTask = vi.fn(() => true);
     const view = render(inputBar(() => {}, { onFocusBackgroundTask }));

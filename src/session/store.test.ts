@@ -11,6 +11,28 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('SessionStore', () => {
+  it('stores and verifies session-owned image attachments', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    const attachment = s.saveImageAttachment(id, {
+      bytes: Uint8Array.from([1, 2, 3]),
+      mediaType: 'image/png',
+      displayName: 'clipboard.png',
+    });
+    expect(s.readImageAttachment(id, attachment)).toEqual(Uint8Array.from([1, 2, 3]));
+    expect(attachment.storageKey).toMatch(/\.png$/);
+
+    s.append(id, {
+      type: 'user',
+      timestamp: 1,
+      data: { content: 'describe', attachments: [attachment] },
+    });
+    expect(s.load(id).history[0].attachments).toEqual([attachment]);
+
+    const forkId = s.fork(id, { cwd: '/proj' });
+    expect(s.readImageAttachment(forkId, attachment)).toEqual(Uint8Array.from([1, 2, 3]));
+  });
+
   it('creates a session with a uuid id', () => {
     const s = new SessionStore(dir);
     const id = s.create({ cwd: '/proj', name: 'my-feature' });

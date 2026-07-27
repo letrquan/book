@@ -19,8 +19,13 @@ interface AnthropicMessage {
 }
 
 interface AnthropicContentBlock {
-  type: 'text' | 'tool_use' | 'tool_result';
+  type: 'text' | 'image' | 'tool_use' | 'tool_result';
   text?: string;
+  source?: {
+    type: 'base64';
+    media_type: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+    data: string;
+  };
   id?: string;
   name?: string;
   input?: Record<string, unknown>;
@@ -49,6 +54,26 @@ function flattenSystemPrompt(zones: SystemPromptZones): string {
 
 function messageText(content: ProviderMessage['content'], fallback = ''): string {
   return typeof content === 'string' ? content : fallback;
+}
+
+function regularUserContent(content: ProviderMessage['content']): string | AnthropicContentBlock[] {
+  if (!Array.isArray(content)) return messageText(content);
+  return content.map((part): AnthropicContentBlock =>
+    part.type === 'text'
+      ? { type: 'text', text: part.text }
+      : {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: part.mediaType,
+            data: part.data,
+          },
+        },
+  );
+}
+
+function isToolResultContent(content: AnthropicMessage['content']): boolean {
+  return Array.isArray(content) && content[0]?.type === 'tool_result';
 }
 
 export function buildSystemBlocks(
@@ -151,10 +176,23 @@ export function convertMessages(messages: ProviderMessage[]): {
       } else {
         // Regular user message — merge with previous if it's also a plain user message
         const last = anthropicMessages[anthropicMessages.length - 1];
-        if (last?.role === 'user' && typeof last.content === 'string') {
-          last.content = last.content + '\n\n' + messageText(msg.content);
+        const nextContent = regularUserContent(msg.content);
+        if (last?.role === 'user' && !isToolResultContent(last.content)) {
+          if (typeof last.content === 'string' && typeof nextContent === 'string') {
+            last.content = last.content + '\n\n' + nextContent;
+          } else {
+            const previousBlocks =
+              typeof last.content === 'string'
+                ? [{ type: 'text' as const, text: last.content }]
+                : last.content;
+            const nextBlocks =
+              typeof nextContent === 'string'
+                ? [{ type: 'text' as const, text: nextContent }]
+                : nextContent;
+            last.content = [...previousBlocks, { type: 'text', text: '\n\n' }, ...nextBlocks];
+          }
         } else {
-          anthropicMessages.push({ role: 'user', content: messageText(msg.content) });
+          anthropicMessages.push({ role: 'user', content: nextContent });
         }
       }
       continue;

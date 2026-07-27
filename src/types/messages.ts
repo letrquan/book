@@ -10,6 +10,16 @@ export interface Usage {
   cacheReadInputTokens?: number;
 }
 
+/** A session-owned image referenced by a user message. */
+export interface ImageAttachment {
+  id: string;
+  sha256: string;
+  storageKey: string;
+  mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+  byteSize: number;
+  displayName?: string;
+}
+
 /**
  * Structured presentation data for local slash-command output.
  *
@@ -86,6 +96,8 @@ export interface Message {
   content: string;
   /** Provider-facing text when it differs from the displayed content. */
   contextContent?: string;
+  /** Images attached to a user turn; bytes live in session attachment storage. */
+  attachments?: ImageAttachment[];
   /** Whether this message is included in provider and compaction context. */
   includeInContext: boolean;
   kind?: 'conversation' | 'checkpoint' | 'local' | 'agent-notification';

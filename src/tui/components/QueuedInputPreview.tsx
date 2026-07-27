@@ -27,6 +27,9 @@ export function QueuedInputPreview({ items, terminalWidth, notice }: QueuedInput
       {visible.map((item) => (
         <Text key={item.id} color={theme.subtle}>
           {'  ↳ '}
+          {item.attachments?.length
+            ? `[${item.attachments.length} image${item.attachments.length === 1 ? '' : 's'}] `
+            : ''}
           {truncateDisplay(item.value.replace(/\s+/g, ' ').trim(), width)}
         </Text>
       ))}

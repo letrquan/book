@@ -2,18 +2,21 @@ import {
   mkdirSync,
   appendFileSync,
   closeSync,
+  copyFileSync,
   existsSync,
   openSync,
   readFileSync,
   readSync,
   readdirSync,
   renameSync,
+  rmSync,
   unlinkSync,
   statSync,
   writeFileSync,
 } from 'fs';
 import { StringDecoder } from 'string_decoder';
 import { join, normalize, resolve } from 'path';
+import { createHash } from 'crypto';
 import type {
   CompactBoundary,
   CompactRecordData,
@@ -25,7 +28,7 @@ import type {
   SessionRecord,
   TurnCheckpointRecordData,
 } from '../types/sessions.js';
-import type { Message } from '../types/messages.js';
+import type { ImageAttachment, Message } from '../types/messages.js';
 import { createDebugLogger } from '../debug-log.js';
 import { normalizeToolResult } from '../tools/result.js';
 import { deriveSessionName } from './name.js';
@@ -41,6 +44,12 @@ const READ_TOTAL_CHARS = 16_000;
 const TOOL_RESULT_PREVIEW_CHARS = 4_000;
 const SESSION_INDEX_FILE = 'session-index.json';
 const JSONL_READ_BUFFER_BYTES = 64 * 1024;
+const IMAGE_STORAGE_KEY = /^[a-f0-9]{64}\.(?:png|jpg|gif|webp)$/;
+
+function imageSessionDirectory(root: string, sessionId: string): string {
+  if (!/^[a-zA-Z0-9-]+$/.test(sessionId)) throw new Error('Invalid attachment session id.');
+  return join(root, 'attachments', sessionId);
+}
 
 interface SessionIndexEntry {
   meta: SessionMeta;
@@ -109,6 +118,40 @@ export class SessionStore {
   constructor(private root: string) {
     mkdirSync(root, { recursive: true });
     this.loadPersistedIndex();
+  }
+
+  saveImageAttachment(
+    sessionId: string,
+    image: { bytes: Uint8Array; mediaType: ImageAttachment['mediaType']; displayName?: string },
+  ): ImageAttachment {
+    const sha256 = createHash('sha256').update(image.bytes).digest('hex');
+    const extension = image.mediaType.slice('image/'.length).replace('jpeg', 'jpg');
+    const storageKey = `${sha256}.${extension}`;
+    const directory = imageSessionDirectory(this.root, sessionId);
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, storageKey);
+    if (!existsSync(path)) writeFileSync(path, image.bytes);
+    return {
+      id: crypto.randomUUID(),
+      sha256,
+      storageKey,
+      mediaType: image.mediaType,
+      byteSize: image.bytes.byteLength,
+      ...(image.displayName ? { displayName: image.displayName } : {}),
+    };
+  }
+
+  readImageAttachment(sessionId: string, attachment: ImageAttachment): Uint8Array {
+    if (!IMAGE_STORAGE_KEY.test(attachment.storageKey)) {
+      throw new Error(`Image attachment ${attachment.id} has an invalid storage key.`);
+    }
+    const path = join(imageSessionDirectory(this.root, sessionId), attachment.storageKey);
+    const bytes = new Uint8Array(readFileSync(path));
+    const actual = createHash('sha256').update(bytes).digest('hex');
+    if (actual !== attachment.sha256) {
+      throw new Error(`Image attachment ${attachment.id} failed integrity validation.`);
+    }
+    return bytes;
   }
 
   private path(id: string): string {
@@ -453,6 +496,7 @@ export class SessionStore {
         includeInContext?: boolean;
         fileObservations?: Message['fileObservations'];
         agentNotifications?: Message['agentNotifications'];
+        attachments?: Message['attachments'];
       };
 
       if (data.kind === 'session_meta_patch') {
@@ -476,6 +520,7 @@ export class SessionStore {
           id: checkpoint.checkpointId,
           userEventId: checkpoint.userEventId,
           prompt: checkpoint.prompt,
+          attachments: checkpoint.attachments,
           timestamp: record.timestamp,
           ...checkpoint.checkpoint,
           codeAvailable: Boolean(
@@ -563,6 +608,7 @@ export class SessionStore {
             id: targetId,
             userEventId: eventId,
             prompt: data.content ?? '',
+            attachments: data.attachments,
             timestamp: record.timestamp,
             codeAvailable: false,
             codeUnavailableReason: 'No filesystem checkpoint was captured for this turn.',
@@ -577,6 +623,9 @@ export class SessionStore {
             activeTargetTail,
             count,
           });
+        } else if (data.attachments?.length) {
+          const target = targets.get(targetId);
+          if (target && !target.attachments?.length) target.attachments = data.attachments;
         }
         count++;
         const message: Message = {
@@ -587,6 +636,7 @@ export class SessionStore {
           includeInContext: data.includeInContext ?? true,
           kind: (data.kind as Message['kind']) ?? 'conversation',
           agentNotifications: data.agentNotifications,
+          attachments: data.attachments,
           fileObservations: data.fileObservations,
           timestamp: record.timestamp,
         };
@@ -616,6 +666,7 @@ export class SessionStore {
             includeInContext: data.includeInContext ?? true,
             kind: (data.kind as Message['kind']) ?? 'conversation',
             agentNotifications: data.agentNotifications,
+            attachments: data.attachments,
             toolCalls: data.toolCalls,
             toolResults: normalizePersistedToolResults(data.toolResults),
             fileObservations: data.fileObservations,
@@ -692,6 +743,14 @@ export class SessionStore {
         continue;
       }
       this.append(targetId, record);
+    }
+    const sourceAttachments = imageSessionDirectory(this.root, sourceId);
+    if (existsSync(sourceAttachments)) {
+      const targetAttachments = imageSessionDirectory(this.root, targetId);
+      mkdirSync(targetAttachments, { recursive: true });
+      for (const filename of readdirSync(sourceAttachments)) {
+        copyFileSync(join(sourceAttachments, filename), join(targetAttachments, filename));
+      }
     }
     this.touch(targetId);
     return targetId;
@@ -855,6 +914,7 @@ export class SessionStore {
       try {
         if (entry.meta.updatedAt < cutoff) {
           unlinkSync(this.path(id));
+          rmSync(imageSessionDirectory(this.root, id), { recursive: true, force: true });
           this.metadataIndex.delete(id);
           this.parsedSessions.delete(id);
           removedIds.push(id);
@@ -863,6 +923,7 @@ export class SessionStore {
       } catch {
         if (existsSync(this.path(id)) && statSync(this.path(id)).mtimeMs < cutoff) {
           unlinkSync(this.path(id));
+          rmSync(imageSessionDirectory(this.root, id), { recursive: true, force: true });
           this.metadataIndex.delete(id);
           this.parsedSessions.delete(id);
           removedIds.push(id);
@@ -896,6 +957,7 @@ function restoreMessage(message: Message, fallbackId: string, timestamp: number)
     includeInContext: message.includeInContext ?? true,
     kind: message.kind ?? (message.includeInContext === false ? 'local' : 'conversation'),
     toolResults: normalizePersistedToolResults(message.toolResults),
+    attachments: message.attachments,
     timestamp: message.timestamp ?? timestamp,
   };
 }

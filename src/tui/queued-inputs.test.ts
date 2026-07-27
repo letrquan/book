@@ -3,6 +3,7 @@ import {
   createQueuedInput,
   enqueueQueuedInput,
   recallNewestQueuedInput,
+  restoreQueuedInputAttachments,
   restoreQueuedInputText,
   shouldRequeueQueuedSend,
 } from './queued-inputs.js';
@@ -36,6 +37,29 @@ describe('queued inputs', () => {
     const queue = [createQueuedInput('first', 'session'), createQueuedInput('second', 'session')];
 
     expect(restoreQueuedInputText(queue, 'draft')).toBe('first\n\nsecond\n\ndraft');
+  });
+
+  it('preserves every queued and draft attachment during interrupt restoration', () => {
+    const attachment = (index: number) => ({
+      id: `image-${index}`,
+      sha256: `${index}`.padStart(64, '0'),
+      storageKey: `${`${index}`.padStart(64, '0')}.png`,
+      mediaType: 'image/png' as const,
+      byteSize: index,
+    });
+    const queue = [
+      createQueuedInput('first', 'session', [attachment(1), attachment(2), attachment(3)]),
+      createQueuedInput('second', 'session', [attachment(4), attachment(5)]),
+    ];
+
+    expect(restoreQueuedInputAttachments(queue, [attachment(6)]).map((item) => item.id)).toEqual([
+      'image-1',
+      'image-2',
+      'image-3',
+      'image-4',
+      'image-5',
+      'image-6',
+    ]);
   });
 
   it('only retries failures that happen before the user message is persisted', () => {

@@ -1,4 +1,4 @@
-import type { Message } from './messages.js';
+import type { ImageAttachment, Message } from './messages.js';
 import type { FileObservation } from './tools.js';
 
 /** What triggered a compaction attempt. */
@@ -74,6 +74,7 @@ export interface TurnCheckpointRecordData {
   checkpointId: string;
   userEventId: string;
   prompt: string;
+  attachments?: ImageAttachment[];
   checkpoint: RewindCheckpointMetadata;
 }
 
@@ -88,6 +89,7 @@ export interface RewindTarget extends RewindCheckpointMetadata {
   id: string;
   userEventId: string;
   prompt: string;
+  attachments?: ImageAttachment[];
   timestamp: number;
   codeAvailable: boolean;
 }
@@ -292,5 +294,10 @@ export interface SessionStoreInterface {
   findByName(name: string): SessionMeta | undefined;
   findById(id: string): SessionMeta | undefined;
   mostRecentInCwd(cwd: string): SessionMeta | undefined;
+  saveImageAttachment?(
+    sessionId: string,
+    image: { bytes: Uint8Array; mediaType: ImageAttachment['mediaType']; displayName?: string },
+  ): ImageAttachment;
+  readImageAttachment?(sessionId: string, attachment: ImageAttachment): Uint8Array;
   cleanup(days: number, preserveIds?: ReadonlySet<string>): number;
 }

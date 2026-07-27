@@ -4,6 +4,14 @@ import type { PermissionMode, RetryPhase } from './runtime.js';
 import type { CompactResult } from './sessions.js';
 import type { PlanApprovalResult, ToolCall, ToolResult, UserQuestionHandler } from './tools.js';
 
+export type ProviderContentPart =
+  | { type: 'text'; text: string }
+  | {
+      type: 'image';
+      mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+      data: string;
+    };
+
 export interface SystemPromptZones {
   /** Cacheable session-stable system prompt prefix. */
   cachedPrefix: string;
@@ -13,7 +21,7 @@ export interface SystemPromptZones {
 
 export interface ProviderMessage {
   role: string;
-  content: string | SystemPromptZones | null;
+  content: string | ProviderContentPart[] | SystemPromptZones | null;
   tool_calls?: Array<{
     id: string;
     type: 'function';

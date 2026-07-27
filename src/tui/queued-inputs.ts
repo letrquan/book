@@ -1,22 +1,29 @@
+import type { ImageAttachment } from '../types/messages.js';
+
 export const MAX_QUEUED_INPUTS = 10;
 
 export interface QueuedInput {
   id: string;
   sessionId: string;
   value: string;
+  attachments?: ImageAttachment[];
   createdAt: number;
 }
 
 export function createQueuedInput(
   value: string,
   sessionId: string,
+  attachmentsOrExisting: ImageAttachment[] | Pick<QueuedInput, 'id' | 'createdAt'> = [],
   existing?: Pick<QueuedInput, 'id' | 'createdAt'>,
 ): QueuedInput {
+  const attachments = Array.isArray(attachmentsOrExisting) ? attachmentsOrExisting : [];
+  const identity = Array.isArray(attachmentsOrExisting) ? existing : attachmentsOrExisting;
   return {
-    id: existing?.id ?? crypto.randomUUID(),
+    id: identity?.id ?? crypto.randomUUID(),
     sessionId,
     value,
-    createdAt: existing?.createdAt ?? Date.now(),
+    ...(attachments.length > 0 ? { attachments } : {}),
+    createdAt: identity?.createdAt ?? Date.now(),
   };
 }
 
@@ -51,6 +58,13 @@ export function restoreQueuedInputText(queue: readonly QueuedInput[], draft: str
   return [...queue.map((item) => item.value), draft]
     .filter((value) => value.trim().length > 0)
     .join('\n\n');
+}
+
+export function restoreQueuedInputAttachments(
+  queue: readonly QueuedInput[],
+  draft: readonly ImageAttachment[] = [],
+): ImageAttachment[] {
+  return [...queue.flatMap((item) => item.attachments ?? []), ...draft];
 }
 
 export function shouldRequeueQueuedSend(result: {

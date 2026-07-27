@@ -172,6 +172,7 @@ interface SendMessageOptions {
   contextMessage?: string;
   kind?: Message['kind'];
   agentNotifications?: Message['agentNotifications'];
+  attachments?: Message['attachments'];
 }
 
 /** Short transcript line shown for a fresh-context handoff (the full plan is the context). */
@@ -619,6 +620,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         const message = makeMessage('user', userMessage, messageOptions?.contextMessage, true);
         message.kind = messageOptions?.kind ?? 'conversation';
         message.agentNotifications = messageOptions?.agentNotifications;
+        message.attachments = messageOptions?.attachments;
         activeUserMessage = message;
         return message;
       };
@@ -909,8 +911,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   );
 
   const send = useCallback(
-    async (userMessage: string, commandContext?: CommandContext) => {
-      return sendMessage(userMessage, commandContext);
+    async (
+      userMessage: string,
+      commandContext?: CommandContext,
+      attachments?: Message['attachments'],
+    ) => {
+      return sendMessage(userMessage, commandContext, { attachments });
     },
     [sendMessage],
   );
@@ -1150,7 +1156,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     async (
       targetId: string,
       action: RewindAction,
-    ): Promise<{ ok: true; restoredPrompt?: string } | { ok: false; error: string }> => {
+    ): Promise<
+      | { ok: true; restoredPrompt?: string; restoredAttachments?: Message['attachments'] }
+      | { ok: false; error: string }
+    > => {
       const operation = operations.tryStart('rewind');
       if (!operation) {
         return { ok: false, error: 'Rewind is unavailable while another operation is active.' };
@@ -1218,7 +1227,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         if (safetySnapshotId) session.snapshotStore?.discardManifest(safetySnapshotId);
         return {
           ok: true,
-          ...(action === 'code' ? {} : { restoredPrompt: target.prompt }),
+          ...(action === 'code'
+            ? {}
+            : {
+                restoredPrompt: target.prompt,
+                ...(target.attachments?.length ? { restoredAttachments: target.attachments } : {}),
+              }),
         };
       } catch (rewindError) {
         let rollbackMessage = '';

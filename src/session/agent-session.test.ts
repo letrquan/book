@@ -10,6 +10,7 @@ import type {
   CompactResult,
   RewindSnapshotCaptureResult,
   SessionRecord,
+  TurnCheckpointRecordData,
 } from '../types/sessions.js';
 import type { Message } from '../types/messages.js';
 import { createSessionFixture } from '../test/session-fixture.js';
@@ -257,10 +258,18 @@ describe('AgentSession', () => {
     const records: SessionRecord[] = [];
     const metaPatches: Array<[string, { name?: string }]> = [];
     const config = defaultConfig();
+    const attachment = {
+      id: 'image-1',
+      sha256: '1'.repeat(64),
+      storageKey: `${'1'.repeat(64)}.png`,
+      mediaType: 'image/png' as const,
+      byteSize: 3,
+    };
     const userMessage: Message = {
       id: 'user-1',
       role: 'user',
       content: 'hello',
+      attachments: [attachment],
       includeInContext: true,
       timestamp: 10,
     };
@@ -283,11 +292,16 @@ describe('AgentSession', () => {
       rewindTarget: {
         userEventId: 'user-1',
         prompt: 'hello',
+        attachments: [attachment],
         codeAvailable: false,
         codeUnavailableReason: 'Filesystem checkpoint storage is unavailable.',
       },
     });
     expect(records.map((record) => record.type)).toEqual(['turn_checkpoint', 'user']);
+    expect((records[0].data as TurnCheckpointRecordData).attachments).toEqual([attachment]);
+    expect((records[1].data as { attachments?: Message['attachments'] }).attachments).toEqual([
+      attachment,
+    ]);
     expect(metaPatches).toEqual([['session-1', { name: 'Hello' }]]);
     expect(userMessage.contextContent).toBeUndefined();
     expect(userMessage.fileObservations).toEqual([]);

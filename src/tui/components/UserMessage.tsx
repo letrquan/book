@@ -1,9 +1,11 @@
 import { Box, Text } from 'ink';
 import React from 'react';
 import { useTheme } from '../theme.js';
+import type { ImageAttachment } from '../../types/messages.js';
 
 interface UserMessageProps {
   content: string;
+  attachments?: ImageAttachment[];
   terminalWidth?: number;
   screenReader?: boolean;
 }
@@ -89,7 +91,12 @@ function parseMentionSegments(content: string): Array<{ text: string; isMention:
  * User message card with an inset paper tint and a warm accent rail.
  * @mentions keep the brand color for quick scanning.
  */
-function UserMessageInner({ content, terminalWidth = 80, screenReader = false }: UserMessageProps) {
+function UserMessageInner({
+  content,
+  attachments = [],
+  terminalWidth = 80,
+  screenReader = false,
+}: UserMessageProps) {
   const theme = useTheme();
   const width = Math.max(20, Math.floor(terminalWidth));
   const cardWidth = Math.max(18, width - 2);
@@ -98,7 +105,12 @@ function UserMessageInner({ content, terminalWidth = 80, screenReader = false }:
   if (screenReader) {
     return (
       <Box width={width}>
-        <Text wrap="wrap">{content}</Text>
+        <Text wrap="wrap">
+          {content}
+          {attachments.length > 0
+            ? `${content ? '\n' : ''}${attachments.length} image attachment${attachments.length === 1 ? '' : 's'}`
+            : ''}
+        </Text>
       </Box>
     );
   }
@@ -116,19 +128,28 @@ function UserMessageInner({ content, terminalWidth = 80, screenReader = false }:
       backgroundColor={theme.userBg}
     >
       <Box width={Math.max(1, cardWidth - 3)}>
-        <Text wrap="wrap">
-          {segments.map((seg, i) =>
-            seg.isMention ? (
-              <Text key={i} color={theme.brand}>
-                {seg.text}
-              </Text>
-            ) : (
-              <Text key={i} color={theme.text}>
-                {seg.text}
-              </Text>
-            ),
-          )}
-        </Text>
+        <Box flexDirection="column">
+          {content ? (
+            <Text wrap="wrap">
+              {segments.map((seg, i) =>
+                seg.isMention ? (
+                  <Text key={i} color={theme.brand}>
+                    {seg.text}
+                  </Text>
+                ) : (
+                  <Text key={i} color={theme.text}>
+                    {seg.text}
+                  </Text>
+                ),
+              )}
+            </Text>
+          ) : null}
+          {attachments.length > 0 ? (
+            <Text color={theme.brand}>
+              {attachments.map((_, index) => `[image ${index + 1}]`).join(' ')}
+            </Text>
+          ) : null}
+        </Box>
       </Box>
     </Box>
   );

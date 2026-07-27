@@ -11,6 +11,7 @@ export const SPINNER_TIPS = [
   'Type /help for available commands',
   'Alt+M to cycle permission modes',
   'Alt+P to open the model picker',
+  'Alt+V to attach a clipboard image',
   'Use /compact when context is getting long',
   'Use /theme to choose and save a color theme',
   'Ctrl+T to toggle the task list',

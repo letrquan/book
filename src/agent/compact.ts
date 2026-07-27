@@ -26,6 +26,7 @@ const log = createDebugLogger('compact');
 
 export const DEFAULT_COMPACT_THRESHOLD = 0.8;
 export const DEFAULT_CONTEXT_WINDOW = 272_000;
+export const IMAGE_TOKEN_ESTIMATE = 1_000;
 const DESIRED_CONTEXT_FRACTION = 0.5;
 const RECENT_TAIL_MAX_TOKENS = 20_000;
 const RECENT_TAIL_FRACTION = 0.2;
@@ -186,6 +187,9 @@ export function shouldCompact(
 export function estimateMessageTokens(message: Message): number {
   let tokens =
     estimateTextTokens(message.contextContent ?? message.content) + MESSAGE_OVERHEAD_TOKENS;
+  // Image tokens are provider-specific; reserve a conservative placeholder
+  // without ever counting the encoded image bytes as prompt text.
+  tokens += (message.attachments?.length ?? 0) * IMAGE_TOKEN_ESTIMATE;
   for (const call of message.toolCalls ?? []) {
     tokens +=
       estimateTextTokens(call.name) +
@@ -208,6 +212,12 @@ export function estimateHistoryTokens(messages: readonly Message[]): number {
 function providerContentText(content: ProviderMessage['content']): string {
   if (content === null) return '';
   if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n');
+  }
   const zones = content as SystemPromptZones;
   return [zones.cachedPrefix, zones.dynamicSuffix].filter(Boolean).join('\n\n');
 }
@@ -234,6 +244,10 @@ export function estimateProviderRequestTokens(
   let tokens = 0;
   for (const message of messages) {
     tokens += estimateTextTokens(providerContentText(message.content)) + MESSAGE_OVERHEAD_TOKENS;
+    if (Array.isArray(message.content)) {
+      tokens +=
+        message.content.filter((part) => part.type === 'image').length * IMAGE_TOKEN_ESTIMATE;
+    }
     if (message.tool_calls) tokens += estimateTextTokens(JSON.stringify(message.tool_calls));
     if (message.tool_call_id) tokens += estimateTextTokens(message.tool_call_id);
   }

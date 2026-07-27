@@ -8,6 +8,8 @@ import {
   usagePressureTokens,
   runCompact,
   DEFAULT_CONTEXT_WINDOW,
+  IMAGE_TOKEN_ESTIMATE,
+  estimateProviderRequestTokens,
 } from './compact.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message, Usage } from '../types/messages.js';
@@ -142,6 +144,29 @@ describe('usagePressureTokens', () => {
         contextTokens: 99,
       }),
     ).toBe(99);
+  });
+});
+
+describe('estimateProviderRequestTokens', () => {
+  it('uses the same conservative image estimate as message history accounting', () => {
+    const textOnly = estimateProviderRequestTokens(
+      [{ role: 'user', content: [{ type: 'text', text: 'describe' }] }],
+      [],
+    );
+    const withImage = estimateProviderRequestTokens(
+      [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'describe' },
+            { type: 'image', mediaType: 'image/png', data: 'encoded' },
+          ],
+        },
+      ],
+      [],
+    );
+
+    expect(withImage - textOnly).toBe(IMAGE_TOKEN_ESTIMATE);
   });
 });
 
