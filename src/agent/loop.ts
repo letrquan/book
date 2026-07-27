@@ -1,6 +1,6 @@
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import { createHash } from 'node:crypto';
-import type { Message, Usage } from '../types/messages.js';
+import type { ImageAttachment, Message, Usage } from '../types/messages.js';
 import type { SlashCommand } from '../types/commands.js';
 import type {
   ToolCall,
@@ -85,6 +85,8 @@ export async function runAgentLoop(
     userMessageId?: string;
     userMessageTimestamp?: number;
     userFileObservations?: Message['fileObservations'];
+    userAttachments?: Message['attachments'];
+    resolveAttachment?: (attachment: ImageAttachment) => Promise<Uint8Array> | Uint8Array;
     userMessageKind?: Message['kind'];
     /** Synthetic host notifications bypass user-authored prompt hooks and memory capture. */
     skipUserPromptHooks?: boolean;
@@ -182,6 +184,7 @@ export async function runAgentLoop(
     includeInContext: true,
     kind: options?.userMessageKind ?? 'conversation',
     fileObservations: options?.userFileObservations,
+    attachments: options?.userAttachments,
     timestamp: options?.userMessageTimestamp ?? Date.now(),
   });
 
@@ -325,6 +328,7 @@ export async function runAgentLoop(
         planMode: effectiveMode === 'plan',
       },
       runtime.agentContextCache,
+      options?.resolveAttachment,
     );
     let requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
     const reservedOutputTokens = Math.min(
@@ -374,6 +378,7 @@ export async function runAgentLoop(
                 toolCatalogSummary: toolSurface.catalogSummary(),
               },
               runtime.agentContextCache,
+              options?.resolveAttachment,
             );
             requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
           }
@@ -401,6 +406,7 @@ export async function runAgentLoop(
             toolCatalogSummary: toolSurface.catalogSummary(),
           },
           runtime.agentContextCache,
+          options?.resolveAttachment,
         );
         requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
         log.info('preflight tool outputs clipped', { requestTokens, contextLimit });

@@ -32,7 +32,10 @@ function isSystemPromptZones(content: ProviderMessage['content']): content is Sy
 
 function flattenMessages(messages: ProviderMessage[]): Array<{
   role: string;
-  content: string | null;
+  content:
+    | string
+    | null
+    | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>;
   tool_calls?: ProviderMessage['tool_calls'];
   tool_call_id?: string;
 }> {
@@ -40,7 +43,16 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
     ...msg,
     content: isSystemPromptZones(msg.content)
       ? [msg.content.cachedPrefix, msg.content.dynamicSuffix].filter(Boolean).join('\n\n')
-      : msg.content,
+      : Array.isArray(msg.content)
+        ? msg.content.map((part) =>
+            part.type === 'text'
+              ? part
+              : {
+                  type: 'image_url' as const,
+                  image_url: { url: `data:${part.mediaType};base64,${part.data}` },
+                },
+          )
+        : msg.content,
   }));
 }
 

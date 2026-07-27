@@ -25,6 +25,32 @@ beforeEach(() => {
 });
 
 describe('chatCompletionStream request body', () => {
+  it('serializes image content parts as data URLs', async () => {
+    const stream = chatCompletionStream(
+      config,
+      [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'What is shown?' },
+            { type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' },
+          ],
+        },
+      ],
+      [],
+    );
+    await drain(stream);
+    expect(capturedBody.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'What is shown?' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } },
+        ],
+      },
+    ]);
+  });
+
   it('does not send max_turns (not an OpenAI param)', async () => {
     const stream = chatCompletionStream(config, [{ role: 'user', content: 'hi' }], []);
     await drain(stream);

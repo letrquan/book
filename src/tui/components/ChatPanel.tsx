@@ -175,6 +175,7 @@ export function ChatPanel({
               ) : null}
               <UserMessage
                 content={message.content}
+                attachments={message.attachments}
                 terminalWidth={terminalWidth}
                 screenReader={screenReader}
               />

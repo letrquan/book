@@ -370,6 +370,60 @@ describe('runHeadless — stream-json output', () => {
     expect(events).toContainEqual({ type: 'session', session_id: sessionId });
   });
 
+  it('hydrates resumed image history when generating prompt suggestions', async () => {
+    const sessions = new SessionStore(makeWorkspace());
+    const sessionId = sessions.create({ cwd: config.workspace });
+    const attachment = sessions.saveImageAttachment(sessionId, {
+      bytes: Uint8Array.from([137, 80, 78, 71, 1]),
+      mediaType: 'image/png',
+    });
+    const requests: Array<{ messages?: unknown[] }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const request = JSON.parse(String(init?.body)) as { messages?: unknown[] };
+        requests.push(request);
+        return requests.length === 1
+          ? sse([textDelta('Done.')])
+          : sse([textDelta('["Inspect the image again"]')]);
+      }),
+    );
+    const writes: string[] = [];
+
+    await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'continue',
+      inputFormat: 'text',
+      outputFormat: 'stream-json',
+      history: [
+        {
+          id: 'image-turn',
+          role: 'user',
+          content: 'What is shown?',
+          attachments: [attachment],
+          includeInContext: true,
+          timestamp: 1,
+        },
+      ],
+      mode: 'bypassPermissions',
+      stdout: { write: (value) => (writes.push(value), true) },
+      sessionStore: sessions,
+      sessionId,
+      promptSuggestions: true,
+    });
+
+    const events = writes
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    expect(requests).toHaveLength(2);
+    expect(JSON.stringify(requests[1].messages)).toContain('data:image/png;base64,');
+    expect(events).toContainEqual({
+      type: 'prompt_suggestions',
+      suggestions: ['Inspect the image again'],
+    });
+  });
+
   it('emits structured user-question events and invokes an interactive host callback', async () => {
     let fetchCalls = 0;
     vi.stubGlobal(

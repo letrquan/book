@@ -1,6 +1,6 @@
 import type { AgentConfig } from './types/runtime.js';
 import type { CompactResult, CompactBoundary } from './types/sessions.js';
-import type { Message, Usage } from './types/messages.js';
+import type { ImageAttachment, Message, Usage } from './types/messages.js';
 import type { HeadlessOptions, HeadlessResult } from './types/public-sdk.js';
 import type { UserQuestionResponse } from './types/tools.js';
 import type { AgentCompletionNotification } from './agents/types.js';
@@ -188,6 +188,7 @@ export async function runHeadless(
           userMessageId: userMessage.id,
           userMessageTimestamp: userMessage.timestamp,
           userFileObservations: userMessage.fileObservations,
+          userAttachments: userMessage.attachments,
           userMessageKind: userMessage.kind,
           manageSessionHooks: sessionId ? false : undefined,
           // Completion messages are host-generated notifications, not user
@@ -384,6 +385,9 @@ export async function runHeadless(
           registry,
           contextHistory,
           opts.signal,
+          store?.readImageAttachment
+            ? (attachment) => store.readImageAttachment!(runtimeSessionId, attachment)
+            : undefined,
         );
         if (suggestions.length > 0) {
           emit({ type: 'prompt_suggestions', suggestions });
@@ -530,6 +534,7 @@ async function generatePromptSuggestions(
   _registry: ToolRegistry,
   history: Message[],
   signal?: AbortSignal,
+  resolveAttachment?: (attachment: ImageAttachment) => Promise<Uint8Array> | Uint8Array,
 ): Promise<string[]> {
   const { chatCompletionStream } = await import('./provider/openai-compatible.js');
   const { buildMessages } = await import('./agent/context.js');
@@ -551,6 +556,9 @@ async function generatePromptSuggestions(
     undefined,
     undefined,
     signal,
+    undefined,
+    undefined,
+    resolveAttachment,
   );
 
   const stream = chatCompletionStream(config, suggestionMessages, [], { signal });

@@ -14,6 +14,7 @@ const discoverSkillsMock = vi.fn((_workspace: string) => []);
 const persistSettingLocalMock = vi.fn((_workspace: string, _key: string, _value: unknown) => ({
   ok: true,
 }));
+const readClipboardImageMock = vi.fn();
 
 vi.mock('./hooks/useAgent.js', () => ({
   useAgent: (...args: unknown[]) => useAgentMock(...args),
@@ -30,6 +31,10 @@ vi.mock('../commands/loader.js', () => ({
 
 vi.mock('../skills.js', () => ({
   discoverSkills: (workspace: string) => discoverSkillsMock(workspace),
+}));
+
+vi.mock('../input/clipboard-image.js', () => ({
+  readClipboardImage: (...args: unknown[]) => readClipboardImageMock(...args),
 }));
 
 vi.mock('./persist.js', () => ({
@@ -155,6 +160,62 @@ describe('App session commands', () => {
     view.stdin.write('\r');
     await new Promise((resolve) => setTimeout(resolve, 75));
   };
+
+  it('revalidates vision support when the model changes after an image is attached', async () => {
+    const attachment = {
+      id: 'image-1',
+      sha256: '1'.repeat(64),
+      storageKey: `${'1'.repeat(64)}.png`,
+      mediaType: 'image/png' as const,
+      byteSize: 3,
+    };
+    const agentState = {
+      ...pendingAgentState(),
+      isThinking: false,
+      pendingPlanApproval: null,
+      liveConfig: { ...config(), modelInfo: { vision: true } },
+    };
+    const store = {
+      saveImageAttachment: vi.fn(() => attachment),
+    };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+    readClipboardImageMock.mockResolvedValue({
+      bytes: Uint8Array.from([137, 80, 78, 71, 1]),
+      mediaType: 'image/png',
+    });
+
+    const view = render(
+      <App config={config()} session={{ ...testSession, store: store as never }} />,
+    );
+    view.stdin.write('\x1bv');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stripAnsi(view.lastFrame())).toContain('[image 1 0 KB]');
+
+    agentState.liveConfig = {
+      ...agentState.liveConfig,
+      model: 'text-only',
+      modelInfo: { vision: false },
+    };
+    view.rerender(<App config={config()} session={{ ...testSession, store: store as never }} />);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    view.stdin.write('describe');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(agentState.send).not.toHaveBeenCalled();
+    expect(agentState.addLocalMessage).toHaveBeenCalledWith(
+      'text-only does not support image input.',
+    );
+    expect(stripAnsi(view.lastFrame())).toContain('[image 1 0 KB]');
+  });
 
   it('uses the context-window fallback for status usage when model metadata is absent', () => {
     const liveConfig = { ...config(), maxTokens: 64_000, modelInfo: undefined };
@@ -472,6 +533,56 @@ describe('App session commands', () => {
     await new Promise((resolve) => setTimeout(resolve, 75));
     await submit(view, '/help');
     expect(view.frames.map(stripAnsi).join('\n')).toContain('/rewind');
+  });
+
+  it('restores image attachments with a rewound conversation prompt', async () => {
+    const attachment = {
+      id: 'image-rewind',
+      sha256: '2'.repeat(64),
+      storageKey: `${'2'.repeat(64)}.png`,
+      mediaType: 'image/png' as const,
+      byteSize: 2048,
+    };
+    const rewind = vi.fn(async () => ({
+      ok: true as const,
+      restoredPrompt: 'describe this image',
+      restoredAttachments: [attachment],
+    }));
+    const agentState = {
+      ...pendingAgentState(),
+      isThinking: false,
+      pendingPlanApproval: null,
+      rewind,
+      getRewindTargets: vi.fn(() => [
+        {
+          id: 'checkpoint-1',
+          userEventId: 'user-1',
+          prompt: 'describe this image',
+          attachments: [attachment],
+          timestamp: Date.now(),
+          codeAvailable: false,
+        },
+      ]),
+    };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    await submit(view, '/rewind');
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(rewind).toHaveBeenCalledWith('checkpoint-1', 'conversation');
+    expect(stripAnsi(view.lastFrame())).toContain('describe this image');
+    expect(stripAnsi(view.lastFrame())).toContain('[image 1 2 KB]');
   });
 });
 

@@ -44,7 +44,7 @@ import { deriveSessionName } from './name.js';
 export type AgentLoopRunner = typeof runAgentLoop;
 type AgentLoopOptions = NonNullable<Parameters<AgentLoopRunner>[6]>;
 type SessionTimelineStore = Pick<SessionStoreInterface, 'append'> &
-  Partial<Pick<SessionStoreInterface, 'patchMeta'>>;
+  Partial<Pick<SessionStoreInterface, 'patchMeta' | 'readImageAttachment'>>;
 
 export interface AgentSessionRunCallbacks {
   onEvent: (event: AgentEvent) => void;
@@ -75,7 +75,8 @@ export interface AgentSessionRunRequest {
   history: Message[];
   mode?: PermissionMode;
   sessionId: string;
-  timelineStore?: Pick<SessionStoreInterface, 'append'>;
+  timelineStore?: Pick<SessionStoreInterface, 'append'> &
+    Partial<Pick<SessionStoreInterface, 'readImageAttachment'>>;
   callbacks: AgentSessionRunCallbacks;
   options?: Omit<AgentLoopOptions, 'signal'>;
   signal?: AbortSignal;
@@ -132,7 +133,13 @@ export interface AgentSessionSendRequest {
   callbacks: AgentSessionRunCallbacks;
   options?: Omit<
     AgentLoopOptions,
-    'signal' | 'displayMessage' | 'userMessageId' | 'userMessageTimestamp' | 'userFileObservations'
+    | 'signal'
+    | 'displayMessage'
+    | 'userMessageId'
+    | 'userMessageTimestamp'
+    | 'userFileObservations'
+    | 'userAttachments'
+    | 'resolveAttachment'
   >;
   isCurrent?: () => boolean;
   runtime?: SessionRuntime;
@@ -327,7 +334,12 @@ export class AgentSession {
             userMessageId: userMessage.id,
             userMessageTimestamp: userMessage.timestamp,
             userFileObservations: userMessage.fileObservations,
+            userAttachments: userMessage.attachments,
             userMessageKind: userMessage.kind,
+            resolveAttachment: request.timelineStore?.readImageAttachment
+              ? (attachment) =>
+                  request.timelineStore!.readImageAttachment!(request.sessionId, attachment)
+              : undefined,
             skipUserPromptHooks: userMessage.kind === 'agent-notification',
           },
           signal: control.signal,
@@ -493,6 +505,7 @@ export class AgentSession {
       id: checkpointId,
       userEventId: request.userMessage.id,
       prompt: request.displayMessage,
+      attachments: request.userMessage.attachments,
       timestamp: checkpointTimestamp,
       ...checkpoint,
       codeAvailable: capture.ok,
@@ -507,6 +520,7 @@ export class AgentSession {
         checkpointId,
         userEventId: request.userMessage.id,
         prompt: request.displayMessage,
+        attachments: request.userMessage.attachments,
         checkpoint,
       } satisfies TurnCheckpointRecordData,
     } satisfies SessionRecord);
@@ -552,6 +566,7 @@ export class AgentSession {
         contextContent: request.userMessage.contextContent,
         kind: request.userMessage.kind ?? 'conversation',
         agentNotifications: request.userMessage.agentNotifications,
+        attachments: request.userMessage.attachments,
         fileObservations: request.userMessage.fileObservations,
       },
     } satisfies SessionRecord);
@@ -719,6 +734,12 @@ export class AgentSession {
         {
           ...request.options,
           runtime: request.options?.runtime ?? this.runtime,
+          resolveAttachment:
+            request.options?.resolveAttachment ??
+            (request.timelineStore?.readImageAttachment
+              ? (attachment) =>
+                  request.timelineStore!.readImageAttachment!(request.sessionId, attachment)
+              : undefined),
           signal: request.signal,
         },
       );

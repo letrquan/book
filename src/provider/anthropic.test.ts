@@ -49,6 +49,28 @@ describe('Anthropic tool contracts', () => {
 // zoned system prompts are carried through so chatCompletionStream can place
 // cache_control only on the stable prefix block.
 describe('convertMessages', () => {
+  it('converts image content parts to Anthropic base64 blocks', () => {
+    const out = convertMessages([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'What is shown?' },
+          { type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' },
+        ],
+      },
+    ]);
+    expect(out.messages[0]).toEqual({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'What is shown?' },
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' },
+        },
+      ],
+    });
+  });
+
   it('preserves two-zone system prompts for Anthropic cache blocks', () => {
     const zones = {
       cachedPrefix: 'static instructions',

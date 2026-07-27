@@ -27,11 +27,43 @@ function tool(name: string, description: string): ToolDefinition {
 
 function systemPrefix(out: Awaited<ReturnType<typeof buildMessages>>): string {
   const content = out[0].content;
-  if (!content || typeof content !== 'object') throw new Error('expected zoned system prompt');
+  if (!content || typeof content !== 'object' || Array.isArray(content)) {
+    throw new Error('expected zoned system prompt');
+  }
   return content.cachedPrefix;
 }
 
 describe('buildMessages', () => {
+  it('hydrates session-owned image attachments without exposing storage bytes as text', async () => {
+    const attachment = {
+      id: 'image-1',
+      sha256: 'hash',
+      storageKey: 'hash.png',
+      mediaType: 'image/png' as const,
+      byteSize: 5,
+    };
+    const out = await buildMessages(
+      config,
+      [
+        {
+          ...userMsg('describe this'),
+          attachments: [attachment],
+        },
+      ],
+      [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => Uint8Array.from([1, 2, 3]),
+    );
+    expect(out[1].content).toEqual([
+      { type: 'text', text: 'describe this' },
+      { type: 'image', mediaType: 'image/png', data: 'AQID' },
+    ]);
+  });
+
   it('keeps the --agents off control free of managed-agent routing and profiles', async () => {
     const offConfig = defaultConfig();
     offConfig.settings.agents.mode = 'off';

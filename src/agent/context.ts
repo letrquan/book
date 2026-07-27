@@ -2,7 +2,7 @@ import { existsSync, readdirSync, statSync } from 'fs';
 import { platform, release, hostname, homedir } from 'os';
 import { dirname, join, parse, resolve } from 'path';
 import type { AgentConfig } from '../types/runtime.js';
-import type { Message } from '../types/messages.js';
+import type { ImageAttachment, Message } from '../types/messages.js';
 import type { ProviderMessage, SystemPromptZones } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
 import type { ToolContext, ToolDefinition } from '../types/tools.js';
@@ -447,6 +447,7 @@ export async function buildMessages(
     planMode?: boolean;
   },
   cache?: AgentContextCache,
+  resolveAttachment?: (attachment: ImageAttachment) => Promise<Uint8Array> | Uint8Array,
 ): Promise<ProviderMessage[]> {
   const messages: ProviderMessage[] = [];
 
@@ -466,12 +467,30 @@ export async function buildMessages(
   for (const msg of history) {
     if (!msg.includeInContext) continue;
     if (msg.role === 'user') {
+      const text =
+        msg.kind === 'checkpoint'
+          ? await renderCheckpointFreshness(config, msg.contextContent ?? msg.content)
+          : (msg.contextContent ?? msg.content);
+      if (msg.attachments?.length) {
+        if (!resolveAttachment) {
+          throw new Error('Image attachment storage is unavailable for this session.');
+        }
+        const content: NonNullable<Extract<ProviderMessage['content'], unknown[]>> = [];
+        if (text) content.push({ type: 'text', text });
+        for (const attachment of msg.attachments) {
+          const bytes = await resolveAttachment(attachment);
+          content.push({
+            type: 'image',
+            mediaType: attachment.mediaType,
+            data: Buffer.from(bytes).toString('base64'),
+          });
+        }
+        messages.push({ role: 'user', content });
+        continue;
+      }
       messages.push({
         role: 'user',
-        content:
-          msg.kind === 'checkpoint'
-            ? await renderCheckpointFreshness(config, msg.contextContent ?? msg.content)
-            : (msg.contextContent ?? msg.content),
+        content: text,
       });
     } else if (msg.role === 'assistant') {
       const assistant: ProviderMessage = {

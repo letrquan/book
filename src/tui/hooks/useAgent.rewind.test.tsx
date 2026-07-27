@@ -366,6 +366,13 @@ describe('useAgent rewind integration', () => {
 
   it('rewinds conversation state in the same session and returns the displayed prompt', async () => {
     const { config, timeline, sessionId } = fixture();
+    const attachment = {
+      id: 'image-1',
+      sha256: '1'.repeat(64),
+      storageKey: `${'1'.repeat(64)}.png`,
+      mediaType: 'image/png' as const,
+      byteSize: 3,
+    };
     timeline.append(sessionId, {
       type: 'turn_checkpoint',
       eventId: 'cp1',
@@ -375,6 +382,7 @@ describe('useAgent rewind integration', () => {
         checkpointId: 'cp1',
         userEventId: 'u1',
         prompt: 'displayed prompt',
+        attachments: [attachment],
         checkpoint: { codeUnavailableReason: 'capture failed' },
       } satisfies TurnCheckpointRecordData,
     });
@@ -382,7 +390,12 @@ describe('useAgent rewind integration', () => {
       type: 'user',
       eventId: 'u1',
       timestamp: Date.now(),
-      data: { id: 'u1', content: 'displayed prompt', kind: 'conversation' },
+      data: {
+        id: 'u1',
+        content: 'displayed prompt',
+        kind: 'conversation',
+        attachments: [attachment],
+      },
     });
     timeline.append(sessionId, {
       type: 'assistant',
@@ -401,7 +414,11 @@ describe('useAgent rewind integration', () => {
     const result = await latest!.rewind('cp1', 'conversation');
     await tick();
 
-    expect(result).toEqual({ ok: true, restoredPrompt: 'displayed prompt' });
+    expect(result).toEqual({
+      ok: true,
+      restoredPrompt: 'displayed prompt',
+      restoredAttachments: [attachment],
+    });
     expect(latest!.sessionId).toBe(sessionId);
     expect(latest!.messages).toEqual([]);
     expect(latest!.usage).toBeNull();

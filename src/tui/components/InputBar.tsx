@@ -6,6 +6,7 @@ import { useTheme } from '../theme.js';
 import { CommandMenu } from './CommandMenu.js';
 import { FileMentionMenu } from './FileMentionMenu.js';
 import type { PermissionMode } from '../../types/runtime.js';
+import type { ImageAttachment } from '../../types/messages.js';
 import type { SlashCommand } from '../../types/commands.js';
 import { modeColorToken } from '../mode-style.js';
 import { floatingFrameMetrics } from './chrome.js';
@@ -30,7 +31,8 @@ const uiLog = createUiDebugLogger('tui:inputbar');
 const FILE_MENTION_DEBOUNCE_MS = 40;
 
 interface InputBarProps {
-  onSubmit: (value: string) => void;
+  onSubmit: (value: string, attachments?: ImageAttachment[]) => void;
+  onPasteImage?: () => Promise<ImageAttachment | null>;
   submissionMode: 'submit' | 'queue' | 'blocked';
   mode: PermissionMode;
   onCycleMode: () => void;
@@ -52,15 +54,15 @@ interface InputBarProps {
   /** Allows conversational input to be queued while the parent is running. */
   canQueueWhileBusy?: (value: string) => boolean;
   /** Receives accepted queued input. Return false when the queue is full. */
-  onQueue?: (value: string) => boolean;
+  onQueue?: (value: string, attachments?: ImageAttachment[]) => boolean;
   /** Recalls the newest queued input when the composer is empty. */
-  onRecallQueued?: () => string | undefined;
+  onRecallQueued?: () => string | { value: string; attachments?: ImageAttachment[] } | undefined;
   /** Cancels the queued input currently being edited. */
   onCancelQueuedEdit?: () => void;
   /** True while the composer contains a recalled queued input. */
   editingQueuedInput?: boolean;
   /** Keeps the parent aware of the live draft for interrupt restoration. */
-  onDraftChange?: (value: string) => void;
+  onDraftChange?: (value: string, attachments?: ImageAttachment[]) => void;
   /** Moves focus from an empty prompt to the first background task when available. */
   onFocusBackgroundTask?: () => boolean;
   /**
@@ -83,7 +85,7 @@ interface InputBarProps {
   /** Commands for the autocomplete menu (from discoverCommands). */
   commands?: SlashCommand[];
   /** Keyed request used by conversation rewind to restore a prior prompt draft. */
-  draftRestore?: { key: number; value: string };
+  draftRestore?: { key: number; value: string; attachments?: ImageAttachment[] };
 }
 
 /**
@@ -147,6 +149,7 @@ function extractCommandName(value: string): string | null {
  */
 export function InputBar({
   onSubmit,
+  onPasteImage,
   submissionMode,
   mode,
   onCycleMode,
@@ -175,6 +178,8 @@ export function InputBar({
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [submitFlashKey, setSubmitFlashKey] = useState(0);
+  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | undefined>();
   const suggestion = compact ? 'Ask...' : 'Ask me anything...';
 
   // Command menu state
@@ -196,8 +201,8 @@ export function InputBar({
   const fileCandidatesRef = useRef<FileMentionCandidate[]>([]);
 
   useEffect(() => {
-    onDraftChange?.(value);
-  }, [onDraftChange, value]);
+    onDraftChange?.(value, attachments.length > 0 ? attachments : undefined);
+  }, [attachments, onDraftChange, value]);
 
   const filteredCmds = useMemo(
     () => getFilteredCommands(commands, menuFilter),
@@ -212,6 +217,25 @@ export function InputBar({
     [canQueueWhileBusy, canSubmitWhileBusy, submissionMode],
   );
   const workspace = process.env.BOOK_WORKSPACE || process.cwd();
+
+  const pasteImage = useCallback(() => {
+    if (!onPasteImage) return;
+    void onPasteImage()
+      .then((attachment) => {
+        if (!attachment) return;
+        setAttachmentError(undefined);
+        setAttachments((current) => {
+          if (current.length >= 4) {
+            setAttachmentError('At most 4 images can be attached to one message.');
+            return current;
+          }
+          return [...current, attachment];
+        });
+      })
+      .catch((error) => {
+        setAttachmentError(error instanceof Error ? error.message : String(error));
+      });
+  }, [onPasteImage]);
 
   useEffect(() => {
     if (!fileMention) {
@@ -257,6 +281,7 @@ export function InputBar({
   useEffect(() => {
     if (!draftRestore) return;
     setValue(normalizeInput(draftRestore.value));
+    setAttachments(draftRestore.attachments ?? []);
     setHistoryIndex(-1);
     setMenuVisible(false);
     setMenuSelected(0);
@@ -294,11 +319,21 @@ export function InputBar({
     // PermissionButtons handles them. Without this, Ink fires every `useInput`
     // handler on every keypress, so Enter/Tab/Esc would double-fire.
     if (inputSuppressed) return;
+    if (key.meta && _input.toLowerCase() === 'v') {
+      pasteImage();
+      return;
+    }
     // Filter out Alt/Meta-modified keys — they're shortcuts, not text input.
     // Preserve the editor value while the parent handles Alt/Meta shortcuts.
     if (key.meta) {
       const preservedValue = value;
       queueMicrotask(() => setValue(preservedValue));
+      return;
+    }
+
+    if (key.backspace && !value && attachments.length > 0) {
+      setAttachments((current) => current.slice(0, -1));
+      setAttachmentError(undefined);
       return;
     }
 
@@ -440,7 +475,12 @@ export function InputBar({
       const recalled = onRecallQueued?.();
       if (recalled !== undefined) {
         setHistoryIndex(-1);
-        setValue(recalled);
+        if (typeof recalled === 'string') {
+          setValue(recalled);
+        } else {
+          setValue(recalled.value);
+          setAttachments(recalled.attachments ?? []);
+        }
         uiLog.event('input:Up', { action: 'recall-queued-input' });
         return;
       }
@@ -570,8 +610,12 @@ export function InputBar({
       setFileSelected(0);
 
       const normalized = normalizeInput(val);
-      if (!normalized.trim()) {
+      if (!normalized.trim() && attachments.length === 0) {
         uiLog.event('submit:text', { result: 'empty' });
+        return;
+      }
+      if (normalized.trimStart().startsWith('/') && attachments.length > 0) {
+        setAttachmentError('Image attachments cannot be combined with slash commands.');
         return;
       }
       const action = resolveSubmissionAction(normalized);
@@ -581,7 +625,10 @@ export function InputBar({
         return;
       }
       if (action === 'queue') {
-        const accepted = onQueue?.(normalized) ?? false;
+        const accepted =
+          attachments.length > 0
+            ? (onQueue?.(normalized, attachments) ?? false)
+            : (onQueue?.(normalized) ?? false);
         uiLog.event('submit:text', {
           result: accepted ? 'queued' : 'queue-full',
           len: normalized.length,
@@ -599,8 +646,13 @@ export function InputBar({
       if (cmdName) recordCommandUse(cmdName);
 
       setSubmitFlashKey((key) => key + 1);
-      if (action === 'submit') onSubmit(normalized);
+      if (action === 'submit') {
+        if (attachments.length > 0) onSubmit(normalized, attachments);
+        else onSubmit(normalized);
+      }
       setValue('');
+      setAttachments([]);
+      setAttachmentError(undefined);
     },
     [
       acceptSelectedFileMention,
@@ -609,6 +661,8 @@ export function InputBar({
       onSubmit,
       resolveSubmissionAction,
       submissionMode,
+      attachments,
+      pasteImage,
     ],
   );
 
@@ -665,6 +719,22 @@ export function InputBar({
         reducedMotion={reducedMotion}
         screenReader={screenReader}
       />
+
+      {attachments.length > 0 ? (
+        <Box marginX={frame.marginX} paddingX={1}>
+          <Text color={theme.brand}>
+            {attachments.map(
+              (attachment, index) =>
+                `${index > 0 ? '  ' : ''}[image ${index + 1} ${(attachment.byteSize / 1024).toFixed(0)} KB]`,
+            )}
+          </Text>
+        </Box>
+      ) : null}
+      {attachmentError ? (
+        <Text color={theme.warning} wrap="wrap">
+          Image paste failed: {attachmentError}
+        </Text>
+      ) : null}
 
       <Box
         borderStyle="round"
