@@ -271,7 +271,7 @@ export function ModelPicker({
         const providerId = option?.providerId;
         if (!providerId) return;
         if (!removableProviderIds.has(providerId)) {
-          setError('Only workspace-local BYOK providers can be removed.');
+          setError('Only BYOK providers you added can be removed.');
           return;
         }
         const provider = providers[providerId];
@@ -380,9 +380,7 @@ export function ModelPicker({
             >
               {isSelected ? '❯' : ' '} {option.label}
               {option.providerId ? `  ${option.providerId}` : ''}
-              {option.providerId && removableProviderIds.has(option.providerId)
-                ? '  [local BYOK]'
-                : ''}
+              {option.providerId && removableProviderIds.has(option.providerId) ? '  [BYOK]' : ''}
               {isCurrent ? '  (current)' : ''}
             </Text>
           );

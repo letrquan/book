@@ -68,6 +68,15 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- BYOK providers and the active model selection now persist to the user-global `~/.book/settings.json`
+  instead of the per-project `.book/settings.local.json`, so a provider added in one folder (its
+  credentials, model catalog, and default model) is shared across every project rather than
+  re-entered per folder. Provider removal (`Alt+D` in `/model` / `/providers`) targets the global
+  file, and removable rows are labeled `[BYOK]` (previously `[local BYOK]`). Saving a model or
+  provider also clears any stale same-key override from the current folder's
+  `.book/settings.local.json` (which would otherwise shadow the new global value), so an
+  already-used folder picks up the global choice immediately. Existing per-project provider entries
+  are still read via the layered resolver but are no longer managed from the picker.
 - **Breaking:** `Edit`/`MultiEdit`/`NotebookEdit` — and `Write` over an existing file — now require
   the file to have been Read or `@`-mentioned in the session first (`file_not_observed`);
   previously only staleness after an observation was checked. `ApplyPatch` is exempt (context

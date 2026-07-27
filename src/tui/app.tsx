@@ -188,8 +188,8 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     agentTodos,
     liveConfig,
     runtime,
-    localProviderIds,
-    localProviderModelCounts,
+    removableProviderIds,
+    removableProviderModelCounts,
     sessionId,
     sessionName,
     send,
@@ -1809,8 +1809,8 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                 }}
                 onPickEffort={(level) => setEffort(level)}
                 onSaveProvider={upsertProviderAndSelect}
-                removableProviderIds={localProviderIds}
-                removableProviderModelCounts={localProviderModelCounts}
+                removableProviderIds={removableProviderIds}
+                removableProviderModelCounts={removableProviderModelCounts}
                 onRemoveProvider={(providerId) => {
                   const result = removeProvider(providerId);
                   if (!result.ok) return result;

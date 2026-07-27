@@ -7,8 +7,13 @@ import {
   persistSettingLocal,
   persistSettingsLocal,
   persistPermissionRuleLocal,
+  persistSettingGlobal,
+  persistSettingsGlobal,
   readSettingsLocal,
+  readSettingsGlobal,
   removeProviderLocal,
+  removeProviderGlobal,
+  clearLocalSettings,
 } from './persist.js';
 
 let dir: string;
@@ -255,5 +260,128 @@ describe('removeProviderLocal', () => {
     expect(restarted.provider.gateway.apiKey).toBe('project-key');
     expect(restarted.provider.gateway.models).toEqual({ inherited: { label: 'Inherited' } });
     expect(readSettingsLocal(dir)).toEqual({});
+  });
+});
+
+describe('global scope (~/.book/settings.json)', () => {
+  // The global helpers resolve their path via os.homedir(), which reads HOME on
+  // POSIX and USERPROFILE on Windows. Point both at a temp dir so writes land in
+  // an isolated fake home instead of the developer's real ~/.book.
+  let home: string;
+  let savedHome: string | undefined;
+  let savedUserProfile: string | undefined;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'book-home-'));
+    savedHome = process.env.HOME;
+    savedUserProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('writes provider and model to the global settings.json, not the workspace', () => {
+    const provider = {
+      type: 'openai',
+      apiKey: 'secret',
+      models: { 'deepseek-chat': { label: 'DeepSeek' } },
+    };
+    expect(
+      persistSettingsGlobal({
+        'provider.gateway': provider,
+        model: 'gateway/deepseek-chat',
+      }).ok,
+    ).toBe(true);
+
+    const globalPath = join(home, '.book', 'settings.json');
+    expect(existsSync(globalPath)).toBe(true);
+    expect(readSettingsGlobal()).toEqual({
+      provider: { gateway: provider },
+      model: 'gateway/deepseek-chat',
+    });
+    // Nothing should have been written to the project-local layer.
+    expect(existsSync(join(dir, '.book', 'settings.local.json'))).toBe(false);
+  });
+
+  it('a global provider resolves for any workspace', () => {
+    persistSettingGlobal('provider.gateway', {
+      type: 'openai',
+      apiKey: 'secret',
+      models: { 'deepseek-chat': { label: 'DeepSeek' } },
+    });
+    const resolved = resolveSettings(dir);
+    expect(resolved.provider.gateway.apiKey).toBe('secret');
+  });
+
+  it('removeProviderGlobal drops the provider and a global default that targets it', () => {
+    persistSettingsGlobal({
+      'provider.gateway': {
+        type: 'openai',
+        apiKey: 'secret',
+        models: { m: { label: 'M' } },
+      },
+      model: 'gateway/m',
+    });
+
+    const result = removeProviderGlobal('gateway');
+    expect(result).toEqual({
+      ok: true,
+      providerId: 'gateway',
+      removedModelCount: 1,
+      localDefaultCleared: true,
+      localProviderExisted: true,
+    });
+    expect(readSettingsGlobal()).toEqual({});
+  });
+
+  it('removeProviderGlobal reports a missing provider against the global path', () => {
+    const result = removeProviderGlobal('nope');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('~/.book/settings.json');
+  });
+
+  it('clearLocalSettings removes a stale local model so the global default wins', () => {
+    // Simulate a folder used before the change: a per-project model override.
+    persistSettingLocal(dir, 'model', 'old/x');
+    persistSettingGlobal('model', 'new/y');
+
+    // Local shadows global for scalars — this is the pre-clear regression.
+    expect(resolveSettings(dir).model).toBe('old/x');
+
+    expect(clearLocalSettings(dir, ['model']).ok).toBe(true);
+
+    // With the stale override gone, the folder inherits the global default.
+    expect(resolveSettings(dir).model).toBe('new/y');
+    expect(readSettingsLocal(dir).model).toBeUndefined();
+  });
+
+  it('clearLocalSettings prunes a stale local provider and empties its registry', () => {
+    persistSettingsLocal(dir, {
+      'provider.gateway': { type: 'openai', apiKey: 'old', models: { m: { label: 'M' } } },
+      model: 'gateway/m',
+    });
+    persistSettingGlobal('provider.gateway', {
+      type: 'openai',
+      apiKey: 'new',
+      models: { m: { label: 'M' } },
+    });
+
+    expect(clearLocalSettings(dir, ['provider.gateway', 'model']).ok).toBe(true);
+
+    // The emptied provider registry is pruned, leaving no local overrides.
+    expect(readSettingsLocal(dir)).toEqual({});
+    expect((resolveSettings(dir).provider.gateway as { apiKey: string }).apiKey).toBe('new');
+  });
+
+  it('clearLocalSettings is a no-op when the local file is absent', () => {
+    expect(clearLocalSettings(dir, ['model']).ok).toBe(true);
+    expect(existsSync(join(dir, '.book', 'settings.local.json'))).toBe(false);
   });
 });
