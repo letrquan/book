@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { program } from 'commander';
 import { runDoctorCommand } from './cli/doctor.js';
+import { runToolStatsCommand } from './cli/tool-stats.js';
 import { runConfigCommand } from './cli/config-cmd.js';
 import { runMainAction } from './cli/run.js';
 import { getPackageVersion } from './version-info.js';
@@ -54,6 +55,29 @@ program
   .action(async (options: { workspace: string }) => {
     await runDoctorCommand(options.workspace);
   });
+
+// ---- book tool-stats ----
+program
+  .command('tool-stats')
+  .description(
+    'Inspect and measure tool use recorded across sessions (fail counts, rates, durations)',
+  )
+  .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
+  .option('--json', 'Emit the aggregate as JSON')
+  .option('--since <days>', 'Only include records from the last N days')
+  .option('--all', 'Include the full history, ignoring the retention window')
+  .option('--prune', 'Drop records older than the window from disk before reporting')
+  .action(
+    async (options: {
+      workspace: string;
+      json?: boolean;
+      since?: string;
+      all?: boolean;
+      prune?: boolean;
+    }) => {
+      await runToolStatsCommand(options);
+    },
+  );
 
 // ---- book config ----
 program

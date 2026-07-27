@@ -15,7 +15,7 @@ AI coding agent CLI with rich terminal UI. An open-source, provider-agnostic alt
 - **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events.
 - **Verified managed agents**: adaptive model-directed routing, purpose-named runs, compact parent-facing results, live TUI monitoring, profile model overrides, read-only non-Git exploration, resumable isolated worktrees, strict capabilities, typed evidence, independent validation, and explicit patch application. Built-in `explorer`, `patcher`, and `validator` profiles can be overridden under `.book/agents/`.
 - **MCP**: stdio-transport MCP client for tool servers.
-- **CLI helpers**: `book doctor` (diagnose env/config) and `book config` (get/set/list settings).
+- **CLI helpers**: `book doctor` (diagnose env/config), `book config` (get/set/list settings), and `book tool-stats` (measure tool use across sessions — fail counts, rates, durations).
 
 See [`MILESTONES.md`](./MILESTONES.md) for the full progress roadmap (Phase 1 Claude-Code-parity work, Phase 2 harness extension points, Phase 3 polish). See [`CHANGELOG.md`](./CHANGELOG.md) for release notes.
 
@@ -62,6 +62,12 @@ book doctor
 book config list
 book config get permissions.deny
 book config set permissions.allow '["Read(*)","Glob(*)","Grep(*)"]'
+
+# Inspect and measure tool use recorded across sessions
+book tool-stats
+book tool-stats --json          # machine-readable aggregate
+book tool-stats --all           # ignore the retention window
+book tool-stats --since 7       # only the last 7 days
 ```
 
 ### Common flags
@@ -215,6 +221,25 @@ Mutation reliability guardrails, tuned for heterogeneous models:
 `toolDiscovery.mode` accepts `auto`, `eager`, or `deferred`. Auto mode sends all authorized definitions only when there are at most ten and their schemas fit the configured budget; otherwise the provider receives the practical core plus `ToolSearch`. Search never returns tools outside the current command, skill, agent-role, permission-mode, or runtime-state capability intersection.
 
 Tool execution is serial by default. Consecutive calls explicitly reviewed as parallel-safe (`Read`, `Glob`, `Grep`, `GitStatus`, `GitDiff`, `GitLog`, and `GitBranch`) run as bounded ordered waves; every other call is a barrier. Preparation, hooks, mode checks, and permission prompts remain sequential, while wave results are published in provider order without discarding successful siblings when another fails. `toolExecution.maxConcurrent` sets the session-wide limit shared by the root and managed children (default `4`, maximum `8`).
+
+### Tool-use telemetry
+
+When `observability.toolTelemetry` is enabled (default), Book appends one JSON line per finalized tool call to `~/.book/telemetry/tool-use.jsonl` (override the directory with `BOOK_TOOL_TELEMETRY_DIR`). Each record captures the canonical tool, the final status the model saw, a derived `isFailure` flag (`error`/`timed_out` only — permission blocks, plan-mode blocks, user declines, and cancellations are never counted as failures), the error code, duration, retries, model, and subagent attribution. The write is best-effort and off the hot path; it never blocks or fails a session, and the active log is size-rotated into a single `.1` backup.
+
+`book tool-stats` reads this log and reports, per tool, calls / failures / fail rate / p50 / p95 duration / retry rate, plus a per-model split and the most frequent error codes:
+
+```
+$ book tool-stats
+Tool use — 1,204 calls across 37 sessions (2026-06-30 → 2026-07-27)
+18 failed (1.5%)
+
+TOOL          CALLS   FAIL   FAIL%      P50      P95   RETRY%
+Bash            412     12    2.9%    120ms    2.1s      4.4%
+ApplyPatch      210      4    1.9%     38ms    140ms     5.7%
+Read            402      0    0.0%     15ms     34ms     0.0%
+```
+
+Use `--json` for a machine-readable aggregate, `--since <days>` to change the window, `--all` for full history, and `--prune` to drop records older than the window from disk. `observability.toolTelemetryRetentionDays` sets the default reporting window and the `--prune` target; disk use is otherwise bounded by log rotation. Records store outcomes and hashes only, never prompts or file contents. This is separate from the ephemeral in-session counters shown by `/usage`.
 
 ### Managed agents
 

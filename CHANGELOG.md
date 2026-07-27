@@ -6,6 +6,16 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Persistent tool-use telemetry and a `book tool-stats` subcommand for measuring tool use across
+  sessions. Each finalized tool call appends one JSON line to `~/.book/telemetry/tool-use.jsonl`
+  (best-effort, off the hot path, size-rotated; captured at the final-status point so plan/user
+  mutations are reflected), recording the tool, status, a derived `isFailure` flag (only `error`/
+  `timed_out` — blocks/cancellations never count), error code, duration, retries, model, and
+  subagent attribution. `book tool-stats` reports per-tool calls/fail rate/p50/p95/retry rate, a
+  per-model split, and top error codes (`--json`, `--since <days>`, `--all`, `--prune`). Gated by
+  `observability.toolTelemetry` (default on) with `observability.toolTelemetryRetentionDays` as the
+  reporting/prune window. Separate from the ephemeral in-session counters in `/usage`.
+
 - Fresh-context plan handoff: an "Approve, fresh context" option (shortcut `F`) at the plan-approval
   prompt stops the planning turn and starts a new conversation seeded with only the approved plan —
   the implementation runs with a clean context window, like Codex/Claude Code handoff.

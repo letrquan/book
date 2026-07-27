@@ -52,7 +52,7 @@ const DEFAULT_DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024;
 const DEFAULT_DEBUG_LOG_BACKUPS = 3;
 export const DEFAULT_LOCAL_DATA_RETENTION_DAYS = 30;
 
-function positiveInteger(value: string | undefined, fallback: number): number {
+export function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }

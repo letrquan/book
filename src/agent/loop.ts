@@ -45,6 +45,8 @@ import {
   toolResultSucceeded,
 } from '../tools/result.js';
 import { toolSearchTools } from '../tools/tool-search.js';
+import { appendToolUseRecords } from '../tool-telemetry.js';
+import type { ToolUseRecord } from '../types/tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
 import { permissionDeniedError } from './actionable-errors.js';
@@ -108,6 +110,8 @@ export async function runAgentLoop(
     runtime?: SessionRuntime;
     /** Override user-local oversized tool-output storage (primarily for isolated hosts/tests). */
     toolOutputRoot?: string;
+    /** Override user-local tool-use telemetry storage (primarily for isolated hosts/tests). */
+    toolTelemetryRoot?: string;
     provider?: Provider;
   },
 ): Promise<Message[]> {
@@ -1179,6 +1183,33 @@ export async function runAgentLoop(
         }
         toolStats.set(name, entry);
       }
+    }
+
+    // Persistent, cross-session tool-use telemetry (additive to toolCallStats
+    // above). Captured here so status reflects post-mutation outcomes. Records
+    // the raw status plus a derived isFailure — blocked/cancelled are not
+    // reliability failures and must not inflate the fail rate. Best-effort.
+    if (config.settings.observability.toolTelemetry && toolCalls.length > 0) {
+      const recordedAt = Date.now();
+      const records: ToolUseRecord[] = [];
+      for (let index = 0; index < toolCalls.length; index++) {
+        const result = orderedToolResults[index];
+        const isFailure = result.status === 'error' || result.status === 'timed_out';
+        records.push({
+          ts: recordedAt,
+          session: runtime.traceId,
+          tool: canonicalToolName(toolCalls[index].name),
+          status: result.status,
+          isFailure,
+          errorCode: isFailure ? (result.structuredError?.code ?? result.status) : undefined,
+          durationMs: result.metrics?.durationMs,
+          retries: Math.max(0, (result.metrics?.retryAttempt ?? 1) - 1),
+          model: effectiveConfig.model,
+          subagent: options?.isSubagent === true,
+          agentRole: options?.agentRole,
+        });
+      }
+      void appendToolUseRecords(records, { root: options?.toolTelemetryRoot });
     }
 
     // Stop hook — fire-and-forget after each turn.
