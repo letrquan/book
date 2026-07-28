@@ -20,6 +20,8 @@
 - Add bounded payload sizes, secret redaction, corruption recovery, and retention controls.
 - Record model identity, project identity, active settings, and an explicit `baseline` workflow label.
 - Record runtime, environment, tool-surface, context-capability, and evaluator compatibility references.
+- Record prompt-layer, skill registry/activation, context-policy, model-adapter, hook-policy,
+  verifier, and delegation capability references.
 - Preserve source provenance for derived evidence without copying untrusted raw content.
 - Map the local ledger to OpenTelemetry-compatible trace, span, event, and metric fields.
 - Keep observation asynchronous where possible so logging does not block user-visible execution.
@@ -61,6 +63,17 @@ assistant_message_completed
 run_interrupted
 run_failed
 run_completed
+prompt_layer_rendered
+skill_activation_requested
+skill_activation_applied
+skill_activation_expired
+tool_discovery_requested
+tool_discovery_applied
+context_contribution_recorded
+verification_requested
+verification_completed
+subagent_handoff_created
+capability_clamped
 ```
 
 Events should contain summaries and references. Do not persist raw prompts, complete tool output, full file contents, or secrets by default.
@@ -141,6 +154,8 @@ Define a stable mapping from run/turn/tool/permission/evaluator events to OpenTe
 - tool/model/permission operations map to named spans with bounded attributes;
 - tokens, cost, latency, retries, and evaluator status map to metrics/events;
 - workflow, policy, model, environment, and tool-surface versions remain explicit attributes;
+- prompt-layer, skill, context, model-adapter, verifier, hook, and delegation versions remain
+  explicit attributes;
 - export is optional, but the local schema must not require a proprietary backend.
 
 Do not emit raw prompts, complete tool output, secrets, or sensitive file contents merely to satisfy telemetry conventions.
@@ -215,6 +230,7 @@ Modify src/session/agent-events.ts
 - Provenance is retained for bounded summaries and cannot be mistaken for trusted policy.
 - OpenTelemetry mapping preserves trace/span relationships and bounded attributes.
 - Runtime, environment, tool-surface, and context-capability changes are visible in run records.
+- Capability-manifest changes are visible in run records, including which layer or component changed.
 - `observe` adds no prompt text, tool definitions, or permission changes.
 
 **Verification:**

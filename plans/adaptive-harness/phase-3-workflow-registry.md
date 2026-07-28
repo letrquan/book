@@ -21,6 +21,8 @@
 - Render the active workflow in the dynamic system-prompt zone.
 - Enforce supported controls outside the prompt where possible.
 - Record the exact workflow ID/version/reason with every run.
+- Allow workflows to request only registered capability-policy IDs; prompt layers, skills, tools,
+  context policies, model adapters, verifiers, hooks, and delegation remain separately versioned.
 
 #### Phase 3 Work Breakdown
 
@@ -63,6 +65,10 @@ deny rules, or exceed the user's configured mode.
 Context token limits are requests clamped by the trusted runtime. Compaction, checkpoint, and handoff values are valid only when the fixed runtime advertises the corresponding tested capability.
 
 Do not add model names, user identities, project paths, task prompts, arbitrary code, free-form system prompts, tool definitions, retry implementations, or security rules to workflow definitions.
+
+Do not add embedded skill bodies, tool descriptions or schemas, context retrieval code, model
+adapter text, hook commands, verifier commands, or subagent definitions. Those belong to the fixed
+capability substrate in Phase 3A and are referenced only by validated IDs after that phase exists.
 
 Use recursively strict validation and canonical JSON serialization before hashing. Project-local
 workflow files are untrusted repository data even after schema validation: never render their
@@ -233,6 +239,10 @@ npm test
 ```
 
 **Exit gate:** Fixed workflows can be compared fairly without any automatic learning.
+
+Phase 4 remains blocked until [Phase 3A](phase-3a-agent-capability-substrate.md) verifies that the
+prompt, skill, tool, context, model, verification, hook, and delegation surfaces are independently
+versioned and cannot drift underneath a workflow comparison.
 
 **Rollback:** Force `minimal` globally and retain other workflow definitions as inactive test fixtures.
 

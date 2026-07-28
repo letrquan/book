@@ -22,6 +22,8 @@ Potential work:
 - confidence decay and evidence expiration;
 - background evaluation workers;
 - cross-project workflow priors using privacy-preserving aggregates;
+- capability transfer only through compatible prompt, skill, tool, context, model-adapter,
+  verification, hook, and delegation manifests;
 - multi-agent coordination only after single-agent adaptation is proven;
 - code-level harness evolution only after bounded configuration search is demonstrably insufficient.
 
@@ -36,6 +38,8 @@ real usage" is not an executable gate.
 ##### 9.1 Cross-model priors
 
 - Transfer only aggregate workflow evidence, never trust state.
+- Transfer aggregate capability outcomes and descriptors, never raw prompts, skill bodies, memory,
+  repository content, tool output, or provider-specific adapter text.
 - Key similarity by provider protocol, tool schema, context behavior, and observed capability rather than name similarity alone.
 - Start every new exact model key at low confidence.
 - Compare cold-start minimal, transferred prior, and recalibrated policy.
@@ -78,6 +82,8 @@ features excluded from inference.
 - Use privacy-preserving aggregates rather than raw project evidence.
 - Require compatible task/project features.
 - Prevent one project's conventions from becoming another project's instructions.
+- Prevent project skills, context packs, tool customizations, memory, and prompt modules from becoming
+  cross-project policy without explicit trust, consent, and compatibility evidence.
 - Provide project-level opt-out and deletion.
 - Demonstrate benefit over project-local cold start.
 
@@ -101,6 +107,8 @@ If explored:
 - measure coordination failures, duplicated work, contention, handoff loss, and aggregate outcome attribution;
 - compare against the best single-agent workflow and prefer it when outcomes are equivalent;
 - require deterministic cancellation, rollback, and cleanup of partial child work.
+- transfer typed handoff and capability-compatibility metadata rather than raw child transcripts or
+  skill bodies, and validate independence and stale-snapshot handling before reuse.
 
 ##### 9.7 Code-level harness evolution
 

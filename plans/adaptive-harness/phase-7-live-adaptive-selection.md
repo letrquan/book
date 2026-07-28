@@ -17,6 +17,8 @@
 - Enable adaptive selection only for verified model/task/project slices.
 - Use deterministic canary assignment with a configurable percentage.
 - Freeze the selected workflow version for each run.
+- Freeze the complete selected capability manifest for each run so prompt, skill, tool, context,
+  model-adapter, verifier, hook, and delegation behavior cannot drift underneath the workflow.
 - Add a user-visible explanation and a one-command override to `minimal` or a fixed workflow.
 - Monitor primary and guardrail metrics against the non-adaptive control group.
 - Automatically disable a slice when rollback thresholds are crossed.
@@ -36,6 +38,7 @@ interface RolloutEligibility {
   projectRisk: string;
   policyVersion: string;
   workflowRegistryVersion: string;
+  capabilityManifestDigest: string;
   canaryPercent: number;
   reportRef: string;
   expiresAt?: number;
@@ -76,6 +79,10 @@ minimal fallback
 
 Produce a `ResolvedWorkflow` with all clamps and provenance before calling the agent loop.
 
+Also resolve a `CapabilityManifest` from promoted, trusted component IDs. The rollout registry cannot
+embed arbitrary prompt text, skill bodies, tool schemas, context retrieval code, model adapter text,
+hook commands, verifier commands, or subagent definitions.
+
 Freeze the decision at the root-run boundary. In the initial release, an interactive override applies
 to the next run unless a separate thread-safe transition channel is implemented.
 
@@ -94,6 +101,7 @@ Expose:
 The UI should state:
 
 - selected workflow and version;
+- capability bundle version and changed components;
 - why it was selected;
 - whether the run is control/canary/active;
 - what evidence scope was used;
@@ -114,6 +122,8 @@ For each rollout, track:
 - model/version changes;
 - runtime, environment, tool-surface, context-capability, and sandbox changes;
 - evaluator failures.
+- prompt-layer, skill, tool-contract, context-policy, model-adapter, hook-policy, verifier, or
+  delegation changes.
 
 Do not combine results across incompatible workflow, policy, model, runtime, environment, tool-surface, context-capability, sandbox, or evaluator versions.
 
@@ -132,6 +142,7 @@ Predeclare rollback triggers such as:
 - user correction/override rate rises materially;
 - evaluator failure rate invalidates monitoring;
 - model/provider, runtime, environment, tool-surface, context-capability, or sandbox changes without recalibration;
+- any capability-manifest component changes without recalibration;
 - live control variance exceeds the declared noise threshold.
 
 Rollback should:
@@ -153,6 +164,8 @@ must stop adaptive assignment immediately after a rollback signal.
 
 - Exact model version changes invalidate or downgrade eligibility.
 - Tool-schema changes invalidate model evidence that depended on the old schema.
+- Prompt-layer, skill registry/body, tool-contract, context-policy, model-adapter, hook, verifier, or
+  delegation changes invalidate capability evidence that depended on the old component.
 - Runtime, sandbox, environment, or context-capability changes invalidate incompatible eligibility.
 - Major project fingerprint changes may expire project-risk eligibility.
 - Evaluator changes pause comparisons until results are normalized or rerun.
@@ -197,6 +210,8 @@ Modify src/settings.ts for kill switches and canary controls
 - Canary workflow is frozen once execution begins.
 - Rollback threshold pauses new assignments immediately.
 - Existing runs retain their recorded workflow after rollback.
+- Existing runs retain the exact resolved capability-manifest and integration/trust decisions; a
+  rollback never silently replays them under a different bundle.
 - Model change invalidates eligibility.
 - Runtime/environment/tool/context compatibility drift invalidates eligibility.
 - Excessive live control variance pauses the rollout instead of producing a directional claim.
@@ -226,6 +241,8 @@ npm test
 
 **Exit gate:** Live adaptive selection clears the predeclared benefit and non-inferiority margins versus concurrent control, justifies its complexity, and can automatically retreat to the best fixed workflow. Otherwise hold or roll back the slice.
 
-**Rollback:** Set harness mode to `shadow`, `observe`, or `off`; mark the workflow version inactive in the registry.
+**Rollback:** Set harness mode to `shadow`, `observe`, or `off`; mark the workflow and associated
+capability-bundle version inactive in the registry; route future runs to the recorded last-known-good
+fixed bundle. Preserve the exact manifest for in-flight runs and diagnostics.
 
 **Intent check:** Is live adaptation earning its complexity on real tasks?

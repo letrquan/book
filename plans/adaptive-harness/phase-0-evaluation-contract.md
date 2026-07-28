@@ -21,6 +21,8 @@
 - Create a small deterministic fixture corpus that can run without private user data.
 - Define environment, runtime, and tool-surface compatibility fingerprints plus a measured infrastructure noise floor.
 - Include context exhaustion/resume, tool-contract, and untrusted-input security fixtures.
+- Include workspace-trust and external-integration fixtures before any project-controlled process or
+  credential can be used in an evaluation arm.
 - Define versioned human rubrics for outcomes that cannot be verified automatically.
 - Define optional external benchmark adapters as portability checks, not promotion substitutes.
 - Record benchmark limitations and tasks that cannot yet be evaluated reliably.
@@ -111,6 +113,26 @@ The initial corpus must also contain targeted cases for:
 - malformed tool arguments, ambiguous tool errors, timeout, cancellation, retry, oversized output, and partial success;
 - prompt injection or instruction-like text from repository files, tool results, and retrieved content;
 - attempted credential exposure, indirect permission escalation, poisoned memory/evidence, and unverified tool endpoints.
+- skill activation: direct, indirect, negative, ambiguous, conflicting, unavailable-body, and
+  project-skill trust cases;
+- tool-contract routing: overlapping tools, deferred discovery, malformed arguments, structured
+  errors, retry/cancellation, and partial-result recovery;
+- prompt-layer behavior: stable-prefix digest changes, dynamic-policy activation, source/trust
+  provenance, budget clipping, and instruction-like untrusted content;
+- context engineering: relevant-file retrieval, repository/symbol-map quality, irrelevant-context
+  pressure, repeated reads, compaction, checkpoint freshness, and resume preservation;
+- model/provider capability: exact identity, aliases/unknown identity, provider message flattening,
+  tool-result ordering, output limits, structured output, and prompt-cache assumptions;
+- subagent capability: skill preload, restricted tools, independent review, stale snapshots, typed
+  handoffs, and duplicate-work detection;
+- deterministic controls: hook block/modify/timeout behavior, verifier authority, permission
+  decisions, and behaviors that must not depend on prompt compliance.
+- workspace trust: untrusted project hooks, providers, MCP servers, commands, skills, and subagents
+  are blocked before spawn/request; explicit trust enables only the reviewed surfaces;
+- external lifecycle: TUI/headless/SDK/CI initialization order, provider/MCP negotiation, auth,
+  timeout, cancellation, reconnect, backpressure, partial results, cleanup, and status parity;
+- web and credential boundaries: origin binding, redirect/private-address blocking, response limits,
+  environment filtering, redaction, and terminal-output sanitization.
 
 Do not use personal session transcripts in the initial corpus.
 
@@ -128,6 +150,10 @@ Document how each case is run under:
 - `D/candidate`: evolved workflow, introduced only in Phase 8.
 
 All arms must use the same model version, provider settings, tool-surface fingerprint, runtime/environment profile, repository revision, budgets, and evaluator version.
+
+For capability experiments, also lock the prompt-layer, skill registry and activation policy, context
+policy, model-adapter, hook policy, verifier, and delegation fingerprints. A workflow result is not
+attributable when any of those changed silently.
 
 The initial corpus must also lock `settings.agents.mode`, normally to `off`, so the harness workflow
 is not confounded with Book's existing adaptive delegation. Capture a golden provider-message and
@@ -169,6 +195,11 @@ changed files/diff size
 user or reviewer result, when applicable
 control variance/noise-floor result
 harness complexity delta
+prompt tokens by layer and cache-prefix churn
+skill activation decision, body/resource tokens, activation latency, and false-trigger label
+tool-selection/search result, schema tokens, malformed-call and recovery outcome
+context contribution summary, relevant-file recall, repeated-read count, and compaction loss
+exact capability manifest and changed component IDs
 ```
 
 ##### 0.6 Record evaluator limitations

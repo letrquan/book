@@ -22,6 +22,8 @@
 - Add outcome provenance so every score points to its evidence.
 - Add versioned human-rubric outcomes with blind review and agreement rules where automatic verification is insufficient.
 - Retain workflow complexity as an outcome/trade-off dimension instead of treating extra scaffolding as free.
+- Add capability outcomes for skill activation quality, tool selection/recovery, context efficiency,
+  prompt/cache stability, verification coverage, subagent usefulness, and unnecessary user friction.
 
 #### Phase 5 Work Breakdown
 
@@ -92,6 +94,16 @@ interface OutcomeDimension {
 ```
 
 Store dimensions for correctness, reliability, regression, user alignment, maintainability, cost, latency, long-horizon stability, and harness complexity.
+
+For capability bundles, retain separate dimensions for:
+
+- skill activation precision, recall, body/resource cost, and completion quality;
+- correct-tool selection, deferred-search success, malformed-call rate, and recovery;
+- prompt tokens by layer, cache-prefix churn, context contribution, relevant-file recall, repeated
+  reads, and compaction loss;
+- verifier coverage, false completion, skipped-check reason, and evidence quality;
+- subagent parent-context savings, total cost, handoff completeness, and duplicate work;
+- unnecessary clarification questions, permission friction, cancellation clarity, and correction rate.
 
 Define a machine-readable aggregation contract per task class, including missingness and unknown
 handling. A failed or unevaluable dimension must remain visible; excluding unknowns because they are
@@ -227,6 +239,10 @@ Modify src/headless.ts or stream-json input for explicit feedback events
 - Blind human-rubric comparison, reviewer disagreement, insufficient reviewers, and rubric-version changes.
 - A model judge cannot independently convert an unknown human-rubric outcome into success.
 - Equivalent outcome quality with higher harness complexity remains visible for tie-breaking.
+- Capability outcomes remain separable from workflow outcomes and identify the changed manifest
+  components.
+- Skill activation false positives and deferred-tool discovery costs remain visible even when final
+  task correctness passes.
 - Recomputed outcome under a new evaluator version preserves prior results.
 - Unknown outcome remains ineligible for automatic promotion.
 - Human-rubric agreement, calibration, blinding, adjudication, and reviewer privacy rules are executable rather than a free-form `agreementRule` string.

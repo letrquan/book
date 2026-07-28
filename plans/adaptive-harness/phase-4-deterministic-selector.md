@@ -2,7 +2,7 @@
 
 - **Parent plan:** [Adaptive Harness Implementation Plan](../adaptive-harness-implementation-plan.md)
 - **Status:** Not started
-- **Depends on:** Phase 3 verified
+- **Depends on:** Phase 3 and Phase 3A verified
 - **Tracking rule:** Update this status and the parent plan ledger in the same change.
 
 > The parent plan's original intent, non-negotiable invariants, architecture boundaries, stop conditions, and anti-drift review apply to every task in this phase.
@@ -13,6 +13,12 @@
 **Objective:** Select among fixed workflows using current evidence without LLM-based policy generation.
 
 Automatic decisions remain advisory in this phase. They may be explained, tested, or recorded, but they do not control live execution until Phase 7 eligibility and canary gates are satisfied.
+
+The first selector chooses only among fixed workflows. Prompt kernels, prompt-layer renderers, skill
+registries and activation policy, tool descriptions/schemas, context policies, model adapters,
+verifiers, hooks, and delegation policy remain frozen capability axes. Advisory recommendations for
+those axes may be recorded separately, but they cannot affect the live run or be conflated with the
+workflow decision.
 
 **Deliverables:**
 
@@ -52,6 +58,7 @@ interface PolicyInput {
     environmentFingerprint: string;
     toolSurfaceFingerprint: string;
     contextCapabilitiesVersion: string;
+    capabilityManifestDigest: string;
   };
 }
 ```
@@ -238,6 +245,8 @@ Modify src/agent/loop.ts only for explicit transition triggers/events
 - Transition loops are impossible.
 - Manual override prevents automatic transitions unless explicitly allowed.
 - Explanation references only evidence actually used.
+- Changing any frozen capability-manifest component invalidates workflow evidence instead of being
+  absorbed into the selector's result.
 
 **Verification:**
 

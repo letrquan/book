@@ -2,12 +2,18 @@
 
 - **Date:** 2026-07-20
 - **Status:** Draft
-- **Scope:** Agent-runtime integration, context and tool-surface contracts, workflow selection, run evidence, evaluation, and safe workflow evolution
+- **Scope:** Agent-runtime integration, prompt and capability layers, context and tool-surface contracts, skills, workflow selection, run evidence, evaluation, and safe workflow evolution
 - **Goal:** Improve Book's task outcomes over time by selecting and evolving workflows for the current model, project, user context, and task without degrading models that perform best with minimal scaffolding.
 
 **Research review:** [Adaptive Harness Research Grounding](adaptive-harness/research-grounding.md)
 is a required input to Phase 0. Its preconditions and unresolved questions must be closed in
 the relevant verification packet rather than treated as optional follow-up work.
+
+**Capability review:** [Agent Capability Research and Gap Analysis](adaptive-harness/agent-capability-research.md)
+and [Phase 3A](adaptive-harness/phase-3a-agent-capability-substrate.md) define the prompt, skill,
+  tool, context, model, verification, delegation, hook, external-integration, trust, and
+  user-interaction surface that must be explicit before automatic selection can use capability
+  evidence.
 
 ---
 
@@ -19,6 +25,7 @@ the relevant verification packet rather than treated as optional follow-up work.
 | 1 | Add contracts and disabled boundary | Off/inert | Existing runtime remains behaviorally identical |
 | 2 | Add append-only evidence | Observe only | Runs are explainable with acceptable overhead |
 | 3 | Add validated fixed workflows | Manual/fixed | Workflows are reproducible and kernel-bounded |
+| 3A | Add agent-capability substrate | Manual/fixed | Prompt, skill, tool, context, model, integration, trust, and handoff surfaces are versioned and comparable |
 | 4 | Add deterministic selector | Explain/dry-run | Decisions are scoped, deterministic, and reversible |
 | 5 | Add outcomes and feedback | Fixed/manual comparison | Outcomes are externally grounded or explicitly unknown |
 | 6 | Evaluate adaptation | Shadow/offline | Adaptive choice beats serious baselines on held-out slices |
@@ -49,6 +56,18 @@ immediately. Resolve or explicitly block on these before collecting promotion ev
   `agents.mode = off` in the initial single-agent corpus;
 - capture the effective provider/model identity or record it as unverifiable;
 - freeze or version ambient prompt/config/tool inputs and isolate Book home state for every arm;
+- freeze or version prompt layers, skill registry and activation policy, tool contracts, context
+  policy, model capability adapter, hook policy, and subagent/delegation settings;
+- establish a workspace-trust boundary before project hooks, provider endpoints, MCP servers,
+  executable slash-command expansions, privileged skills, or subagent definitions can execute;
+- enforce a permission ceiling across user, project, workflow, skill, hook, MCP, and subagent scopes;
+  lower-trust configuration may narrow capabilities but cannot broaden them;
+- route project-controlled command execution through the normal tool, permission, sandbox, hook,
+  cancellation, and audit path instead of hidden host-side execution;
+- bind provider credentials to approved origins, validate provider endpoints, bound MCP startup, and
+  prevent untrusted project configuration from receiving credentials or first-request context;
+- make sandbox availability and network restrictions truthful and fail closed for evaluation;
+  harden web/MCP access against private-address requests and unbounded response reads;
 - use a disposable process/container boundary for adversarial fixtures, especially on Windows;
 - extend architecture checks to enforce the harness/runtime/evaluator/proposer dependency rules.
 
@@ -364,6 +383,7 @@ Detailed implementation work lives in one file per phase. The parent document re
 | 1 | Not started | [Contracts and disabled boundary](adaptive-harness/phase-1-contracts-boundary.md) | Harness is inert and runtime-equivalent when off |
 | 2 | Not started | [Run evidence ledger](adaptive-harness/phase-2-run-evidence-ledger.md) | Runs are explainable without behavior changes |
 | 3 | Not started | [Validated workflow registry](adaptive-harness/phase-3-workflow-registry.md) | Fixed workflows are safe and reproducible |
+| 3A | Not started | [Agent-capability substrate](adaptive-harness/phase-3a-agent-capability-substrate.md) | Capability bundles are versioned, bounded, and comparable |
 | 4 | Not started | [Deterministic selector](adaptive-harness/phase-4-deterministic-selector.md) | Decisions are advisory, scoped, and explainable |
 | 5 | Not started | [Outcomes and feedback](adaptive-harness/phase-5-outcomes-feedback.md) | Outcomes are externally grounded or unknown |
 | 6 | Not started | [Shadow and held-out evaluation](adaptive-harness/phase-6-shadow-evaluation.md) | Adaptation beats serious baselines on eligible slices |
@@ -393,6 +413,7 @@ Update this table in the same pull request that changes a phase status. Do not m
 | [1. Contracts and disabled boundary](adaptive-harness/phase-1-contracts-boundary.md) | Not started | - | - | - | - |
 | [2. Observation ledger](adaptive-harness/phase-2-run-evidence-ledger.md) | Not started | - | - | - | - |
 | [3. Fixed workflow registry](adaptive-harness/phase-3-workflow-registry.md) | Not started | - | - | - | - |
+| [3A. Agent-capability substrate](adaptive-harness/phase-3a-agent-capability-substrate.md) | Not started | - | - | - | Prompt, skill, tool, context, model, and handoff contracts |
 | [4. Deterministic selector](adaptive-harness/phase-4-deterministic-selector.md) | Not started | - | - | - | - |
 | [5. Outcomes and feedback](adaptive-harness/phase-5-outcomes-feedback.md) | Not started | - | - | - | - |
 | [6. Shadow adaptation](adaptive-harness/phase-6-shadow-evaluation.md) | Not started | - | - | - | - |
@@ -428,7 +449,8 @@ Each verification record must include:
 Implement in four reviewable batches:
 
 1. **Evidence foundation:** Phases 0-2. No task behavior changes.
-2. **Controlled workflow comparison:** Phases 3-5. Fixed/manual workflows and trustworthy outcomes.
+2. **Controlled capability comparison:** Phases 3-5. Fixed/manual workflows, capability bundles,
+   and trustworthy outcomes.
 3. **Verified adaptation:** Phases 6-7. Shadow evaluation before scoped live selection.
 4. **Self-improvement:** Phase 8. Bounded candidates, immutable gates, and rollback.
 
@@ -465,6 +487,19 @@ For TUI-visible behavior, also run the relevant render/integration tests and man
 - The system can select `minimal` for models/tasks that do not benefit from scaffolding.
 - Current explicit user instructions always override learned preferences.
 - Model evidence is derived and disposable, not a manually maintained per-model profile.
+- Prompt layers, skills, tool contracts, context policies, model adapters, verification, hooks, and
+  delegation have explicit versioned identities in comparison records.
+- Skill bodies are lazy and scoped; project-controlled skills cannot change permissions, budgets,
+  evaluators, tool schemas, or prompt-injection defenses.
+- Tool descriptions and schemas are evaluated as part of the tool surface, not treated as immutable
+  implementation detail.
+- Existing fixed tool-reliability semantics are fingerprinted and reused rather than duplicated by
+  the adaptive harness.
+- TUI, headless/CI, and SDK entry surfaces share trust, lifecycle, permission, budget, status, and
+  evidence contracts or carry an explicit incompatibility marker.
+- Untrusted workspaces cannot start or authorize project-controlled hooks, providers, MCP servers,
+  executable commands, skill scripts, or privileged subagents through a capability bundle.
+- Capability bundles can be rolled back independently of the trusted kernel and evaluator.
 - Project and user evidence is scoped, inspectable, confidence-weighted, and expiring where appropriate.
 - Every adaptive decision records its evidence, reason, policy version, and workflow version.
 - Outcome evaluation retains correctness, reliability, alignment, regression, cost, and latency separately.
@@ -488,6 +523,11 @@ For TUI-visible behavior, also run the relevant render/integration tests and man
 | Model churn makes evidence stale | Key evidence by exact model version, use weak priors, and recalibrate |
 | User behavior changes by context | Scope signals, prioritize current intent, use confidence decay and modes |
 | Profiles become maintenance burden | Store observations and derive temporary evidence views |
+| Prompt, skill, or tool changes are misattributed to workflows | Fingerprint the full capability manifest and evaluate axes separately |
+| Long prompts distract or invalidate caches | Split stable, session, dynamic, and task prompt layers with budgets |
+| Skills activate too often or too late | Test trigger precision/recall, direct activation, and deferred activation cost |
+| Tool descriptions route models incorrectly | Add contract fixtures and selection metrics for overlapping tools |
+| Context retrieval adds noise | Compare bounded retrieval policies and report relevant-token ratio |
 | Easy metrics replace real quality | Preserve multiple dimensions and block learning on unknown outcomes |
 | Candidate overfits replay tasks | Separate held-in and held-out sets; canary on fresh tasks |
 | Reward hacking | Keep evaluator, permissions, budgets, and history immutable |
