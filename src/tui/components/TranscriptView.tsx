@@ -36,7 +36,8 @@ interface TranscriptViewProps {
 }
 
 const INITIAL_METRICS: TranscriptMetrics = { contentRows: 0, viewportRows: 1 };
-const MOUSE_WHEEL_ROWS = 3;
+const MOUSE_WHEEL_ROWS = 2;
+const MOUSE_WHEEL_FRAME_MS = 16;
 
 function getAbsolutePosition(node: DOMElement): { x: number; y: number } | undefined {
   let current: DOMElement | undefined = node;
@@ -67,6 +68,10 @@ export function TranscriptView({
   const stateRef = useRef<TranscriptScrollState>(createTranscriptScrollState());
   const previousContentRowsRef = useRef(0);
   const previousFollowRequestRef = useRef(followRequestKey);
+  const pendingWheelRowsRef = useRef(0);
+  const wheelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastWheelFlushRef = useRef<number | null>(null);
+  const onToggleToolRef = useRef(onToggleTool);
   const [scrollState, setScrollState] = useState(createTranscriptScrollState);
   const [hasNewOutput, setHasNewOutput] = useState(false);
   const toolRowsRef = useRef(new Map<string, ToolSummaryRowRegistration>());
@@ -93,6 +98,46 @@ export function TranscriptView({
     );
     if (next.followBottom) setHasNewOutput(false);
   }, []);
+
+  onToggleToolRef.current = onToggleTool;
+
+  const cancelWheelScroll = useCallback(() => {
+    pendingWheelRowsRef.current = 0;
+    lastWheelFlushRef.current = null;
+    if (wheelTimerRef.current !== null) {
+      clearTimeout(wheelTimerRef.current);
+      wheelTimerRef.current = null;
+    }
+  }, []);
+
+  const flushWheelScroll = useCallback(() => {
+    const rows = pendingWheelRowsRef.current;
+    pendingWheelRowsRef.current = 0;
+    if (rows === 0) return;
+    lastWheelFlushRef.current = Date.now();
+    applyScrollState(scrollTranscriptBy(stateRef.current, metricsRef.current, rows));
+  }, [applyScrollState]);
+
+  const scheduleWheelScroll = useCallback(
+    (rows: number) => {
+      pendingWheelRowsRef.current += rows;
+      const now = Date.now();
+      const lastFlush = lastWheelFlushRef.current;
+      if (lastFlush === null || now - lastFlush >= MOUSE_WHEEL_FRAME_MS) {
+        flushWheelScroll();
+        return;
+      }
+      if (wheelTimerRef.current !== null) return;
+      wheelTimerRef.current = setTimeout(
+        () => {
+          wheelTimerRef.current = null;
+          flushWheelScroll();
+        },
+        MOUSE_WHEEL_FRAME_MS - (now - lastFlush),
+      );
+    },
+    [flushWheelScroll],
+  );
 
   useLayoutEffect(() => {
     const viewportRows = viewportRef.current
@@ -125,8 +170,9 @@ export function TranscriptView({
   useLayoutEffect(() => {
     if (previousFollowRequestRef.current === followRequestKey) return;
     previousFollowRequestRef.current = followRequestKey;
+    cancelWheelScroll();
     applyScrollState(scrollTranscriptToEnd(metricsRef.current));
-  }, [applyScrollState, followRequestKey]);
+  }, [applyScrollState, cancelWheelScroll, followRequestKey]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -136,10 +182,11 @@ export function TranscriptView({
       if (!event) return;
       if (event.type === 'wheel') {
         const rows = event.button === 'wheel-up' ? -MOUSE_WHEEL_ROWS : MOUSE_WHEEL_ROWS;
-        applyScrollState(scrollTranscriptBy(stateRef.current, metricsRef.current, rows));
+        scheduleWheelScroll(rows);
         return;
       }
-      if (event.type !== 'press' || event.button !== 'left' || !onToggleTool) return;
+      const toggleTool = onToggleToolRef.current;
+      if (event.type !== 'press' || event.button !== 'left' || !toggleTool) return;
 
       const x = event.x - 1;
       const y = event.y - 1;
@@ -154,7 +201,7 @@ export function TranscriptView({
           y >= position.y &&
           y < position.y + rect.height
         ) {
-          onToggleTool(registration.id);
+          toggleTool(registration.id);
           return;
         }
       }
@@ -163,8 +210,9 @@ export function TranscriptView({
     internal_eventEmitter.on('input', handleMouseInput);
     return () => {
       internal_eventEmitter.removeListener('input', handleMouseInput);
+      cancelWheelScroll();
     };
-  }, [applyScrollState, internal_eventEmitter, isActive, onToggleTool]);
+  }, [cancelWheelScroll, internal_eventEmitter, isActive, scheduleWheelScroll]);
 
   useInput(
     (input, key) => {
@@ -202,7 +250,10 @@ export function TranscriptView({
         );
       }
 
-      if (next) applyScrollState(next);
+      if (next) {
+        cancelWheelScroll();
+        applyScrollState(next);
+      }
     },
     { isActive },
   );

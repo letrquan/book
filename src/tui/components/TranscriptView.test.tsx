@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import { act } from 'react';
 import { render } from 'ink-testing-library';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { TranscriptView } from './TranscriptView.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
@@ -19,7 +19,12 @@ function Rows({ labels }: { labels: string[] }) {
 
 function view(
   labels: string[],
-  props: { height?: number; isActive?: boolean; followRequestKey?: number } = {},
+  props: {
+    height?: number;
+    isActive?: boolean;
+    followRequestKey?: number;
+    onToggleTool?: (toolId: string) => void;
+  } = {},
 ) {
   return (
     <ThemeContext.Provider value={DEFAULT_THEME}>
@@ -28,6 +33,7 @@ function view(
         width={20}
         isActive={props.isActive}
         followRequestKey={props.followRequestKey}
+        onToggleTool={props.onToggleTool}
       >
         <Rows labels={labels} />
       </TranscriptView>
@@ -36,6 +42,10 @@ function view(
 }
 
 const frameLines = (frame: string | undefined) => (frame ?? '').split('\n').filter(Boolean);
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('TranscriptView', () => {
   it('clips to the latest rendered rows initially', () => {
@@ -59,18 +69,87 @@ describe('TranscriptView', () => {
   });
 
   it('scrolls with SGR mouse wheel reports', () => {
+    vi.useFakeTimers();
     const app = render(view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']));
 
     act(() => app.stdin.write('\x1b[<64;10;5M'));
     app.rerender(view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']));
     const older = frameLines(app.lastFrame());
     expect(older.some((line) => line.includes('browsing history'))).toBe(true);
-    expect(older).toContain('B');
+    expect(older).toContain('C');
     expect(older).not.toContain('H');
 
     act(() => app.stdin.write('\x1b[<65;10;5M'));
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
     app.rerender(view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']));
     expect(frameLines(app.lastFrame())).toEqual(['E', 'F', 'G', 'H']);
+  });
+
+  it('batches rapid wheel reports to one update per render frame', () => {
+    vi.useFakeTimers();
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const app = render(view(labels));
+
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    expect(frameLines(app.lastFrame())).toContain('E');
+
+    act(() => {
+      app.stdin.write('\x1b[<64;10;5M');
+      app.stdin.write('\x1b[<64;10;5M');
+    });
+    expect(frameLines(app.lastFrame())).toContain('E');
+
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    expect(frameLines(app.lastFrame())).toContain('A');
+  });
+
+  it('preserves queued wheel rows when the tool callback changes', () => {
+    vi.useFakeTimers();
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const app = render(view(labels, { onToggleTool: vi.fn() }));
+
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    app.rerender(view(labels, { onToggleTool: vi.fn() }));
+
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    expect(frameLines(app.lastFrame())).toContain('C');
+  });
+
+  it('cancels queued wheel rows when follow-bottom is requested', () => {
+    vi.useFakeTimers();
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const app = render(view(labels, { followRequestKey: 0 }));
+
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    app.rerender(view(labels, { followRequestKey: 1 }));
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+
+    expect(frameLines(app.lastFrame())).toEqual(['G', 'H', 'I', 'J']);
+  });
+
+  it('cancels queued wheel rows before keyboard navigation', () => {
+    vi.useFakeTimers();
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const app = render(view(labels));
+
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    act(() => app.stdin.write('\x1b[6~'));
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+
+    expect(frameLines(app.lastFrame())).toEqual(['G', 'H', 'I', 'J']);
   });
 
   it('ignores mouse clicks and wheel reports while inactive', () => {
