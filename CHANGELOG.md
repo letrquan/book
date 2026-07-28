@@ -78,6 +78,10 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Improved TUI streaming responsiveness by batching first-turn updates at a sustainable cadence,
+  avoiding idle accumulator wakeups, and limiting the active transcript window to the available
+  terminal height while output is streaming.
+
 - BYOK providers and the active model selection now persist to the user-global `~/.book/settings.json`
   instead of the per-project `.book/settings.local.json`, so a provider added in one folder (its
   credentials, model catalog, and default model) is shared across every project rather than

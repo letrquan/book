@@ -24,7 +24,18 @@ import { truncateDisplay } from './word-wrap.js';
 const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
 const EMPTY_BOUNDARIES: CompactBoundary[] = [];
-const STREAMING_TIMELINE_WINDOW = 64;
+const STREAMING_TIMELINE_MIN_WINDOW = 16;
+const STREAMING_TIMELINE_MAX_WINDOW = 64;
+
+export function getStreamingTimelineWindow(terminalHeight?: number): number {
+  const height = Math.max(8, Math.floor(terminalHeight ?? 40));
+  // Keep a small amount of context above the viewport without rendering an
+  // entire long transcript on every streamed token.
+  return Math.min(
+    STREAMING_TIMELINE_MAX_WINDOW,
+    Math.max(STREAMING_TIMELINE_MIN_WINDOW, Math.ceil(height * 1.25)),
+  );
+}
 
 function formatTurnTime(timestamp: number): string {
   if (!timestamp) return '';
@@ -115,7 +126,7 @@ export function ChatPanel({
   useDebugMount(uiLog, { model, mode, commandCount, skillCount });
   const timeline = useIncrementalTimeline(messages, compactBoundaries, streamingMessageId);
   const hiddenTimelineEntries = streamingMessageId
-    ? Math.max(0, timeline.length - STREAMING_TIMELINE_WINDOW)
+    ? Math.max(0, timeline.length - getStreamingTimelineWindow(terminalHeight))
     : 0;
   const visibleTimeline =
     hiddenTimelineEntries > 0 ? timeline.slice(hiddenTimelineEntries) : timeline;

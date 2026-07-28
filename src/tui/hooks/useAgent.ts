@@ -665,10 +665,13 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           setSessionName(prepared.sessionName);
         }
         setRewindTargets((current) => [prepared.rewindTarget, ...current]);
-        activeAccumulator = createMessageAccumulator(placeholder!.id, setMessages, messagesRef, 16);
+        // Ink layout plus markdown parsing commonly takes longer than a 60fps
+        // frame on a real transcript. A 32ms cadence keeps streaming responsive
+        // without making the terminal renderer compete with every token delta.
+        activeAccumulator = createMessageAccumulator(placeholder!.id, setMessages, messagesRef, 32);
         accumulatorRef.current = activeAccumulator;
         activeAccumulator.start();
-        uiLog.event('accumulator:started', { flushIntervalMs: 16 });
+        uiLog.event('accumulator:started', { flushIntervalMs: 32 });
       };
 
       const sendResult = await agentSession.send({

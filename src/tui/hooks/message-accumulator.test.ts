@@ -45,6 +45,20 @@ describe('message-accumulator', () => {
     expect(getMessages()[0].content).toBe('Hello World');
   });
 
+  it('does not keep a timer alive while the stream is idle', () => {
+    const { acc, setMessages } = createTestAccumulator();
+    acc.start();
+
+    expect(vi.getTimerCount()).toBe(0);
+    acc.addText('queued');
+    expect(vi.getTimerCount()).toBe(1);
+
+    vi.advanceTimersByTime(20);
+
+    expect(setMessages).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('applies tool ops individually in FIFO order', () => {
     const { acc, setMessages, getMessages } = createTestAccumulator();
     acc.start();

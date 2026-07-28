@@ -25,8 +25,8 @@ export type AccumulatorOp =
  * Batched message accumulator for streaming events.
  *
  * Collects text deltas, tool calls, and tool results in a queue and flushes
- * them at a fixed interval (~16ms = 60fps). Consecutive text ops are
- * coalesced into a single appendContentToMessage call.
+ * them on a bounded cadence. Consecutive text ops are coalesced into a single
+ * appendContentToMessage call, and no timer stays active while the queue is idle.
  *
  * The flush callback is a `setMessages`-style state updater so React can
  * batch the update with other state changes.
@@ -44,7 +44,7 @@ export interface MessageAccumulator {
   addNestedToolResult: (traceId: string, result: ToolResult) => void;
   /** Flush all queued ops immediately (called by timer and stop). */
   flush: () => void;
-  /** Start the periodic flush timer. */
+  /** Enable scheduled flushing. Queued work starts the timer on demand. */
   start: () => void;
   /** Stop the timer, flush remaining ops. Idempotent. */
   stop: () => void;
@@ -81,8 +81,9 @@ export function createMessageAccumulator(
   };
 
   function scheduleNext(): void {
-    if (state.stopped) return;
+    if (state.stopped || state.timerId !== null || state.queue.length === 0) return;
     state.timerId = setTimeout(() => {
+      state.timerId = null;
       flush();
       scheduleNext();
     }, state.intervalMs);
@@ -160,26 +161,31 @@ export function createMessageAccumulator(
   function addText(content: string): void {
     if (state.stopped) return;
     state.queue.push({ type: 'text', content });
+    scheduleNext();
   }
 
   function addToolCall(call: ToolCall): void {
     if (state.stopped) return;
     state.queue.push({ type: 'toolCall', call });
+    scheduleNext();
   }
 
   function addToolResult(result: ToolResult): void {
     if (state.stopped) return;
     state.queue.push({ type: 'toolResult', result });
+    scheduleNext();
   }
 
   function addNestedToolCall(invocation: NestedToolInvocation): void {
     if (state.stopped) return;
     state.queue.push({ type: 'nestedToolCall', invocation });
+    scheduleNext();
   }
 
   function addNestedToolResult(traceId: string, result: ToolResult): void {
     if (state.stopped) return;
     state.queue.push({ type: 'nestedToolResult', traceId, result });
+    scheduleNext();
   }
 
   function start(): void {

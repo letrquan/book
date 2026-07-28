@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { DensityContext, type TuiDensity } from '../density.js';
-import { ChatPanel } from './ChatPanel.js';
+import { ChatPanel, getStreamingTimelineWindow } from './ChatPanel.js';
 import { AgentMessage } from './AgentMessage.js';
 import type { FileMutationSummary, ToolCall, ToolResult } from '../../types/tools.js';
 import type { Message } from '../../types/messages.js';
@@ -57,6 +57,12 @@ afterEach(() => {
 });
 
 describe('ChatPanel Ink rendering', () => {
+  it('scales the streamed transcript window to the terminal height', () => {
+    expect(getStreamingTimelineWindow(24)).toBe(30);
+    expect(getStreamingTimelineWindow(40)).toBe(50);
+    expect(getStreamingTimelineWindow(100)).toBe(64);
+  });
+
   it('renders the animated welcome when the conversation is empty', () => {
     const view = render(
       withTheme(
