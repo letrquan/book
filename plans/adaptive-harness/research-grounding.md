@@ -1,11 +1,16 @@
 # Adaptive Harness Research Grounding
 
-**Date:** 2026-07-22  
+**Date:** 2026-07-28
 **Scope:** Review of the adaptive-harness phases against the current Book runtime and
 primary external sources.  
 **Decision:** The roadmap is directionally sound, but it is not implementation-ready
 until the blockers and questions below are resolved. This document is a required input
 to the Phase 0 verification packet.
+
+The companion [Agent Capability Research and Gap Analysis](agent-capability-research.md) covers
+the previously under-specified prompt, skill, tool-contract, context, model-adapter, verification,
+delegation, hook, and user-interaction surfaces. Its fixed implementation gate is
+[Phase 3A](phase-3a-agent-capability-substrate.md).
 
 ## Executive Finding
 
@@ -60,6 +65,15 @@ tracked as a prerequisite batch before collecting promotion evidence:
 8. Add architecture checks for the one-way dependency rules in the parent plan. The
    existing architecture script does not yet prevent evaluator/proposer imports from
    entering the runtime.
+9. Decide the trust and lifecycle boundary for project skills and workflow files before any skill
+   body, supporting script, or dynamic policy can influence a comparison arm.
+10. Define the complete capability manifest and include prompt-layer, skill, tool-contract, context,
+    model-adapter, hook, verifier, and delegation identities in the ambient run snapshot.
+11. Establish workspace trust and permission-ceiling controls before evaluating project-controlled
+    hooks, providers, MCP servers, executable commands, skills, or subagents. A fresh fixture folder
+    is not a substitute for a trust boundary.
+12. Make sandbox, network, credential-origin, web-fetch, MCP-startup, and command-expansion policies
+    truthful and fail-closed before adversarial harness fixtures are eligible.
 
 ## Research Questions That Must Have Answers
 
@@ -127,6 +141,21 @@ tracked as a prerequisite batch before collecting promotion evidence:
 - Add a separate bounded dynamic policy zone. The current context builder places generic
   appended text in the cached prefix, so the documented dynamic-suffix behavior is not
   currently true.
+- Can the workflow request a registered capability bundle without embedding arbitrary prompt text,
+  skill bodies, tool schemas, context retrieval code, verifier commands, or model-specific code?
+- Is the skill body lazy, attributed, bounded, scoped to an activation frame, and prevented from
+  changing kernel permissions or evaluator rules?
+- Are `InvokeSkill` and `ToolSearch` discoverable at a measured cost, and can skill/tool restrictions
+  be restored after an activation expires?
+- Are tool descriptions, schemas, output/error contracts, retry semantics, and side effects included
+  in the tool-surface fingerprint and tested as routing behavior?
+- Are provider-specific prompt flattening, message ordering, tool-result conventions, and exact model
+  capability metadata captured before comparing model/provider arms?
+- Is context selection separately described and measured rather than hidden inside workflow prose?
+- Does an untrusted workspace fail closed for project hooks, provider endpoints, MCP startup,
+  executable command expansion, privileged skills, and subagent definitions?
+- Can any project/workflow/skill/hook/MCP/subagent scope broaden a permission or sandbox ceiling set
+  by a higher-trust scope?
 
 ### Phase 4: Is selection causally informed?
 
@@ -214,7 +243,25 @@ tracked as a prerequisite batch before collecting promotion evidence:
 
 ## External Evidence Used
 
-The following primary or standards sources were checked on 2026-07-22:
+The following primary or standards sources were checked on 2026-07-22; the capability-specific
+sources below were rechecked on 2026-07-28:
+
+- AI World, [System prompts and what they tell us about the chat before the chat](https://aiworld.eu/story/system-prompts-and-what-they-tell-us-about-the-chat-before-the-chat): category framing for tool definitions, tool-use guidance, memory, safety, conduct, and voice.
+- Anthropic, [Claude Code best practices](https://code.claude.com/docs/en/best-practices): context management, verification, planning, concise project instructions, subagents, and recovery.
+- Anthropic, [Extend Claude with skills](https://code.claude.com/docs/en/skills): lazy skill bodies, activation descriptions, invocation control, supporting resources, and skill evaluation.
+- Anthropic, [Create custom subagents](https://code.claude.com/docs/en/sub-agents): isolated contexts, tool restrictions, model selection, skill preloading, and handoff boundaries.
+- Anthropic, [Automate actions with hooks](https://code.claude.com/docs/en/hooks-guide): deterministic lifecycle enforcement and context reinjection outside model guidance.
+- OpenAI, [Codex manual](https://developers.openai.com/codex/codex-manual.md): `AGENTS.md`, skills, tools, hooks, context, customization, and progressive disclosure guidance.
+- OpenAI, [Define tools](https://developers.openai.com/plugins/plan/tools) and [Build skills](https://developers.openai.com/plugins/build/skills): user-intent tool contracts and focused, triggerable workflows.
+- Aider, [Repository map](https://aider.chat/docs/repomap.html): token-bounded structural context and relevance ranking.
+- SWE-agent, [Agent-Computer Interfaces Enable Automated Software Engineering](https://arxiv.org/abs/2405.15793): model-facing tool/interface design as a determinant of software-engineering outcomes.
+- Cline, [open-source coding agent](https://github.com/cline/cline): Plan/Act separation, rules and skills, checkpoints, approval, compiler/linter feedback, and multi-agent coordination.
+- Book, [Security Assessment and Remediation Plan](../security-assessment.md): current trust-boundary
+  risks for project hooks, provider endpoints, MCP startup, sandbox construction, subagents, command
+  expansion, web access, and permission ceilings.
+- Book, [Tool Reliability Plan](../tool-reliability-plan.md): existing model-agnostic tool contracts,
+  actionable errors, read-before-edit freshness, retry circuit breakers, and edit guidance that
+  should be fingerprinted rather than reimplemented by the harness.
 
 - Anthropic, [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents): defines task, trial, grader, transcript, outcome, and harness; emphasizes multiple trials because agent outputs vary and grades the final environment state rather than the model's claim.
 - OpenTelemetry, [GenAI agent semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-agent-spans.md): provides agent/workflow/tool span semantics, exact requested model/provider fields, bounded trace attributes, and explicit warnings that message/system-instruction content is sensitive opt-in data.
@@ -240,24 +287,30 @@ The following primary or standards sources were checked on 2026-07-22:
 
 1. **Runtime correctness preconditions:** terminal outcomes, run boundaries, cumulative
    usage/budget enforcement, exact identity, and architecture rules.
-2. **Phase 0:** machine-readable cases, trusted evaluator boundary, repeated-trial and
+2. **Workspace trust and security preconditions:** project-config trust, permission ceilings,
+   provider/MCP credential boundaries, command expansion, sandbox/network truthfulness, and
+   subagent authorization.
+3. **Phase 0:** machine-readable cases, trusted evaluator boundary, repeated-trial and
    statistical protocol, sealed corpus split, security/context/tool fixtures.
-3. **Phase 1:** inert `harness.mode` boundary and capability matrix.
-4. **Phase 2:** observation ledger with explicit durability, provenance, redaction, and
+4. **Phase 1:** inert `harness.mode` boundary and capability matrix.
+5. **Phase 2:** observation ledger with explicit durability, provenance, redaction, and
    OTel/W3C mapping.
-5. **Phase 3:** only enforceable fixed workflows, no new parallelism, strict schemas and
+6. **Phase 3:** only enforceable fixed workflows, no new parallelism, strict schemas and
    canonical registry hashes.
-6. **Phase 4:** deterministic shadow selector using original-intent features and an
+7. **Phase 3A:** fixed prompt layers, lazy scoped skills, fingerprinted existing tool-reliability
+   semantics, context policies, model capability adapters, external-integration lifecycle contracts,
+   cross-surface parity, and typed subagent handoffs.
+8. **Phase 4:** deterministic shadow selector using original-intent features and an
    abstaining confidence policy.
-7. **Phase 5:** immutable verifiers, typed outcomes, missingness policy, and explicit
+9. **Phase 5:** immutable verifiers, typed outcomes, missingness policy, and explicit
    feedback/rubric contracts.
-8. **Phase 6:** isolated replay, nested held-in/held-out evaluation, multiplicity and
+10. **Phase 6:** isolated replay, nested held-in/held-out evaluation, multiplicity and
    sequentially valid reporting.
-9. **Phase 7:** salted canary assignment, numerical rollback rules, signed registry, and
+11. **Phase 7:** salted canary assignment, numerical rollback rules, signed registry, and
    a human-approved rollout gate.
-10. **Phase 8:** sealed final holdout, bounded candidate/query budgets, recomputed complexity,
-    signed atomic promotion, and "no promotion" as a valid result.
-11. **Phase 9:** separate proposal per transfer track with a new Phase-0-style contract.
+12. **Phase 8:** sealed final holdout, bounded candidate/query budgets, recomputed complexity,
+   signed atomic promotion, and "no promotion" as a valid result.
+13. **Phase 9:** separate proposal per transfer track with a new Phase-0-style contract.
 
 ## Bottom Line
 

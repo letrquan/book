@@ -35,6 +35,8 @@ Not every historical run is replayable. A run is eligible only when Book can rec
 - runtime, environment, sandbox, context-capability, and tool-surface fingerprints;
 - tool definitions and permissions;
 - workflow and policy version;
+- complete prompt-layer, skill, tool-contract, context-policy, model-adapter, verifier, hook, and
+  delegation capability manifest;
 - evaluator version;
 - budget limits;
 - required external dependencies or data.
@@ -85,6 +87,14 @@ interface EvaluationMatrixEntry {
   sandboxFingerprint: string;
   toolSurfaceFingerprint: string;
   contextCapabilitiesVersion: string;
+  capabilityManifestDigest: string;
+  promptManifestDigest: string;
+  skillRegistryDigest: string;
+  skillActivationPolicyVersion: string;
+  contextPolicyVersion: string;
+  modelAdapterVersion: string;
+  hookPolicyDigest: string;
+  delegationPolicyVersion: string;
   evaluatorVersion: string;
   agentsMode: 'off' | 'manual' | 'adaptive';
   bookHomeFingerprint: string;
@@ -93,6 +103,23 @@ interface EvaluationMatrixEntry {
 ```
 
 The runner must reject invalid comparisons where critical fields differ.
+
+Evaluate one capability axis at a time unless a factorial interaction is predeclared and adequately
+powered. Initial comparison families are:
+
+```text
+workflow only
+prompt-layer/kernel variant only
+skill registry or activation policy only
+tool description/schema/error-contract variant only
+context policy only
+model adapter only
+verification policy only
+delegation policy only
+```
+
+Do not call a combined capability bundle successful when the experiment cannot identify which
+component caused the change.
 
 ##### 6.4 Implement held-in and held-out separation
 
@@ -166,6 +193,7 @@ Reports must prominently list:
 - slices where minimal won;
 - cost/latency trade-offs;
 - harness complexity and the simpler-workflow tie decision;
+- capability-manifest differences and per-axis skill/tool/context/prompt metrics;
 - infrastructure noise and compatibility mismatches;
 - human-rubric disagreement and external benchmark results, when applicable;
 - recommendation: enable, hold, reject, or gather more data.

@@ -20,6 +20,10 @@
 - Define the coordinator interface without implementing learning.
 - Document the immutable kernel fields that workflows cannot control.
 - Define compatibility identities for the fixed runtime, environment, and tool surface without collecting them in `off` mode.
+- Define the versioned agent capability manifest for prompt layers, skills, tool contracts, context
+  policy, model/provider capabilities, verification, hooks, delegation, and permissions.
+- Define workspace-trust and external-integration references for TUI, headless/CI, SDK, provider,
+  MCP, and web surfaces, including requested/effective security posture and unavailable states.
 - Separate fixed runtime primitives from the bounded workflow-selectable surface.
 
 #### Phase 1 Work Breakdown
@@ -61,6 +65,9 @@ interface HarnessRunContext {
   runtimeFingerprint?: string;
   environmentFingerprint?: string;
   toolSurfaceFingerprint?: string;
+  capabilityManifestDigest?: string;
+  workspaceTrustFingerprint?: string;
+  integrationFingerprint?: string;
 }
 
 interface WorkflowDecision {
@@ -79,6 +86,10 @@ interface HarnessCoordinator {
 ```
 
 Avoid importing provider, TUI, or tool implementations into the contracts module.
+
+Trust and integration contracts are descriptive only. They cannot authorize a project hook, provider
+origin, MCP process, command block, skill script, or subagent. The host must resolve these requests
+against the user-owned workspace-trust decision and the fixed permission/sandbox/network ceilings.
 
 In `off` mode the harness context/coordinator is absent and no run ID is generated. The required
 run context applies only after observation is enabled; this preserves the stated no-op behavior.
@@ -172,6 +183,10 @@ interface ToolSurfaceDescriptor {
 
 These contracts identify compatibility; they do not authorize the harness to redefine tools or runtime behavior. Fingerprint collection begins only in later observe/evaluation phases and must remain absent from the Phase 1 `off` path.
 
+The `off` path must also avoid resolving project-controlled provider credentials, starting MCP or
+hook processes, loading executable skill resources, or contacting external endpoints merely to build
+an integration fingerprint.
+
 ##### 1.8 Publish the workflow capability matrix
 
 Before Phase 3, map every proposed workflow field to a concrete enforcement point and classify it
@@ -181,6 +196,22 @@ handoff, edit-scope limits, trusted verifier execution, or workflow-specific ret
 
 Also decide whether the first harness release is available through the public SDK/headless options.
 If it is, include `src/sdk.ts` and `src/types/public-sdk.ts`; otherwise record CLI/settings-only scope.
+
+Before Phase 3A, publish the companion capability matrix. For every prompt, skill, tool, context,
+model, verifier, hook, and delegation field, classify it as:
+
+```text
+kernel-enforced
+host-enforced
+deterministic-hook
+trusted-verifier
+bounded model guidance
+unsupported/clamped
+```
+
+The capability matrix must explicitly cover skill activation authority, scoped skill restrictions,
+tool-contract versioning, context retrieval policy, provider prompt flattening, model identity, and
+subagent preload/handoff behavior. Prompt text alone must never be reported as enforcement.
 
 #### Phase 1 File Plan
 

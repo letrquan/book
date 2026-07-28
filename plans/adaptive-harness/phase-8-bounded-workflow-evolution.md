@@ -12,6 +12,11 @@
 
 **Objective:** Propose new workflow configurations without allowing arbitrary runtime self-modification.
 
+The initial Phase 8 lane evolves workflow fields only. Prompt modules, skill definitions, tool
+contracts, context policies, model adapters, hook policies, verifier definitions, and delegation
+policies are different candidate classes and remain disabled until each has its own schema,
+evaluation slices, query budget, promotion authority, and rollback artifact.
+
 **Deliverables:**
 
 - Generate candidate changes only inside the validated workflow schema.
@@ -196,6 +201,9 @@ Include candidates that attempt to:
 - optimize only a narrow training task;
 - treat unknown as success;
 - hide added context, transitions, calls, or latency from complexity accounting.
+- embed unrestricted system prompts, skill bodies, tool schemas, executable scripts, hook commands,
+  verifier commands, model/provider changes, or subagent definitions inside a workflow candidate;
+- relabel a capability-manifest change as a workflow-only change;
 
 The pipeline must reject them before promotion.
 
@@ -212,6 +220,31 @@ Limit:
 - maximum complexity delta relative to the parent workflow.
 
 Candidate generation pauses when outcome evidence is weak, the active rollout is unstable, or the budget is exhausted.
+
+##### 8.11 Define future capability-candidate lanes
+
+Document but do not enable separate candidate schemas for:
+
+```text
+bounded prompt-module candidate
+skill metadata/body candidate
+tool description/error-contract candidate
+context-policy candidate
+model-adapter candidate
+external-integration lifecycle candidate (no trust, permission, credential, or sandbox widening)
+verification-policy candidate
+delegation-policy candidate
+```
+
+Every lane needs its own immutable fields, prohibited fields, activation/evaluation corpus,
+complexity measure, sealed holdout/query budget, signature, rollout registry, and last-known-good
+artifact. A proposer can never emit arbitrary executable scripts, permissions, evaluator changes,
+provider credentials, workspace-trust decisions, sandbox/network ceilings, or raw unrestricted system
+prompts. Integration candidates may describe only already-approved protocol/lifecycle behavior and
+must pass the same security and surface-parity gates as the fixed substrate.
+
+Do not combine candidate lanes until each component has independently cleared Phase 6 and Phase 7
+gates and a predeclared interaction experiment justifies the combination.
 
 #### Phase 8 File Plan
 
