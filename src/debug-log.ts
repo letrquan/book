@@ -133,17 +133,35 @@ function writeDebugLine(line: string): void {
   }
 }
 
-let pendingRenderDebug = '';
+let pendingRenderDebug: string[] = [];
 let renderDebugFlush: ReturnType<typeof setImmediate> | null = null;
 
 function writeRenderDebugLine(line: string): void {
-  pendingRenderDebug += line;
+  pendingRenderDebug.push(line);
   if (renderDebugFlush !== null) return;
   renderDebugFlush = setImmediate(() => {
     renderDebugFlush = null;
     const batch = pendingRenderDebug;
-    pendingRenderDebug = '';
-    if (batch) writeDebugLine(batch);
+    pendingRenderDebug = [];
+    const maxBytes = positiveInteger(process.env.BOOK_DEBUG_MAX_BYTES, DEFAULT_DEBUG_LOG_MAX_BYTES);
+    let chunk = '';
+    let chunkBytes = 0;
+
+    for (const pendingLine of batch) {
+      const lineBytes = Buffer.byteLength(pendingLine);
+      if (chunk && chunkBytes + lineBytes > maxBytes) {
+        writeDebugLine(chunk);
+        chunk = '';
+        chunkBytes = 0;
+      }
+      if (lineBytes > maxBytes) {
+        writeDebugLine(pendingLine);
+        continue;
+      }
+      chunk += pendingLine;
+      chunkBytes += lineBytes;
+    }
+    if (chunk) writeDebugLine(chunk);
   });
 }
 

@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from 'fs';
@@ -127,6 +128,24 @@ describe('debug logger output target', () => {
     const output = readFileSync(logPath, 'utf8');
     expect(output).toContain('count=1');
     expect(output).toContain('count=2');
+  });
+
+  it('keeps render-log rotation bounded when one flush contains many lines', async () => {
+    const logPath = join(tempDir(), 'render-bounded.log');
+    vi.stubEnv('BOOK_DEBUG_RENDER', '1');
+    vi.stubEnv('BOOK_DEBUG_FILE', logPath);
+    vi.stubEnv('BOOK_DEBUG_MAX_BYTES', '120');
+    vi.stubEnv('BOOK_DEBUG_BACKUPS', '2');
+    setStderrIsTTY(true);
+
+    const { createRenderDebugLogger } = await import('./debug-log.js');
+    const logger = createRenderDebugLogger('render-rotation');
+    for (let index = 0; index < 8; index++) logger.event('render', { index });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(statSync(logPath).size).toBeLessThanOrEqual(120);
+    expect(existsSync(`${logPath}.1`)).toBe(true);
   });
 
   it('clears expired rotated logs while preserving the active log', async () => {
