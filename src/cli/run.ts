@@ -197,7 +197,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       : enterInteractiveScreen(process.stdout);
     try {
       const rendererMode = resolveTuiRendererMode(process.env.BOOK_TUI_RENDERER, {
-        isTTY: process.stdout.isTTY,
+        isTTY: process.stdout.isTTY === true,
         screenReader: config.accessibility.screenReader,
       });
       await installInkScrollRenderer(rendererMode === 'experimental-scroll');

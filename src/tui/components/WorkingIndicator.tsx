@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { Message } from '../../types/messages.js';
 import type { RetryPhase } from '../../types/runtime.js';
 import type {
@@ -37,16 +37,28 @@ interface WorkingIndicatorProps {
 }
 
 function useElapsedSeconds(active: boolean, disabled: boolean): number {
+  const running = active && !disabled;
   const startedAtRef = useRef(Date.now());
-  const tick = useUiClock('slow', active && !disabled);
+  const resetPendingRef = useRef(true);
+  const wasRunningRef = useRef(false);
+  const [, refresh] = useState(0);
+  const tick = useUiClock('slow', running);
 
-  useEffect(() => {
-    startedAtRef.current = Date.now();
-  }, [active, disabled]);
+  useLayoutEffect(() => {
+    if (running && !wasRunningRef.current) {
+      startedAtRef.current = Date.now();
+      resetPendingRef.current = false;
+      wasRunningRef.current = true;
+      refresh((value) => value + 1);
+    } else if (!running && wasRunningRef.current) {
+      resetPendingRef.current = true;
+      wasRunningRef.current = false;
+    }
+  }, [running]);
 
-  if (!active || disabled) return 0;
+  if (!running || resetPendingRef.current) return 0;
   void tick;
-  return Math.floor((Date.now() - startedAtRef.current) / 1000);
+  return Math.floor(Math.max(0, Date.now() - startedAtRef.current) / 1000);
 }
 
 function fitActivityLine(

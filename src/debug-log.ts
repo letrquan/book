@@ -141,14 +141,19 @@ function writeSizeBoundedDebugLine(line: string, maxBytes: number): void {
 
   // Split oversized render events on UTF-8 character boundaries so one burst
   // cannot bypass the configured active-log cap.
-  let offset = 0;
-  while (offset < line.length) {
-    let end = Math.min(line.length, offset + maxBytes);
-    while (end > offset && Buffer.byteLength(line.slice(offset, end)) > maxBytes) end--;
-    if (end === offset) end++;
-    writeDebugLine(line.slice(offset, end));
-    offset = end;
+  let chunk = '';
+  let chunkBytes = 0;
+  for (const character of line) {
+    const characterBytes = Buffer.byteLength(character);
+    if (chunk && chunkBytes + characterBytes > maxBytes) {
+      writeDebugLine(chunk);
+      chunk = '';
+      chunkBytes = 0;
+    }
+    chunk += character;
+    chunkBytes += characterBytes;
   }
+  if (chunk) writeDebugLine(chunk);
 }
 
 let pendingRenderDebug: string[] = [];
