@@ -367,4 +367,6 @@ consecutive green full CI runs and no open lifecycle or accounting regression is
 
 ## License
 
-MIT
+Copyright (c) 2026 letrquan. All rights reserved.
+
+Proprietary software. No permission is granted to use, copy, modify, or distribute this software without prior written authorization.

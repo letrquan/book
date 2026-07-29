@@ -1,9 +1,10 @@
 {
   "name": "book",
   "version": "0.1.0",
-  "description": "AI coding agent CLI with rich TUI — open-source, provider-agnostic alternative to Claude Code",
+  "description": "AI coding agent CLI with rich TUI",
   "type": "module",
-  "license": "MIT",
+  "private": true,
+  "license": "UNLICENSED",
   "author": "letrquan",
   "repository": {
     "type": "git",
@@ -30,7 +31,6 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE",
     "CHANGELOG.md"
   ],
   "bin": {

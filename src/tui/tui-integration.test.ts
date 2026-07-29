@@ -249,7 +249,9 @@ describe('TUI slash commands', () => {
     await sleep(500);
     const output = stripAnsi(session.readRaw().slice(beforeToggle));
     const latestFrame = output.slice(output.lastIndexOf('╭ BOOK'));
-    expect(latestFrame).toContain('Ask me anything');
+    // Incremental rendering does not rewrite the now-stable input row when
+    // only the transcript changes.
+    expect(latestFrame).toContain('╭ BOOK');
     expect(latestFrame).not.toContain('Slash Commands');
   }, 20_000);
 

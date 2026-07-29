@@ -15,6 +15,16 @@ const persistSettingLocalMock = vi.fn((_workspace: string, _key: string, _value:
   ok: true,
 }));
 const readClipboardImageMock = vi.fn();
+const managedAgentManagerMock = {
+  list: vi.fn(async () => []),
+  listPendingCompletions: vi.fn(async () => []),
+  subscribe: vi.fn(() => () => {}),
+  setInteractivePermissions: vi.fn(),
+  send: vi.fn(),
+  stop: vi.fn(),
+  apply: vi.fn(),
+  get: vi.fn(),
+};
 
 vi.mock('./hooks/useAgent.js', () => ({
   useAgent: (...args: unknown[]) => useAgentMock(...args),
@@ -39,6 +49,10 @@ vi.mock('../input/clipboard-image.js', () => ({
 
 vi.mock('./persist.js', () => ({
   persistSettingLocal: (...args: [string, string, unknown]) => persistSettingLocalMock(...args),
+}));
+
+vi.mock('../agents/manager.js', () => ({
+  getOrCreateAgentManager: () => managedAgentManagerMock,
 }));
 
 function config(): AgentConfig {

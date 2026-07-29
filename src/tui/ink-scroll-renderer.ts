@@ -31,6 +31,10 @@ interface LogUpdateModule {
 let pendingHint: TranscriptScrollHint | null = null;
 let rendererInstalled = false;
 
+export function isInkScrollRendererEnabled(value?: string): boolean {
+  return value === 'on';
+}
+
 export function setTranscriptScrollHint(hint: TranscriptScrollHint): void {
   if (!Number.isFinite(hint.delta) || hint.delta === 0) return;
   if (
@@ -47,6 +51,10 @@ export function setTranscriptScrollHint(hint: TranscriptScrollHint): void {
 
 function splitFrame(frame: string): string[] {
   return frame.endsWith('\n') ? frame.slice(0, -1).split('\n') : frame.split('\n');
+}
+
+function getFrameEndRow(frame: string, visibleLineCount: number): number {
+  return visibleLineCount + (frame.endsWith('\n') ? 1 : 0);
 }
 
 function cursorTo(row: number): string {
@@ -118,10 +126,11 @@ function createScrollAwareRenderer(
     const previousLines = splitFrame(previousFrame);
     const nextLines = splitFrame(output);
     const terminalRows = stream.rows ?? 0;
+    const frameEndRow = getFrameEndRow(output, nextLines.length);
     const canScroll =
       Boolean(stream.isTTY) &&
       terminalRows > 0 &&
-      nextLines.length <= terminalRows &&
+      frameEndRow <= terminalRows &&
       previousFrame.length > 0 &&
       hint !== null &&
       hint.bottom <= nextLines.length &&
@@ -131,10 +140,13 @@ function createScrollAwareRenderer(
       const top = Math.floor(hint.top);
       const bottom = Math.floor(hint.bottom);
       const delta = Math.trunc(hint.delta);
-      stream.write('\x1b7' + setScrollRegion(top, bottom));
+      stream.write('\x1b[?25l' + setScrollRegion(top, bottom));
       stream.write(`\x1b[${Math.abs(delta)}${delta > 0 ? 'S' : 'T'}`);
       writeExposedRows(stream, nextLines, top - 1, bottom, delta);
-      stream.write(setScrollRegion(1, terminalRows) + '\x1b8');
+      // Ink's sync() positions the input cursor relative to the frame bottom.
+      // Re-anchor there first so its cursor suffix cannot repaint the prompt on
+      // a transcript row after a terminal-native scroll.
+      stream.write(setScrollRegion(1, terminalRows) + cursorTo(frameEndRow));
       previousFrame = output;
       base.sync(output);
       return true;
@@ -171,8 +183,10 @@ function createScrollAwareRenderer(
 
 export async function installInkScrollRenderer(): Promise<void> {
   if (rendererInstalled) return;
+  // DECSTBM/CSI S/T rendering remains available for profiling, but Windows
+  // ConPTY can corrupt fixed footer rows after a later incremental repaint.
+  if (!isInkScrollRendererEnabled(process.env.BOOK_SCROLL_RENDERER)) return;
   rendererInstalled = true;
-  if (process.env.BOOK_SCROLL_RENDERER === 'off') return;
 
   try {
     const require = createRequire(import.meta.url);

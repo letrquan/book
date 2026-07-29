@@ -195,7 +195,7 @@ export function TranscriptView({
   }, []);
 
   const applyScrollState = useCallback(
-    (next: TranscriptScrollState) => {
+    (next: TranscriptScrollState, requestRender = true) => {
       const previous = stateRef.current;
       stateRef.current = next;
       if (previous.scrollTop !== next.scrollTop) markTranscriptScrollActivity();
@@ -218,7 +218,11 @@ export function TranscriptView({
 
       if (previous.followBottom !== next.followBottom) {
         const content = contentRef.current;
-        if (!content || !applyImperativeScrollOffset(content, next.scrollTop, false)) {
+        if (
+          !requestRender ||
+          !content ||
+          !applyImperativeScrollOffset(content, next.scrollTop, false)
+        ) {
           setRenderedScrollTop((current) =>
             current === next.scrollTop ? current : next.scrollTop,
           );
@@ -226,7 +230,7 @@ export function TranscriptView({
         setFollowBottom(next.followBottom);
       } else {
         const content = contentRef.current;
-        if (!content || !applyImperativeScrollOffset(content, next.scrollTop)) {
+        if (!requestRender || !content || !applyImperativeScrollOffset(content, next.scrollTop)) {
           setRenderedScrollTop((current) =>
             current === next.scrollTop ? current : next.scrollTop,
           );
@@ -313,7 +317,12 @@ export function TranscriptView({
       previousMetrics.viewportRows !== viewportRows
     ) {
       metricsRef.current = nextMetrics;
-      applyScrollState(reconcileTranscriptScroll(stateRef.current, nextMetrics));
+      // Let Ink establish its incremental frame baseline before applying the
+      // initial bottom offset; nested root.onRender calls can desynchronize it.
+      applyScrollState(
+        reconcileTranscriptScroll(stateRef.current, nextMetrics),
+        previousMetrics.contentRows > 0,
+      );
     }
   }, [applyScrollState, height]);
 

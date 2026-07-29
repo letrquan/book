@@ -1,7 +1,6 @@
 import { Box, Text } from 'ink';
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useInput } from 'ink';
-import { useTimedFlash, usePulse } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { CommandMenu } from './CommandMenu.js';
 import { FileMentionMenu } from './FileMentionMenu.js';
@@ -177,7 +176,6 @@ export function InputBar({
   const [value, setValue] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
-  const [submitFlashKey, setSubmitFlashKey] = useState(0);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | undefined>();
   const suggestion = compact ? 'Ask...' : 'Ask me anything...';
@@ -572,7 +570,6 @@ export function InputBar({
             command: commandValue.slice(1),
             submissionMode,
           });
-          setSubmitFlashKey((key) => key + 1);
           setValue(commandValue);
         } else if (action === 'queue') {
           const accepted = onQueue?.(commandValue) ?? false;
@@ -580,7 +577,6 @@ export function InputBar({
             result: accepted ? 'queued' : 'queue-full',
             command: commandValue.slice(1),
           });
-          setSubmitFlashKey((key) => key + 1);
           setValue(accepted ? '' : commandValue);
         } else {
           uiLog.event('submit:menu', {
@@ -590,7 +586,6 @@ export function InputBar({
           setHistory((h) => [commandValue, ...h].slice(0, 100));
           setHistoryIndex(-1);
           recordCommandUse(commandValue.slice(1));
-          setSubmitFlashKey((key) => key + 1);
           onSubmit(commandValue);
           setValue('');
         }
@@ -621,7 +616,6 @@ export function InputBar({
       const action = resolveSubmissionAction(normalized);
       if (action === 'blocked') {
         uiLog.event('submit:text', { result: 'blocked', len: normalized.length, submissionMode });
-        setSubmitFlashKey((key) => key + 1);
         return;
       }
       if (action === 'queue') {
@@ -633,7 +627,6 @@ export function InputBar({
           result: accepted ? 'queued' : 'queue-full',
           len: normalized.length,
         });
-        setSubmitFlashKey((key) => key + 1);
         if (!accepted) return;
       } else {
         uiLog.event('submit:text', { result: 'submitted', len: normalized.length });
@@ -645,7 +638,6 @@ export function InputBar({
       const cmdName = extractCommandName(normalized);
       if (cmdName) recordCommandUse(cmdName);
 
-      setSubmitFlashKey((key) => key + 1);
       if (action === 'submit') {
         if (attachments.length > 0) onSubmit(normalized, attachments);
         else onSubmit(normalized);
@@ -668,19 +660,12 @@ export function InputBar({
 
   const tokenKey = modeColorToken(mode);
   const baseBorderColor = theme[tokenKey];
-  const motionDisabled = reducedMotion || screenReader;
-  const promptPulse = usePulse(
-    submissionMode === 'submit' && !inputSuppressed && !motionDisabled,
-    700,
-  );
-  const submitFlash = useTimedFlash(submitFlashKey, 220, motionDisabled);
 
   const outerWidth = Math.max(20, Math.floor(terminalWidth));
   const frame = floatingFrameMetrics(outerWidth);
   const editorWidth = Math.max(8, frame.width - 4);
   const inputWidth = Math.max(1, editorWidth - 2);
-  const promptColor =
-    submitFlash || (promptPulse && !compact) ? theme.brandShimmer : baseBorderColor;
+  const promptColor = baseBorderColor;
   const placeholder =
     submissionMode === 'queue'
       ? compact
