@@ -327,7 +327,9 @@ export function AskUserQuestionWizard({
         <Box flexDirection="column" marginTop={1}>
           <Text color={theme.subtle} dimColor>
             {screenReader
-              ? 'Use Up and Down to move. Number keys choose. Enter confirms. O writes another answer. Escape cancels.'
+              ? question.multiSelect
+                ? 'Use Up and Down to move. Space or number keys toggle choices. Enter confirms. O writes another answer. Escape cancels.'
+                : 'Use Up and Down to move. Number keys choose. Enter confirms. O writes another answer. Escape cancels.'
               : compact
                 ? question.multiSelect
                   ? '↑↓ move · Space toggle · Enter next'

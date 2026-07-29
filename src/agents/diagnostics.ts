@@ -74,12 +74,6 @@ export function collectAgentDiagnostics(
         message: `agents.profiles.${name} has settings but no matching agent definition.`,
       });
     }
-    if (override.model?.trim() === 'inherit') {
-      diagnostics.push({
-        code: 'literal-inherit',
-        message: `agents.profiles.${name}.model stores literal "inherit"; remove the key to inherit cleanly.`,
-      });
-    }
     const modelDiagnostic = validateModel(name, override.model, config);
     if (modelDiagnostic) diagnostics.push(modelDiagnostic);
   }

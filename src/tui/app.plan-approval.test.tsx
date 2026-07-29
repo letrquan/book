@@ -145,6 +145,7 @@ function pendingAgentState() {
     upsertProviderAndSelect: vi.fn(() => ({ ok: true })),
     removeProvider: vi.fn(() => ({ ok: false, error: 'not local' })),
     setEffort: vi.fn(() => ({ ok: true })),
+    setAgentProfileModel: vi.fn(() => ({ ok: true })),
     setMemoryAutoSave: vi.fn(),
     refreshMemoryContext: vi.fn(),
     turnDurationMs: 0,
@@ -482,6 +483,38 @@ describe('App session commands', () => {
 
     expect(agentState.addLocalMessage).toHaveBeenCalledWith(expect.stringContaining('/tasks'));
     expect(stripAnsi(view.lastFrame())).not.toContain('Agent Center');
+  });
+
+  it('/config opens visual settings and subagent profile management', async () => {
+    const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    await submit(view, '/config');
+    expect(stripAnsi(view.lastFrame())).toContain('Settings');
+    expect(stripAnsi(view.lastFrame())).toContain('Subagent profiles');
+
+    view.stdin.write('a');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    const frame = stripAnsi(view.lastFrame());
+    expect(frame).toContain('explorer');
+    expect(frame).toContain('patcher');
+    expect(frame).toContain('validator');
+
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(stripAnsi(view.lastFrame())).toContain('Choose subagent model');
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(agentState.setAgentProfileModel).toHaveBeenCalledWith('explorer', expect.any(String));
+    expect(stripAnsi(view.lastFrame())).toContain('Subagent profiles');
   });
 
   it('/newline is not treated as /new', async () => {
@@ -828,6 +861,21 @@ describe('App effort command', () => {
 
     expect(stripAnsi(view.lastFrame())).not.toContain('Set effort level');
     expect(agentState.setEffort).not.toHaveBeenCalled();
+    expect(agentState.addLocalMessage).toHaveBeenCalledWith(
+      '✕ Model "model-x" does not support configurable effort.',
+    );
+  });
+
+  it('keeps /config usable when effort is disabled', async () => {
+    const liveConfig = { ...config(), modelInfo: { effort: false as const } };
+    const { agentState, view } = renderIdle({ liveConfig });
+
+    await submit(view, '/config');
+    view.stdin.write('e');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    expect(stripAnsi(view.lastFrame())).toContain('Settings');
+    expect(stripAnsi(view.lastFrame())).not.toContain('Set effort level');
     expect(agentState.addLocalMessage).toHaveBeenCalledWith(
       '✕ Model "model-x" does not support configurable effort.',
     );

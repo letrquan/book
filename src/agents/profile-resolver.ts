@@ -37,10 +37,11 @@ export function resolveAgentProfile(
 ): ResolvedAgentProfile {
   const override = config.settings.agents.profiles[definition.name];
   const requestedModel = usableModel(invocationModel);
+  const explicitlyInherits = override?.model?.trim() === 'inherit';
   const resolvedModel =
     requestedModel ??
     usableModel(override?.model) ??
-    usableModel(definition.model) ??
+    (explicitlyInherits ? undefined : usableModel(definition.model)) ??
     config.modelSelection ??
     config.model;
   const slash = resolvedModel.indexOf('/');

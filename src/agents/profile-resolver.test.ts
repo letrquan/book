@@ -15,7 +15,7 @@ describe('resolveAgentProfile', () => {
       'invocation-model',
     );
     config.settings.agents.profiles.explorer = { model: 'inherit' };
-    expect(resolveAgentProfile(definition, config).resolvedModel).toBe('definition-model');
+    expect(resolveAgentProfile(definition, config).resolvedModel).toBe('parent-selection');
     config.settings.agents.profiles.explorer = {};
     expect(resolveAgentProfile({ ...definition, model: undefined }, config).resolvedModel).toBe(
       'parent-selection',

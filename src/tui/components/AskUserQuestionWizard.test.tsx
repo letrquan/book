@@ -81,6 +81,34 @@ describe('AskUserQuestionWizard', () => {
     );
   });
 
+  it('confirms multiple predefined choices with a multi-select question', async () => {
+    const onResolve = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <AskUserQuestionWizard
+          request={{
+            ...request,
+            questions: [request.questions[1]],
+          }}
+          onResolve={onResolve}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    await press(view, ' ');
+    await press(view, '2');
+    await press(view, '\r');
+
+    await vi.waitFor(
+      () =>
+        expect(onResolve).toHaveBeenCalledWith({
+          action: 'answer',
+          answers: { 'Which sections?': ['Intro', 'Tests'] },
+        }),
+      { timeout: 2_000, interval: 20 },
+    );
+  });
+
   it('distinguishes decline from cancel', async () => {
     const decline = vi.fn();
     const declineView = render(

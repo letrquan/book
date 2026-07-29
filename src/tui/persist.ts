@@ -113,6 +113,34 @@ export function persistSettingGlobal(key: string, value: unknown): { ok: boolean
   return persistSettingsGlobal({ [key]: value });
 }
 
+/** Persist a profile model without treating dots in the profile name as path separators. */
+export function persistAgentProfileModel(
+  workspace: string,
+  profile: string,
+  model?: string,
+): { ok: boolean; error?: string } {
+  const result = new SettingsRepository(localSettingsPath(workspace)).update((candidate) => {
+    const agents =
+      candidate.agents && typeof candidate.agents === 'object' && !Array.isArray(candidate.agents)
+        ? (candidate.agents as Record<string, unknown>)
+        : {};
+    const profiles =
+      agents.profiles && typeof agents.profiles === 'object' && !Array.isArray(agents.profiles)
+        ? (agents.profiles as Record<string, Record<string, unknown>>)
+        : {};
+    const existing =
+      profiles[profile] && typeof profiles[profile] === 'object' ? { ...profiles[profile] } : {};
+
+    // "inherit" must be explicit so it can override project/global settings and frontmatter.
+    existing.model = model ?? 'inherit';
+    profiles[profile] = existing;
+    candidate.agents = { ...agents, profiles };
+  });
+  return result.ok
+    ? { ok: true }
+    : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+}
+
 /**
  * Remove dot-path keys from the project-local layer if present. Used after a
  * value has been written to the global layer to clear a stale per-project

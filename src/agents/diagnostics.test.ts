@@ -34,7 +34,6 @@ describe('collectAgentDiagnostics', () => {
       expect.arrayContaining([
         'duplicate-profile',
         'invalid-model',
-        'literal-inherit',
         'missing-profile',
         'readonly-mutation',
         'unknown-tool',

@@ -77,6 +77,22 @@ describe('ModelPicker', () => {
     expect(view.lastFrame()?.split('\n').length).toBeLessThanOrEqual(8);
   });
 
+  it('hides provider-management actions while choosing a subagent model', async () => {
+    const { view, onSaveProvider, onRemoveProvider } = renderPicker({
+      allowProviderManagement: false,
+    });
+
+    expect(view.lastFrame()).toContain('Choose subagent model');
+    expect(view.lastFrame()).not.toContain('Add BYOK provider');
+    expect(view.lastFrame()).not.toContain('Alt+A');
+    expect(view.lastFrame()).not.toContain('Alt+D');
+
+    await write(view, '\x1ba');
+    await write(view, '\x1bd');
+    expect(onSaveProvider).not.toHaveBeenCalled();
+    expect(onRemoveProvider).not.toHaveBeenCalled();
+  });
+
   it('distinguishes save-default and session-only selections', () => {
     const first = renderPicker();
     first.view.stdin.write('\r');

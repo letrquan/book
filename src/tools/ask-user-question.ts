@@ -175,7 +175,7 @@ export const askUserQuestionTools: ToolDefinition[] = [
   {
     name: 'AskUserQuestion',
     description:
-      'Ask the user 1-4 necessary clarifying questions with 2-4 described choices each. Use only when the answer materially changes the work and cannot be discovered from the workspace. The host also offers free-text Other answers. Never request passwords, API keys, tokens, authentication codes, private keys, or other secrets.',
+      'Ask the user 1-4 necessary clarifying questions with 2-4 described choices each. Questions may allow exactly one answer or multiple answers; use multiSelect when choices are not mutually exclusive. Use only when the answer materially changes the work and cannot be discovered from the workspace. The host also offers free-text Other answers. Never request passwords, API keys, tokens, authentication codes, private keys, or other secrets.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -188,12 +188,23 @@ export const askUserQuestionTools: ToolDefinition[] = [
             type: 'object',
             additionalProperties: false,
             properties: {
-              question: { type: 'string', minLength: 1, maxLength: 500 },
-              header: { type: 'string', minLength: 1, maxLength: 12 },
+              question: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 500,
+                description: 'The complete question shown to the user.',
+              },
+              header: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 12,
+                description: 'A short category label for the question.',
+              },
               options: {
                 type: 'array',
                 minItems: 2,
                 maxItems: 4,
+                description: 'The predefined answers the user may choose from.',
                 items: {
                   type: 'object',
                   additionalProperties: false,
@@ -204,7 +215,11 @@ export const askUserQuestionTools: ToolDefinition[] = [
                   required: ['label', 'description'],
                 },
               },
-              multiSelect: { type: 'boolean' },
+              multiSelect: {
+                type: 'boolean',
+                description:
+                  'Set true when the user may choose one or more answers; set false when exactly one answer is required.',
+              },
             },
             required: ['question', 'header', 'options', 'multiSelect'],
           },

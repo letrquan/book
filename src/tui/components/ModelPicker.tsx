@@ -44,6 +44,7 @@ interface ModelPickerProps {
   removableProviderModelCounts?: ReadonlyMap<string, number>;
   onRemoveProvider: (providerId: string) => ProviderRemovalResult;
   onProviderSaved?: (request: ProviderSaveRequest) => void;
+  allowProviderManagement?: boolean;
   onCancel: () => void;
 }
 
@@ -69,6 +70,7 @@ export function ModelPicker({
   removableProviderModelCounts,
   onRemoveProvider,
   onProviderSaved,
+  allowProviderManagement = true,
   onCancel,
 }: ModelPickerProps) {
   const theme = useTheme();
@@ -96,12 +98,12 @@ export function ModelPicker({
         option.providerId?.toLowerCase().includes(query),
     );
   }, [filter, options]);
-  const itemCount = filteredOptions.length + 1;
+  const itemCount = filteredOptions.length + (allowProviderManagement ? 1 : 0);
   const addIndex = filteredOptions.length;
 
   useEffect(() => {
-    setSelected((value) => Math.min(value, filteredOptions.length));
-  }, [filteredOptions.length]);
+    setSelected((value) => Math.min(value, Math.max(0, itemCount - 1)));
+  }, [filteredOptions.length, itemCount]);
 
   const handlePick = useCallback(
     (model: string, saveDefault: boolean) => {
@@ -219,7 +221,7 @@ export function ModelPicker({
         return;
       }
       if (key.return) {
-        if (selected === addIndex) setShowWizard(true);
+        if (allowProviderManagement && selected === addIndex) setShowWizard(true);
         else {
           const option = filteredOptions[selected];
           if (option) handlePick(option.id, true);
@@ -241,7 +243,7 @@ export function ModelPicker({
         setSelected((value) => (value + 1) % itemCount);
         return;
       }
-      if (key.meta && input === 'a') {
+      if (allowProviderManagement && key.meta && input === 'a') {
         setShowWizard(true);
         setError(undefined);
         return;
@@ -261,12 +263,12 @@ export function ModelPicker({
         if (option) handlePick(option.id, false);
         return;
       }
-      if (key.meta && input === 'r' && selected !== addIndex) {
+      if (allowProviderManagement && key.meta && input === 'r' && selected !== addIndex) {
         const providerId = filteredOptions[selected]?.providerId;
         if (providerId && !refreshing) void refreshProvider(providerId);
         return;
       }
-      if (key.meta && input === 'd' && selected !== addIndex) {
+      if (allowProviderManagement && key.meta && input === 'd' && selected !== addIndex) {
         const option = filteredOptions[selected];
         const providerId = option?.providerId;
         if (!providerId) return;
@@ -343,14 +345,14 @@ export function ModelPicker({
   );
   const rows = [
     ...filteredOptions.map((option) => ({ type: 'model' as const, option })),
-    { type: 'add' as const },
+    ...(allowProviderManagement ? [{ type: 'add' as const }] : []),
   ].slice(windowStart, windowStart + maxVisibleModels);
   const hasRemovableProviders = removableProviderIds.size > 0;
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
       <Text bold color={theme.brand}>
-        Models &amp; BYOK providers
+        {allowProviderManagement ? 'Models & BYOK providers' : 'Choose subagent model'}
       </Text>
       <Text color={theme.brand}>Filter: {filter || '(type to filter)'}</Text>
       <Box flexDirection="column">
@@ -388,13 +390,15 @@ export function ModelPicker({
       </Box>
       <Box flexDirection="column">
         <Text color={theme.subtle} dimColor>
-          {compact || !density.showOptionalHelp
-            ? hasRemovableProviders
-              ? '↑↓ select · Enter save · Alt+D remove BYOK · Esc cancel'
-              : '↑↓ select · Enter save · Alt+S session · Esc cancel'
-            : hasRemovableProviders
-              ? 'Type · ↑↓ select · Enter save · Alt+A add · Alt+D remove BYOK · Esc'
-              : 'Type filter · ↑↓ select · Enter save · Alt+A add BYOK · Alt+S session · Esc cancel'}
+          {!allowProviderManagement
+            ? 'Type filter · ↑↓ select · Enter save · Esc back'
+            : compact || !density.showOptionalHelp
+              ? hasRemovableProviders
+                ? '↑↓ select · Enter save · Alt+D remove BYOK · Esc cancel'
+                : '↑↓ select · Enter save · Alt+S session · Esc cancel'
+              : hasRemovableProviders
+                ? 'Type · ↑↓ select · Enter save · Alt+A add · Alt+D remove BYOK · Esc'
+                : 'Type filter · ↑↓ select · Enter save · Alt+A add BYOK · Alt+S session · Esc cancel'}
         </Text>
         {refreshing && <Text color={theme.brand}>Refreshing {refreshing} models…</Text>}
         {onEffort && (

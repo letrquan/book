@@ -32,6 +32,7 @@ import {
   readSettingsGlobal,
   removeProviderGlobal,
   persistSettingLocal,
+  persistAgentProfileModel,
   persistSettingGlobal,
   persistSettingsGlobal,
   persistPermissionRuleLocal,
@@ -1491,6 +1492,30 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [config.workspace],
   );
 
+  const setAgentProfileModel = useCallback(
+    (profile: string, model?: string) => {
+      const persisted = persistAgentProfileModel(config.workspace, profile, model);
+      if (!persisted.ok) return persisted;
+
+      setLiveConfig((current) => {
+        const profiles = { ...current.settings.agents.profiles };
+        const existing = { ...(profiles[profile] ?? {}) };
+        existing.model = model ?? 'inherit';
+        if (Object.keys(existing).length > 0) profiles[profile] = existing;
+        else delete profiles[profile];
+        return {
+          ...current,
+          settings: {
+            ...current.settings,
+            agents: { ...current.settings.agents, profiles },
+          },
+        };
+      });
+      return { ok: true };
+    },
+    [config.workspace],
+  );
+
   const setMemoryAutoSave = useCallback(
     (enabled: boolean) => {
       setLiveConfig((c) => ({
@@ -1578,6 +1603,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     upsertProviderAndSelect,
     removeProvider,
     setEffort,
+    setAgentProfileModel,
     setMemoryAutoSave,
 
     /** Reload the memory snapshot after approve/discard so the next agent turn picks up changes. */

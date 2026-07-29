@@ -14,7 +14,7 @@ import {
 import { CommandRegistry, type CommandAlias, type CommandDefinition } from './registry.js';
 import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
 import { EFFORT_USAGE, isEffortLevel, type EffortLevel } from './effort.js';
-import { redactSettingValue, redactSettingsForDisplay } from '../settings-redaction.js';
+import { redactSettingValue } from '../settings-redaction.js';
 import {
   formatSettingsDiagnostics,
   formatSettingsKeyHelp,
@@ -77,7 +77,7 @@ export type BuiltinCommandEffect =
   | { type: 'resume-conversation'; session?: string }
   | { type: 'compact'; focus?: string }
   | { type: 'exit' }
-  | { type: 'show-modal'; modal: 'model' | 'rewind' | 'theme' | 'effort' }
+  | { type: 'show-modal'; modal: 'config' | 'model' | 'rewind' | 'theme' | 'effort' }
   | { type: 'set-theme'; preference: string }
   | { type: 'set-model'; selection: string }
   | { type: 'set-effort'; level: EffortLevel }
@@ -122,36 +122,7 @@ function configCommandEffect(
   rawArguments: string,
   context: BuiltinCommandContext,
 ): BuiltinCommandEffect {
-  const runtime = context.runtimeConfig;
-  if (!rawArguments) {
-    const snapshot = redactSettingsForDisplay({
-      ...runtime.settings,
-      model: runtime.modelSelection ?? runtime.model,
-      baseUrl: runtime.baseUrl,
-      workspace: runtime.workspace,
-      maxTurns: runtime.maxTurns,
-      maxTokens: runtime.maxTokens,
-      effort: runtime.effort,
-      activeProvider: runtime.provider,
-      modelInfo: runtime.modelInfo,
-    }) as Record<string, unknown>;
-    return {
-      type: 'local-message',
-      content: JSON.stringify(snapshot, null, 2),
-      display: {
-        kind: 'config',
-        snapshot,
-        runtime: {
-          model: runtime.modelSelection ?? runtime.model,
-          provider: runtime.provider ?? 'auto',
-          effort: runtime.effort,
-          mode: context.mode,
-          maxTokens: runtime.modelInfo?.contextWindow ?? runtime.maxTokens,
-          workspace: runtime.workspace,
-        },
-      },
-    };
-  }
+  if (!rawArguments) return { type: 'show-modal', modal: 'config' };
   if (rawArguments === '--help') {
     return {
       type: 'local-message',

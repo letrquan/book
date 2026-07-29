@@ -12,6 +12,8 @@ import { AgentTodoList, shouldShowAgentPlan } from './components/AgentTodoList.j
 import { ModelPicker, type ProviderRemovalResult } from './components/ModelPicker.js';
 import { EffortPicker } from './components/EffortPicker.js';
 import { ThemePicker } from './components/ThemePicker.js';
+import { ConfigMenu, type ConfigSection } from './components/ConfigMenu.js';
+import { AgentProfilePicker } from './components/AgentProfilePicker.js';
 import { SessionPicker } from './components/SessionPicker.js';
 import { RewindPicker } from './components/RewindPicker.js';
 import { TranscriptView } from './components/TranscriptView.js';
@@ -52,6 +54,7 @@ import { runGit } from '../tools/git.js';
 import { getMemoryIndex } from '../memory-display.js';
 import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
+import { withBuiltInAgents } from '../agents/profiles.js';
 import { persistSettingLocal } from './persist.js';
 import { buildModelOptions } from './model-options.js';
 import { createUiDebugLogger } from '../debug-log.js';
@@ -95,6 +98,8 @@ export function ownsModalInput(
   showEffortPicker = false,
   showThemePicker = false,
   showRewindPicker = false,
+  showConfigPicker = false,
+  showAgentProfilePicker = false,
 ): boolean {
   return Boolean(
     pendingPermission ||
@@ -104,7 +109,9 @@ export function ownsModalInput(
     showSessionPicker ||
     showEffortPicker ||
     showThemePicker ||
-    showRewindPicker,
+    showRewindPicker ||
+    showConfigPicker ||
+    showAgentProfilePicker,
   );
 }
 
@@ -216,6 +223,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     upsertProviderAndSelect,
     removeProvider,
     setEffort,
+    setAgentProfileModel,
     setMemoryAutoSave,
     refreshMemoryContext,
     persistPermissionRule,
@@ -257,6 +265,9 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showEffortPicker, setShowEffortPicker] = useState(false);
   const [showThemePicker, setShowThemePicker] = useState(false);
+  const [showConfigPicker, setShowConfigPicker] = useState(false);
+  const [showAgentProfilePicker, setShowAgentProfilePicker] = useState(false);
+  const [agentProfileForModel, setAgentProfileForModel] = useState<string>();
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [showRewindPicker, setShowRewindPicker] = useState(false);
   const [isResolvingCommand, setIsResolvingCommand] = useState(false);
@@ -446,7 +457,29 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   const [skills, setSkills] = useState(
     () => interactiveAssets?.skills ?? discoverSkills(config.workspace),
   );
+  const [agentProfiles, setAgentProfiles] = useState(() =>
+    withBuiltInAgents(discoverAgents(config.workspace)),
+  );
   const modelOptions = useMemo(() => buildModelOptions(liveConfig.settings), [liveConfig.settings]);
+  const configuredAgentModels = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(liveConfig.settings.agents.profiles).map(([name, profile]) => [
+          name,
+          profile.model,
+        ]),
+      ),
+    [liveConfig.settings.agents.profiles],
+  );
+  const activeAgentProfile = agentProfileForModel
+    ? agentProfiles.find((profile) => profile.name === agentProfileForModel)
+    : undefined;
+  const modelPickerSelection = activeAgentProfile
+    ? (configuredAgentModels[activeAgentProfile.name] ??
+      activeAgentProfile.model ??
+      liveConfig.modelSelection ??
+      liveConfig.model)
+    : (liveConfig.modelSelection ?? liveConfig.model);
   const effortLevels = useMemo(() => getAvailableEffortLevels(liveConfig), [liveConfig.modelInfo]);
 
   const { stdout } = useStdout();
@@ -644,6 +677,8 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   useDebugValueChange(uiLog, 'showModelPicker', showModelPicker, (v) => String(v));
   useDebugValueChange(uiLog, 'showEffortPicker', showEffortPicker, (v) => String(v));
   useDebugValueChange(uiLog, 'showThemePicker', showThemePicker, (v) => String(v));
+  useDebugValueChange(uiLog, 'showConfigPicker', showConfigPicker, (v) => String(v));
+  useDebugValueChange(uiLog, 'showAgentProfilePicker', showAgentProfilePicker, (v) => String(v));
 
   useInput((input, key) => {
     // Modal prompts own the keyboard until they resolve. Let their own
@@ -659,6 +694,8 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
         showEffortPicker,
         showThemePicker,
         showRewindPicker,
+        showConfigPicker,
+        showAgentProfilePicker,
       )
     ) {
       if (key.escape) {
@@ -973,7 +1010,8 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
           return;
         }
         if (effect?.type === 'show-modal') {
-          if (effect.modal === 'model') setShowModelPicker(true);
+          if (effect.modal === 'config') setShowConfigPicker(true);
+          else if (effect.modal === 'model') setShowModelPicker(true);
           else if (effect.modal === 'rewind') setShowRewindPicker(true);
           else if (effect.modal === 'theme') {
             setCustomThemes(listCustomThemes(config.workspace));
@@ -1037,6 +1075,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
           setCommands(discoverCommands(config.workspace));
           setSkills(discoverSkills(config.workspace));
           setCustomThemes(listCustomThemes(config.workspace));
+          setAgentProfiles(withBuiltInAgents(discoverAgents(config.workspace)));
           addLocalMessage('Commands and skills have been reloaded.');
           return;
         }
@@ -1073,6 +1112,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                   join(config.workspace, '.book', 'agents'),
                 );
                 addLocalMessage(`${report}\n\nInstalled:\n${installed.join('\n')}`);
+                setAgentProfiles(withBuiltInAgents(discoverAgents(config.workspace)));
                 void managedAgents.refresh();
               }
             } catch (importError) {
@@ -1229,7 +1269,15 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
       // Ctrl+/ and Ctrl+E must be handled here (not only in the parent useInput)
       // because ink-text-input consumes some Ctrl key events before they reach
       // the parent handler.
-      if (showModelPicker || showEffortPicker || showThemePicker || showRewindPicker) return true;
+      if (
+        showModelPicker ||
+        showEffortPicker ||
+        showThemePicker ||
+        showRewindPicker ||
+        showConfigPicker ||
+        showAgentProfilePicker
+      )
+        return true;
       if (key.ctrl && input === 'c') {
         if (pendingUserQuestion) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
@@ -1299,6 +1347,8 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
       showModelPicker,
       showThemePicker,
       showRewindPicker,
+      showConfigPicker,
+      showAgentProfilePicker,
       expandedToolId,
       focusedToolId,
       messages,
@@ -1309,7 +1359,13 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   // handleGlobalShortcut remains for Ctrl+/ keyboard shortcut reference.
 
   const pickerOwnsTranscript =
-    showModelPicker || showEffortPicker || showThemePicker || showSessionPicker || showRewindPicker;
+    showModelPicker ||
+    showEffortPicker ||
+    showThemePicker ||
+    showSessionPicker ||
+    showRewindPicker ||
+    showConfigPicker ||
+    showAgentProfilePicker;
 
   return (
     <AppProviders theme={currentTheme.tokens} density={density}>
@@ -1835,13 +1891,71 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                 onCancel={() => setShowRewindPicker(false)}
               />
             ) : null}
+            {showConfigPicker ? (
+              <ConfigMenu
+                model={liveConfig.modelSelection ?? liveConfig.model}
+                effort={liveConfig.effort}
+                themeName={currentTheme.preference}
+                memoryAutoSave={liveConfig.settings.memory.autoSave}
+                agentCount={agentProfiles.length}
+                terminalWidth={termWidth}
+                onOpen={(section: ConfigSection) => {
+                  if (section === 'effort') {
+                    const unavailable = getEffortUnavailableError(liveConfig);
+                    if (unavailable) {
+                      addLocalMessage(`✕ ${unavailable}`);
+                      return;
+                    }
+                  }
+                  setShowConfigPicker(false);
+                  if (section === 'model') {
+                    setAgentProfileForModel(undefined);
+                    setShowModelPicker(true);
+                  } else if (section === 'effort') {
+                    setShowEffortPicker(true);
+                  } else if (section === 'theme') {
+                    setCustomThemes(listCustomThemes(config.workspace));
+                    setShowThemePicker(true);
+                  } else {
+                    setShowAgentProfilePicker(true);
+                  }
+                }}
+                onToggleMemory={() => setMemoryAutoSave(!liveConfig.settings.memory.autoSave)}
+                onCancel={() => setShowConfigPicker(false)}
+              />
+            ) : null}
+            {showAgentProfilePicker ? (
+              <AgentProfilePicker
+                profiles={agentProfiles}
+                parentModel={liveConfig.modelSelection ?? liveConfig.model}
+                configuredModels={configuredAgentModels}
+                terminalWidth={termWidth}
+                onSelect={(profile) => {
+                  setAgentProfileForModel(profile);
+                  setShowAgentProfilePicker(false);
+                  setShowModelPicker(true);
+                }}
+                onReset={(profile) => {
+                  const result = setAgentProfileModel(profile);
+                  addLocalMessage(
+                    result.ok
+                      ? `${profile} now inherits the parent model.`
+                      : `✕ ${result.error ?? `Could not reset ${profile}.`}`,
+                  );
+                }}
+                onCancel={() => {
+                  setShowAgentProfilePicker(false);
+                  setShowConfigPicker(true);
+                }}
+              />
+            ) : null}
             {showModelPicker ? (
               <ModelPicker
                 options={modelOptions}
-                currentModel={liveConfig.modelSelection ?? liveConfig.model}
+                currentModel={modelPickerSelection}
                 currentEffort={liveConfig.effort}
-                effortLevels={effortLevels ?? []}
-                hasPriorOutput={messages.length > 0}
+                effortLevels={agentProfileForModel ? [] : (effortLevels ?? [])}
+                hasPriorOutput={!agentProfileForModel && messages.length > 0}
                 providers={liveConfig.settings.provider}
                 workspace={config.workspace}
                 retry={liveConfig.retry}
@@ -1858,6 +1972,15 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                     : '',
                 ].filter(Boolean)}
                 onPick={(model, saveDefault) => {
+                  if (agentProfileForModel) {
+                    const result = setAgentProfileModel(agentProfileForModel, model);
+                    if (!result.ok) return result;
+                    addLocalMessage(`Set ${agentProfileForModel} subagent model to ${model}.`);
+                    setAgentProfileForModel(undefined);
+                    setShowModelPicker(false);
+                    setShowAgentProfilePicker(true);
+                    return result;
+                  }
                   const result = setModel(model, { persist: saveDefault });
                   if (!result.ok) return result;
                   addLocalMessage(
@@ -1869,6 +1992,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                   return result;
                 }}
                 onPickEffort={(level) => setEffort(level)}
+                allowProviderManagement={!agentProfileForModel}
                 onSaveProvider={upsertProviderAndSelect}
                 removableProviderIds={removableProviderIds}
                 removableProviderModelCounts={removableProviderModelCounts}
@@ -1885,7 +2009,12 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                   );
                   setShowModelPicker(false);
                 }}
-                onCancel={() => setShowModelPicker(false)}
+                onCancel={() => {
+                  const returnToAgents = Boolean(agentProfileForModel);
+                  setAgentProfileForModel(undefined);
+                  setShowModelPicker(false);
+                  if (returnToAgents) setShowAgentProfilePicker(true);
+                }}
               />
             ) : null}
             {showEffortPicker && effortLevels ? (
@@ -2019,6 +2148,8 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                   showEffortPicker,
                   showThemePicker,
                   showRewindPicker,
+                  showConfigPicker,
+                  showAgentProfilePicker,
                 ) ||
                 transcriptMode === 'detailed' ||
                 managedAgents.surface === 'tasks' ||

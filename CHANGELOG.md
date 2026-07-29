@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- `/config` now opens a visual settings menu for model, effort, theme, memory capture, and
+  subagent profile models. Explorer, patcher, validator, and custom profiles can select an
+  existing configured model or reset to parent-model inheritance without editing JSON.
+
+- `AskUserQuestion` now explicitly advertises single- and multi-select questions to models.
+
 - Added terminal-screen regression coverage and made patched Ink incremental rendering the default
   interactive mode through `BOOK_TUI_RENDERER`. The stable full-frame renderer remains available
   as `BOOK_TUI_RENDERER=safe`, while active TUI animations share pausable clocks to reduce render

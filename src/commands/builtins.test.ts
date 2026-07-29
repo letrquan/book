@@ -209,12 +209,7 @@ describe('built-in command contract', () => {
         runtimeConfig: defaultConfig({ workspace }),
       };
       const display = registry.execute('config', '', commandContext);
-      expect(display).toEqual(
-        expect.objectContaining({
-          type: 'local-message',
-          display: expect.objectContaining({ kind: 'config' }),
-        }),
-      );
+      expect(display).toEqual({ type: 'show-modal', modal: 'config' });
       expect(registry.execute('config', '--help', commandContext)).toEqual(
         expect.objectContaining({ content: expect.stringContaining('  maxTurns') }),
       );

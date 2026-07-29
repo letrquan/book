@@ -114,6 +114,10 @@ Writes use an atomic sibling-file replacement, and malformed or non-object
 `.book/settings.local.json` files are never overwritten. The reported error includes the file and
 invalid setting path; provider secrets are redacted.
 
+Inside the TUI, `/config` opens a visual settings menu. Use it to change the main model, effort,
+theme, memory auto-capture, or the model assigned to each managed-agent profile. Subagent model
+changes apply immediately to newly spawned runs and are saved in `.book/settings.local.json`.
+
 ### File mutations
 
 Book exposes the same mutation tools to every model — `ApplyPatch`, `Edit`, `MultiEdit`, and

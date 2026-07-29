@@ -9,6 +9,7 @@ import {
   persistPermissionRuleLocal,
   persistSettingGlobal,
   persistSettingsGlobal,
+  persistAgentProfileModel,
   readSettingsLocal,
   readSettingsGlobal,
   removeProviderLocal,
@@ -96,6 +97,16 @@ describe('persistSettingLocal', () => {
 
     expect(result.ok).toBe(false);
     expect(readFileSync(localPath, 'utf-8')).toBe('{broken');
+  });
+});
+
+describe('persistAgentProfileModel', () => {
+  it('keeps dotted profile names as literal keys and persists inherit', () => {
+    expect(persistAgentProfileModel(dir, 'code.review', 'gateway/model.v2').ok).toBe(true);
+    expect(persistAgentProfileModel(dir, 'code.review').ok).toBe(true);
+    expect(readSettingsLocal(dir)).toMatchObject({
+      agents: { profiles: { 'code.review': { model: 'inherit' } } },
+    });
   });
 });
 
