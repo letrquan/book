@@ -21,7 +21,8 @@ try {
     'dist/sdk.js',
     'dist/sdk.d.ts',
     'README.md',
-    'LICENSE',
+    'patches/ink+6.8.0.patch',
+    'scripts/apply-ink-patch.mjs',
   ]) {
     if (!packagedFiles.has(required)) throw new Error(`Packed artifact is missing ${required}.`);
   }
@@ -31,7 +32,7 @@ try {
   );
   const tarball = join(temporaryRoot, packed.filename);
   writeFileSync(join(temporaryRoot, 'package.json'), '{"private":true}', 'utf8');
-  runNpm(['install', '--ignore-scripts', '--no-audit', '--no-fund', tarball], temporaryRoot);
+  runNpm(['install', '--no-audit', '--no-fund', tarball], temporaryRoot);
 
   const installedPackage = JSON.parse(
     readFileSync(join(temporaryRoot, 'node_modules', 'book', 'package.json'), 'utf8'),

@@ -133,6 +133,29 @@ function writeDebugLine(line: string): void {
   }
 }
 
+function writeSizeBoundedDebugLine(line: string, maxBytes: number): void {
+  if (Buffer.byteLength(line) <= maxBytes) {
+    writeDebugLine(line);
+    return;
+  }
+
+  // Split oversized render events on UTF-8 character boundaries so one burst
+  // cannot bypass the configured active-log cap.
+  let chunk = '';
+  let chunkBytes = 0;
+  for (const character of line) {
+    const characterBytes = Buffer.byteLength(character);
+    if (chunk && chunkBytes + characterBytes > maxBytes) {
+      writeDebugLine(chunk);
+      chunk = '';
+      chunkBytes = 0;
+    }
+    chunk += character;
+    chunkBytes += characterBytes;
+  }
+  if (chunk) writeDebugLine(chunk);
+}
+
 let pendingRenderDebug: string[] = [];
 let renderDebugFlush: ReturnType<typeof setImmediate> | null = null;
 
@@ -155,7 +178,7 @@ function writeRenderDebugLine(line: string): void {
         chunkBytes = 0;
       }
       if (lineBytes > maxBytes) {
-        writeDebugLine(pendingLine);
+        writeSizeBoundedDebugLine(pendingLine, maxBytes);
         continue;
       }
       chunk += pendingLine;

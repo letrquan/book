@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { createRenderDebugLogger } from '../../debug-log.js';
 import { isTranscriptScrollActive } from '../scroll-activity.js';
+import { useUiClock } from '../ui-clock.js';
 
 const animLog = createRenderDebugLogger('tui:animation');
 
@@ -11,27 +12,19 @@ export function useSpinner(
   active: boolean,
   style: 'braille' | 'dots' = 'braille',
 ): { frame: string; colorIndex: number } {
-  const [frame, setFrame] = useState(0);
   const frames = style === 'braille' ? BRAILLE_FRAMES : DOT_FRAMES;
+  const tick = useUiClock('fast', active);
 
   useEffect(() => {
-    if (!active) {
-      setFrame(0);
-      return;
-    }
+    if (!active) return;
     animLog.event('spinner:start', { style });
-    const interval = setInterval(() => {
-      if (isTranscriptScrollActive()) return;
-      setFrame((f) => (f + 1) % frames.length);
-    }, 80);
     return () => {
-      clearInterval(interval);
       animLog.event('spinner:stop', { style });
     };
-  }, [active, frames.length, style]);
+  }, [active, style]);
 
-  const colorIndex = frame;
-  return { frame: frames[frame], colorIndex };
+  const frame = active ? tick % frames.length : 0;
+  return { frame: frames[frame], colorIndex: frame };
 }
 
 /**
@@ -43,24 +36,12 @@ export function useGradientSpinner(
   style: 'braille' | 'dots' = 'braille',
   reducedMotion = false,
 ): { frame: string; color: string } {
-  const [tick, setTick] = useState(0);
   const frames = style === 'braille' ? BRAILLE_FRAMES : DOT_FRAMES;
-
-  useEffect(() => {
-    if (!active || reducedMotion) {
-      setTick(0);
-      return;
-    }
-    const interval = setInterval(() => {
-      if (isTranscriptScrollActive()) return;
-      setTick((f) => (f + 1) % frames.length);
-    }, 80);
-    return () => clearInterval(interval);
-  }, [active, frames.length, reducedMotion]);
+  const tick = useUiClock('fast', active && !reducedMotion);
 
   // Shimmer gradient: alternate between cyan and a lighter cyan
   const colors = ['cyan', '#5cf'];
-  const frame = frames[reducedMotion ? 0 : tick];
+  const frame = frames[active && !reducedMotion ? tick % frames.length : 0];
   const color = colors[tick % colors.length];
 
   return { frame, color };
@@ -181,26 +162,22 @@ export function useAnimatedProgress(
   maximum = 95,
 ): number {
   const [progress, setProgress] = useState(0);
+  const safeMaximum = Math.max(0, Math.min(99, maximum));
+  const startedAtRef = useRef(Date.now());
+  const tick = useUiClock('fast', active && !reducedMotion && progress < safeMaximum);
 
   useEffect(() => {
+    startedAtRef.current = Date.now();
     setProgress(0);
+  }, [active, durationMs, reducedMotion, safeMaximum]);
+
+  useEffect(() => {
     if (!active || reducedMotion) return;
-
-    const startedAt = Date.now();
     const safeDuration = Math.max(1, durationMs);
-    const safeMaximum = Math.max(0, Math.min(99, maximum));
-    const timer = setInterval(() => {
-      if (isTranscriptScrollActive()) return;
-      const next = Math.min(
-        safeMaximum,
-        Math.floor(((Date.now() - startedAt) / safeDuration) * 100),
-      );
-      setProgress(next);
-      if (next >= safeMaximum) clearInterval(timer);
-    }, 80);
-
-    return () => clearInterval(timer);
-  }, [active, durationMs, maximum, reducedMotion]);
+    setProgress(
+      Math.min(safeMaximum, Math.floor(((Date.now() - startedAtRef.current) / safeDuration) * 100)),
+    );
+  }, [active, durationMs, reducedMotion, safeMaximum, tick]);
 
   return progress;
 }

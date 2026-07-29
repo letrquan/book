@@ -286,17 +286,18 @@ Project themes can override any token in `.book/themes/<name>.json`. They appear
 
 ### Environment variables
 
-| Variable                                                                                          | Purpose                                               |
-| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `BOOK_API_KEY`                                                                                    | Default API key (or `{env:VAR}` in provider settings) |
-| `BOOK_BASE_URL`                                                                                   | Default OpenAI-compatible base URL                    |
-| `BOOK_MODEL`                                                                                      | Default model                                         |
-| `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                     |
-| `BOOK_EFFORT`                                                                                     | Thinking effort level                                 |
-| `BOOK_WORKSPACE`                                                                                  | Default workspace                                     |
-| `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                              |
-| `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                              |
-| `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                   |
+| Variable                                                                                          | Purpose                                                          |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `BOOK_API_KEY`                                                                                    | Default API key (or `{env:VAR}` in provider settings)            |
+| `BOOK_BASE_URL`                                                                                   | Default OpenAI-compatible base URL                               |
+| `BOOK_MODEL`                                                                                      | Default model                                                    |
+| `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                                |
+| `BOOK_EFFORT`                                                                                     | Thinking effort level                                            |
+| `BOOK_WORKSPACE`                                                                                  | Default workspace                                                |
+| `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                         |
+| `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                         |
+| `BOOK_TUI_RENDERER`                                                                               | `incremental` (default), `safe`, or experimental scroll renderer |
+| `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                              |
 
 ## Slash Commands
 

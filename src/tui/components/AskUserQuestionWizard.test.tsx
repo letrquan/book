@@ -39,6 +39,13 @@ async function press(view: ReturnType<typeof render>, input: string) {
   await wait(20);
 }
 
+async function waitForText(view: ReturnType<typeof render>, text: string) {
+  await vi.waitFor(() => expect(stripAnsi(view.lastFrame())).toContain(text), {
+    timeout: 2_000,
+    interval: 20,
+  });
+}
+
 afterEach(cleanup);
 
 describe('AskUserQuestionWizard', () => {
@@ -52,19 +59,26 @@ describe('AskUserQuestionWizard', () => {
 
     expect(stripAnsi(view.lastFrame())).toContain('? reviewer');
     await press(view, '\r');
-    expect(stripAnsi(view.lastFrame())).toContain('Which sections?');
+    await waitForText(view, 'Which sections?');
     await press(view, ' ');
+    await waitForText(view, '■ 1. Intro');
     await press(view, 'o');
+    await waitForText(view, 'Your answer');
     await press(view, 'Custom appendix');
+    await waitForText(view, 'Custom appendix');
     await press(view, '\r');
 
-    expect(onResolve).toHaveBeenCalledWith({
-      action: 'answer',
-      answers: {
-        'Which format?': 'Summary',
-        'Which sections?': ['Intro', 'Custom appendix'],
-      },
-    });
+    await vi.waitFor(
+      () =>
+        expect(onResolve).toHaveBeenCalledWith({
+          action: 'answer',
+          answers: {
+            'Which format?': 'Summary',
+            'Which sections?': ['Intro', 'Custom appendix'],
+          },
+        }),
+      { timeout: 2_000, interval: 20 },
+    );
   });
 
   it('distinguishes decline from cancel', async () => {

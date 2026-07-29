@@ -1,5 +1,5 @@
 import { Text, Box, type DOMElement } from 'ink';
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Spinner } from './Spinner.js';
 import { useTheme } from '../theme.js';
 import { DiffBlock } from './Diff.js';
@@ -17,6 +17,7 @@ import {
   type ToolPresentationStatus,
 } from '../tool-presentation.js';
 import { useToolRowInteractionRegistry } from './tool-row-interactions.js';
+import { useUiClock } from '../ui-clock.js';
 import type { ToolResult } from '../../types/tools.js';
 
 interface ToolCallBlockProps {
@@ -98,17 +99,14 @@ function stringifyArg(value: unknown): string {
 
 function useRunningElapsed(isRunning: boolean): number {
   const startedAtRef = useRef(Date.now());
-  const [elapsedMs, setElapsedMs] = useState(0);
+  const tick = useUiClock('fast', isRunning);
 
   useEffect(() => {
-    if (!isRunning) return;
-    const update = () => setElapsedMs(Date.now() - startedAtRef.current);
-    update();
-    const timer = setInterval(update, 250);
-    return () => clearInterval(timer);
+    startedAtRef.current = Date.now();
   }, [isRunning]);
 
-  return elapsedMs;
+  void tick;
+  return isRunning ? Date.now() - startedAtRef.current : 0;
 }
 
 function ScreenReaderTool({

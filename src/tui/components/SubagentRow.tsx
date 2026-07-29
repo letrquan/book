@@ -1,8 +1,8 @@
 import { Text } from 'ink';
-import { useEffect, useState } from 'react';
 import type { AgentSummary } from '../../agents/types.js';
 import { useTheme } from '../theme.js';
 import { truncateDisplay } from './word-wrap.js';
+import { useUiClock } from '../ui-clock.js';
 
 function statusGlyph(status: AgentSummary['status'], reducedMotion: boolean): string {
   if (status === 'completed') return '✓';
@@ -31,21 +31,9 @@ export function formatElapsedDuration(totalSeconds: number): string {
 }
 
 function useCurrentTime(active: boolean, fixedNow?: number): number {
-  const [currentTime, setCurrentTime] = useState(() => fixedNow ?? Date.now());
-
-  useEffect(() => {
-    if (fixedNow !== undefined) {
-      setCurrentTime(fixedNow);
-      return;
-    }
-    if (!active) return;
-    const update = () => setCurrentTime(Date.now());
-    update();
-    const timer = setInterval(update, 1000);
-    return () => clearInterval(timer);
-  }, [active, fixedNow]);
-
-  return fixedNow ?? currentTime;
+  const tick = useUiClock('slow', active && fixedNow === undefined);
+  void tick;
+  return fixedNow ?? Date.now();
 }
 
 export function SubagentRow({

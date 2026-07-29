@@ -199,7 +199,7 @@ describe('WorkingIndicator', () => {
     const initialWriteCount = view.frames.length;
 
     act(() => {
-      vi.advanceTimersByTime(80);
+      vi.advanceTimersByTime(100);
     });
 
     expect(view.lastFrame()).not.toBe(initialFrame);
@@ -219,6 +219,37 @@ describe('WorkingIndicator', () => {
     });
 
     expect(stripAnsi(view.lastFrame())).toContain('Consulting the footnotes · 3s');
+  });
+
+  it('resets elapsed time when activity resumes after approval', async () => {
+    vi.useFakeTimers();
+    const view = render(
+      withTheme(<WorkingIndicator isThinking messages={[]} terminalWidth={80} />),
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(stripAnsi(view.lastFrame())).toContain('· 2s');
+
+    await view.rerender(
+      withTheme(
+        <WorkingIndicator
+          isThinking
+          messages={[]}
+          pendingPlanApproval={{ plan: 'Review the changes.' }}
+          terminalWidth={80}
+        />,
+      ),
+    );
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+
+    await view.rerender(
+      withTheme(<WorkingIndicator isThinking messages={[]} terminalWidth={80} />),
+    );
+    expect(stripAnsi(view.lastFrame())).toContain('· 0s');
   });
 
   it('keeps long activity labels on one row in narrow terminals', () => {

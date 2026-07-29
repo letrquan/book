@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import { useEffect, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { Message } from '../../types/messages.js';
 import type { RetryPhase } from '../../types/runtime.js';
 import type {
@@ -8,6 +8,7 @@ import type {
   PendingUserQuestionRequest,
 } from '../../session/agent-interactions.js';
 import { useAnimatedProgress, useGradientSpinner } from '../hooks/useAnimation.js';
+import { useUiClock } from '../ui-clock.js';
 import { useTheme } from '../theme.js';
 import { deriveWorkingActivity } from '../working-activity.js';
 import { floatingFrameMetrics } from './chrome.js';
@@ -36,20 +37,28 @@ interface WorkingIndicatorProps {
 }
 
 function useElapsedSeconds(active: boolean, disabled: boolean): number {
-  const [seconds, setSeconds] = useState(0);
+  const running = active && !disabled;
+  const startedAtRef = useRef(Date.now());
+  const resetPendingRef = useRef(true);
+  const wasRunningRef = useRef(false);
+  const [, refresh] = useState(0);
+  const tick = useUiClock('slow', running);
 
-  useEffect(() => {
-    setSeconds(0);
-    if (!active || disabled) return;
+  useLayoutEffect(() => {
+    if (running && !wasRunningRef.current) {
+      startedAtRef.current = Date.now();
+      resetPendingRef.current = false;
+      wasRunningRef.current = true;
+      refresh((value) => value + 1);
+    } else if (!running && wasRunningRef.current) {
+      resetPendingRef.current = true;
+      wasRunningRef.current = false;
+    }
+  }, [running]);
 
-    const startedAt = Date.now();
-    const timer = setInterval(() => {
-      setSeconds(Math.floor((Date.now() - startedAt) / 1000));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [active, disabled]);
-
-  return seconds;
+  if (!running || resetPendingRef.current) return 0;
+  void tick;
+  return Math.floor(Math.max(0, Date.now() - startedAtRef.current) / 1000);
 }
 
 function fitActivityLine(

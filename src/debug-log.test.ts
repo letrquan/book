@@ -148,6 +148,41 @@ describe('debug logger output target', () => {
     expect(existsSync(`${logPath}.1`)).toBe(true);
   });
 
+  it('splits one oversized render event before writing it', async () => {
+    const logPath = join(tempDir(), 'render-oversized.log');
+    vi.stubEnv('BOOK_DEBUG_RENDER', '1');
+    vi.stubEnv('BOOK_DEBUG_FILE', logPath);
+    vi.stubEnv('BOOK_DEBUG_MAX_BYTES', '32');
+    setStderrIsTTY(true);
+
+    const { createRenderDebugLogger } = await import('./debug-log.js');
+    createRenderDebugLogger('render-oversized').event('render', { payload: 'x'.repeat(200) });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(statSync(logPath).size).toBeLessThanOrEqual(32);
+  });
+
+  it('keeps astral Unicode characters intact across oversized chunks', async () => {
+    const logPath = join(tempDir(), 'render-unicode.log');
+    vi.stubEnv('BOOK_DEBUG_RENDER', '1');
+    vi.stubEnv('BOOK_DEBUG_FILE', logPath);
+    vi.stubEnv('BOOK_DEBUG_MAX_BYTES', '32');
+    vi.stubEnv('BOOK_DEBUG_BACKUPS', '20');
+    setStderrIsTTY(true);
+
+    const { createRenderDebugLogger } = await import('./debug-log.js');
+    createRenderDebugLogger('render-unicode').event('render', { payload: '🙂'.repeat(80) });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const files = [logPath, ...Array.from({ length: 20 }, (_, index) => `${logPath}.${index + 1}`)];
+    const output = files
+      .filter((path) => existsSync(path))
+      .map((path) => readFileSync(path, 'utf8'))
+      .join('');
+    expect(output).not.toContain('\uFFFD');
+    expect(output).toContain('🙂');
+  });
+
   it('clears expired rotated logs while preserving the active log', async () => {
     const logPath = join(tempDir(), 'debug.log');
     writeFileSync(logPath, 'active');

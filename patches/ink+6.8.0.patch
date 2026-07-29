@@ -1,0 +1,13 @@
+diff --git a/node_modules/ink/build/log-update.js b/node_modules/ink/build/log-update.js
+index 73e297d..06c1a22 100644
+--- a/node_modules/ink/build/log-update.js
++++ b/node_modules/ink/build/log-update.js
+@@ -161,7 +161,7 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+             buffer.push(ansiEscapes.eraseLines(previousVisible - visibleCount + extraSlot), ansiEscapes.cursorUp(visibleCount));
+         }
+         else {
+-            buffer.push(ansiEscapes.cursorUp(previousVisible - 1));
++            buffer.push(ansiEscapes.cursorUp(previousLines.length - 1));
+         }
+         for (let i = 0; i < visibleCount; i++) {
+             const isLastLine = i === visibleCount - 1;

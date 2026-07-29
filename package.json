@@ -31,7 +31,10 @@
   "files": [
     "dist",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "patches/ink+6.8.0.patch",
+    "scripts/apply-ink-patch.mjs",
+    "scripts/verify-ink-patch.mjs"
   ],
   "bin": {
     "book": "./dist/index.js"
@@ -51,6 +54,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsx src/index.ts",
+    "postinstall": "node scripts/apply-ink-patch.mjs",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
     "test": "npm run test:unit && npm run test:contract && npm run test:integration",
@@ -59,9 +63,11 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage --config vitest.coverage.config.ts",
-    "bench:ui": "tsx src/tui/__benchmarks__/ui.bench.tsx",
+    "bench:ui": "node scripts/run-ui-benchmark.mjs",
+    "verify:ink-patch": "node scripts/verify-ink-patch.mjs",
     "bench:runtime": "tsx src/tui/__benchmarks__/runtime.bench.ts",
     "eval:edit": "tsx scripts/edit-eval.ts",
+    "apply:ink-patch": "node scripts/apply-ink-patch.mjs",
     "lint": "eslint src/ --ext .ts,.tsx --max-warnings 0",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
     "format:check": "prettier --check \"{src,scripts}/**/*.{ts,tsx}\" \"*.config.ts\"",
@@ -93,11 +99,13 @@
     "@typescript-eslint/eslint-plugin": "8.65.0",
     "@typescript-eslint/parser": "8.65.0",
     "@vitest/coverage-v8": "^4.1.9",
+    "@xterm/headless": "^6.0.0",
     "eslint": "^10.7.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.7.0",
     "ink-testing-library": "^4.0.0",
     "node-pty": "^1.1.0",
+    "patch-package": "^8.0.1",
     "prettier": "^3.9.6",
     "tinybench": "^6.1.2",
     "tsup": "^8.5.0",

@@ -30,7 +30,6 @@ import {
   type TranscriptViewportStore,
 } from '../transcript-layout.js';
 import { useTheme } from '../theme.js';
-import { setTranscriptScrollHint } from '../ink-scroll-renderer.js';
 import { markTranscriptScrollActivity } from '../scroll-activity.js';
 import {
   ToolRowInteractionContext,
@@ -48,27 +47,6 @@ interface TranscriptViewProps {
 
 const INITIAL_METRICS: TranscriptMetrics = { contentRows: 0, viewportRows: 1 };
 const MOUSE_WHEEL_ROWS = 3;
-// Yoga's Edge.Top value; keeping this local avoids exposing Ink's layout dependency.
-const YOGA_EDGE_TOP = 1;
-
-function applyImperativeScrollOffset(
-  node: DOMElement,
-  scrollTop: number,
-  requestRender = true,
-): boolean {
-  if (!node.yogaNode) return false;
-
-  node.yogaNode.setMargin(YOGA_EDGE_TOP, -scrollTop);
-  if (!requestRender) return true;
-
-  let root = node;
-  while (root.parentNode) root = root.parentNode;
-  if (!root.onComputeLayout || !root.onRender) return false;
-
-  root.onComputeLayout();
-  root.onRender();
-  return true;
-}
 
 function getAbsolutePosition(node: DOMElement): { x: number; y: number } | undefined {
   let current: DOMElement | undefined = node;
@@ -195,47 +173,13 @@ export function TranscriptView({
   }, []);
 
   const applyScrollState = useCallback(
-    (next: TranscriptScrollState, requestRender = true) => {
+    (next: TranscriptScrollState) => {
       const previous = stateRef.current;
       stateRef.current = next;
       if (previous.scrollTop !== next.scrollTop) markTranscriptScrollActivity();
 
-      if (
-        previous.scrollTop !== next.scrollTop &&
-        previous.followBottom === next.followBottom &&
-        viewportRef.current
-      ) {
-        const position = getAbsolutePosition(viewportRef.current);
-        const viewportHeight = Math.max(1, Math.floor(measureElement(viewportRef.current).height));
-        if (position) {
-          setTranscriptScrollHint({
-            top: position.y + 1,
-            bottom: position.y + viewportHeight,
-            delta: next.scrollTop - previous.scrollTop,
-          });
-        }
-      }
-
-      if (previous.followBottom !== next.followBottom) {
-        const content = contentRef.current;
-        if (
-          !requestRender ||
-          !content ||
-          !applyImperativeScrollOffset(content, next.scrollTop, false)
-        ) {
-          setRenderedScrollTop((current) =>
-            current === next.scrollTop ? current : next.scrollTop,
-          );
-        }
-        setFollowBottom(next.followBottom);
-      } else {
-        const content = contentRef.current;
-        if (!requestRender || !content || !applyImperativeScrollOffset(content, next.scrollTop)) {
-          setRenderedScrollTop((current) =>
-            current === next.scrollTop ? current : next.scrollTop,
-          );
-        }
-      }
+      setRenderedScrollTop((current) => (current === next.scrollTop ? current : next.scrollTop));
+      setFollowBottom((current) => (current === next.followBottom ? current : next.followBottom));
       if (next.followBottom) setHasNewOutput(false);
       publishViewport(next);
     },
@@ -317,12 +261,7 @@ export function TranscriptView({
       previousMetrics.viewportRows !== viewportRows
     ) {
       metricsRef.current = nextMetrics;
-      // Let Ink establish its incremental frame baseline before applying the
-      // initial bottom offset; nested root.onRender calls can desynchronize it.
-      applyScrollState(
-        reconcileTranscriptScroll(stateRef.current, nextMetrics),
-        previousMetrics.contentRows > 0,
-      );
+      applyScrollState(reconcileTranscriptScroll(stateRef.current, nextMetrics));
     }
   }, [applyScrollState, height]);
 

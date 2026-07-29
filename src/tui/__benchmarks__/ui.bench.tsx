@@ -1,6 +1,9 @@
 import { Bench } from 'tinybench';
 import { render, cleanup } from 'ink-testing-library';
 import React from 'react';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { marked, Tokens } from 'marked';
 import { ThemeContext } from '../theme.js';
 import { DEFAULT_THEME } from '../../types/theme.js';
@@ -14,6 +17,7 @@ import { wordWrap } from '../components/word-wrap.js';
 import { toolSuccess } from '../../tools/result.js';
 import type { Message } from '../../types/messages.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
+import { replayTerminalOutput } from '../terminal-screen.js';
 
 const TERMINAL_WIDTH = 80;
 const LATENCY_BUDGETS_MS = {
@@ -27,7 +31,46 @@ const SCROLL_UPDATE_P95_BUDGET_MS = 16;
 const LARGE_SCROLL_UPDATE_P95_BUDGET_MS = 25;
 const COMPLETION_TRANSITION_BUDGET_MS = 300;
 const TRACE_CHURN_P95_BUDGET_MS = 100;
+const INCREMENTAL_BYTE_REDUCTION_BUDGET = 0.7;
 let sink = 0;
+
+interface RendererMetrics {
+  bytes: number;
+  writes: number;
+  screen: string[];
+  convergenceMs: number;
+}
+
+async function measureRenderer(
+  frames: readonly string[],
+  incremental: boolean,
+): Promise<RendererMetrics> {
+  const require = createRequire(import.meta.url);
+  const logUpdateModule = (await import(
+    pathToFileURL(join(dirname(require.resolve('ink')), 'log-update.js')).href
+  )) as {
+    default: {
+      create: (
+        stream: { isTTY: boolean; rows: number; write: (value: string) => void },
+        options: { incremental: boolean; showCursor: boolean },
+      ) => (output: string) => void;
+    };
+  };
+  const writes: string[] = [];
+  const log = logUpdateModule.default.create(
+    { isTTY: true, rows: 40, write: (value) => writes.push(value) },
+    { incremental, showCursor: true },
+  );
+  const startedAt = performance.now();
+  for (const frame of frames) log(frame);
+  const screen = await replayTerminalOutput(writes.join(''), { cols: TERMINAL_WIDTH, rows: 40 });
+  return {
+    bytes: writes.reduce((total, value) => total + Buffer.byteLength(value), 0),
+    writes: writes.length,
+    screen,
+    convergenceMs: performance.now() - startedAt,
+  };
+}
 
 function makeParagraph(wordCount: number): string {
   const words = [
@@ -272,6 +315,39 @@ bench
 await bench.run();
 
 console.table(bench.table());
+
+const rendererFrames = [
+  Array.from({ length: 36 }, (_, index) => `Transcript row ${index + 1}`)
+    .concat('Working 0s', '> Ask Book')
+    .join('\n') + '\n',
+  ...Array.from(
+    { length: 30 },
+    (_, tick) =>
+      Array.from({ length: 36 }, (_, index) => `Transcript row ${index + 1}`)
+        .concat(`Working ${tick + 1}s`, '> Ask Book')
+        .join('\n') + '\n',
+  ),
+];
+const safeRenderer = await measureRenderer(rendererFrames, false);
+const incrementalRenderer = await measureRenderer(rendererFrames, true);
+const byteReduction = 1 - incrementalRenderer.bytes / Math.max(1, safeRenderer.bytes);
+console.log(
+  `renderer bytes: safe ${safeRenderer.bytes}, incremental ${incrementalRenderer.bytes} ` +
+    `(${(byteReduction * 100).toFixed(1)}% reduction); writes: safe ${safeRenderer.writes}, ` +
+    `incremental ${incrementalRenderer.writes}; convergence: ` +
+    `${safeRenderer.convergenceMs.toFixed(2)}ms/${incrementalRenderer.convergenceMs.toFixed(2)}ms.`,
+);
+if (safeRenderer.screen.join('\n') !== incrementalRenderer.screen.join('\n')) {
+  console.error('Safe and incremental renderer final terminal screens differ.');
+  process.exitCode = 1;
+}
+if (byteReduction < INCREMENTAL_BYTE_REDUCTION_BUDGET) {
+  console.error(
+    `Incremental renderer reduced output by ${(byteReduction * 100).toFixed(1)}%, below the ` +
+      `${INCREMENTAL_BYTE_REDUCTION_BUDGET * 100}% budget.`,
+  );
+  process.exitCode = 1;
+}
 
 const streamingView = render(
   <ThemeContext.Provider value={DEFAULT_THEME}>
