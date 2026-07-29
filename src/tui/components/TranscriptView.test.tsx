@@ -159,11 +159,20 @@ describe('TranscriptView', () => {
     expect(childRenderCount).toBe(1);
   });
 
-  it('scrolls imperatively without another React commit once browsing history', async () => {
+  it('routes each scroll update through React without re-rendering transcript children', async () => {
     let commitCount = 0;
+    let childRenderCount = 0;
+    function CountingRows() {
+      childRenderCount++;
+      return <Rows labels={['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']} />;
+    }
     const app = render(
       <Profiler id="transcript" onRender={() => commitCount++}>
-        {view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'])}
+        <ThemeContext.Provider value={DEFAULT_THEME}>
+          <TranscriptView height={5} width={20}>
+            <CountingRows />
+          </TranscriptView>
+        </ThemeContext.Provider>
       </Profiler>,
     );
 
@@ -174,7 +183,8 @@ describe('TranscriptView', () => {
 
     act(() => app.stdin.write('\x1b[<64;10;5M'));
     await flushWheelFrame();
-    expect(commitCount).toBe(browsingCommitCount);
+    expect(commitCount).toBeGreaterThan(browsingCommitCount);
+    expect(childRenderCount).toBe(1);
     expect(frameLines(app.lastFrame())).toContain('D');
   });
 

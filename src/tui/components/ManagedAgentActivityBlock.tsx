@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import { useEffect, useState } from 'react';
+import { useUiClock } from '../ui-clock.js';
 import type { ManagedAgentTrace, ManagedAgentToolUse } from '../managed-agent-transcript.js';
 import { formatDuration, deriveToolPresentation } from '../tool-presentation.js';
 import { useTheme } from '../theme.js';
@@ -10,13 +10,9 @@ const MAX_VISIBLE_TOOL_USES = 1;
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'stopped', 'interrupted']);
 
 function useCurrentTime(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [active]);
-  return now;
+  const tick = useUiClock('slow', active);
+  void tick;
+  return Date.now();
 }
 
 function statusGlyph(status: ManagedAgentToolUse['status'] | ManagedAgentTrace['status']): string {

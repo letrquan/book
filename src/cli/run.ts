@@ -21,7 +21,8 @@ import {
   DEFAULT_LOCAL_DATA_RETENTION_DAYS,
   getDebugLogPath,
 } from '../debug-log.js';
-import { installInkScrollRenderer } from '../tui/ink-scroll-renderer.js';
+import { installInkScrollRenderer } from './ink-scroll-renderer.js';
+import { resolveTuiRendererMode } from './tui-renderer-mode.js';
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
@@ -195,7 +196,11 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       ? () => {}
       : enterInteractiveScreen(process.stdout);
     try {
-      await installInkScrollRenderer();
+      const rendererMode = resolveTuiRendererMode(process.env.BOOK_TUI_RENDERER, {
+        isTTY: process.stdout.isTTY,
+        screenReader: config.accessibility.screenReader,
+      });
+      await installInkScrollRenderer(rendererMode === 'experimental-scroll');
       app = render(
         createElement(App, {
           config,
@@ -206,6 +211,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         {
           exitOnCtrlC: false,
           isScreenReaderEnabled: config.accessibility.screenReader,
+          incrementalRendering: rendererMode !== 'safe',
           maxFps: 60,
         },
       );

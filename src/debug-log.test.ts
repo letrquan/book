@@ -148,6 +148,20 @@ describe('debug logger output target', () => {
     expect(existsSync(`${logPath}.1`)).toBe(true);
   });
 
+  it('splits one oversized render event before writing it', async () => {
+    const logPath = join(tempDir(), 'render-oversized.log');
+    vi.stubEnv('BOOK_DEBUG_RENDER', '1');
+    vi.stubEnv('BOOK_DEBUG_FILE', logPath);
+    vi.stubEnv('BOOK_DEBUG_MAX_BYTES', '32');
+    setStderrIsTTY(true);
+
+    const { createRenderDebugLogger } = await import('./debug-log.js');
+    createRenderDebugLogger('render-oversized').event('render', { payload: 'x'.repeat(200) });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(statSync(logPath).size).toBeLessThanOrEqual(32);
+  });
+
   it('clears expired rotated logs while preserving the active log', async () => {
     const logPath = join(tempDir(), 'debug.log');
     writeFileSync(logPath, 'active');

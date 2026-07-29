@@ -6,6 +6,11 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Added terminal-screen regression coverage and made patched Ink incremental rendering the default
+  interactive mode through `BOOK_TUI_RENDERER`. The stable full-frame renderer remains available
+  as `BOOK_TUI_RENDERER=safe`, while active TUI animations share pausable clocks to reduce render
+  churn.
+
 - Persistent tool-use telemetry and a `book tool-stats` subcommand for measuring tool use across
   sessions. Each finalized tool call appends one JSON line to `~/.book/telemetry/tool-use.jsonl`
   (best-effort, off the hot path, size-rotated; captured at the final-status point so plan/user

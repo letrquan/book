@@ -199,7 +199,7 @@ describe('WorkingIndicator', () => {
     const initialWriteCount = view.frames.length;
 
     act(() => {
-      vi.advanceTimersByTime(80);
+      vi.advanceTimersByTime(100);
     });
 
     expect(view.lastFrame()).not.toBe(initialFrame);
