@@ -6,6 +6,7 @@ import type { CommandItem } from '../../commands/filter.js';
 import { truncateDisplay } from './word-wrap.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
+import { useDebugRender } from '../debug.js';
 
 const renderLog = createRenderDebugLogger('tui:cmdmenu');
 
@@ -115,9 +116,7 @@ export function CommandMenu({
   const hiddenAfter = Math.max(0, items.length - window.end);
   const hiddenTotal = hiddenBefore + hiddenAfter;
 
-  if (!visible) return null;
-
-  renderLog.event('render', {
+  useDebugRender(renderLog, {
     items: items.length,
     visible: visibleItems.length,
     selected: selIdx,
@@ -125,6 +124,8 @@ export function CommandMenu({
     hidden: hiddenTotal,
     filter: filterText || '(empty)',
   });
+
+  if (!visible) return null;
 
   const title = filterText
     ? truncateDisplay(`Commands matching “${filterText}”`, contentWidth)

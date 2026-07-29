@@ -7,6 +7,7 @@ import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
 import { modeColorToken, modeLabel } from '../mode-style.js';
 import { floatingFrameMetrics } from './chrome.js';
+import { useDebugRender } from '../debug.js';
 
 const renderLog = createRenderDebugLogger('tui:statusline');
 
@@ -87,7 +88,7 @@ export function StatusLine({
   const modeFlash = useTimedFlash(mode, 260, motionDisabled);
 
   const costEstimate = tokenCount > 0 ? (tokenCount / 1_000_000) * 5 : 0;
-  renderLog.event('render', {
+  useDebugRender(renderLog, {
     width,
     contentWidth,
     compact,

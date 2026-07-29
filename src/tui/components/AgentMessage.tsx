@@ -27,6 +27,7 @@ import {
 } from '../tool-presentation.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
 import { ManagedAgentActivityBlock } from './ManagedAgentActivityBlock.js';
+import { useDebugRender } from '../debug.js';
 
 const renderLog = createRenderDebugLogger('tui:agentmsg');
 
@@ -311,7 +312,7 @@ export function AgentMessageInner({
     : message.content;
   const displayContent = suppressDelegationNarration ? '' : rawDisplayContent;
 
-  renderLog.event('render', {
+  useDebugRender(renderLog, {
     id: message.id.slice(-8),
     streaming: isStreaming,
     contentLen: displayContent.length,
@@ -529,6 +530,51 @@ export function AgentMessageInner({
   );
 }
 
+function managedAgentTraceEqual(
+  left: ManagedAgentTrace | undefined,
+  right: ManagedAgentTrace | undefined,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  if (
+    left.agentId !== right.agentId ||
+    left.parentToolCallId !== right.parentToolCallId ||
+    left.profile !== right.profile ||
+    left.purpose !== right.purpose ||
+    left.status !== right.status ||
+    left.startedAt !== right.startedAt ||
+    left.finishedAt !== right.finishedAt ||
+    left.toolUses.length !== right.toolUses.length
+  ) {
+    return false;
+  }
+  return left.toolUses.every((tool, index) => {
+    const candidate = right.toolUses[index];
+    return (
+      candidate !== undefined &&
+      tool.id === candidate.id &&
+      tool.call === candidate.call &&
+      tool.result === candidate.result &&
+      tool.status === candidate.status &&
+      tool.startedAt === candidate.startedAt &&
+      tool.finishedAt === candidate.finishedAt
+    );
+  });
+}
+
+export function managedAgentTracesEqualForMessage(
+  message: Message,
+  left: ReadonlyMap<string, ManagedAgentTrace> | undefined,
+  right: ReadonlyMap<string, ManagedAgentTrace> | undefined,
+): boolean {
+  if (left === right) return true;
+  for (const call of message.toolCalls ?? []) {
+    if (call.name !== 'AgentSpawn') continue;
+    if (!managedAgentTraceEqual(left?.get(call.id), right?.get(call.id))) return false;
+  }
+  return true;
+}
+
 /**
  * Memoized agent message with a custom comparator.
  *
@@ -540,7 +586,6 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
   // Fast path: same references for the most common props.
   if (
     prev.isStreaming === next.isStreaming &&
-    prev.managedAgentTraces === next.managedAgentTraces &&
     prev.expandedToolCallId === next.expandedToolCallId &&
     prev.transcriptMode === next.transcriptMode &&
     prev.automaticToolCallId === next.automaticToolCallId &&
@@ -567,7 +612,8 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
       pm.localCommand === nm.localCommand &&
       pm.toolCalls === nm.toolCalls &&
       pm.toolResults === nm.toolResults &&
-      pm.nestedToolInvocations === nm.nestedToolInvocations
+      pm.nestedToolInvocations === nm.nestedToolInvocations &&
+      managedAgentTracesEqualForMessage(nm, prev.managedAgentTraces, next.managedAgentTraces)
     ) {
       return true; // skip re-render
     }

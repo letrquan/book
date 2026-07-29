@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { getRetryLabel, trimPartialClosingFences } from './AgentMessage.js';
+import {
+  getRetryLabel,
+  managedAgentTracesEqualForMessage,
+  trimPartialClosingFences,
+} from './AgentMessage.js';
+import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
+import type { Message } from '../../types/messages.js';
 
 /**
  * Tests for AgentMessage retry rendering logic.
@@ -135,5 +141,45 @@ describe('trimPartialClosingFences', () => {
     expect(trimPartialClosingFences(input)).toBe(
       '```md\nouter start\n```js\ninner code\n```\nouter end\n',
     );
+  });
+});
+
+describe('managed-agent render invalidation', () => {
+  const message: Message = {
+    id: 'assistant-1',
+    role: 'assistant',
+    content: 'delegated',
+    includeInContext: true,
+    timestamp: 1,
+    toolCalls: [{ id: 'spawn-1', name: 'AgentSpawn', arguments: {} }],
+  };
+
+  function trace(agentId: string): ManagedAgentTrace {
+    return {
+      agentId,
+      parentToolCallId: 'spawn-1',
+      profile: 'explorer',
+      purpose: 'Inspect the repository',
+      status: 'running',
+      startedAt: 1,
+      toolUses: [],
+    };
+  }
+
+  it('ignores trace-map changes for messages without the changed spawn', () => {
+    const before = new Map([['other-spawn', trace('agent-2')]]);
+    const after = new Map([
+      ['other-spawn', trace('agent-2')],
+      ['unrelated', trace('agent-3')],
+    ]);
+
+    expect(managedAgentTracesEqualForMessage(message, before, after)).toBe(true);
+  });
+
+  it('rerenders when the message-owned managed trace changes', () => {
+    const before = new Map([['spawn-1', trace('agent-1')]]);
+    const after = new Map([['spawn-1', { ...trace('agent-1'), status: 'completed' as const }]]);
+
+    expect(managedAgentTracesEqualForMessage(message, before, after)).toBe(false);
   });
 });

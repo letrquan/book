@@ -1,11 +1,15 @@
 import { Box, Text } from 'ink';
 import { act } from 'react';
+import { useState } from 'react';
 import { render } from 'ink-testing-library';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { TranscriptView } from './TranscriptView.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
+import { MarkdownBlock } from './MarkdownBlock.js';
+import { ChatPanel } from './ChatPanel.js';
 import { toolSuccess } from '../../tools/result.js';
+import type { Message } from '../../types/messages.js';
 
 function Rows({ labels }: { labels: string[] }) {
   return (
@@ -43,9 +47,11 @@ function view(
 
 const frameLines = (frame: string | undefined) => (frame ?? '').split('\n').filter(Boolean);
 
-afterEach(() => {
-  vi.useRealTimers();
-});
+async function flushWheelFrame(): Promise<void> {
+  await act(async () => {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+}
 
 describe('TranscriptView', () => {
   it('clips to the latest rendered rows initially', () => {
@@ -68,87 +74,134 @@ describe('TranscriptView', () => {
     expect(frameLines(app.lastFrame())).toEqual(['C', 'D', 'E', 'F']);
   });
 
-  it('scrolls with SGR mouse wheel reports', () => {
-    vi.useFakeTimers();
+  it('scrolls three rows per SGR mouse wheel report', async () => {
     const app = render(view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']));
 
     act(() => app.stdin.write('\x1b[<64;10;5M'));
+    await flushWheelFrame();
     app.rerender(view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']));
     const older = frameLines(app.lastFrame());
     expect(older.some((line) => line.includes('browsing history'))).toBe(true);
-    expect(older).toContain('C');
+    expect(older).toContain('B');
     expect(older).not.toContain('H');
 
     act(() => app.stdin.write('\x1b[<65;10;5M'));
-    act(() => {
-      vi.advanceTimersByTime(16);
-    });
+    await flushWheelFrame();
     app.rerender(view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']));
     expect(frameLines(app.lastFrame())).toEqual(['E', 'F', 'G', 'H']);
   });
 
-  it('batches rapid wheel reports to one update per render frame', () => {
-    vi.useFakeTimers();
+  it('coalesces rapid wheel reports without dropping a terminal input chunk', async () => {
     const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
     const app = render(view(labels));
 
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
-    expect(frameLines(app.lastFrame())).toContain('E');
-
     act(() => {
-      app.stdin.write('\x1b[<64;10;5M');
-      app.stdin.write('\x1b[<64;10;5M');
+      app.stdin.write('\x1b[<64;10;5M\x1b[<64;10;5M\x1b[<64;10;5M');
     });
-    expect(frameLines(app.lastFrame())).toContain('E');
-
-    act(() => {
-      vi.advanceTimersByTime(16);
-    });
+    await flushWheelFrame();
     expect(frameLines(app.lastFrame())).toContain('A');
   });
 
-  it('preserves queued wheel rows when the tool callback changes', () => {
-    vi.useFakeTimers();
+  it('coalesces separate wheel chunks in the same event-loop turn', async () => {
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const app = render(view(labels));
+
+    act(() => {
+      app.stdin.write('\x1b[<64;10;5M');
+      app.stdin.write('\x1b[<64;10;5M');
+    });
+    expect(frameLines(app.lastFrame())).toEqual(['G', 'H', 'I', 'J']);
+    await flushWheelFrame();
+    expect(frameLines(app.lastFrame())).toContain('A');
+  });
+
+  it('does not re-render transcript children for scroll-only updates', async () => {
+    let childRenderCount = 0;
+    function CountingRows() {
+      childRenderCount++;
+      return <Rows labels={['A', 'B', 'C', 'D', 'E', 'F']} />;
+    }
+    const app = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={5} width={20}>
+          <CountingRows />
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+    expect(childRenderCount).toBe(1);
+
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    await flushWheelFrame();
+    expect(childRenderCount).toBe(1);
+  });
+
+  it('reconciles content height after a descendant-local markdown update', async () => {
+    let grow: (() => void) | undefined;
+    function GrowingMarkdown() {
+      const [content, setContent] = useState('initial line');
+      grow = () =>
+        setContent(Array.from({ length: 12 }, (_, index) => `grown line ${index + 1}`).join('\n'));
+      return <MarkdownBlock content={content} terminalWidth={20} />;
+    }
+
+    const app = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={5} width={20}>
+          <GrowingMarkdown />
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+    expect(grow).toBeDefined();
+
+    act(() => grow?.());
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 80));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    });
+
+    expect(frameLines(app.lastFrame())).toContain('grown line 12');
+  });
+
+  it('cancels opposite wheel reports within the same render turn', async () => {
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const app = render(view(labels));
+
+    act(() => {
+      app.stdin.write('\x1b[<64;10;5M');
+      app.stdin.write('\x1b[<65;10;5M');
+    });
+    await flushWheelFrame();
+    expect(frameLines(app.lastFrame())).toEqual(['G', 'H', 'I', 'J']);
+  });
+
+  it('keeps queued wheel scrolling stable when the tool callback changes', async () => {
     const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
     const app = render(view(labels, { onToggleTool: vi.fn() }));
 
     act(() => app.stdin.write('\x1b[<64;10;5M'));
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
     app.rerender(view(labels, { onToggleTool: vi.fn() }));
-
-    act(() => {
-      vi.advanceTimersByTime(16);
-    });
-    expect(frameLines(app.lastFrame())).toContain('C');
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    await flushWheelFrame();
+    expect(frameLines(app.lastFrame())).toContain('A');
   });
 
-  it('cancels queued wheel rows when follow-bottom is requested', () => {
-    vi.useFakeTimers();
+  it('cancels queued wheel rows when follow-bottom is requested', async () => {
     const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
     const app = render(view(labels, { followRequestKey: 0 }));
 
     act(() => app.stdin.write('\x1b[<64;10;5M'));
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
     app.rerender(view(labels, { followRequestKey: 1 }));
-    act(() => {
-      vi.advanceTimersByTime(16);
-    });
-
+    await flushWheelFrame();
     expect(frameLines(app.lastFrame())).toEqual(['G', 'H', 'I', 'J']);
   });
 
-  it('cancels queued wheel rows before keyboard navigation', () => {
-    vi.useFakeTimers();
+  it('cancels queued wheel rows before keyboard navigation', async () => {
     const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
     const app = render(view(labels));
 
     act(() => app.stdin.write('\x1b[<64;10;5M'));
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
     act(() => app.stdin.write('\x1b[6~'));
-    act(() => {
-      vi.advanceTimersByTime(16);
-    });
-
+    await flushWheelFrame();
     expect(frameLines(app.lastFrame())).toEqual(['G', 'H', 'I', 'J']);
   });
 
@@ -221,5 +274,30 @@ describe('TranscriptView', () => {
     const app = render(view(['A', 'B', 'C', 'D', 'E', 'F'], { isActive: false }));
     act(() => app.stdin.write('[5~'));
     expect(frameLines(app.lastFrame())).toEqual(['C', 'D', 'E', 'F']);
+  });
+
+  it('loads bounded completed history before jumping to the transcript start', async () => {
+    const messages: Message[] = Array.from({ length: 200 }, (_, index) => ({
+      id: `message-${index}`,
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: `entry-${index}`,
+      includeInContext: true,
+      timestamp: index,
+    }));
+    const app = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={8} width={80}>
+          <ChatPanel messages={messages} terminalWidth={80} terminalHeight={24} reducedMotion />
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+
+    expect(app.lastFrame()).not.toContain('entry-0');
+    await act(async () => {
+      app.stdin.write('\x1b[1;5H');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    });
+
+    expect(app.lastFrame()).toContain('entry-0');
   });
 });

@@ -360,12 +360,40 @@ const WIDE_RANGES: [number, number][] = [
   [0x3299, 0x3299], // Circled ideograph secret
 ];
 
+function mergeRanges(ranges: [number, number][]): [number, number][] {
+  const sorted = [...ranges].sort((left, right) => left[0] - right[0]);
+  const merged: [number, number][] = [];
+  for (const [low, high] of sorted) {
+    const previous = merged[merged.length - 1];
+    if (!previous || low > previous[1] + 1) {
+      merged.push([low, high]);
+    } else {
+      previous[1] = Math.max(previous[1], high);
+    }
+  }
+  return merged;
+}
+
+const SORTED_ZERO_WIDTH_RANGES = mergeRanges(ZERO_WIDTH_RANGES);
+const SORTED_WIDE_RANGES = mergeRanges(WIDE_RANGES);
+const ASCII_PRINTABLE = /^[\x20-\x7e]*$/;
+
 /**
  * Check if a code point falls within any range in the given list.
  */
 function inRanges(cp: number, ranges: [number, number][]): boolean {
-  for (const [lo, hi] of ranges) {
-    if (cp >= lo && cp <= hi) return true;
+  let low = 0;
+  let high = ranges.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >>> 1;
+    const [rangeLow, rangeHigh] = ranges[middle]!;
+    if (cp < rangeLow) {
+      high = middle - 1;
+    } else if (cp > rangeHigh) {
+      low = middle + 1;
+    } else {
+      return true;
+    }
   }
   return false;
 }
@@ -380,12 +408,15 @@ function inRanges(cp: number, ranges: [number, number][]): boolean {
  * ANSI escape sequences are stripped before measurement.
  */
 export function displayWidth(text: string): number {
+  const plain = stripAnsi(text);
+  if (ASCII_PRINTABLE.test(plain)) return plain.length;
+
   let width = 0;
-  for (const ch of stripAnsi(text)) {
+  for (const ch of plain) {
     const cp = ch.codePointAt(0) ?? 0;
-    if (inRanges(cp, ZERO_WIDTH_RANGES)) {
+    if (inRanges(cp, SORTED_ZERO_WIDTH_RANGES)) {
       // width += 0
-    } else if (inRanges(cp, WIDE_RANGES)) {
+    } else if (inRanges(cp, SORTED_WIDE_RANGES)) {
       width += 2;
     } else {
       width += 1;

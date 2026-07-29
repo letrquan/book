@@ -14,6 +14,7 @@ export interface SgrMouseEvent {
 }
 
 const SGR_MOUSE_PATTERN = /^\x1b\[<(\d+);(\d+);(\d+)(M|m)$/;
+const SGR_MOUSE_SEQUENCE_PATTERN = /\x1b\[<\d+;\d+;\d+[Mm]/g;
 
 /** Parse an SGR mouse report into a typed, 1-based terminal event. */
 export function parseSgrMouseEvent(input: string): SgrMouseEvent | null {
@@ -50,6 +51,16 @@ export function parseSgrMouseEvent(input: string): SgrMouseEvent | null {
   const type: SgrMouseEventType =
     match[4] === 'm' ? 'release' : isMove ? 'move' : buttonCode === 3 ? 'release' : 'press';
   return { type, button, x, y, shift, alt, ctrl };
+}
+
+/** Parse every complete SGR mouse report from a terminal input chunk. */
+export function parseSgrMouseEvents(input: string): SgrMouseEvent[] {
+  const events: SgrMouseEvent[] = [];
+  for (const match of input.matchAll(SGR_MOUSE_SEQUENCE_PATTERN)) {
+    const event = parseSgrMouseEvent(match[0]);
+    if (event) events.push(event);
+  }
+  return events;
 }
 
 /**

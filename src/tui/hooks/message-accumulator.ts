@@ -146,16 +146,22 @@ export function createMessageAccumulator(
       messagesRef.current = next;
       return next;
     });
-    const renderPressure = performance.now() - startedAt;
     const transcriptPressure = Math.floor(messagesRef.current.length / 250) * 8;
-    state.intervalMs = Math.min(
-      48,
-      Math.max(
-        flushIntervalMs,
-        Math.ceil(renderPressure * 1.5),
-        flushIntervalMs + transcriptPressure,
-      ),
-    );
+    // React/Ink commits after the state setter returns. Sample on the next
+    // macrotask so the cadence reflects actual render pressure, not just the
+    // time spent constructing the next message array.
+    setImmediate(() => {
+      if (state.stopped) return;
+      const renderPressure = performance.now() - startedAt;
+      state.intervalMs = Math.min(
+        48,
+        Math.max(
+          flushIntervalMs,
+          Math.ceil(renderPressure * 1.5),
+          flushIntervalMs + transcriptPressure,
+        ),
+      );
+    });
   }
 
   function addText(content: string): void {

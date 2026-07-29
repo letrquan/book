@@ -1,8 +1,9 @@
 import { Text, Box } from 'ink';
-import React, { useMemo, useRef, useState, useEffect } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState, useEffect } from 'react';
 import { marked, Tokens, Token } from 'marked';
 import { useTheme } from '../theme.js';
 import { useDensity } from '../density.js';
+import { useTranscriptLayoutChange } from '../transcript-layout.js';
 import { wordWrap } from './word-wrap.js';
 import { highlightCode, type StyledLine } from './syntax-highlight.js';
 import {
@@ -75,12 +76,15 @@ export function wrapParagraphLines(rawText: string, terminalWidth: number): stri
  * edge deferred too, pass an explicit `startPending` flag. Ceiling: none —
  * this is the standard throttle shape.
  */
-export function useThrottledValue<T>(next: T, intervalMs: number): T {
+export function useThrottledValue<T>(next: T, intervalMs: number, onEmit?: () => void): T {
   const [value, setValue] = useState<T>(next);
   const lastEmitRef = useRef<number | null>(null);
   const mountedRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nextRef = useRef<T>(next);
+  const onEmitRef = useRef(onEmit);
+  const notifiedValueRef = useRef(value);
+  onEmitRef.current = onEmit;
 
   useEffect(() => {
     nextRef.current = next;
@@ -115,6 +119,12 @@ export function useThrottledValue<T>(next: T, intervalMs: number): T {
       }
     };
   }, []);
+
+  useLayoutEffect(() => {
+    if (value === notifiedValueRef.current) return;
+    notifiedValueRef.current = value;
+    onEmitRef.current?.();
+  }, [value]);
 
   return value;
 }
@@ -249,33 +259,12 @@ function inlineRunsFromTokens(
   return runs;
 }
 
-function sliceRunsForLine(runs: InlineRun[], line: string, offset: number): InlineRun[] {
-  const lineRuns: InlineRun[] = [];
-  let remaining = line.length;
-  let cursor = 0;
-
-  for (const run of runs) {
-    const runStart = cursor;
-    const runEnd = cursor + run.text.length;
-    const lineStart = offset;
-    const lineEnd = offset + line.length;
-    const overlapStart = Math.max(runStart, lineStart);
-    const overlapEnd = Math.min(runEnd, lineEnd);
-    if (overlapStart < overlapEnd) {
-      appendRun(lineRuns, run.text.slice(overlapStart - runStart, overlapEnd - runStart), run);
-      remaining -= overlapEnd - overlapStart;
-      if (remaining <= 0) break;
-    }
-    cursor = runEnd;
-  }
-
-  return lineRuns;
-}
-
 function wrappedInlineRuns(runs: InlineRun[], terminalWidth: number): InlineRun[][] {
   const rawText = runs.map((run) => run.text).join('');
   const lines = wrapParagraphLines(rawText, terminalWidth);
   let searchOffset = 0;
+  let runIndex = 0;
+  let runOffset = 0;
   return lines.map((line) => {
     // wordWrap may collapse spaces or replace an original newline with a visual
     // line break. Locate each rendered slice in the source instead of assuming
@@ -283,10 +272,39 @@ function wrappedInlineRuns(runs: InlineRun[], terminalWidth: number): InlineRun[
     // later lines can lose their final character.
     const locatedOffset = rawText.indexOf(line, searchOffset);
     const lineOffset = locatedOffset === -1 ? searchOffset : locatedOffset;
-    const lineRuns = sliceRunsForLine(runs, line, lineOffset);
+    const lineRuns: InlineRun[] = [];
+    while (runIndex < runs.length && runOffset + runs[runIndex]!.text.length <= lineOffset) {
+      runOffset += runs[runIndex]!.text.length;
+      runIndex++;
+    }
+
+    let localIndex = runIndex;
+    let localOffset = runOffset;
+    const lineEnd = lineOffset + line.length;
+    while (localIndex < runs.length && localOffset < lineEnd) {
+      const run = runs[localIndex]!;
+      const overlapStart = Math.max(localOffset, lineOffset);
+      const overlapEnd = Math.min(localOffset + run.text.length, lineEnd);
+      if (overlapStart < overlapEnd) {
+        appendRun(
+          lineRuns,
+          run.text.slice(overlapStart - localOffset, overlapEnd - localOffset),
+          run,
+        );
+      }
+      localOffset += run.text.length;
+      localIndex++;
+    }
     searchOffset = lineOffset + line.length;
     return lineRuns;
   });
+}
+
+export function streamingMarkdownWindow(content: string, terminalWidth?: number): string {
+  const width = Math.max(20, Math.floor(terminalWidth ?? 80));
+  const maxCharacters = width * 80;
+  if (content.length <= maxCharacters) return content;
+  return `… earlier response hidden while streaming\n\n${content.slice(-maxCharacters)}`;
 }
 
 function InlineRuns({ runs }: { runs: InlineRun[] }) {
@@ -661,18 +679,24 @@ function renderBlockToken(
  * block-level token to Ink Box/Text components with appropriate styling
  * from the current theme (mdCodeBackground, mdHeading, mdLink, etc.).
  */
-export function MarkdownBlock({ content, terminalWidth, isStreaming = false }: MarkdownBlockProps) {
-  const theme = useTheme();
-  const density = useDensity();
+interface MarkdownRendererProps {
+  content: string;
+  terminalWidth?: number;
+  isStreaming: boolean;
+  theme: ReturnType<typeof useTheme>;
+  density: ReturnType<typeof useDensity>;
+}
 
-  const parsedContent = useThrottledValue(content, 60);
-  const effectiveContent = parsedContent || content;
-
-  if (!effectiveContent) return null;
-
+const MarkdownRenderer = React.memo(function MarkdownRenderer({
+  content,
+  terminalWidth,
+  isStreaming,
+  theme,
+  density,
+}: MarkdownRendererProps) {
   const tokens = useMemo(
-    () => marked.lexer(effectiveContent).filter((token) => token.type !== 'space'),
-    [effectiveContent],
+    () => marked.lexer(content).filter((token) => token.type !== 'space'),
+    [content],
   );
 
   return (
@@ -691,5 +715,60 @@ export function MarkdownBlock({ content, terminalWidth, isStreaming = false }: M
         );
       })}
     </Box>
+  );
+});
+
+const StreamingMarkdownRenderer = React.memo(function StreamingMarkdownRenderer({
+  content,
+  terminalWidth,
+  color,
+}: {
+  content: string;
+  terminalWidth?: number;
+  color?: string;
+}) {
+  const display = useMemo(
+    () => (terminalWidth ? wordWrap(content, terminalWidth) : content),
+    [content, terminalWidth],
+  );
+  return (
+    <Box flexDirection="column">
+      <Text color={color} wrap="truncate">
+        {display}
+      </Text>
+    </Box>
+  );
+});
+
+export function MarkdownBlock({ content, terminalWidth, isStreaming = false }: MarkdownBlockProps) {
+  const theme = useTheme();
+  const density = useDensity();
+  const notifyLayoutChange = useTranscriptLayoutChange();
+
+  const parsedContent = useThrottledValue(content, 60, notifyLayoutChange ?? undefined);
+  // Completed content should never wait for the streaming throttle. This also
+  // ensures the final render highlights the complete response immediately.
+  const effectiveContent = isStreaming ? parsedContent || content : content;
+
+  if (!effectiveContent) return null;
+
+  if (isStreaming) {
+    return (
+      <StreamingMarkdownRenderer
+        content={streamingMarkdownWindow(effectiveContent, terminalWidth)}
+        terminalWidth={terminalWidth}
+        color={theme.text}
+      />
+    );
+  }
+
+  return (
+    <MarkdownRenderer
+      content={effectiveContent}
+      terminalWidth={terminalWidth}
+      isStreaming={false}
+      theme={theme}
+      density={density}
+    />
   );
 }

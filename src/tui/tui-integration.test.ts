@@ -359,6 +359,18 @@ describe('TUI keyboard input', () => {
     expect(output).not.toContain('[<65;60;20M');
   }, 20_000);
 
+  it('wheel scrolling reaches transcript history promptly', async () => {
+    session = await startAndWait();
+    await submitInteractive(session, '/help');
+    await session.waitFor('Slash Commands', 5000);
+
+    const startedAt = performance.now();
+    session.sendKey(keys.wheelUp);
+    await session.waitFor('browsing history', 2000);
+
+    expect(performance.now() - startedAt).toBeLessThan(500);
+  }, 20_000);
+
   it('Home / End keys do not crash', async () => {
     session = await startAndWait();
     session.sendKey(keys.home);

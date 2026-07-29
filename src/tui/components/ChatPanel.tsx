@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import { useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTheme } from '../theme.js';
 import type { CompactBoundary } from '../../types/sessions.js';
 import type { Message } from '../../types/messages.js';
@@ -9,23 +9,26 @@ import type {
   PendingPermissionRequest,
   PendingPlanApprovalRequest,
 } from '../../session/agent-interactions.js';
-import { AgentMessage } from './AgentMessage.js';
+import { AgentMessage, managedAgentTracesEqualForMessage } from './AgentMessage.js';
 import { UserMessage } from './UserMessage.js';
 import { WelcomeScreen } from './WelcomeScreen.js';
 import { createRenderDebugLogger, createUiDebugLogger } from '../../debug-log.js';
-import { useDebugMount } from '../debug.js';
+import { useDebugMount, useDebugRender } from '../debug.js';
 import { useDensity } from '../density.js';
 import { mergeAssistantMessages } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
 import type { TranscriptMode } from '../tool-presentation.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
 import { truncateDisplay } from './word-wrap.js';
+import { useTranscriptHistoryLoader } from '../transcript-layout.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
 const EMPTY_BOUNDARIES: CompactBoundary[] = [];
 const STREAMING_TIMELINE_MIN_WINDOW = 16;
 const STREAMING_TIMELINE_MAX_WINDOW = 64;
+const COMPLETED_TIMELINE_MIN_WINDOW = 80;
+const COMPLETED_TIMELINE_MAX_WINDOW = 192;
 
 export function getStreamingTimelineWindow(terminalHeight?: number): number {
   const height = Math.max(8, Math.floor(terminalHeight ?? 40));
@@ -34,6 +37,14 @@ export function getStreamingTimelineWindow(terminalHeight?: number): number {
   return Math.min(
     STREAMING_TIMELINE_MAX_WINDOW,
     Math.max(STREAMING_TIMELINE_MIN_WINDOW, Math.ceil(height * 1.25)),
+  );
+}
+
+export function getCompletedTimelineWindow(terminalHeight?: number): number {
+  const height = Math.max(8, Math.floor(terminalHeight ?? 40));
+  return Math.min(
+    COMPLETED_TIMELINE_MAX_WINDOW,
+    Math.max(COMPLETED_TIMELINE_MIN_WINDOW, Math.ceil(height * 3)),
   );
 }
 
@@ -96,7 +107,7 @@ interface ChatPanelProps {
 }
 
 /** Dynamically renders transcript content. TranscriptView owns clipping and navigation. */
-export function ChatPanel({
+export function ChatPanelInner({
   messages,
   managedAgentTraces,
   compactBoundaries = EMPTY_BOUNDARIES,
@@ -125,15 +136,38 @@ export function ChatPanel({
   const density = useDensity();
   useDebugMount(uiLog, { model, mode, commandCount, skillCount });
   const timeline = useIncrementalTimeline(messages, compactBoundaries, streamingMessageId);
-  const hiddenTimelineEntries = streamingMessageId
-    ? Math.max(0, timeline.length - getStreamingTimelineWindow(terminalHeight))
-    : 0;
+  const completedWindow = getCompletedTimelineWindow(terminalHeight);
+  const [historyWindowSize, setHistoryWindowSize] = useState(completedWindow);
+  const previousTimelineLengthRef = useRef(timeline.length);
+
+  useEffect(() => {
+    if (timeline.length < previousTimelineLengthRef.current) {
+      setHistoryWindowSize(completedWindow);
+    }
+    previousTimelineLengthRef.current = timeline.length;
+  }, [completedWindow, timeline.length]);
+
+  const activeWindowSize = streamingMessageId
+    ? getStreamingTimelineWindow(terminalHeight)
+    : historyWindowSize;
+  const hiddenTimelineEntries = Math.max(0, timeline.length - activeWindowSize);
   const visibleTimeline =
     hiddenTimelineEntries > 0 ? timeline.slice(hiddenTimelineEntries) : timeline;
+  const loadOlderHistory = useCallback(
+    (request: 'page' | 'all') => {
+      if (streamingMessageId || hiddenTimelineEntries === 0) return false;
+      setHistoryWindowSize((current) =>
+        request === 'all' ? timeline.length : Math.min(timeline.length, current + completedWindow),
+      );
+      return true;
+    },
+    [completedWindow, hiddenTimelineEntries, streamingMessageId, timeline.length],
+  );
+  useTranscriptHistoryLoader(loadOlderHistory);
   const selectedToolCallId =
     expandedToolCallId === undefined ? selectExpandedToolId(messages) : expandedToolCallId;
 
-  renderLog.event('render', {
+  useDebugRender(renderLog, {
     total: timeline.length,
     active: streamingMessageId?.slice(-8) ?? null,
     isEmpty: timeline.length === 0,
@@ -164,7 +198,8 @@ export function ChatPanel({
       {hiddenTimelineEntries > 0 ? (
         <Box marginLeft={2} marginBottom={density === 'tight' ? 0 : 1}>
           <Text dimColor>
-            {hiddenTimelineEntries} older transcript entries hidden while streaming
+            {hiddenTimelineEntries} older transcript entries hidden
+            {streamingMessageId ? ' while streaming' : ' · scroll to the top to load more'}
           </Text>
         </Box>
       ) : null}
@@ -244,6 +279,45 @@ export function ChatPanel({
     </Box>
   );
 }
+
+export const ChatPanel = React.memo(ChatPanelInner, (previous, next) => {
+  if (
+    previous.messages !== next.messages ||
+    previous.compactBoundaries !== next.compactBoundaries ||
+    previous.streamingMessageId !== next.streamingMessageId ||
+    previous.pendingPermission !== next.pendingPermission ||
+    previous.expandedToolCallId !== next.expandedToolCallId ||
+    previous.transcriptMode !== next.transcriptMode ||
+    previous.automaticToolCallId !== next.automaticToolCallId ||
+    previous.toolExpansionOverrides !== next.toolExpansionOverrides ||
+    previous.reducedMotion !== next.reducedMotion ||
+    previous.screenReader !== next.screenReader ||
+    previous.terminalWidth !== next.terminalWidth ||
+    previous.terminalHeight !== next.terminalHeight ||
+    previous.workspace !== next.workspace ||
+    previous.model !== next.model ||
+    previous.mode !== next.mode ||
+    previous.commandCount !== next.commandCount ||
+    previous.skillCount !== next.skillCount ||
+    previous.retryPhase !== next.retryPhase ||
+    previous.showAllToolOutput !== next.showAllToolOutput ||
+    previous.showAllToolOutputIds !== next.showAllToolOutputIds ||
+    previous.retryAttempt !== next.retryAttempt ||
+    previous.retryMax !== next.retryMax ||
+    previous.retryCountdownMs !== next.retryCountdownMs
+  ) {
+    return false;
+  }
+
+  if (previous.managedAgentTraces === next.managedAgentTraces) return true;
+  return previous.messages.every((message) =>
+    managedAgentTracesEqualForMessage(
+      message,
+      previous.managedAgentTraces,
+      next.managedAgentTraces,
+    ),
+  );
+});
 
 interface TimelineCache {
   streamingMessageId?: string | null;

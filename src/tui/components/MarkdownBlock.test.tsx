@@ -4,7 +4,12 @@ import { Text } from 'ink';
 import React from 'react';
 import { ThemeContext } from '../theme.js';
 import { DEFAULT_THEME } from '../../types/theme.js';
-import { MarkdownBlock, useThrottledValue, wrapParagraphLines } from './MarkdownBlock.js';
+import {
+  MarkdownBlock,
+  streamingMarkdownWindow,
+  useThrottledValue,
+  wrapParagraphLines,
+} from './MarkdownBlock.js';
 import { displayWidth } from './word-wrap.js';
 
 function stripAnsi(value: string | undefined): string {
@@ -24,6 +29,15 @@ afterEach(() => {
 });
 
 describe('MarkdownBlock', () => {
+  it('bounds the live streaming tail while preserving the complete final content', () => {
+    const content = `prefix-marker ${'x'.repeat(8_000)} suffix-marker`;
+    const streaming = streamingMarkdownWindow(content, 80);
+
+    expect(streaming).toContain('earlier response hidden while streaming');
+    expect(streaming).not.toContain('prefix-marker');
+    expect(streaming).toContain('suffix-marker');
+  });
+
   it('renders empty content as nothing', () => {
     const view = render(withTheme(React.createElement(MarkdownBlock, { content: '' })));
     const output = frame(view.lastFrame);
@@ -410,6 +424,30 @@ describe('MarkdownBlock', () => {
     expect(frame(streaming.lastFrame)).toContain('const x = 1');
     expect(frame(done.lastFrame)).toContain('const x = 1');
   });
+
+  it('renders the complete content immediately when streaming finishes', () => {
+    const view = render(
+      withTheme(
+        React.createElement(MarkdownBlock, {
+          content: 'partial response',
+          terminalWidth: 40,
+          isStreaming: true,
+        }),
+      ),
+    );
+
+    view.rerender(
+      withTheme(
+        React.createElement(MarkdownBlock, {
+          content: 'final response with complete content',
+          terminalWidth: 40,
+          isStreaming: false,
+        }),
+      ),
+    );
+
+    expect(frame(view.lastFrame)).toContain('final response with complete content');
+  });
 });
 
 describe('useThrottledValue', () => {
@@ -418,7 +456,7 @@ describe('useThrottledValue', () => {
   // effects don't reliably flush on advanceTimersByTime), so only the
   // synchronous-first-frame guarantee is asserted here — the one the
   // MarkdownBlock render tests above depend on. The trailing path is exercised
-  // live by the streaming accumulator flush (16ms) → final onDone emit.
+  // live by the streaming accumulator flush (32ms) → final onDone emit.
   function Echo({ value, intervalMs }: { value: string; intervalMs: number }) {
     const throttled = useThrottledValue(value, intervalMs);
     return React.createElement(Text, null, throttled);

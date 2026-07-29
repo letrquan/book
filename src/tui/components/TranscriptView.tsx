@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  memo,
   useMemo,
   useRef,
   useState,
@@ -19,7 +20,12 @@ import {
   type TranscriptMetrics,
   type TranscriptScrollState,
 } from '../transcript-scroll.js';
-import { parseSgrMouseEvent } from '../mouse.js';
+import { parseSgrMouseEvents } from '../mouse.js';
+import {
+  TranscriptHistoryContext,
+  TranscriptLayoutContext,
+  type TranscriptHistoryLoader,
+} from '../transcript-layout.js';
 import { useTheme } from '../theme.js';
 import {
   ToolRowInteractionContext,
@@ -36,8 +42,7 @@ interface TranscriptViewProps {
 }
 
 const INITIAL_METRICS: TranscriptMetrics = { contentRows: 0, viewportRows: 1 };
-const MOUSE_WHEEL_ROWS = 2;
-const MOUSE_WHEEL_FRAME_MS = 16;
+const MOUSE_WHEEL_ROWS = 3;
 
 function getAbsolutePosition(node: DOMElement): { x: number; y: number } | undefined {
   let current: DOMElement | undefined = node;
@@ -51,6 +56,34 @@ function getAbsolutePosition(node: DOMElement): { x: number; y: number } | undef
   }
   return { x, y };
 }
+
+interface TranscriptContentProps {
+  children: ReactNode;
+  interactionRegistry: {
+    register: (registration: ToolSummaryRowRegistration) => () => void;
+  };
+  historyRegistry: {
+    register: (loader: TranscriptHistoryLoader) => () => void;
+  };
+  onLayoutChange: () => void;
+}
+
+const TranscriptContent = memo(function TranscriptContent({
+  children,
+  interactionRegistry,
+  historyRegistry,
+  onLayoutChange,
+}: TranscriptContentProps) {
+  return (
+    <TranscriptLayoutContext.Provider value={onLayoutChange}>
+      <TranscriptHistoryContext.Provider value={historyRegistry}>
+        <ToolRowInteractionContext.Provider value={interactionRegistry}>
+          {children}
+        </ToolRowInteractionContext.Provider>
+      </TranscriptHistoryContext.Provider>
+    </TranscriptLayoutContext.Provider>
+  );
+});
 
 export function TranscriptView({
   children,
@@ -69,12 +102,13 @@ export function TranscriptView({
   const previousContentRowsRef = useRef(0);
   const previousFollowRequestRef = useRef(followRequestKey);
   const pendingWheelRowsRef = useRef(0);
-  const wheelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastWheelFlushRef = useRef<number | null>(null);
+  const wheelImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
+  const layoutMeasureImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
   const onToggleToolRef = useRef(onToggleTool);
   const [scrollState, setScrollState] = useState(createTranscriptScrollState);
   const [hasNewOutput, setHasNewOutput] = useState(false);
   const toolRowsRef = useRef(new Map<string, ToolSummaryRowRegistration>());
+  const historyLoaderRef = useRef<TranscriptHistoryLoader | null>(null);
   const interactionRegistry = useMemo(
     () => ({
       register: (registration: ToolSummaryRowRegistration) => {
@@ -83,6 +117,17 @@ export function TranscriptView({
           if (toolRowsRef.current.get(registration.id) === registration) {
             toolRowsRef.current.delete(registration.id);
           }
+        };
+      },
+    }),
+    [],
+  );
+  const historyRegistry = useMemo(
+    () => ({
+      register: (loader: TranscriptHistoryLoader) => {
+        historyLoaderRef.current = loader;
+        return () => {
+          if (historyLoaderRef.current === loader) historyLoaderRef.current = null;
         };
       },
     }),
@@ -103,43 +148,31 @@ export function TranscriptView({
 
   const cancelWheelScroll = useCallback(() => {
     pendingWheelRowsRef.current = 0;
-    lastWheelFlushRef.current = null;
-    if (wheelTimerRef.current !== null) {
-      clearTimeout(wheelTimerRef.current);
-      wheelTimerRef.current = null;
+    if (wheelImmediateRef.current !== null) {
+      clearImmediate(wheelImmediateRef.current);
+      wheelImmediateRef.current = null;
     }
   }, []);
 
   const flushWheelScroll = useCallback(() => {
+    wheelImmediateRef.current = null;
     const rows = pendingWheelRowsRef.current;
     pendingWheelRowsRef.current = 0;
     if (rows === 0) return;
-    lastWheelFlushRef.current = Date.now();
     applyScrollState(scrollTranscriptBy(stateRef.current, metricsRef.current, rows));
   }, [applyScrollState]);
 
   const scheduleWheelScroll = useCallback(
     (rows: number) => {
       pendingWheelRowsRef.current += rows;
-      const now = Date.now();
-      const lastFlush = lastWheelFlushRef.current;
-      if (lastFlush === null || now - lastFlush >= MOUSE_WHEEL_FRAME_MS) {
-        flushWheelScroll();
-        return;
-      }
-      if (wheelTimerRef.current !== null) return;
-      wheelTimerRef.current = setTimeout(
-        () => {
-          wheelTimerRef.current = null;
-          flushWheelScroll();
-        },
-        MOUSE_WHEEL_FRAME_MS - (now - lastFlush),
-      );
+      if (wheelImmediateRef.current !== null) return;
+      // Coalesce terminal data bursts without adding a fixed frame delay.
+      wheelImmediateRef.current = setImmediate(flushWheelScroll);
     },
     [flushWheelScroll],
   );
 
-  useLayoutEffect(() => {
+  const measureTranscript = useCallback(() => {
     const viewportRows = viewportRef.current
       ? Math.max(1, Math.floor(measureElement(viewportRef.current).height))
       : Math.max(1, Math.floor(height ?? 1));
@@ -165,7 +198,34 @@ export function TranscriptView({
       metricsRef.current = nextMetrics;
       applyScrollState(reconcileTranscriptScroll(stateRef.current, nextMetrics));
     }
-  });
+  }, [applyScrollState, height]);
+
+  const cancelScheduledLayoutMeasure = useCallback(() => {
+    if (layoutMeasureImmediateRef.current !== null) {
+      clearImmediate(layoutMeasureImmediateRef.current);
+      layoutMeasureImmediateRef.current = null;
+    }
+  }, []);
+
+  const scheduleLayoutMeasure = useCallback(() => {
+    if (layoutMeasureImmediateRef.current !== null) return;
+    layoutMeasureImmediateRef.current = setImmediate(() => {
+      layoutMeasureImmediateRef.current = null;
+      measureTranscript();
+    });
+  }, [measureTranscript]);
+
+  useLayoutEffect(() => {
+    cancelScheduledLayoutMeasure();
+    measureTranscript();
+  }, [cancelScheduledLayoutMeasure, children, height, measureTranscript, width]);
+
+  useEffect(
+    () => () => {
+      cancelScheduledLayoutMeasure();
+    },
+    [cancelScheduledLayoutMeasure],
+  );
 
   useLayoutEffect(() => {
     if (previousFollowRequestRef.current === followRequestKey) return;
@@ -178,31 +238,38 @@ export function TranscriptView({
     if (!isActive) return;
 
     const handleMouseInput = (input: string) => {
-      const event = parseSgrMouseEvent(input);
-      if (!event) return;
-      if (event.type === 'wheel') {
-        const rows = event.button === 'wheel-up' ? -MOUSE_WHEEL_ROWS : MOUSE_WHEEL_ROWS;
-        scheduleWheelScroll(rows);
-        return;
-      }
-      const toggleTool = onToggleToolRef.current;
-      if (event.type !== 'press' || event.button !== 'left' || !toggleTool) return;
+      const events = parseSgrMouseEvents(input);
+      if (events.length === 0) return;
 
-      const x = event.x - 1;
-      const y = event.y - 1;
-      for (const registration of toolRowsRef.current.values()) {
-        if (!registration.expandable || !registration.element.current) continue;
-        const rect = measureElement(registration.element.current);
-        const position = getAbsolutePosition(registration.element.current);
-        if (
-          position &&
-          x >= position.x &&
-          x < position.x + rect.width &&
-          y >= position.y &&
-          y < position.y + rect.height
-        ) {
-          toggleTool(registration.id);
-          return;
+      for (const event of events) {
+        if (event.type === 'wheel') {
+          const rows = event.button === 'wheel-up' ? -MOUSE_WHEEL_ROWS : MOUSE_WHEEL_ROWS;
+          if (rows < 0 && stateRef.current.scrollTop === 0 && historyLoaderRef.current?.('page')) {
+            continue;
+          }
+          scheduleWheelScroll(rows);
+          continue;
+        }
+
+        const toggleTool = onToggleToolRef.current;
+        if (event.type !== 'press' || event.button !== 'left' || !toggleTool) continue;
+
+        const x = event.x - 1;
+        const y = event.y - 1;
+        for (const registration of toolRowsRef.current.values()) {
+          if (!registration.expandable || !registration.element.current) continue;
+          const rect = measureElement(registration.element.current);
+          const position = getAbsolutePosition(registration.element.current);
+          if (
+            position &&
+            x >= position.x &&
+            x < position.x + rect.width &&
+            y >= position.y &&
+            y < position.y + rect.height
+          ) {
+            toggleTool(registration.id);
+            break;
+          }
         }
       }
     };
@@ -221,6 +288,7 @@ export function TranscriptView({
       let next: TranscriptScrollState | undefined;
 
       if (key.pageUp) {
+        if (stateRef.current.scrollTop === 0 && historyLoaderRef.current?.('page')) return;
         next = scrollTranscriptBy(
           stateRef.current,
           metrics,
@@ -233,6 +301,7 @@ export function TranscriptView({
           getTranscriptPageRows(metrics.viewportRows),
         );
       } else if (key.ctrl && key.home) {
+        historyLoaderRef.current?.('all');
         next = scrollTranscriptToStart();
       } else if (key.ctrl && key.end) {
         next = scrollTranscriptToEnd(metrics);
@@ -283,9 +352,13 @@ export function TranscriptView({
           width={width}
           marginTop={-scrollState.scrollTop}
         >
-          <ToolRowInteractionContext.Provider value={interactionRegistry}>
+          <TranscriptContent
+            interactionRegistry={interactionRegistry}
+            historyRegistry={historyRegistry}
+            onLayoutChange={scheduleLayoutMeasure}
+          >
             {children}
-          </ToolRowInteractionContext.Provider>
+          </TranscriptContent>
         </Box>
       </Box>
     </Box>

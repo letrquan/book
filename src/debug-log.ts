@@ -133,6 +133,20 @@ function writeDebugLine(line: string): void {
   }
 }
 
+let pendingRenderDebug = '';
+let renderDebugFlush: ReturnType<typeof setImmediate> | null = null;
+
+function writeRenderDebugLine(line: string): void {
+  pendingRenderDebug += line;
+  if (renderDebugFlush !== null) return;
+  renderDebugFlush = setImmediate(() => {
+    renderDebugFlush = null;
+    const batch = pendingRenderDebug;
+    pendingRenderDebug = '';
+    if (batch) writeDebugLine(batch);
+  });
+}
+
 // Per-namespace monotonic event counter, used when a logger is created with
 // `createDebugLoggerWithCounter`. Useful for tracing event ordering across
 // concurrent sources (streaming flushes vs. user input).
@@ -239,20 +253,23 @@ function makePrefix(namespace: string, level: string): string {
 }
 
 /** Build a writing logger for an enabled namespace. */
-function buildLogger(namespace: string): DebugLogger {
+function buildLogger(
+  namespace: string,
+  write: (line: string) => void = writeDebugLine,
+): DebugLogger {
   return {
     debug: (...args: unknown[]) => {
-      writeDebugLine(`${makePrefix(namespace, 'DEBUG')} ${formatMessage(...args)}\n`);
+      write(`${makePrefix(namespace, 'DEBUG')} ${formatMessage(...args)}\n`);
     },
     info: (...args: unknown[]) => {
-      writeDebugLine(`${makePrefix(namespace, 'INFO')} ${formatMessage(...args)}\n`);
+      write(`${makePrefix(namespace, 'INFO')} ${formatMessage(...args)}\n`);
     },
     warn: (...args: unknown[]) => {
-      writeDebugLine(`${makePrefix(namespace, 'WARN')} ${formatMessage(...args)}\n`);
+      write(`${makePrefix(namespace, 'WARN')} ${formatMessage(...args)}\n`);
     },
     event: (event, meta) => {
       const suffix = meta && Object.keys(meta).length > 0 ? ` ${formatMeta(meta)}` : '';
-      writeDebugLine(`${makePrefix(namespace, 'DEBUG')} ${event}${suffix}\n`);
+      write(`${makePrefix(namespace, 'DEBUG')} ${event}${suffix}\n`);
     },
   };
 }
@@ -312,7 +329,7 @@ export function createUiDebugLogger(namespace: string): DebugLogger {
  */
 export function createRenderDebugLogger(namespace: string): DebugLogger {
   if (!RENDER_DEBUG_ENABLED) return NOOP_LOGGER;
-  return buildLogger(namespace);
+  return buildLogger(namespace, writeRenderDebugLine);
 }
 
 /**

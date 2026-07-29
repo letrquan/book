@@ -111,6 +111,24 @@ describe('debug logger output target', () => {
     expect(readFileSync(logPath, 'utf8')).toContain('b'.repeat(80));
   });
 
+  it('batches noisy render diagnostics off the current render turn', async () => {
+    const logPath = join(tempDir(), 'render-debug.log');
+    vi.stubEnv('BOOK_DEBUG_RENDER', '1');
+    vi.stubEnv('BOOK_DEBUG_FILE', logPath);
+    setStderrIsTTY(true);
+
+    const { createRenderDebugLogger } = await import('./debug-log.js');
+    const logger = createRenderDebugLogger('render-test');
+    logger.event('render', { count: 1 });
+    logger.event('render', { count: 2 });
+
+    expect(existsSync(logPath)).toBe(false);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const output = readFileSync(logPath, 'utf8');
+    expect(output).toContain('count=1');
+    expect(output).toContain('count=2');
+  });
+
   it('clears expired rotated logs while preserving the active log', async () => {
     const logPath = join(tempDir(), 'debug.log');
     writeFileSync(logPath, 'active');

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { DensityContext, type TuiDensity } from '../density.js';
-import { ChatPanel, getStreamingTimelineWindow } from './ChatPanel.js';
+import { ChatPanel, getCompletedTimelineWindow, getStreamingTimelineWindow } from './ChatPanel.js';
 import { AgentMessage } from './AgentMessage.js';
 import type { FileMutationSummary, ToolCall, ToolResult } from '../../types/tools.js';
 import type { Message } from '../../types/messages.js';
@@ -61,6 +61,28 @@ describe('ChatPanel Ink rendering', () => {
     expect(getStreamingTimelineWindow(24)).toBe(30);
     expect(getStreamingTimelineWindow(40)).toBe(50);
     expect(getStreamingTimelineWindow(100)).toBe(64);
+  });
+
+  it('keeps completed transcript hydration bounded until older history is requested', () => {
+    expect(getCompletedTimelineWindow(24)).toBe(80);
+    expect(getCompletedTimelineWindow(40)).toBe(120);
+    expect(getCompletedTimelineWindow(100)).toBe(192);
+  });
+
+  it('renders only the newest completed-history window initially', () => {
+    const messages = Array.from({ length: 200 }, (_, index) =>
+      msg(`m-${index}`, index % 2 === 0 ? 'user' : 'assistant', `entry-${index}`),
+    );
+    const view = render(
+      withTheme(
+        <ChatPanel messages={messages} terminalWidth={80} terminalHeight={24} reducedMotion />,
+      ),
+    );
+    const output = frame(view.lastFrame);
+
+    expect(output).toContain('120 older transcript entries hidden');
+    expect(output).toContain('entry-199');
+    expect(output).not.toContain('entry-0');
   });
 
   it('renders the animated welcome when the conversation is empty', () => {

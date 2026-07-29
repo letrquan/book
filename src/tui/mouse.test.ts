@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseMouseWheelDirection, parseSgrMouseEvent } from './mouse.js';
+import { parseMouseWheelDirection, parseSgrMouseEvent, parseSgrMouseEvents } from './mouse.js';
 
 describe('parseSgrMouseEvent', () => {
   it('parses left clicks, releases, movement, coordinates, and modifiers', () => {
@@ -51,5 +51,22 @@ describe('parseMouseWheelDirection', () => {
     expect(parseMouseWheelDirection('\x1b[<64;13;20m')).toBeNull();
     expect(parseMouseWheelDirection('\x1b[<64;13M')).toBeNull();
     expect(parseMouseWheelDirection('\x1b[<64;13;20Mtext')).toBeNull();
+  });
+});
+
+describe('parseSgrMouseEvents', () => {
+  it('parses every complete report in a coalesced terminal input chunk', () => {
+    expect(parseSgrMouseEvents('\x1b[<64;13;20M\x1b[<64;13;20M\x1b[<65;13;20M')).toMatchObject([
+      { type: 'wheel', button: 'wheel-up' },
+      { type: 'wheel', button: 'wheel-up' },
+      { type: 'wheel', button: 'wheel-down' },
+    ]);
+  });
+
+  it('ignores surrounding text, incomplete reports, and invalid wheel releases', () => {
+    expect(parseSgrMouseEvents('text\x1b[<64;1;1Mincomplete\x1b[<65;1')).toMatchObject([
+      { type: 'wheel', button: 'wheel-up' },
+    ]);
+    expect(parseSgrMouseEvents('\x1b[<64;1;1m')).toEqual([]);
   });
 });

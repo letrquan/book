@@ -80,9 +80,12 @@ All notable changes to this project are documented in this file.
 
 - Improved TUI streaming responsiveness by batching first-turn updates at a sustainable cadence,
   avoiding idle accumulator wakeups, and limiting the active transcript window to the available
-  terminal height while output is streaming.
-- Smoothed mouse-wheel history navigation with smaller row steps and frame-batched updates during
-  rapid scrolling.
+  terminal height while output is streaming. Live Markdown now uses a bounded plain-text tail and
+  defers full decoration until completion.
+- Smoothed mouse-wheel history navigation with three-row wheel steps, low-latency event-loop
+  coalescing, isolated transcript content, and support for coalesced terminal reports.
+- Reduced managed-agent render fan-out, bounded completed transcript hydration with keyboard/mouse
+  history expansion, accelerated terminal-width measurement, and batched noisy render diagnostics.
 
 - BYOK providers and the active model selection now persist to the user-global `~/.book/settings.json`
   instead of the per-project `.book/settings.local.json`, so a provider added in one folder (its
@@ -134,6 +137,8 @@ All notable changes to this project are documented in this file.
 - Prevent context-window failures from oversized tool output by skipping binary `Grep` inputs, bounding search and generic tool results, preflighting complete provider requests, and compacting or clipping once before retrying recognized overflow errors.
 - Apply interactive permission-mode changes immediately to the active agent loop.
 - Keep mouse-wheel transcript scrolling while allowing terminal copy with Shift+drag.
+- Reconcile transcript height after descendant-local updates so throttled Markdown remains reachable
+  without restoring per-wheel full-content measurement.
 - Deliver completed and failed subagent reports to the parent before automatically removing their terminal rows from the prompt-adjacent task panel.
 - Prevent the first submitted TUI message from freezing during a cold rewind snapshot by yielding filesystem checkpoint work and rendering the optimistic turn first.
 - Make `/theme` open a keyboard picker, apply the full app palette, persist the selection, resolve terminal auto mode correctly, and report invalid custom themes.
