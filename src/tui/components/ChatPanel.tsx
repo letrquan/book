@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '../theme.js';
 import type { CompactBoundary } from '../../types/sessions.js';
 import type { Message } from '../../types/messages.js';
@@ -20,7 +20,8 @@ import { selectExpandedToolId } from '../tool-traces.js';
 import type { TranscriptMode } from '../tool-presentation.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
 import { truncateDisplay } from './word-wrap.js';
-import { useTranscriptHistoryLoader } from '../transcript-layout.js';
+import { useTranscriptHistoryLoader, useTranscriptLayoutChange } from '../transcript-layout.js';
+import { useVirtualTranscript, VirtualTranscriptRow } from './virtual-transcript.js';
 
 const renderLog = createRenderDebugLogger('tui:chatpanel');
 const uiLog = createUiDebugLogger('tui:chatpanel');
@@ -46,6 +47,23 @@ export function getCompletedTimelineWindow(terminalHeight?: number): number {
     COMPLETED_TIMELINE_MAX_WINDOW,
     Math.max(COMPLETED_TIMELINE_MIN_WINDOW, Math.ceil(height * 3)),
   );
+}
+
+function estimateWrappedRows(content: string, width: number): number {
+  const contentWidth = Math.max(12, Math.floor(width) - 6);
+  if (!content) return 1;
+  return content
+    .split('\n')
+    .reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / contentWidth)), 0);
+}
+
+function estimateTimelineRows(entry: Message | CompactBoundary, terminalWidth: number): number {
+  if ('transcriptOrdinal' in entry) return 1;
+
+  const textRows = estimateWrappedRows(entry.content, terminalWidth);
+  const attachmentRows = entry.attachments?.length ? 1 : 0;
+  const toolRows = (entry.toolCalls?.length ?? 0) * 2 + (entry.toolResults?.length ?? 0);
+  return Math.max(1, textRows + attachmentRows + toolRows);
 }
 
 function formatTurnTime(timestamp: number): string {
@@ -139,6 +157,7 @@ export function ChatPanelInner({
   const completedWindow = getCompletedTimelineWindow(terminalHeight);
   const [historyWindowSize, setHistoryWindowSize] = useState(completedWindow);
   const previousTimelineLengthRef = useRef(timeline.length);
+  const notifyLayoutChange = useTranscriptLayoutChange();
 
   useEffect(() => {
     if (timeline.length < previousTimelineLengthRef.current) {
@@ -147,12 +166,36 @@ export function ChatPanelInner({
     previousTimelineLengthRef.current = timeline.length;
   }, [completedWindow, timeline.length]);
 
+  useLayoutEffect(() => {
+    notifyLayoutChange?.();
+  }, [historyWindowSize, notifyLayoutChange]);
+
   const activeWindowSize = streamingMessageId
     ? getStreamingTimelineWindow(terminalHeight)
     : historyWindowSize;
   const hiddenTimelineEntries = Math.max(0, timeline.length - activeWindowSize);
-  const visibleTimeline =
-    hiddenTimelineEntries > 0 ? timeline.slice(hiddenTimelineEntries) : timeline;
+  const visibleTimeline = useMemo(
+    () => (hiddenTimelineEntries > 0 ? timeline.slice(hiddenTimelineEntries) : timeline),
+    [hiddenTimelineEntries, timeline],
+  );
+  const getTimelineKey = useCallback(
+    (entry: Message | CompactBoundary) =>
+      'transcriptOrdinal' in entry ? `boundary-${entry.id}` : entry.id,
+    [],
+  );
+  const estimateRows = useCallback(
+    (entry: Message | CompactBoundary) => estimateTimelineRows(entry, terminalWidth ?? 80),
+    [terminalWidth],
+  );
+  const hiddenHistoryRows = hiddenTimelineEntries > 0 ? (density === 'tight' ? 1 : 2) : 0;
+  const virtualTimeline = useVirtualTranscript({
+    items: visibleTimeline,
+    enabled: !screenReader && !streamingMessageId && visibleTimeline.length > 24,
+    terminalWidth: terminalWidth ?? 80,
+    leadingRows: hiddenHistoryRows,
+    getKey: getTimelineKey,
+    estimateRows,
+  });
   const loadOlderHistory = useCallback(
     (request: 'page' | 'all') => {
       if (streamingMessageId || hiddenTimelineEntries === 0) return false;
@@ -203,79 +246,98 @@ export function ChatPanelInner({
           </Text>
         </Box>
       ) : null}
-      {visibleTimeline.map((entry, index) => {
+      {virtualTimeline.topSpacerRows > 0 ? (
+        <Box height={virtualTimeline.topSpacerRows} flexShrink={0} />
+      ) : null}
+      {virtualTimeline.entries.map(({ item: entry, index, measurementKey }) => {
+        let row: React.ReactNode;
         if ('transcriptOrdinal' in entry) {
-          return <CompactBoundaryRow key={`boundary-${entry.id}`} terminalWidth={terminalWidth} />;
-        }
-        const message = entry;
-        const previous = visibleTimeline[index - 1];
-        if (message.role === 'user') {
-          return (
-            <Box
-              key={message.id}
-              flexDirection="column"
-              marginTop={index > 0 && density !== 'tight' ? 1 : 0}
-            >
-              {screenReader ? (
-                <ScreenReaderRoleLabel role="user" timestamp={message.timestamp} />
-              ) : null}
-              <UserMessage
-                content={message.content}
-                attachments={message.attachments}
-                terminalWidth={terminalWidth}
-                screenReader={screenReader}
-              />
-            </Box>
-          );
+          row = <CompactBoundaryRow terminalWidth={terminalWidth} />;
+        } else {
+          const message = entry;
+          const previous = visibleTimeline[index - 1];
+          if (message.role === 'user') {
+            row = (
+              <Box flexDirection="column" marginTop={index > 0 && density !== 'tight' ? 1 : 0}>
+                {screenReader ? (
+                  <ScreenReaderRoleLabel role="user" timestamp={message.timestamp} />
+                ) : null}
+                <UserMessage
+                  content={message.content}
+                  attachments={message.attachments}
+                  terminalWidth={terminalWidth}
+                  screenReader={screenReader}
+                />
+              </Box>
+            );
+          } else {
+            const isStreaming = message.id === streamingMessageId;
+            const next = visibleTimeline[index + 1];
+            const nextEntryIsUser = Boolean(next && 'role' in next && next.role === 'user');
+            const followsToolCall = Boolean(
+              previous &&
+              'role' in previous &&
+              previous.role === 'assistant' &&
+              previous.toolCalls?.length,
+            );
+            row = (
+              <Box
+                flexDirection="column"
+                marginTop={
+                  followsToolCall ||
+                  (density !== 'tight' &&
+                    previous &&
+                    'role' in previous &&
+                    previous.role === 'user')
+                    ? 1
+                    : 0
+                }
+              >
+                {screenReader ? (
+                  <ScreenReaderRoleLabel role="assistant" timestamp={message.timestamp} />
+                ) : null}
+                <AgentMessage
+                  message={message}
+                  managedAgentTraces={managedAgentTraces}
+                  isStreaming={isStreaming}
+                  pendingPermission={pendingPermission}
+                  expandedToolCallId={selectedToolCallId}
+                  transcriptMode={transcriptMode}
+                  automaticToolCallId={automaticToolCallId ?? selectedToolCallId}
+                  toolExpansionOverrides={toolExpansionOverrides}
+                  reducedMotion={reducedMotion}
+                  screenReader={screenReader}
+                  terminalWidth={terminalWidth}
+                  retryPhase={isStreaming ? retryPhase : 'none'}
+                  retryAttempt={isStreaming ? retryAttempt : 0}
+                  retryMax={isStreaming ? retryMax : 0}
+                  retryCountdownMs={isStreaming ? retryCountdownMs : 0}
+                  hideStreamingSpinner={isStreaming}
+                  showAllToolOutput={showAllToolOutput}
+                  showAllToolOutputIds={showAllToolOutputIds}
+                  trimTrailingSpacing={nextEntryIsUser}
+                />
+              </Box>
+            );
+          }
         }
 
-        const isStreaming = message.id === streamingMessageId;
-        const next = visibleTimeline[index + 1];
-        const nextEntryIsUser = Boolean(next && 'role' in next && next.role === 'user');
-        const followsToolCall = Boolean(
-          previous &&
-          'role' in previous &&
-          previous.role === 'assistant' &&
-          previous.toolCalls?.length,
-        );
+        if (!virtualTimeline.virtualized) {
+          return <React.Fragment key={measurementKey}>{row}</React.Fragment>;
+        }
         return (
-          <Box
-            key={message.id}
-            flexDirection="column"
-            marginTop={
-              followsToolCall ||
-              (density !== 'tight' && previous && 'role' in previous && previous.role === 'user')
-                ? 1
-                : 0
-            }
+          <VirtualTranscriptRow
+            key={measurementKey}
+            measurementKey={measurementKey}
+            onMeasure={virtualTimeline.measure}
           >
-            {screenReader ? (
-              <ScreenReaderRoleLabel role="assistant" timestamp={message.timestamp} />
-            ) : null}
-            <AgentMessage
-              message={message}
-              managedAgentTraces={managedAgentTraces}
-              isStreaming={isStreaming}
-              pendingPermission={pendingPermission}
-              expandedToolCallId={selectedToolCallId}
-              transcriptMode={transcriptMode}
-              automaticToolCallId={automaticToolCallId ?? selectedToolCallId}
-              toolExpansionOverrides={toolExpansionOverrides}
-              reducedMotion={reducedMotion}
-              screenReader={screenReader}
-              terminalWidth={terminalWidth}
-              retryPhase={isStreaming ? retryPhase : 'none'}
-              retryAttempt={isStreaming ? retryAttempt : 0}
-              retryMax={isStreaming ? retryMax : 0}
-              retryCountdownMs={isStreaming ? retryCountdownMs : 0}
-              hideStreamingSpinner={isStreaming}
-              showAllToolOutput={showAllToolOutput}
-              showAllToolOutputIds={showAllToolOutputIds}
-              trimTrailingSpacing={nextEntryIsUser}
-            />
-          </Box>
+            {row}
+          </VirtualTranscriptRow>
         );
       })}
+      {virtualTimeline.bottomSpacerRows > 0 ? (
+        <Box height={virtualTimeline.bottomSpacerRows} flexShrink={0} />
+      ) : null}
     </Box>
   );
 }
@@ -320,6 +382,7 @@ export const ChatPanel = React.memo(ChatPanelInner, (previous, next) => {
 });
 
 interface TimelineCache {
+  messages?: Message[];
   streamingMessageId?: string | null;
   prefixLength: number;
   prefixLast?: Message;
@@ -333,7 +396,19 @@ function useIncrementalTimeline(
   streamingMessageId?: string | null,
 ): Array<Message | CompactBoundary> {
   const cache = useRef<TimelineCache>({ prefixLength: -1, prefix: [] });
-  if (!streamingMessageId) return buildTimeline(messages, boundaries, streamingMessageId);
+  if (!streamingMessageId) {
+    if (cache.current.messages !== messages || cache.current.boundaries !== boundaries) {
+      cache.current = {
+        messages,
+        streamingMessageId,
+        prefixLength: messages.length,
+        prefixLast: messages.at(-1),
+        boundaries,
+        prefix: buildTimeline(messages, boundaries, streamingMessageId),
+      };
+    }
+    return cache.current.prefix;
+  }
   const streamingIndex = messages.findIndex((message) => message.id === streamingMessageId);
   if (streamingIndex < 0 || streamingIndex !== messages.length - 1) {
     return buildTimeline(messages, boundaries, streamingMessageId);

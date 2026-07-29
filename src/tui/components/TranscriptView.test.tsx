@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import { act } from 'react';
+import { act, Profiler } from 'react';
 import { useState } from 'react';
 import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
@@ -10,6 +10,7 @@ import { MarkdownBlock } from './MarkdownBlock.js';
 import { ChatPanel } from './ChatPanel.js';
 import { toolSuccess } from '../../tools/result.js';
 import type { Message } from '../../types/messages.js';
+import { useTranscriptHistoryLoader, type TranscriptHistoryLoader } from '../transcript-layout.js';
 
 function Rows({ labels }: { labels: string[] }) {
   return (
@@ -19,6 +20,11 @@ function Rows({ labels }: { labels: string[] }) {
       ))}
     </Box>
   );
+}
+
+function HistoryRows({ labels, onLoad }: { labels: string[]; onLoad: TranscriptHistoryLoader }) {
+  useTranscriptHistoryLoader(onLoad);
+  return <Rows labels={labels} />;
 }
 
 function view(
@@ -72,6 +78,24 @@ describe('TranscriptView', () => {
     act(() => app.stdin.write('[6~'));
     app.rerender(view(['A', 'B', 'C', 'D', 'E', 'F']));
     expect(frameLines(app.lastFrame())).toEqual(['C', 'D', 'E', 'F']);
+  });
+
+  it('loads another history page when Ctrl+U is pressed at the hydrated start', () => {
+    const onLoad = vi.fn<TranscriptHistoryLoader>(() => true);
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const app = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={5} width={20}>
+          <HistoryRows labels={labels} onLoad={onLoad} />
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+
+    for (let index = 0; index < 4; index++) {
+      act(() => app.stdin.write('\x15'));
+    }
+
+    expect(onLoad).toHaveBeenCalledWith('page');
   });
 
   it('scrolls three rows per SGR mouse wheel report', async () => {
@@ -133,6 +157,25 @@ describe('TranscriptView', () => {
     act(() => app.stdin.write('\x1b[<64;10;5M'));
     await flushWheelFrame();
     expect(childRenderCount).toBe(1);
+  });
+
+  it('scrolls imperatively without another React commit once browsing history', async () => {
+    let commitCount = 0;
+    const app = render(
+      <Profiler id="transcript" onRender={() => commitCount++}>
+        {view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'])}
+      </Profiler>,
+    );
+
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    await flushWheelFrame();
+    const browsingCommitCount = commitCount;
+    expect(browsingCommitCount).toBeGreaterThan(1);
+
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    await flushWheelFrame();
+    expect(commitCount).toBe(browsingCommitCount);
+    expect(frameLines(app.lastFrame())).toContain('D');
   });
 
   it('reconciles content height after a descendant-local markdown update', async () => {
@@ -299,5 +342,8 @@ describe('TranscriptView', () => {
     });
 
     expect(app.lastFrame()).toContain('entry-0');
+
+    act(() => app.stdin.write('\x1b[1;5F'));
+    expect(app.lastFrame()).toContain('entry-199');
   });
 });

@@ -13,6 +13,7 @@ import {
   createTranscriptScrollState,
   getTranscriptHalfPageRows,
   getTranscriptPageRows,
+  getTranscriptWheelDrainRows,
   reconcileTranscriptScroll,
   scrollTranscriptBy,
   scrollTranscriptToEnd,
@@ -24,9 +25,13 @@ import { parseSgrMouseEvents } from '../mouse.js';
 import {
   TranscriptHistoryContext,
   TranscriptLayoutContext,
+  TranscriptViewportContext,
   type TranscriptHistoryLoader,
+  type TranscriptViewportStore,
 } from '../transcript-layout.js';
 import { useTheme } from '../theme.js';
+import { setTranscriptScrollHint } from '../ink-scroll-renderer.js';
+import { markTranscriptScrollActivity } from '../scroll-activity.js';
 import {
   ToolRowInteractionContext,
   type ToolSummaryRowRegistration,
@@ -43,6 +48,27 @@ interface TranscriptViewProps {
 
 const INITIAL_METRICS: TranscriptMetrics = { contentRows: 0, viewportRows: 1 };
 const MOUSE_WHEEL_ROWS = 3;
+// Yoga's Edge.Top value; keeping this local avoids exposing Ink's layout dependency.
+const YOGA_EDGE_TOP = 1;
+
+function applyImperativeScrollOffset(
+  node: DOMElement,
+  scrollTop: number,
+  requestRender = true,
+): boolean {
+  if (!node.yogaNode) return false;
+
+  node.yogaNode.setMargin(YOGA_EDGE_TOP, -scrollTop);
+  if (!requestRender) return true;
+
+  let root = node;
+  while (root.parentNode) root = root.parentNode;
+  if (!root.onComputeLayout || !root.onRender) return false;
+
+  root.onComputeLayout();
+  root.onRender();
+  return true;
+}
 
 function getAbsolutePosition(node: DOMElement): { x: number; y: number } | undefined {
   let current: DOMElement | undefined = node;
@@ -65,6 +91,7 @@ interface TranscriptContentProps {
   historyRegistry: {
     register: (loader: TranscriptHistoryLoader) => () => void;
   };
+  viewportStore: TranscriptViewportStore;
   onLayoutChange: () => void;
 }
 
@@ -72,14 +99,17 @@ const TranscriptContent = memo(function TranscriptContent({
   children,
   interactionRegistry,
   historyRegistry,
+  viewportStore,
   onLayoutChange,
 }: TranscriptContentProps) {
   return (
     <TranscriptLayoutContext.Provider value={onLayoutChange}>
       <TranscriptHistoryContext.Provider value={historyRegistry}>
-        <ToolRowInteractionContext.Provider value={interactionRegistry}>
-          {children}
-        </ToolRowInteractionContext.Provider>
+        <TranscriptViewportContext.Provider value={viewportStore}>
+          <ToolRowInteractionContext.Provider value={interactionRegistry}>
+            {children}
+          </ToolRowInteractionContext.Provider>
+        </TranscriptViewportContext.Provider>
       </TranscriptHistoryContext.Provider>
     </TranscriptLayoutContext.Provider>
   );
@@ -105,10 +135,14 @@ export function TranscriptView({
   const wheelImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
   const layoutMeasureImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
   const onToggleToolRef = useRef(onToggleTool);
-  const [scrollState, setScrollState] = useState(createTranscriptScrollState);
+  const [renderedScrollTop, setRenderedScrollTop] = useState(0);
+  const [followBottom, setFollowBottom] = useState(true);
   const [hasNewOutput, setHasNewOutput] = useState(false);
   const toolRowsRef = useRef(new Map<string, ToolSummaryRowRegistration>());
   const historyLoaderRef = useRef<TranscriptHistoryLoader | null>(null);
+  const viewportListenersRef = useRef(new Set<() => void>());
+  const viewportRevisionRef = useRef(0);
+  const viewportBucketRef = useRef('');
   const interactionRegistry = useMemo(
     () => ({
       register: (registration: ToolSummaryRowRegistration) => {
@@ -133,16 +167,76 @@ export function TranscriptView({
     }),
     [],
   );
+  const viewportStore = useMemo<TranscriptViewportStore>(
+    () => ({
+      subscribe: (listener) => {
+        viewportListenersRef.current.add(listener);
+        return () => viewportListenersRef.current.delete(listener);
+      },
+      getRevision: () => viewportRevisionRef.current,
+      getSnapshot: () => ({
+        scrollTop: stateRef.current.scrollTop,
+        viewportRows: metricsRef.current.viewportRows,
+        followBottom: stateRef.current.followBottom,
+      }),
+    }),
+    [],
+  );
 
-  const applyScrollState = useCallback((next: TranscriptScrollState) => {
-    stateRef.current = next;
-    setScrollState((current) =>
-      current.scrollTop === next.scrollTop && current.followBottom === next.followBottom
-        ? current
-        : next,
-    );
-    if (next.followBottom) setHasNewOutput(false);
+  const publishViewport = useCallback((state: TranscriptScrollState) => {
+    const viewportRows = metricsRef.current.viewportRows;
+    const bucketRows = Math.max(1, getTranscriptHalfPageRows(viewportRows));
+    const bucket = `${Math.floor(state.scrollTop / bucketRows)}:${viewportRows}:${state.followBottom}`;
+    if (viewportBucketRef.current === bucket) return;
+
+    viewportBucketRef.current = bucket;
+    viewportRevisionRef.current++;
+    for (const listener of viewportListenersRef.current) listener();
   }, []);
+
+  const applyScrollState = useCallback(
+    (next: TranscriptScrollState) => {
+      const previous = stateRef.current;
+      stateRef.current = next;
+      if (previous.scrollTop !== next.scrollTop) markTranscriptScrollActivity();
+
+      if (
+        previous.scrollTop !== next.scrollTop &&
+        previous.followBottom === next.followBottom &&
+        viewportRef.current
+      ) {
+        const position = getAbsolutePosition(viewportRef.current);
+        const viewportHeight = Math.max(1, Math.floor(measureElement(viewportRef.current).height));
+        if (position) {
+          setTranscriptScrollHint({
+            top: position.y + 1,
+            bottom: position.y + viewportHeight,
+            delta: next.scrollTop - previous.scrollTop,
+          });
+        }
+      }
+
+      if (previous.followBottom !== next.followBottom) {
+        const content = contentRef.current;
+        if (!content || !applyImperativeScrollOffset(content, next.scrollTop, false)) {
+          setRenderedScrollTop((current) =>
+            current === next.scrollTop ? current : next.scrollTop,
+          );
+        }
+        setFollowBottom(next.followBottom);
+      } else {
+        const content = contentRef.current;
+        if (!content || !applyImperativeScrollOffset(content, next.scrollTop)) {
+          setRenderedScrollTop((current) =>
+            current === next.scrollTop ? current : next.scrollTop,
+          );
+        }
+      }
+      if (next.followBottom) setHasNewOutput(false);
+      publishViewport(next);
+    },
+    [publishViewport],
+  );
 
   onToggleToolRef.current = onToggleTool;
 
@@ -156,10 +250,33 @@ export function TranscriptView({
 
   const flushWheelScroll = useCallback(() => {
     wheelImmediateRef.current = null;
-    const rows = pendingWheelRowsRef.current;
-    pendingWheelRowsRef.current = 0;
+    const rows = getTranscriptWheelDrainRows(
+      pendingWheelRowsRef.current,
+      metricsRef.current.viewportRows,
+    );
     if (rows === 0) return;
-    applyScrollState(scrollTranscriptBy(stateRef.current, metricsRef.current, rows));
+
+    pendingWheelRowsRef.current -= rows;
+    const previous = stateRef.current;
+    const next = scrollTranscriptBy(previous, metricsRef.current, rows);
+    applyScrollState(next);
+
+    if (next.scrollTop === previous.scrollTop) {
+      pendingWheelRowsRef.current = 0;
+      return;
+    }
+    if (
+      rows < 0 &&
+      next.scrollTop === 0 &&
+      pendingWheelRowsRef.current < 0 &&
+      historyLoaderRef.current?.('page')
+    ) {
+      pendingWheelRowsRef.current = 0;
+      return;
+    }
+    if (pendingWheelRowsRef.current !== 0) {
+      wheelImmediateRef.current = setImmediate(flushWheelScroll);
+    }
   }, [applyScrollState]);
 
   const scheduleWheelScroll = useCallback(
@@ -306,6 +423,7 @@ export function TranscriptView({
       } else if (key.ctrl && key.end) {
         next = scrollTranscriptToEnd(metrics);
       } else if (key.ctrl && input.toLowerCase() === 'u') {
+        if (stateRef.current.scrollTop === 0 && historyLoaderRef.current?.('page')) return;
         next = scrollTranscriptBy(
           stateRef.current,
           metrics,
@@ -337,7 +455,7 @@ export function TranscriptView({
       width={width}
     >
       <Box flexShrink={0} height={1} justifyContent="flex-end">
-        {!scrollState.followBottom ? (
+        {!followBottom ? (
           <Text color={theme.subtle} dimColor>
             ↑ browsing history{hasNewOutput ? ' · new output below' : ''}
           </Text>
@@ -350,11 +468,12 @@ export function TranscriptView({
           flexShrink={0}
           position="absolute"
           width={width}
-          marginTop={-scrollState.scrollTop}
+          marginTop={-renderedScrollTop}
         >
           <TranscriptContent
             interactionRegistry={interactionRegistry}
             historyRegistry={historyRegistry}
+            viewportStore={viewportStore}
             onLayoutChange={scheduleLayoutMeasure}
           >
             {children}

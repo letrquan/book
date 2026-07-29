@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { createRenderDebugLogger } from '../../debug-log.js';
+import { isTranscriptScrollActive } from '../scroll-activity.js';
 
 const animLog = createRenderDebugLogger('tui:animation');
 
@@ -20,6 +21,7 @@ export function useSpinner(
     }
     animLog.event('spinner:start', { style });
     const interval = setInterval(() => {
+      if (isTranscriptScrollActive()) return;
       setFrame((f) => (f + 1) % frames.length);
     }, 80);
     return () => {
@@ -50,6 +52,7 @@ export function useGradientSpinner(
       return;
     }
     const interval = setInterval(() => {
+      if (isTranscriptScrollActive()) return;
       setTick((f) => (f + 1) % frames.length);
     }, 80);
     return () => clearInterval(interval);
@@ -84,6 +87,7 @@ export function useTypewriter(
     }
     let i = 0;
     const interval = setInterval(() => {
+      if (isTranscriptScrollActive()) return;
       i++;
       setDisplayed(text.slice(0, i));
       if (i >= text.length) {
@@ -112,6 +116,7 @@ export function useStaggeredReveal(
     setVisibleCount(0);
     let current = 0;
     const interval = setInterval(() => {
+      if (isTranscriptScrollActive()) return;
       current++;
       setVisibleCount(Math.min(count, current));
       if (current >= count) {
@@ -156,6 +161,7 @@ export function usePulse(active: boolean, interval = 500): boolean {
     }
     animLog.event('pulse:start', { interval });
     const timer = setInterval(() => {
+      if (isTranscriptScrollActive()) return;
       setOn((o) => !o);
     }, interval);
     return () => {
@@ -184,6 +190,7 @@ export function useAnimatedProgress(
     const safeDuration = Math.max(1, durationMs);
     const safeMaximum = Math.max(0, Math.min(99, maximum));
     const timer = setInterval(() => {
+      if (isTranscriptScrollActive()) return;
       const next = Math.min(
         safeMaximum,
         Math.floor(((Date.now() - startedAt) / safeDuration) * 100),

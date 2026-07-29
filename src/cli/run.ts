@@ -21,6 +21,7 @@ import {
   DEFAULT_LOCAL_DATA_RETENTION_DAYS,
   getDebugLogPath,
 } from '../debug-log.js';
+import { installInkScrollRenderer } from '../tui/ink-scroll-renderer.js';
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
@@ -194,6 +195,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       ? () => {}
       : enterInteractiveScreen(process.stdout);
     try {
+      await installInkScrollRenderer();
       app = render(
         createElement(App, {
           config,
@@ -204,6 +206,10 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         {
           exitOnCtrlC: false,
           isScreenReaderEnabled: config.accessibility.screenReader,
+          // Scroll updates change a small portion of the screen; avoid erasing
+          // and rewriting the full transcript frame on every wheel report.
+          incrementalRendering: true,
+          maxFps: 60,
         },
       );
       await app.waitUntilExit();

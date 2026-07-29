@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import { isTranscriptScrollActive } from '../scroll-activity.js';
 
 interface GitStatus {
   branch: string;
@@ -18,6 +19,7 @@ export function useGitStatus(workspace: string): GitStatus {
     let activeController: AbortController | undefined;
 
     async function check(): Promise<void> {
+      if (isTranscriptScrollActive()) return;
       if (running) return;
       running = true;
       activeController = new AbortController();
