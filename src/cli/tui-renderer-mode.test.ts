@@ -17,4 +17,13 @@ describe('TUI renderer mode', () => {
     expect(resolveTuiRendererMode('incremental', { isTTY: false })).toBe('safe');
     expect(resolveTuiRendererMode('incremental', { screenReader: true })).toBe('safe');
   });
+
+  it('falls back to safe rendering when the Ink patch is unavailable', () => {
+    expect(resolveTuiRendererMode('incremental', { incrementalRendererPatched: false })).toBe(
+      'safe',
+    );
+    expect(
+      resolveTuiRendererMode('experimental-scroll', { incrementalRendererPatched: false }),
+    ).toBe('safe');
+  });
 });

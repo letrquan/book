@@ -41,7 +41,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function submitInteractive(session: TuiSession, text: string): Promise<void> {
-  session.submit(text);
+  await session.submit(text);
 }
 
 // ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ interface TuiSession {
   read(): string;
   readRaw(): string;
   waitFor(pattern: string | RegExp, timeoutMs?: number): Promise<string>;
-  submit(text: string): void;
+  submit(text: string): Promise<void>;
   sendKey(seq: string): void;
   resize(columns: number, rows: number): void;
   waitForExit(timeoutMs?: number): Promise<number>;
@@ -141,9 +141,11 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
         `Timed out waiting for ${String(pattern)} after ${timeoutMs}ms. Last output:\n${rendered.slice(-4000)}`,
       );
     },
-    submit(text: string) {
+    async submit(text: string) {
       pty.write(text);
-      setTimeout(() => pty.write('\r'), 50);
+      // ConPTY can deliver input on a later turn under loaded Windows runners.
+      await sleep(IS_WINDOWS ? 150 : 50);
+      pty.write('\r');
     },
     sendKey(seq: string) {
       pty.write(seq);
@@ -434,14 +436,14 @@ describe('TUI keyboard input', () => {
 describe.skipIf(!HAS_API_KEY)('TUI streaming with API', () => {
   it('streams a response after submitting a message', async () => {
     session = await startAndWait();
-    session.submit('Say exactly: HELLO_TUI_TEST');
+    await session.submit('Say exactly: HELLO_TUI_TEST');
     const output = await session.waitFor('HELLO_TUI_TEST', 30_000);
     expect(output).toContain('HELLO_TUI_TEST');
   }, 50_000);
 
   it('renders successful tool calls in the activity tree', async () => {
     session = await startAndWait();
-    session.submit('Read the first line of package.json using the Read tool');
+    await session.submit('Read the first line of package.json using the Read tool');
     const output = await session.waitFor(/✓/, 30_000);
     expect(output).toContain('✓');
     expect(output).toContain('Read');
@@ -449,11 +451,11 @@ describe.skipIf(!HAS_API_KEY)('TUI streaming with API', () => {
 
   it('/clear after streaming resets conversation', async () => {
     session = await startAndWait();
-    session.submit('Say exactly: FIRST_MESSAGE');
+    await session.submit('Say exactly: FIRST_MESSAGE');
     await session.waitFor('FIRST_MESSAGE', 30_000);
     await submitInteractive(session, '/clear');
     await sleep(500);
-    session.submit('Say exactly: SECOND_MESSAGE');
+    await session.submit('Say exactly: SECOND_MESSAGE');
     const output = await session.waitFor('SECOND_MESSAGE', 30_000);
     expect(output).toContain('SECOND_MESSAGE');
   }, 80_000);

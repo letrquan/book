@@ -12,6 +12,14 @@ import { toolSuccess } from '../../tools/result.js';
 import type { Message } from '../../types/messages.js';
 import { useTranscriptHistoryLoader, type TranscriptHistoryLoader } from '../transcript-layout.js';
 
+const { setTranscriptScrollHintSpy } = vi.hoisted(() => ({
+  setTranscriptScrollHintSpy: vi.fn(),
+}));
+
+vi.mock('../ink-scroll-renderer.js', () => ({
+  setTranscriptScrollHint: setTranscriptScrollHintSpy,
+}));
+
 function Rows({ labels }: { labels: string[] }) {
   return (
     <Box flexDirection="column">
@@ -113,6 +121,18 @@ describe('TranscriptView', () => {
     await flushWheelFrame();
     app.rerender(view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']));
     expect(frameLines(app.lastFrame())).toEqual(['E', 'F', 'G', 'H']);
+  });
+
+  it('publishes scroll hints for consecutive transcript-only scrolls', async () => {
+    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']));
+    setTranscriptScrollHintSpy.mockClear();
+
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    await flushWheelFrame();
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    await flushWheelFrame();
+
+    expect(setTranscriptScrollHintSpy).toHaveBeenCalledWith(expect.objectContaining({ delta: -1 }));
   });
 
   it('coalesces rapid wheel reports without dropping a terminal input chunk', async () => {

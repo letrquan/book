@@ -49,6 +49,7 @@ const FLOW_DEBUG_ENABLED = process.env.BOOK_DEBUG_FLOW === '1';
 let debugLogPath: string | undefined;
 const debugLogSizes = new Map<string, number>();
 const DEFAULT_DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024;
+const MIN_DEBUG_LOG_MAX_BYTES = 4;
 const DEFAULT_DEBUG_LOG_BACKUPS = 3;
 export const DEFAULT_LOCAL_DATA_RETENTION_DAYS = 30;
 
@@ -57,12 +58,20 @@ export function positiveInteger(value: string | undefined, fallback: number): nu
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function debugLogMaxBytes(): number {
+  // Four bytes is the largest UTF-8 encoding for a single Unicode code point.
+  return Math.max(
+    MIN_DEBUG_LOG_MAX_BYTES,
+    positiveInteger(process.env.BOOK_DEBUG_MAX_BYTES, DEFAULT_DEBUG_LOG_MAX_BYTES),
+  );
+}
+
 function rotateDebugLog(target: string, incomingBytes: number): void {
   if (!existsSync(target)) {
     debugLogSizes.set(target, 0);
     return;
   }
-  const maxBytes = positiveInteger(process.env.BOOK_DEBUG_MAX_BYTES, DEFAULT_DEBUG_LOG_MAX_BYTES);
+  const maxBytes = debugLogMaxBytes();
   const currentBytes = debugLogSizes.get(target) ?? statSync(target).size;
   debugLogSizes.set(target, currentBytes);
   if (currentBytes + incomingBytes <= maxBytes) return;
@@ -166,7 +175,7 @@ function writeRenderDebugLine(line: string): void {
     renderDebugFlush = null;
     const batch = pendingRenderDebug;
     pendingRenderDebug = [];
-    const maxBytes = positiveInteger(process.env.BOOK_DEBUG_MAX_BYTES, DEFAULT_DEBUG_LOG_MAX_BYTES);
+    const maxBytes = debugLogMaxBytes();
     let chunk = '';
     let chunkBytes = 0;
 

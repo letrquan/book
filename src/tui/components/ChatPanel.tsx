@@ -372,6 +372,7 @@ export const ChatPanel = React.memo(ChatPanelInner, (previous, next) => {
   }
 
   if (previous.managedAgentTraces === next.managedAgentTraces) return true;
+  if (!previous.managedAgentTraces?.size && !next.managedAgentTraces?.size) return true;
   return previous.messages.every((message) =>
     managedAgentTracesEqualForMessage(
       message,

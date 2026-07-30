@@ -1,4 +1,5 @@
 import { setTimeout as wait } from 'node:timers/promises';
+import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
@@ -35,7 +36,9 @@ function stripAnsi(value: string | undefined): string {
 }
 
 async function press(view: ReturnType<typeof render>, input: string) {
-  view.stdin.write(input);
+  act(() => {
+    view.stdin.write(input);
+  });
   await wait(20);
 }
 

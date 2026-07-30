@@ -30,6 +30,7 @@ import {
   type TranscriptViewportStore,
 } from '../transcript-layout.js';
 import { useTheme } from '../theme.js';
+import { setTranscriptScrollHint } from '../ink-scroll-renderer.js';
 import { markTranscriptScrollActivity } from '../scroll-activity.js';
 import {
   ToolRowInteractionContext,
@@ -177,6 +178,22 @@ export function TranscriptView({
       const previous = stateRef.current;
       stateRef.current = next;
       if (previous.scrollTop !== next.scrollTop) markTranscriptScrollActivity();
+
+      if (
+        previous.scrollTop !== next.scrollTop &&
+        previous.followBottom === next.followBottom &&
+        viewportRef.current
+      ) {
+        const position = getAbsolutePosition(viewportRef.current);
+        const viewportHeight = Math.max(1, Math.floor(measureElement(viewportRef.current).height));
+        if (position) {
+          setTranscriptScrollHint({
+            top: position.y + 1,
+            bottom: position.y + viewportHeight,
+            delta: next.scrollTop - previous.scrollTop,
+          });
+        }
+      }
 
       setRenderedScrollTop((current) => (current === next.scrollTop ? current : next.scrollTop));
       setFollowBottom((current) => (current === next.followBottom ? current : next.followBottom));

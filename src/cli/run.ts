@@ -22,6 +22,7 @@ import {
   getDebugLogPath,
 } from '../debug-log.js';
 import { installInkScrollRenderer } from './ink-scroll-renderer.js';
+import { isInkIncrementalRendererPatched } from './ink-patch.js';
 import { resolveTuiRendererMode } from './tui-renderer-mode.js';
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
@@ -199,6 +200,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       const rendererMode = resolveTuiRendererMode(process.env.BOOK_TUI_RENDERER, {
         isTTY: process.stdout.isTTY === true,
         screenReader: config.accessibility.screenReader,
+        incrementalRendererPatched: isInkIncrementalRendererPatched(),
       });
       await installInkScrollRenderer(rendererMode === 'experimental-scroll');
       app = render(
