@@ -7,7 +7,13 @@ import type {
 import type { ToolDefinition } from '../types/tools.js';
 import type { Usage } from '../types/messages.js';
 import { createDebugLogger } from '../debug-log.js';
-import { fetchWithRetry, formatApiError, readStreamChunk } from './reliability.js';
+import {
+  classifyApiError,
+  classifyProviderError,
+  fetchWithRetry,
+  formatApiError,
+  readStreamChunk,
+} from './reliability.js';
 
 const log = createDebugLogger('provider:anthropic');
 
@@ -350,8 +356,18 @@ export async function* chatCompletionStream(
       log,
     );
   } catch (e) {
+    if (signal?.aborted) return;
     log.warn('fetchWithRetry failed', e instanceof Error ? e.message : String(e));
-    yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
+    yield {
+      type: 'error',
+      error: e instanceof Error ? e.message : String(e),
+      errorCode: classifyProviderError(e),
+    };
+    return;
+  }
+
+  if (signal?.aborted) {
+    await response.body?.cancel();
     return;
   }
 
@@ -359,13 +375,17 @@ export async function* chatCompletionStream(
 
   if (!response.ok) {
     const errorText = await response.text();
-    yield { type: 'error', error: formatApiError(response.status, errorText) };
+    yield {
+      type: 'error',
+      error: formatApiError(response.status, errorText),
+      errorCode: classifyApiError(response.status, errorText),
+    };
     return;
   }
 
   const reader = response.body?.getReader();
   if (!reader) {
-    yield { type: 'error', error: 'No response body' };
+    yield { type: 'error', error: 'No response body', errorCode: 'protocol_error' };
     return;
   }
 
@@ -380,6 +400,9 @@ export async function* chatCompletionStream(
   let outputTokens = 0;
   let cacheCreationInputTokens = 0;
   let cacheReadInputTokens = 0;
+  let responseModel: string | undefined;
+  let responseId: string | undefined;
+  const finishReasons = new Set<string>();
   const stallTimeoutMs = retry.streamStallTimeoutMs;
 
   try {
@@ -406,6 +429,7 @@ export async function* chatCompletionStream(
         yield {
           type: 'error',
           error: 'Stream stalled: no data received for ' + stallTimeoutMs + 'ms',
+          errorCode: 'stream_stall',
         };
         return;
       }
@@ -438,6 +462,8 @@ export async function* chatCompletionStream(
         switch (eventType) {
           case 'message_start': {
             const msg = parsed.message as Record<string, unknown> | undefined;
+            if (typeof msg?.model === 'string') responseModel = msg.model;
+            if (typeof msg?.id === 'string') responseId = msg.id;
             if (msg?.usage) {
               const usage = msg.usage as Record<string, number>;
               inputTokens = usage.input_tokens ?? 0;
@@ -494,6 +520,8 @@ export async function* chatCompletionStream(
             if (usage) {
               outputTokens = usage.output_tokens ?? 0;
             }
+            const stopReason = (parsed.delta as Record<string, unknown> | undefined)?.stop_reason;
+            if (typeof stopReason === 'string') finishReasons.add(stopReason);
             break;
           }
 
@@ -507,13 +535,23 @@ export async function* chatCompletionStream(
               contextTokens: inputTokens + cacheCreationInputTokens + cacheReadInputTokens,
             };
             log.info('stream done', usage);
-            yield { type: 'done', usage };
+            yield {
+              type: 'done',
+              usage,
+              ...(responseModel ? { responseModel } : {}),
+              ...(responseId ? { responseId } : {}),
+              ...(finishReasons.size > 0 ? { finishReasons: [...finishReasons] } : {}),
+            };
             return;
           }
 
           case 'error': {
             const err = parsed.error as Record<string, string> | undefined;
-            yield { type: 'error', error: err?.message ?? 'Unknown Anthropic API error' };
+            yield {
+              type: 'error',
+              error: err?.message ?? 'Unknown Anthropic API error',
+              errorCode: err?.type ?? 'provider_error',
+            };
             return;
           }
 
@@ -527,7 +565,12 @@ export async function* chatCompletionStream(
       }
     }
   } catch (e) {
-    yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
+    if (signal?.aborted) return;
+    yield {
+      type: 'error',
+      error: e instanceof Error ? e.message : String(e),
+      errorCode: classifyProviderError(e),
+    };
     return;
   } finally {
     try {
@@ -537,17 +580,11 @@ export async function* chatCompletionStream(
     }
   }
 
-  // Fallback: if we reached end-of-body without message_stop, emit done
-  const usage: Usage = {
-    promptTokens: inputTokens,
-    completionTokens: outputTokens,
-    totalTokens: inputTokens + outputTokens,
-    cacheCreationInputTokens,
-    cacheReadInputTokens,
-    contextTokens: inputTokens + cacheCreationInputTokens + cacheReadInputTokens,
+  yield {
+    type: 'error',
+    error: 'Provider stream ended before its terminal event.',
+    errorCode: 'transport_interrupted',
   };
-  log.info('stream done (end of body)', usage);
-  yield { type: 'done', usage };
 }
 
 /**

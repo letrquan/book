@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import type { RetryPhase, AgentConfig } from '../../types/runtime.js';
-import { didSendMessageComplete, resolveConfigAfterProviderRemoval } from './useAgent.js';
+import {
+  didSendMessageComplete,
+  resolveConfigAfterProviderRemoval,
+  shouldDiscardOptimisticMessages,
+} from './useAgent.js';
 import type { AgentSessionSendResult } from '../../session/agent-session.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from '../../settings.js';
 import { defaultConfig } from '../../test/fixtures.js';
@@ -133,6 +137,24 @@ describe('useAgent retry state machine', () => {
 });
 
 describe('useAgent error/isThinking state transitions', () => {
+  it('keeps cancelled messages visible when they are retained in provider context', () => {
+    const retained: AgentSessionSendResult = {
+      status: 'cancelled',
+      messages: [
+        {
+          id: 'user-1',
+          role: 'user',
+          content: 'keep this turn',
+          includeInContext: true,
+          timestamp: 1,
+        },
+      ],
+    };
+
+    expect(shouldDiscardOptimisticMessages(retained)).toBe(false);
+    expect(shouldDiscardOptimisticMessages({ status: 'cancelled' })).toBe(true);
+  });
+
   it('does not treat a failed run as a delivered completion turn', () => {
     const failed: AgentSessionSendResult = {
       status: 'failed',

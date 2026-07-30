@@ -3,6 +3,7 @@ import type { AgentTask, BackgroundShellStore } from '../types/runtime.js';
 import type { FileObservation, ToolDiscoveryState } from '../types/tools.js';
 import { AgentContextCache } from '../agent/context.js';
 import { ToolExecutionScheduler } from '../tools/execution-scheduler.js';
+import { RunAccounting } from './run-accounting.js';
 
 export interface SessionRuntimeOptions {
   tasks?: AgentTask[];
@@ -11,6 +12,7 @@ export interface SessionRuntimeOptions {
   toolDiscoveryState?: ToolDiscoveryState;
   agentContextCache?: AgentContextCache;
   toolExecutionScheduler?: ToolExecutionScheduler;
+  runAccounting?: RunAccounting;
   traceId?: string;
 }
 
@@ -23,6 +25,7 @@ export class SessionRuntime {
   readonly agentContextCache: AgentContextCache;
   readonly toolExecutionScheduler: ToolExecutionScheduler;
   readonly traceId: string;
+  readonly runAccounting: RunAccounting;
   /** Advisory memory of recent identical tool failures (registry circuit breaker). */
   readonly recentToolFailures = new Map<string, number>();
   /** Per-session tool call/failure counters keyed by canonical tool name. */
@@ -40,6 +43,7 @@ export class SessionRuntime {
     this.toolDiscoveryState = options.toolDiscoveryState ?? { clock: 0, loaded: new Map() };
     this.agentContextCache = options.agentContextCache ?? new AgentContextCache();
     this.toolExecutionScheduler = options.toolExecutionScheduler ?? new ToolExecutionScheduler();
+    this.runAccounting = options.runAccounting ?? new RunAccounting();
     this.traceId = options.traceId ?? crypto.randomUUID();
   }
 

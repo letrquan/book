@@ -137,6 +137,7 @@ export async function* query(
         sessionStore,
         sessionId: bootstrap.sessionId,
         sessionCreated: bootstrap.created,
+        runSource: 'sdk',
         signal: controller.signal,
         onUserQuestionRequired: options.onUserQuestionRequired,
         forwardSubagentText: options.forwardSubagentText,
@@ -158,6 +159,8 @@ export async function* query(
         messages: result.messages,
         usage: result.usage,
         sessionId: bootstrap.sessionId,
+        outcome: result.outcome,
+        runs: result.runs,
       });
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -222,6 +225,19 @@ export type {
   AgentSpawnRequest,
   EvidenceItem,
 } from './agents/types.js';
+export type {
+  AgentTerminalOutcome,
+  AgentTerminalReason,
+  AgentTerminalStatus,
+} from './types/terminal.js';
+export type {
+  AgentModelIdentity,
+  AgentModelIdentityStatus,
+  AgentRunAccounting,
+  AgentRunContext,
+  AgentRunResult,
+  AgentRunSource,
+} from './types/runs.js';
 export type {
   JsonSchemaObject,
   ToolCatalogMetadata,

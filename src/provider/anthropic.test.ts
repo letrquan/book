@@ -116,6 +116,92 @@ describe('Anthropic request URL', () => {
   });
 });
 
+describe('Anthropic terminal framing', () => {
+  it('reports transport interruption when EOF arrives without message_stop', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                [
+                  'data: {"type":"message_start","message":{"usage":{"input_tokens":2}}}',
+                  '',
+                  'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}',
+                  '',
+                ].join('\n'),
+              ),
+            );
+            controller.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    const stream = chatCompletionStream(
+      defaultConfig({ provider: 'anthropic', baseUrl: 'https://api.anthropic.com' }),
+      [{ role: 'user', content: 'hi' }],
+      [],
+    );
+    for await (const event of stream) events.push(event);
+
+    expect(events).toEqual([
+      { type: 'text', content: 'partial' },
+      {
+        type: 'error',
+        error: 'Provider stream ended before its terminal event.',
+        errorCode: 'transport_interrupted',
+      },
+    ]);
+  });
+});
+
+describe('Anthropic response metadata', () => {
+  it('preserves response identity and stop reason', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                [
+                  'data: {"type":"message_start","message":{"id":"msg-1","model":"claude-sonnet-5","usage":{"input_tokens":2}}}',
+                  '',
+                  'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
+                  '',
+                  'data: {"type":"message_stop"}',
+                  '',
+                ].join('\n'),
+              ),
+            );
+            controller.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const event of chatCompletionStream(
+      defaultConfig({ provider: 'anthropic', baseUrl: 'https://api.anthropic.com' }),
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      events.push(event);
+    }
+    expect(events.at(-1)).toMatchObject({
+      type: 'done',
+      responseId: 'msg-1',
+      responseModel: 'claude-sonnet-5',
+      finishReasons: ['end_turn'],
+    });
+  });
+});
+
 describe('buildSystemBlocks', () => {
   it('caches only the static prefix for zoned system prompts', () => {
     const blocks = buildSystemBlocks('ignored flat fallback', {

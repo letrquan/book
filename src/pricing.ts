@@ -1,3 +1,5 @@
+import type { Usage } from './types/messages.js';
+
 /**
  * Local per-model pricing table ($ per million tokens, input/output).
  *
@@ -7,7 +9,17 @@
  * ponytail: ceiling = user-overridable pricing via settings.json (PRICING or
  * a pricing.<model> key); add when a model not in the table needs a custom rate.
  */
-export const PRICING: Record<string, { in: number; out: number }> = {
+export const PRICING_VERSION = 'book-local-2026-07-29';
+
+export interface ModelPricing {
+  in: number;
+  out: number;
+  cacheRead?: number;
+  cacheCreation?: number;
+  reasoningOut?: number;
+}
+
+export const PRICING: Record<string, ModelPricing> = {
   // Anthropic
   'claude-sonnet-5': { in: 3, out: 15 },
   'claude-opus-4-8': { in: 15, out: 75 },
@@ -21,6 +33,62 @@ export const PRICING: Record<string, { in: number; out: number }> = {
   'glm-4.6': { in: 0.6, out: 2.2 },
   'z-ai/glm-5.2': { in: 0.6, out: 2.2 },
 };
+
+export type UsageCostEstimate =
+  | {
+      status: 'known';
+      costUsd: number;
+      model: string;
+      pricingVersion: string;
+    }
+  | {
+      status: 'unknown';
+      costUsd: null;
+      model: string;
+      pricingVersion: string;
+      reason: 'unknown-model' | 'cache-pricing-unavailable';
+    };
+
+export function hasKnownPricing(model: string): boolean {
+  return PRICING[model] !== undefined;
+}
+
+/** Estimate one provider-reported usage event without guessing missing price dimensions. */
+export function estimateUsageCost(model: string, usage: Usage): UsageCostEstimate {
+  const rate = PRICING[model];
+  if (!rate) {
+    return {
+      status: 'unknown',
+      costUsd: null,
+      model,
+      pricingVersion: PRICING_VERSION,
+      reason: 'unknown-model',
+    };
+  }
+
+  const cacheRead = usage.cacheReadInputTokens ?? 0;
+  const cacheCreation = usage.cacheCreationInputTokens ?? 0;
+  if (
+    (cacheRead > 0 && rate.cacheRead === undefined) ||
+    (cacheCreation > 0 && rate.cacheCreation === undefined)
+  ) {
+    return {
+      status: 'unknown',
+      costUsd: null,
+      model,
+      pricingVersion: PRICING_VERSION,
+      reason: 'cache-pricing-unavailable',
+    };
+  }
+
+  const costUsd =
+    (usage.promptTokens * rate.in +
+      usage.completionTokens * rate.out +
+      cacheRead * (rate.cacheRead ?? 0) +
+      cacheCreation * (rate.cacheCreation ?? 0)) /
+    1_000_000;
+  return { status: 'known', costUsd, model, pricingVersion: PRICING_VERSION };
+}
 
 /**
  * Build the /cost report string: token counts + a local USD estimate.

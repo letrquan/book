@@ -40,6 +40,8 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
       description: deriveAgentDisplayName(prompt, agentName),
       prompt,
       parentSessionId: ctx.parentSessionId,
+      rootRunId: ctx.runContext?.rootRunId,
+      parentRunId: ctx.runContext?.runId,
     });
     const completed = await manager.wait(spawned.id);
     if (['completed', 'failed', 'stopped', 'interrupted'].includes(completed.status)) {

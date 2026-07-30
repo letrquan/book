@@ -83,7 +83,7 @@ describe('runHeadless — text output', () => {
         return true;
       },
     };
-    await runHeadless(config, createDefaultRegistry(), {
+    const result = await runHeadless(config, createDefaultRegistry(), {
       prompt: 'say hi',
       inputFormat: 'text',
       outputFormat: 'text',
@@ -92,6 +92,74 @@ describe('runHeadless — text output', () => {
       stdout,
     });
     expect(writes.join('')).toContain('Hello!');
+    expect(result.outcome).toEqual({
+      status: 'completed',
+      reason: 'normal_completion',
+      partialOutput: false,
+    });
+  });
+
+  it('returns versioned run accounting and verified response identity', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sse([
+          textDelta('Hello!'),
+          `data: ${JSON.stringify({
+            id: 'response-1',
+            model: 'gpt-5',
+            choices: [{ delta: {}, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+          })}\n\n`,
+        ]),
+      ),
+    );
+
+    const result = await runHeadless(freshConfig({ model: 'gpt-5' }), createDefaultRegistry(), {
+      prompt: 'say hi',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout: { write: () => true },
+    });
+
+    expect(result.runs?.[0]?.accounting).toMatchObject({
+      directUsage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      inclusiveUsage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      costStatus: 'known',
+      modelIdentities: [
+        {
+          status: 'verified',
+          requestedModel: 'gpt-5',
+          responseModel: 'gpt-5',
+          responseId: 'response-1',
+        },
+      ],
+      completeness: 'partial',
+    });
+  });
+
+  it('fails before a budgeted call when model pricing is unknown', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await runHeadless(
+      freshConfig({ model: 'vendor/unknown' }),
+      createDefaultRegistry(),
+      {
+        prompt: 'say hi',
+        inputFormat: 'text',
+        outputFormat: 'text',
+        history: [],
+        mode: 'bypassPermissions',
+        maxBudgetUsd: 1,
+        stdout: { write: () => true },
+      },
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.outcome).toMatchObject({ status: 'failed', reason: 'budget_unverifiable' });
   });
 
   it('delivers shared agent events before text output encoding', async () => {
@@ -108,6 +176,7 @@ describe('runHeadless — text output', () => {
     });
 
     expect(events.map((event) => event.type)).toEqual([
+      'run_started',
       'system',
       'session',
       'text',
@@ -118,6 +187,66 @@ describe('runHeadless — text output', () => {
       type: 'text',
       content: 'Hello!',
     });
+  });
+
+  it('creates one independently finalized root run per streamed user request', async () => {
+    const { Readable } = await import('stream');
+    const stdin = Readable.from([
+      `${JSON.stringify({ type: 'user', content: 'first' })}\n`,
+      `${JSON.stringify({ type: 'user', content: 'second' })}\n`,
+    ]);
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      inputFormat: 'stream-json',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdin,
+      stdout: { write: () => true },
+    });
+
+    expect(result.runs).toHaveLength(2);
+    expect(result.runs?.map((run) => run.outcome.status)).toEqual(['completed', 'completed']);
+    expect(result.runs?.[0]?.context).toMatchObject({ source: 'headless' });
+    expect(result.runs?.[1]?.context).toMatchObject({ source: 'headless' });
+    expect(result.runs?.[0]?.context.runId).toBe(result.runs?.[0]?.context.rootRunId);
+    expect(result.runs?.[1]?.context.runId).toBe(result.runs?.[1]?.context.rootRunId);
+    expect(result.runs?.[0]?.context.runId).not.toBe(result.runs?.[1]?.context.runId);
+  });
+
+  it('starts a new linked run when continuing persisted history', async () => {
+    const history = [
+      {
+        id: 'prior-request',
+        role: 'user' as const,
+        content: 'before resume',
+        includeInContext: true,
+        timestamp: 1,
+      },
+      {
+        id: 'prior-assistant',
+        role: 'assistant' as const,
+        content: 'before resume response',
+        includeInContext: true,
+        timestamp: 2,
+      },
+    ];
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'continue',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history,
+      mode: 'bypassPermissions',
+      stdout: { write: () => true },
+    });
+
+    expect(result.runs).toHaveLength(1);
+    expect(result.runs?.[0]?.context).toMatchObject({
+      resumedFromRunId: 'prior-request',
+      source: 'headless',
+    });
+    expect(result.runs?.[0]?.context.runId).not.toBe('prior-request');
   });
 
   it('waits for background completions and routes them through a parent continuation turn', async () => {
@@ -140,11 +269,13 @@ describe('runHeadless — text output', () => {
     const notification: AgentCompletionNotification = {
       deliveryId: 'child-1:1',
       sequence: 1,
+      rootRunId: 'persisted-root-run',
+      runId: 'persisted-child-run',
       completion: {
         agentId: 'child-1',
         displayName: 'Atlas',
         profile: 'explorer',
-        status: 'completed',
+        status: 'failed',
         resolvedModel: 'test/model',
         isolation: 'workspace-readonly',
         summary: 'Found the missing delivery bridge',
@@ -173,6 +304,38 @@ describe('runHeadless — text output', () => {
       execute: async (_args, context) => {
         notification.parentSessionId = context.parentSessionId;
         context.runtime!.agentManager = fakeManager;
+        context.onAgentEvent?.({
+          type: 'agent_result',
+          agent: {
+            id: 'child-1',
+            profile: 'explorer',
+            name: 'explorer',
+            role: 'explorer',
+            description: 'Inspect the task',
+            parentSessionId: context.parentSessionId,
+            rootRunId: 'persisted-root-run',
+            parentRunId: context.runContext?.runId,
+            runId: 'persisted-child-run',
+            status: 'failed',
+            applicationStatus: 'not_applied',
+            prompt: 'inspect',
+            referencedEvidenceIds: [],
+            transcript: [],
+            pendingMessages: [],
+            result: 'partial child result',
+            error: 'child provider failed',
+            runOutcome: {
+              status: 'failed',
+              reason: 'provider_error',
+              partialOutput: true,
+              message: 'child provider failed',
+            },
+            runUsage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+            runStartedAt: Date.now(),
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+        });
         return toolSuccess('spawned');
       },
     });
@@ -207,6 +370,20 @@ describe('runHeadless — text output', () => {
     );
     expect(result.messages.at(-1)?.content).toContain('Integrated the child report.');
     expect(acknowledgeCompletion).toHaveBeenCalledWith('child-1:1');
+    expect(result.runs).toContainEqual(
+      expect.objectContaining({
+        context: expect.objectContaining({
+          runId: 'persisted-child-run',
+          rootRunId: 'persisted-root-run',
+        }),
+        outcome: expect.objectContaining({ status: 'failed', reason: 'provider_error' }),
+        usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+      }),
+    );
+    expect(result.runs?.at(-1)?.context).toMatchObject({
+      rootRunId: 'persisted-root-run',
+      parentRunId: 'persisted-child-run',
+    });
   });
 
   it('expands @ file mentions before sending prompts to the provider', async () => {
@@ -313,6 +490,44 @@ describe('runHeadless — json output', () => {
     expect(parsed.result).toBeDefined();
     expect(parsed.result.usage.totalTokens).toBe(7);
     expect(parsed.result.messages.length).toBeGreaterThan(0);
+    expect(parsed.result.outcome).toEqual({
+      status: 'completed',
+      reason: 'normal_completion',
+      partialOutput: false,
+    });
+  });
+
+  it('returns an interrupted outcome when the provider stream is truncated', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'),
+            );
+            controller.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'say hi',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout: { write: () => true },
+    });
+
+    expect(result.outcome).toEqual({
+      status: 'interrupted',
+      reason: 'transport_interrupted',
+      message: 'Provider stream ended before its terminal event.',
+      partialOutput: true,
+    });
   });
 });
 
@@ -338,6 +553,11 @@ describe('runHeadless — stream-json output', () => {
     expect(types[0]).toBe('system');
     expect(types).toContain('assistant');
     expect(types[types.length - 1]).toBe('result');
+    expect(JSON.parse(lines.at(-1)!).result.outcome).toEqual({
+      status: 'completed',
+      reason: 'normal_completion',
+      partialOutput: false,
+    });
   });
 
   it('emits a pre-created durable session id', async () => {

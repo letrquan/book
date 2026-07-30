@@ -9,7 +9,6 @@
 
 ---
 
-
 **Objective:** Observe real execution before selecting or evolving workflows.
 
 **Deliverables:**
@@ -91,6 +90,11 @@ Root request preparation/finalization belongs at `src/session/agent-session.ts`,
 lifecycle bridge for headless and TUI execution. Headless/TUI adapters should not create duplicate
 run boundaries. A process serving multiple requests must create one root ID inside the request loop.
 Resume must record whether it continues the same run or creates a new linked run.
+
+The runtime prerequisite decision is explicit: each user request receives a new root `runId`; a
+session resume creates a new root run with `resumedFromRunId`; and a managed-agent continuation is
+a child run with a new `runId`, the originating `rootRunId`, and its parent execution ID. Terminal
+outcomes belong to the execution run, while the root ID joins linked child evidence.
 
 ##### 2.3 Implement the project-scoped store
 

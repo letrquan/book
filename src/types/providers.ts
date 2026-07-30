@@ -2,6 +2,7 @@ import type { AgentRuntimeEvent } from '../agents/types.js';
 import type { Message, Usage } from './messages.js';
 import type { PermissionMode, RetryPhase } from './runtime.js';
 import type { CompactResult } from './sessions.js';
+import type { AgentTerminalOutcome } from './terminal.js';
 import type { PlanApprovalResult, ToolCall, ToolResult, UserQuestionHandler } from './tools.js';
 
 export type ProviderContentPart =
@@ -35,7 +36,21 @@ export interface ProviderStreamEvent {
   content?: string;
   toolCall?: ToolCall;
   error?: string;
+  /** Stable machine-readable provider/transport classification when available. */
+  errorCode?: string;
   usage?: Usage;
+  /** Provider response identity when the stream exposes it. */
+  responseModel?: string;
+  responseId?: string;
+  finishReasons?: string[];
+}
+
+export interface ProviderResponseMetadata {
+  provider: string;
+  requestedModel: string;
+  responseModel?: string;
+  responseId?: string;
+  finishReasons?: string[];
 }
 
 export interface ProviderStreamOptions {
@@ -53,12 +68,14 @@ export interface AgentLoopCallbacks {
   onError: (error: string) => void;
   onTurnStart: (turn: number) => void;
   onDone: () => void;
+  /** Final runtime outcome. Emitted once; onError remains diagnostic only. */
+  onTerminal?: (outcome: AgentTerminalOutcome) => void;
   onPermissionRequired: (toolCall: ToolCall) => Promise<'allow' | 'deny' | 'always'>;
   /** Reads the host's current permission mode while an agent loop is active. */
   getMode?: () => PermissionMode;
   /** @deprecated use onUsage for real token counts from the API. */
   onTokenCount?: (count: number) => void;
-  onUsage?: (usage: Usage) => void;
+  onUsage?: (usage: Usage, response?: ProviderResponseMetadata) => void;
   /** Called when a tool changes the live permission mode. */
   onModeChange?: (mode: PermissionMode) => void;
   /** Called when ExitPlanMode submits a plan for host approval. */

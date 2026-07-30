@@ -460,7 +460,13 @@ describe('chatCompletionStream retry — callbacks', () => {
       events.push(e);
     }
     expect(stallFired).toBe(true);
-    expect(events.some((e) => e.type === 'error' && e.error?.includes('stalled'))).toBe(true);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'error',
+        error: expect.stringContaining('stalled'),
+        errorCode: 'stream_stall',
+      }),
+    );
   });
 
   it('does not fire stall for streams that deliver data quickly', async () => {
@@ -518,6 +524,7 @@ describe('chatCompletionStream retry — edge cases', () => {
       events.push(e);
     }
     expect(calls).toBe(1);
+    expect(events).toEqual([]);
   });
 
   it('does not retry when maxAttempts is 0', async () => {
@@ -664,6 +671,40 @@ describe('chatCompletionStream retry — edge cases', () => {
     }
     const err = events.find((e) => e.type === 'error');
     expect(err?.error).toMatch(/timed out/i);
+    expect(err?.errorCode).toBe('timeout');
+  });
+});
+
+describe('chatCompletionStream terminal framing', () => {
+  it('reports transport interruption when EOF arrives without [DONE]', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'),
+            );
+            controller.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const event of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      { type: 'text', content: 'partial' },
+      {
+        type: 'error',
+        error: 'Provider stream ended before its terminal event.',
+        errorCode: 'transport_interrupted',
+      },
+    ]);
   });
 });
 
@@ -770,6 +811,38 @@ describe('chatCompletionStream usage', () => {
       promptTokens: 10,
       completionTokens: 5,
       totalTokens: 15,
+    });
+  });
+
+  it('preserves response identity and finish reason metadata', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(
+              enc.encode(
+                'data: {"id":"resp-1","model":"gpt-5-2026-01","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',
+              ),
+            );
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const event of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(event);
+    }
+    expect(events.at(-1)).toMatchObject({
+      type: 'done',
+      responseId: 'resp-1',
+      responseModel: 'gpt-5-2026-01',
+      finishReasons: ['stop'],
     });
   });
 });

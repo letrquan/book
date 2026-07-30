@@ -115,7 +115,11 @@ describe('AgentSession', () => {
       },
     });
 
-    expect(result).toEqual({ status: 'completed', messages: [message] });
+    expect(result).toEqual({
+      status: 'completed',
+      messages: [message],
+      outcome: { status: 'completed', reason: 'normal_completion', partialOutput: false },
+    });
     expect(order).toEqual(['before-prepare', 'preparing', 'prepared', 'run:hello:0']);
     expect(session.operations.activeKind).toBeNull();
   });
@@ -153,8 +157,140 @@ describe('AgentSession', () => {
     expect(second).toEqual({ status: 'rejected', activeKind: 'send' });
 
     releaseRun();
-    await expect(first).resolves.toEqual({ status: 'completed', messages: [] });
+    await expect(first).resolves.toEqual({
+      status: 'completed',
+      messages: [],
+      outcome: { status: 'completed', reason: 'normal_completion', partialOutput: false },
+    });
     expect(session.operations.activeKind).toBeNull();
+  });
+
+  it('returns the cancellation outcome when an active send is cancelled', async () => {
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const session = new AgentSession({
+      runLoop: async (_config, _registry, _prompt, _history, _callbacks, _mode, options) => {
+        markStarted();
+        await new Promise<void>((resolve) => {
+          options?.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return [];
+      },
+    });
+
+    const pending = session.send({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      displayMessage: 'hello',
+      createUserMessage: () => ({
+        id: 'user-cancelled',
+        role: 'user',
+        content: 'hello',
+        includeInContext: true,
+        timestamp: 10,
+      }),
+      history: [],
+      sessionId: 'session-1',
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+    await started;
+    session.cancel('test');
+
+    await expect(pending).resolves.toEqual({
+      status: 'cancelled',
+      messages: [],
+      outcome: { status: 'cancelled', reason: 'user_cancelled', partialOutput: false },
+    });
+  });
+
+  it('returns partial history when a send terminates with a provider failure', async () => {
+    const messages: Message[] = [
+      {
+        id: 'user-failed',
+        role: 'user',
+        content: 'hello',
+        includeInContext: true,
+        timestamp: 10,
+      },
+      {
+        id: 'assistant-partial',
+        role: 'assistant',
+        content: 'partial',
+        includeInContext: true,
+        timestamp: 11,
+      },
+    ];
+    const session = new AgentSession({
+      runLoop: async (_config, _registry, _prompt, _history, callbacks) => {
+        callbacks.onTerminal?.({
+          status: 'failed',
+          reason: 'provider_error',
+          message: 'provider failed',
+          partialOutput: true,
+        });
+        return messages;
+      },
+    });
+
+    const result = await session.send({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      displayMessage: 'hello',
+      createUserMessage: () => messages[0]!,
+      history: [],
+      sessionId: 'session-1',
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      phase: 'run',
+      messages,
+      outcome: { status: 'failed', reason: 'provider_error', partialOutput: true },
+    });
+  });
+
+  it('returns a stale send outcome even after session replacement clears the snapshot', async () => {
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const session = new AgentSession({
+      runLoop: async (_config, _registry, _prompt, _history, _callbacks, _mode, options) => {
+        markStarted();
+        await new Promise<void>((resolve) => {
+          options?.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return [];
+      },
+    });
+
+    const pending = session.send({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      displayMessage: 'hello',
+      createUserMessage: () => ({
+        id: 'user-replaced',
+        role: 'user',
+        content: 'hello',
+        includeInContext: true,
+        timestamp: 10,
+      }),
+      history: [],
+      sessionId: 'session-1',
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+    await started;
+    session.reset('test');
+
+    await expect(pending).resolves.toMatchObject({
+      status: 'failed',
+      phase: 'run',
+      outcome: { status: 'interrupted', reason: 'session_replaced', partialOutput: false },
+    });
+    expect(session.getSnapshot()).toEqual(createAgentSessionSnapshot());
   });
 
   it('releases the send lease when preparation fails', async () => {
@@ -875,6 +1011,7 @@ describe('AgentSession', () => {
       createAgentSessionSnapshot(),
     );
     expect(events.map((event) => event.type)).toEqual([
+      'run_started',
       'system',
       'session',
       'text',
@@ -883,6 +1020,7 @@ describe('AgentSession', () => {
       'user_question',
       'user_question_result',
       'result',
+      'terminal',
       'done',
     ]);
     expect(snapshot).toMatchObject({
@@ -893,8 +1031,16 @@ describe('AgentSession', () => {
       toolResults: [toolResult],
       messages,
       usage: { totalTokens: 5 },
+      terminal: { status: 'completed', reason: 'normal_completion', partialOutput: false },
     });
     expect(session.getSnapshot()).toEqual(snapshot);
+    const started = events.find((event) => event.type === 'run_started');
+    const terminal = events.find((event) => event.type === 'terminal');
+    expect(started?.context).toMatchObject({
+      sessionId: 'session-1',
+      source: 'internal',
+    });
+    expect(terminal?.runContext).toEqual(started?.context);
   });
 
   it('delegates non-interactive host decisions while retaining question events', async () => {
@@ -975,11 +1121,130 @@ describe('AgentSession', () => {
         callbacks: { onEvent: (event) => events.push(event), onTurnStart: () => {} },
       }),
     ).rejects.toThrow('provider failed');
-    expect(events.map((event) => event.type)).toEqual(['system', 'session', 'error', 'done']);
+    expect(events.map((event) => event.type)).toEqual([
+      'run_started',
+      'system',
+      'session',
+      'error',
+      'terminal',
+      'done',
+    ]);
     expect(session.getSnapshot()).toMatchObject({
       status: 'failed',
       sessionId: 'session-1',
       error: 'provider failed',
+      terminal: {
+        status: 'failed',
+        reason: 'runtime_error',
+        message: 'provider failed',
+        partialOutput: false,
+      },
+    });
+  });
+
+  it('preserves caller cancellation as a distinct terminal outcome', async () => {
+    const controller = new AbortController();
+    const session = new AgentSession({
+      runLoop: async (_config, _registry, _prompt, _history, callbacks) => {
+        callbacks.onText('partial');
+        controller.abort({ bookTerminalReason: 'user_cancelled' });
+        return [];
+      },
+    });
+
+    await session.run({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      prompt: 'prompt',
+      history: [],
+      sessionId: 'session-1',
+      signal: controller.signal,
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+
+    expect(session.getSnapshot()).toMatchObject({
+      status: 'cancelled',
+      assistantText: 'partial',
+      terminal: {
+        status: 'cancelled',
+        reason: 'user_cancelled',
+        partialOutput: true,
+      },
+    });
+  });
+
+  it('preserves timeout as distinct from cancellation and failure', async () => {
+    const controller = new AbortController();
+    const session = new AgentSession({
+      runLoop: async () => {
+        controller.abort(new DOMException('Provider timed out.', 'TimeoutError'));
+        return [];
+      },
+    });
+
+    await session.run({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      prompt: 'prompt',
+      history: [],
+      sessionId: 'session-1',
+      signal: controller.signal,
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+
+    expect(session.getSnapshot()).toMatchObject({
+      status: 'timed_out',
+      terminal: {
+        status: 'timed_out',
+        reason: 'provider_timeout',
+        message: 'Provider timed out.',
+        partialOutput: false,
+      },
+    });
+  });
+
+  it('keeps partial provider output attached to the failed terminal outcome', async () => {
+    const message: Message = {
+      id: 'assistant-partial',
+      role: 'assistant',
+      content: 'partial',
+      includeInContext: true,
+      timestamp: 1,
+    };
+    const session = new AgentSession({
+      runLoop: async (_config, _registry, _prompt, _history, callbacks) => {
+        callbacks.onText('partial');
+        callbacks.onError('provider failed');
+        callbacks.onTerminal?.({
+          status: 'failed',
+          reason: 'provider_error',
+          message: 'provider failed',
+          partialOutput: true,
+          providerCode: 'server_error',
+        });
+        return [message];
+      },
+    });
+
+    await session.run({
+      config: defaultConfig(),
+      registry: {} as ToolRegistry,
+      prompt: 'prompt',
+      history: [],
+      sessionId: 'session-1',
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+
+    expect(session.getSnapshot()).toMatchObject({
+      status: 'failed',
+      assistantText: 'partial',
+      messages: [message],
+      terminal: {
+        status: 'failed',
+        reason: 'provider_error',
+        partialOutput: true,
+        providerCode: 'server_error',
+      },
     });
   });
 
@@ -1012,8 +1277,18 @@ describe('AgentSession', () => {
         if (prompt === 'first') {
           await firstRunBlocked;
           callbacks.onText(' too late');
+          callbacks.onTerminal?.({
+            status: 'interrupted',
+            reason: 'session_replaced',
+            partialOutput: true,
+          });
           return firstMessages;
         }
+        callbacks.onTerminal?.({
+          status: 'completed',
+          reason: 'normal_completion',
+          partialOutput: false,
+        });
         return secondMessages;
       },
     });
@@ -1046,6 +1321,7 @@ describe('AgentSession', () => {
       sessionId: 'session-second',
       assistantText: 'second started',
       messages: secondMessages,
+      terminal: { status: 'completed', reason: 'normal_completion', partialOutput: false },
     });
     expect(session.getSnapshot()).toBe(currentSnapshot);
   });

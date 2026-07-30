@@ -65,6 +65,11 @@ export function didSendMessageComplete(result: AgentSessionSendResult): boolean 
   return result.status === 'completed';
 }
 
+export function shouldDiscardOptimisticMessages(result: AgentSessionSendResult): boolean {
+  if (result.status === 'cancelled') return !result.messages;
+  return result.status === 'failed' && result.phase !== 'run';
+}
+
 export interface UseAgentSessionOptions extends SessionBootstrap {
   store?: SessionStoreInterface;
   timelineStore?: SessionStoreInterface;
@@ -255,6 +260,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const contextHistoryRef = useRef<Message[]>(initialContext);
   const sessionIdRef = useRef(session.sessionId);
   const sessionNameRef = useRef(session.sessionName);
+  const resumedFromRunIdRef = useRef<string | undefined>(undefined);
   const sessionGenerationRef = useRef(0);
   const modeRef = useRef(mode);
   const liveConfigRef = useRef(liveConfig);
@@ -355,13 +361,27 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   useEffect(
     () =>
       agentSession.subscribe((snapshot) => {
-        if (snapshot.status !== 'completed' && snapshot.status !== 'failed') return;
+        if (
+          snapshot.status !== 'completed' &&
+          snapshot.status !== 'failed' &&
+          snapshot.status !== 'cancelled' &&
+          snapshot.status !== 'timed_out' &&
+          snapshot.status !== 'interrupted'
+        )
+          return;
         if (snapshot.sessionId !== sessionIdRef.current) return;
         setIsThinking(false);
         clearCountdown();
         setRetryPhase('none');
         setRetryCountdownMs(0);
-        if (snapshot.status === 'failed' && snapshot.error) setError(snapshot.error);
+        if (
+          (snapshot.status === 'failed' ||
+            snapshot.status === 'timed_out' ||
+            snapshot.status === 'interrupted') &&
+          snapshot.error
+        ) {
+          setError(snapshot.error);
+        }
       }),
     [agentSession, clearCountdown],
   );
@@ -460,7 +480,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         timelineStore,
         previousName,
         onTransitionStart: prepareConversationProjection,
-        onTransition: (bootstrap) =>
+        onTransition: (bootstrap) => {
+          resumedFromRunIdRef.current = undefined;
           projectConversationState(
             bootstrap.sessionId,
             bootstrap.sessionName,
@@ -468,7 +489,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             bootstrap.contextHistory ?? bootstrap.history,
             bootstrap.compactBoundaries,
             bootstrap.rewindTargets,
-          ),
+          );
+        },
       });
     },
     [
@@ -489,7 +511,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         timelineStore,
         selector,
         onTransitionStart: prepareConversationProjection,
-        onTransition: (bootstrap) =>
+        onTransition: (bootstrap) => {
+          resumedFromRunIdRef.current = [...(bootstrap.transcript ?? bootstrap.history)]
+            .reverse()
+            .find((message) => message.role === 'user')?.id;
           projectConversationState(
             bootstrap.sessionId,
             bootstrap.sessionName,
@@ -497,7 +522,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             bootstrap.contextHistory ?? bootstrap.history,
             bootstrap.compactBoundaries,
             bootstrap.rewindTargets,
-          ),
+          );
+        },
       });
     },
     [
@@ -683,6 +709,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         history: () => contextHistoryRef.current,
         mode: modeRef.current,
         sessionId: activeSessionId,
+        source: 'tui',
+        resumedFromRunId:
+          messageOptions?.kind === 'agent-notification' ? undefined : resumedFromRunIdRef.current,
         sessionName: sessionNameRef.current,
         snapshotStore: session.snapshotStore,
         timelineStore,
@@ -856,6 +885,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           parentSessionId: activeSessionId,
         },
       });
+      if (messageOptions?.kind !== 'agent-notification' && sendResult.status !== 'rejected') {
+        resumedFromRunIdRef.current = undefined;
+      }
 
       const hostStillCurrent = sessionGenerationRef.current === generation;
       if (sendResult.status === 'rejected') {
@@ -865,7 +897,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         });
         return sendResult;
       }
-      if (hostStillCurrent && sendResult.status === 'completed') {
+      if (hostStillCurrent && 'messages' in sendResult && sendResult.messages) {
         // Nested tool traces remain display-only; the returned history is provider context.
         contextHistoryRef.current = sendResult.messages;
       }
@@ -879,11 +911,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           setPendingHandoff({ ...handoff, generation });
         }
       }
-      if (
-        hostStillCurrent &&
-        (sendResult.status === 'cancelled' ||
-          (sendResult.status === 'failed' && sendResult.phase !== 'run'))
-      ) {
+      if (hostStillCurrent && shouldDiscardOptimisticMessages(sendResult)) {
         if (sendResult.status === 'failed') {
           setError(
             sendResult.error instanceof Error ? sendResult.error.message : String(sendResult.error),

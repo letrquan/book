@@ -33,12 +33,21 @@ export function classifyHttpStatus(status: number): {
   return { code: 'unknown', retryable: false };
 }
 
+export function classifyApiError(status: number, body: string): ProviderErrorCode {
+  const code = classifyHttpStatus(status).code;
+  return code === 'bad_request' && isContextOverflowError(body) ? 'context_overflow' : code;
+}
+
+export function classifyProviderError(error: unknown): ProviderErrorCode {
+  if (error instanceof DOMException && error.name === 'TimeoutError') return 'timeout';
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  if (message.includes('timed out') || message.includes('timeout')) return 'timeout';
+  if (isContextOverflowError(message)) return 'context_overflow';
+  return 'network';
+}
+
 export function formatApiError(status: number, body: string): string {
-  const statusCode = classifyHttpStatus(status).code;
-  const code =
-    statusCode === 'bad_request' && isContextOverflowError(body)
-      ? ('context_overflow' as const)
-      : statusCode;
+  const code = classifyApiError(status, body);
   const detail = safeErrorDetail(body);
   const base = `API Error: ${status}`;
   switch (code) {

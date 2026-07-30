@@ -81,6 +81,14 @@ describe('managed-agent synchronous delivery', () => {
       agentConfig: config,
       availableTools: [],
       currentMode: 'bypassPermissions',
+      parentSessionId: 'session-root',
+      runContext: {
+        runId: 'run-root',
+        rootRunId: 'run-root',
+        sessionId: 'session-root',
+        source: 'internal',
+        startedAt: 1,
+      },
       runtime,
     };
 
@@ -131,10 +139,57 @@ describe('managed-agent synchronous delivery', () => {
       agentConfig: config,
       availableTools: [],
       currentMode: 'bypassPermissions',
+      parentSessionId: 'session-root',
+      runContext: {
+        runId: 'run-root',
+        rootRunId: 'run-root',
+        sessionId: 'session-root',
+        source: 'internal',
+        startedAt: 1,
+      },
       runtime,
     };
 
     try {
+      const spawnTool = agentLifecycleTools.find((tool) => tool.name === 'AgentSpawn')!;
+      await expect(
+        spawnTool.execute({ agent: 'explorer', prompt: 'attributed' }, context),
+      ).resolves.toMatchObject({ status: 'success' });
+      const attributed = (await manager.list()).find((record) => record.prompt === 'attributed');
+      expect(attributed).toMatchObject({
+        parentSessionId: 'session-root',
+        rootRunId: 'run-root',
+        parentRunId: 'run-root',
+      });
+      if (attributed) {
+        await manager.wait(attributed.id, 1000);
+        await manager.acknowledgeCompletion(
+          `${attributed.id}:${attributed.completionSequence ?? 0}`,
+        );
+        const sendTool = agentLifecycleTools.find((tool) => tool.name === 'AgentSend')!;
+        await expect(
+          sendTool.execute(
+            { agentId: attributed.id, message: 'continue under the new request' },
+            {
+              ...context,
+              runContext: {
+                runId: 'later-parent-run',
+                rootRunId: 'later-root-run',
+                sessionId: 'session-root',
+                source: 'internal',
+                startedAt: 2,
+              },
+            },
+          ),
+        ).resolves.toMatchObject({ status: 'success' });
+        const resumed = await manager.wait(attributed.id, 1000);
+        expect(resumed).toMatchObject({
+          rootRunId: 'later-root-run',
+          parentRunId: 'later-parent-run',
+        });
+        await manager.acknowledgeCompletion(`${resumed.id}:${resumed.completionSequence ?? 0}`);
+      }
+
       const spawned = await manager.spawn({ agent: 'explorer', prompt: 'waited' });
       const waitTool = agentLifecycleTools.find((tool) => tool.name === 'AgentWait')!;
       await expect(waitTool.execute({ agentId: spawned.id }, context)).resolves.toMatchObject({

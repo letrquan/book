@@ -18,6 +18,13 @@ import type {
   TurnCheckpointRecordData,
 } from '../types/sessions.js';
 import type { Message, Usage } from '../types/messages.js';
+import { createAgentRunContext, type AgentRunContext, type AgentRunSource } from '../types/runs.js';
+import {
+  classifyAbortReason,
+  classifyRuntimeError,
+  createTerminalOutcome,
+  type AgentTerminalOutcome,
+} from '../types/terminal.js';
 import type { ToolCall, ToolResult, UserQuestionResponse } from '../types/tools.js';
 import {
   collectAtMentionObservations,
@@ -50,6 +57,7 @@ export interface AgentSessionRunCallbacks {
   onEvent: (event: AgentEvent) => void;
   onTurnStart: AgentLoopCallbacks['onTurnStart'];
   onDone?: AgentLoopCallbacks['onDone'];
+  onTerminal?: AgentLoopCallbacks['onTerminal'];
   onUsage?: AgentLoopCallbacks['onUsage'];
   getMode?: AgentLoopCallbacks['getMode'];
   onModeChange?: AgentLoopCallbacks['onModeChange'];
@@ -78,6 +86,12 @@ export interface AgentSessionRunRequest {
   timelineStore?: Pick<SessionStoreInterface, 'append'> &
     Partial<Pick<SessionStoreInterface, 'readImageAttachment'>>;
   callbacks: AgentSessionRunCallbacks;
+  /** Frozen attribution for this request; created once when omitted. */
+  runContext?: AgentRunContext;
+  /** Optional hard USD ceiling for this root run. */
+  maxBudgetUsd?: number;
+  source?: AgentRunSource;
+  resumedFromRunId?: string;
   options?: Omit<AgentLoopOptions, 'signal'>;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
@@ -131,6 +145,10 @@ export interface AgentSessionSendRequest {
   timelineStore?: SessionTimelineStore;
   registryStore?: SessionStoreInterface;
   callbacks: AgentSessionRunCallbacks;
+  /** Frozen attribution for this request; created once when omitted. */
+  runContext?: AgentRunContext;
+  source?: AgentRunSource;
+  resumedFromRunId?: string;
   options?: Omit<
     AgentLoopOptions,
     | 'signal'
@@ -153,9 +171,15 @@ export interface AgentSessionSendRequest {
 
 export type AgentSessionSendResult =
   | { status: 'rejected'; activeKind: AgentSessionOperation['kind'] | null }
-  | { status: 'cancelled' }
-  | { status: 'completed'; messages: Message[] }
-  | { status: 'failed'; phase: 'before-prepare' | 'run'; error: unknown }
+  | { status: 'cancelled'; messages?: Message[]; outcome?: AgentTerminalOutcome }
+  | { status: 'completed'; messages: Message[]; outcome: AgentTerminalOutcome }
+  | {
+      status: 'failed';
+      phase: 'before-prepare' | 'run';
+      error: unknown;
+      messages?: Message[];
+      outcome?: AgentTerminalOutcome;
+    }
   | { status: 'failed'; phase: 'prepare'; error: unknown; userMessagePersisted: boolean };
 
 export interface AgentSessionCompactRequest {
@@ -271,6 +295,7 @@ export class AgentSession {
     };
     const runtime = request.runtime ?? this.runtime;
     let userMessagePersisted = false;
+    let runOutcome: AgentTerminalOutcome | undefined;
 
     try {
       try {
@@ -326,7 +351,21 @@ export class AgentSession {
           mode: request.mode,
           sessionId: request.sessionId,
           timelineStore: request.timelineStore,
-          callbacks: request.callbacks,
+          callbacks: {
+            ...request.callbacks,
+            onTerminal: (outcome) => {
+              runOutcome ??= outcome;
+              request.callbacks.onTerminal?.(outcome);
+            },
+          },
+          runContext:
+            request.runContext ??
+            createAgentRunContext({
+              sessionId: request.sessionId,
+              runId: userMessage.id,
+              source: request.source ?? 'internal',
+              resumedFromRunId: request.resumedFromRunId,
+            }),
           options: {
             ...request.options,
             runtime,
@@ -345,9 +384,30 @@ export class AgentSession {
           signal: control.signal,
           isCurrent: control.isCurrent,
         });
-        return { status: 'completed', messages };
+        const outcome = runOutcome ?? this.snapshot.terminal;
+        if (!outcome) {
+          return {
+            status: 'failed',
+            phase: 'run',
+            error: new Error('Agent run ended without a terminal outcome.'),
+          };
+        }
+        if (outcome.status === 'completed') return { status: 'completed', messages, outcome };
+        if (outcome.status === 'cancelled') return { status: 'cancelled', messages, outcome };
+        return {
+          status: 'failed',
+          phase: 'run',
+          error: new Error(outcome.message ?? `Agent run ${outcome.status}.`),
+          messages,
+          outcome,
+        };
       } catch (error) {
-        return { status: 'failed', phase: 'run', error };
+        return {
+          status: 'failed',
+          phase: 'run',
+          error,
+          outcome: runOutcome ?? this.snapshot.terminal,
+        };
       }
     } finally {
       this.finishSend(operation);
@@ -375,14 +435,14 @@ export class AgentSession {
 
   cancel(via: string): AgentSessionCancelResult {
     return {
-      operation: this.operations.cancel(),
+      operation: this.operations.cancel({ bookTerminalReason: 'user_cancelled' }),
       interactions: this.interactions.cancelAll(via),
     };
   }
 
   reset(via: string): void {
     this.interactions.cancelAll(via);
-    this.operations.reset();
+    this.operations.reset({ bookTerminalReason: 'session_replaced' });
     this.runGeneration++;
     this.replaceRuntime({}, via);
     this.replaceSnapshot(createAgentSessionSnapshot());
@@ -390,7 +450,7 @@ export class AgentSession {
 
   dispose(via = 'session_disposed'): void {
     this.interactions.cancelAll(via);
-    this.operations.reset();
+    this.operations.reset({ bookTerminalReason: 'session_disposed' });
     this.runGeneration++;
     this.runtime.dispose(via);
   }
@@ -421,7 +481,7 @@ export class AgentSession {
     request: AgentSessionTransitionRequest,
   ): Promise<AgentSessionTransitionResult> {
     request.onTransitionStart?.();
-    this.operations.cancel();
+    this.operations.cancel({ bookTerminalReason: 'session_replaced' });
     await this.endLifecycle(request.config, request.currentSessionId, 'clear');
     if (request.previousName && request.store) {
       request.store.patchMeta(request.currentSessionId, { name: request.previousName });
@@ -457,7 +517,7 @@ export class AgentSession {
 
     const loaded = request.store.load(selected.id);
     request.onTransitionStart?.();
-    this.operations.cancel();
+    this.operations.cancel({ bookTerminalReason: 'session_replaced' });
     await this.endLifecycle(request.config, request.currentSessionId, 'resume');
     request.store.touch(selected.id);
 
@@ -645,11 +705,31 @@ export class AgentSession {
     const runGeneration = ++this.runGeneration;
     let usage: Usage | null = null;
     let emittedError: string | undefined;
+    let terminalOutcome: AgentTerminalOutcome | undefined;
+    let streamedAssistantText = '';
+    const runContext =
+      request.runContext ??
+      createAgentRunContext({
+        sessionId: request.sessionId,
+        runId: request.options?.userMessageId,
+        source: request.source,
+        resumedFromRunId: request.resumedFromRunId,
+      });
+    const runtime = request.options?.runtime ?? this.runtime;
+    runtime.runAccounting.startRoot(runContext, request.maxBudgetUsd);
+    const finalizeOutcome = (outcome: AgentTerminalOutcome): AgentTerminalOutcome => {
+      if (!terminalOutcome) {
+        terminalOutcome = outcome;
+        callbacks.onTerminal?.(outcome);
+      }
+      return terminalOutcome;
+    };
     this.replaceSnapshot(createAgentSessionSnapshot());
     const emit = (event: AgentEvent) => {
       if (runGeneration === this.runGeneration) this.emit(event, callbacks.onEvent);
       else callbacks.onEvent(event);
     };
+    emit({ type: 'run_started', context: runContext });
     emit({ type: 'system', model: request.config.model, cwd: request.config.workspace });
     emit({ type: 'session', sessionId: request.sessionId });
 
@@ -660,7 +740,10 @@ export class AgentSession {
         request.prompt,
         request.history,
         {
-          onText: (content: string) => emit({ type: 'text', content }),
+          onText: (content: string) => {
+            streamedAssistantText += content;
+            emit({ type: 'text', content });
+          },
           onToolCall: (toolCall: ToolCall) => emit({ type: 'tool_use', toolCall }),
           onToolResult: (toolResult: ToolResult) => emit({ type: 'tool_result', toolResult }),
           onError: (error: string) => {
@@ -669,6 +752,9 @@ export class AgentSession {
           },
           onTurnStart: callbacks.onTurnStart,
           onDone: callbacks.onDone ?? (() => {}),
+          onTerminal: (outcome) => {
+            finalizeOutcome(outcome);
+          },
           onPermissionRequired: (toolCall) => {
             if (request.isCurrent?.() === false) return Promise.resolve('deny');
             return callbacks.onPermissionRequired
@@ -733,7 +819,8 @@ export class AgentSession {
         request.mode,
         {
           ...request.options,
-          runtime: request.options?.runtime ?? this.runtime,
+          runtime,
+          runContext,
           resolveAttachment:
             request.options?.resolveAttachment ??
             (request.timelineStore?.readImageAttachment
@@ -743,11 +830,43 @@ export class AgentSession {
           signal: request.signal,
         },
       );
-      emit({ type: 'result', messages, usage, sessionId: request.sessionId });
+      const partialOutput =
+        streamedAssistantText.length > 0 ||
+        messages.slice(request.history.length).some((message) => message.role === 'assistant');
+      const outcome = finalizeOutcome(
+        terminalOutcome ??
+          (request.signal?.aborted
+            ? classifyAbortReason(request.signal.reason, partialOutput)
+            : emittedError
+              ? createTerminalOutcome('failed', 'provider_error', {
+                  partialOutput,
+                  message: emittedError,
+                })
+              : createTerminalOutcome('completed', 'normal_completion', {
+                  partialOutput: false,
+                })),
+      );
+      emit({
+        type: 'result',
+        messages,
+        usage,
+        sessionId: request.sessionId,
+        outcome,
+        runContext,
+      });
+      emit({ type: 'terminal', outcome, runContext });
       return messages;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (emittedError !== message) emit({ type: 'error', error: message });
+      const partialOutput = streamedAssistantText.length > 0;
+      const outcome = finalizeOutcome(
+        terminalOutcome ??
+          (request.signal?.aborted
+            ? classifyAbortReason(request.signal.reason, partialOutput)
+            : classifyRuntimeError(error, partialOutput)),
+      );
+      emit({ type: 'terminal', outcome, runContext });
       throw error;
     } finally {
       emit({ type: 'done' });

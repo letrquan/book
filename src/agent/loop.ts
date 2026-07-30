@@ -1,6 +1,7 @@
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import { createHash } from 'node:crypto';
 import type { ImageAttachment, Message, Usage } from '../types/messages.js';
+import type { ProviderResponseMetadata } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
 import type {
   ToolCall,
@@ -51,6 +52,12 @@ import { SessionRuntime } from '../session/runtime.js';
 import { ExplorationRoutingTracker } from './exploration-routing.js';
 import { permissionDeniedError } from './actionable-errors.js';
 import { isContextOverflowError } from '../provider/reliability.js';
+import {
+  classifyAbortReason,
+  createTerminalOutcome,
+  type AgentTerminalOutcome,
+} from '../types/terminal.js';
+import type { AgentRunContext } from '../types/runs.js';
 
 const log = createDebugLogger('agent');
 
@@ -110,6 +117,8 @@ export async function runAgentLoop(
     parentSessionId?: string;
     /** Mutable resources owned by the logical session. */
     runtime?: SessionRuntime;
+    /** Frozen attribution for this root or linked child execution. */
+    runContext?: AgentRunContext;
     /** Override user-local oversized tool-output storage (primarily for isolated hosts/tests). */
     toolOutputRoot?: string;
     /** Override user-local tool-use telemetry storage (primarily for isolated hosts/tests). */
@@ -119,6 +128,14 @@ export async function runAgentLoop(
 ): Promise<Message[]> {
   const signal = options?.signal;
   const newHistory = [...history];
+  let assistantOutputProduced = false;
+  let terminalEmitted = false;
+  const finishTerminal = (outcome: AgentTerminalOutcome): void => {
+    if (terminalEmitted) return;
+    terminalEmitted = true;
+    callbacks.onTerminal?.(outcome);
+  };
+  const hasPartialOutput = (): boolean => assistantOutputProduced;
   const retry = config.retry;
   const runtime = options?.runtime ?? new SessionRuntime();
   runtime.toolExecutionScheduler.setLimit(config.settings.toolExecution.maxConcurrent);
@@ -168,6 +185,12 @@ export async function runAgentLoop(
         includeInContext: false,
         timestamp: Date.now(),
       });
+      finishTerminal(
+        createTerminalOutcome('failed', 'blocked_by_policy', {
+          partialOutput: false,
+          message: r.message ?? 'The prompt was blocked by a user hook.',
+        }),
+      );
       return newHistory;
     }
     if (r.action === 'modify' && r.modifiedPrompt) {
@@ -232,6 +255,7 @@ export async function runAgentLoop(
     agentId: options?.agentId,
     agentRole: options?.agentRole,
     parentSessionId: options?.parentSessionId,
+    runContext: options?.runContext,
     onAgentEvent: callbacks.onAgentEvent,
     onHookEvent: callbacks.onHookEvent,
     runtime,
@@ -417,12 +441,19 @@ export async function runAgentLoop(
       callbacks.onError(
         `Request is too large for ${effectiveConfig.model} (${requestTokens} estimated input tokens, ${usableContextLimit} available input tokens after reserving output space). Start a new session or reduce the current prompt.`,
       );
+      finishTerminal(
+        createTerminalOutcome('failed', 'context_overflow', {
+          partialOutput: hasPartialOutput(),
+          message: `Request is too large for ${effectiveConfig.model}.`,
+        }),
+      );
       return newHistory;
     }
     let assistantContent = '';
     const toolCalls: ToolCall[] = [];
     const nestedTraceIds: string[] = [];
     let turnUsage: Usage | null = null;
+    let responseMetadata: ProviderResponseMetadata | undefined;
 
     // Buffer text during streaming so we can discard on retry.
     let textBuffer = '';
@@ -430,6 +461,22 @@ export async function runAgentLoop(
     let textStreamingStarted = false;
 
     const provider = options?.provider ?? createProvider(effectiveConfig);
+    if (options?.runContext) {
+      const budget = runtime.runAccounting.checkBeforeModelCall(
+        options.runContext.rootRunId,
+        effectiveConfig.model,
+      );
+      if (!budget.allowed) {
+        const reason = budget.status === 'exceeded' ? 'budget_exceeded' : 'budget_unverifiable';
+        const outcome = createTerminalOutcome('failed', reason, {
+          partialOutput: hasPartialOutput(),
+          message: budget.message,
+        });
+        callbacks.onError(budget.message ?? 'Run budget cannot be enforced.');
+        finishTerminal(outcome);
+        return newHistory;
+      }
+    }
     const stream = provider.stream(effectiveConfig, messages, activeDefinitions, {
       signal,
       onRetry: (attempt, max, delayMs) => {
@@ -444,6 +491,7 @@ export async function runAgentLoop(
     });
 
     let streamError: string | null = null;
+    let streamErrorCode: string | undefined;
     let streamDone = false;
 
     try {
@@ -451,6 +499,7 @@ export async function runAgentLoop(
         if (event.type === 'text' && event.content) {
           textBuffer += event.content;
           if (textStreamingStarted) {
+            assistantOutputProduced = true;
             callbacks.onText(event.content);
           } else {
             heldText += event.content;
@@ -458,11 +507,13 @@ export async function runAgentLoop(
             const errorPrefix = '[error]';
             if (!errorPrefix.startsWith(candidate) && !candidate.startsWith(errorPrefix)) {
               textStreamingStarted = true;
+              assistantOutputProduced = true;
               callbacks.onText(heldText);
               heldText = '';
             }
           }
         } else if (event.type === 'tool_call' && event.toolCall) {
+          assistantOutputProduced = true;
           toolCalls.push(event.toolCall);
           callbacks.onToolCall(event.toolCall);
           if (options?.nestedToolObserver && options.parentToolTraceId) {
@@ -476,6 +527,7 @@ export async function runAgentLoop(
           }
         } else if (event.type === 'error' && event.error) {
           streamError = event.error;
+          streamErrorCode = event.errorCode;
           break;
         } else if (event.type === 'done') {
           streamDone = true;
@@ -483,6 +535,13 @@ export async function runAgentLoop(
             turnUsage = event.usage;
             lastUsage = turnUsage;
           }
+          responseMetadata = {
+            provider: provider.id,
+            requestedModel: effectiveConfig.model,
+            responseModel: event.responseModel,
+            responseId: event.responseId,
+            finishReasons: event.finishReasons,
+          };
         }
         if (signal?.aborted) break;
       }
@@ -492,6 +551,7 @@ export async function runAgentLoop(
         break;
       }
       streamError = e instanceof Error ? e.message : String(e);
+      streamErrorCode = 'provider_error';
     }
 
     assistantContent = textBuffer;
@@ -504,14 +564,18 @@ export async function runAgentLoop(
       isContextOverflowError(assistantContent);
     if (routerOverflowResponse) {
       streamError = assistantContent.trim();
+      streamErrorCode = 'context_overflow';
       assistantContent = '';
     }
-    if (heldText && !routerOverflowResponse) callbacks.onText(heldText);
+    if (heldText && !routerOverflowResponse) {
+      assistantOutputProduced = true;
+      callbacks.onText(heldText);
+    }
 
     // If the stream ended with an error, surface it and stop the loop. Keep
     // any partial assistant text/tool call metadata in returned history so
     // callers that persist sessions do not lose what was already rendered.
-    if (streamError) {
+    if (streamError && !signal?.aborted) {
       const canRecoverContextOverflow =
         forcedCompactTurn !== turn &&
         assistantContent.length === 0 &&
@@ -579,6 +643,7 @@ export async function runAgentLoop(
         toolCallCount: toolCalls.length,
       });
       if (assistantContent.length > 0 || toolCalls.length > 0) {
+        assistantOutputProduced = true;
         newHistory.push({
           id: crypto.randomUUID(),
           role: 'assistant',
@@ -589,6 +654,40 @@ export async function runAgentLoop(
         });
       }
       callbacks.onError(streamError);
+      const streamOutcome =
+        streamErrorCode === 'stream_stall'
+          ? createTerminalOutcome('timed_out', 'stream_stall', {
+              partialOutput: hasPartialOutput(),
+              message: streamError,
+            })
+          : streamErrorCode === 'timeout'
+            ? createTerminalOutcome('timed_out', 'provider_timeout', {
+                partialOutput: hasPartialOutput(),
+                message: streamError,
+              })
+            : streamErrorCode === 'transport_interrupted'
+              ? createTerminalOutcome('interrupted', 'transport_interrupted', {
+                  partialOutput: hasPartialOutput(),
+                  message: streamError,
+                })
+              : streamErrorCode === 'context_overflow'
+                ? createTerminalOutcome('failed', 'context_overflow', {
+                    partialOutput: hasPartialOutput(),
+                    message: streamError,
+                    providerCode: streamErrorCode,
+                  })
+                : streamErrorCode === 'protocol_error'
+                  ? createTerminalOutcome('failed', 'protocol_error', {
+                      partialOutput: hasPartialOutput(),
+                      message: streamError,
+                      providerCode: streamErrorCode,
+                    })
+                  : createTerminalOutcome('failed', 'provider_error', {
+                      partialOutput: hasPartialOutput(),
+                      message: streamError,
+                      providerCode: streamErrorCode,
+                    });
+      finishTerminal(streamOutcome);
       return newHistory;
     }
 
@@ -609,6 +708,7 @@ export async function runAgentLoop(
         return result;
       });
       if (assistantContent.length > 0 || toolCalls.length > 0) {
+        assistantOutputProduced = true;
         newHistory.push({
           id: crypto.randomUUID(),
           role: 'assistant',
@@ -623,7 +723,13 @@ export async function runAgentLoop(
     }
 
     if (turnUsage) {
-      callbacks.onUsage?.(turnUsage);
+      const metadata = responseMetadata ?? {
+        provider: provider.id,
+        requestedModel: effectiveConfig.model,
+      };
+      callbacks.onUsage?.(turnUsage, metadata);
+      if (options?.runContext)
+        runtime.runAccounting.record(options.runContext, turnUsage, metadata);
     }
 
     const publishResult = (callIndex: number, result: ToolResult): void => {
@@ -653,6 +759,12 @@ export async function runAgentLoop(
         );
       }
       callbacks.onError(message);
+      finishTerminal(
+        createTerminalOutcome('failed', 'protocol_error', {
+          partialOutput: assistantContent.length > 0 || hasPartialOutput(),
+          message,
+        }),
+      );
       const malformedMessage: Message = {
         id: options?.assistantMessageId?.(turn) ?? crypto.randomUUID(),
         role: 'assistant',
@@ -662,6 +774,7 @@ export async function runAgentLoop(
         includeInContext: true,
         timestamp: Date.now(),
       };
+      assistantOutputProduced = true;
       newHistory.push(malformedMessage);
       callbacks.onAssistantMessageComplete?.(malformedMessage);
       break;
@@ -1242,6 +1355,7 @@ export async function runAgentLoop(
       ),
       timestamp: Date.now(),
     };
+    if (assistantContent.length > 0 || toolCalls.length > 0) assistantOutputProduced = true;
     newHistory.push(assistantMessage);
     callbacks.onAssistantMessageComplete?.(assistantMessage);
 
@@ -1269,6 +1383,22 @@ export async function runAgentLoop(
     log.warn('max turns reached', { maxTurns: config.maxTurns });
     callbacks.onError(
       `Reached max turns (${config.maxTurns}). Refine your prompt or increase BOOK_MAX_TURNS.`,
+    );
+    finishTerminal(
+      createTerminalOutcome('failed', 'max_turns', {
+        partialOutput: hasPartialOutput(),
+        message: `Reached max turns (${config.maxTurns}).`,
+      }),
+    );
+  }
+
+  if (!terminalEmitted) {
+    finishTerminal(
+      signal?.aborted
+        ? classifyAbortReason(signal.reason, hasPartialOutput())
+        : createTerminalOutcome('completed', 'normal_completion', {
+            partialOutput: false,
+          }),
     );
   }
 

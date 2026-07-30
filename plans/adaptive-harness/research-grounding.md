@@ -36,6 +36,42 @@ without improving the requested task:
 
 Until these are addressed, Phase 6 results are not attributable to workflow selection.
 
+## Research Update: What Existing Systems Change
+
+The roadmap was rechecked against OpenTelemetry GenAI agent conventions, LiteLLM's
+budget/cost accounting, Inspect AI's task/sample/scorer/sandbox model, MCP security guidance,
+and VS Code Workspace Trust. Four decisions follow from that comparison:
+
+1. **Separate attribution from observability.** OpenTelemetry distinguishes requested model,
+   response model, provider, operation/span identity, usage dimensions, and error status. Book's
+   local run contract must keep those fields separate; an OTel export mapping is a view, not the
+   source of truth. Provider/model identity is `verified` only when the response identifies what
+   actually served the request; a proxy's configured provider is not proof of the upstream model.
+2. **Separate direct, inclusive, and estimated accounting.** A run needs its own model-call usage,
+   root-inclusive usage (including children and compaction), pricing version, and budget state.
+   Cost estimates must support cache/reasoning dimensions and an explicit unknown state. A single
+   `usage` number or a display-only USD estimate cannot be a promotion guardrail. Hard budgets must
+   be enforced at the next-call boundary; if pricing or identity is unknown, evaluation mode must
+   fail closed while ordinary interactive mode may continue with `unknown` accounting.
+   The current implementation uses a versioned local table and therefore remains an estimate until
+   a provider/account billing source or explicitly supplied pricing configuration is available; it
+   must not be presented as an invoice or a projected-cost guarantee.
+3. **Make trial the evaluation unit below a case.** Anthropic's agent-eval model separates task,
+   trial, grader, transcript, and final environment outcome; Inspect AI gives each sample a fresh
+   sandbox and records limits and scores independently. Phase 0 therefore needs stable trial/attempt
+   identity, per-trial isolation, final-state grading, and explicit unknown/error outcomes rather
+   than treating one case execution as deterministic.
+4. **Tier the security gates.** VS Code's restricted mode and Inspect's per-sample containers show
+   that trust and isolation are runtime boundaries, not fixture metadata. MCP guidance additionally
+   requires consent-bound authorization to avoid confused-deputy credential flows. Safe built-in
+   fixtures may proceed after attribution and evaluator-runner gates; project-controlled hooks,
+   MCP, provider endpoints, executable commands, skills, and subagents remain blocked until the
+   workspace-trust, credential-origin, network, and sandbox gates are verified.
+
+These decisions narrow the next implementation slice and prevent the plan from either treating
+estimated cost as truth or blocking all non-adversarial Phase 0 work on controls that only matter
+once project-controlled processes are admitted.
+
 ## Required Pre-Phase-0 Preconditions
 
 These are small runtime correctness changes, not adaptive behavior. They should be
@@ -103,7 +139,9 @@ tracked as a prerequisite batch before collecting promotion evidence:
   alone is insufficient; add an explicit availability gate before any storage or provider
   work.
 - Is `HarnessRunContext` absent in `off`, or is there a non-persisted deterministic
-  no-run value? The current required `runId` conflicts with the stated no-ID off path.
+  no-run value? The current required `runId` conflicts with the stated no-ID off path. The
+  precondition runtime identity is therefore kept separate as `AgentRunContext`; it is created
+  for attribution, while the Phase 1 harness context remains absent in `off`.
 - What is the queue/flush/close contract for asynchronous observation, including dropped
   events, backpressure, shutdown, and evidence-write failure?
 - Which workflow controls are actually enforced by the kernel, prompt guidance only, or
@@ -266,6 +304,10 @@ sources below were rechecked on 2026-07-28:
 - Anthropic, [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents): defines task, trial, grader, transcript, outcome, and harness; emphasizes multiple trials because agent outputs vary and grades the final environment state rather than the model's claim.
 - OpenTelemetry, [GenAI agent semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-agent-spans.md): provides agent/workflow/tool span semantics, exact requested model/provider fields, bounded trace attributes, and explicit warnings that message/system-instruction content is sensitive opt-in data.
 - OpenTelemetry, [Trace API](https://opentelemetry.io/docs/specs/otel/trace/api/) and [common limits](https://opentelemetry.io/docs/specs/otel/common/): require valid immutable trace/span identity and bounded attribute collections.
+- LiteLLM, [model pricing map](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) and [budget manager](https://github.com/BerriAI/litellm/blob/main/litellm/budget_manager.py): keep versioned per-model dimensions, project current spend, and refuse to guess unknown pricing.
+- Inspect AI, [tasks](https://github.com/UKGovernmentBEIS/inspect_ai/blob/main/docs/tasks.qmd), [evaluation logs](https://github.com/UKGovernmentBEIS/inspect_ai/blob/main/docs/eval-logs.qmd), and [sandboxing](https://github.com/UKGovernmentBEIS/inspect_ai/blob/main/docs/sandboxing.qmd): separate task/sample/solver/scorer, preserve per-sample logs and limits, and provision a fresh sandbox per sample.
+- Model Context Protocol, [security best practices](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/docs/2026-07-28/tutorials/security/security_best_practices.mdx): prevent confused-deputy authorization and bind consent/credentials to the requesting client and server.
+- Visual Studio Code, [Workspace Trust](https://github.com/microsoft/vscode-docs/blob/main/docs/editing/workspaces/workspace-trust.md): restricted mode blocks automatic project code execution, but trust is not a substitute for extension/process isolation.
 - OWASP, [LLM Prompt Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html): covers indirect injection, RAG/context poisoning, tool manipulation, output screening, least privilege, and monitoring.
 - W3C, [Trace Context](https://www.w3.org/TR/trace-context/): defines interoperable trace/span propagation; UI IDs must remain separate from these identifiers.
 - IETF, [RFC 8785 JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785): canonical JSON gives deterministic, hashable representations for workflow, tool-surface, fixture, and promotion artifacts.
@@ -305,11 +347,11 @@ sources below were rechecked on 2026-07-28:
 9. **Phase 5:** immutable verifiers, typed outcomes, missingness policy, and explicit
    feedback/rubric contracts.
 10. **Phase 6:** isolated replay, nested held-in/held-out evaluation, multiplicity and
-   sequentially valid reporting.
+    sequentially valid reporting.
 11. **Phase 7:** salted canary assignment, numerical rollback rules, signed registry, and
-   a human-approved rollout gate.
+    a human-approved rollout gate.
 12. **Phase 8:** sealed final holdout, bounded candidate/query budgets, recomputed complexity,
-   signed atomic promotion, and "no promotion" as a valid result.
+    signed atomic promotion, and "no promotion" as a valid result.
 13. **Phase 9:** separate proposal per transfer track with a new Phase-0-style contract.
 
 ## Bottom Line

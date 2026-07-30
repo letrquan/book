@@ -46,7 +46,12 @@ vi.mock('./headless.js', () => ({
       });
     }
     await state.gate;
-    return { messages: [], usage: null, sessionId: options.sessionId };
+    return {
+      messages: [],
+      usage: null,
+      sessionId: options.sessionId,
+      outcome: { status: 'completed', reason: 'normal_completion', partialOutput: false },
+    };
   }),
 }));
 
@@ -87,6 +92,7 @@ describe('SDK runtime event bridge', () => {
       expect.objectContaining({
         type: 'result',
         sessionId: session?.type === 'session' ? session.sessionId : '',
+        outcome: { status: 'completed', reason: 'normal_completion', partialOutput: false },
       }),
     );
     expect((await iterator.next()).value).toEqual({ type: 'done' });

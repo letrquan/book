@@ -4,6 +4,8 @@ import type { ImageAttachment, Message, Usage } from './types/messages.js';
 import type { HeadlessOptions, HeadlessResult } from './types/public-sdk.js';
 import type { UserQuestionResponse } from './types/tools.js';
 import type { AgentCompletionNotification } from './agents/types.js';
+import { createTerminalOutcome, type AgentTerminalOutcome } from './types/terminal.js';
+import { createAgentRunContext, type AgentRunContext, type AgentRunResult } from './types/runs.js';
 import { resolveContextLimit, shouldCompact, usagePressureTokens } from './agent/compact.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { observationKey } from './tools/file-provenance.js';
@@ -85,6 +87,82 @@ export async function runHeadless(
     const permissionRequired = async (): Promise<'deny'> => 'deny';
 
     let lastUsage: Usage | null = null;
+    let lastOutcome: AgentTerminalOutcome | null = null;
+    const runResults: AgentRunResult[] = [];
+    const recordRunResult = (result: AgentRunResult): void => {
+      const existing = runResults.findIndex(
+        (candidate) => candidate.context.runId === result.context.runId,
+      );
+      if (existing >= 0) runResults[existing] = result;
+      else runResults.push(result);
+    };
+    const recordManagedRunResult = (
+      agent: Extract<AgentEvent, { type: 'agent_result' }>['agent'],
+    ): void => {
+      if (!agent.runId) return;
+      const context = createAgentRunContext({
+        sessionId: agent.parentSessionId ?? runtimeSessionId,
+        runId: agent.runId,
+        rootRunId: agent.rootRunId ?? agent.runId,
+        parentRunId: agent.parentRunId,
+        source: 'internal',
+        startedAt: agent.runStartedAt ?? agent.startedAt ?? agent.createdAt,
+      });
+      const outcome =
+        agent.runOutcome ??
+        (agent.status === 'completed'
+          ? createTerminalOutcome('completed', 'normal_completion', { partialOutput: false })
+          : createTerminalOutcome('failed', 'runtime_error', {
+              partialOutput: Boolean(agent.result),
+              message: agent.error ?? `Managed agent ended with status ${agent.status}.`,
+            }));
+      recordRunResult({
+        context,
+        outcome,
+        usage: agent.runUsage ?? null,
+        accounting: runtime.runAccounting.snapshotRun(agent.runId),
+      });
+    };
+    const recordManagedCompletionResult = (notification: AgentCompletionNotification): void => {
+      if (
+        !notification.runId ||
+        runResults.some((candidate) => candidate.context.runId === notification.runId)
+      )
+        return;
+      const completion = notification.completion;
+      const outcome =
+        notification.outcome ??
+        (completion.status === 'completed'
+          ? createTerminalOutcome('completed', 'normal_completion', { partialOutput: false })
+          : completion.status === 'stopped'
+            ? createTerminalOutcome('cancelled', 'user_cancelled', {
+                partialOutput: Boolean(completion.summary),
+                message: completion.error,
+              })
+            : completion.status === 'interrupted'
+              ? createTerminalOutcome('interrupted', 'transport_interrupted', {
+                  partialOutput: Boolean(completion.summary),
+                  message: completion.error,
+                })
+              : createTerminalOutcome('failed', 'runtime_error', {
+                  partialOutput: Boolean(completion.summary),
+                  message: completion.error,
+                }));
+      recordRunResult({
+        context: createAgentRunContext({
+          sessionId: notification.parentSessionId ?? runtimeSessionId,
+          runId: notification.runId,
+          rootRunId: notification.rootRunId ?? notification.runId,
+          parentRunId: notification.parentRunId,
+          source: 'internal',
+          startedAt: completion.startedAt ?? completion.createdAt,
+        }),
+        outcome,
+        usage: completion.usage ?? null,
+        accounting: runtime.runAccounting.snapshotRun(notification.runId),
+      });
+    };
+    const rootContexts = new Map<string, AgentRunContext>();
     let lastHostCompactAttemptKey: string | null = null;
     const contextHistory: Message[] = [...opts.history];
     const transcript: Message[] = [...(opts.transcript ?? opts.history)];
@@ -103,8 +181,18 @@ export async function runHeadless(
       ...config,
       maxTurns: opts.maxTurns ?? config.maxTurns,
     };
-    const createRunCallbacks = (): AgentSessionRunRequest['callbacks'] => ({
-      onEvent: (event) => emitAgentEvent(event, opts, emit),
+    const createRunCallbacks = (
+      runContext: AgentRunContext,
+      onOutcome: (outcome: AgentTerminalOutcome) => void,
+    ): AgentSessionRunRequest['callbacks'] => ({
+      onEvent: (event) => {
+        if (event.type === 'agent_result') recordManagedRunResult(event.agent);
+        if (event.type === 'terminal') {
+          lastOutcome = event.outcome;
+          onOutcome(event.outcome);
+        }
+        emitAgentEvent(event, opts, emit);
+      },
       // No header rewrite at turn boundaries: load() derives updatedAt from
       // the last appended record, so the on-disk header is never authoritative.
       onTurnStart: () => {},
@@ -172,38 +260,69 @@ export async function runHeadless(
       prompt: string,
       displayMessage: string,
       userMessage: Message,
+      runContext: AgentRunContext,
     ): Promise<void> => {
-      const updated = await agentSession.run({
-        config: loopConfig,
-        registry,
-        prompt,
-        history: contextHistory,
-        mode: opts.mode,
-        sessionId: runtimeSessionId,
-        timelineStore: store,
-        signal: opts.signal,
-        callbacks: createRunCallbacks(),
-        options: {
-          displayMessage,
-          userMessageId: userMessage.id,
-          userMessageTimestamp: userMessage.timestamp,
-          userFileObservations: userMessage.fileObservations,
-          userAttachments: userMessage.attachments,
-          userMessageKind: userMessage.kind,
-          manageSessionHooks: sessionId ? false : undefined,
-          // Completion messages are host-generated notifications, not user
-          // prompts. Keep UserPromptSubmit hooks from rewriting or blocking them.
-          skipUserPromptHooks: userMessage.kind === 'agent-notification',
-          parentSessionId: runtimeSessionId,
-          runtime,
-        },
-      });
+      let runOutcome: AgentTerminalOutcome | undefined;
+      lastUsage = null;
+      let updated: Message[];
+      try {
+        updated = await agentSession.run({
+          config: loopConfig,
+          registry,
+          prompt,
+          history: contextHistory,
+          mode: opts.mode,
+          sessionId: runtimeSessionId,
+          timelineStore: store,
+          signal: opts.signal,
+          callbacks: createRunCallbacks(runContext, (outcome) => {
+            runOutcome = outcome;
+          }),
+          runContext,
+          maxBudgetUsd: opts.maxBudgetUsd,
+          options: {
+            displayMessage,
+            userMessageId: userMessage.id,
+            userMessageTimestamp: userMessage.timestamp,
+            userFileObservations: userMessage.fileObservations,
+            userAttachments: userMessage.attachments,
+            userMessageKind: userMessage.kind,
+            manageSessionHooks: sessionId ? false : undefined,
+            // Completion messages are host-generated notifications, not user
+            // prompts. Keep UserPromptSubmit hooks from rewriting or blocking them.
+            skipUserPromptHooks: userMessage.kind === 'agent-notification',
+            parentSessionId: runtimeSessionId,
+            runContext,
+            runtime,
+          },
+        });
+      } catch (error) {
+        recordRunResult({
+          context: runContext,
+          outcome:
+            runOutcome ??
+            createTerminalOutcome('interrupted', 'missing_terminal', { partialOutput: false }),
+          usage: runtime.runAccounting.snapshotRun(runContext.runId)?.directUsage ?? lastUsage,
+          accounting: runtime.runAccounting.snapshotRun(runContext.runId),
+        });
+        throw error;
+      }
       const priorIds = new Set(transcript.map((message) => message.id));
       transcript.push(
         ...updated.filter((message) => !priorIds.has(message.id) && message.role === 'assistant'),
       );
       contextHistory.length = 0;
       contextHistory.push(...updated);
+      recordRunResult({
+        context: runContext,
+        outcome:
+          runOutcome ??
+          createTerminalOutcome('interrupted', 'missing_terminal', {
+            partialOutput: updated.some((message) => message.role === 'assistant'),
+          }),
+        usage: runtime.runAccounting.snapshotRun(runContext.runId)?.directUsage ?? lastUsage,
+        accounting: runtime.runAccounting.snapshotRun(runContext.runId),
+      });
     };
 
     // Collect prompts: text input -> single prompt; stream-json -> read stdin.
@@ -294,7 +413,20 @@ export async function runHeadless(
       sessionName = recorded.sessionName;
       const contextMessage = recorded.contextMessage;
       transcript.push(userMessage);
-      await runParentTurn(contextMessage, prompt, userMessage);
+      const runContext = createAgentRunContext({
+        sessionId: runtimeSessionId,
+        runId: userMessage.id,
+        source: opts.runSource ?? 'headless',
+        resumedFromRunId:
+          runResults.length === 0
+            ? (opts.resumedFromRunId ??
+              (opts.history.length > 0
+                ? [...opts.history].reverse().find((message) => message.role === 'user')?.id
+                : undefined))
+            : undefined,
+      });
+      rootContexts.set(runContext.rootRunId, runContext);
+      await runParentTurn(contextMessage, prompt, userMessage, runContext);
     }
 
     // Background children outlive the root tool call. Keep the runtime alive,
@@ -325,7 +457,12 @@ export async function runHeadless(
           (notification) => !deliveredCompletionIds.has(notification.deliveryId),
         );
         if (fresh.length === 0) continue;
-        const batch = takeAgentCompletionBatch(fresh);
+        const firstRootRunId = fresh[0]?.rootRunId;
+        const sameRoot = firstRootRunId
+          ? fresh.filter((notification) => notification.rootRunId === firstRootRunId)
+          : fresh;
+        const batch = takeAgentCompletionBatch(sameRoot);
+        for (const notification of batch) recordManagedCompletionResult(notification);
         const built = batch.map((notification: AgentCompletionNotification) =>
           buildAgentCompletionMessage(notification),
         );
@@ -352,7 +489,18 @@ export async function runHeadless(
           signal: opts.signal,
         });
         transcript.push(userMessage);
-        await runParentTurn(recorded.contextMessage, displayMessage, userMessage);
+        const parentContext = batch[0]?.rootRunId
+          ? rootContexts.get(batch[0].rootRunId)
+          : undefined;
+        const runContext = createAgentRunContext({
+          sessionId: runtimeSessionId,
+          source: opts.runSource ?? 'headless',
+          rootRunId: parentContext?.rootRunId ?? batch[0]?.rootRunId,
+          parentRunId: batch[0]?.runId ?? parentContext?.runId,
+        });
+        if (parentContext) rootContexts.set(runContext.rootRunId, parentContext);
+        else rootContexts.set(runContext.rootRunId, runContext);
+        await runParentTurn(recorded.contextMessage, displayMessage, userMessage, runContext);
         for (const notification of batch) {
           deliveredCompletionIds.add(notification.deliveryId);
           await managedAgentManager.acknowledgeCompletion(notification.deliveryId);
@@ -360,11 +508,20 @@ export async function runHeadless(
       }
     }
 
+    const outcome =
+      lastOutcome ??
+      createTerminalOutcome('interrupted', 'missing_terminal', {
+        partialOutput: transcript.some((message) => message.role === 'assistant'),
+      });
+    runResults.sort((left, right) => left.context.startedAt - right.context.startedAt);
     const result: HeadlessResult = {
       messages: contextHistory,
       transcript,
       compactBoundaries,
       usage: lastUsage,
+      accounting: runtime.runAccounting.snapshotAll(),
+      outcome,
+      runs: runResults,
       sessionId,
     };
 
@@ -405,6 +562,9 @@ export async function runHeadless(
         result: {
           messages: contextHistory,
           usage: lastUsage,
+          accounting: result.accounting,
+          outcome,
+          runs: runResults,
           structured: result.structured,
           structuredError: result.structuredError,
         },
@@ -415,6 +575,9 @@ export async function runHeadless(
         result: {
           messages: contextHistory,
           usage: lastUsage,
+          accounting: result.accounting,
+          outcome,
+          runs: runResults,
           structured: result.structured,
           structuredError: result.structuredError,
         },
@@ -452,6 +615,7 @@ function createHookEventHandler(
 }
 
 function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: HeadlessEmit): void {
+  if (event.type === 'terminal') return;
   if (event.type === 'agent_text_delta' && opts.forwardSubagentText !== true) return;
   opts.onAgentEvent?.(event);
   if (event.type === 'error') {
@@ -462,6 +626,9 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
   if (opts.outputFormat !== 'stream-json') return;
 
   switch (event.type) {
+    case 'run_started':
+      emit({ type: 'run_start', run: event.context });
+      break;
     case 'text':
       if (opts.includePartialMessages !== false) emit({ type: 'assistant', text: event.content });
       break;

@@ -1,5 +1,7 @@
 import type { AgentRecord, AgentRuntimeEvent, EvidenceItem } from '../agents/types.js';
 import type { Message, Usage } from '../types/messages.js';
+import type { AgentRunContext, AgentRunResult } from '../types/runs.js';
+import { isTerminalStatus, type AgentTerminalOutcome } from '../types/terminal.js';
 import type {
   ToolCall,
   ToolResult,
@@ -8,6 +10,7 @@ import type {
 } from '../types/tools.js';
 
 export type AgentEvent =
+  | { type: 'run_started'; context: AgentRunContext }
   | { type: 'system'; model: string; cwd: string }
   | { type: 'session'; sessionId: string }
   | { type: 'text'; content: string }
@@ -35,10 +38,27 @@ export type AgentEvent =
     >
   | { type: 'evidence_update'; evidence: EvidenceItem }
   | { type: 'error'; error: string }
-  | { type: 'result'; messages: Message[]; usage: Usage | null; sessionId: string }
+  | {
+      type: 'result';
+      messages: Message[];
+      usage: Usage | null;
+      sessionId: string;
+      outcome?: AgentTerminalOutcome;
+      runContext?: AgentRunContext;
+      runs?: AgentRunResult[];
+    }
+  | { type: 'terminal'; outcome: AgentTerminalOutcome; runContext?: AgentRunContext }
   | { type: 'done' };
 
-export type AgentSessionStatus = 'idle' | 'running' | 'waiting_for_user' | 'completed' | 'failed';
+export type AgentSessionStatus =
+  | 'idle'
+  | 'running'
+  | 'waiting_for_user'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'timed_out'
+  | 'interrupted';
 
 export interface AgentSessionSnapshot {
   status: AgentSessionStatus;
@@ -53,6 +73,8 @@ export interface AgentSessionSnapshot {
   evidence: EvidenceItem[];
   messages: Message[];
   usage: Usage | null;
+  terminal?: AgentTerminalOutcome;
+  runContext?: AgentRunContext;
   error?: string;
 }
 
@@ -81,7 +103,11 @@ export function reduceAgentSessionSnapshot(
   snapshot: AgentSessionSnapshot,
   event: AgentEvent,
 ): AgentSessionSnapshot {
+  if (isTerminalStatus(snapshot.status) && event.type !== 'terminal') return snapshot;
+
   switch (event.type) {
+    case 'run_started':
+      return { ...snapshot, status: 'running', runContext: event.context };
     case 'system':
       return { ...snapshot, status: 'running', model: event.model, cwd: event.cwd };
     case 'session':
@@ -125,16 +151,38 @@ export function reduceAgentSessionSnapshot(
     case 'evidence_update':
       return { ...snapshot, evidence: upsertById(snapshot.evidence, event.evidence) };
     case 'error':
-      return { ...snapshot, status: 'failed', error: event.error };
+      return { ...snapshot, error: event.error };
     case 'result':
       return {
         ...snapshot,
-        status: 'running',
         sessionId: event.sessionId,
         messages: [...event.messages],
         usage: event.usage,
+        runContext: event.runContext ?? snapshot.runContext,
+      };
+    case 'terminal':
+      if (isTerminalStatus(snapshot.status)) return snapshot;
+      return {
+        ...snapshot,
+        status: event.outcome.status,
+        terminal: event.outcome,
+        runContext: event.runContext ?? snapshot.runContext,
+        error:
+          event.outcome.status === 'failed' || event.outcome.status === 'timed_out'
+            ? event.outcome.message
+            : snapshot.error,
       };
     case 'done':
-      return snapshot.status === 'failed' ? snapshot : { ...snapshot, status: 'completed' };
+      return isTerminalStatus(snapshot.status)
+        ? snapshot
+        : {
+            ...snapshot,
+            status: 'interrupted',
+            terminal: {
+              status: 'interrupted',
+              reason: 'missing_terminal',
+              partialOutput: snapshot.assistantText.length > 0 || snapshot.messages.length > 0,
+            },
+          };
   }
 }

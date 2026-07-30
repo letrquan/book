@@ -327,15 +327,24 @@ describe('AgentManager lifecycle', () => {
     const spawned = await manager.spawn({ agent: 'explorer', prompt: 'first' });
     const first = await manager.wait(spawned.id, 1000);
     const identityStartedAt = first.startedAt;
+    const firstRunId = first.runId;
+    const rootRunId = first.rootRunId;
     expect(first).toMatchObject({
       runSequence: 1,
       runUsage: { totalTokens: 5 },
       usage: { totalTokens: 5 },
     });
 
-    await manager.send(spawned.id, 'second');
+    await manager.send(spawned.id, 'second', [], {
+      runId: 'current-parent-run',
+      rootRunId: 'current-root-run',
+    });
     const second = await manager.wait(spawned.id, 1000);
     expect(second.startedAt).toBe(identityStartedAt);
+    expect(second.runId).not.toBe(firstRunId);
+    expect(rootRunId).not.toBe('current-root-run');
+    expect(second.rootRunId).toBe('current-root-run');
+    expect(second.parentRunId).toBe('current-parent-run');
     expect(second).toMatchObject({
       runSequence: 2,
       runUsage: { totalTokens: 5 },
@@ -586,9 +595,9 @@ describe('AgentManager lifecycle', () => {
     manager.dispose();
   });
 
-  it('distinguishes provider failures from bounded max-turn completion', async () => {
+  it('distinguishes provider failures and honors max-turn terminal outcomes', async () => {
     const root = tempRoot();
-    const makeManager = (error: string) => {
+    const makeManager = (error: string, terminalReason?: 'max_turns') => {
       const config = defaultConfig({ workspace: root });
       config.settings.agents.persist = false;
       return new AgentManager(config, [], {
@@ -599,6 +608,14 @@ describe('AgentManager lifecycle', () => {
         createWorktree: async (_snapshot, agentId) => ({ path: root, branch: `branch-${agentId}` }),
         runLoop: async (_config, _registry, _prompt, history, callbacks) => {
           callbacks.onError(error);
+          if (terminalReason) {
+            callbacks.onTerminal?.({
+              status: 'failed',
+              reason: terminalReason,
+              message: error,
+              partialOutput: true,
+            });
+          }
           return history;
         },
       });
@@ -609,10 +626,10 @@ describe('AgentManager lifecycle', () => {
     expect((await failedManager.wait(failed.id)).status).toBe('failed');
     failedManager.dispose();
 
-    const boundedManager = makeManager('Reached max turns (2). Refine your prompt.');
+    const boundedManager = makeManager('Reached max turns (2). Refine your prompt.', 'max_turns');
     const bounded = await boundedManager.spawn({ agent: 'explorer', prompt: 'bounded' });
     const result = await boundedManager.wait(bounded.id);
-    expect(result.status).toBe('completed');
+    expect(result.status).toBe('failed');
     expect(result.stopReason).toBe('max_turns');
     boundedManager.dispose();
   });

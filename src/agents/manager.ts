@@ -1,6 +1,12 @@
 import { randomUUID } from 'crypto';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message, Usage } from '../types/messages.js';
+import { createAgentRunContext, type AgentRunContext } from '../types/runs.js';
+import {
+  classifyRuntimeError,
+  createTerminalOutcome,
+  type AgentTerminalOutcome,
+} from '../types/terminal.js';
 import type { ToolCall, ToolDefinition, ToolResult, UserQuestionResponse } from '../types/tools.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { runCompact, usagePressureTokens } from '../agent/compact.js';
@@ -576,6 +582,8 @@ export class AgentManager {
       type: 'agent_status',
       agent: projectAgentSummary(publicRecord),
       parentSessionId: record.parentSessionId,
+      rootRunId: record.rootRunId,
+      parentRunId: record.parentRunId,
     });
     if (event === 'result') {
       this.emit({
@@ -596,6 +604,10 @@ export class AgentManager {
       sequence,
       completion: projectAgentCompletion(this.recordForReturn(record)),
       parentSessionId: record.parentSessionId,
+      rootRunId: record.rootRunId,
+      parentRunId: record.parentRunId,
+      runId: record.runId,
+      outcome: record.runOutcome,
     };
   }
 
@@ -617,12 +629,16 @@ export class AgentManager {
     rationale: string;
     agentBudget: number;
     parentSessionId?: string;
+    rootRunId?: string;
+    parentRunId?: string;
   }): Promise<AgentPlanRecord> {
     await this.ensureInitialized();
     const requestedBudget = Number.isFinite(input.agentBudget) ? input.agentBudget : 0;
     const plan: AgentPlanRecord = {
       id: randomUUID(),
       parentSessionId: input.parentSessionId,
+      rootRunId: input.rootRunId,
+      parentRunId: input.parentRunId,
       taskShape: input.taskShape,
       issueQuality: input.issueQuality,
       topology: input.topology,
@@ -723,6 +739,8 @@ export class AgentManager {
       rationale: 'Explicit spawn without a preceding AgentPlan.',
       agentBudget: 1,
       parentSessionId: request.parentSessionId,
+      rootRunId: request.rootRunId,
+      parentRunId: request.parentRunId,
     });
     const existingForPlan = Array.from(this.agents.values()).filter(
       (record) => record.planId === plan?.id,
@@ -742,6 +760,7 @@ export class AgentManager {
         .filter((agent) => !TERMINAL_STATUSES.has(agent.status))
         .map((agent) => agent.displayName ?? agent.name),
     );
+    const runId = randomUUID();
     const record: AgentRecord = {
       id: randomUUID(),
       profile: definition.name,
@@ -757,6 +776,9 @@ export class AgentManager {
       role: definition.role,
       description: definition.description,
       parentSessionId: request.parentSessionId ?? plan.parentSessionId,
+      rootRunId: request.rootRunId ?? plan.rootRunId ?? runId,
+      parentRunId: request.parentRunId ?? plan.parentRunId,
+      runId,
       planId: plan.id,
       status: 'queued',
       applicationStatus: 'not_applied',
@@ -890,7 +912,12 @@ export class AgentManager {
     }
   }
 
-  async send(agentId: string, message: string, evidenceIds: string[] = []): Promise<AgentRecord> {
+  async send(
+    agentId: string,
+    message: string,
+    evidenceIds: string[] = [],
+    runContext?: Pick<AgentRunContext, 'rootRunId' | 'runId'>,
+  ): Promise<AgentRecord> {
     await this.ensureInitialized();
     this.assertMutable(agentId);
     const record = this.hydrateAgent(agentId);
@@ -929,6 +956,10 @@ export class AgentManager {
     record.result = undefined;
     record.stopReason = undefined;
     record.finishedAt = undefined;
+    if (runContext) {
+      record.rootRunId = runContext.rootRunId;
+      record.parentRunId = runContext.runId;
+    }
     record.status = 'queued';
     this.queue.push(record.id);
     this.persist(record);
@@ -971,6 +1002,10 @@ export class AgentManager {
     if (TERMINAL_STATUSES.has(record.status)) return this.recordForReturn(record);
     record.stopReason = reason;
     record.status = 'stopped';
+    record.runOutcome = createTerminalOutcome('cancelled', 'user_cancelled', {
+      partialOutput: Boolean(record.result),
+      message: reason,
+    });
     record.finishedAt = Date.now();
     this.controllers.get(agentId)?.abort(reason);
     this.questionResolvers.get(agentId)?.({ action: 'cancel', message: reason });
@@ -1202,12 +1237,27 @@ export class AgentManager {
   }
 
   private async run(record: AgentRecord): Promise<void> {
+    record.status = 'starting';
+    record.startedAt ??= Date.now();
+    record.runSequence = (record.runSequence ?? 0) + 1;
+    record.runId = randomUUID();
+    record.rootRunId ??= record.runId;
+    record.runStartedAt = Date.now();
+    record.runUsage = undefined;
+    record.runMetrics = { toolCalls: 0, compactions: 0, retries: 0 };
+    record.runOutcome = undefined;
+    record.result = undefined;
+    record.error = undefined;
     const definition = this.definitions().find(
       (candidate) => candidate.name === (record.profile ?? record.name),
     );
     if (!definition) {
       record.status = 'failed';
       record.error = 'Agent definition is no longer available.';
+      record.runOutcome = createTerminalOutcome('failed', 'runtime_error', {
+        partialOutput: false,
+        message: record.error,
+      });
       record.finishedAt = Date.now();
       this.persist(record, 'result');
       return;
@@ -1215,6 +1265,7 @@ export class AgentManager {
 
     const runtime = new SessionRuntime({
       toolExecutionScheduler: this.options.runtime?.toolExecutionScheduler,
+      runAccounting: this.options.runtime?.runAccounting,
       // Children inherit a copy of the parent's file observations so files the
       // parent already Read (or the user @-mentioned) stay editable without a
       // redundant re-Read. Worktree children key by their own workspace, so
@@ -1224,14 +1275,6 @@ export class AgentManager {
     const controller = runtime.trackAbortController(new AbortController());
     this.controllers.set(record.id, controller);
     try {
-      record.status = 'starting';
-      record.startedAt ??= Date.now();
-      record.runSequence = (record.runSequence ?? 0) + 1;
-      record.runStartedAt = Date.now();
-      record.runUsage = undefined;
-      record.runMetrics = { toolCalls: 0, compactions: 0, retries: 0 };
-      record.result = undefined;
-      record.error = undefined;
       this.persist(record);
       let snapshot: AgentSnapshot | undefined;
       const isolation = record.isolation ?? definition.isolation;
@@ -1322,6 +1365,7 @@ export class AgentManager {
         );
       }
       let loopError: string | undefined;
+      let terminalOutcome: AgentTerminalOutcome | undefined;
       const startActivity = (
         kind: AgentActivity['kind'],
         label: string,
@@ -1373,6 +1417,13 @@ export class AgentManager {
           this.persist(record);
         }
       };
+      const runContext = createAgentRunContext({
+        sessionId: record.parentSessionId ?? `agent:${record.id}`,
+        runId: record.runId,
+        rootRunId: record.rootRunId,
+        parentRunId: record.parentRunId,
+        source: 'internal',
+      });
       const updated = await (this.options.runLoop ?? runAgentLoop)(
         agentConfig,
         registry,
@@ -1396,6 +1447,10 @@ export class AgentManager {
             startActivity('thinking', `Thinking (turn ${turn})`);
           },
           onDone: () => {},
+          onTerminal: (outcome) => {
+            terminalOutcome = outcome;
+            record.runOutcome = outcome;
+          },
           onPermissionRequired: async (toolCall: ToolCall) => {
             if (!this.interactivePermissions) return 'deny';
             const request: AgentPermissionRequest = {
@@ -1502,6 +1557,7 @@ export class AgentManager {
           agentId: record.id,
           agentRole: record.role,
           parentSessionId: record.parentSessionId,
+          runContext,
           runtime,
         },
       );
@@ -1511,7 +1567,27 @@ export class AgentManager {
       record.result = lastAssistantText(updated);
       record.error = loopError;
 
+      if (terminalOutcome && terminalOutcome.status !== 'completed') {
+        record.runOutcome = terminalOutcome;
+        record.status =
+          terminalOutcome.status === 'cancelled'
+            ? 'stopped'
+            : terminalOutcome.status === 'interrupted'
+              ? 'interrupted'
+              : 'failed';
+        record.stopReason = terminalOutcome.reason;
+        record.error = terminalOutcome.message ?? loopError;
+        record.finishedAt = Date.now();
+        this.persist(record, 'result');
+        this.telemetry('failed', record, { terminalReason: terminalOutcome.reason });
+        return;
+      }
+
       if (loopError && !loopError.startsWith('Reached max turns')) {
+        record.runOutcome = createTerminalOutcome('failed', 'provider_error', {
+          partialOutput: Boolean(record.result),
+          message: loopError,
+        });
         record.status = 'failed';
         record.finishedAt = Date.now();
         this.persist(record, 'result');
@@ -1558,6 +1634,9 @@ export class AgentManager {
           this.queue.push(record.id);
           this.persist(record);
         } else {
+          record.runOutcome ??= createTerminalOutcome('completed', 'normal_completion', {
+            partialOutput: false,
+          });
           record.status = 'completed';
           record.finishedAt = Date.now();
           this.persist(record, 'result');
@@ -1570,6 +1649,12 @@ export class AgentManager {
         this.flushTextDelta(record.id);
         record.status = controller.signal.aborted ? 'stopped' : 'failed';
         record.error = error instanceof Error ? error.message : String(error);
+        record.runOutcome = controller.signal.aborted
+          ? createTerminalOutcome('cancelled', 'caller_cancelled', {
+              partialOutput: Boolean(record.result),
+              message: record.error,
+            })
+          : classifyRuntimeError(error, Boolean(record.result));
         record.finishedAt = Date.now();
         this.persist(record, 'result');
         this.telemetry('failed', record);

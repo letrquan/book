@@ -51,6 +51,8 @@ export interface AgentActivity extends AgentActivitySummary {
 export interface AgentPlanRecord {
   id: string;
   parentSessionId?: string;
+  rootRunId?: string;
+  parentRunId?: string;
   taskShape: string;
   issueQuality: IssueQuality;
   topology: AgentTopology;
@@ -105,6 +107,9 @@ export interface AgentRecord {
   /** @deprecated Use profileDescription. */
   description: string;
   parentSessionId?: string;
+  rootRunId?: string;
+  parentRunId?: string;
+  runId?: string;
   planId?: string;
   status: AgentStatus;
   applicationStatus: AgentApplicationStatus;
@@ -139,6 +144,8 @@ export interface AgentRecord {
   runStartedAt?: number;
   runUsage?: Usage;
   runMetrics?: AgentRunMetrics;
+  /** Terminal outcome for the latest execution generation. */
+  runOutcome?: import('../types/terminal.js').AgentTerminalOutcome;
   /** Runtime-only warning when the latest state is waiting for durable storage. */
   durabilityWarning?: string;
 }
@@ -175,6 +182,10 @@ export interface AgentCompletionNotification {
   sequence: number;
   completion: AgentCompletion;
   parentSessionId?: string;
+  rootRunId?: string;
+  parentRunId?: string;
+  runId?: string;
+  outcome?: import('../types/terminal.js').AgentTerminalOutcome;
 }
 
 export type EvidenceKind = 'finding' | 'hypothesis' | 'test_result' | 'patch_candidate' | 'blocker';
@@ -203,7 +214,13 @@ export interface EvidenceItem {
 }
 
 export type AgentRuntimeEvent =
-  | { type: 'agent_status'; agent: AgentSummary; parentSessionId?: string }
+  | {
+      type: 'agent_status';
+      agent: AgentSummary;
+      parentSessionId?: string;
+      rootRunId?: string;
+      parentRunId?: string;
+    }
   | { type: 'agent_activity'; agentId: string; activity: AgentActivity }
   | { type: 'agent_text_delta'; agentId: string; text: string }
   | { type: 'agent_message'; agentId: string; message: Message }
@@ -241,6 +258,8 @@ export interface AgentSpawnRequest {
   planId?: string;
   evidenceIds?: string[];
   parentSessionId?: string;
+  rootRunId?: string;
+  parentRunId?: string;
 }
 
 export interface AgentPermissionRequest {

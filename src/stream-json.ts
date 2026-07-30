@@ -3,6 +3,7 @@ export type StreamJsonEvent =
   | { type: 'user'; content: string }
   | { type: 'system'; model?: string; cwd?: string; [key: string]: unknown }
   | { type: 'session'; session_id?: string }
+  | { type: 'run_start'; run?: unknown }
   | { type: 'assistant'; text?: string }
   | { type: 'tool_use'; tool_call?: unknown }
   | { type: 'tool_result'; tool_result?: unknown }
@@ -43,6 +44,7 @@ const EVENT_TYPES = new Set<StreamJsonEvent['type']>([
   'user',
   'system',
   'session',
+  'run_start',
   'assistant',
   'tool_use',
   'tool_result',

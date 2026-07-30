@@ -3,6 +3,7 @@ import type { AgentRole, AgentRuntimeEvent } from '../agents/types.js';
 import type { ResolvedSettings } from '../settings.js';
 import type { SessionRuntime } from '../session/runtime.js';
 import type { AgentConfig, AgentTask, BackgroundShellStore, PermissionMode } from './runtime.js';
+import type { AgentRunContext } from './runs.js';
 
 export type PermissionResult = 'allow' | 'deny' | 'always';
 
@@ -259,6 +260,8 @@ export interface ToolContext {
   agentRole?: AgentRole;
   /** Parent session attribution for managed agents and hooks. */
   parentSessionId?: string;
+  /** Root/parent execution attribution for managed agents and evidence. */
+  runContext?: AgentRunContext;
   /** Host sink for managed-agent lifecycle and evidence events. */
   onAgentEvent?: (event: AgentRuntimeEvent) => void;
   /** Host sink used by lifecycle hooks started from managed-agent tools. */

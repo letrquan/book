@@ -19,6 +19,10 @@ describe('agent session event reducer', () => {
       { type: 'tool_use', toolCall },
       { type: 'tool_result', toolResult },
       { type: 'result', messages: [], usage: null, sessionId: 'session-1' },
+      {
+        type: 'terminal',
+        outcome: { status: 'completed', reason: 'normal_completion', partialOutput: false },
+      },
       { type: 'done' },
     ]);
 
@@ -61,9 +65,61 @@ describe('agent session event reducer', () => {
     const snapshot = reduce([
       { type: 'system', model: 'model-x', cwd: '/workspace' },
       { type: 'error', error: 'provider failed' },
+      {
+        type: 'terminal',
+        outcome: {
+          status: 'failed',
+          reason: 'provider_error',
+          message: 'provider failed',
+          partialOutput: false,
+        },
+      },
       { type: 'done' },
     ]);
 
     expect(snapshot).toMatchObject({ status: 'failed', error: 'provider failed' });
+  });
+
+  it.each([
+    ['failed', 'provider_error'],
+    ['cancelled', 'user_cancelled'],
+    ['timed_out', 'stream_stall'],
+    ['interrupted', 'transport_interrupted'],
+  ] as const)('does not overwrite a %s terminal state with later events', (status, reason) => {
+    const outcome = { status, reason, partialOutput: true };
+    const snapshot = reduce([
+      { type: 'system', model: 'model-x', cwd: '/workspace' },
+      { type: 'text', content: 'partial' },
+      { type: 'terminal', outcome },
+      { type: 'result', messages: [], usage: null, sessionId: 'late-session' },
+      { type: 'text', content: ' ignored' },
+      { type: 'done' },
+    ]);
+
+    expect(snapshot).toMatchObject({
+      status,
+      assistantText: 'partial',
+      terminal: outcome,
+      messages: [],
+    });
+    expect(snapshot).not.toHaveProperty('sessionId');
+  });
+
+  it('treats done without a terminal event as an interrupted run', () => {
+    const snapshot = reduce([
+      { type: 'system', model: 'model-x', cwd: '/workspace' },
+      { type: 'text', content: 'partial' },
+      { type: 'done' },
+    ]);
+
+    expect(snapshot).toMatchObject({
+      status: 'interrupted',
+      assistantText: 'partial',
+      terminal: {
+        status: 'interrupted',
+        reason: 'missing_terminal',
+        partialOutput: true,
+      },
+    });
   });
 });

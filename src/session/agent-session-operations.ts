@@ -48,19 +48,19 @@ export class AgentSessionOperations {
     };
   }
 
-  cancel(): CancelOperationResult {
+  cancel(reason?: unknown): CancelOperationResult {
     const active = this.active;
     if (!active) return { kind: null, aborted: false };
     const aborted = active.controller !== undefined && !active.controller.signal.aborted;
-    active.controller?.abort();
+    active.controller?.abort(reason);
     return { kind: active.kind, aborted };
   }
 
   /** Abort and release the active lease when replacing the whole session. */
-  reset(): AgentSessionOperationKind | null {
+  reset(reason?: unknown): AgentSessionOperationKind | null {
     const active = this.active;
     if (!active) return null;
-    active.controller?.abort();
+    active.controller?.abort(reason);
     this.active = null;
     return active.kind;
   }

@@ -11,27 +11,27 @@ the relevant verification packet rather than treated as optional follow-up work.
 
 **Capability review:** [Agent Capability Research and Gap Analysis](adaptive-harness/agent-capability-research.md)
 and [Phase 3A](adaptive-harness/phase-3a-agent-capability-substrate.md) define the prompt, skill,
-  tool, context, model, verification, delegation, hook, external-integration, trust, and
-  user-interaction surface that must be explicit before automatic selection can use capability
-  evidence.
+tool, context, model, verification, delegation, hook, external-integration, trust, and
+user-interaction surface that must be explicit before automatic selection can use capability
+evidence.
 
 ---
 
 ## Roadmap at a Glance
 
-| Phase | Purpose | Behavior level | Required proof before advancing |
-| --- | --- | --- | --- |
-| 0 | Freeze evaluation contract and fixtures | Documentation/evaluation only | Metrics can distinguish improvement from activity |
-| 1 | Add contracts and disabled boundary | Off/inert | Existing runtime remains behaviorally identical |
-| 2 | Add append-only evidence | Observe only | Runs are explainable with acceptable overhead |
-| 3 | Add validated fixed workflows | Manual/fixed | Workflows are reproducible and kernel-bounded |
-| 3A | Add agent-capability substrate | Manual/fixed | Prompt, skill, tool, context, model, integration, trust, and handoff surfaces are versioned and comparable |
-| 4 | Add deterministic selector | Explain/dry-run | Decisions are scoped, deterministic, and reversible |
-| 5 | Add outcomes and feedback | Fixed/manual comparison | Outcomes are externally grounded or explicitly unknown |
-| 6 | Evaluate adaptation | Shadow/offline | Adaptive choice beats serious baselines on held-out slices |
-| 7 | Enable adaptive canaries | Scoped live selection | Concurrent live evidence confirms benefit and no guardrail breach |
-| 8 | Evolve bounded workflows | Candidate pipeline | Candidate promotion is reproducible, immutable, and reversible |
-| 9 | Consider broader transfer | Future research gate | Project-scoped adaptation is already proven and stable |
+| Phase | Purpose                                 | Behavior level                | Required proof before advancing                                                                            |
+| ----- | --------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 0     | Freeze evaluation contract and fixtures | Documentation/evaluation only | Metrics can distinguish improvement from activity                                                          |
+| 1     | Add contracts and disabled boundary     | Off/inert                     | Existing runtime remains behaviorally identical                                                            |
+| 2     | Add append-only evidence                | Observe only                  | Runs are explainable with acceptable overhead                                                              |
+| 3     | Add validated fixed workflows           | Manual/fixed                  | Workflows are reproducible and kernel-bounded                                                              |
+| 3A    | Add agent-capability substrate          | Manual/fixed                  | Prompt, skill, tool, context, model, integration, trust, and handoff surfaces are versioned and comparable |
+| 4     | Add deterministic selector              | Explain/dry-run               | Decisions are scoped, deterministic, and reversible                                                        |
+| 5     | Add outcomes and feedback               | Fixed/manual comparison       | Outcomes are externally grounded or explicitly unknown                                                     |
+| 6     | Evaluate adaptation                     | Shadow/offline                | Adaptive choice beats serious baselines on held-out slices                                                 |
+| 7     | Enable adaptive canaries                | Scoped live selection         | Concurrent live evidence confirms benefit and no guardrail breach                                          |
+| 8     | Evolve bounded workflows                | Candidate pipeline            | Candidate promotion is reproducible, immutable, and reversible                                             |
+| 9     | Consider broader transfer               | Future research gate          | Project-scoped adaptation is already proven and stable                                                     |
 
 Recommended reading order:
 
@@ -46,18 +46,33 @@ Do not treat later-phase detail as authorization to implement it early. The exit
 ## Pre-Phase-0 Runtime Preconditions
 
 The repository audit found runtime issues that would invalidate attribution if evaluation started
-immediately. Resolve or explicitly block on these before collecting promotion evidence:
+immediately. Resolve or explicitly block on these before collecting promotion evidence. The gates
+are tiered: **Tier A** blocks any attributable corpus data, **Tier B** blocks Phase 0 verification
+execution, and **Tier C** blocks adversarial or project-controlled fixtures. This keeps safe,
+built-in evaluation work possible without pretending that a copied fixture directory is a sandbox.
+
+### Tier A: attribution and accounting
 
 - preserve failed, aborted, cancelled, timed-out, interrupted, and completed terminal states through
   `AgentSession` without later reducer events overwriting them;
 - define one harness run per root user request, including resume and child-run linkage;
 - enforce cumulative root-and-child usage, cost, and budget accounting with a versioned pricing source;
-- keep `harness.mode` separate from the existing `agents.mode`, and normally force
-  `agents.mode = off` in the initial single-agent corpus;
 - capture the effective provider/model identity or record it as unverifiable;
 - freeze or version ambient prompt/config/tool inputs and isolate Book home state for every arm;
+- record and normally force `agents.mode = off` in the initial single-agent corpus. The inert
+  `harness.mode` setting is introduced by Phase 1 after Phase 0; Phase 0 must not depend on a
+  setting that does not yet exist;
 - freeze or version prompt layers, skill registry and activation policy, tool contracts, context
   policy, model capability adapter, hook policy, and subagent/delegation settings;
+
+### Tier B: evaluator and architecture boundary
+
+- add a disposable evaluation runner with a fresh session/tool-discovery state, sanitized
+  environment, and an external process/container boundary;
+- extend architecture checks to enforce the harness/runtime/evaluator/proposer dependency rules.
+
+### Tier C: trusted execution boundary
+
 - establish a workspace-trust boundary before project hooks, provider endpoints, MCP servers,
   executable slash-command expansions, privileged skills, or subagent definitions can execute;
 - enforce a permission ceiling across user, project, workflow, skill, hook, MCP, and subagent scopes;
@@ -69,7 +84,6 @@ immediately. Resolve or explicitly block on these before collecting promotion ev
 - make sandbox availability and network restrictions truthful and fail closed for evaluation;
   harden web/MCP access against private-address requests and unbounded response reads;
 - use a disposable process/container boundary for adversarial fixtures, especially on Windows;
-- extend architecture checks to enforce the harness/runtime/evaluator/proposer dependency rules.
 
 These are runtime correctness prerequisites, not permission to introduce selection or learning early.
 
@@ -166,16 +180,16 @@ agents off; any later combined workflow-and-delegation experiment requires its o
 
 Do not collapse all results into one score until the individual dimensions are retained and inspectable:
 
-| Dimension | Example signals |
-| --- | --- |
-| Correctness | tests, typecheck, verifier result, expected artifact |
-| Reliability | first-pass completion, retry count, repeated tool failures |
-| Regression risk | unrelated edits, failing existing tests, policy violations |
-| User alignment | explicit rating, correction, rejection, requested rework |
-| Maintainability | diff scope, architecture checks, reviewer assessment |
-| Efficiency | tokens, cost, elapsed time, tool calls, model calls |
-| Long-horizon stability | resume success, preserved decisions, context recovery |
-| Harness complexity | prompt/context tokens, workflow fields, transitions, extra calls, maintenance surface |
+| Dimension              | Example signals                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------- |
+| Correctness            | tests, typecheck, verifier result, expected artifact                                  |
+| Reliability            | first-pass completion, retry count, repeated tool failures                            |
+| Regression risk        | unrelated edits, failing existing tests, policy violations                            |
+| User alignment         | explicit rating, correction, rejection, requested rework                              |
+| Maintainability        | diff scope, architecture checks, reviewer assessment                                  |
+| Efficiency             | tokens, cost, elapsed time, tool calls, model calls                                   |
+| Long-horizon stability | resume success, preserved decisions, context recovery                                 |
+| Harness complexity     | prompt/context tokens, workflow fields, transitions, extra calls, maintenance surface |
 
 The utility function and promotion thresholds must be declared before evaluating a candidate. They must not be changed after seeing the result to make a candidate appear successful.
 
@@ -282,14 +296,14 @@ Likely integration points:
 
 The adaptive layer may choose only among tested runtime capabilities:
 
-| Fixed runtime responsibility | Adaptive workflow surface |
-| --- | --- |
-| Permission, sandbox, secret, and prompt-injection enforcement | Requested approval posture, subject to kernel clamps |
-| Tool schemas, error semantics, cancellation, and retry correctness | Retry posture within kernel ceilings |
-| Checkpoint, compaction, and resume mechanics | Context depth, failure/decision retention, and supported compaction policy |
-| Verifier definitions and evaluator integrity | Which declared verifiers to request |
-| Trace/evidence integrity and retention policy | Evidence level and explanation detail |
-| Absolute budgets and model/provider identity | Planning, edit scope, and verification posture |
+| Fixed runtime responsibility                                       | Adaptive workflow surface                                                  |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| Permission, sandbox, secret, and prompt-injection enforcement      | Requested approval posture, subject to kernel clamps                       |
+| Tool schemas, error semantics, cancellation, and retry correctness | Retry posture within kernel ceilings                                       |
+| Checkpoint, compaction, and resume mechanics                       | Context depth, failure/decision retention, and supported compaction policy |
+| Verifier definitions and evaluator integrity                       | Which declared verifiers to request                                        |
+| Trace/evidence integrity and retention policy                      | Evidence level and explanation detail                                      |
+| Absolute budgets and model/provider identity                       | Planning, edit scope, and verification posture                             |
 
 Workflow definitions cannot add runtime primitives, arbitrary tools, free-form prompts, or security policy.
 
@@ -377,19 +391,19 @@ Changes that mix two gated phases must explain why they cannot be separated. Con
 
 Detailed implementation work lives in one file per phase. The parent document remains the source of truth for original intent, shared invariants, architecture boundaries, stop conditions, rollout ordering, and the central status ledger.
 
-| Phase | Status | Detailed plan | Advancement gate |
-| --- | --- | --- | --- |
-| 0 | Not started | [Evaluation contract and fixtures](adaptive-harness/phase-0-evaluation-contract.md) | Improvement can be falsified with stable metrics |
-| 1 | Not started | [Contracts and disabled boundary](adaptive-harness/phase-1-contracts-boundary.md) | Harness is inert and runtime-equivalent when off |
-| 2 | Not started | [Run evidence ledger](adaptive-harness/phase-2-run-evidence-ledger.md) | Runs are explainable without behavior changes |
-| 3 | Not started | [Validated workflow registry](adaptive-harness/phase-3-workflow-registry.md) | Fixed workflows are safe and reproducible |
-| 3A | Not started | [Agent-capability substrate](adaptive-harness/phase-3a-agent-capability-substrate.md) | Capability bundles are versioned, bounded, and comparable |
-| 4 | Not started | [Deterministic selector](adaptive-harness/phase-4-deterministic-selector.md) | Decisions are advisory, scoped, and explainable |
-| 5 | Not started | [Outcomes and feedback](adaptive-harness/phase-5-outcomes-feedback.md) | Outcomes are externally grounded or unknown |
-| 6 | Not started | [Shadow and held-out evaluation](adaptive-harness/phase-6-shadow-evaluation.md) | Adaptation beats serious baselines on eligible slices |
-| 7 | Not started | [Scoped live adaptive selection](adaptive-harness/phase-7-live-adaptive-selection.md) | Canary evidence confirms benefit and rollback works |
-| 8 | Not started | [Bounded workflow evolution](adaptive-harness/phase-8-bounded-workflow-evolution.md) | Candidates pass immutable held-out promotion gates |
-| 9 | Future gate | [Long-term and cross-context transfer](adaptive-harness/phase-9-long-term-transfer.md) | Project-scoped adaptation is already proven |
+| Phase | Status      | Detailed plan                                                                          | Advancement gate                                          |
+| ----- | ----------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| 0     | Not started | [Evaluation contract and fixtures](adaptive-harness/phase-0-evaluation-contract.md)    | Improvement can be falsified with stable metrics          |
+| 1     | Not started | [Contracts and disabled boundary](adaptive-harness/phase-1-contracts-boundary.md)      | Harness is inert and runtime-equivalent when off          |
+| 2     | Not started | [Run evidence ledger](adaptive-harness/phase-2-run-evidence-ledger.md)                 | Runs are explainable without behavior changes             |
+| 3     | Not started | [Validated workflow registry](adaptive-harness/phase-3-workflow-registry.md)           | Fixed workflows are safe and reproducible                 |
+| 3A    | Not started | [Agent-capability substrate](adaptive-harness/phase-3a-agent-capability-substrate.md)  | Capability bundles are versioned, bounded, and comparable |
+| 4     | Not started | [Deterministic selector](adaptive-harness/phase-4-deterministic-selector.md)           | Decisions are advisory, scoped, and explainable           |
+| 5     | Not started | [Outcomes and feedback](adaptive-harness/phase-5-outcomes-feedback.md)                 | Outcomes are externally grounded or unknown               |
+| 6     | Not started | [Shadow and held-out evaluation](adaptive-harness/phase-6-shadow-evaluation.md)        | Adaptation beats serious baselines on eligible slices     |
+| 7     | Not started | [Scoped live adaptive selection](adaptive-harness/phase-7-live-adaptive-selection.md)  | Canary evidence confirms benefit and rollback works       |
+| 8     | Not started | [Bounded workflow evolution](adaptive-harness/phase-8-bounded-workflow-evolution.md)   | Candidates pass immutable held-out promotion gates        |
+| 9     | Future gate | [Long-term and cross-context transfer](adaptive-harness/phase-9-long-term-transfer.md) | Project-scoped adaptation is already proven               |
 
 ### Phase File Maintenance Rules
 
@@ -406,20 +420,20 @@ Detailed implementation work lives in one file per phase. The parent document re
 
 Update this table in the same pull request that changes a phase status. Do not mark a phase verified without linked test/evaluation evidence.
 
-| Phase | Status | Owner | PR/commit | Verification evidence | Decision/notes |
-| --- | --- | --- | --- | --- | --- |
-| [Preconditions](adaptive-harness/research-grounding.md#required-pre-phase-0-preconditions) | Not started | - | - | - | Terminal status, run boundary, accounting, identity, isolation, and dependency rules |
-| [0. Evaluation contract](adaptive-harness/phase-0-evaluation-contract.md) | Not started | - | - | - | - |
-| [1. Contracts and disabled boundary](adaptive-harness/phase-1-contracts-boundary.md) | Not started | - | - | - | - |
-| [2. Observation ledger](adaptive-harness/phase-2-run-evidence-ledger.md) | Not started | - | - | - | - |
-| [3. Fixed workflow registry](adaptive-harness/phase-3-workflow-registry.md) | Not started | - | - | - | - |
-| [3A. Agent-capability substrate](adaptive-harness/phase-3a-agent-capability-substrate.md) | Not started | - | - | - | Prompt, skill, tool, context, model, and handoff contracts |
-| [4. Deterministic selector](adaptive-harness/phase-4-deterministic-selector.md) | Not started | - | - | - | - |
-| [5. Outcomes and feedback](adaptive-harness/phase-5-outcomes-feedback.md) | Not started | - | - | - | - |
-| [6. Shadow adaptation](adaptive-harness/phase-6-shadow-evaluation.md) | Not started | - | - | - | - |
-| [7. Scoped live selection](adaptive-harness/phase-7-live-adaptive-selection.md) | Not started | - | - | - | - |
-| [8. Bounded evolution](adaptive-harness/phase-8-bounded-workflow-evolution.md) | Not started | - | - | - | - |
-| [9. Cross-context transfer](adaptive-harness/phase-9-long-term-transfer.md) | Future gate | - | - | - | Not part of initial delivery |
+| Phase                                                                                      | Status      | Owner | PR/commit | Verification evidence                                                                                         | Decision/notes                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------ | ----------- | ----- | --------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Preconditions](adaptive-harness/research-grounding.md#required-pre-phase-0-preconditions) | In progress | Codex | -         | `npm run check`, `npm run build`, `npm run test:integration`, `git diff --check` | Tier A terminal status and per-request root/child/resume attribution are implemented. Versioned local pricing, provider response identity, direct/root-inclusive accounting, and fail-closed budget checks are implemented but explicitly partial: compaction and failed-provider-attempt usage are not yet captured. Tier B evaluator/architecture and Tier C trust/permission/isolation gates remain open. |
+| [0. Evaluation contract](adaptive-harness/phase-0-evaluation-contract.md)                  | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
+| [1. Contracts and disabled boundary](adaptive-harness/phase-1-contracts-boundary.md)       | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
+| [2. Observation ledger](adaptive-harness/phase-2-run-evidence-ledger.md)                   | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
+| [3. Fixed workflow registry](adaptive-harness/phase-3-workflow-registry.md)                | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
+| [3A. Agent-capability substrate](adaptive-harness/phase-3a-agent-capability-substrate.md)  | Not started | -     | -         | -                                                                                                             | Prompt, skill, tool, context, model, and handoff contracts                                                                                                                                                                                                                       |
+| [4. Deterministic selector](adaptive-harness/phase-4-deterministic-selector.md)            | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
+| [5. Outcomes and feedback](adaptive-harness/phase-5-outcomes-feedback.md)                  | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
+| [6. Shadow adaptation](adaptive-harness/phase-6-shadow-evaluation.md)                      | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
+| [7. Scoped live selection](adaptive-harness/phase-7-live-adaptive-selection.md)            | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
+| [8. Bounded evolution](adaptive-harness/phase-8-bounded-workflow-evolution.md)             | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
+| [9. Cross-context transfer](adaptive-harness/phase-9-long-term-transfer.md)                | Future gate | -     | -         | -                                                                                                             | Not part of initial delivery                                                                                                                                                                                                                                                     |
 
 Allowed statuses:
 
@@ -517,29 +531,29 @@ For TUI-visible behavior, also run the relevant render/integration tests and man
 
 ## Risks and Mitigations
 
-| Risk | Mitigation |
-| --- | --- |
-| Harness helps weak models but harms strong models | Slice metrics by model/task and allow minimal/no-adaptation policies |
-| Model churn makes evidence stale | Key evidence by exact model version, use weak priors, and recalibrate |
-| User behavior changes by context | Scope signals, prioritize current intent, use confidence decay and modes |
-| Profiles become maintenance burden | Store observations and derive temporary evidence views |
-| Prompt, skill, or tool changes are misattributed to workflows | Fingerprint the full capability manifest and evaluate axes separately |
-| Long prompts distract or invalidate caches | Split stable, session, dynamic, and task prompt layers with budgets |
-| Skills activate too often or too late | Test trigger precision/recall, direct activation, and deferred activation cost |
-| Tool descriptions route models incorrectly | Add contract fixtures and selection metrics for overlapping tools |
-| Context retrieval adds noise | Compare bounded retrieval policies and report relevant-token ratio |
-| Easy metrics replace real quality | Preserve multiple dimensions and block learning on unknown outcomes |
-| Candidate overfits replay tasks | Separate held-in and held-out sets; canary on fresh tasks |
-| Reward hacking | Keep evaluator, permissions, budgets, and history immutable |
-| Runtime becomes entangled with learning | Enforce one-way dependencies and keep learning offline |
-| Data collection leaks private content | Store bounded references, redact secrets, and require replay eligibility |
-| Complexity grows without benefit | Phase gates, serious baselines, stop conditions, and minimal fallback |
-| Infrastructure noise looks like improvement | Fingerprint execution environments, estimate a noise floor, and use paired control runs |
-| Context loss or resume drift is misattributed to workflow quality | Evaluate compaction, handoff, checkpoint, and resume behavior as explicit cases |
-| Prompt injection or poisoned tool/project content reaches policy | Preserve provenance, isolate untrusted inputs, and run security fixtures before promotion |
-| Tool schema or runtime changes stale evidence | Fingerprint the tool surface and fixed runtime capabilities; invalidate incompatible samples |
-| Subjective quality is ignored or over-trusted | Use versioned blind human rubrics with agreement thresholds and explicit unknowns |
-| Observability becomes a proprietary dead end | Keep the append-only ledger locally but map traces and metrics to OpenTelemetry semantics |
+| Risk                                                              | Mitigation                                                                                   |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Harness helps weak models but harms strong models                 | Slice metrics by model/task and allow minimal/no-adaptation policies                         |
+| Model churn makes evidence stale                                  | Key evidence by exact model version, use weak priors, and recalibrate                        |
+| User behavior changes by context                                  | Scope signals, prioritize current intent, use confidence decay and modes                     |
+| Profiles become maintenance burden                                | Store observations and derive temporary evidence views                                       |
+| Prompt, skill, or tool changes are misattributed to workflows     | Fingerprint the full capability manifest and evaluate axes separately                        |
+| Long prompts distract or invalidate caches                        | Split stable, session, dynamic, and task prompt layers with budgets                          |
+| Skills activate too often or too late                             | Test trigger precision/recall, direct activation, and deferred activation cost               |
+| Tool descriptions route models incorrectly                        | Add contract fixtures and selection metrics for overlapping tools                            |
+| Context retrieval adds noise                                      | Compare bounded retrieval policies and report relevant-token ratio                           |
+| Easy metrics replace real quality                                 | Preserve multiple dimensions and block learning on unknown outcomes                          |
+| Candidate overfits replay tasks                                   | Separate held-in and held-out sets; canary on fresh tasks                                    |
+| Reward hacking                                                    | Keep evaluator, permissions, budgets, and history immutable                                  |
+| Runtime becomes entangled with learning                           | Enforce one-way dependencies and keep learning offline                                       |
+| Data collection leaks private content                             | Store bounded references, redact secrets, and require replay eligibility                     |
+| Complexity grows without benefit                                  | Phase gates, serious baselines, stop conditions, and minimal fallback                        |
+| Infrastructure noise looks like improvement                       | Fingerprint execution environments, estimate a noise floor, and use paired control runs      |
+| Context loss or resume drift is misattributed to workflow quality | Evaluate compaction, handoff, checkpoint, and resume behavior as explicit cases              |
+| Prompt injection or poisoned tool/project content reaches policy  | Preserve provenance, isolate untrusted inputs, and run security fixtures before promotion    |
+| Tool schema or runtime changes stale evidence                     | Fingerprint the tool surface and fixed runtime capabilities; invalidate incompatible samples |
+| Subjective quality is ignored or over-trusted                     | Use versioned blind human rubrics with agreement thresholds and explicit unknowns            |
+| Observability becomes a proprietary dead end                      | Keep the append-only ledger locally but map traces and metrics to OpenTelemetry semantics    |
 
 ## Non-Goals for the Initial Delivery
 

@@ -105,6 +105,8 @@ async function agentPlan(args: Record<string, unknown>, ctx: ToolContext): Promi
       topology,
       agentBudget: budget,
       parentSessionId: ctx.parentSessionId,
+      rootRunId: ctx.runContext?.rootRunId,
+      parentRunId: ctx.runContext?.runId,
     });
     return ok(plan, {
       summary: `Planned ${plan.topology.replaceAll('_', ' ')} delegation`,
@@ -131,6 +133,8 @@ async function agentSpawn(args: Record<string, unknown>, ctx: ToolContext): Prom
         ? args.evidenceIds.filter((value): value is string => typeof value === 'string')
         : undefined,
       parentSessionId: ctx.parentSessionId,
+      rootRunId: ctx.runContext?.rootRunId,
+      parentRunId: ctx.runContext?.runId,
     });
     const summary = projectAgentSummary(record);
     return ok(summary, agentStatusPresentation(summary, 'Spawned'));
@@ -205,6 +209,7 @@ async function agentSend(args: Record<string, unknown>, ctx: ToolContext): Promi
         Array.isArray(args.evidenceIds)
           ? args.evidenceIds.filter((value): value is string => typeof value === 'string')
           : [],
+        ctx.runContext,
       ),
     );
     return ok(summary, agentStatusPresentation(summary, 'Sent follow-up to'));

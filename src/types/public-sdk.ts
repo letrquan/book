@@ -4,6 +4,8 @@ import type { Message, Usage } from './messages.js';
 import type { PermissionMode } from './runtime.js';
 import type { CompactBoundary, SessionStoreInterface } from './sessions.js';
 import type { UserQuestionHandler } from './tools.js';
+import type { AgentTerminalOutcome } from './terminal.js';
+import type { AgentRunAccounting, AgentRunResult, AgentRunSource } from './runs.js';
 
 export type OutputFormat = 'text' | 'json' | 'stream-json';
 
@@ -47,6 +49,10 @@ export interface HeadlessOptions {
   promptSuggestions?: boolean;
   /** Optional interactive host callback for AskUserQuestion. */
   onUserQuestionRequired?: UserQuestionHandler;
+  /** Host surface used for run attribution; defaults to headless. */
+  runSource?: AgentRunSource;
+  /** Link the first request to a prior run when resuming a session. */
+  resumedFromRunId?: string;
 }
 
 export interface HeadlessResult {
@@ -54,7 +60,11 @@ export interface HeadlessResult {
   transcript?: Message[];
   compactBoundaries?: CompactBoundary[];
   usage: Usage | null;
+  outcome: AgentTerminalOutcome;
+  /** Per-request and linked-child outcomes; the aggregate fields remain for compatibility. */
+  runs?: AgentRunResult[];
   costUsd?: number;
+  accounting?: AgentRunAccounting;
   sessionId?: string;
   structured?: unknown;
   structuredError?: string;

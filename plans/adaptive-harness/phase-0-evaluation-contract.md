@@ -9,7 +9,6 @@
 
 ---
 
-
 **Objective:** Define what improvement means before adding adaptive behavior.
 
 **Deliverables:**
@@ -39,7 +38,14 @@ interface HarnessEvaluationCase {
   corpusVersion: string;
   evaluatorVersion: string;
   id: string;
-  taskClass: 'read-only' | 'simple-edit' | 'bug-fix' | 'multi-file' | 'review' | 'research' | 'long-horizon';
+  trial: {
+    id: string;
+    attempt: number;
+    clusterKey: string;
+    isolationRef: string;
+  };
+  taskClass:
+    'read-only' | 'simple-edit' | 'bug-fix' | 'multi-file' | 'review' | 'research' | 'long-horizon';
   prompt: string;
   fixture: {
     source: string;
@@ -106,6 +112,10 @@ Each fixture should define:
 - timeout and cost ceiling;
 - known ambiguous outcomes;
 - reset procedure.
+
+Each trial must receive a fresh materialized environment and a stable `trial.id`; repeated
+attempts of the same case are separate trials grouped by `clusterKey`. The grader evaluates the
+final environment state and verifier evidence, not the agent's self-reported completion claim.
 
 The initial corpus must also contain targeted cases for:
 

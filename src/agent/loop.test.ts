@@ -13,6 +13,7 @@ import { readToolUseRecords } from '../tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import type { Provider } from '../provider/index.js';
 import type { CompactResult } from '../types/sessions.js';
+import type { AgentTerminalOutcome } from '../types/terminal.js';
 
 function compactedForRetry(): Extract<CompactResult, { status: 'compacted' }> {
   return {
@@ -210,6 +211,67 @@ describe('runAgentLoop streaming render callbacks', () => {
     expect(onError).toHaveBeenCalledWith('maximum context length exceeded');
   });
 
+  it('marks tool-call output as partial after compaction shortens the history', async () => {
+    let providerCalls = 0;
+    const terminalOutcomes: AgentTerminalOutcome[] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls === 1) {
+          yield {
+            type: 'error',
+            error: 'maximum context length exceeded',
+            errorCode: 'context_overflow',
+          };
+          return;
+        }
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'partial-tool', name: 'Read', arguments: {} },
+        };
+        yield { type: 'error', error: 'provider failed', errorCode: 'server_error' };
+      },
+    };
+    const history = [
+      {
+        id: 'old-user',
+        role: 'user' as const,
+        content: 'one',
+        includeInContext: true,
+        timestamp: 1,
+      },
+      {
+        id: 'old-assistant',
+        role: 'assistant' as const,
+        content: 'two',
+        includeInContext: true,
+        timestamp: 2,
+      },
+    ];
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      history,
+      noopCallbacks({
+        onCompact: async () => compactedForRetry(),
+        onTerminal: (outcome) => terminalOutcomes.push(outcome),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(terminalOutcomes).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        reason: 'provider_error',
+        partialOutput: true,
+      }),
+    ]);
+  });
+
   it('uses an injected provider port without resolving a concrete adapter', async () => {
     const provider: Provider = {
       id: 'scripted',
@@ -253,6 +315,7 @@ describe('runAgentLoop streaming render callbacks', () => {
     );
 
     const events: string[] = [];
+    const terminalOutcomes: AgentTerminalOutcome[] = [];
     const result = await runAgentLoop(
       config,
       createRegistry(),
@@ -261,10 +324,17 @@ describe('runAgentLoop streaming render callbacks', () => {
       noopCallbacks({
         onText: (t: string) => events.push(`text:${t}`),
         onDone: () => events.push('done'),
+        onTerminal: (outcome) => {
+          terminalOutcomes.push(outcome);
+          events.push(`terminal:${outcome.status}`);
+        },
       }),
     );
 
-    expect(events).toEqual(['text:Hel', 'text:lo', 'done']);
+    expect(events).toEqual(['text:Hel', 'text:lo', 'terminal:completed', 'done']);
+    expect(terminalOutcomes).toEqual([
+      { status: 'completed', reason: 'normal_completion', partialOutput: false },
+    ]);
     expect(result.map((m) => [m.role, m.content])).toEqual([
       ['user', 'hi'],
       ['assistant', 'Hello'],
@@ -423,6 +493,7 @@ describe('runAgentLoop abort', () => {
     );
 
     const seen: string[] = [];
+    const terminalOutcomes: AgentTerminalOutcome[] = [];
     await runAgentLoop(
       config,
       createRegistry(),
@@ -435,6 +506,7 @@ describe('runAgentLoop abort', () => {
         onError: () => {},
         onTurnStart: () => {},
         onDone: () => {},
+        onTerminal: (outcome) => terminalOutcomes.push(outcome),
         onPermissionRequired: async () => 'allow',
         onTokenCount: () => {},
       },
@@ -444,6 +516,13 @@ describe('runAgentLoop abort', () => {
 
     // Aborted mid-stream: we should NOT have looped into more turns.
     expect(seen.length).toBeLessThanOrEqual(3);
+    expect(terminalOutcomes).toEqual([
+      {
+        status: 'cancelled',
+        reason: 'caller_cancelled',
+        partialOutput: true,
+      },
+    ]);
   });
 
   it('publishes terminal results for streamed tool calls when aborted before execution', async () => {
@@ -697,6 +776,44 @@ describe('runAgentLoop error handling', () => {
     }
   });
 
+  it('classifies an unrecovered router context error as context overflow', async () => {
+    const terminalOutcomes: AgentTerminalOutcome[] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: '[Error] Your input exceeds the context window.' };
+        yield { type: 'done' };
+      },
+    };
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [
+        {
+          id: 'history-user',
+          role: 'user',
+          content: 'hello',
+          includeInContext: true,
+          timestamp: 1,
+        },
+      ],
+      noopCallbacks({ onTerminal: (outcome) => terminalOutcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(terminalOutcomes).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        reason: 'context_overflow',
+        providerCode: 'context_overflow',
+        partialOutput: false,
+      }),
+    ]);
+  });
+
   it('calls onError and stops loop when stream yields error event', async () => {
     vi.stubGlobal(
       'fetch',
@@ -707,6 +824,7 @@ describe('runAgentLoop error handling', () => {
 
     let errorMsg = '';
     let doneCalled = false;
+    const terminalOutcomes: AgentTerminalOutcome[] = [];
 
     const cfg = defaultConfig({
       retry: {
@@ -733,12 +851,87 @@ describe('runAgentLoop error handling', () => {
         onDone: () => {
           doneCalled = true;
         },
+        onTerminal: (outcome) => terminalOutcomes.push(outcome),
       }),
     );
 
     expect(errorMsg).toMatch(/API Error: 429/);
     // onDone should NOT be called when the loop exits via error return.
     expect(doneCalled).toBe(false);
+    expect(terminalOutcomes).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        reason: 'provider_error',
+        partialOutput: false,
+        providerCode: 'rate_limited',
+      }),
+    ]);
+  });
+
+  it('reports truncated provider output as one interrupted terminal outcome', async () => {
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: 'partial' };
+        yield {
+          type: 'error',
+          error: 'Provider stream ended before its terminal event.',
+          errorCode: 'transport_interrupted',
+        };
+      },
+    };
+    const terminalOutcomes: AgentTerminalOutcome[] = [];
+
+    const result = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hi',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => terminalOutcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(result.at(-1)).toMatchObject({ role: 'assistant', content: 'partial' });
+    expect(terminalOutcomes).toEqual([
+      {
+        status: 'interrupted',
+        reason: 'transport_interrupted',
+        message: 'Provider stream ended before its terminal event.',
+        partialOutput: true,
+      },
+    ]);
+  });
+
+  it('lets caller cancellation win a race with a provider error', async () => {
+    const controller = new AbortController();
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        controller.abort();
+        yield { type: 'error', error: 'socket closed', errorCode: 'network' };
+      },
+    };
+    const errors: string[] = [];
+    const terminalOutcomes: AgentTerminalOutcome[] = [];
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hi',
+      [],
+      noopCallbacks({
+        onError: (error) => errors.push(error),
+        onTerminal: (outcome) => terminalOutcomes.push(outcome),
+      }),
+      'default',
+      { provider, signal: controller.signal, isNewSession: false },
+    );
+
+    expect(errors).toEqual([]);
+    expect(terminalOutcomes).toEqual([
+      { status: 'cancelled', reason: 'caller_cancelled', partialOutput: false },
+    ]);
   });
 
   it('calls onError when max turns reached', async () => {
@@ -765,6 +958,7 @@ describe('runAgentLoop error handling', () => {
     );
 
     let errorMsg = '';
+    const terminalOutcomes: AgentTerminalOutcome[] = [];
     const cfg = defaultConfig({ maxTurns: 2 });
 
     await runAgentLoop(
@@ -777,10 +971,19 @@ describe('runAgentLoop error handling', () => {
           errorMsg = err;
         },
         onPermissionRequired: async () => 'deny', // deny tools so loop keeps turning without side effects
+        onTerminal: (outcome) => terminalOutcomes.push(outcome),
       }),
     );
 
     expect(errorMsg).toMatch(/max turns/);
+    expect(terminalOutcomes).toEqual([
+      {
+        status: 'failed',
+        reason: 'max_turns',
+        message: 'Reached max turns (2).',
+        partialOutput: true,
+      },
+    ]);
   });
 
   it('emits a skipped tool result when permission is denied', async () => {
@@ -882,6 +1085,7 @@ describe('runAgentLoop error handling', () => {
 
     let stallCalled = false;
     let errorMsg = '';
+    const terminalOutcomes: AgentTerminalOutcome[] = [];
     const cfg = defaultConfig({
       retry: {
         maxAttempts: 3,
@@ -907,6 +1111,7 @@ describe('runAgentLoop error handling', () => {
         onError: (err: string) => {
           errorMsg = err;
         },
+        onTerminal: (outcome) => terminalOutcomes.push(outcome),
       }),
     );
 
@@ -914,6 +1119,13 @@ describe('runAgentLoop error handling', () => {
     expect(stallCalled).toBe(true);
     // Loop should have ended with a stall error.
     expect(errorMsg).toMatch(/stalled/i);
+    expect(terminalOutcomes).toEqual([
+      expect.objectContaining({
+        status: 'timed_out',
+        reason: 'stream_stall',
+        partialOutput: false,
+      }),
+    ]);
   });
 
   it('preserves user message in history after error', async () => {

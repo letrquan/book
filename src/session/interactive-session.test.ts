@@ -35,7 +35,11 @@ describe('createInteractiveAgentSession', () => {
         callbacks: { onEvent: () => {}, onTurnStart: () => {} },
       });
 
-      expect(result).toEqual({ status: 'completed', messages: [] });
+      expect(result).toEqual({
+        status: 'completed',
+        messages: [],
+        outcome: { status: 'completed', reason: 'normal_completion', partialOutput: false },
+      });
       expect(toolNames).toContain('Read');
       expect(toolNames).toContain('SessionHistorySearch');
       expect(toolNames).toContain('SessionHistoryRead');
