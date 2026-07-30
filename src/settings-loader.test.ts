@@ -128,6 +128,14 @@ describe('mergeSettings', () => {
     expect(result.memory.autoSave).toBe(false);
     expect(result.memory.requireApproval).toBe(true);
   });
+
+  it('merges the thinking visibility setting without losing its default', () => {
+    const base = structuredClone(DEFAULT_SETTINGS);
+    const result = mergeSettings(base, {
+      ui: { showThinking: false },
+    } as Partial<ResolvedSettings>);
+    expect(result.ui.showThinking).toBe(false);
+  });
 });
 
 describe('resolveSettings — layered merging', () => {

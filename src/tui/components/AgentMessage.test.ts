@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  countReasoningLines,
   getRetryLabel,
   managedAgentTracesEqualForMessage,
   trimPartialClosingFences,
@@ -141,6 +142,12 @@ describe('trimPartialClosingFences', () => {
     expect(trimPartialClosingFences(input)).toBe(
       '```md\nouter start\n```js\ninner code\n```\nouter end\n',
     );
+  });
+});
+
+describe('reasoning presentation', () => {
+  it('counts only visible reasoning lines', () => {
+    expect(countReasoningLines('first\n\n  second  \n')).toBe(2);
   });
 });
 

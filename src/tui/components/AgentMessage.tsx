@@ -3,7 +3,7 @@ import React, { useMemo } from 'react';
 import { Spinner } from './Spinner.js';
 import { ToolCallBlock } from './ToolCallBlock.js';
 import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
-import { MarkdownBlock } from './MarkdownBlock.js';
+import { MarkdownBlock, useThrottledValue } from './MarkdownBlock.js';
 import { CommandPanel } from './CommandPanel.js';
 import { useTheme } from '../theme.js';
 import { useDensityMetrics } from '../density.js';
@@ -55,6 +55,8 @@ interface AgentMessageProps {
   showAllToolOutput?: boolean;
   /** Tool-specific full-output expansion used by compact transcript mode. */
   showAllToolOutputIds?: ReadonlySet<string>;
+  /** Whether provider-native and embedded model thinking should be shown. */
+  showThinking?: boolean;
   /** Remove the final markdown block's margin before the next user turn. */
   trimTrailingSpacing?: boolean;
 }
@@ -227,41 +229,75 @@ export function splitThinkBlocks(content: string): MessagePart[] {
   return parts.length > 0 ? parts : [{ kind: 'markdown', text: content }];
 }
 
+function reasoningLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+export function countReasoningLines(text: string): number {
+  return reasoningLines(text).length;
+}
+
 function ThinkBlock({
   text,
   terminalWidth,
   reducedMotion,
   active = true,
+  screenReader = false,
 }: {
   text: string;
   terminalWidth?: number;
   reducedMotion?: boolean;
   active?: boolean;
+  screenReader?: boolean;
 }) {
   const theme = useTheme();
+  const lineCount = countReasoningLines(text);
+  // Keep the complete thought readable while avoiding a terminal redraw for every delta.
+  const streamedText = useThrottledValue(text, 80);
+  const visibleText = active ? streamedText : text;
+  const lineLabel = `${lineCount} ${lineCount === 1 ? 'line' : 'lines'}`;
 
   return (
     <Box
       flexDirection="column"
-      borderLeft
+      borderLeft={!screenReader}
       borderLeftColor={theme.mdThinkBorder}
-      backgroundColor={theme.mdThinkBg}
-      paddingLeft={1}
+      backgroundColor={screenReader ? undefined : theme.mdThinkBg}
+      paddingLeft={screenReader ? 0 : 1}
     >
       <Box>
-        <Spinner
-          active={active}
-          style="dots"
-          color={theme.mdThinkText}
-          reducedMotion={reducedMotion}
-        />
-        <Text color={theme.mdThinkText} dimColor>
-          Thinking
+        {active && !screenReader ? (
+          <Spinner active style="dots" color={theme.mdThinkText} reducedMotion={reducedMotion} />
+        ) : null}
+        <Text color={theme.mdThinkText} bold={active} dimColor={!active}>
+          {active ? 'Thinking' : 'Thought'}
         </Text>
+        {!active ? <Text color={theme.subtle} dimColor>{` - ${lineLabel}`}</Text> : null}
       </Box>
-      <Box marginLeft={2}>
-        <MarkdownBlock content={text} terminalWidth={terminalWidth} />
+      <Box marginLeft={screenReader ? 0 : 2}>
+        {active ? (
+          <Text color={theme.mdThinkText} dimColor>
+            {visibleText}
+          </Text>
+        ) : (
+          <MarkdownBlock content={visibleText} terminalWidth={terminalWidth} />
+        )}
       </Box>
+    </Box>
+  );
+}
+
+function AnswerDivider({ screenReader }: { screenReader: boolean }) {
+  const theme = useTheme();
+  return (
+    <Box marginTop={1} marginBottom={1}>
+      <Text color={screenReader ? theme.text : theme.assistantAccent} bold={!screenReader}>
+        {screenReader ? 'Answer:' : 'Answer'}
+      </Text>
+      {!screenReader ? <Text color={theme.mdTurnSeparator}> {'-'.repeat(12)}</Text> : null}
     </Box>
   );
 }
@@ -302,6 +338,7 @@ export function AgentMessageInner({
   hideStreamingSpinner = false,
   showAllToolOutput = false,
   showAllToolOutputIds = new Set<string>(),
+  showThinking = true,
   trimTrailingSpacing = false,
 }: AgentMessageProps) {
   const theme = useTheme();
@@ -346,6 +383,10 @@ export function AgentMessageInner({
   const contentWidth = terminalWidth ? Math.max(12, Math.floor(terminalWidth) - 2) : undefined;
   const mdWidth = contentWidth;
   const contentParts = useMemo(() => splitThinkBlocks(displayContent), [displayContent]);
+  const embeddedThinking = useMemo(
+    () => contentParts.some((part) => part.kind === 'think'),
+    [contentParts],
+  );
   const topLevelInvocations = useMemo(
     () =>
       toolCalls.map((call) => {
@@ -380,7 +421,7 @@ export function AgentMessageInner({
       {isStreaming &&
       !hideStreamingSpinner &&
       !displayContent &&
-      !reasoningContent &&
+      !(showThinking && reasoningContent) &&
       !message.toolCalls?.length ? (
         <Box marginLeft={screenReader ? 0 : 2}>
           {isRetrying && spinnerLabel ? (
@@ -394,13 +435,14 @@ export function AgentMessageInner({
         </Box>
       ) : null}
 
-      {reasoningContent ? (
+      {showThinking && reasoningContent ? (
         <Box marginLeft={screenReader ? 0 : 2} flexDirection="column">
           <ThinkBlock
             text={reasoningContent}
             terminalWidth={mdWidth}
             reducedMotion={reducedMotion}
-            active={isStreaming}
+            active={isStreaming && !displayContent}
+            screenReader={screenReader}
           />
         </Box>
       ) : null}
@@ -408,6 +450,9 @@ export function AgentMessageInner({
       {/* Activity and content use separate rows so markdown keeps its full budget. */}
       {displayContent ? (
         <Box marginLeft={screenReader ? 0 : 2} flexDirection="column">
+          {showThinking && reasoningContent && !embeddedThinking ? (
+            <AnswerDivider screenReader={screenReader} />
+          ) : null}
           {isStreaming && !hideStreamingSpinner && !isRetrying ? (
             <Box>
               <Spinner active style="braille" reducedMotion={reducedMotion} />
@@ -423,25 +468,40 @@ export function AgentMessageInner({
             <DiffBlock output={displayContent} terminalWidth={contentWidth} />
           ) : (
             <Box flexDirection="column">
-              {contentParts.map((part, i) =>
-                part.kind === 'think' ? (
-                  <ThinkBlock
-                    key={`think-${i}`}
-                    text={part.text}
-                    terminalWidth={mdWidth}
-                    reducedMotion={reducedMotion}
-                    active={isStreaming}
-                  />
-                ) : (
-                  <MarkdownBlock
-                    key={`md-${i}`}
-                    content={part.text}
-                    terminalWidth={mdWidth}
-                    isStreaming={isStreaming}
-                    trimTrailingMargin={trimTrailingSpacing && i === contentParts.length - 1}
-                  />
-                ),
-              )}
+              {contentParts.map((part, i) => {
+                if (part.kind === 'think') {
+                  if (!showThinking) return null;
+                  const answerHasStarted = contentParts
+                    .slice(i + 1)
+                    .some((candidate) => candidate.kind === 'markdown' && candidate.text.trim());
+                  return (
+                    <ThinkBlock
+                      key={`think-${i}`}
+                      text={part.text}
+                      terminalWidth={mdWidth}
+                      reducedMotion={reducedMotion}
+                      active={isStreaming && !answerHasStarted}
+                      screenReader={screenReader}
+                    />
+                  );
+                }
+                const hasEarlierThinking = contentParts
+                  .slice(0, i)
+                  .some((candidate) => candidate.kind === 'think');
+                return (
+                  <React.Fragment key={`md-${i}`}>
+                    {showThinking && hasEarlierThinking ? (
+                      <AnswerDivider screenReader={screenReader} />
+                    ) : null}
+                    <MarkdownBlock
+                      content={part.text}
+                      terminalWidth={mdWidth}
+                      isStreaming={isStreaming}
+                      trimTrailingMargin={trimTrailingSpacing && i === contentParts.length - 1}
+                    />
+                  </React.Fragment>
+                );
+              })}
             </Box>
           )}
         </Box>
@@ -450,7 +510,11 @@ export function AgentMessageInner({
       {/* Every invocation gets its own row. Task subagent tools stay display-only and nest below it. */}
       {topLevelInvocations.map((invocation, index) => {
         const marginTop =
-          index === 0 ? (displayContent || reasoningContent ? toolRowGap : 0) : toolRowGap;
+          index === 0
+            ? displayContent || (showThinking && reasoningContent)
+              ? toolRowGap
+              : 0
+            : toolRowGap;
         const tc = invocation.call;
         const result = invocation.result;
         const mutation = invocation.mutation;
@@ -623,6 +687,7 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
     prev.hideStreamingSpinner === next.hideStreamingSpinner &&
     prev.showAllToolOutput === next.showAllToolOutput &&
     prev.showAllToolOutputIds === next.showAllToolOutputIds &&
+    prev.showThinking === next.showThinking &&
     prev.trimTrailingSpacing === next.trimTrailingSpacing &&
     prev.reducedMotion === next.reducedMotion &&
     prev.screenReader === next.screenReader &&

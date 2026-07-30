@@ -6,6 +6,9 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Streaming assistant responses now use the same Markdown layout as completed replies while
+  keeping a bounded, throttled live tail for responsive rendering of large outputs.
+
 - `/config` now opens a visual settings menu for model, effort, theme, memory capture, and
   subagent profile models. Explorer, patcher, validator, and custom profiles can select an
   existing configured model or reset to parent-model inheritance without editing JSON.

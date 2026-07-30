@@ -119,6 +119,7 @@ interface ChatPanelProps {
   retryPhase?: RetryPhase;
   showAllToolOutput?: boolean;
   showAllToolOutputIds?: ReadonlySet<string>;
+  showThinking?: boolean;
   retryAttempt?: number;
   retryMax?: number;
   retryCountdownMs?: number;
@@ -147,6 +148,7 @@ export function ChatPanelInner({
   retryPhase = 'none',
   showAllToolOutput = false,
   showAllToolOutputIds,
+  showThinking = true,
   retryAttempt = 0,
   retryMax = 0,
   retryCountdownMs = 0,
@@ -315,6 +317,7 @@ export function ChatPanelInner({
                   hideStreamingSpinner={isStreaming}
                   showAllToolOutput={showAllToolOutput}
                   showAllToolOutputIds={showAllToolOutputIds}
+                  showThinking={showThinking}
                   trimTrailingSpacing={nextEntryIsUser}
                 />
               </Box>
@@ -364,6 +367,7 @@ export const ChatPanel = React.memo(ChatPanelInner, (previous, next) => {
     previous.retryPhase !== next.retryPhase ||
     previous.showAllToolOutput !== next.showAllToolOutput ||
     previous.showAllToolOutputIds !== next.showAllToolOutputIds ||
+    previous.showThinking !== next.showThinking ||
     previous.retryAttempt !== next.retryAttempt ||
     previous.retryMax !== next.retryMax ||
     previous.retryCountdownMs !== next.retryCountdownMs

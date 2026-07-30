@@ -192,6 +192,13 @@ export const observabilitySettingsSchema = z.object({
 
 export type ObservabilitySettings = z.infer<typeof observabilitySettingsSchema>;
 
+export const uiSettingsSchema = z.object({
+  /** Show provider-native and embedded model reasoning in the interactive transcript. */
+  showThinking: z.boolean().default(true),
+});
+
+export type UiSettings = z.infer<typeof uiSettingsSchema>;
+
 export type ProviderModelConfig = z.infer<typeof providerModelSchema>;
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;
 
@@ -207,6 +214,7 @@ export const bookSettingsSchema = z.object({
   effort: effortLevelSchema.optional(),
   /** TUI color theme: dark, light, auto, or a custom theme filename. */
   theme: z.string().min(1).optional(),
+  ui: uiSettingsSchema.default({}),
   autoCompactEnabled: z.boolean().optional(),
   /** Permission mode used by each host when no invocation-specific mode is supplied. */
   defaultMode: z
@@ -286,6 +294,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   additionalDirectories: [],
   env: {},
   provider: {},
+  ui: { showThinking: true },
   retry: {
     maxAttempts: 10,
     baseDelayMs: 1000,

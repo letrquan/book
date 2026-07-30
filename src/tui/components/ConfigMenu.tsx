@@ -11,15 +11,25 @@ interface ConfigMenuProps {
   effort?: string;
   themeName: string;
   memoryAutoSave: boolean;
+  showThinking: boolean;
   agentCount: number;
   defaultPermissionMode: string;
   terminalWidth?: number;
   onOpen: (section: ConfigSection) => void;
   onToggleMemory: () => void;
+  onToggleThinking: () => void;
   onCancel: () => void;
 }
 
-const ROWS = ['model', 'effort', 'theme', 'permission-mode', 'agents', 'memory'] as const;
+const ROWS = [
+  'model',
+  'effort',
+  'thinking',
+  'theme',
+  'permission-mode',
+  'agents',
+  'memory',
+] as const;
 type Row = (typeof ROWS)[number];
 
 export function ConfigMenu({
@@ -27,11 +37,13 @@ export function ConfigMenu({
   effort,
   themeName,
   memoryAutoSave,
+  showThinking,
   agentCount,
   defaultPermissionMode,
   terminalWidth = 80,
   onOpen,
   onToggleMemory,
+  onToggleThinking,
   onCancel,
 }: ConfigMenuProps) {
   const theme = useTheme();
@@ -52,12 +64,14 @@ export function ConfigMenu({
     if (key.return) {
       const row = ROWS[selected];
       if (row === 'memory') onToggleMemory();
+      else if (row === 'thinking') onToggleThinking();
       else onOpen(row);
       return;
     }
     const shortcut = input.toLowerCase();
     if (shortcut === 'm') onOpen('model');
     else if (shortcut === 'e') onOpen('effort');
+    else if (shortcut === 'i') onToggleThinking();
     else if (shortcut === 't') onOpen('theme');
     else if (shortcut === 'a') onOpen('agents');
     else if (shortcut === 'p') onOpen('permission-mode');
@@ -70,6 +84,12 @@ export function ConfigMenu({
       label: 'Effort',
       value: effort ?? 'model default',
       description: 'Reasoning depth for supported models',
+    },
+    {
+      row: 'thinking',
+      label: 'Show thinking',
+      value: showThinking ? 'on' : 'off',
+      description: 'Display the model reasoning in the transcript',
     },
     { row: 'theme', label: 'Theme', value: themeName, description: 'Terminal color palette' },
     {
@@ -108,7 +128,7 @@ export function ConfigMenu({
         ))}
       </Box>
       <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter open/save · M model · P permissions · A agents · Esc close
+        ↑↓ select · Enter toggle/open · I thinking · M model · P permissions · A agents · Esc close
       </Text>
     </SoftPanel>
   );
