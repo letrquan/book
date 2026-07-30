@@ -19,10 +19,12 @@ describe('ConfigMenu', () => {
           effort="high"
           themeName="dark"
           memoryAutoSave={false}
+          showThinking
           agentCount={3}
           defaultPermissionMode="default"
           onOpen={onOpen}
           onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
           onCancel={() => {}}
         />
       </ThemeContext.Provider>,
@@ -41,10 +43,12 @@ describe('ConfigMenu', () => {
           model="gpt-5"
           themeName="dark"
           memoryAutoSave={false}
+          showThinking
           agentCount={3}
           defaultPermissionMode="accept-edits"
           onOpen={onOpen}
           onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
           onCancel={() => {}}
         />
       </ThemeContext.Provider>,
@@ -56,6 +60,31 @@ describe('ConfigMenu', () => {
     expect(onOpen).toHaveBeenCalledWith('permission-mode');
   });
 
+  it('shows and toggles model thinking from the keyboard shortcut', () => {
+    const onToggleThinking = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          themeName="dark"
+          memoryAutoSave={false}
+          showThinking={false}
+          agentCount={3}
+          defaultPermissionMode="default"
+          onOpen={() => {}}
+          onToggleMemory={() => {}}
+          onToggleThinking={onToggleThinking}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    expect(view.lastFrame()).toContain('Show thinking');
+    expect(view.lastFrame()).toContain('off');
+    view.stdin.write('i');
+    expect(onToggleThinking).toHaveBeenCalledOnce();
+  });
+
   it('fits narrow terminals', () => {
     const view = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>
@@ -63,11 +92,13 @@ describe('ConfigMenu', () => {
           model="9router/qc/qwen3.7-max"
           themeName="dark"
           memoryAutoSave={false}
+          showThinking
           agentCount={3}
           defaultPermissionMode="default"
           terminalWidth={42}
           onOpen={() => {}}
           onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
           onCancel={() => {}}
         />
       </ThemeContext.Provider>,

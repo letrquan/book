@@ -213,6 +213,106 @@ export async function* chatCompletionStream(
     }
   };
 
+  const emitDone = function* (
+    terminal: '[DONE]' | 'finish_reason',
+  ): Generator<ProviderStreamEvent> {
+    yield* emitToolCalls();
+    log.info('stream done', {
+      terminal,
+      promptTokens: currentUsage?.promptTokens ?? 0,
+      completionTokens: currentUsage?.completionTokens ?? 0,
+      totalTokens: currentUsage?.totalTokens ?? 0,
+    });
+    yield {
+      type: 'done',
+      usage: currentUsage ?? undefined,
+      ...(responseModel ? { responseModel } : {}),
+      ...(responseId ? { responseId } : {}),
+      ...(finishReasons.size > 0 ? { finishReasons: [...finishReasons] } : {}),
+    };
+  };
+
+  const processSseLine = function* (line: string): Generator<ProviderStreamEvent, boolean> {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith('data:')) return false;
+
+    const data = trimmed.slice(5).replace(/^ /, '');
+    if (data === '[DONE]') {
+      yield* emitDone('[DONE]');
+      return true;
+    }
+
+    try {
+      const parsed = JSON.parse(data);
+      if (typeof parsed.model === 'string') responseModel = parsed.model;
+      if (typeof parsed.id === 'string') responseId = parsed.id;
+      // OpenAI sends usage on the final chunk when stream_options.include_usage is set.
+      if (parsed.usage) {
+        currentUsage = {
+          promptTokens: parsed.usage.prompt_tokens ?? 0,
+          completionTokens: parsed.usage.completion_tokens ?? 0,
+          totalTokens: parsed.usage.total_tokens ?? 0,
+        };
+      }
+      const choice = parsed.choices?.[0];
+      if (!choice) return false;
+      const finishReason: unknown = choice.finish_reason;
+      if (typeof finishReason === 'string' && finishReason) finishReasons.add(finishReason);
+
+      const delta = choice.delta as
+        | (Record<string, unknown> & {
+            content?: string;
+            tool_calls?: Array<{
+              index?: number;
+              id?: string;
+              function?: { name?: string; arguments?: string };
+            }>;
+          })
+        | undefined;
+      if (!delta) return false;
+
+      const reasoning = parseReasoningDelta(delta);
+      if (reasoning) {
+        log.debug('stream reasoning', { len: reasoning.length });
+        yield { type: 'reasoning', reasoning };
+      }
+
+      if (delta.content) {
+        log.debug('stream text', { len: delta.content.length });
+        yield { type: 'text', content: delta.content };
+      }
+
+      if (delta.tool_calls) {
+        log.debug('stream tool_call delta', { count: delta.tool_calls.length });
+        for (const tc of delta.tool_calls) {
+          const explicitIndex = Number.isInteger(tc.index) ? tc.index : undefined;
+          let index = explicitIndex;
+
+          if (index === undefined && tc.id) {
+            index = toolCallParts.find((part) => part.id === tc.id)?.index;
+          }
+          if (index === undefined) {
+            index = toolCallParts.length;
+          }
+
+          let part = toolCallParts.find((p) => p.index === index);
+          if (!part) {
+            part = { index, id: '', name: '', arguments: '' };
+            toolCallParts.push(part);
+          }
+
+          if (tc.id) part.id = tc.id;
+          if (tc.function?.name) part.name = tc.function.name;
+          if (tc.function?.arguments) part.arguments += tc.function.arguments;
+        }
+      }
+    } catch {
+      // Skip unparseable lines.
+    }
+
+    return false;
+  };
+
   // Stream stall detection: if no data arrives for streamStallTimeoutMs,
   // call the onStreamStall callback and yield a visible error instead of
   // leaving the TUI stuck in a pending read forever.
@@ -257,95 +357,19 @@ export async function* chatCompletionStream(
       buffer = lines.pop() || '';
 
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data: ')) continue;
-
-        const data = trimmed.slice(6);
-        if (data === '[DONE]') {
-          yield* emitToolCalls();
-          log.info('stream done', {
-            promptTokens: currentUsage?.promptTokens ?? 0,
-            completionTokens: currentUsage?.completionTokens ?? 0,
-            totalTokens: currentUsage?.totalTokens ?? 0,
-          });
-          yield {
-            type: 'done',
-            usage: currentUsage ?? undefined,
-            ...(responseModel ? { responseModel } : {}),
-            ...(responseId ? { responseId } : {}),
-            ...(finishReasons.size > 0 ? { finishReasons: [...finishReasons] } : {}),
-          };
-          return;
-        }
-
-        try {
-          const parsed = JSON.parse(data);
-          if (typeof parsed.model === 'string') responseModel = parsed.model;
-          if (typeof parsed.id === 'string') responseId = parsed.id;
-          // OpenAI sends usage on the final chunk when stream_options.include_usage is set.
-          if (parsed.usage) {
-            currentUsage = {
-              promptTokens: parsed.usage.prompt_tokens ?? 0,
-              completionTokens: parsed.usage.completion_tokens ?? 0,
-              totalTokens: parsed.usage.total_tokens ?? 0,
-            };
-          }
-          const choice = parsed.choices?.[0];
-          if (!choice) continue;
-          const finishReason: unknown = choice.finish_reason;
-          if (typeof finishReason === 'string') finishReasons.add(finishReason);
-
-          const delta = choice.delta as
-            | (Record<string, unknown> & {
-                content?: string;
-                tool_calls?: Array<{
-                  index?: number;
-                  id?: string;
-                  function?: { name?: string; arguments?: string };
-                }>;
-              })
-            | undefined;
-          if (!delta) continue;
-
-          const reasoning = parseReasoningDelta(delta);
-          if (reasoning) {
-            log.debug('stream reasoning', { len: reasoning.length });
-            yield { type: 'reasoning', reasoning };
-          }
-
-          if (delta.content) {
-            log.debug('stream text', { len: delta.content.length });
-            yield { type: 'text', content: delta.content };
-          }
-
-          if (delta.tool_calls) {
-            log.debug('stream tool_call delta', { count: delta.tool_calls.length });
-            for (const tc of delta.tool_calls) {
-              const explicitIndex = Number.isInteger(tc.index) ? tc.index : undefined;
-              let index = explicitIndex;
-
-              if (index === undefined && tc.id) {
-                index = toolCallParts.find((part) => part.id === tc.id)?.index;
-              }
-              if (index === undefined) {
-                index = toolCallParts.length;
-              }
-
-              let part = toolCallParts.find((p) => p.index === index);
-              if (!part) {
-                part = { index, id: '', name: '', arguments: '' };
-                toolCallParts.push(part);
-              }
-
-              if (tc.id) part.id = tc.id;
-              if (tc.function?.name) part.name = tc.function.name;
-              if (tc.function?.arguments) part.arguments += tc.function.arguments;
-            }
-          }
-        } catch {
-          // Skip unparseable lines
-        }
+        if (yield* processSseLine(line)) return;
       }
+    }
+
+    buffer += decoder.decode();
+    for (const line of buffer.split('\n')) {
+      if (yield* processSseLine(line)) return;
+    }
+
+    // Some OpenAI-compatible gateways omit [DONE] and close after a finish_reason chunk.
+    if (finishReasons.size > 0) {
+      yield* emitDone('finish_reason');
+      return;
     }
   } catch (e) {
     if (signal?.aborted) return;

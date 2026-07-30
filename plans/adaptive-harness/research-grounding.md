@@ -25,8 +25,11 @@ without improving the requested task:
   while the plan treats multi-agent coordination as future work.
 - `maxBudgetUsd` is exposed at the headless boundary but is not enforced end to end;
   root usage is not accumulated consistently and legacy child usage is discarded.
-- Provider errors and aborts can be returned as ordinary history and later finalized as
-  completed session work.
+- Provider terminal failures must never be returned as ordinary completed history. A
+  regression exposed after the adaptive-harness accounting change (`fab5211`) showed that
+  an OpenAI-compatible stream can close after partial output without `[DONE]` or a
+  `finish_reason`; the provider must classify that EOF as `transport_interrupted` and the
+  agent loop must emit one interrupted terminal outcome instead of calling `onDone`.
 - The shared lifecycle boundary is `AgentSession`, not only `headless.ts`, the TUI, or
   `runAgentLoop`.
 - The exact effective model, tool surface, ambient prompt inputs, and Book home state
@@ -35,6 +38,21 @@ without improving the requested task:
   sufficient isolation for adversarial setup, verifier, or candidate commands.
 
 Until these are addressed, Phase 6 results are not attributable to workflow selection.
+
+## Verified Stream-Termination Regression
+
+The provider stream contract treats terminal framing as evidence, not an assumption:
+
+- `[DONE]` is a valid completion marker.
+- EOF after a `finish_reason` is accepted for gateways that omit `[DONE]`.
+- EOF without either marker is an interrupted transport, even when partial text was
+  received.
+
+This distinction is required by the harness because a truncated answer must not be recorded
+as a completed run. The regression is asserted at both boundaries:
+`src/provider/openai-compatible.test.ts` verifies the event sequence and
+`src/agent/loop.test.ts` verifies `status: interrupted`,
+`reason: transport_interrupted`, `partialOutput: true`, and the absence of `onDone`.
 
 ## Research Update: What Existing Systems Change
 
@@ -79,7 +97,8 @@ tracked as a prerequisite batch before collecting promotion evidence:
 
 1. Make terminal run status lossless. A provider error, cancellation, timeout, and
    interruption must remain distinct from verified completion through `AgentSession` and
-   its event reducer.
+   its event reducer. The OpenAI-compatible EOF case above is now covered; remaining
+   provider/session paths must preserve the same distinction.
 2. Enforce one root run boundary per user request. A single headless process may serve
    several requests, so prepare/finalize must occur inside the request loop. Resume must
    define whether it continues a run or starts a new run linked to the prior one.

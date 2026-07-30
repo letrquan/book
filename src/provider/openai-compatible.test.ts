@@ -728,7 +728,7 @@ describe('chatCompletionStream retry — edge cases', () => {
 });
 
 describe('chatCompletionStream terminal framing', () => {
-  it('reports transport interruption when EOF arrives without [DONE]', async () => {
+  it('reports transport interruption when EOF arrives without completion evidence', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
@@ -756,6 +756,106 @@ describe('chatCompletionStream terminal framing', () => {
         error: 'Provider stream ended before its terminal event.',
         errorCode: 'transport_interrupted',
       },
+    ]);
+  });
+
+  it('accepts [DONE] without a trailing newline', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder();
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"complete"}}]}\n\n'),
+            );
+            controller.enqueue(encoder.encode('data: [DONE]'));
+            controller.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const event of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      { type: 'text', content: 'complete' },
+      { type: 'done', usage: undefined },
+    ]);
+  });
+
+  it('accepts EOF after a finish reason', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                'data: {"id":"resp-1","model":"compat-model","choices":[{"delta":{"content":"complete"},"finish_reason":"stop"}]}',
+              ),
+            );
+            controller.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const event of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      { type: 'text', content: 'complete' },
+      {
+        type: 'done',
+        usage: undefined,
+        responseModel: 'compat-model',
+        responseId: 'resp-1',
+        finishReasons: ['stop'],
+      },
+    ]);
+  });
+
+  it('emits completed tool calls when EOF follows a tool_calls finish reason', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder();
+            controller.enqueue(
+              encoder.encode(
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"Read","arguments":"{\\"filePath\\":\\"README.md\\"}"}}]},"finish_reason":null}]}\n\n',
+              ),
+            );
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}'),
+            );
+            controller.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const event of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: 'tool_call',
+        toolCall: { id: 'call_1', name: 'Read', arguments: { filePath: 'README.md' } },
+      },
+      { type: 'done', usage: undefined, finishReasons: ['tool_calls'] },
     ]);
   });
 });

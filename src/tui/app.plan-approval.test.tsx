@@ -147,6 +147,7 @@ function pendingAgentState() {
     setEffort: vi.fn(() => ({ ok: true })),
     setAgentProfileModel: vi.fn(() => ({ ok: true })),
     setMemoryAutoSave: vi.fn(),
+    setShowThinking: vi.fn(() => ({ ok: true })),
     refreshMemoryContext: vi.fn(),
     turnDurationMs: 0,
     retryPhase: 'none',

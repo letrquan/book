@@ -1056,6 +1056,103 @@ describe('ChatPanel Ink rendering', () => {
     expect(frame(view.lastFrame)).toContain('BASH_RESULT_MARKER');
   });
 
+  it('keeps completed reasoning readable and separates it from the answer', () => {
+    const message: Message = {
+      ...msg('a1', 'assistant', 'The stream framing is compatible.'),
+      reasoningContent: [
+        'Inspecting the provider stream',
+        'Checking its terminal framing',
+        'Comparing the final finish reason',
+      ].join('\n'),
+    };
+    const view = render(
+      withTheme(
+        <AgentMessage
+          message={message}
+          isStreaming={false}
+          transcriptMode="compact"
+          reducedMotion
+          terminalWidth={100}
+        />,
+      ),
+    );
+
+    let output = frame(view.lastFrame);
+    expect(output).toContain('Thought');
+    expect(output).toContain('3 lines');
+    expect(output).toContain('Inspecting the provider stream');
+    expect(output).toContain('Checking its terminal framing');
+    expect(output).toContain('Comparing the final finish reason');
+    expect(output).toContain('Answer');
+
+    view.rerender(
+      withTheme(
+        <AgentMessage
+          message={message}
+          isStreaming={false}
+          transcriptMode="detailed"
+          reducedMotion
+          terminalWidth={100}
+        />,
+      ),
+    );
+    output = frame(view.lastFrame);
+    expect(output).toContain('Checking its terminal framing');
+    expect(output).toContain('Comparing the final finish reason');
+  });
+
+  it('keeps the complete reasoning visible while streaming', () => {
+    const message: Message = {
+      ...msg('a1', 'assistant', ''),
+      reasoningContent: [
+        'OLD_REASONING_LINE',
+        'step two',
+        'step three',
+        'step four',
+        'LATEST_REASONING_LINE',
+      ].join('\n'),
+    };
+    const view = render(
+      withTheme(
+        <AgentMessage
+          message={message}
+          isStreaming
+          transcriptMode="compact"
+          reducedMotion
+          terminalWidth={100}
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('Thinking');
+    expect(output).toContain('OLD_REASONING_LINE');
+    expect(output).toContain('LATEST_REASONING_LINE');
+  });
+
+  it('can hide reasoning without hiding the final answer', () => {
+    const message: Message = {
+      ...msg('a1', 'assistant', 'VISIBLE_ANSWER'),
+      reasoningContent: 'HIDDEN_THOUGHT',
+    };
+    const view = render(
+      withTheme(
+        <AgentMessage
+          message={message}
+          isStreaming={false}
+          showThinking={false}
+          reducedMotion
+          terminalWidth={100}
+        />,
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('VISIBLE_ANSWER');
+    expect(output).not.toContain('HIDDEN_THOUGHT');
+    expect(output).not.toContain('Thought');
+  });
+
   it('collapses a compact action when it completes and preserves manual expansion', () => {
     const running: Message = {
       ...msg('a1', 'assistant', ''),

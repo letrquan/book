@@ -236,6 +236,7 @@ export function App({
     setEffort,
     setAgentProfileModel,
     setMemoryAutoSave,
+    setShowThinking,
     refreshMemoryContext,
     persistPermissionRule,
     setDefaultPermissionMode,
@@ -1441,6 +1442,7 @@ export function App({
                   reducedMotion={motionDisabled}
                   screenReader={screenReader}
                   terminalWidth={termWidth}
+                  showThinking={liveConfig.settings.ui.showThinking}
                   terminalHeight={termHeight}
                   workspace={config.workspace}
                   model={liveConfig.modelSelection ?? liveConfig.model}
@@ -1917,6 +1919,7 @@ export function App({
                 effort={liveConfig.effort}
                 themeName={currentTheme.preference}
                 memoryAutoSave={liveConfig.settings.memory.autoSave}
+                showThinking={liveConfig.settings.ui.showThinking}
                 agentCount={agentProfiles.length}
                 defaultPermissionMode={resolvePermissionMode(liveConfig.settings)}
                 terminalWidth={termWidth}
@@ -1944,6 +1947,11 @@ export function App({
                   }
                 }}
                 onToggleMemory={() => setMemoryAutoSave(!liveConfig.settings.memory.autoSave)}
+                onToggleThinking={() => {
+                  const result = setShowThinking(!liveConfig.settings.ui.showThinking);
+                  if (!result.ok)
+                    addLocalMessage(`✕ ${result.error ?? 'Could not save thinking setting.'}`);
+                }}
                 onCancel={() => setShowConfigPicker(false)}
               />
             ) : null}
