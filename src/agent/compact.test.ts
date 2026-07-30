@@ -256,6 +256,20 @@ describe('buildCompactPrompt / serialize', () => {
     expect(text).toMatch(/a\.ts/);
     expect(text).toMatch(/file body here/);
   });
+
+  it('retains reasoning in the compact transcript', () => {
+    const text = serializeHistoryForCompact([
+      {
+        id: 'reasoning-1',
+        role: 'assistant',
+        content: 'answer',
+        reasoningContent: 'inspect first',
+        includeInContext: true,
+        timestamp: 0,
+      },
+    ]);
+    expect(text).toContain('<reasoning_context>\ninspect first\n</reasoning_context>');
+  });
 });
 
 describe('runCompact', () => {

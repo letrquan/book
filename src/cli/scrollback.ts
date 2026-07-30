@@ -66,6 +66,7 @@ export async function runScrollbackSession(
         history,
         {
           onText: (text) => output.write(text),
+          onReasoning: (text) => output.write(`\n[thinking] ${text}\n`),
           onToolCall: (call) => {
             toolCalls.set(call.id, call);
             output.write(formatToolCall(call));

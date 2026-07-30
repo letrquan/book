@@ -1,6 +1,11 @@
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import { createHash } from 'node:crypto';
-import type { ImageAttachment, Message, Usage } from '../types/messages.js';
+import type {
+  ImageAttachment,
+  Message,
+  ProviderMessageMetadata,
+  Usage,
+} from '../types/messages.js';
 import type { ProviderResponseMetadata } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
 import type {
@@ -275,6 +280,7 @@ export async function runAgentLoop(
   /** Avoid re-attempting compact for the same pressure snapshot after skip/fail. */
   let lastCompactAttemptKey: string | null = null;
   let retrySameTurn = false;
+  let emptyResponseRetryTurn: number | null = null;
   let forcedCompactTurn: number | null = null;
   let effectiveMode = initialMode;
   /** Set when the user approves a plan with fresh context; ends the turn so the host can reseed. */
@@ -330,7 +336,7 @@ export async function runAgentLoop(
 
     if (retrySameTurn) {
       retrySameTurn = false;
-      log.info('retrying turn after context-overflow compaction', { turn });
+      log.info('retrying current turn', { turn });
     } else {
       turn++;
       callbacks.onTurnStart(turn);
@@ -450,17 +456,39 @@ export async function runAgentLoop(
       return newHistory;
     }
     let assistantContent = '';
+    let reasoningContent = '';
     const toolCalls: ToolCall[] = [];
     const nestedTraceIds: string[] = [];
     let turnUsage: Usage | null = null;
     let responseMetadata: ProviderResponseMetadata | undefined;
+    let assistantProviderMetadata: ProviderMessageMetadata | undefined;
 
     // Buffer text during streaming so we can discard on retry.
     let textBuffer = '';
     let heldText = '';
     let textStreamingStarted = false;
+    let reasoningStreamingStarted = false;
+    const flushReasoning = (): void => {
+      if (reasoningStreamingStarted) return;
+      reasoningStreamingStarted = true;
+      if (!reasoningContent) return;
+      assistantOutputProduced = true;
+      callbacks.onReasoning?.(reasoningContent);
+    };
 
     const provider = options?.provider ?? createProvider(effectiveConfig);
+    let usageRecorded = false;
+    const recordTurnUsage = (): void => {
+      if (!turnUsage || usageRecorded) return;
+      usageRecorded = true;
+      const metadata = responseMetadata ?? {
+        provider: provider.id,
+        requestedModel: effectiveConfig.model,
+      };
+      callbacks.onUsage?.(turnUsage, metadata);
+      if (options?.runContext)
+        runtime.runAccounting.record(options.runContext, turnUsage, metadata);
+    };
     if (options?.runContext) {
       const budget = runtime.runAccounting.checkBeforeModelCall(
         options.runContext.rootRunId,
@@ -496,7 +524,10 @@ export async function runAgentLoop(
 
     try {
       for await (const event of stream) {
-        if (event.type === 'text' && event.content) {
+        if (event.type === 'reasoning' && event.reasoning) {
+          reasoningContent += event.reasoning;
+          if (reasoningStreamingStarted) callbacks.onReasoning?.(event.reasoning);
+        } else if (event.type === 'text' && event.content) {
           textBuffer += event.content;
           if (textStreamingStarted) {
             assistantOutputProduced = true;
@@ -508,11 +539,13 @@ export async function runAgentLoop(
             if (!errorPrefix.startsWith(candidate) && !candidate.startsWith(errorPrefix)) {
               textStreamingStarted = true;
               assistantOutputProduced = true;
+              flushReasoning();
               callbacks.onText(heldText);
               heldText = '';
             }
           }
         } else if (event.type === 'tool_call' && event.toolCall) {
+          flushReasoning();
           assistantOutputProduced = true;
           toolCalls.push(event.toolCall);
           callbacks.onToolCall(event.toolCall);
@@ -542,6 +575,7 @@ export async function runAgentLoop(
             responseId: event.responseId,
             finishReasons: event.finishReasons,
           };
+          assistantProviderMetadata = event.providerMetadata;
         }
         if (signal?.aborted) break;
       }
@@ -555,6 +589,54 @@ export async function runAgentLoop(
     }
 
     assistantContent = textBuffer;
+    recordTurnUsage();
+
+    const finishReason = responseMetadata?.finishReasons?.find((reason) =>
+      [
+        'length',
+        'max_tokens',
+        'model_context_window_exceeded',
+        'content_filter',
+        'refusal',
+        'error',
+      ].includes(reason),
+    );
+    if (!streamError && streamDone && finishReason) {
+      if (finishReason === 'length' || finishReason === 'max_tokens') {
+        streamError = 'The provider stopped because the response reached its output limit.';
+        streamErrorCode = 'protocol_error';
+      } else if (finishReason === 'model_context_window_exceeded') {
+        streamError = 'The provider stopped because the model context window was exceeded.';
+        streamErrorCode = 'context_overflow';
+      } else {
+        streamError = `The provider stopped with finish reason: ${finishReason}.`;
+        streamErrorCode =
+          finishReason === 'error' || finishReason === 'refusal'
+            ? 'provider_error'
+            : 'protocol_error';
+      }
+    }
+
+    if (
+      !streamError &&
+      streamDone &&
+      assistantContent.trim().length === 0 &&
+      toolCalls.length === 0
+    ) {
+      if (emptyResponseRetryTurn !== turn) {
+        emptyResponseRetryTurn = turn;
+        log.warn('provider returned an empty completion; retrying once', {
+          turn,
+          reasoningLen: reasoningContent.length,
+          responseId: responseMetadata?.responseId,
+        });
+        retrySameTurn = true;
+        continue;
+      }
+      streamError =
+        'The provider returned an empty response after one retry. Please retry the request.';
+      streamErrorCode = 'protocol_error';
+    }
 
     const routerOverflowResponse =
       !streamError &&
@@ -569,6 +651,7 @@ export async function runAgentLoop(
     }
     if (heldText && !routerOverflowResponse) {
       assistantOutputProduced = true;
+      flushReasoning();
       callbacks.onText(heldText);
     }
 
@@ -642,12 +725,15 @@ export async function runAgentLoop(
         contentLen: assistantContent.length,
         toolCallCount: toolCalls.length,
       });
-      if (assistantContent.length > 0 || toolCalls.length > 0) {
+      flushReasoning();
+      if (assistantContent.length > 0 || reasoningContent.length > 0 || toolCalls.length > 0) {
         assistantOutputProduced = true;
         newHistory.push({
           id: crypto.randomUUID(),
           role: 'assistant',
           content: assistantContent,
+          reasoningContent: reasoningContent || undefined,
+          providerMetadata: assistantProviderMetadata,
           includeInContext: true,
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           timestamp: Date.now(),
@@ -694,6 +780,7 @@ export async function runAgentLoop(
     // If we got no done event and no error, the stream was aborted or
     // ended unexpectedly — keep what we have and finish.
     if (!streamDone && signal?.aborted) {
+      flushReasoning();
       const cancelledResults = toolCalls.map<ToolResult>((call, callIndex) => {
         const result = toolFailure('CANCELLED: Agent execution was interrupted', {
           toolCallId: call.id,
@@ -707,30 +794,26 @@ export async function runAgentLoop(
         }
         return result;
       });
-      if (assistantContent.length > 0 || toolCalls.length > 0) {
+      if (assistantContent.length > 0 || reasoningContent.length > 0 || toolCalls.length > 0) {
         assistantOutputProduced = true;
-        newHistory.push({
+        const cancelledMessage: Message = {
           id: crypto.randomUUID(),
           role: 'assistant',
           content: assistantContent,
+          reasoningContent: reasoningContent || undefined,
+          providerMetadata: assistantProviderMetadata,
           includeInContext: true,
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           toolResults: cancelledResults.length > 0 ? cancelledResults : undefined,
           timestamp: Date.now(),
-        });
+        };
+        newHistory.push(cancelledMessage);
+        callbacks.onAssistantMessageComplete?.(cancelledMessage);
       }
       break;
     }
 
-    if (turnUsage) {
-      const metadata = responseMetadata ?? {
-        provider: provider.id,
-        requestedModel: effectiveConfig.model,
-      };
-      callbacks.onUsage?.(turnUsage, metadata);
-      if (options?.runContext)
-        runtime.runAccounting.record(options.runContext, turnUsage, metadata);
-    }
+    recordTurnUsage();
 
     const publishResult = (callIndex: number, result: ToolResult): void => {
       callbacks.onToolResult(result);
@@ -771,6 +854,8 @@ export async function runAgentLoop(
         content: [assistantContent, `[Tool batch rejected: ${message}]`]
           .filter(Boolean)
           .join('\n\n'),
+        reasoningContent: reasoningContent || undefined,
+        providerMetadata: assistantProviderMetadata,
         includeInContext: true,
         timestamp: Date.now(),
       };
@@ -1346,6 +1431,8 @@ export async function runAgentLoop(
       id: options?.assistantMessageId?.(turn) ?? crypto.randomUUID(),
       role: 'assistant',
       content: assistantContent,
+      reasoningContent: reasoningContent || undefined,
+      providerMetadata: assistantProviderMetadata,
       includeInContext: true,
       kind: 'conversation',
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
@@ -1355,7 +1442,9 @@ export async function runAgentLoop(
       ),
       timestamp: Date.now(),
     };
-    if (assistantContent.length > 0 || toolCalls.length > 0) assistantOutputProduced = true;
+    if (assistantContent.length > 0 || reasoningContent.length > 0 || toolCalls.length > 0) {
+      assistantOutputProduced = true;
+    }
     newHistory.push(assistantMessage);
     callbacks.onAssistantMessageComplete?.(assistantMessage);
 

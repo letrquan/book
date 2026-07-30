@@ -81,6 +81,182 @@ function noopCallbacks(overrides: Partial<AgentLoopCallbacks> = {}): AgentLoopCa
 }
 
 describe('runAgentLoop streaming render callbacks', () => {
+  it('retries a successful but empty provider completion once', async () => {
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        if (calls === 1) {
+          yield { type: 'done' };
+          return;
+        }
+        yield { type: 'text', content: 'recovered' };
+        yield { type: 'done' };
+      },
+    };
+
+    const result = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks(),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(result.at(-1)?.content).toBe('recovered');
+  });
+
+  it('keeps provider reasoning separate from assistant context content', async () => {
+    const reasoning: string[] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'reasoning', reasoning: 'inspect the request' };
+        yield { type: 'text', content: 'answer' };
+        yield { type: 'done' };
+      },
+    };
+
+    const result = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onReasoning: (text) => reasoning.push(text) }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(reasoning).toEqual(['inspect the request']);
+    expect(result.at(-1)).toMatchObject({
+      content: 'answer',
+      reasoningContent: 'inspect the request',
+    });
+  });
+
+  it('streams reasoning that arrives after answer text', async () => {
+    const reasoning: string[] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: 'answer' };
+        yield { type: 'reasoning', reasoning: 'late detail' };
+        yield { type: 'done' };
+      },
+    };
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onReasoning: (text) => reasoning.push(text) }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(reasoning).toEqual(['late detail']);
+  });
+
+  it('persists reasoning-only output when the stream is cancelled', async () => {
+    const controller = new AbortController();
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'reasoning', reasoning: 'unfinished thought' };
+        controller.abort();
+      },
+    };
+
+    const result = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks(),
+      'default',
+      { provider, signal: controller.signal, isNewSession: false },
+    );
+
+    expect(result.at(-1)).toMatchObject({
+      role: 'assistant',
+      reasoningContent: 'unfinished thought',
+    });
+  });
+
+  it.each([
+    ['max_tokens', 'protocol_error'],
+    ['model_context_window_exceeded', 'context_overflow'],
+    ['refusal', 'provider_error'],
+  ] as const)(
+    'fails on provider finish reason %s and records usage',
+    async (finishReason, code) => {
+      const usages: number[] = [];
+      const outcomes: AgentTerminalOutcome[] = [];
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          yield { type: 'text', content: 'partial' };
+          yield {
+            type: 'done',
+            usage: { promptTokens: 4, completionTokens: 3, totalTokens: 7 },
+            finishReasons: [finishReason],
+          };
+        },
+      };
+
+      await runAgentLoop(
+        defaultConfig({ maxTurns: 1 }),
+        createRegistry(),
+        'hello',
+        [],
+        noopCallbacks({
+          onUsage: (usage) => usages.push(usage.totalTokens),
+          onTerminal: (outcome) => outcomes.push(outcome),
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(usages).toEqual([7]);
+      expect(outcomes[0]).toMatchObject({ status: 'failed', reason: code });
+    },
+  );
+
+  it('fails visibly after two empty provider completions', async () => {
+    const errors: string[] = [];
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'done' };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onError: (error) => errors.push(error),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(errors[0]).toMatch(/empty response/i);
+    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'protocol_error' });
+  });
+
   it('continues the active turn after between-turn auto compaction', async () => {
     let providerCalls = 0;
     const seenMessageContents: string[][] = [];
@@ -141,6 +317,60 @@ describe('runAgentLoop streaming render callbacks', () => {
     expect(providerCalls).toBe(2);
     expect(seenMessageContents[1]).toContain('compact summary');
     expect(result.at(-1)?.content).toBe('continued after compact');
+  });
+
+  it('carries provider-native assistant metadata into tool follow-up requests', async () => {
+    let calls = 0;
+    const provider: Provider = {
+      id: 'anthropic',
+      stream: async function* (_config, messages) {
+        calls++;
+        if (calls === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'echo-native', name: 'Echo', arguments: { value: 'ok' } },
+          };
+          yield {
+            type: 'done',
+            providerMetadata: {
+              anthropicContentBlocks: [
+                { type: 'thinking', thinking: 'inspect', signature: 'sig-native' },
+                { type: 'tool_use', id: 'echo-native', name: 'Echo', input: { value: 'ok' } },
+              ],
+            },
+          };
+          return;
+        }
+        expect(messages.find((message) => message.role === 'assistant')?.providerMetadata).toEqual({
+          anthropicContentBlocks: [
+            { type: 'thinking', thinking: 'inspect', signature: 'sig-native' },
+            { type: 'tool_use', id: 'echo-native', name: 'Echo', input: { value: 'ok' } },
+          ],
+        });
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    registry.register({
+      name: 'Echo',
+      description: 'Return a value',
+      parameters: { type: 'object', properties: { value: { type: 'string' } } },
+      execute: async (args) => toolSuccess(String(args.value ?? '')),
+    });
+
+    const result = await runAgentLoop(
+      defaultConfig({ maxTurns: 2 }),
+      registry,
+      'hello',
+      [],
+      noopCallbacks(),
+      'auto',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(result.at(-1)?.content).toBe('done');
   });
 
   it('compacts and retries once when the provider rejects an oversized context', async () => {

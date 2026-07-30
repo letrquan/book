@@ -14,6 +14,7 @@ export type AgentEvent =
   | { type: 'system'; model: string; cwd: string }
   | { type: 'session'; sessionId: string }
   | { type: 'text'; content: string }
+  | { type: 'reasoning'; content: string }
   | { type: 'tool_use'; toolCall: ToolCall }
   | { type: 'tool_result'; toolResult: ToolResult }
   | { type: 'user_question'; request: UserQuestionRequest; status: 'pending' | 'unavailable' }
@@ -118,6 +119,8 @@ export function reduceAgentSessionSnapshot(
         status: 'running',
         assistantText: snapshot.assistantText + event.content,
       };
+    case 'reasoning':
+      return { ...snapshot, status: 'running' };
     case 'tool_use':
       return { ...snapshot, status: 'running', toolCalls: [...snapshot.toolCalls, event.toolCall] };
     case 'tool_result':

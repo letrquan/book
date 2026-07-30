@@ -49,6 +49,33 @@ describe('Anthropic tool contracts', () => {
 // zoned system prompts are carried through so chatCompletionStream can place
 // cache_control only on the stable prefix block.
 describe('convertMessages', () => {
+  it('replays native thinking signatures unchanged', () => {
+    const blocks = [
+      { type: 'thinking', thinking: 'inspect', signature: 'sig-1' },
+      { type: 'text', text: 'I will read it.' },
+      { type: 'tool_use', id: 'tool-1', name: 'Read', input: { file_path: 'a.ts' } },
+    ];
+    const out = convertMessages([
+      { role: 'assistant', content: '', providerMetadata: { anthropicContentBlocks: blocks } },
+    ]);
+    expect(out.messages).toEqual([{ role: 'assistant', content: blocks }]);
+  });
+
+  it('includes unsigned legacy reasoning as delimited assistant context', () => {
+    const out = convertMessages([
+      { role: 'assistant', content: 'answer', reasoningContent: 'inspect first' },
+    ]);
+    expect(out.messages).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: '<reasoning_context>\ninspect first\n</reasoning_context>' },
+          { type: 'text', text: 'answer' },
+        ],
+      },
+    ]);
+  });
+
   it('converts image content parts to Anthropic base64 blocks', () => {
     const out = convertMessages([
       {
@@ -116,7 +143,124 @@ describe('Anthropic request URL', () => {
   });
 });
 
+describe('Anthropic thinking configuration', () => {
+  it('requests summarized adaptive thinking for Opus 5', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        requestBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return new Response('{}', { status: 400 });
+      }),
+    );
+
+    for await (const event of chatCompletionStream(
+      defaultConfig({
+        model: 'claude-opus-5-20260101',
+        provider: 'anthropic',
+        baseUrl: 'https://api.anthropic.com',
+      }),
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      void event;
+    }
+
+    expect(requestBody?.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+    expect(requestBody?.output_config).toEqual({ effort: 'high' });
+  });
+});
+
 describe('Anthropic terminal framing', () => {
+  it('captures complete thinking blocks and signatures for replay', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                [
+                  'data: {"type":"message_start","message":{"usage":{"input_tokens":2}}}',
+                  '',
+                  'data: {"type":"content_block_start","content_block":{"type":"thinking","thinking":""}}',
+                  '',
+                  'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"inspect"}}',
+                  '',
+                  'data: {"type":"content_block_delta","delta":{"type":"signature_delta","signature":"sig-1"}}',
+                  '',
+                  'data: {"type":"content_block_stop"}',
+                  '',
+                  'data: {"type":"message_stop"}',
+                  '',
+                ].join('\n'),
+              ),
+            );
+            controller.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+    const events = [];
+    for await (const event of chatCompletionStream(
+      defaultConfig({ provider: 'anthropic', baseUrl: 'https://api.anthropic.com' }),
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      events.push(event);
+    }
+    expect(events.at(-1)).toMatchObject({
+      providerMetadata: {
+        anthropicContentBlocks: [{ type: 'thinking', thinking: 'inspect', signature: 'sig-1' }],
+      },
+    });
+  });
+
+  it('emits thinking deltas as reasoning events', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                [
+                  'data: {"type":"message_start","message":{"usage":{"input_tokens":2}}}',
+                  '',
+                  'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"inspect first"}}',
+                  '',
+                  'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"answer"}}',
+                  '',
+                  'data: {"type":"message_stop"}',
+                  '',
+                ].join('\n'),
+              ),
+            );
+            controller.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const event of chatCompletionStream(
+      defaultConfig({ provider: 'anthropic', baseUrl: 'https://api.anthropic.com' }),
+      [{ role: 'user', content: 'hi' }],
+      [],
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        { type: 'reasoning', reasoning: 'inspect first' },
+        { type: 'text', content: 'answer' },
+      ]),
+    );
+  });
+
   it('reports transport interruption when EOF arrives without message_stop', async () => {
     vi.stubGlobal(
       'fetch',

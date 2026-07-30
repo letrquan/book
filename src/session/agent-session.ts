@@ -744,6 +744,7 @@ export class AgentSession {
             streamedAssistantText += content;
             emit({ type: 'text', content });
           },
+          onReasoning: (content: string) => emit({ type: 'reasoning', content }),
           onToolCall: (toolCall: ToolCall) => emit({ type: 'tool_use', toolCall }),
           onToolResult: (toolResult: ToolResult) => emit({ type: 'tool_result', toolResult }),
           onError: (error: string) => {
@@ -800,6 +801,8 @@ export class AgentSession {
                 id: message.id,
                 complete: true,
                 content: message.content,
+                reasoningContent: message.reasoningContent,
+                providerMetadata: message.providerMetadata,
                 kind: message.kind ?? 'conversation',
                 toolCalls: message.toolCalls,
                 toolResults: message.toolResults,

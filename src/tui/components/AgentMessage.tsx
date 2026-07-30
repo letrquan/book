@@ -231,10 +231,12 @@ function ThinkBlock({
   text,
   terminalWidth,
   reducedMotion,
+  active = true,
 }: {
   text: string;
   terminalWidth?: number;
   reducedMotion?: boolean;
+  active?: boolean;
 }) {
   const theme = useTheme();
 
@@ -247,7 +249,12 @@ function ThinkBlock({
       paddingLeft={1}
     >
       <Box>
-        <Spinner active style="dots" color={theme.mdThinkText} reducedMotion={reducedMotion} />
+        <Spinner
+          active={active}
+          style="dots"
+          color={theme.mdThinkText}
+          reducedMotion={reducedMotion}
+        />
         <Text color={theme.mdThinkText} dimColor>
           Thinking
         </Text>
@@ -311,6 +318,7 @@ export function AgentMessageInner({
     ? trimPartialClosingFences(message.content)
     : message.content;
   const displayContent = suppressDelegationNarration ? '' : rawDisplayContent;
+  const reasoningContent = message.reasoningContent;
 
   useDebugRender(renderLog, {
     id: message.id.slice(-8),
@@ -369,7 +377,11 @@ export function AgentMessageInner({
   return (
     <Box flexDirection="column">
       {/* Spinner line: shows thinking tips, or retry countdown during retries */}
-      {isStreaming && !hideStreamingSpinner && !displayContent && !message.toolCalls?.length ? (
+      {isStreaming &&
+      !hideStreamingSpinner &&
+      !displayContent &&
+      !reasoningContent &&
+      !message.toolCalls?.length ? (
         <Box marginLeft={screenReader ? 0 : 2}>
           {isRetrying && spinnerLabel ? (
             <Box>
@@ -379,6 +391,17 @@ export function AgentMessageInner({
           ) : (
             <Spinner active style="braille" reducedMotion={reducedMotion} showTips={true} />
           )}
+        </Box>
+      ) : null}
+
+      {reasoningContent ? (
+        <Box marginLeft={screenReader ? 0 : 2} flexDirection="column">
+          <ThinkBlock
+            text={reasoningContent}
+            terminalWidth={mdWidth}
+            reducedMotion={reducedMotion}
+            active={isStreaming}
+          />
         </Box>
       ) : null}
 
@@ -407,6 +430,7 @@ export function AgentMessageInner({
                     text={part.text}
                     terminalWidth={mdWidth}
                     reducedMotion={reducedMotion}
+                    active={isStreaming}
                   />
                 ) : (
                   <MarkdownBlock
@@ -425,7 +449,8 @@ export function AgentMessageInner({
 
       {/* Every invocation gets its own row. Task subagent tools stay display-only and nest below it. */}
       {topLevelInvocations.map((invocation, index) => {
-        const marginTop = index === 0 ? (displayContent ? toolRowGap : 0) : toolRowGap;
+        const marginTop =
+          index === 0 ? (displayContent || reasoningContent ? toolRowGap : 0) : toolRowGap;
         const tc = invocation.call;
         const result = invocation.result;
         const mutation = invocation.mutation;
@@ -609,6 +634,7 @@ export const AgentMessage = React.memo(AgentMessageInner, (prev, next) => {
     if (
       pm.id === nm.id &&
       pm.content === nm.content &&
+      pm.reasoningContent === nm.reasoningContent &&
       pm.localCommand === nm.localCommand &&
       pm.toolCalls === nm.toolCalls &&
       pm.toolResults === nm.toolResults &&

@@ -483,6 +483,8 @@ export class SessionStore {
         kind?: string;
         name?: string;
         content?: string;
+        reasoningContent?: string;
+        providerMetadata?: Message['providerMetadata'];
         contextContent?: string;
         complete?: boolean;
         toolCalls?: Message['toolCalls'];
@@ -662,6 +664,8 @@ export class SessionStore {
             id: data.id ?? eventId,
             role: 'assistant',
             content: data.content ?? '',
+            reasoningContent: data.reasoningContent,
+            providerMetadata: data.providerMetadata,
             contextContent: data.contextContent,
             includeInContext: data.includeInContext ?? true,
             kind: (data.kind as Message['kind']) ?? 'conversation',
@@ -678,7 +682,13 @@ export class SessionStore {
         } else {
           const last = transcript[transcript.length - 1];
           if (last?.role === 'assistant') {
-            const updated = { ...last, content: last.content + (data.content ?? '') };
+            const updated = {
+              ...last,
+              content: last.content + (data.content ?? ''),
+              reasoningContent:
+                (last.reasoningContent ?? '') + (data.reasoningContent ?? '') || undefined,
+              providerMetadata: data.providerMetadata ?? last.providerMetadata,
+            };
             transcript[transcript.length - 1] = updated;
             const contextLast = contextHistory[contextHistory.length - 1];
             if (contextLast?.id === last.id) {
@@ -690,6 +700,8 @@ export class SessionStore {
               id: data.id ?? eventId,
               role: 'assistant',
               content: data.content ?? '',
+              reasoningContent: data.reasoningContent,
+              providerMetadata: data.providerMetadata,
               includeInContext: true,
               kind: 'conversation',
               timestamp: record.timestamp,

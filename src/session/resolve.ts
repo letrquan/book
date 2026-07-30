@@ -65,6 +65,8 @@ export function persistHistory(
           ? {
               id: message.id,
               content: message.content,
+              reasoningContent: message.reasoningContent,
+              providerMetadata: message.providerMetadata,
               contextContent: message.contextContent,
               kind: message.kind,
               includeInContext: message.includeInContext,
@@ -75,6 +77,8 @@ export function persistHistory(
               id: message.id,
               complete: true,
               content: message.content,
+              reasoningContent: message.reasoningContent,
+              providerMetadata: message.providerMetadata,
               kind: message.kind,
               includeInContext: message.includeInContext,
               toolCalls: message.toolCalls,

@@ -191,6 +191,19 @@ describe('buildMessages', () => {
     expect(out.find((m) => m.role === 'tool')).toBeUndefined();
   });
 
+  it('carries assistant reasoning into provider context metadata', async () => {
+    const history = [
+      userMsg('inspect it'),
+      { ...assistantMsg('The answer'), reasoningContent: 'I checked the relevant file first.' },
+    ];
+    const out = await buildMessages(config, history, []);
+    expect(out[2]).toMatchObject({
+      role: 'assistant',
+      content: 'The answer',
+      reasoningContent: 'I checked the relevant file first.',
+    });
+  });
+
   it('injects workspace CLAUDE.md and AGENTS.md instructions into the system prompt', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'book-context-'));
     try {

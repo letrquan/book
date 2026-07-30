@@ -30,6 +30,10 @@ export function mergeAssistantMessages(
       if (next.id === streamingMessageId) break;
       mergedMessage = {
         ...mergedMessage,
+        reasoningContent:
+          [mergedMessage.reasoningContent, next.reasoningContent]
+            .filter((value): value is string => Boolean(value))
+            .join('\n\n') || undefined,
         toolCalls: [...(mergedMessage.toolCalls ?? []), ...(next.toolCalls ?? [])],
         toolResults: [...(mergedMessage.toolResults ?? []), ...(next.toolResults ?? [])],
         nestedToolInvocations: [

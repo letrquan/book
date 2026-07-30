@@ -27,6 +27,28 @@ function parseToolArguments(raw: string): Record<string, unknown> {
   }
 }
 
+function parseReasoningDelta(delta: Record<string, unknown>): string | undefined {
+  for (const key of ['reasoning_content', 'reasoning', 'thinking', 'analysis']) {
+    const value = delta[key];
+    if (typeof value === 'string' && value) return value;
+  }
+  const details = delta.reasoning_details;
+  if (!Array.isArray(details)) return undefined;
+  const text = details
+    .map((detail) => {
+      if (typeof detail === 'string') return detail;
+      if (!detail || typeof detail !== 'object') return '';
+      const item = detail as Record<string, unknown>;
+      for (const key of ['text', 'reasoning', 'content']) {
+        if (typeof item[key] === 'string') return item[key] as string;
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('');
+  return text || undefined;
+}
+
 function isSystemPromptZones(content: ProviderMessage['content']): content is SystemPromptZones {
   return (
     !!content &&
@@ -45,7 +67,7 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
   tool_calls?: ProviderMessage['tool_calls'];
   tool_call_id?: string;
 }> {
-  return messages.map((msg) => ({
+  return messages.map(({ providerMetadata: _providerMetadata, reasoningContent, ...msg }) => ({
     ...msg,
     content: isSystemPromptZones(msg.content)
       ? [msg.content.cachedPrefix, msg.content.dynamicSuffix].filter(Boolean).join('\n\n')
@@ -58,7 +80,11 @@ function flattenMessages(messages: ProviderMessage[]): Array<{
                   image_url: { url: `data:${part.mediaType};base64,${part.data}` },
                 },
           )
-        : msg.content,
+        : reasoningContent
+          ? ['<reasoning_context>', reasoningContent, '</reasoning_context>', msg.content ?? '']
+              .filter(Boolean)
+              .join('\n')
+          : msg.content,
   }));
 }
 
@@ -269,8 +295,23 @@ export async function* chatCompletionStream(
           const finishReason: unknown = choice.finish_reason;
           if (typeof finishReason === 'string') finishReasons.add(finishReason);
 
-          const delta = choice.delta;
+          const delta = choice.delta as
+            | (Record<string, unknown> & {
+                content?: string;
+                tool_calls?: Array<{
+                  index?: number;
+                  id?: string;
+                  function?: { name?: string; arguments?: string };
+                }>;
+              })
+            | undefined;
           if (!delta) continue;
+
+          const reasoning = parseReasoningDelta(delta);
+          if (reasoning) {
+            log.debug('stream reasoning', { len: reasoning.length });
+            yield { type: 'reasoning', reasoning };
+          }
 
           if (delta.content) {
             log.debug('stream text', { len: delta.content.length });

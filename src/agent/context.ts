@@ -498,6 +498,8 @@ export async function buildMessages(
         // OpenAI rejects null content when tool_calls is absent, so coerce to ''.
         content:
           msg.content && msg.content.length > 0 ? msg.content : msg.toolCalls?.length ? null : '',
+        reasoningContent: msg.reasoningContent,
+        providerMetadata: msg.providerMetadata,
       };
       if (msg.toolCalls && msg.toolCalls.length > 0) {
         assistant.tool_calls = msg.toolCalls.map((tc) => ({

@@ -187,6 +187,7 @@ export function shouldCompact(
 export function estimateMessageTokens(message: Message): number {
   let tokens =
     estimateTextTokens(message.contextContent ?? message.content) + MESSAGE_OVERHEAD_TOKENS;
+  tokens += estimateTextTokens(message.reasoningContent ?? '');
   // Image tokens are provider-specific; reserve a conservative placeholder
   // without ever counting the encoded image bytes as prompt text.
   tokens += (message.attachments?.length ?? 0) * IMAGE_TOKEN_ESTIMATE;
@@ -1169,6 +1170,9 @@ function serializeReferencedMessage(message: Message): string {
 
 function serializeReferencedMessageBody(message: Message): string {
   const lines = [message.contextContent ?? message.content ?? ''];
+  if (message.reasoningContent) {
+    lines.unshift(`<reasoning_context>\n${message.reasoningContent}\n</reasoning_context>`);
+  }
   for (const call of message.toolCalls ?? []) {
     const primary = getPrimaryArg(call.arguments ?? {});
     lines.push(

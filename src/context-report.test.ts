@@ -42,6 +42,15 @@ describe('buildContextBreakdown', () => {
     expect(b.estimatedTokens).toBeGreaterThan(0);
   });
 
+  it('counts reasoning in the assistant context estimate', () => {
+    const withoutReasoning = buildContextBreakdown([msg('assistant', 'answer')]);
+    const withReasoning = msg('assistant', 'answer');
+    withReasoning.reasoningContent = 'inspect first';
+    expect(buildContextBreakdown([withReasoning]).estimatedTokens).toBeGreaterThan(
+      withoutReasoning.estimatedTokens,
+    );
+  });
+
   it('excludes local-only messages from context totals', () => {
     const local = msg('assistant', 'x'.repeat(400));
     local.includeInContext = false;
