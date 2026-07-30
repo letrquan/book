@@ -5,7 +5,6 @@ import { join } from 'path';
 import type { UserQuestionHandler } from './types/tools.js';
 import type { AgentConfig } from './types/runtime.js';
 import type { SessionStoreInterface } from './types/sessions.js';
-import type { HeadlessOptions } from './types/public-sdk.js';
 import {
   freezeAgentConfig,
   loadConfig,
@@ -24,6 +23,7 @@ import {
   DEFAULT_LOCAL_DATA_RETENTION_DAYS,
   getDebugLogPath,
 } from './debug-log.js';
+import { resolvePermissionMode } from './permission-mode.js';
 
 export type QueryEvent = AgentEvent;
 
@@ -131,7 +131,7 @@ export async function* query(
         history: bootstrap.history,
         transcript: bootstrap.transcript,
         compactBoundaries: bootstrap.compactBoundaries,
-        mode: (options.permissionMode as HeadlessOptions['mode']) || 'default',
+        mode: resolvePermissionMode(config.settings, options.permissionMode),
         maxTurns: options.maxTurns,
         persistSession,
         sessionStore,

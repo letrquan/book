@@ -61,6 +61,18 @@ describe('loadConfig model defaults', () => {
   });
 });
 
+describe('loadConfig permission defaults', () => {
+  it('loads the configured default permission mode from settings', () => {
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ defaultMode: 'plan' }),
+    );
+
+    const config = loadConfig(workspace);
+    expect(config.settings.defaultMode).toBe('plan');
+  });
+});
+
 describe('freezeAgentConfig', () => {
   it('deep-freezes resolved configuration without runtime resource fields', () => {
     const config = freezeAgentConfig(loadConfig(workspace, { noSettings: true }));

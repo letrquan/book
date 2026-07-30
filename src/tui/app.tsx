@@ -11,6 +11,7 @@ import { TaskList } from './components/TaskList.js';
 import { AgentTodoList, shouldShowAgentPlan } from './components/AgentTodoList.js';
 import { ModelPicker, type ProviderRemovalResult } from './components/ModelPicker.js';
 import { EffortPicker } from './components/EffortPicker.js';
+import { PermissionModePicker } from './components/PermissionModePicker.js';
 import { ThemePicker } from './components/ThemePicker.js';
 import { ConfigMenu, type ConfigSection } from './components/ConfigMenu.js';
 import { AgentProfilePicker } from './components/AgentProfilePicker.js';
@@ -35,7 +36,8 @@ import {
   type ThemeTokens,
   type ResolvedTheme,
 } from './theme.js';
-import type { AgentConfig } from '../types/runtime.js';
+import type { AgentConfig, PermissionMode } from '../types/runtime.js';
+import { resolvePermissionMode } from '../permission-mode.js';
 import type { ImageAttachment } from '../types/messages.js';
 import type { CommandContext } from '../types/commands.js';
 import type { RewindSnapshotStoreInterface, SessionStoreInterface } from '../types/sessions.js';
@@ -100,6 +102,7 @@ export function ownsModalInput(
   showRewindPicker = false,
   showConfigPicker = false,
   showAgentProfilePicker = false,
+  showPermissionModePicker = false,
 ): boolean {
   return Boolean(
     pendingPermission ||
@@ -108,6 +111,7 @@ export function ownsModalInput(
     showModelPicker ||
     showSessionPicker ||
     showEffortPicker ||
+    showPermissionModePicker ||
     showThemePicker ||
     showRewindPicker ||
     showConfigPicker ||
@@ -139,6 +143,7 @@ export function providerRemovalMessage(
 
 interface AppProps {
   config: AgentConfig;
+  permissionMode?: PermissionMode;
   interactiveAssets?: InteractiveAssets;
   session: SessionBootstrap & {
     store?: SessionStoreInterface;
@@ -177,7 +182,13 @@ interface AppProps {
  *   Shift+Tab — cycle permission mode
  *   Ctrl+/   — toggle keyboard shortcuts reference
  */
-export function App({ config, session, redrawViewport, interactiveAssets }: AppProps) {
+export function App({
+  config,
+  permissionMode,
+  session,
+  redrawViewport,
+  interactiveAssets,
+}: AppProps) {
   const {
     messages,
     contextHistory,
@@ -227,12 +238,13 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
     setMemoryAutoSave,
     refreshMemoryContext,
     persistPermissionRule,
+    setDefaultPermissionMode,
     turnDurationMs,
     retryPhase,
     retryAttempt,
     retryMax,
     retryCountdownMs,
-  } = useAgent(config, session);
+  } = useAgent(config, { ...session, permissionMode });
 
   const managedAgentManager = useMemo(
     () =>
@@ -264,6 +276,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   const [showSkills, setShowSkills] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showEffortPicker, setShowEffortPicker] = useState(false);
+  const [showPermissionModePicker, setShowPermissionModePicker] = useState(false);
   const [showThemePicker, setShowThemePicker] = useState(false);
   const [showConfigPicker, setShowConfigPicker] = useState(false);
   const [showAgentProfilePicker, setShowAgentProfilePicker] = useState(false);
@@ -676,6 +689,9 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   useDebugValueChange(uiLog, 'showSkills', showSkills, (v) => String(v));
   useDebugValueChange(uiLog, 'showModelPicker', showModelPicker, (v) => String(v));
   useDebugValueChange(uiLog, 'showEffortPicker', showEffortPicker, (v) => String(v));
+  useDebugValueChange(uiLog, 'showPermissionModePicker', showPermissionModePicker, (v) =>
+    String(v),
+  );
   useDebugValueChange(uiLog, 'showThemePicker', showThemePicker, (v) => String(v));
   useDebugValueChange(uiLog, 'showConfigPicker', showConfigPicker, (v) => String(v));
   useDebugValueChange(uiLog, 'showAgentProfilePicker', showAgentProfilePicker, (v) => String(v));
@@ -696,6 +712,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
         showRewindPicker,
         showConfigPicker,
         showAgentProfilePicker,
+        showPermissionModePicker,
       )
     ) {
       if (key.escape) {
@@ -1272,6 +1289,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
       if (
         showModelPicker ||
         showEffortPicker ||
+        showPermissionModePicker ||
         showThemePicker ||
         showRewindPicker ||
         showConfigPicker ||
@@ -1344,6 +1362,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
       pendingUserQuestion,
       redrawViewport,
       showEffortPicker,
+      showPermissionModePicker,
       showModelPicker,
       showThemePicker,
       showRewindPicker,
@@ -1361,6 +1380,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
   const pickerOwnsTranscript =
     showModelPicker ||
     showEffortPicker ||
+    showPermissionModePicker ||
     showThemePicker ||
     showSessionPicker ||
     showRewindPicker ||
@@ -1898,6 +1918,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                 themeName={currentTheme.preference}
                 memoryAutoSave={liveConfig.settings.memory.autoSave}
                 agentCount={agentProfiles.length}
+                defaultPermissionMode={resolvePermissionMode(liveConfig.settings)}
                 terminalWidth={termWidth}
                 onOpen={(section: ConfigSection) => {
                   if (section === 'effort') {
@@ -1916,6 +1937,8 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                   } else if (section === 'theme') {
                     setCustomThemes(listCustomThemes(config.workspace));
                     setShowThemePicker(true);
+                  } else if (section === 'permission-mode') {
+                    setShowPermissionModePicker(true);
                   } else {
                     setShowAgentProfilePicker(true);
                   }
@@ -2029,6 +2052,31 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                   return result;
                 }}
                 onCancel={() => setShowEffortPicker(false)}
+              />
+            ) : null}
+            {showPermissionModePicker ? (
+              <PermissionModePicker
+                current={resolvePermissionMode(liveConfig.settings)}
+                availableModes={
+                  [
+                    'default',
+                    'auto',
+                    'plan',
+                    'accept-edits',
+                    'dontAsk',
+                    ...(liveConfig.settings.disableBypassPermissionsMode
+                      ? []
+                      : ['bypassPermissions']),
+                  ] as PermissionMode[]
+                }
+                onSelect={(nextMode) => {
+                  const result = setDefaultPermissionMode(nextMode);
+                  if (!result.ok) return result;
+                  addLocalMessage(`Default permission mode set to ${nextMode} globally.`);
+                  setShowPermissionModePicker(false);
+                  return result;
+                }}
+                onCancel={() => setShowPermissionModePicker(false)}
               />
             ) : null}
             {showThemePicker ? (
@@ -2150,6 +2198,7 @@ export function App({ config, session, redrawViewport, interactiveAssets }: AppP
                   showRewindPicker,
                   showConfigPicker,
                   showAgentProfilePicker,
+                  showPermissionModePicker,
                 ) ||
                 transcriptMode === 'detailed' ||
                 managedAgents.surface === 'tasks' ||

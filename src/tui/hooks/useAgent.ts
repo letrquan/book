@@ -55,6 +55,7 @@ import { SessionRuntime } from '../../session/runtime.js';
 import { createInteractiveAgentSession } from '../../session/interactive-session.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
 import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
+import { resolvePermissionMode } from '../../permission-mode.js';
 
 const log = createDebugLoggerWithCounter('tui:agent');
 const uiLog = createUiDebugLogger('tui:agent');
@@ -71,6 +72,7 @@ export function shouldDiscardOptimisticMessages(result: AgentSessionSendResult):
 }
 
 export interface UseAgentSessionOptions extends SessionBootstrap {
+  permissionMode?: PermissionMode;
   store?: SessionStoreInterface;
   timelineStore?: SessionStoreInterface;
   snapshotStore?: RewindSnapshotStoreInterface;
@@ -214,7 +216,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const [error, setError] = useState<string | null>(null);
   const [currentTurn, setCurrentTurn] = useState(0);
   const [usage, setUsage] = useState<Usage | null>(null);
-  const [mode, setMode] = useState<PermissionMode>('default');
+  const [mode, setMode] = useState<PermissionMode>(() =>
+    resolvePermissionMode(config.settings, session.permissionMode),
+  );
   const [agentTodos, setAgentTodos] = useState<Todo[]>([]);
   // Set when the user approves a plan with "fresh context"; a post-send effect
   // starts a new conversation seeded with the approved plan.
@@ -1325,7 +1329,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       'accept-edits',
       'dontAsk',
       'bypassPermissions',
-    ];
+    ].filter(
+      (candidate) =>
+        candidate !== 'bypassPermissions' ||
+        liveConfigRef.current.settings.disableBypassPermissionsMode !== true,
+    ) as PermissionMode[];
     const idx = modes.indexOf(modeRef.current);
     const nextMode = modes[(idx + 1) % modes.length];
     modeRef.current = nextMode;
@@ -1579,6 +1587,21 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [config.workspace],
   );
 
+  const setDefaultPermissionMode = useCallback(
+    (nextMode: PermissionMode) => {
+      const storedMode = nextMode === 'accept-edits' ? 'acceptEdits' : nextMode;
+      const result = persistSettingGlobal('defaultMode', storedMode);
+      if (!result.ok) return result;
+      clearLocalSettings(config.workspace, ['defaultMode']);
+      setLiveConfig((current) => ({
+        ...current,
+        settings: { ...current.settings, defaultMode: storedMode },
+      }));
+      return { ok: true };
+    },
+    [config.workspace],
+  );
+
   return {
     messages,
     compactBoundaries,
@@ -1643,5 +1666,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     },
 
     persistPermissionRule,
+    setDefaultPermissionMode,
   };
 }

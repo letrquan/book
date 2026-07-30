@@ -208,6 +208,7 @@ export const bookSettingsSchema = z.object({
   /** TUI color theme: dark, light, auto, or a custom theme filename. */
   theme: z.string().min(1).optional(),
   autoCompactEnabled: z.boolean().optional(),
+  /** Permission mode used by each host when no invocation-specific mode is supplied. */
   defaultMode: z
     .enum(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'])
     .optional(),

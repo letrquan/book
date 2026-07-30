@@ -98,6 +98,23 @@ afterEach(() => {
 });
 
 describe('useAgent plan handoff', () => {
+  it('does not cycle into bypass mode when bypass is disabled', async () => {
+    const { config, timeline, sessionId } = fixture();
+    config.settings.disableBypassPermissionsMode = true;
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    const visited = new Set<string>([latest!.mode]);
+    for (let index = 0; index < 6; index++) {
+      latest!.cycleMode();
+      await tick();
+      visited.add(latest!.mode);
+    }
+
+    expect(visited).not.toContain('bypassPermissions');
+    expect(latest!.mode).toBe('auto');
+  });
+
   it('starts a fresh session seeded with the approved plan on approve-fresh', async () => {
     const { config, timeline, sessionId } = fixture();
     render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
