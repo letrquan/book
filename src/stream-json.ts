@@ -5,6 +5,7 @@ export type StreamJsonEvent =
   | { type: 'session'; session_id?: string }
   | { type: 'run_start'; run?: unknown }
   | { type: 'assistant'; text?: string }
+  | { type: 'reasoning'; text?: string }
   | { type: 'tool_use'; tool_call?: unknown }
   | { type: 'tool_result'; tool_result?: unknown }
   | { type: 'user_question'; request?: unknown; status?: 'pending' | 'unavailable' }
@@ -46,6 +47,7 @@ const EVENT_TYPES = new Set<StreamJsonEvent['type']>([
   'session',
   'run_start',
   'assistant',
+  'reasoning',
   'tool_use',
   'tool_result',
   'user_question',

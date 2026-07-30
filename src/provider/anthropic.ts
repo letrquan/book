@@ -25,8 +25,11 @@ interface AnthropicMessage {
 }
 
 interface AnthropicContentBlock {
-  type: 'text' | 'image' | 'tool_use' | 'tool_result';
+  type: 'text' | 'image' | 'tool_use' | 'tool_result' | 'thinking' | 'redacted_thinking';
   text?: string;
+  thinking?: string;
+  signature?: string;
+  data?: string;
   source?: {
     type: 'base64';
     media_type: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
@@ -113,6 +116,7 @@ export function buildSystemBlocks(
 
 /** Models that support adaptive thinking. All others get no thinking field. */
 const ADAPTIVE_THINKING_MODELS = new Set([
+  'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
@@ -205,11 +209,32 @@ export function convertMessages(messages: ProviderMessage[]): {
     }
 
     if (msg.role === 'assistant') {
+      const nativeBlocks = msg.providerMetadata?.anthropicContentBlocks;
+      if (nativeBlocks?.length) {
+        anthropicMessages.push({
+          role: 'assistant',
+          content: nativeBlocks.map((block) => ({
+            ...block,
+          })) as unknown as AnthropicContentBlock[],
+        });
+        continue;
+      }
       const content: AnthropicContentBlock[] = [];
 
-      // Always include a text block — Anthropic requires at least one content block.
-      // Use empty string if content is null/empty (assistant with tool_calls only).
-      content.push({ type: 'text', text: messageText(msg.content) });
+      // Unsigned reasoning cannot be fabricated as an Anthropic thinking block. Replay
+      // legacy or cross-provider reasoning as clearly delimited assistant context instead.
+      if (msg.reasoningContent) {
+        content.push({
+          type: 'text',
+          text: `<reasoning_context>\n${msg.reasoningContent}\n</reasoning_context>`,
+        });
+      }
+
+      const assistantText = messageText(msg.content);
+      if (assistantText || content.length === 0) {
+        // Anthropic requires at least one content block, including tool-only turns.
+        content.push({ type: 'text', text: assistantText });
+      }
 
       if (msg.tool_calls && msg.tool_calls.length > 0) {
         for (const tc of msg.tool_calls as Array<{
@@ -325,7 +350,7 @@ export async function* chatCompletionStream(
   // Thinking / effort — only for models that support adaptive thinking.
   if (config.modelInfo?.effort !== false && supportsAdaptiveThinking(config.model)) {
     const effort = config.effort ?? 'high';
-    body.thinking = { type: 'adaptive', display: 'omitted' };
+    body.thinking = { type: 'adaptive', display: 'summarized' };
     body.output_config = { effort };
   }
 
@@ -396,6 +421,8 @@ export async function* chatCompletionStream(
   let currentToolId = '';
   let currentToolName = '';
   let currentToolArgs = '';
+  let currentContentBlock: AnthropicContentBlock | undefined;
+  const assistantContentBlocks: AnthropicContentBlock[] = [];
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheCreationInputTokens = 0;
@@ -476,13 +503,13 @@ export async function* chatCompletionStream(
           case 'content_block_start': {
             const block = parsed.content_block as Record<string, unknown> | undefined;
             if (!block) break;
+            currentContentBlock = { ...block } as unknown as AnthropicContentBlock;
 
             if (block.type === 'tool_use') {
               currentToolId = (block.id as string) ?? '';
               currentToolName = (block.name as string) ?? '';
               currentToolArgs = '';
             }
-            // thinking blocks: silently consumed (display: "omitted" default)
             break;
           }
 
@@ -491,15 +518,32 @@ export async function* chatCompletionStream(
             if (!delta) break;
 
             if (delta.type === 'text_delta' && delta.text) {
+              if (currentContentBlock) {
+                currentContentBlock.text = (currentContentBlock.text ?? '') + String(delta.text);
+              }
               yield { type: 'text', content: delta.text as string };
+            } else if (delta.type === 'thinking_delta' && delta.thinking) {
+              if (currentContentBlock) {
+                currentContentBlock.thinking =
+                  (currentContentBlock.thinking ?? '') + String(delta.thinking);
+              }
+              yield { type: 'reasoning', reasoning: delta.thinking as string };
+            } else if (delta.type === 'signature_delta' && delta.signature) {
+              if (currentContentBlock) {
+                currentContentBlock.signature =
+                  (currentContentBlock.signature ?? '') + String(delta.signature);
+              }
             } else if (delta.type === 'input_json_delta' && delta.partial_json) {
               currentToolArgs += delta.partial_json as string;
             }
-            // thinking_delta: silently consumed
             break;
           }
 
           case 'content_block_stop': {
+            if (currentContentBlock?.type === 'tool_use') {
+              currentContentBlock.input = parseToolArguments(currentToolArgs);
+            }
+            if (currentContentBlock) assistantContentBlocks.push(currentContentBlock);
             // Emit completed tool call
             if (currentToolId && currentToolName) {
               const toolCall = {
@@ -512,6 +556,7 @@ export async function* chatCompletionStream(
             currentToolId = '';
             currentToolName = '';
             currentToolArgs = '';
+            currentContentBlock = undefined;
             break;
           }
 
@@ -541,6 +586,13 @@ export async function* chatCompletionStream(
               ...(responseModel ? { responseModel } : {}),
               ...(responseId ? { responseId } : {}),
               ...(finishReasons.size > 0 ? { finishReasons: [...finishReasons] } : {}),
+              ...(assistantContentBlocks.length > 0
+                ? {
+                    providerMetadata: {
+                      anthropicContentBlocks: assistantContentBlocks.map((block) => ({ ...block })),
+                    },
+                  }
+                : {}),
             };
             return;
           }

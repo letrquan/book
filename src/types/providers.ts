@@ -1,5 +1,5 @@
 import type { AgentRuntimeEvent } from '../agents/types.js';
-import type { Message, Usage } from './messages.js';
+import type { Message, ProviderMessageMetadata, Usage } from './messages.js';
 import type { PermissionMode, RetryPhase } from './runtime.js';
 import type { CompactResult } from './sessions.js';
 import type { AgentTerminalOutcome } from './terminal.js';
@@ -23,6 +23,9 @@ export interface SystemPromptZones {
 export interface ProviderMessage {
   role: string;
   content: string | ProviderContentPart[] | SystemPromptZones | null;
+  /** Prior assistant reasoning to replay as provider context when supported. */
+  reasoningContent?: string;
+  providerMetadata?: ProviderMessageMetadata;
   tool_calls?: Array<{
     id: string;
     type: 'function';
@@ -32,8 +35,9 @@ export interface ProviderMessage {
 }
 
 export interface ProviderStreamEvent {
-  type: 'text' | 'tool_call' | 'done' | 'error';
+  type: 'text' | 'reasoning' | 'tool_call' | 'done' | 'error';
   content?: string;
+  reasoning?: string;
   toolCall?: ToolCall;
   error?: string;
   /** Stable machine-readable provider/transport classification when available. */
@@ -43,6 +47,7 @@ export interface ProviderStreamEvent {
   responseModel?: string;
   responseId?: string;
   finishReasons?: string[];
+  providerMetadata?: ProviderMessageMetadata;
 }
 
 export interface ProviderResponseMetadata {
@@ -63,6 +68,8 @@ export interface ProviderStreamOptions {
 
 export interface AgentLoopCallbacks {
   onText: (text: string) => void;
+  /** Called with provider-native reasoning deltas, displayed separately from answer text. */
+  onReasoning?: (text: string) => void;
   onToolCall: (call: ToolCall) => void;
   onToolResult: (result: ToolResult) => void;
   onError: (error: string) => void;

@@ -632,6 +632,9 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
     case 'text':
       if (opts.includePartialMessages !== false) emit({ type: 'assistant', text: event.content });
       break;
+    case 'reasoning':
+      if (opts.includePartialMessages !== false) emit({ type: 'reasoning', text: event.content });
+      break;
     case 'tool_use':
       emit({ type: 'tool_use', tool_call: event.toolCall });
       break;

@@ -28,6 +28,7 @@ function findMessageIndex(messages: Message[], id: string): number {
 export function isTotallyEmptyAssistant(message: Message): boolean {
   if (message.role !== 'assistant') return false;
   if (message.content !== '') return false;
+  if (message.reasoningContent) return false;
   if ((message.toolCalls?.length ?? 0) > 0) return false;
   if ((message.toolResults?.length ?? 0) > 0) return false;
   if ((message.nestedToolInvocations?.length ?? 0) > 0) return false;
@@ -56,6 +57,23 @@ export function appendContentToMessage(
   const next = messages.slice();
   const message = messages[index];
   next[index] = { ...message, content: message.content + content };
+  return next;
+}
+
+export function appendReasoningToMessage(
+  messages: Message[],
+  id: string,
+  reasoning: string,
+): Message[] {
+  if (reasoning === '') return messages;
+  const index = findMessageIndex(messages, id);
+  if (index === -1) return messages;
+  const next = messages.slice();
+  const message = messages[index];
+  next[index] = {
+    ...message,
+    reasoningContent: (message.reasoningContent ?? '') + reasoning,
+  };
   return next;
 }
 

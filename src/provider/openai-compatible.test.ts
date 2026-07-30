@@ -25,6 +25,38 @@ beforeEach(() => {
 });
 
 describe('chatCompletionStream request body', () => {
+  it('emits provider-native reasoning deltas separately from answer text', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(
+              enc.encode('data: {"choices":[{"delta":{"reasoning_content":"inspect first"}}]}\n\n'),
+            );
+            c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"answer"}}]}\n\n'));
+            c.enqueue(enc.encode('data: [DONE]\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+
+    const events = [];
+    for await (const event of chatCompletionStream(config, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(event);
+    }
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        { type: 'reasoning', reasoning: 'inspect first' },
+        { type: 'text', content: 'answer' },
+      ]),
+    );
+  });
+
   it('serializes image content parts as data URLs', async () => {
     const stream = chatCompletionStream(
       config,
@@ -49,6 +81,26 @@ describe('chatCompletionStream request body', () => {
         ],
       },
     ]);
+  });
+
+  it('replays prior reasoning as delimited assistant context', async () => {
+    const stream = chatCompletionStream(
+      config,
+      [
+        { role: 'assistant', content: 'answer', reasoningContent: 'inspect first' },
+        { role: 'user', content: 'continue' },
+      ],
+      [],
+    );
+    await drain(stream);
+    expect(capturedBody.messages).toEqual([
+      {
+        role: 'assistant',
+        content: '<reasoning_context>\ninspect first\n</reasoning_context>\nanswer',
+      },
+      { role: 'user', content: 'continue' },
+    ]);
+    expect(JSON.stringify(capturedBody)).not.toContain('reasoningContent');
   });
 
   it('does not send max_turns (not an OpenAI param)', async () => {

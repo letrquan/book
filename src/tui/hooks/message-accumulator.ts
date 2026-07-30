@@ -1,6 +1,7 @@
 import type { NestedToolInvocation, ToolCall, ToolResult } from '../../types/tools.js';
 import {
   appendContentToMessage,
+  appendReasoningToMessage,
   appendNestedToolInvocationToMessage,
   appendNestedToolResultToMessage,
   appendToolCallToMessage,
@@ -16,6 +17,7 @@ import type { Message } from '../../types/messages.js';
  */
 export type AccumulatorOp =
   | { type: 'text'; content: string }
+  | { type: 'reasoning'; content: string }
   | { type: 'toolCall'; call: ToolCall }
   | { type: 'toolResult'; result: ToolResult }
   | { type: 'nestedToolCall'; invocation: NestedToolInvocation }
@@ -34,6 +36,8 @@ export type AccumulatorOp =
 export interface MessageAccumulator {
   /** Queue a text delta (appended to the streaming message). */
   addText: (content: string) => void;
+  /** Queue a provider-native reasoning delta. */
+  addReasoning: (content: string) => void;
   /** Queue a tool call. */
   addToolCall: (call: ToolCall) => void;
   /** Queue a tool result. */
@@ -97,17 +101,18 @@ export function createMessageAccumulator(
     const ops = state.queue;
     state.queue = [];
 
-    // Coalesce consecutive text ops into a single appendContentToMessage call.
+    // Coalesce consecutive text/reasoning ops into a single append operation.
     // Tool calls and results are applied individually.
     const coalesced: AccumulatorOp[] = [];
     for (const op of ops) {
       if (
-        op.type === 'text' &&
+        (op.type === 'text' || op.type === 'reasoning') &&
         coalesced.length > 0 &&
-        coalesced[coalesced.length - 1].type === 'text'
+        coalesced[coalesced.length - 1].type === op.type
       ) {
-        (coalesced[coalesced.length - 1] as { type: 'text'; content: string }).content +=
-          op.content;
+        (
+          coalesced[coalesced.length - 1] as { type: 'text' | 'reasoning'; content: string }
+        ).content += op.content;
       } else {
         coalesced.push(op);
       }
@@ -130,6 +135,8 @@ export function createMessageAccumulator(
       for (const op of coalesced) {
         if (op.type === 'text') {
           active = appendContentToMessage(active, messageId, op.content);
+        } else if (op.type === 'reasoning') {
+          active = appendReasoningToMessage(active, messageId, op.content);
         } else if (op.type === 'toolCall') {
           active = appendToolCallToMessage(active, messageId, op.call);
         } else if (op.type === 'toolResult') {
@@ -167,6 +174,12 @@ export function createMessageAccumulator(
   function addText(content: string): void {
     if (state.stopped) return;
     state.queue.push({ type: 'text', content });
+    scheduleNext();
+  }
+
+  function addReasoning(content: string): void {
+    if (state.stopped) return;
+    state.queue.push({ type: 'reasoning', content });
     scheduleNext();
   }
 
@@ -221,6 +234,7 @@ export function createMessageAccumulator(
 
   return {
     addText,
+    addReasoning,
     addToolCall,
     addToolResult,
     addNestedToolCall,

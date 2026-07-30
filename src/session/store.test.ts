@@ -141,6 +141,22 @@ describe('SessionStore', () => {
     ]);
   });
 
+  it('does not expose provider reasoning through history search or read', () => {
+    const s = new SessionStore(dir);
+    const id = s.create({ cwd: '/proj' });
+    s.append(id, {
+      type: 'assistant',
+      eventId: 'reasoning-1',
+      timestamp: 1,
+      data: { complete: true, content: 'answer', reasoningContent: 'secret internal thought' },
+    });
+
+    expect(s.searchCurrent(id, 'secret internal thought')).toEqual([]);
+    expect(s.readCurrent(id, ['session://current/event/reasoning-1'])[0].content).not.toContain(
+      'secret internal thought',
+    );
+  });
+
   it('marks a copied fork as recently updated', () => {
     const s = new SessionStore(dir);
     const sourceId = s.create({ cwd: '/proj' });

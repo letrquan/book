@@ -10,6 +10,12 @@ export interface Usage {
   cacheReadInputTokens?: number;
 }
 
+/** Provider-native response data needed to replay a provider protocol exactly. */
+export interface ProviderMessageMetadata {
+  /** Anthropic content blocks, including thinking signatures, in original order. */
+  anthropicContentBlocks?: Array<Record<string, unknown>>;
+}
+
 /** A session-owned image referenced by a user message. */
 export interface ImageAttachment {
   id: string;
@@ -94,6 +100,10 @@ export interface Message {
   role: 'user' | 'assistant';
   /** User-facing text shown in the TUI/history. */
   content: string;
+  /** Provider-native reasoning/thinking text shown separately and replayed in later context. */
+  reasoningContent?: string;
+  /** Provider-native metadata used only when reconstructing provider requests. */
+  providerMetadata?: ProviderMessageMetadata;
   /** Provider-facing text when it differs from the displayed content. */
   contextContent?: string;
   /** Images attached to a user turn; bytes live in session attachment storage. */

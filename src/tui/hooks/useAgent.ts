@@ -728,6 +728,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               case 'text':
                 activeAccumulator?.addText(event.content);
                 break;
+              case 'reasoning':
+                activeAccumulator?.addReasoning(event.content);
+                break;
               case 'tool_use':
                 activeAccumulator?.addToolCall(event.toolCall);
                 break;

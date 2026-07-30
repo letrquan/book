@@ -32,6 +32,12 @@ describe('createStreamParser', () => {
     expect(parseStreamLineDetailed('{"type":"user"}').diagnostic?.code).toBe('invalid-shape');
   });
 
+  it('accepts reasoning output events emitted by headless mode', () => {
+    expect(parseStreamLineDetailed('{"type":"reasoning","text":"inspect"}')).toEqual({
+      event: { type: 'reasoning', text: 'inspect' },
+    });
+  });
+
   it.each([
     { type: 'agent_status', agent: { agentId: 'a1' } },
     { type: 'agent_activity', agentId: 'a1', activity: { id: 'activity' } },
