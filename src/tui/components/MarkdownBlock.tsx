@@ -300,11 +300,103 @@ function wrappedInlineRuns(runs: InlineRun[], terminalWidth: number): InlineRun[
   });
 }
 
+interface FenceContext {
+  marker: string;
+  info: string;
+}
+
+function fenceOpening(context: FenceContext): string {
+  return `${context.marker}${context.info}`;
+}
+
+function fenceContextAt(content: string, offset: number): FenceContext | undefined {
+  let open: FenceContext | undefined;
+  let lineStart = 0;
+
+  while (lineStart < offset) {
+    const lineEnd = content.indexOf('\n', lineStart);
+    if (lineEnd === -1 || lineEnd > offset) break;
+
+    const line = content.slice(lineStart, lineEnd).replace(/\r$/, '');
+    const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+    if (match) {
+      const marker = match[2]!;
+      const rest = match[3]!;
+      // Backtick fences cannot contain backticks in their info string.
+      if (!(marker[0] === '`' && rest.includes('`'))) {
+        if (open) {
+          if (
+            marker[0] === open.marker[0] &&
+            marker.length >= open.marker.length &&
+            rest.trim() === ''
+          ) {
+            open = undefined;
+          }
+        } else {
+          open = { marker, info: rest.trim() };
+        }
+      }
+    }
+
+    lineStart = lineEnd + 1;
+  }
+
+  return open;
+}
+
+function standaloneBlockStart(content: string, offset: number): number | undefined {
+  let lineStart = content.indexOf('\n', offset);
+  if (lineStart === -1) return undefined;
+  lineStart++;
+
+  while (lineStart < content.length) {
+    const lineEnd = content.indexOf('\n', lineStart);
+    const line = content.slice(lineStart, lineEnd === -1 ? content.length : lineEnd);
+    if (
+      /^( {0,3})(?:#{1,6}(?:\s|$)|>|(?:[-+*]|\d+[.)])\s|`{3,}|~{3,}|(?:[-*_]\s*){3,}$)/.test(line)
+    ) {
+      return lineStart;
+    }
+    if (lineEnd === -1) return undefined;
+    lineStart = lineEnd + 1;
+  }
+
+  return undefined;
+}
+
+function contextualStreamingTail(content: string, maxCharacters: number): string {
+  const desiredStart = content.length - maxCharacters;
+  if (desiredStart <= 0) return content;
+
+  const context = fenceContextAt(content, desiredStart);
+  if (context) {
+    return `${fenceOpening(context)}\n${content.slice(desiredStart)}`;
+  }
+
+  // Start complete Markdown blocks whenever possible. This avoids turning a
+  // truncated table/list/paragraph prefix into a misleading partial block.
+  const blankLine = content.indexOf('\n\n', desiredStart);
+  const standaloneStart =
+    blankLine === -1 ? standaloneBlockStart(content, desiredStart) : undefined;
+  const start = blankLine >= 0 ? blankLine + 2 : standaloneStart;
+  if (start === undefined) {
+    const tail = content.slice(desiredStart);
+    return /[*_`~[\]<>|\\]/.test(tail) ? '' : tail;
+  }
+  const startContext = fenceContextAt(content, start);
+  if (startContext) {
+    return `${fenceOpening(startContext)}\n${content.slice(start)}`;
+  }
+  return content.slice(start);
+}
+
 export function streamingMarkdownWindow(content: string, terminalWidth?: number): string {
   const width = Math.max(20, Math.floor(terminalWidth ?? 80));
-  const maxCharacters = width * 80;
+  // Keep enough history for the live tail to feel continuous without making
+  // every throttled Markdown parse scale with the full assistant response.
+  const maxCharacters = width * 24;
   if (content.length <= maxCharacters) return content;
-  return `… earlier response hidden while streaming\n\n${content.slice(-maxCharacters)}`;
+  return `… earlier response hidden while streaming\n\n${contextualStreamingTail(content, maxCharacters)}`;
 }
 
 function InlineRuns({ runs }: { runs: InlineRun[] }) {
@@ -718,28 +810,6 @@ const MarkdownRenderer = React.memo(function MarkdownRenderer({
   );
 });
 
-const StreamingMarkdownRenderer = React.memo(function StreamingMarkdownRenderer({
-  content,
-  terminalWidth,
-  color,
-}: {
-  content: string;
-  terminalWidth?: number;
-  color?: string;
-}) {
-  const display = useMemo(
-    () => (terminalWidth ? wordWrap(content, terminalWidth) : content),
-    [content, terminalWidth],
-  );
-  return (
-    <Box flexDirection="column">
-      <Text color={color} wrap="truncate">
-        {display}
-      </Text>
-    </Box>
-  );
-});
-
 export function MarkdownBlock({ content, terminalWidth, isStreaming = false }: MarkdownBlockProps) {
   const theme = useTheme();
   const density = useDensity();
@@ -749,24 +819,22 @@ export function MarkdownBlock({ content, terminalWidth, isStreaming = false }: M
   // Completed content should never wait for the streaming throttle. This also
   // ensures the final render highlights the complete response immediately.
   const effectiveContent = isStreaming ? parsedContent || content : content;
+  // Keep the live view bounded, but use the same Markdown tree as the final
+  // view. This avoids a visible raw-text-to-Markdown layout swap when a large
+  // response completes; streaming only disables expensive code highlighting.
+  const displayContent = useMemo(
+    () =>
+      isStreaming ? streamingMarkdownWindow(effectiveContent, terminalWidth) : effectiveContent,
+    [effectiveContent, isStreaming, terminalWidth],
+  );
 
-  if (!effectiveContent) return null;
-
-  if (isStreaming) {
-    return (
-      <StreamingMarkdownRenderer
-        content={streamingMarkdownWindow(effectiveContent, terminalWidth)}
-        terminalWidth={terminalWidth}
-        color={theme.text}
-      />
-    );
-  }
+  if (!displayContent) return null;
 
   return (
     <MarkdownRenderer
-      content={effectiveContent}
+      content={displayContent}
       terminalWidth={terminalWidth}
-      isStreaming={false}
+      isStreaming={isStreaming}
       theme={theme}
       density={density}
     />

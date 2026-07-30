@@ -38,6 +38,51 @@ describe('MarkdownBlock', () => {
     expect(streaming).toContain('suffix-marker');
   });
 
+  it('preserves fenced-code context when the live tail crosses its cutoff', () => {
+    const content = [
+      '```typescript',
+      'const prefix = 1;',
+      'x'.repeat(900),
+      'const suffix = 2;',
+      '```',
+    ].join('\n');
+    const streaming = streamingMarkdownWindow(content, 20);
+
+    expect(streaming).toContain('```typescript\n');
+    expect(streaming).not.toContain('const prefix = 1');
+    expect(streaming).toContain('const suffix = 2');
+  });
+
+  it('skips a truncated table and resumes at the next complete block', () => {
+    const rows = Array.from({ length: 80 }, (_, index) => `| row ${index} | value ${index} |`);
+    const content = [
+      '| Name | Value |',
+      '| --- | --- |',
+      ...rows,
+      '',
+      '## Complete tail block',
+      '',
+      'Tail content',
+    ].join('\n');
+    const streaming = streamingMarkdownWindow(content, 20);
+
+    expect(streaming).not.toContain('| row 79 |');
+    expect(streaming).toContain('## Complete tail block');
+    expect(streaming).toContain('Tail content');
+  });
+
+  it('does not expose an incomplete table when no safe block follows the cutoff', () => {
+    const content = [
+      '| Name | Value |',
+      '| --- | --- |',
+      ...Array.from({ length: 80 }, (_, index) => `| row ${index} | value ${index} |`),
+    ].join('\n');
+    const streaming = streamingMarkdownWindow(content, 20);
+
+    expect(streaming).toContain('earlier response hidden while streaming');
+    expect(streaming).not.toContain('| row');
+  });
+
   it('renders empty content as nothing', () => {
     const view = render(withTheme(React.createElement(MarkdownBlock, { content: '' })));
     const output = frame(view.lastFrame);
@@ -423,6 +468,23 @@ describe('MarkdownBlock', () => {
     // Both should show the source text; streaming path skips highlight only.
     expect(frame(streaming.lastFrame)).toContain('const x = 1');
     expect(frame(done.lastFrame)).toContain('const x = 1');
+  });
+
+  it('keeps Markdown structure visible while streaming', () => {
+    const view = render(
+      withTheme(
+        React.createElement(MarkdownBlock, {
+          content: '# Live heading\n\n- first item\n- second item',
+          terminalWidth: 40,
+          isStreaming: true,
+        }),
+      ),
+    );
+
+    const output = frame(view.lastFrame);
+    expect(output).toContain('LIVE HEADING');
+    expect(output).toContain('first item');
+    expect(output).not.toContain('# Live heading');
   });
 
   it('renders the complete content immediately when streaming finishes', () => {
