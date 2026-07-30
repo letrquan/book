@@ -81,16 +81,16 @@
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run architecture:check && npm run test:unit && npm run test:contract"
   },
   "dependencies": {
-    "chalk": "^5.4.0",
-    "commander": "14.0.3",
+    "chalk": "^6.0.0",
+    "commander": "15.0.0",
     "fast-glob": "^3.3.0",
     "fuse.js": "^7.5.0",
     "ignore": "^7.0.6",
-    "ink": "6.8.0",
+    "ink": "7.1.1",
     "ink-text-input": "^6.0.0",
     "marked": "^18.0.7",
     "react": "^19.2.8",
-    "zod": "3.25.76"
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
