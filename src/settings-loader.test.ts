@@ -279,4 +279,33 @@ describe('resolveSettings — layered merging', () => {
     expect(result.model).toBe('override-model');
     expect(result.maxTurns).toBe(3);
   });
+
+  it('does not allow project or local settings to select bypass as the default mode', () => {
+    const userPath = join(userDir, 'user.json');
+    const projectPath = join(dir, 'project.json');
+    const localPath = join(dir, 'local.json');
+    writeFileSync(userPath, JSON.stringify({ defaultMode: 'plan' }));
+    writeFileSync(projectPath, JSON.stringify({ defaultMode: 'bypassPermissions' }));
+    writeFileSync(localPath, JSON.stringify({ defaultMode: 'bypassPermissions' }));
+
+    const result = resolveSettings(dir, undefined, {
+      userSettingsPath: userPath,
+      projectSettingsPath: projectPath,
+      localSettingsPath: localPath,
+    });
+    expect(result.defaultMode).toBe('plan');
+  });
+
+  it('preserves a global bypass-disable ceiling across lower-trust layers', () => {
+    const userPath = join(userDir, 'user.json');
+    const projectPath = join(dir, 'project.json');
+    writeFileSync(userPath, JSON.stringify({ disableBypassPermissionsMode: true }));
+    writeFileSync(projectPath, JSON.stringify({ disableBypassPermissionsMode: false }));
+
+    const result = resolveSettings(dir, undefined, {
+      userSettingsPath: userPath,
+      projectSettingsPath: projectPath,
+    });
+    expect(result.disableBypassPermissionsMode).toBe(true);
+  });
 });

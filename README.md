@@ -110,6 +110,13 @@ Scalar values use the highest-priority layer. Permission rules, hook lists, and
 deduplicated. Other arrays are replaced by the highest-priority layer that defines them.
 
 `book config set` and TUI preference changes validate the complete local document before writing.
+
+Set `defaultMode` in user-global `~/.book/settings.json` to choose the permission mode used by
+the TUI, print mode, scrollback, and SDK when no invocation-specific mode is supplied. The
+`--permission-mode` CLI option and SDK `permissionMode` option override that default.
+Project and local settings cannot select `bypassPermissions` as the startup default. Setting
+`disableBypassPermissionsMode` to `true` also blocks explicit bypass requests and removes bypass
+from the TUI mode cycle.
 Writes use an atomic sibling-file replacement, and malformed or non-object
 `.book/settings.local.json` files are never overwritten. The reported error includes the file and
 invalid setting path; provider secrets are redacted.
@@ -180,6 +187,7 @@ Mutation reliability guardrails, tuned for heterogeneous models:
 {
   "model": "claude-opus-4-6",
   "effort": "high",
+  "defaultMode": "default",
   "permissions": {
     "allow": ["Read(*)", "Glob(*)", "Grep(*)"],
     "deny": ["Bash(rm *)", "Write(.env)"]

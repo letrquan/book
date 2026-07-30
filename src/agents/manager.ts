@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import type { AgentConfig } from '../types/runtime.js';
+import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import type { Message, Usage } from '../types/messages.js';
 import { createAgentRunContext, type AgentRunContext } from '../types/runs.js';
 import {
@@ -52,6 +52,7 @@ import type {
   AgentTopology,
 } from './types.js';
 import { SessionRuntime } from '../session/runtime.js';
+import { normalizePermissionMode, resolvePermissionMode } from '../permission-mode.js';
 
 interface ManagerOptions {
   storeRoot?: string;
@@ -186,6 +187,7 @@ export class AgentManager {
   private active = 0;
   private interactivePermissions = false;
   private permissionMode = 'default';
+  private permissionModeOverride?: PermissionMode;
   private readonly subscribers = new Set<(event: AgentRuntimeEvent) => void>();
   private legacyEventSink?: (event: AgentRuntimeEvent) => void;
   private readonly textBuffers = new Map<string, string>();
@@ -203,7 +205,11 @@ export class AgentManager {
     this.config = config;
     this.parentDefinitions = parentDefinitions;
     this.options = options;
-    this.permissionMode = options.permissionMode ?? 'default';
+    this.permissionModeOverride =
+      options.permissionMode === undefined
+        ? undefined
+        : (normalizePermissionMode(options.permissionMode) ?? 'default');
+    this.permissionMode = resolvePermissionMode(config.settings, options.permissionMode);
     this.legacyEventSink = options.eventSink;
     this.hookEventSink = options.hookEventSink;
   }
@@ -218,6 +224,9 @@ export class AgentManager {
 
   updateConfig(config: AgentConfig): void {
     this.config = config;
+    if (this.permissionModeOverride === undefined) {
+      this.permissionMode = resolvePermissionMode(config.settings);
+    }
   }
 
   hasActiveProfile(profile: string): boolean {
@@ -260,7 +269,19 @@ export class AgentManager {
   }
 
   setPermissionMode(mode: string | undefined): void {
-    if (mode) this.permissionMode = mode;
+    if (mode === undefined) {
+      this.permissionModeOverride = undefined;
+      this.permissionMode = resolvePermissionMode(this.config.settings);
+      return;
+    }
+    const normalized = normalizePermissionMode(mode);
+    if (normalized === undefined) {
+      this.permissionModeOverride = 'default';
+      this.permissionMode = resolvePermissionMode(this.config.settings, mode);
+      return;
+    }
+    this.permissionModeOverride = normalized;
+    this.permissionMode = resolvePermissionMode(this.config.settings, normalized);
   }
 
   async resolvePermission(

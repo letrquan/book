@@ -24,6 +24,7 @@ import {
 import { installInkScrollRenderer } from './ink-scroll-renderer.js';
 import { isInkIncrementalRendererPatched } from './ink-patch.js';
 import { resolveTuiRendererMode } from './tui-renderer-mode.js';
+import { resolvePermissionMode } from '../permission-mode.js';
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
@@ -95,9 +96,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         registry.registerAll(mcp.tools);
       }
 
-      const rawMode = ((options.permissionMode as string) ?? 'default') as string;
-      const mode = (rawMode === 'acceptEdits' ? 'accept-edits' : rawMode) as
-        'default' | 'accept-edits' | 'plan' | 'auto' | 'dontAsk' | 'bypassPermissions';
+      const mode = resolvePermissionMode(config.settings, options.permissionMode);
 
       const sessionStore = (options.sessionPersistence as boolean)
         ? new SessionStore(SESSION_ROOT)
@@ -138,9 +137,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     }
 
     // Interactive TUI mode.
-    const rawMode = ((options.permissionMode as string) ?? 'default') as string;
-    const mode = (rawMode === 'acceptEdits' ? 'accept-edits' : rawMode) as
-      'default' | 'accept-edits' | 'plan' | 'auto' | 'dontAsk' | 'bypassPermissions';
+    const mode = resolvePermissionMode(config.settings, options.permissionMode);
     if (options.scrollback) {
       const { runScrollbackSession } = await import('./scrollback.js');
       await runScrollbackSession(config, { mode });
@@ -206,6 +203,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       app = render(
         createElement(App, {
           config,
+          permissionMode: mode,
           interactiveAssets,
           redrawViewport,
           session: { ...bootstrap, store: sessionStore, timelineStore, snapshotStore },

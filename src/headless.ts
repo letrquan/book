@@ -21,12 +21,14 @@ import {
   buildAgentCompletionMessage,
   takeAgentCompletionBatch,
 } from './agents/completion-notification.js';
+import { resolvePermissionMode } from './permission-mode.js';
 
 export async function runHeadless(
   config: AgentConfig,
   registry: ToolRegistry,
   opts: HeadlessOptions,
 ): Promise<HeadlessResult> {
+  const mode = resolvePermissionMode(config.settings, opts.mode);
   const stdout = opts.stdout ?? process.stdout;
   const emit = (obj: unknown) => {
     if (obj && typeof obj === 'object' && 'type' in obj) {
@@ -204,7 +206,7 @@ export async function runHeadless(
         }
       },
       onPlanApprovalRequired: async () => {
-        const approved = opts.mode === 'bypassPermissions';
+        const approved = mode === 'bypassPermissions';
         if (opts.outputFormat === 'stream-json') {
           emit({ type: 'plan_approval', status: approved ? 'approve' : 'reject' });
         }
@@ -271,7 +273,7 @@ export async function runHeadless(
           registry,
           prompt,
           history: contextHistory,
-          mode: opts.mode,
+          mode,
           sessionId: runtimeSessionId,
           timelineStore: store,
           signal: opts.signal,

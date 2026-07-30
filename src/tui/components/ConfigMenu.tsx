@@ -4,7 +4,7 @@ import { useTheme } from '../theme.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
 import { truncateDisplay } from './word-wrap.js';
 
-export type ConfigSection = 'model' | 'effort' | 'theme' | 'agents';
+export type ConfigSection = 'model' | 'effort' | 'theme' | 'agents' | 'permission-mode';
 
 interface ConfigMenuProps {
   model: string;
@@ -12,13 +12,14 @@ interface ConfigMenuProps {
   themeName: string;
   memoryAutoSave: boolean;
   agentCount: number;
+  defaultPermissionMode: string;
   terminalWidth?: number;
   onOpen: (section: ConfigSection) => void;
   onToggleMemory: () => void;
   onCancel: () => void;
 }
 
-const ROWS = ['model', 'effort', 'theme', 'agents', 'memory'] as const;
+const ROWS = ['model', 'effort', 'theme', 'permission-mode', 'agents', 'memory'] as const;
 type Row = (typeof ROWS)[number];
 
 export function ConfigMenu({
@@ -27,6 +28,7 @@ export function ConfigMenu({
   themeName,
   memoryAutoSave,
   agentCount,
+  defaultPermissionMode,
   terminalWidth = 80,
   onOpen,
   onToggleMemory,
@@ -58,6 +60,7 @@ export function ConfigMenu({
     else if (shortcut === 'e') onOpen('effort');
     else if (shortcut === 't') onOpen('theme');
     else if (shortcut === 'a') onOpen('agents');
+    else if (shortcut === 'p') onOpen('permission-mode');
   });
 
   const rows: Array<{ row: Row; label: string; value: string; description: string }> = [
@@ -69,6 +72,12 @@ export function ConfigMenu({
       description: 'Reasoning depth for supported models',
     },
     { row: 'theme', label: 'Theme', value: themeName, description: 'Terminal color palette' },
+    {
+      row: 'permission-mode',
+      label: 'Default permissions',
+      value: defaultPermissionMode,
+      description: 'Mode for runs without an explicit override',
+    },
     {
       row: 'agents',
       label: 'Subagent profiles',
@@ -99,7 +108,7 @@ export function ConfigMenu({
         ))}
       </Box>
       <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter open/save · M model · A agents · Esc close
+        ↑↓ select · Enter open/save · M model · P permissions · A agents · Esc close
       </Text>
     </SoftPanel>
   );

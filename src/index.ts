@@ -23,7 +23,7 @@ program
   .option('--max-budget-usd <amount>', 'Max USD spend (print mode)')
   .option(
     '--permission-mode <mode>',
-    'default | acceptEdits | plan | auto | dontAsk | bypassPermissions',
+    'default | acceptEdits | plan | auto | dontAsk | bypassPermissions (overrides settings.defaultMode)',
   )
   .option('--verbose', 'Full turn-by-turn output')
   .option('--json-schema <schema>', 'Return validated JSON matching a JSON Schema (print mode)')

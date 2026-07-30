@@ -77,6 +77,31 @@ function mergeObject(
   return result;
 }
 
+/** Project/local settings cannot opt a session into the most permissive mode. */
+function sanitizeUntrustedPermissionSettings(
+  settings: Partial<BookSettings>,
+): Partial<BookSettings> {
+  const sanitized = structuredClone(settings);
+  if (sanitized.defaultMode === 'bypassPermissions') delete sanitized.defaultMode;
+  return sanitized;
+}
+
+function mergeLayer(
+  resolved: ResolvedSettings,
+  layer: Partial<BookSettings>,
+  trusted: boolean,
+): ResolvedSettings {
+  const candidate = trusted ? layer : sanitizeUntrustedPermissionSettings(layer);
+  // A trusted global safety ceiling cannot be disabled by a lower-trust layer.
+  if (
+    resolved.disableBypassPermissionsMode === true &&
+    candidate.disableBypassPermissionsMode === false
+  ) {
+    candidate.disableBypassPermissionsMode = true;
+  }
+  return mergeSettings(resolved, candidate);
+}
+
 export function mergeSettings(
   base: ResolvedSettings,
   override: Partial<BookSettings>,
@@ -135,22 +160,22 @@ export function resolveSettings(
   const userPath =
     paths.userSettingsPath ?? join(paths.home ?? homedir(), '.book', 'settings.json');
   const user = loadSettingsFile(userPath);
-  if (user) resolved = mergeSettings(resolved, user);
+  if (user) resolved = mergeLayer(resolved, user, true);
 
   // Layer 2: Project settings (<workspace>/.book/settings.json)
   const projectPath = paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json');
   const project = loadSettingsFile(projectPath);
-  if (project) resolved = mergeSettings(resolved, project);
+  if (project) resolved = mergeLayer(resolved, project, false);
 
   // Layer 3: Local settings (<workspace>/.book/settings.local.json)
   const localPath = paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json');
   const local = loadSettingsFile(localPath);
-  if (local) resolved = mergeSettings(resolved, local);
+  if (local) resolved = mergeLayer(resolved, local, false);
 
   // Layer 4 (optional): Ad-hoc override (--settings flag)
   if (overridePath) {
     const override = loadSettingsFile(overridePath);
-    if (override) resolved = mergeSettings(resolved, override);
+    if (override) resolved = mergeLayer(resolved, override, true);
   }
 
   return bookSettingsSchema.parse(resolved) as ResolvedSettings;

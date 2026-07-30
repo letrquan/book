@@ -994,4 +994,39 @@ describe('AgentManager lifecycle', () => {
     expect(childConfig!.effortExplicit).toBe(true);
     manager.dispose();
   });
+
+  it('refreshes and normalizes its permission mode when config or host mode changes', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    config.settings.defaultMode = 'plan';
+    const modes: string[] = [];
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history, _callbacks, mode) => {
+        modes.push(mode ?? 'default');
+        return history;
+      },
+    });
+
+    const first = await manager.spawn({ agent: 'explorer', prompt: 'first' });
+    await manager.wait(first.id, 1000);
+
+    config.settings.defaultMode = 'acceptEdits';
+    manager.updateConfig(config);
+    const second = await manager.spawn({ agent: 'explorer', prompt: 'second' });
+    await manager.wait(second.id, 1000);
+
+    manager.setPermissionMode('acceptEdits');
+    const third = await manager.spawn({ agent: 'explorer', prompt: 'third' });
+    await manager.wait(third.id, 1000);
+
+    manager.setPermissionMode('invalid-mode');
+    const fourth = await manager.spawn({ agent: 'explorer', prompt: 'fourth' });
+    await manager.wait(fourth.id, 1000);
+
+    expect(modes).toEqual(['plan', 'accept-edits', 'accept-edits', 'default']);
+    manager.dispose();
+  });
 });

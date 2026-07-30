@@ -20,6 +20,7 @@ describe('ConfigMenu', () => {
           themeName="dark"
           memoryAutoSave={false}
           agentCount={3}
+          defaultPermissionMode="default"
           onOpen={onOpen}
           onToggleMemory={() => {}}
           onCancel={() => {}}
@@ -32,6 +33,29 @@ describe('ConfigMenu', () => {
     expect(onOpen).toHaveBeenCalledWith('agents');
   });
 
+  it('shows and opens the global default permission setting', () => {
+    const onOpen = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          themeName="dark"
+          memoryAutoSave={false}
+          agentCount={3}
+          defaultPermissionMode="accept-edits"
+          onOpen={onOpen}
+          onToggleMemory={() => {}}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    expect(view.lastFrame()).toContain('Default permissions');
+    expect(view.lastFrame()).toContain('accept-edits');
+    view.stdin.write('p');
+    expect(onOpen).toHaveBeenCalledWith('permission-mode');
+  });
+
   it('fits narrow terminals', () => {
     const view = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>
@@ -40,6 +64,7 @@ describe('ConfigMenu', () => {
           themeName="dark"
           memoryAutoSave={false}
           agentCount={3}
+          defaultPermissionMode="default"
           terminalWidth={42}
           onOpen={() => {}}
           onToggleMemory={() => {}}
