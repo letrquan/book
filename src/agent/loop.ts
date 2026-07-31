@@ -29,13 +29,16 @@ import {
   shouldCompact,
   usagePressureTokens,
 } from './compact.js';
-import { evaluatePermissionDetail } from '../permissions.js';
+import {
+  evaluatePermissionDetail,
+  permissionRuleForToolCall,
+  permissionRuleMatchesCall,
+} from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
-import { getPrimaryArg } from '../tools/primary-arg.js';
 import { createDebugLogger } from '../debug-log.js';
 import { maybeCaptureMemoryCandidate } from '../memory-autosave.js';
-import { READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
+import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
 import {
   formatUserQuestionAnswers,
@@ -275,7 +278,7 @@ export async function runAgentLoop(
   toolContext.toolDiscovery = toolSurface;
 
   let turn = 0;
-  const approveAll: string[] = [];
+  const approveAllRules: string[] = [];
   let lastUsage: Usage | null = null;
   /** Avoid re-attempting compact for the same pressure snapshot after skip/fail. */
   let lastCompactAttemptKey: string | null = null;
@@ -927,12 +930,13 @@ export async function runAgentLoop(
 
       syncHostMode();
       const planReadOnly = effectiveMode === 'plan' && READ_ONLY_PLAN_TOOLS.has(canonName);
+      const planAutoApproved = planReadOnly && !PLAN_PERMISSION_REQUIRED_TOOLS.has(canonName);
       const isUserQuestion = canonName === 'AskUserQuestion';
       const managedLifecycle = canonName.startsWith('Agent') && canonName !== 'AgentApply';
       const autoSafeTool =
         canonName === 'EnterPlanMode' ||
         canonName === 'ToolSearch' ||
-        planReadOnly ||
+        planAutoApproved ||
         isUserQuestion ||
         managedLifecycle;
 
@@ -959,9 +963,9 @@ export async function runAgentLoop(
 
       if (
         needsPermissionCheck(effectiveMode) &&
-        !approveAll.includes(canonName) &&
+        !approveAllRules.some((rule) => permissionRuleMatchesCall(rule, call)) &&
         !autoSafeTool &&
-        effectiveMode !== 'plan'
+        (effectiveMode !== 'plan' || planReadOnly)
       ) {
         const autoApproved = effectiveMode === 'accept-edits' && isFileMutatingTool(canonName);
         if (!autoApproved) {
@@ -986,10 +990,10 @@ export async function runAgentLoop(
           }
           if (permission === 'always') {
             log.debug('permission always', { tool: canonName });
-            approveAll.push(canonName);
+            const rule = permissionRuleForToolCall(call);
+            approveAllRules.push(rule);
             if (callbacks.onPersistPermissionRule) {
-              const primary = getPrimaryArg(call.arguments);
-              callbacks.onPersistPermissionRule(primary ? `${canonName}(${primary})` : canonName);
+              callbacks.onPersistPermissionRule(rule);
             }
           }
         }

@@ -298,18 +298,29 @@ Project themes can override any token in `.book/themes/<name>.json`. They appear
 
 ### Environment variables
 
-| Variable                                                                                          | Purpose                                                          |
-| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `BOOK_API_KEY`                                                                                    | Default API key (or `{env:VAR}` in provider settings)            |
-| `BOOK_BASE_URL`                                                                                   | Default OpenAI-compatible base URL                               |
-| `BOOK_MODEL`                                                                                      | Default model                                                    |
-| `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                                |
-| `BOOK_EFFORT`                                                                                     | Thinking effort level                                            |
-| `BOOK_WORKSPACE`                                                                                  | Default workspace                                                |
-| `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                         |
-| `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                         |
-| `BOOK_TUI_RENDERER`                                                                               | `incremental` (default), `safe`, or experimental scroll renderer |
-| `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                              |
+| Variable                                                                                          | Purpose                                                           |
+| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `BOOK_API_KEY`                                                                                    | Default API key (or `{env:VAR}` in provider settings)             |
+| `BOOK_BASE_URL`                                                                                   | Default OpenAI-compatible base URL                                |
+| `BOOK_MODEL`                                                                                      | Default model                                                     |
+| `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                                 |
+| `BOOK_EFFORT`                                                                                     | Thinking effort level                                             |
+| `BOOK_WORKSPACE`                                                                                  | Default workspace                                                 |
+| `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                          |
+| `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                          |
+| `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)          |
+| `BOOK_WEB_ALLOW_PRIVATE_NETWORK`                                                                  | Opt into local/private web destinations (disabled by default)     |
+| `BOOK_WEB_MAX_REDIRECTS`                                                                          | Same-origin redirect limit for `WebFetch` (default 5, maximum 10) |
+| `BOOK_TUI_RENDERER`                                                                               | `incremental` (default), `safe`, or experimental scroll renderer  |
+| `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                               |
+
+`WebFetch` requires HTTPS by default, validates DNS results and the address used by the network
+connection, blocks private/special-use destinations, and stops on cross-origin redirects so the
+new origin receives its own permission decision. It returns Markdown by default; `format` can be
+`markdown`, `text`, or sanitized `html`. `WebSearch` works without configuration through the
+built-in Exa MCP provider and accepts optional `limit`, `domains`, `recencyDays`, and `country`
+hints. Its provider endpoint is built in and cannot be overridden through settings or environment
+variables.
 
 ## Slash Commands
 

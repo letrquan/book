@@ -2009,6 +2009,120 @@ describe('runAgentLoop plan mode', () => {
     expect(results[0]).toMatchObject({ status: 'success', content: 'read ok' });
   });
 
+  it('keeps web tools available but permission-gated in plan mode', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              {
+                id: 'web_1',
+                name: 'WebFetch',
+                arguments: '{"url":"https://example.com/docs"}',
+              },
+            ]),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const registry = createRegistry();
+    const execute = vi.fn(async () => toolSuccess('web ok'));
+    registry.register({
+      name: 'WebFetch',
+      description: 'Fetch a URL',
+      parameters: {
+        type: 'object',
+        properties: { url: { type: 'string' } },
+        required: ['url'],
+      },
+      execute,
+    });
+
+    const prompted = vi.fn(async () => 'allow' as const);
+    const results: ToolResult[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'plan',
+      [],
+      noopCallbacks({
+        onPermissionRequired: prompted,
+        onToolResult: (result: ToolResult) => results.push(result),
+      }),
+      'plan',
+    );
+
+    expect(prompted).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(results[0]).toMatchObject({ status: 'success', content: 'web ok' });
+  });
+
+  it('keeps remembered WebFetch approval scoped to the approved origin', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              {
+                id: 'web_1',
+                name: 'WebFetch',
+                arguments: '{"url":"https://docs.example.com/guide"}',
+              },
+              {
+                id: 'web_2',
+                name: 'WebFetch',
+                arguments: '{"url":"https://docs.example.com/api"}',
+              },
+              {
+                id: 'web_3',
+                name: 'WebFetch',
+                arguments: '{"url":"https://status.example.com/"}',
+              },
+            ]),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const registry = createRegistry();
+    const execute = vi.fn(async () => toolSuccess('web ok'));
+    registry.register({
+      name: 'WebFetch',
+      description: 'Fetch a URL',
+      parameters: {
+        type: 'object',
+        properties: { url: { type: 'string' } },
+        required: ['url'],
+      },
+      policy: { concurrency: 'parallel' },
+      execute,
+    });
+
+    const prompted = vi
+      .fn<() => Promise<'always' | 'allow'>>()
+      .mockResolvedValueOnce('always')
+      .mockResolvedValueOnce('allow');
+    const persisted = vi.fn();
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'plan',
+      [],
+      noopCallbacks({
+        onPermissionRequired: prompted,
+        onPersistPermissionRule: persisted,
+      }),
+      'plan',
+    );
+
+    expect(prompted).toHaveBeenCalledTimes(2);
+    expect(persisted).toHaveBeenCalledWith('WebFetch(https://docs.example.com/**)');
+    expect(execute).toHaveBeenCalledTimes(3);
+  });
+
   it('blocks mutating tools before execution in plan mode', async () => {
     vi.stubGlobal(
       'fetch',

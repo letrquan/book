@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { parseRule, evaluatePermission, primaryArgForRule } from './permissions.js';
+import {
+  evaluatePermission,
+  parseRule,
+  permissionRuleForToolCall,
+  permissionRuleMatchesCall,
+  primaryArgForRule,
+} from './permissions.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from './settings.js';
 
 describe('parseRule', () => {
@@ -71,6 +77,50 @@ describe('primaryArgForRule', () => {
   });
 });
 
+describe('remembered permission rules', () => {
+  it('scopes WebFetch to an origin and WebSearch to the configured tool', () => {
+    const fetchCall = {
+      id: 'fetch',
+      name: 'WebFetch',
+      arguments: { url: 'https://docs.example.com/guide' },
+    };
+    const sameOrigin = {
+      ...fetchCall,
+      id: 'same',
+      arguments: { url: 'https://docs.example.com/reference/api' },
+    };
+    const originRoot = {
+      ...fetchCall,
+      id: 'root',
+      arguments: { url: 'https://docs.example.com' },
+    };
+    const queryOnly = {
+      ...fetchCall,
+      id: 'query',
+      arguments: { url: 'https://docs.example.com?tab=api' },
+    };
+    const otherOrigin = {
+      ...fetchCall,
+      id: 'other',
+      arguments: { url: 'https://status.example.com/' },
+    };
+    const rule = permissionRuleForToolCall(fetchCall);
+
+    expect(rule).toBe('WebFetch(https://docs.example.com/**)');
+    expect(permissionRuleMatchesCall(rule, sameOrigin)).toBe(true);
+    expect(permissionRuleMatchesCall(rule, originRoot)).toBe(true);
+    expect(permissionRuleMatchesCall(rule, queryOnly)).toBe(true);
+    expect(permissionRuleMatchesCall(rule, otherOrigin)).toBe(false);
+    expect(
+      permissionRuleForToolCall({
+        id: 'search',
+        name: 'WebSearch',
+        arguments: { query: 'release notes' },
+      }),
+    ).toBe('WebSearch');
+  });
+});
+
 describe('evaluatePermission', () => {
   function settings(overrides: Partial<ResolvedSettings['permissions']> = {}): ResolvedSettings {
     return {
@@ -81,6 +131,15 @@ describe('evaluatePermission', () => {
 
   it('returns ask when no rules match', () => {
     expect(evaluatePermission('Bash', { command: 'ls' }, settings())).toBe('ask');
+  });
+
+  it('matches persisted WebFetch origin rules for root and query-only URLs', () => {
+    const s = settings({ allow: ['WebFetch(https://docs.example.com/**)'] });
+
+    expect(evaluatePermission('WebFetch', { url: 'https://docs.example.com' }, s)).toBe('allow');
+    expect(evaluatePermission('WebFetch', { url: 'https://docs.example.com?tab=api' }, s)).toBe(
+      'allow',
+    );
   });
 
   it('allow rule matches exact command', () => {

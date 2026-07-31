@@ -32,8 +32,7 @@ import { deriveAgentDisplayName, uniqueAgentDisplayName } from './naming.js';
 import { projectAgentCompletion, projectAgentSummary } from './projections.js';
 import { projectToolResultForDisplay, redactToolCallForDisplay } from './activity.js';
 import { AgentStore, type AgentStoreWriteResult } from './store.js';
-import { canonicalToolName } from '../tools/aliases.js';
-import { getPrimaryArg } from '../tools/primary-arg.js';
+import { permissionRuleForToolCall } from '../permissions.js';
 import type {
   AgentApplyResult,
   AgentActivity,
@@ -129,12 +128,6 @@ function isNewerAgentRecord(candidate: AgentRecord, current: AgentRecord): boole
     if (left[index] !== right[index]) return left[index] > right[index];
   }
   return false;
-}
-
-function permissionRuleForToolCall(call: ToolCall): string {
-  const toolName = canonicalToolName(call.name);
-  const primaryArg = getPrimaryArg(call.arguments);
-  return primaryArg ? `${toolName}(${primaryArg})` : toolName;
 }
 
 function accumulateUsage(current: Usage | undefined, next: Usage): Usage {

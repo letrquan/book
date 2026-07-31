@@ -32,6 +32,9 @@ export const READ_ONLY_PLAN_TOOLS = new Set([
   'AgentStop',
 ]);
 
+/** Read-only network calls remain available in plan mode but still require approval. */
+export const PLAN_PERMISSION_REQUIRED_TOOLS = new Set(['WebFetch', 'WebSearch']);
+
 function ok(output: string): ToolResult {
   return toolSuccess(output);
 }

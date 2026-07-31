@@ -1,4 +1,6 @@
 import type { ResolvedSettings } from './settings.js';
+import type { ToolCall } from './types/tools.js';
+import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
@@ -60,6 +62,35 @@ function ruleMatches(rule: ParsedRule, toolName: string, primaryArg: string): bo
   return globToRegex(normalizedPattern).test(normalizedArg);
 }
 
+export function permissionRuleForToolCall(call: ToolCall): string {
+  const toolName = canonicalToolName(call.name);
+  const primaryArg = getPrimaryArg(call.arguments);
+  if (toolName === 'WebSearch') return toolName;
+  if (toolName === 'WebFetch' && primaryArg) {
+    try {
+      const url = new URL(primaryArg);
+      return `${toolName}(${url.origin}/**)`;
+    } catch {
+      // An invalid URL must not widen into a tool-wide permission.
+    }
+  }
+  return primaryArg ? `${toolName}(${primaryArg})` : toolName;
+}
+
+export function permissionRuleMatchesCall(rule: string, call: ToolCall): boolean {
+  const toolName = canonicalToolName(call.name);
+  const primaryArg = getPrimaryArg(call.arguments);
+  if (toolName === 'WebFetch' && primaryArg) {
+    try {
+      // URL.toString() gives origin roots a trailing slash, matching the remembered origin glob.
+      return ruleMatches(parseRule(rule), toolName, new URL(primaryArg).toString());
+    } catch {
+      // Invalid URLs retain the normal raw-argument matching behavior.
+    }
+  }
+  return ruleMatches(parseRule(rule), toolName, primaryArg);
+}
+
 function patchOperations(args: Record<string, unknown>): PatchOperation[] {
   const parsed = parsePatch(args.patch);
   return 'operations' in parsed ? parsed.operations : [];
@@ -113,7 +144,6 @@ export function evaluatePermissionDetail(
   args: Record<string, unknown>,
   settings: ResolvedSettings,
 ): PermissionVerdict {
-  const primaryArg = primaryArgForRule(toolName, args);
   const { deny, ask, allow } = settings.permissions;
 
   // ApplyPatch is the canonical mutation surface, but existing Edit/Write rules
@@ -158,26 +188,25 @@ export function evaluatePermissionDetail(
     return { decision: 'ask', source: 'default' };
   }
 
+  const call: ToolCall = { id: 'permission-evaluation', name: toolName, arguments: args };
+
   // Deny rules first.
   for (const ruleStr of deny) {
-    const rule = parseRule(ruleStr);
-    if (ruleMatches(rule, toolName, primaryArg)) {
+    if (permissionRuleMatchesCall(ruleStr, call)) {
       return { decision: 'deny', matchedRule: ruleStr, source: 'deny' };
     }
   }
 
   // Ask rules second.
   for (const ruleStr of ask) {
-    const rule = parseRule(ruleStr);
-    if (ruleMatches(rule, toolName, primaryArg)) {
+    if (permissionRuleMatchesCall(ruleStr, call)) {
       return { decision: 'ask', matchedRule: ruleStr, source: 'ask' };
     }
   }
 
   // Allow rules third.
   for (const ruleStr of allow) {
-    const rule = parseRule(ruleStr);
-    if (ruleMatches(rule, toolName, primaryArg)) {
+    if (permissionRuleMatchesCall(ruleStr, call)) {
       return { decision: 'allow', matchedRule: ruleStr, source: 'allow' };
     }
   }

@@ -5,11 +5,13 @@ import { useDensityMetrics } from '../density.js';
 import { getPrimaryArg } from '../../tools/primary-arg.js';
 import { canonicalToolName } from '../../tools/aliases.js';
 import { isFileMutatingTool } from '../../tools/tool-capabilities.js';
+import { permissionRuleForToolCall } from '../../permissions.js';
 import type { PermissionResult, ToolCall } from '../../types/tools.js';
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 
 const uiLog = createUiDebugLogger('tui:permbtn');
+const PERMISSION_PATTERN_DISPLAY_MAX_LENGTH = 40;
 
 interface PermissionButtonsProps {
   toolCall: ToolCall;
@@ -31,24 +33,31 @@ const BUTTONS: ButtonDef[] = [
   { label: 'Always allow', value: 'always', key: 'a', colorKey: 'remember' },
 ];
 
-export function toolRiskLevel(toolCall: ToolCall): 'safe' | 'write' | 'shell' {
+export function toolRiskLevel(toolCall: ToolCall): 'safe' | 'network' | 'write' | 'shell' {
   const name = canonicalToolName(toolCall.name);
   const lower = toolCall.name.toLowerCase();
   if (name === 'Bash' || name === 'KillShell' || lower.includes('bash') || lower === 'shell')
     return 'shell';
   if (isFileMutatingTool(name)) return 'write';
+  if (name === 'WebFetch' || name === 'WebSearch') return 'network';
   return 'safe';
 }
 
 function riskHint(level: ReturnType<typeof toolRiskLevel>): string | null {
   if (level === 'shell') return 'This will run a shell command on your machine.';
   if (level === 'write') return 'This will modify files on disk.';
+  if (level === 'network') return 'This will send a request to an external service.';
   return null;
 }
 
-function permissionPattern(toolCall: ToolCall, primaryArg: string): string {
-  const name = canonicalToolName(toolCall.name);
-  return primaryArg ? `${name}(${primaryArg.slice(0, 40)})` : name;
+export function permissionPatternForTool(toolCall: ToolCall, primaryArg: string): string {
+  void primaryArg;
+  return permissionRuleForToolCall(toolCall);
+}
+
+export function permissionPatternForDisplay(pattern: string): string {
+  if (pattern.length <= PERMISSION_PATTERN_DISPLAY_MAX_LENGTH) return pattern;
+  return `${pattern.slice(0, PERMISSION_PATTERN_DISPLAY_MAX_LENGTH - 3)}...`;
 }
 
 /**
@@ -72,7 +81,8 @@ export function PermissionButtons({
   const primaryArg = getPrimaryArg(toolCall.arguments);
   const risk = toolRiskLevel(toolCall);
   const hint = riskHint(risk);
-  const alwaysPattern = permissionPattern(toolCall, primaryArg);
+  const alwaysPattern = permissionPatternForTool(toolCall, primaryArg);
+  const alwaysPatternDisplay = permissionPatternForDisplay(alwaysPattern);
 
   // Track previous selection for old→new logging without stale closure issues.
   const prevSelectedRef = useRef(0);
@@ -205,7 +215,7 @@ export function PermissionButtons({
         {BUTTONS.map((btn, i) => {
           const isSelected = i === selected;
           const btnColor = theme[btn.colorKey];
-          const label = btn.value === 'always' ? `${btn.label} ${alwaysPattern}` : btn.label;
+          const label = btn.value === 'always' ? `${btn.label} ${alwaysPatternDisplay}` : btn.label;
           return (
             <Box key={btn.label} marginRight={1}>
               <Text

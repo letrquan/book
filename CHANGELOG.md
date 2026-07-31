@@ -92,6 +92,14 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- `WebFetch` now returns structured provenance and Markdown/text/sanitized-HTML formats, uses a
+  real HTML parser, preserves bounded complete output through the shared tool-output path, rejects
+  binary content, and treats its legacy `prompt` argument as metadata instead of claiming to
+  perform extraction. `WebSearch` now works without configuration through a built-in Exa MCP
+  provider with a fixed endpoint, bounded responses, and result/domain/recency/country controls.
+- Web tools are explicitly parallel-safe but remain permission-gated network operations, including
+  in plan mode. Remembered fetch approval is scoped to the URL origin; cross-origin redirects must
+  be fetched as a separately approved call.
 - Improved TUI streaming responsiveness by batching first-turn updates at a sustainable cadence,
   avoiding idle accumulator wakeups, and limiting the active transcript window to the available
   terminal height while output is streaming. Live Markdown now uses a bounded plain-text tail and
@@ -138,6 +146,10 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- Hardened `WebFetch` against SSRF and DNS rebinding by requiring HTTPS unless explicitly enabled,
+  rejecting embedded credentials and local/private/special-use destinations, validating every DNS
+  result again at connection time, manually bounding redirects, and refusing cross-origin redirect
+  hops. Dangerous HTTP/private-network exceptions require explicit host environment opt-in.
 - Managed snapshots include non-ignored untracked files in the local Git object database by default. Ignore secrets or set `agents.includeUntrackedInSnapshot` to `false` before delegation.
 - Rewind snapshots intentionally include hidden, gitignored, and secret-like workspace files for complete local restoration, but keep file contents out of session JSON, logs, and model context; `.git` and workspace-local `.book/` state are excluded by default.
 

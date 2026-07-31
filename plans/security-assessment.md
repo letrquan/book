@@ -126,19 +126,17 @@ Recommended remediation:
 - Add tests asserting that every security setting changes observable runtime behavior.
 - Reject unsupported or currently unimplemented security settings instead of silently accepting them.
 
-### 8. Medium: Network Tools Permit SSRF and Unbounded Response Reads
+### 8. Resolved: Network Tool SSRF and Response Bounds
 
-`WebFetch` accepts HTTP and HTTPS URLs, follows redirects, and does not reject loopback, private, link-local, or cloud metadata addresses (`src/tools/web.ts:33`). It reads the complete response into memory before truncating the output (`src/tools/web.ts:72`). `WebSearch` also lets the model select an arbitrary backend URL.
+`WebFetch` now requires HTTPS unless the host explicitly opts into HTTP, rejects URL credentials,
+blocks local/private/link-local/multicast/metadata destinations, validates every resolved address
+again through the HTTP connector, and revalidates each redirect. Same-origin redirects are bounded;
+cross-origin redirects stop and require a separately permissioned `WebFetch` call. Response bodies
+are streamed with a byte limit. `WebSearch` uses only a fixed HTTPS Exa MCP endpoint, validates
+bounded provider responses, and rejects model-supplied backend arguments.
 
-This enables server-side request forgery against local services and can cause memory exhaustion from a large or endless response.
-
-Recommended remediation:
-
-- Resolve and block loopback, private, link-local, multicast, and metadata IP ranges for every redirect hop.
-- Apply DNS rebinding protections and revalidate the connected address.
-- Restrict HTTP to explicitly approved local endpoints.
-- Stream responses with a strict byte limit instead of calling `response.text()` without a bound.
-- Make search backend configuration host-controlled rather than model-controlled.
+The escape hatches `BOOK_WEB_ALLOW_HTTP` and `BOOK_WEB_ALLOW_PRIVATE_NETWORK` intentionally move
+responsibility to the host operator and must not be enabled by untrusted project automation.
 
 ## Defense-in-Depth Observations
 
