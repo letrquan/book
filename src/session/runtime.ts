@@ -4,6 +4,7 @@ import type { FileObservation, ToolDiscoveryState } from '../types/tools.js';
 import { AgentContextCache } from '../agent/context.js';
 import { ToolExecutionScheduler } from '../tools/execution-scheduler.js';
 import { RunAccounting } from './run-accounting.js';
+import { ShellJobManager } from '../jobs/shell-manager.js';
 
 export interface SessionRuntimeOptions {
   tasks?: AgentTask[];
@@ -26,6 +27,7 @@ export class SessionRuntime {
   readonly toolExecutionScheduler: ToolExecutionScheduler;
   readonly traceId: string;
   readonly runAccounting: RunAccounting;
+  readonly shellManager: ShellJobManager;
   /** Advisory memory of recent identical tool failures (registry circuit breaker). */
   readonly recentToolFailures = new Map<string, number>();
   /** Per-session tool call/failure counters keyed by canonical tool name. */
@@ -44,6 +46,7 @@ export class SessionRuntime {
     this.agentContextCache = options.agentContextCache ?? new AgentContextCache();
     this.toolExecutionScheduler = options.toolExecutionScheduler ?? new ToolExecutionScheduler();
     this.runAccounting = options.runAccounting ?? new RunAccounting();
+    this.shellManager = new ShellJobManager(this.backgroundShells);
     this.traceId = options.traceId ?? crypto.randomUUID();
   }
 
@@ -90,18 +93,18 @@ export class SessionRuntime {
     this.abortControllers.clear();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
-    const ownedChildren = new Set(this.childProcesses);
-    for (const shell of this.backgroundShells.shells.values()) {
-      if (shell.timer) clearTimeout(shell.timer);
-      if (shell.retentionTimer) clearTimeout(shell.retentionTimer);
-      if (shell.process) ownedChildren.add(shell.process);
-    }
-    for (const child of ownedChildren) {
+    const shellProcesses = new Set(
+      Array.from(this.backgroundShells.shells.values())
+        .map((shell) => shell.process)
+        .filter((child): child is ChildProcess => Boolean(child)),
+    );
+    for (const child of this.childProcesses) {
+      if (shellProcesses.has(child)) continue;
       if (!child.killed) child.kill();
     }
+    this.shellManager.dispose();
     this.agentManager?.dispose();
     this.agentManager = undefined;
     this.childProcesses.clear();
-    this.backgroundShells.shells.clear();
   }
 }

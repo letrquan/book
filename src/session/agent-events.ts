@@ -1,6 +1,7 @@
 import type { AgentRecord, AgentRuntimeEvent, EvidenceItem } from '../agents/types.js';
 import type { Message, Usage } from '../types/messages.js';
 import type { AgentRunContext, AgentRunResult } from '../types/runs.js';
+import type { ShellJobEvent } from '../jobs/shell-manager.js';
 import { isTerminalStatus, type AgentTerminalOutcome } from '../types/terminal.js';
 import type {
   ToolCall,
@@ -19,6 +20,7 @@ export type AgentEvent =
   | { type: 'tool_result'; toolResult: ToolResult }
   | { type: 'user_question'; request: UserQuestionRequest; status: 'pending' | 'unavailable' }
   | { type: 'user_question_result'; requestId: string; response: UserQuestionResponse }
+  | ShellJobEvent
   | { type: 'agent_start'; agent: AgentRecord }
   | { type: 'agent_update'; agent: AgentRecord }
   | { type: 'agent_result'; agent: AgentRecord }
@@ -150,6 +152,11 @@ export function reduceAgentSessionSnapshot(
     case 'agent_completion':
     case 'agent_permission':
     case 'agent_persistence':
+    case 'background_job_start':
+    case 'background_job_update':
+    case 'background_job_output':
+    case 'background_job_result':
+    case 'background_job_dismiss':
       return snapshot;
     case 'evidence_update':
       return { ...snapshot, evidence: upsertById(snapshot.evidence, event.evidence) };

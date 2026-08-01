@@ -55,6 +55,7 @@ import { SessionRuntime } from '../../session/runtime.js';
 import { createInteractiveAgentSession } from '../../session/interactive-session.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
 import { buildAgentCompletionMessage } from '../../agents/completion-notification.js';
+import type { BackgroundShellRecord } from '../../types/runtime.js';
 import { resolvePermissionMode } from '../../permission-mode.js';
 
 const log = createDebugLoggerWithCounter('tui:agent');
@@ -1026,6 +1027,32 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [sendMessage],
   );
 
+  const sendBackgroundShellCompletion = useCallback(
+    async (shell: BackgroundShellRecord): Promise<boolean> => {
+      const tail = agentSession.getRuntime().shellManager.readTail(shell.id, 4_000) ?? '';
+      const exit = shell.exitCode !== undefined ? ` exit=${shell.exitCode ?? 'none'}` : '';
+      const display = `Background shell ${shell.title || shell.id} ${shell.status}${exit}.`;
+      const context = [
+        '<background-shell-completion>',
+        `id: ${shell.id}`,
+        `title: ${shell.title || shell.command}`,
+        `status: ${shell.status}${exit}`,
+        `elapsed_ms: ${(shell.finishedAt ?? Date.now()) - shell.startedAt}`,
+        tail ? 'output_tail:' : undefined,
+        tail || undefined,
+        '</background-shell-completion>',
+      ]
+        .filter((line): line is string => line !== undefined)
+        .join('\n');
+      const result = await sendMessage(display, undefined, {
+        contextMessage: context,
+        kind: 'agent-notification',
+      });
+      return didSendMessageComplete(result);
+    },
+    [agentSession, sendMessage],
+  );
+
   const resolvePermission = useCallback(
     (result: PermissionResult) => {
       settlePermission(result, 'resolve');
@@ -1654,6 +1681,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     sessionName,
     send,
     sendAgentCompletions,
+    sendBackgroundShellCompletion,
     clear,
     startNewConversation,
     resumeConversation,

@@ -41,23 +41,44 @@ export interface AgentTask {
 }
 
 export type BackgroundShellStatus =
-  'running' | 'stopping' | 'exited' | 'failed' | 'killed' | 'timed_out';
+  'starting' | 'running' | 'stopping' | 'exited' | 'failed' | 'killed' | 'timed_out' | 'lost';
+
+export type BackgroundShellLifetime = 'session' | 'persistent';
+export type BackgroundShellNotify = 'none' | 'ui' | 'agent';
 
 export interface BackgroundShellRecord {
   id: string;
   command: string;
   effectiveCommand: string;
+  title?: string;
   workdir: string;
   pid?: number;
+  runnerPid?: number;
   process?: ChildProcess;
   status: BackgroundShellStatus;
+  lifetime?: BackgroundShellLifetime;
+  notify?: BackgroundShellNotify;
   output: string;
   readOffset: number;
   truncatedBytes: number;
+  outputRevision?: number;
+  completionSequence?: number;
+  completionAcknowledgedSequence?: number;
+  completionDeliveredSequence?: number;
   exitCode?: number | null;
   signal?: NodeJS.Signals | string | null;
   startedAt: number;
   finishedAt?: number;
+  timeoutMs?: number;
+  deadlineAt?: number;
+  parentSessionId?: string;
+  rootRunId?: string;
+  parentRunId?: string;
+  persistentRecordPath?: string;
+  persistentControlPath?: string;
+  persistentOutputPath?: string;
+  persistentOutputRotationSequence?: number;
+  controlToken?: string;
   timer?: NodeJS.Timeout;
   retentionTimer?: NodeJS.Timeout;
   sandboxed?: boolean;

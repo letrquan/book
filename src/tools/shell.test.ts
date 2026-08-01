@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { shellTools } from './shell.js';
+import { persistentEnvironmentOverrides, shellTools } from './shell.js';
 import { getPrimaryArg } from './primary-arg.js';
 import type { BackgroundShellStore } from '../types/runtime.js';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
@@ -77,6 +77,24 @@ afterEach(async () => {
 });
 
 describe('Bash shell tools', () => {
+  it('persists only explicit non-sensitive environment overrides', () => {
+    const inheritedSecret = process.env.OPENAI_API_KEY;
+    const context: ToolContext = {
+      workspaceRoot: dir,
+      env: {
+        ...process.env,
+        OPENAI_API_KEY: inheritedSecret ?? 'inherited-secret',
+      } as Record<string, string>,
+      envOverrides: {
+        BOOK_COLOR: 'always',
+        OPENAI_API_KEY: 'explicit-secret',
+        SERVICE_TOKEN: 'explicit-token',
+      },
+    };
+
+    expect(persistentEnvironmentOverrides(context)).toEqual({ BOOK_COLOR: 'always' });
+  });
+
   it('keeps foreground Bash behavior', async () => {
     const c = ctx();
     const command = nodeCommand('foreground.cjs', `console.log('foreground-ok');\n`);

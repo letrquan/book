@@ -11,6 +11,12 @@ export type StreamJsonEvent =
   | { type: 'user_question'; request?: unknown; status?: 'pending' | 'unavailable' }
   | { type: 'user_question_result'; request_id?: string; response?: unknown }
   | { type: 'agent_start' | 'agent_update' | 'agent_result'; agent?: unknown }
+  | {
+      type: 'background_job_start' | 'background_job_update' | 'background_job_result';
+      job?: unknown;
+    }
+  | { type: 'background_job_output'; jobId?: string; revision?: number }
+  | { type: 'background_job_dismiss'; jobId?: string }
   | { type: 'agent_question'; agentId?: string; request?: unknown }
   | { type: 'agent_status'; agent?: unknown }
   | { type: 'agent_activity'; agentId?: string; activity?: unknown }
@@ -53,6 +59,11 @@ const EVENT_TYPES = new Set<StreamJsonEvent['type']>([
   'user_question',
   'user_question_result',
   'agent_start',
+  'background_job_start',
+  'background_job_update',
+  'background_job_output',
+  'background_job_result',
+  'background_job_dismiss',
   'agent_update',
   'agent_result',
   'agent_question',

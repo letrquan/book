@@ -732,6 +732,7 @@ export class AgentSession {
     emit({ type: 'run_started', context: runContext });
     emit({ type: 'system', model: request.config.model, cwd: request.config.workspace });
     emit({ type: 'session', sessionId: request.sessionId });
+    const unsubscribeShellEvents = runtime.shellManager.subscribe((event) => emit(event));
 
     try {
       const messages = await this.runLoop(
@@ -872,6 +873,7 @@ export class AgentSession {
       emit({ type: 'terminal', outcome, runContext });
       throw error;
     } finally {
+      unsubscribeShellEvents();
       emit({ type: 'done' });
     }
   }

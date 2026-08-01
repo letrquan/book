@@ -79,6 +79,10 @@ function needsPermissionCheck(mode: string): boolean {
   return true; // all other modes (default, accept-edits, plan, dontAsk) check rules
 }
 
+function requiresToolPermission(mode: string, persistentBackgroundShell: boolean): boolean {
+  return needsPermissionCheck(mode) || (persistentBackgroundShell && mode !== 'bypassPermissions');
+}
+
 export async function runAgentLoop(
   config: AgentConfig,
   registry: ToolRegistry,
@@ -246,6 +250,7 @@ export async function runAgentLoop(
   const toolContext: ToolContext = {
     workspaceRoot: config.workspace,
     env: process.env as Record<string, string>,
+    envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,
     sandbox: config.settings.sandbox,
     agentConfig: config,
@@ -933,6 +938,10 @@ export async function runAgentLoop(
       const planAutoApproved = planReadOnly && !PLAN_PERMISSION_REQUIRED_TOOLS.has(canonName);
       const isUserQuestion = canonName === 'AskUserQuestion';
       const managedLifecycle = canonName.startsWith('Agent') && canonName !== 'AgentApply';
+      const persistentBackgroundShell =
+        canonName === 'Bash' &&
+        call.arguments.run_in_background === true &&
+        call.arguments.lifetime === 'persistent';
       const autoSafeTool =
         canonName === 'EnterPlanMode' ||
         canonName === 'ToolSearch' ||
@@ -962,15 +971,16 @@ export async function runAgentLoop(
       }
 
       if (
-        needsPermissionCheck(effectiveMode) &&
-        !approveAllRules.some((rule) => permissionRuleMatchesCall(rule, call)) &&
+        requiresToolPermission(effectiveMode, persistentBackgroundShell) &&
+        (persistentBackgroundShell ||
+          !approveAllRules.some((rule) => permissionRuleMatchesCall(rule, call))) &&
         !autoSafeTool &&
         (effectiveMode !== 'plan' || planReadOnly)
       ) {
         const autoApproved = effectiveMode === 'accept-edits' && isFileMutatingTool(canonName);
         if (!autoApproved) {
           let permission: 'allow' | 'deny' | 'always' | undefined;
-          if (effectiveMode !== 'dontAsk') {
+          if (effectiveMode !== 'dontAsk' && !persistentBackgroundShell) {
             const verdict = evaluatePermissionDetail(canonName, call.arguments, config.settings);
             if (verdict.decision === 'allow') permission = 'allow';
             else if (verdict.decision === 'deny') permission = 'deny';
@@ -988,7 +998,7 @@ export async function runAgentLoop(
             });
             return undefined;
           }
-          if (permission === 'always') {
+          if (permission === 'always' && !persistentBackgroundShell) {
             log.debug('permission always', { tool: canonName });
             const rule = permissionRuleForToolCall(call);
             approveAllRules.push(rule);
@@ -1513,4 +1523,4 @@ export async function runAgentLoop(
   return newHistory;
 }
 
-export { needsPermissionCheck };
+export { needsPermissionCheck, requiresToolPermission };

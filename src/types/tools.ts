@@ -219,6 +219,8 @@ export interface ToolDefinition {
 export interface ToolContext {
   workspaceRoot: string;
   env: Record<string, string>;
+  /** Explicit environment overrides safe to persist for opt-in persistent jobs. */
+  envOverrides?: Record<string, string>;
   /** Glob patterns to ignore during file discovery (e.g. from .gitignore). */
   gitignorePatterns?: string[];
   /** Resolved sandbox settings for the Bash tool. */
@@ -237,6 +239,7 @@ export interface ToolContext {
   tasks?: AgentTask[];
   /** Background shells started by Bash(run_in_background), shared across tool calls. */
   backgroundShells?: BackgroundShellStore;
+  shellManager?: import('../jobs/shell-manager.js').ShellJobManager;
   /** Runtime-only newest file observation per workspace/path. */
   fileObservationLedger?: Map<string, FileObservation>;
   /** Live permission mode for the active agent loop; tools may update this. */

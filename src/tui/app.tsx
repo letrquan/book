@@ -24,9 +24,11 @@ import { AskUserQuestionWizard } from './components/AskUserQuestionWizard.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
 import { useManagedAgents } from './hooks/useManagedAgents.js';
+import { useBackgroundShells } from './hooks/useBackgroundShells.js';
 import { useAgentCompletionDelivery } from './hooks/useAgentCompletionDelivery.js';
 import { SubagentPanel } from './components/SubagentPanel.js';
 import { SubagentDetail } from './components/SubagentDetail.js';
+import { BackgroundShellDetail } from './components/BackgroundShellDetail.js';
 import { projectManagedAgentTraces } from './managed-agent-transcript.js';
 import {
   ThemeContext,
@@ -57,6 +59,7 @@ import { getMemoryIndex } from '../memory-display.js';
 import { discoverClaudeMd } from '../claude-md.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
+import { ShellJobManager } from '../jobs/shell-manager.js';
 import { persistSettingLocal } from './persist.js';
 import { buildModelOptions } from './model-options.js';
 import { createUiDebugLogger } from '../debug-log.js';
@@ -217,6 +220,7 @@ export function App({
     sessionName,
     send,
     sendAgentCompletions,
+    sendBackgroundShellCompletion,
     clear,
     startNewConversation,
     resumeConversation,
@@ -262,6 +266,12 @@ export function App({
     [liveConfig, mode, persistPermissionRule, runtime],
   );
   const managedAgents = useManagedAgents(managedAgentManager, sessionId);
+  const shellManager = useMemo(() => {
+    const resolved = runtime?.shellManager ?? new ShellJobManager({ nextId: 1, shells: new Map() });
+    resolved.configureWorkspace(liveConfig.workspace);
+    return resolved;
+  }, [liveConfig.workspace, runtime]);
+  const backgroundShells = useBackgroundShells(shellManager, sessionId);
 
   const [showTasks, setShowTasks] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -296,11 +306,13 @@ export function App({
   const [queueNotice, setQueueNotice] = useState<string | undefined>(undefined);
   const [sendInFlight, setSendInFlight] = useState(false);
   const [, setQueueDrainTick] = useState(0);
+  const [shellCompletionRetryTick, setShellCompletionRetryTick] = useState(0);
   const [followRequestKey, setFollowRequestKey] = useState(0);
   const [detailTaskPickerOpen, setDetailTaskPickerOpen] = useState(false);
   const [detailTaskPickerAgentId, setDetailTaskPickerAgentId] = useState<string | undefined>(
     undefined,
   );
+  const [selectedShellId, setSelectedShellId] = useState<string>();
   const commandResolutionRef = useRef<AbortController | null>(null);
   const queuedInputsRef = useRef<QueuedInput[]>([]);
   const editingQueuedInputRef = useRef<QueuedInput | undefined>(undefined);
@@ -308,6 +320,8 @@ export function App({
   const draftRef = useRef('');
   const draftAttachmentsRef = useRef<ImageAttachment[]>([]);
   const queueDrainRunningRef = useRef(false);
+  const shellCompletionDeliveryRef = useRef(false);
+  const shellCompletionRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queueDrainPausedRef = useRef(false);
   const queueInterruptEpochRef = useRef(0);
   const queueSessionRef = useRef(sessionId);
@@ -432,6 +446,7 @@ export function App({
   useEffect(() => {
     setDetailTaskPickerOpen(false);
     setDetailTaskPickerAgentId(undefined);
+    setSelectedShellId(undefined);
     managedAgents.setSurface('main');
     managedAgents.selectAgent(undefined);
   }, [managedAgents.selectAgent, managedAgents.setSurface, sessionId]);
@@ -571,6 +586,54 @@ export function App({
     editingQueuedInput ||
     managedAgents.surface !== 'main',
   );
+
+  const scheduleShellCompletionRetry = useCallback(() => {
+    if (shellCompletionRetryTimerRef.current) {
+      clearTimeout(shellCompletionRetryTimerRef.current);
+    }
+    shellCompletionRetryTimerRef.current = setTimeout(() => {
+      shellCompletionRetryTimerRef.current = null;
+      setShellCompletionRetryTick((current) => current + 1);
+    }, 1_000);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (shellCompletionRetryTimerRef.current) {
+        clearTimeout(shellCompletionRetryTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const completion = backgroundShells.pendingAgentCompletions[0];
+    if (!completion || queueDrainBlocked || shellCompletionDeliveryRef.current) return;
+    shellCompletionDeliveryRef.current = true;
+    void sendBackgroundShellCompletion(completion)
+      .then((accepted) => {
+        if (accepted) {
+          if (shellCompletionRetryTimerRef.current) {
+            clearTimeout(shellCompletionRetryTimerRef.current);
+            shellCompletionRetryTimerRef.current = null;
+          }
+          backgroundShells.acknowledgeAgentCompletion(completion.id, completion.completionSequence);
+        } else {
+          scheduleShellCompletionRetry();
+        }
+      })
+      .catch(() => scheduleShellCompletionRetry())
+      .finally(() => {
+        shellCompletionDeliveryRef.current = false;
+      });
+  }, [
+    backgroundShells.acknowledgeAgentCompletion,
+    backgroundShells.pendingAgentCompletions,
+    queueDrainBlocked,
+    scheduleShellCompletionRetry,
+    sendBackgroundShellCompletion,
+    shellCompletionRetryTick,
+  ]);
   const managedAgentTraces = useMemo(
     () => projectManagedAgentTraces(messages, managedAgents.records, managedAgents.activities),
     [managedAgents.activities, managedAgents.records, messages],
@@ -578,9 +641,53 @@ export function App({
   const returnToMain = useCallback(() => {
     setDetailTaskPickerOpen(false);
     setDetailTaskPickerAgentId(undefined);
+    setSelectedShellId(undefined);
     managedAgents.setSurface('main');
     managedAgents.selectAgent(undefined);
   }, [managedAgents.selectAgent, managedAgents.setSurface]);
+
+  const selectBackgroundJob = useCallback(
+    (jobId?: string) => {
+      if (!jobId) {
+        setSelectedShellId(undefined);
+        managedAgents.selectAgent(undefined);
+        return;
+      }
+      if (backgroundShells.shells.some((shell) => shell.id === jobId)) {
+        setSelectedShellId(jobId);
+        managedAgents.selectAgent(undefined);
+      } else {
+        setSelectedShellId(undefined);
+        managedAgents.selectAgent(jobId);
+      }
+    },
+    [backgroundShells.shells, managedAgents.selectAgent],
+  );
+
+  // Terminal jobs are removed from the active list as soon as they finish or
+  // stop. Leave their detail view even when notifications are disabled.
+  useEffect(() => {
+    if (selectedShellId && !backgroundShells.shells.some((shell) => shell.id === selectedShellId)) {
+      returnToMain();
+    }
+  }, [backgroundShells.shells, returnToMain, selectedShellId]);
+
+  useEffect(() => {
+    const completed = backgroundShells.lastCompletion;
+    if (!completed) return;
+    const exit = completed.exitCode !== undefined ? ` (exit ${completed.exitCode ?? 'none'})` : '';
+    addLocalMessage(
+      `${completed.status === 'exited' ? '✓' : '✕'} Background shell ${completed.title || completed.id} ${completed.status}${exit}.`,
+    );
+    backgroundShells.acknowledge(completed.id);
+    if (selectedShellId === completed.id) returnToMain();
+  }, [
+    addLocalMessage,
+    backgroundShells.acknowledge,
+    backgroundShells.lastCompletion,
+    returnToMain,
+    selectedShellId,
+  ]);
 
   // Tab cycles focus flatly through [main, ...spawned agents], opening each
   // child's transcript directly. Wrapping past the last agent returns to main.
@@ -588,21 +695,33 @@ export function App({
   // its default Tab behavior.
   const cycleAgentFocus = useCallback((): boolean => {
     if (!managedAgentUiEnabled) return false;
-    const agents = managedAgents.summaries;
-    if (agents.length === 0) return false;
-    const rows: Array<string | undefined> = [undefined, ...agents.map((agent) => agent.agentId)];
+    const jobIds = [
+      ...managedAgents.summaries.map((agent) => agent.agentId),
+      ...backgroundShells.shells.map((shell) => shell.id),
+    ];
+    if (jobIds.length === 0) return false;
+    const rows: Array<string | undefined> = [undefined, ...jobIds];
     const currentId =
-      managedAgents.surface === 'detail' ? managedAgents.selectedAgentId : undefined;
+      managedAgents.surface === 'detail'
+        ? (selectedShellId ?? managedAgents.selectedAgentId)
+        : undefined;
     const currentIndex = currentId ? rows.indexOf(currentId) : 0;
     const next = rows[((currentIndex < 0 ? 0 : currentIndex) + 1) % rows.length];
     if (next === undefined) {
       returnToMain();
     } else {
-      managedAgents.selectAgent(next);
+      selectBackgroundJob(next);
       managedAgents.setSurface('detail');
     }
     return true;
-  }, [managedAgentUiEnabled, managedAgents, returnToMain]);
+  }, [
+    backgroundShells.shells,
+    managedAgentUiEnabled,
+    managedAgents,
+    returnToMain,
+    selectBackgroundJob,
+    selectedShellId,
+  ]);
 
   useEffect(() => {
     if (
@@ -938,12 +1057,14 @@ export function App({
       }
       if (managedAgents.surface === 'detail' && attachments.length > 0) {
         addLocalMessage('Image attachments are sent to the main conversation.');
-        managedAgents.setSurface('main');
-        managedAgents.selectAgent(undefined);
+        returnToMain();
       }
-      if (managedAgents.surface === 'detail' && !value.startsWith('/') && !selectedChild) {
-        managedAgents.setSurface('main');
-        managedAgents.selectAgent(undefined);
+      if (
+        managedAgents.surface === 'detail' &&
+        !value.startsWith('/') &&
+        (!selectedChild || selectedShellId)
+      ) {
+        returnToMain();
       }
       if (managedAgents.surface === 'detail' && value.startsWith('/')) {
         addLocalMessage('Session commands apply to the main conversation while viewing a child.');
@@ -1143,6 +1264,7 @@ export function App({
           if (effect.operation === 'list') {
             managedAgents.setSurface('tasks');
             void managedAgents.refresh().catch(reportError);
+            backgroundShells.refresh();
           } else if (effect.operation === 'import') {
             try {
               const previews = previewAgentImport(effect.importPath!);
@@ -1302,7 +1424,7 @@ export function App({
 
   const canSubmitWhileParentBusy = useCallback((value: string) => {
     const name = parseSlashInput(value)?.name;
-    return name === 'tasks' || name === 'queue';
+    return name === 'tasks' || name === 'jobs' || name === 'queue';
   }, []);
   const canQueueWhileParentBusy = useCallback(
     (value: string) => !value.trimStart().startsWith('/'),
@@ -1448,7 +1570,19 @@ export function App({
                   <Text color={theme.error}>✕ {error}</Text>
                 </Box>
               )}
-              {managedAgents.surface === 'detail' && managedAgents.selectedAgentId ? (
+              {managedAgents.surface === 'detail' && selectedShellId ? (
+                backgroundShells.shells.find((shell) => shell.id === selectedShellId) ? (
+                  <BackgroundShellDetail
+                    shell={backgroundShells.shells.find((shell) => shell.id === selectedShellId)!}
+                    output={shellManager.readTail(selectedShellId, 16_000) ?? ''}
+                    width={termWidth}
+                  />
+                ) : (
+                  <Box paddingX={1}>
+                    <Text color={theme.subtle}>Loading background shell…</Text>
+                  </Box>
+                )
+              ) : managedAgents.surface === 'detail' && managedAgents.selectedAgentId ? (
                 // Viewing a child: never fall back to the main conversation.
                 // The record can briefly lag its summary (a status event lists
                 // an agent before its record is stored), so show a loading
@@ -2226,9 +2360,10 @@ export function App({
                   setDetailTaskPickerOpen(true);
                   return true;
                 }
-                const firstAgent = managedAgents.summaries[0];
-                if (!managedAgentUiEnabled || !firstAgent) return false;
-                managedAgents.selectAgent(firstAgent.agentId);
+                const firstJobId =
+                  managedAgents.summaries[0]?.agentId ?? backgroundShells.shells[0]?.id;
+                if (!managedAgentUiEnabled || !firstJobId) return false;
+                selectBackgroundJob(firstJobId);
                 managedAgents.setSurface('tasks');
                 return true;
               }}
@@ -2267,16 +2402,26 @@ export function App({
             (managedAgents.surface === 'detail' && !detailTaskPickerOpen)) ? (
             <SubagentPanel
               agents={managedAgents.summaries}
-              selectedAgentId={managedAgents.selectedAgentId}
+              shells={backgroundShells.shells}
+              selectedJobId={selectedShellId ?? managedAgents.selectedAgentId}
               isActive={managedAgents.surface === 'tasks'}
-              onSelect={managedAgents.selectAgent}
-              onOpen={(agentId) => {
-                managedAgents.selectAgent(agentId);
+              onSelect={selectBackgroundJob}
+              onOpen={(jobId) => {
+                selectBackgroundJob(jobId);
+                if (backgroundShells.shells.some((shell) => shell.id === jobId)) {
+                  backgroundShells.acknowledge(jobId);
+                }
                 managedAgents.setSurface('detail');
               }}
               onClose={() => managedAgents.setSurface('main')}
               onCancel={() => managedAgents.setSurface('main')}
-              onStopOrDismiss={(agentId) => void managedAgents.stopOrDismiss(agentId)}
+              onStopOrDismiss={(jobId) => {
+                if (backgroundShells.shells.some((shell) => shell.id === jobId)) {
+                  void backgroundShells.stopOrDismiss(jobId);
+                } else {
+                  void managedAgents.stopOrDismiss(jobId);
+                }
+              }}
               width={termWidth}
               reducedMotion={motionDisabled}
               screenReader={screenReader}
@@ -2286,20 +2431,27 @@ export function App({
           {managedAgentUiEnabled && managedAgents.surface === 'detail' && detailTaskPickerOpen ? (
             <SubagentPanel
               agents={managedAgents.summaries}
-              selectedAgentId={detailTaskPickerAgentId}
+              shells={backgroundShells.shells}
+              selectedJobId={detailTaskPickerAgentId}
               isActive
               onSelect={setDetailTaskPickerAgentId}
-              onOpen={(agentId) => {
+              onOpen={(jobId) => {
                 setDetailTaskPickerOpen(false);
                 setDetailTaskPickerAgentId(undefined);
-                managedAgents.selectAgent(agentId);
+                selectBackgroundJob(jobId);
               }}
               onClose={returnToMain}
               onCancel={() => {
                 setDetailTaskPickerOpen(false);
                 setDetailTaskPickerAgentId(undefined);
               }}
-              onStopOrDismiss={(agentId) => void managedAgents.stopOrDismiss(agentId)}
+              onStopOrDismiss={(jobId) => {
+                if (backgroundShells.shells.some((shell) => shell.id === jobId)) {
+                  void backgroundShells.stopOrDismiss(jobId);
+                } else {
+                  void managedAgents.stopOrDismiss(jobId);
+                }
+              }}
               width={termWidth}
               reducedMotion={motionDisabled}
               screenReader={screenReader}

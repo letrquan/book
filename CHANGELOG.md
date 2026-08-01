@@ -11,6 +11,12 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Unified `/jobs` TUI management for managed agents and background shell jobs, with `/tasks` kept
+  as an alias. Background shells support session or explicit persistent lifetimes, bounded output,
+  optional parent-agent completion delivery, restart reattachment, stop/dismiss controls, and SDK/
+  stream-json lifecycle events. Finished and stopped shell rows leave the active UI automatically
+  while a one-time completion notice remains available.
+
 - Streaming assistant responses now use the same Markdown layout as completed replies while
   keeping a bounded, throttled live tail for responsive rendering of large outputs.
 

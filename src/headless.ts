@@ -654,6 +654,11 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
       });
       break;
     case 'agent_start':
+    case 'background_job_start':
+    case 'background_job_update':
+    case 'background_job_output':
+    case 'background_job_result':
+    case 'background_job_dismiss':
     case 'agent_update':
     case 'agent_result':
     case 'agent_question':

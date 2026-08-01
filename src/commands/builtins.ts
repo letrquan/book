@@ -417,7 +417,7 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
         return {
           type: 'local-message',
           content:
-            'Subagents run from the prompt-adjacent task panel. Use /tasks to inspect them; configure definitions in .book/agents or ~/.book/agents.',
+            'Subagents run from the prompt-adjacent job panel. Use /jobs (or /tasks) to inspect them; configure definitions in .book/agents or ~/.book/agents.',
         };
       }
       const confirmed = parts[1] === '--confirm';
@@ -428,8 +428,13 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     },
   },
   {
+    name: 'jobs',
+    description: 'View and manage background agents and shell jobs in this session',
+    execute: () => ({ type: 'managed-agent', operation: 'list' }),
+  },
+  {
     name: 'tasks',
-    description: 'View and manage background subagents in this session',
+    description: 'Alias for /jobs',
     execute: () => ({ type: 'managed-agent', operation: 'list' }),
   },
   {

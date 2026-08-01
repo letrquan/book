@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runAgentLoop } from './loop.js';
+import { requiresToolPermission, runAgentLoop } from './loop.js';
 import { createDefaultRegistry, createRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
@@ -53,6 +53,14 @@ function compactedForRetry(): Extract<CompactResult, { status: 'compacted' }> {
 }
 
 const config = defaultConfig();
+
+describe('persistent background shell permissions', () => {
+  it('requires explicit permission in auto mode but preserves bypass mode', () => {
+    expect(requiresToolPermission('auto', true)).toBe(true);
+    expect(requiresToolPermission('bypassPermissions', true)).toBe(false);
+    expect(requiresToolPermission('auto', false)).toBe(false);
+  });
+});
 
 // Helper: create a stream that yields text then done.
 function textStream(content: string): ReadableStream {
