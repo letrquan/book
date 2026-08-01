@@ -25,7 +25,7 @@ import { installInkScrollRenderer } from './ink-scroll-renderer.js';
 import { isInkIncrementalRendererPatched } from './ink-patch.js';
 import { resolveTuiRendererMode } from './tui-renderer-mode.js';
 import { resolvePermissionMode } from '../permission-mode.js';
-import { spawnSync } from 'child_process';
+import { spawn } from 'node:child_process';
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
@@ -63,23 +63,29 @@ function writeTerminalControl(stdout: Pick<NodeJS.WriteStream, 'write'>, sequenc
 
   // A Windows process launched from WSL writes through an inner ConPTY. Find
   // the WSL proxy for this terminal session and write modes to its real PTY.
-  spawnSync(
-    'wsl.exe',
-    [
-      '-e',
-      'sh',
-      '-c',
-      WSL_TERMINAL_BRIDGE_SCRIPT,
-      'book-terminal-bridge',
-      sequence,
-      process.env.WT_SESSION!,
-    ],
-    {
-      stdio: ['ignore', 'ignore', 'ignore'],
-      windowsHide: true,
-      timeout: 2_000,
-    },
-  );
+  try {
+    const bridge = spawn(
+      'wsl.exe',
+      [
+        '-e',
+        'sh',
+        '-c',
+        WSL_TERMINAL_BRIDGE_SCRIPT,
+        'book-terminal-bridge',
+        sequence,
+        process.env.WT_SESSION!,
+      ],
+      {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      },
+    );
+    bridge.on('error', () => {});
+    bridge.unref();
+  } catch {
+    // Terminal restoration remains best effort when the WSL bridge is unavailable.
+  }
 }
 
 function collectSnapshotReferences(store: SessionStore, cwd: string): Set<string> {
