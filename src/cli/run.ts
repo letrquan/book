@@ -25,6 +25,7 @@ import { installInkScrollRenderer } from './ink-scroll-renderer.js';
 import { isInkIncrementalRendererPatched } from './ink-patch.js';
 import { resolveTuiRendererMode } from './tui-renderer-mode.js';
 import { resolvePermissionMode } from '../permission-mode.js';
+import { spawnSync } from 'child_process';
 
 const SESSION_ROOT = join(homedir(), '.book', 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
@@ -33,6 +34,53 @@ const ENABLE_SGR_MOUSE = '\x1b[?1006h';
 const DISABLE_SGR_MOUSE = '\x1b[?1006l';
 const DISABLE_MOUSE_TRACKING = '\x1b[?1000l';
 const EXIT_ALT_SCREEN = '\x1b[?1049l';
+const WSL_TERMINAL_BRIDGE_SCRIPT = `
+for process in /proc/[0-9]*; do
+  [ -r "$process/environ" ] || continue
+  /usr/bin/grep -Fzqx "WT_SESSION=$2" "$process/environ" 2>/dev/null || continue
+  target=$(/usr/bin/readlink "$process/fd/1" 2>/dev/null) || continue
+  case "$target" in
+    /dev/pts/*)
+      /usr/bin/printf '%s' "$1" > "$process/fd/1"
+      exit $?
+      ;;
+  esac
+done
+exit 1
+`.trim();
+
+export function shouldBridgeWslTerminal(
+  platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const sharedVariables = (env.WSLENV ?? '').split(':').map((entry) => entry.split('/')[0]);
+  return platform === 'win32' && Boolean(env.WT_SESSION) && sharedVariables.includes('WT_SESSION');
+}
+
+function writeTerminalControl(stdout: Pick<NodeJS.WriteStream, 'write'>, sequence: string): void {
+  stdout.write(sequence);
+  if (stdout !== process.stdout || !shouldBridgeWslTerminal()) return;
+
+  // A Windows process launched from WSL writes through an inner ConPTY. Find
+  // the WSL proxy for this terminal session and write modes to its real PTY.
+  spawnSync(
+    'wsl.exe',
+    [
+      '-e',
+      'sh',
+      '-c',
+      WSL_TERMINAL_BRIDGE_SCRIPT,
+      'book-terminal-bridge',
+      sequence,
+      process.env.WT_SESSION!,
+    ],
+    {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      windowsHide: true,
+      timeout: 2_000,
+    },
+  );
+}
 
 function collectSnapshotReferences(store: SessionStore, cwd: string): Set<string> {
   return store.listSnapshotReferences(cwd);
@@ -41,19 +89,20 @@ function collectSnapshotReferences(store: SessionStore, cwd: string): Set<string
 export function enterInteractiveScreen(
   stdout: Pick<NodeJS.WriteStream, 'isTTY' | 'write'> = process.stdout,
 ): () => void {
-  if (!stdout.isTTY) return () => {};
+  const bridgeWslTerminal = shouldBridgeWslTerminal();
+  if (!stdout.isTTY && !bridgeWslTerminal) return () => {};
 
   let restored = false;
   const restore = () => {
     if (restored) return;
     restored = true;
-    stdout.write(DISABLE_SGR_MOUSE + DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN);
+    writeTerminalControl(stdout, DISABLE_SGR_MOUSE + DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN);
     process.off('exit', restore);
   };
 
   // Shift+drag remains available for terminal-native selection while mouse
   // reporting keeps transcript wheel scrolling and tool-row clicks working.
-  stdout.write(ENTER_ALT_SCREEN + ENABLE_MOUSE_TRACKING + ENABLE_SGR_MOUSE);
+  writeTerminalControl(stdout, ENTER_ALT_SCREEN + ENABLE_MOUSE_TRACKING + ENABLE_SGR_MOUSE);
   process.once('exit', restore);
   return restore;
 }

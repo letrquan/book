@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Mouse-wheel scrolling now reaches conversation history when the Windows CLI runs from WSL,
+  instead of being translated into Up/Down prompt-history navigation by the outer terminal.
+
 ### Added
 
 - Streaming assistant responses now use the same Markdown layout as completed replies while
