@@ -226,6 +226,14 @@ delay. Book should measure:
 - whether the model uses the activated tool on the next turn;
 - whether deferred mode improves total outcome after its extra call and latency.
 
+The current default makes that cost common rather than exceptional. `toolDiscovery.mode = auto`
+usually becomes deferred because `eagerToolCount` defaults to 10 even when the complete schema
+estimate remains below the default 8,000-token budget. `Bash` is core while `WebSearch`, `WebFetch`,
+and the managed-agent lifecycle are deferred. Sparse fuzzy-search metadata also produces poor intent
+matches: transcript and generic web queries can rank agent/task tools, while broad research queries
+can return no useful result. Mechanical search tests are therefore insufficient; Book needs a frozen
+natural-language routing corpus and explicit next-turn-use evidence.
+
 Skills should either have a direct core invocation surface when skills exist or a dedicated skill
 search/activation path whose metadata is visible and whose cost is measured.
 
@@ -310,6 +318,12 @@ capabilities include:
 - calibration of when delegation saves parent context enough to justify extra cost;
 - zero-tool and unresolved-tool failures that fail closed with clear diagnostics;
 - evaluation of single-agent versus delegated arms as different experimental conditions.
+
+The current prompt can recommend `AgentSpawn` when its schema is not visible, and the adaptive
+exploration threshold emits a reminder without starting or activating an explorer. Child profiles
+can also name role-critical Git, check, or evidence capabilities that remain deferred. Routing work
+must therefore align prompts with the effective surface, eagerly satisfy valid child allowlists, and
+make adaptive read-only delegation actionable rather than advisory-only.
 
 ### Memory and personalization gaps
 
@@ -579,6 +593,7 @@ Treat these as separate measurable axes:
 | Skills | Are relevant procedures activated and completed correctly? | activation precision/recall, outcome delta, false triggers |
 | Tool contracts | Does the model select and recover from tools correctly? | selection accuracy, malformed calls, retries, recovery |
 | Tool discovery | Is deferred loading worth its cost? | search success, activation delay, schema tokens, latency |
+| Capability routing | Are common tools visible and deferred tools or agents activated from natural intent? | first-turn availability, next-turn use, unnecessary activation, child startup |
 | Context retrieval | Is the right code available with less noise? | relevant-file recall, context tokens, repeated reads |
 | Compaction/resume | Are decisions and failures preserved? | resume success, contradiction rate, recovery quality |
 | Planning | Is planning used only when it helps? | plan overhead, plan fidelity, task success by complexity |
@@ -649,11 +664,23 @@ before the automatic selector can depend on it. Reuse and fingerprint the canoni
 structured-error, read-before-edit, retry, and edit-guidance semantics already defined in the
 [Tool Reliability Plan](../tool-reliability-plan.md); do not create a competing tool behavior layer.
 
+### Phase 3B
+
+Implement the routing behavior described in
+[Phase 3B](phase-3b-capability-routing.md) after the Phase 3A manifests and budgets are verified.
+This is the first phase allowed to change default `auto` exposure for common web and delegation
+capabilities, preload tools from trusted original intent, require eager child allowlists, improve
+deferred-search recovery, and make bounded read-only explorer delegation actionable. Keep Git,
+MCP, notebook, session-history, and uncommon integrations deferred unless a fixed preload rule
+matches. Compare routing bundles separately from workflow selection and keep `agents.mode = off`
+behaviorally unchanged.
+
 ### Phase 4
 
-The first selector continues selecting workflows only. Skill activation, tool-description variants,
-context policies, model adapters, and delegation remain frozen experimental axes unless a later
-policy version explicitly supports one after separate evaluation.
+The first selector continues selecting workflows only. Capability routing is frozen to the promoted
+Phase 3B bundle; skill activation, tool-description variants, context policies, model adapters, and
+delegation-policy changes remain separate experimental axes unless a later policy version explicitly
+supports one after separate evaluation.
 
 ### Phase 5
 
@@ -732,8 +759,13 @@ Sources reviewed for this gap analysis:
 - OpenAI, [Build skills](https://developers.openai.com/plugins/build/skills).
 - Aider, [Repository map](https://aider.chat/docs/repomap.html).
 - SWE-agent, [Agent-Computer Interfaces Enable Automated Software Engineering](https://arxiv.org/abs/2405.15793).
-- Cline, [open-source coding agent](https://github.com/cline/cline), including Plan/Act,
-  rules/skills, checkpoints, tool approval, and compiler/linter feedback.
+- ToolLLM, [Facilitating Large Language Models to Master 16000+ Real-world APIs](https://arxiv.org/abs/2307.16789).
+- Gorilla, [Large Language Model Connected with Massive APIs](https://arxiv.org/abs/2305.15334).
+- ReAct, [Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629).
+- Cline, [open-source coding agent](https://github.com/cline/cline), including first-class browser,
+  MCP, and task surfaces alongside Plan/Act, rules/skills, checkpoints, and tool approval.
+- OpenCode, [open-source coding agent](https://github.com/anomalyco/opencode), including direct web
+  and task tool registration with explicit delegation guidance.
 - Book, [Security Assessment and Remediation Plan](../security-assessment.md), for workspace trust,
   provider/MCP credentials, sandboxing, subagent permission inheritance, command expansion, and web
   access prerequisites.
@@ -745,7 +777,7 @@ Sources reviewed for this gap analysis:
 ## Bottom Line
 
 The adaptive harness should optimize a versioned agent capability bundle, but only after each
-component is explicit, attributable, and independently testable. The immediate missing milestone is
-not automatic selection. It is a fixed, inspectable capability substrate with clean prompt layers,
-trusted lazy skills, evaluated tool contracts, bounded context policies, and exact model/runtime
-identity.
+component is explicit, attributable, and independently testable. The immediate milestones are not
+automatic workflow selection: Phase 3A must first provide a fixed, inspectable capability substrate,
+then Phase 3B must prove that common tools, deferred discovery, child allowlists, and bounded
+delegation route reliably from natural task intent.

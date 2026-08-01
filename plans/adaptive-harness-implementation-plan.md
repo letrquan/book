@@ -9,11 +9,11 @@
 is a required input to Phase 0. Its preconditions and unresolved questions must be closed in
 the relevant verification packet rather than treated as optional follow-up work.
 
-**Capability review:** [Agent Capability Research and Gap Analysis](adaptive-harness/agent-capability-research.md)
-and [Phase 3A](adaptive-harness/phase-3a-agent-capability-substrate.md) define the prompt, skill,
-tool, context, model, verification, delegation, hook, external-integration, trust, and
-user-interaction surface that must be explicit before automatic selection can use capability
-evidence.
+**Capability review:** [Agent Capability Research and Gap Analysis](adaptive-harness/agent-capability-research.md),
+[Phase 3A](adaptive-harness/phase-3a-agent-capability-substrate.md), and
+[Phase 3B](adaptive-harness/phase-3b-capability-routing.md) define the prompt, skill, tool,
+context, model, verification, delegation, hook, external-integration, trust, and user-interaction
+surface that must be explicit before automatic selection can use capability evidence.
 
 ---
 
@@ -26,6 +26,7 @@ evidence.
 | 2     | Add append-only evidence                | Observe only                  | Runs are explainable with acceptable overhead                                                              |
 | 3     | Add validated fixed workflows           | Manual/fixed                  | Workflows are reproducible and kernel-bounded                                                              |
 | 3A    | Add agent-capability substrate          | Manual/fixed                  | Prompt, skill, tool, context, model, integration, trust, and handoff surfaces are versioned and comparable |
+| 3B    | Make capability routing reliable        | Manual/fixed                  | Common web/delegation tools route correctly, child allowlists are usable, and explorer routing is bounded  |
 | 4     | Add deterministic selector              | Explain/dry-run               | Decisions are scoped, deterministic, and reversible                                                        |
 | 5     | Add outcomes and feedback               | Fixed/manual comparison       | Outcomes are externally grounded or explicitly unknown                                                     |
 | 6     | Evaluate adaptation                     | Shadow/offline                | Adaptive choice beats serious baselines on held-out slices                                                 |
@@ -398,6 +399,7 @@ Detailed implementation work lives in one file per phase. The parent document re
 | 2     | Not started | [Run evidence ledger](adaptive-harness/phase-2-run-evidence-ledger.md)                 | Runs are explainable without behavior changes             |
 | 3     | Not started | [Validated workflow registry](adaptive-harness/phase-3-workflow-registry.md)           | Fixed workflows are safe and reproducible                 |
 | 3A    | Not started | [Agent-capability substrate](adaptive-harness/phase-3a-agent-capability-substrate.md)  | Capability bundles are versioned, bounded, and comparable |
+| 3B    | Not started | [Capability routing reliability](adaptive-harness/phase-3b-capability-routing.md)       | Routing bundle passes tool, child, and delegation guardrails |
 | 4     | Not started | [Deterministic selector](adaptive-harness/phase-4-deterministic-selector.md)           | Decisions are advisory, scoped, and explainable           |
 | 5     | Not started | [Outcomes and feedback](adaptive-harness/phase-5-outcomes-feedback.md)                 | Outcomes are externally grounded or unknown               |
 | 6     | Not started | [Shadow and held-out evaluation](adaptive-harness/phase-6-shadow-evaluation.md)        | Adaptation beats serious baselines on eligible slices     |
@@ -428,6 +430,7 @@ Update this table in the same pull request that changes a phase status. Do not m
 | [2. Observation ledger](adaptive-harness/phase-2-run-evidence-ledger.md)                   | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
 | [3. Fixed workflow registry](adaptive-harness/phase-3-workflow-registry.md)                | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
 | [3A. Agent-capability substrate](adaptive-harness/phase-3a-agent-capability-substrate.md)  | Not started | -     | -         | -                                                                                                             | Prompt, skill, tool, context, model, and handoff contracts                                                                                                                                                                                                                       |
+| [3B. Capability routing reliability](adaptive-harness/phase-3b-capability-routing.md)       | Not started | -     | -         | -                                                                                                             | Hybrid exposure, intent preload, eager child surfaces, deterministic discovery, and bounded explorer delegation                                                                                                                                                                  |
 | [4. Deterministic selector](adaptive-harness/phase-4-deterministic-selector.md)            | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
 | [5. Outcomes and feedback](adaptive-harness/phase-5-outcomes-feedback.md)                  | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
 | [6. Shadow adaptation](adaptive-harness/phase-6-shadow-evaluation.md)                      | Not started | -     | -         | -                                                                                                             | -                                                                                                                                                                                                                                                                                |
@@ -507,6 +510,11 @@ For TUI-visible behavior, also run the relevant render/integration tests and man
   evaluators, tool schemas, or prompt-injection defenses.
 - Tool descriptions and schemas are evaluated as part of the tool surface, not treated as immutable
   implementation detail.
+- The promoted Phase 3B routing bundle exposes common web and permitted delegation capabilities,
+  eagerly satisfies valid child allowlists, and records an inspectable reason for every capability
+  visibility or activation decision.
+- Prompts and managed-agent profiles never promise a tool outside the effective surface, and
+  deferred discovery failures distinguish no-match, authorization, availability, and budget causes.
 - Existing fixed tool-reliability semantics are fingerprinted and reused rather than duplicated by
   the adaptive harness.
 - TUI, headless/CI, and SDK entry surfaces share trust, lifecycle, permission, budget, status, and
@@ -541,6 +549,8 @@ For TUI-visible behavior, also run the relevant render/integration tests and man
 | Long prompts distract or invalidate caches                        | Split stable, session, dynamic, and task prompt layers with budgets                          |
 | Skills activate too often or too late                             | Test trigger precision/recall, direct activation, and deferred activation cost               |
 | Tool descriptions route models incorrectly                        | Add contract fixtures and selection metrics for overlapping tools                            |
+| Common tools remain hidden or child tools remain unusable          | Promote only a routing bundle that passes first-turn, child-budget, and next-turn-use gates     |
+| Automatic explorer delegation adds cost or duplicate work          | Cap it to one read-only child, measure parent-context savings, and retain deterministic rollback |
 | Context retrieval adds noise                                      | Compare bounded retrieval policies and report relevant-token ratio                           |
 | Easy metrics replace real quality                                 | Preserve multiple dimensions and block learning on unknown outcomes                          |
 | Candidate overfits replay tasks                                   | Separate held-in and held-out sets; canary on fresh tasks                                    |

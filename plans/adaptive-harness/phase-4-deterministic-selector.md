@@ -2,7 +2,7 @@
 
 - **Parent plan:** [Adaptive Harness Implementation Plan](../adaptive-harness-implementation-plan.md)
 - **Status:** Not started
-- **Depends on:** Phase 3 and Phase 3A verified
+- **Depends on:** Phase 3, Phase 3A, and Phase 3B verified
 - **Tracking rule:** Update this status and the parent plan ledger in the same change.
 
 > The parent plan's original intent, non-negotiable invariants, architecture boundaries, stop conditions, and anti-drift review apply to every task in this phase.

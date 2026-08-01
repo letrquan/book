@@ -4,7 +4,7 @@
 - **Research:** [Agent Capability Research and Gap Analysis](agent-capability-research.md)
 - **Status:** Not started
 - **Depends on:** Phase 3 verified, workspace-trust and fixed-runtime security preconditions verified
-- **Blocks:** Phase 4 selector may not use capability evidence before this phase is verified
+- **Blocks:** Phase 3B routing and Phase 4 selector may not use capability evidence before this phase is verified
 - **Tracking rule:** Update this status and the parent plan ledger in the same change.
 
 > The parent plan's original intent, non-negotiable invariants, architecture boundaries, stop
@@ -21,7 +21,9 @@ preconditions. A descriptor for a blocked or unsupported surface is valid; silen
 surface is not.
 
 This phase introduces no automatic learning and no default behavior change. It establishes fixed
-manual capability bundles that can be compared fairly.
+manual capability bundles that can be compared fairly. It does not decide which common tools should
+be visible or when an explorer should be spawned; those behavior changes belong to
+[Phase 3B](phase-3b-capability-routing.md), which consumes this phase's manifests and evidence.
 
 ## Deliverables
 
@@ -48,7 +50,8 @@ manual capability bundles that can be compared fairly.
   and web tools, including negotiation, authentication, timeout, cancellation, backpressure,
   cleanup, and schema-change fingerprints.
 - Add subagent preload, handoff, independence, and capability-manifest metadata without changing
-  managed-agent routing by default.
+  managed-agent routing by default. Phase 3B may later use these contracts for eager child
+  allowlists and bounded explorer routing.
 - Add prompt, skill, tool, context, model, and subagent inspection output for debugging and reports.
 
 ## Work Breakdown
@@ -308,7 +311,7 @@ runs, or declare the difference and reject comparison.
 
 ### 3A.8 Add subagent capability and handoff metadata
 
-Without changing default delegation, record:
+Without changing default delegation, record the substrate required by later routing experiments:
 
 - parent and child capability-manifest digests;
 - preloaded skills and context packs;
@@ -482,6 +485,10 @@ npm test
 **Exit gate:** Book can produce a versioned capability manifest and compare fixed capability bundles
 without starting untrusted integrations, changing the trusted kernel, silently changing
 provider-visible behavior, or treating prompt text as enforcement.
+
+Phase 3A is not complete until the Phase 3B input is sufficient to identify the effective root and
+child tool surfaces, schema budgets, preload reasons, delegation policy, and handoff digests without
+guessing from prompt text.
 
 **Rollback:** Disable capability bundles and return to the accepted Phase 3/minimal behavior. Keep
 contract and diagnostic records readable but ineligible for adaptive selection.

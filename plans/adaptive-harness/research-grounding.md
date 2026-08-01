@@ -9,8 +9,9 @@ to the Phase 0 verification packet.
 
 The companion [Agent Capability Research and Gap Analysis](agent-capability-research.md) covers
 the previously under-specified prompt, skill, tool-contract, context, model-adapter, verification,
-delegation, hook, and user-interaction surfaces. Its fixed implementation gate is
-[Phase 3A](phase-3a-agent-capability-substrate.md).
+delegation, hook, and user-interaction surfaces. Its fixed implementation gates are
+[Phase 3A](phase-3a-agent-capability-substrate.md) for measurement and
+[Phase 3B](phase-3b-capability-routing.md) for behavior-changing capability routing.
 
 ## Executive Finding
 
@@ -214,6 +215,23 @@ tracked as a prerequisite batch before collecting promotion evidence:
 - Can any project/workflow/skill/hook/MCP/subagent scope broaden a permission or sandbox ceiling set
   by a higher-trust scope?
 
+### Phase 3B: Does capability routing match task intent?
+
+- Does `auto` use the schema-token budget as the primary constraint instead of deferring a
+  budget-fitting common surface because of the eager-count threshold?
+- Are web and managed-agent lifecycle tools visible when policy permits them, while uncommon
+  integrations remain deferred?
+- Are intent-preload rules derived only from original user intent and trusted command metadata?
+- Does every valid child allowlist become visible on the first child request, or fail closed with a
+  useful budget diagnostic rather than silently hiding role-critical tools?
+- Do canonical aliases, intent phrases, categories, and fallback results make deferred discovery
+  useful for natural requests instead of only exact tool names?
+- Does generated prompt text agree with the effective tool and agent surface at the current turn?
+- Does adaptive mode make bounded read-only explorer delegation actionable without enabling automatic
+  mutation, duplicate work, or permission escalation?
+- Are routing outcomes measured independently from workflow selection, including first-turn
+  availability, next-turn use, latency, cost, parent-context savings, and guardrail violations?
+
 ### Phase 4: Is selection causally informed?
 
 - Historical outcomes are selection-confounded. What randomized/control exposure or
@@ -312,7 +330,11 @@ sources below were rechecked on 2026-07-28:
 - OpenAI, [Define tools](https://developers.openai.com/plugins/plan/tools) and [Build skills](https://developers.openai.com/plugins/build/skills): user-intent tool contracts and focused, triggerable workflows.
 - Aider, [Repository map](https://aider.chat/docs/repomap.html): token-bounded structural context and relevance ranking.
 - SWE-agent, [Agent-Computer Interfaces Enable Automated Software Engineering](https://arxiv.org/abs/2405.15793): model-facing tool/interface design as a determinant of software-engineering outcomes.
-- Cline, [open-source coding agent](https://github.com/cline/cline): Plan/Act separation, rules and skills, checkpoints, approval, compiler/linter feedback, and multi-agent coordination.
+- ToolLLM, [Facilitating Large Language Models to Master 16000+ Real-world APIs](https://arxiv.org/abs/2307.16789): retrieval and planning over large tool catalogs rather than relying on undifferentiated schema exposure.
+- Gorilla, [Large Language Model Connected with Massive APIs](https://arxiv.org/abs/2305.15334): retrieval-aware tool selection and the effect of tool documentation quality on correct calls.
+- ReAct, [Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629): interleaved action and observation loops that require capabilities to be visible at the decision point.
+- Cline, [open-source coding agent](https://github.com/cline/cline): first-class browser, MCP, and task surfaces alongside Plan/Act separation, rules, checkpoints, and approval.
+- OpenCode, [open-source coding agent](https://github.com/anomalyco/opencode): direct web-fetch, web-search, and task registration with explicit delegation guidance.
 - Book, [Security Assessment and Remediation Plan](../security-assessment.md): current trust-boundary
   risks for project hooks, provider endpoints, MCP startup, sandbox construction, subagents, command
   expansion, web access, and permission ceilings.
@@ -361,17 +383,20 @@ sources below were rechecked on 2026-07-28:
 7. **Phase 3A:** fixed prompt layers, lazy scoped skills, fingerprinted existing tool-reliability
    semantics, context policies, model capability adapters, external-integration lifecycle contracts,
    cross-surface parity, and typed subagent handoffs.
-8. **Phase 4:** deterministic shadow selector using original-intent features and an
+8. **Phase 3B:** hybrid root exposure for web/delegation, trusted intent preload, eager child
+   allowlists, deterministic deferred discovery, prompt/capability alignment, and bounded
+   read-only explorer routing.
+9. **Phase 4:** deterministic shadow selector using original-intent features and an
    abstaining confidence policy.
-9. **Phase 5:** immutable verifiers, typed outcomes, missingness policy, and explicit
+10. **Phase 5:** immutable verifiers, typed outcomes, missingness policy, and explicit
    feedback/rubric contracts.
-10. **Phase 6:** isolated replay, nested held-in/held-out evaluation, multiplicity and
+11. **Phase 6:** isolated replay, nested held-in/held-out evaluation, multiplicity and
     sequentially valid reporting.
-11. **Phase 7:** salted canary assignment, numerical rollback rules, signed registry, and
+12. **Phase 7:** salted canary assignment, numerical rollback rules, signed registry, and
     a human-approved rollout gate.
-12. **Phase 8:** sealed final holdout, bounded candidate/query budgets, recomputed complexity,
+13. **Phase 8:** sealed final holdout, bounded candidate/query budgets, recomputed complexity,
     signed atomic promotion, and "no promotion" as a valid result.
-13. **Phase 9:** separate proposal per transfer track with a new Phase-0-style contract.
+14. **Phase 9:** separate proposal per transfer track with a new Phase-0-style contract.
 
 ## Bottom Line
 

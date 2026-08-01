@@ -127,6 +127,10 @@ The initial corpus must also contain targeted cases for:
   project-skill trust cases;
 - tool-contract routing: overlapping tools, deferred discovery, malformed arguments, structured
   errors, retry/cancellation, and partial-result recovery;
+- capability-routing behavior: current-information/web requests, direct URLs, transcripts, broad
+  repository exploration, parallel investigation, independent review, child allowlist budget
+  failures, prompt/tool-surface mismatch, and negative tasks that must not call web or delegation
+  tools or preload Git, session-history, notebook, skill, or integration tools;
 - prompt-layer behavior: stable-prefix digest changes, dynamic-policy activation, source/trust
   provenance, budget clipping, and instruction-like untrusted content;
 - context engineering: relevant-file retrieval, repository/symbol-map quality, irrelevant-context
@@ -146,6 +150,12 @@ The initial corpus must also contain targeted cases for:
 
 Do not use personal session transcripts in the initial corpus.
 
+The capability-routing slice must preserve the exact natural-language prompts used for ranking and
+activation tests. It must include `youtube transcript`, `web tool`, `research this deeply`,
+`parallel research`, `spawn explorer`, and `inspect git history`, plus local-only negative cases that
+must not call web or delegation tools or preload Git, session-history, notebook, skill, or
+integration capabilities.
+
 Machine-verifiable, human-rubric, and observational cases must be labeled separately. A
 deterministic fixture does not make model execution deterministic; every model-backed case must
 declare a repeated-trial rule even when temperature is zero or a provider seed is available.
@@ -158,6 +168,11 @@ Document how each case is run under:
 - `B/fixed`: each manually selected fixed workflow;
 - `C/adaptive`: selector output, initially shadow-only;
 - `D/candidate`: evolved workflow, introduced only in Phase 8.
+
+Phase 3B capability-routing experiments use their own fixed arms (`current-routing`,
+`hybrid-routing`, `child-eager-routing`, and `adaptive-explorer-routing`) and must not be labeled as
+workflow improvements. Routing and workflow arms may be combined only in a predeclared interaction
+experiment after each independent axis has passed its own gate.
 
 All arms must use the same model version, provider settings, tool-surface fingerprint, runtime/environment profile, repository revision, budgets, and evaluator version.
 
@@ -290,6 +305,8 @@ Windows shell path.
 - Manifest schemas reject unknown fields recursively instead of stripping them.
 - Fixture materialization matches the declared tree digest and rejects symlink/path escapes.
 - Root and child tokens/costs are cumulative; unknown pricing remains unknown rather than zero.
+- Capability-routing comparisons freeze the root exposure policy, intent-preload policy, child
+  allowlist policy, discovery-ranking version, and adaptive-delegation policy as separate fingerprints.
 
 **Verification:**
 
