@@ -133,6 +133,16 @@ describe('chatCompletionStream request body', () => {
     await drain(stream);
     expect(capturedBody.max_tokens).toBe(4096);
   });
+
+  it('sends explicit reasoning effort for compatible reasoning models', async () => {
+    const stream = chatCompletionStream(
+      { ...config, effort: 'low', effortExplicit: true },
+      [{ role: 'user', content: 'hi' }],
+      [],
+    );
+    await drain(stream);
+    expect(capturedBody.reasoning_effort).toBe('low');
+  });
 });
 
 // Helper: create a readable stream that yields text events then [DONE].

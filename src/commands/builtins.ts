@@ -128,15 +128,25 @@ function configCommandEffect(
       type: 'local-message',
       content:
         formatSettingsKeyHelp('Settable keys (dot-separated):') +
-        '\n\nUsage: /config <key>=<value>',
+        '\n\nUsage: /config <key>=<value>\n       /config compact-model <provider/model>',
     };
+  }
+  const compactModelMatch = rawArguments.match(/^compact-model\s+(.+)$/i);
+  if (compactModelMatch?.[1]?.trim()) {
+    return configCommandEffect(
+      `compactModel=${JSON.stringify(compactModelMatch[1].trim())}`,
+      context,
+    );
   }
   if (!rawArguments.includes('=')) {
     return { type: 'local-message', content: 'Usage: /config [key=value] or /config --help' };
   }
 
   const separator = rawArguments.indexOf('=');
-  const key = rawArguments.slice(0, separator).trim();
+  const key =
+    rawArguments.slice(0, separator).trim().toLowerCase() === 'compact-model'
+      ? 'compactModel'
+      : rawArguments.slice(0, separator).trim();
   const rawValue = rawArguments.slice(separator + 1).trim();
   let value: unknown = rawValue;
   try {

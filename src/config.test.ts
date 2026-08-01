@@ -3,6 +3,7 @@ import {
   applyModelDefaults,
   freezeAgentConfig,
   loadConfig,
+  resolveCompactModelConfig,
   resolveModelProviderConfig,
 } from './config.js';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
@@ -58,6 +59,18 @@ describe('loadConfig model defaults', () => {
     expect(config.maxTokens).toBe(64_000);
     expect(config.defaultMaxTokens).toBe(64_000);
     expect(config.maxTokensExplicit).toBe(false);
+  });
+
+  it('loads the compact model from settings with an environment override', () => {
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ compactModel: 'router/settings-reducer' }),
+    );
+
+    expect(loadConfig(workspace).compactModel).toBe('router/settings-reducer');
+
+    process.env.BOOK_COMPACT_MODEL = 'router/env-reducer';
+    expect(loadConfig(workspace).compactModel).toBe('router/env-reducer');
   });
 });
 
@@ -372,6 +385,51 @@ describe('loadConfig provider registry', () => {
 
     const switched = applyModelDefaults(resolveModelProviderConfig(config, 'openrouter/bar'));
     expect(switched.maxTokens).toBe(4096);
+  });
+
+  it('resolves the compact model without changing the active model config', () => {
+    const config = defaultConfig({
+      apiKey: 'active-key',
+      baseUrl: 'https://active.example/v1',
+      model: 'active-model',
+      modelSelection: 'active/active-model',
+      compactModel: 'reducer/flash',
+      settings: {
+        ...defaultConfig().settings,
+        provider: {
+          reducer: {
+            type: 'openai',
+            baseURL: 'https://reducer.example/v1',
+            apiKey: 'reducer-key',
+            models: {
+              flash: {
+                maxOutputTokens: 4096,
+                effort: { default: 'medium', levels: ['low', 'medium', 'high'] },
+              },
+            },
+          },
+        },
+      },
+      defaultMaxTokens: 64_000,
+      defaultEffort: 'high',
+      effortExplicit: false,
+    });
+
+    const reducer = resolveCompactModelConfig(config);
+
+    expect(config).toMatchObject({
+      model: 'active-model',
+      baseUrl: 'https://active.example/v1',
+      apiKey: 'active-key',
+    });
+    expect(reducer).toMatchObject({
+      model: 'flash',
+      modelSelection: 'reducer/flash',
+      baseUrl: 'https://reducer.example/v1',
+      apiKey: 'reducer-key',
+      maxTokens: 4096,
+      effort: 'medium',
+    });
   });
 
   it('uses the 64k output budget for models without metadata', () => {

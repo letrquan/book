@@ -146,6 +146,7 @@ function pendingAgentState() {
     removeProvider: vi.fn(() => ({ ok: false, error: 'not local' })),
     setEffort: vi.fn(() => ({ ok: true })),
     setAgentProfileModel: vi.fn(() => ({ ok: true })),
+    setCompactModel: vi.fn(() => ({ ok: true })),
     setMemoryAutoSave: vi.fn(),
     setShowThinking: vi.fn(() => ({ ok: true })),
     refreshMemoryContext: vi.fn(),
@@ -516,6 +517,29 @@ describe('App session commands', () => {
     await new Promise((resolve) => setTimeout(resolve, 75));
     expect(agentState.setAgentProfileModel).toHaveBeenCalledWith('explorer', expect.any(String));
     expect(stripAnsi(view.lastFrame())).toContain('Subagent profiles');
+  });
+
+  it('/config opens the compact model picker without changing the active model', async () => {
+    const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={config()} session={testSession} />);
+    await submit(view, '/config');
+    view.stdin.write('c');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(stripAnsi(view.lastFrame())).toContain('Choose compact model');
+
+    view.stdin.write('\r');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(agentState.setCompactModel).toHaveBeenCalledWith(expect.any(String));
+    expect(agentState.setModel).not.toHaveBeenCalled();
   });
 
   it('/newline is not treated as /new', async () => {

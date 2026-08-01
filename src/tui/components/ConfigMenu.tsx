@@ -4,10 +4,12 @@ import { useTheme } from '../theme.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
 import { truncateDisplay } from './word-wrap.js';
 
-export type ConfigSection = 'model' | 'effort' | 'theme' | 'agents' | 'permission-mode';
+export type ConfigSection =
+  'model' | 'compact-model' | 'effort' | 'theme' | 'agents' | 'permission-mode';
 
 interface ConfigMenuProps {
   model: string;
+  compactModel?: string;
   effort?: string;
   themeName: string;
   memoryAutoSave: boolean;
@@ -23,6 +25,7 @@ interface ConfigMenuProps {
 
 const ROWS = [
   'model',
+  'compact-model',
   'effort',
   'thinking',
   'theme',
@@ -34,6 +37,7 @@ type Row = (typeof ROWS)[number];
 
 export function ConfigMenu({
   model,
+  compactModel,
   effort,
   themeName,
   memoryAutoSave,
@@ -70,6 +74,7 @@ export function ConfigMenu({
     }
     const shortcut = input.toLowerCase();
     if (shortcut === 'm') onOpen('model');
+    else if (shortcut === 'c') onOpen('compact-model');
     else if (shortcut === 'e') onOpen('effort');
     else if (shortcut === 'i') onToggleThinking();
     else if (shortcut === 't') onOpen('theme');
@@ -79,6 +84,12 @@ export function ConfigMenu({
 
   const rows: Array<{ row: Row; label: string; value: string; description: string }> = [
     { row: 'model', label: 'Model', value: model, description: 'Default model for the main agent' },
+    {
+      row: 'compact-model',
+      label: 'Compact model',
+      value: compactModel ?? 'same as main',
+      description: 'Reducer used only for conversation checkpoints',
+    },
     {
       row: 'effort',
       label: 'Effort',
@@ -128,7 +139,7 @@ export function ConfigMenu({
         ))}
       </Box>
       <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter toggle/open · I thinking · M model · P permissions · A agents · Esc close
+        ↑↓ select · Enter toggle/open · M model · C compact · P permissions · A agents · Esc close
       </Text>
     </SoftPanel>
   );

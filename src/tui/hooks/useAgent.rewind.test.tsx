@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanup, render } from 'ink-testing-library';
@@ -198,6 +198,23 @@ describe('useAgent rewind integration', () => {
 
     expect(latest!.sessionName).toBe('Fix session labels instead of showing ids');
     expect(timeline.load(sessionId).meta.name).toBe('Fix session labels instead of showing ids');
+  });
+
+  it('persists and applies a compact reducer model without switching the active model', async () => {
+    const { config, timeline, sessionId } = fixture();
+    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
+    await tick();
+
+    const result = latest!.setCompactModel('router/gemini-flash');
+    await tick();
+
+    expect(result).toEqual({ ok: true });
+    expect(latest!.liveConfig.model).toBe(config.model);
+    expect(latest!.liveConfig.compactModel).toBe('router/gemini-flash');
+    expect(latest!.liveConfig.settings.compactModel).toBe('router/gemini-flash');
+    expect(readFileSync(join(config.workspace, '.book', 'settings.local.json'), 'utf8')).toContain(
+      'router/gemini-flash',
+    );
   });
 
   it('renders the submitted message while an asynchronous snapshot is still pending', async () => {

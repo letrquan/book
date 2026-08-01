@@ -240,6 +240,7 @@ export function App({
     removeProvider,
     setEffort,
     setAgentProfileModel,
+    setCompactModel,
     setMemoryAutoSave,
     setShowThinking,
     refreshMemoryContext,
@@ -293,6 +294,7 @@ export function App({
   const [showConfigPicker, setShowConfigPicker] = useState(false);
   const [showAgentProfilePicker, setShowAgentProfilePicker] = useState(false);
   const [agentProfileForModel, setAgentProfileForModel] = useState<string>();
+  const [selectingCompactModel, setSelectingCompactModel] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [showRewindPicker, setShowRewindPicker] = useState(false);
   const [isResolvingCommand, setIsResolvingCommand] = useState(false);
@@ -504,12 +506,17 @@ export function App({
   const activeAgentProfile = agentProfileForModel
     ? agentProfiles.find((profile) => profile.name === agentProfileForModel)
     : undefined;
-  const modelPickerSelection = activeAgentProfile
-    ? (configuredAgentModels[activeAgentProfile.name] ??
-      activeAgentProfile.model ??
+  const modelPickerSelection = selectingCompactModel
+    ? (liveConfig.compactModel ??
+      liveConfig.settings.compactModel ??
       liveConfig.modelSelection ??
       liveConfig.model)
-    : (liveConfig.modelSelection ?? liveConfig.model);
+    : activeAgentProfile
+      ? (configuredAgentModels[activeAgentProfile.name] ??
+        activeAgentProfile.model ??
+        liveConfig.modelSelection ??
+        liveConfig.model)
+      : (liveConfig.modelSelection ?? liveConfig.model);
   const effortLevels = useMemo(() => getAvailableEffortLevels(liveConfig), [liveConfig.modelInfo]);
 
   const { stdout } = useStdout();
@@ -1187,8 +1194,10 @@ export function App({
         }
         if (effect?.type === 'show-modal') {
           if (effect.modal === 'config') setShowConfigPicker(true);
-          else if (effect.modal === 'model') setShowModelPicker(true);
-          else if (effect.modal === 'rewind') setShowRewindPicker(true);
+          else if (effect.modal === 'model') {
+            setSelectingCompactModel(false);
+            setShowModelPicker(true);
+          } else if (effect.modal === 'rewind') setShowRewindPicker(true);
           else if (effect.modal === 'theme') {
             setCustomThemes(listCustomThemes(config.workspace));
             setShowThemePicker(true);
@@ -2088,6 +2097,7 @@ export function App({
             {showConfigPicker ? (
               <ConfigMenu
                 model={liveConfig.modelSelection ?? liveConfig.model}
+                compactModel={liveConfig.compactModel ?? liveConfig.settings.compactModel}
                 effort={liveConfig.effort}
                 themeName={currentTheme.preference}
                 memoryAutoSave={liveConfig.settings.memory.autoSave}
@@ -2105,6 +2115,11 @@ export function App({
                   }
                   setShowConfigPicker(false);
                   if (section === 'model') {
+                    setSelectingCompactModel(false);
+                    setAgentProfileForModel(undefined);
+                    setShowModelPicker(true);
+                  } else if (section === 'compact-model') {
+                    setSelectingCompactModel(true);
                     setAgentProfileForModel(undefined);
                     setShowModelPicker(true);
                   } else if (section === 'effort') {
@@ -2134,6 +2149,7 @@ export function App({
                 configuredModels={configuredAgentModels}
                 terminalWidth={termWidth}
                 onSelect={(profile) => {
+                  setSelectingCompactModel(false);
                   setAgentProfileForModel(profile);
                   setShowAgentProfilePicker(false);
                   setShowModelPicker(true);
@@ -2154,11 +2170,16 @@ export function App({
             ) : null}
             {showModelPicker ? (
               <ModelPicker
+                title={selectingCompactModel ? 'Choose compact model' : undefined}
                 options={modelOptions}
                 currentModel={modelPickerSelection}
-                currentEffort={liveConfig.effort}
-                effortLevels={agentProfileForModel ? [] : (effortLevels ?? [])}
-                hasPriorOutput={!agentProfileForModel && messages.length > 0}
+                currentEffort={selectingCompactModel ? undefined : liveConfig.effort}
+                effortLevels={
+                  selectingCompactModel || agentProfileForModel ? [] : (effortLevels ?? [])
+                }
+                hasPriorOutput={
+                  !selectingCompactModel && !agentProfileForModel && messages.length > 0
+                }
                 providers={liveConfig.settings.provider}
                 workspace={config.workspace}
                 retry={liveConfig.retry}
@@ -2175,6 +2196,15 @@ export function App({
                     : '',
                 ].filter(Boolean)}
                 onPick={(model, saveDefault) => {
+                  if (selectingCompactModel) {
+                    const result = setCompactModel(model);
+                    if (!result.ok) return result;
+                    addLocalMessage(`Set compact model to ${model}.`);
+                    setSelectingCompactModel(false);
+                    setShowModelPicker(false);
+                    setShowConfigPicker(true);
+                    return result;
+                  }
                   if (agentProfileForModel) {
                     const result = setAgentProfileModel(agentProfileForModel, model);
                     if (!result.ok) return result;
@@ -2195,7 +2225,7 @@ export function App({
                   return result;
                 }}
                 onPickEffort={(level) => setEffort(level)}
-                allowProviderManagement={!agentProfileForModel}
+                allowProviderManagement={!selectingCompactModel && !agentProfileForModel}
                 onSaveProvider={upsertProviderAndSelect}
                 removableProviderIds={removableProviderIds}
                 removableProviderModelCounts={removableProviderModelCounts}
@@ -2213,10 +2243,13 @@ export function App({
                   setShowModelPicker(false);
                 }}
                 onCancel={() => {
+                  const returnToConfig = selectingCompactModel;
                   const returnToAgents = Boolean(agentProfileForModel);
+                  setSelectingCompactModel(false);
                   setAgentProfileForModel(undefined);
                   setShowModelPicker(false);
-                  if (returnToAgents) setShowAgentProfilePicker(true);
+                  if (returnToConfig) setShowConfigPicker(true);
+                  else if (returnToAgents) setShowAgentProfilePicker(true);
                 }}
               />
             ) : null}

@@ -16,6 +16,7 @@ describe('ConfigMenu', () => {
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="9router/qc/qwen3.7-max"
+          compactModel="9router/ag/gemini-3.6-flash-high"
           effort="high"
           themeName="dark"
           memoryAutoSave={false}
@@ -31,8 +32,32 @@ describe('ConfigMenu', () => {
     );
 
     expect(view.lastFrame()).toContain('Subagent profiles');
+    expect(view.lastFrame()).toContain('Compact model');
     view.stdin.write('a');
     expect(onOpen).toHaveBeenCalledWith('agents');
+  });
+
+  it('opens compact model settings from the keyboard shortcut', () => {
+    const onOpen = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          themeName="dark"
+          memoryAutoSave={false}
+          showThinking
+          agentCount={3}
+          defaultPermissionMode="default"
+          onOpen={onOpen}
+          onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    view.stdin.write('c');
+    expect(onOpen).toHaveBeenCalledWith('compact-model');
   });
 
   it('shows and opens the global default permission setting', () => {

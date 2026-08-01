@@ -219,6 +219,18 @@ describe('built-in command contract', () => {
       expect(
         JSON.parse(readFileSync(join(workspace, '.book', 'settings.local.json'), 'utf-8')),
       ).toEqual({ maxTurns: 12 });
+
+      const compactResult = registry.execute(
+        'config',
+        'compact-model 9router/ag/gemini-3.6-flash-high',
+        commandContext,
+      );
+      expect(compactResult).toEqual(
+        expect.objectContaining({ content: expect.stringContaining('compactModel') }),
+      );
+      expect(
+        JSON.parse(readFileSync(join(workspace, '.book', 'settings.local.json'), 'utf-8')),
+      ).toMatchObject({ compactModel: '9router/ag/gemini-3.6-flash-high' });
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
