@@ -7,6 +7,21 @@ import { AgentMessage } from './AgentMessage.js';
 import type { FileMutationSummary, ToolCall, ToolResult } from '../../types/tools.js';
 import type { Message } from '../../types/messages.js';
 
+const { virtualTranscriptOptionsSpy } = vi.hoisted(() => ({
+  virtualTranscriptOptionsSpy: vi.fn(),
+}));
+
+vi.mock('./virtual-transcript.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./virtual-transcript.js')>();
+  return {
+    ...actual,
+    useVirtualTranscript: (options: Parameters<typeof actual.useVirtualTranscript>[0]) => {
+      virtualTranscriptOptionsSpy(options);
+      return actual.useVirtualTranscript(options);
+    },
+  };
+});
+
 function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
 }
@@ -54,6 +69,7 @@ function failureResult(toolCallId: string, message: string, content = ''): ToolR
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  virtualTranscriptOptionsSpy.mockClear();
 });
 
 describe('ChatPanel Ink rendering', () => {
@@ -83,6 +99,28 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).toContain('120 older transcript entries hidden');
     expect(output).toContain('entry-199');
     expect(output).not.toContain('entry-0');
+  });
+
+  it('keeps transcript virtualization enabled while a response streams', () => {
+    const messages = Array.from({ length: 40 }, (_, index) =>
+      msg(`stream-${index}`, index % 2 === 0 ? 'user' : 'assistant', `entry-${index}`),
+    );
+    const view = render(
+      withTheme(
+        <ChatPanel
+          messages={messages}
+          streamingMessageId="stream-39"
+          terminalWidth={80}
+          terminalHeight={24}
+          reducedMotion
+        />,
+      ),
+    );
+
+    expect(view.lastFrame()).toBeDefined();
+    expect(virtualTranscriptOptionsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled: true }),
+    );
   });
 
   it('renders the animated welcome when the conversation is empty', () => {

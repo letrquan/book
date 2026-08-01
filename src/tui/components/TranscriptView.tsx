@@ -43,6 +43,8 @@ interface TranscriptViewProps {
   width?: number;
   isActive?: boolean;
   followRequestKey?: number;
+  /** Structural layout changes outside transcript components that self-report height updates. */
+  layoutRevision?: unknown;
   onToggleTool?: (toolId: string) => void;
 }
 
@@ -100,6 +102,7 @@ export function TranscriptView({
   width,
   isActive = true,
   followRequestKey = 0,
+  layoutRevision,
   onToggleTool,
 }: TranscriptViewProps) {
   const theme = useTheme();
@@ -297,10 +300,11 @@ export function TranscriptView({
     });
   }, [measureTranscript]);
 
+  const layoutDependency = layoutRevision === undefined ? children : layoutRevision;
   useLayoutEffect(() => {
     cancelScheduledLayoutMeasure();
     measureTranscript();
-  }, [cancelScheduledLayoutMeasure, children, height, measureTranscript, width]);
+  }, [cancelScheduledLayoutMeasure, height, layoutDependency, measureTranscript, width]);
 
   useEffect(
     () => () => {
