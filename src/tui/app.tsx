@@ -78,6 +78,7 @@ import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
 import type { InteractiveAssets } from './interactive-assets.js';
 import { resolveContextLimit } from '../agent/compact.js';
+import { wordWrap } from './components/word-wrap.js';
 import {
   createQueuedInput,
   enqueueQueuedInput,
@@ -824,6 +825,42 @@ export function App({
   // Active tools open automatically; completed file mutations use their own default policy.
   const expandedToolId = useMemo(() => selectExpandedToolId(messages), [messages]);
   const showAgentPlan = shouldShowAgentPlan(agentTodos, showTasks);
+  const selectedManagedAgentRecord = managedAgents.selectedAgentId
+    ? managedAgents.records.get(managedAgents.selectedAgentId)
+    : undefined;
+  const selectedManagedAgentLiveText = managedAgents.selectedAgentId
+    ? managedAgents.liveText.get(managedAgents.selectedAgentId)
+    : undefined;
+  const selectedManagedAgentLiveRows = selectedManagedAgentLiveText
+    ? wordWrap(selectedManagedAgentLiveText.slice(-1000), Math.max(1, termWidth - 2)).split('\n')
+        .length
+    : 0;
+  const transcriptLayoutRevision = JSON.stringify([
+    error ?? '',
+    streamingMessageId ?? '',
+    transcriptMode,
+    expandedToolId ?? '',
+    [...toolExpansionOverrides.entries()].sort(([left], [right]) => left.localeCompare(right)),
+    showAllDetailedOutput,
+    [...showAllToolOutputIds].sort(),
+    liveConfig.settings.ui.showThinking,
+    pendingPermission?.toolCall.id ?? '',
+    managedAgents.surface,
+    managedAgents.selectedAgentId ?? '',
+    selectedManagedAgentRecord?.status ?? '',
+    selectedManagedAgentRecord?.referencedEvidenceIds.length ?? 0,
+    selectedManagedAgentLiveRows,
+    showAgentPlan
+      ? agentTodos.map((todo) => [todo.status, todo.content, todo.activeForm ?? ''])
+      : [],
+    showTasks ? tasks.map((task) => [task.id, task.status, task.subject]) : [],
+    showHelp,
+    showStatus,
+    showPermissions,
+    showSkills,
+    showShortcuts,
+    pendingPlanApproval?.plan ?? '',
+  ]);
 
   useEffect(() => {
     setTranscriptMode('compact');
@@ -1402,6 +1439,7 @@ export function App({
             width={termWidth}
             isActive={!pickerOwnsTranscript && managedAgents.surface !== 'tasks'}
             followRequestKey={followRequestKey}
+            layoutRevision={transcriptLayoutRevision}
             onToggleTool={toggleToolExpansion}
           >
             <Box flexDirection="column" width={termWidth}>

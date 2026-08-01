@@ -66,6 +66,16 @@ function estimateTimelineRows(entry: Message | CompactBoundary, terminalWidth: n
   return Math.max(1, textRows + attachmentRows + toolRows);
 }
 
+function messageOwnsTool(message: Message, toolId: string | null | undefined): boolean {
+  if (!toolId) return false;
+  if (message.toolCalls?.some((call) => call.id === toolId)) return true;
+  return Boolean(
+    message.nestedToolInvocations?.some(
+      (invocation) => invocation.traceId === toolId || invocation.call.id === toolId,
+    ),
+  );
+}
+
 function formatTurnTime(timestamp: number): string {
   if (!timestamp) return '';
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -192,12 +202,25 @@ export function ChatPanelInner({
   const hiddenHistoryRows = hiddenTimelineEntries > 0 ? (density === 'tight' ? 1 : 2) : 0;
   const virtualTimeline = useVirtualTranscript({
     items: visibleTimeline,
-    enabled: !screenReader && !streamingMessageId && visibleTimeline.length > 24,
+    // Keep completed history virtualized while a live response streams. The
+    // active message remains in the virtual range and follows the bottom when
+    // the user is not browsing history.
+    enabled: !screenReader && visibleTimeline.length > 24,
     terminalWidth: terminalWidth ?? 80,
     leadingRows: hiddenHistoryRows,
     getKey: getTimelineKey,
     estimateRows,
   });
+  const estimatedLayoutRows = useMemo(
+    () => visibleTimeline.reduce((total, entry) => total + estimateRows(entry), 0),
+    [estimateRows, visibleTimeline],
+  );
+  useEffect(() => {
+    // Re-measure only when the estimated row count changes. MarkdownBlock and
+    // virtual rows also notify for content whose measured height differs from
+    // this inexpensive estimate.
+    notifyLayoutChange?.();
+  }, [estimatedLayoutRows, notifyLayoutChange]);
   const loadOlderHistory = useCallback(
     (request: 'page' | 'all') => {
       if (streamingMessageId || hiddenTimelineEntries === 0) return false;
@@ -251,7 +274,7 @@ export function ChatPanelInner({
       {virtualTimeline.topSpacerRows > 0 ? (
         <Box height={virtualTimeline.topSpacerRows} flexShrink={0} />
       ) : null}
-      {virtualTimeline.entries.map(({ item: entry, index, measurementKey }) => {
+      {virtualTimeline.entries.map(({ item: entry, index, key, measurementKey }) => {
         let row: React.ReactNode;
         if ('transcriptOrdinal' in entry) {
           row = <CompactBoundaryRow terminalWidth={terminalWidth} />;
@@ -274,6 +297,16 @@ export function ChatPanelInner({
             );
           } else {
             const isStreaming = message.id === streamingMessageId;
+            const rowExpandedToolCallId = messageOwnsTool(message, selectedToolCallId)
+              ? selectedToolCallId
+              : undefined;
+            const rowAutomaticToolCallId = messageOwnsTool(message, automaticToolCallId)
+              ? automaticToolCallId
+              : undefined;
+            const rowPendingPermission =
+              pendingPermission && messageOwnsTool(message, pendingPermission.toolCall.id)
+                ? pendingPermission
+                : undefined;
             const next = visibleTimeline[index + 1];
             const nextEntryIsUser = Boolean(next && 'role' in next && next.role === 'user');
             const followsToolCall = Boolean(
@@ -302,10 +335,10 @@ export function ChatPanelInner({
                   message={message}
                   managedAgentTraces={managedAgentTraces}
                   isStreaming={isStreaming}
-                  pendingPermission={pendingPermission}
-                  expandedToolCallId={selectedToolCallId}
+                  pendingPermission={rowPendingPermission}
+                  expandedToolCallId={rowExpandedToolCallId}
                   transcriptMode={transcriptMode}
-                  automaticToolCallId={automaticToolCallId ?? selectedToolCallId}
+                  automaticToolCallId={rowAutomaticToolCallId}
                   toolExpansionOverrides={toolExpansionOverrides}
                   reducedMotion={reducedMotion}
                   screenReader={screenReader}
@@ -326,11 +359,11 @@ export function ChatPanelInner({
         }
 
         if (!virtualTimeline.virtualized) {
-          return <React.Fragment key={measurementKey}>{row}</React.Fragment>;
+          return <React.Fragment key={key}>{row}</React.Fragment>;
         }
         return (
           <VirtualTranscriptRow
-            key={measurementKey}
+            key={key}
             measurementKey={measurementKey}
             onMeasure={virtualTimeline.measure}
           >

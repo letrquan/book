@@ -41,6 +41,7 @@ function view(
     height?: number;
     isActive?: boolean;
     followRequestKey?: number;
+    layoutRevision?: unknown;
     onToggleTool?: (toolId: string) => void;
   } = {},
 ) {
@@ -51,6 +52,7 @@ function view(
         width={20}
         isActive={props.isActive}
         followRequestKey={props.followRequestKey}
+        layoutRevision={props.layoutRevision}
         onToggleTool={props.onToggleTool}
       >
         <Rows labels={labels} />
@@ -233,6 +235,23 @@ describe('TranscriptView', () => {
     });
 
     expect(frameLines(app.lastFrame())).toContain('grown line 12');
+  });
+
+  it('reconciles structural child changes when the layout revision advances', () => {
+    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F'], { layoutRevision: 0 }));
+
+    app.rerender(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={5} width={20} layoutRevision={1}>
+          <Rows labels={['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']} />
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+
+    expect(frameLines(app.lastFrame())).toEqual(['G', 'H', 'I', 'J']);
+
+    act(() => app.stdin.write('\x1b[1;5H'));
+    expect(frameLines(app.lastFrame())).toContain('A');
   });
 
   it('cancels opposite wheel reports within the same render turn', async () => {

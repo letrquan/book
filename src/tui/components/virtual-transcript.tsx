@@ -22,7 +22,7 @@ interface UseVirtualTranscriptOptions<T> {
 }
 
 export interface VirtualTranscriptWindow<T> extends VirtualTranscriptRange {
-  entries: Array<{ item: T; index: number; measurementKey: string }>;
+  entries: Array<{ item: T; index: number; key: string; measurementKey: string }>;
   measure: (measurementKey: string, rows: number) => void;
   virtualized: boolean;
 }
@@ -97,19 +97,21 @@ export function useVirtualTranscript<T>({
   const [heightVersion, setHeightVersion] = useState(0);
   const width = Math.max(1, Math.floor(terminalWidth));
 
+  const itemKeys = useMemo(() => items.map((item) => getKey(item)), [getKey, items]);
+  const estimatedRows = useMemo(
+    () => items.map((item) => Math.max(1, Math.ceil(estimateRows(item)))),
+    [estimateRows, items],
+  );
   const measurementKeys = useMemo(
-    () => items.map((item) => `${width}:${getKey(item)}`),
-    [getKey, items, width],
+    () => itemKeys.map((key, index) => `${width}:${key}:${estimatedRows[index] ?? 1}`),
+    [estimatedRows, itemKeys, width],
   );
   const heights = useMemo(
     () =>
       items.map((item, index) =>
-        Math.max(
-          1,
-          heightCacheRef.current.get(measurementKeys[index]!) ?? Math.ceil(estimateRows(item)),
-        ),
+        Math.max(1, heightCacheRef.current.get(measurementKeys[index]!) ?? estimatedRows[index]!),
       ),
-    [estimateRows, heightVersion, items, measurementKeys],
+    [estimatedRows, heightVersion, items, measurementKeys],
   );
 
   useEffect(() => {
@@ -156,7 +158,7 @@ export function useVirtualTranscript<T>({
     ...range,
     entries: items.slice(range.startIndex, range.endIndex).map((item, offset) => {
       const index = range.startIndex + offset;
-      return { item, index, measurementKey: measurementKeys[index]! };
+      return { item, index, key: itemKeys[index]!, measurementKey: measurementKeys[index]! };
     }),
     measure,
     virtualized: shouldVirtualize,
