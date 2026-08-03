@@ -313,7 +313,7 @@ Project themes can override any token in `.book/themes/<name>.json`. They appear
 | `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)          |
 | `BOOK_WEB_ALLOW_PRIVATE_NETWORK`                                                                  | Opt into local/private web destinations (disabled by default)     |
 | `BOOK_WEB_MAX_REDIRECTS`                                                                          | Same-origin redirect limit for `WebFetch` (default 5, maximum 10) |
-| `BOOK_TUI_RENDERER`                                                                               | `incremental` (default), `safe`, or experimental scroll renderer  |
+| `BOOK_TUI_RENDERER`                                                                               | `safe`, `incremental`, or experimental scroll renderer            |
 | `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                               |
 
 `WebFetch` requires HTTPS by default, validates DNS results and the address used by the network
@@ -323,6 +323,10 @@ new origin receives its own permission decision. It returns Markdown by default;
 built-in Exa MCP provider and accepts optional `limit`, `domains`, `recencyDays`, and `country`
 hints. Its provider endpoint is built in and cannot be overridden through settings or environment
 variables.
+
+The TUI defaults to the full-frame `safe` renderer on Windows to avoid ConPTY footer corruption
+during deep transcript scrolling. Other interactive terminals default to `incremental`. Set
+`BOOK_TUI_RENDERER=incremental` to opt into incremental rendering explicitly on Windows.
 
 ## Slash Commands
 

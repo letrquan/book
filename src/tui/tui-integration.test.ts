@@ -18,6 +18,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { replayTerminalOutput } from './terminal-screen.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -51,6 +52,7 @@ async function submitInteractive(session: TuiSession, text: string): Promise<voi
 interface TuiSession {
   read(): string;
   readRaw(): string;
+  readScreen(): Promise<string[]>;
   waitFor(pattern: string | RegExp, timeoutMs?: number): Promise<string>;
   submit(text: string): Promise<void>;
   sendKey(seq: string): void;
@@ -86,6 +88,8 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
   });
 
   let output = '';
+  let terminalColumns = 120;
+  let terminalRows = 40;
   const disposable = pty.onData((data: string) => {
     output += data;
   });
@@ -124,6 +128,9 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
     readRaw() {
       return output;
     },
+    readScreen() {
+      return replayTerminalOutput(output, { cols: terminalColumns, rows: terminalRows });
+    },
     async waitFor(pattern: string | RegExp, timeoutMs = 15_000) {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
@@ -151,6 +158,8 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
       pty.write(seq);
     },
     resize(columns: number, rows: number) {
+      terminalColumns = columns;
+      terminalRows = rows;
       pty.resize(columns, rows);
     },
     waitForExit,
@@ -375,6 +384,29 @@ describe('TUI keyboard input', () => {
     await session.waitFor('browsing histor', 2000);
 
     expect(performance.now() - startedAt).toBeLessThan(500);
+  }, 20_000);
+
+  it('safe rendering keeps the final input frame visible after deep wheel scrolling', async () => {
+    session = await startAndWait({ BOOK_TUI_RENDERER: 'safe' });
+    await submitInteractive(session, '/help');
+    await session.waitFor('Slash Commands', 5000);
+
+    session.sendKey('INPUT_FOOTER_SENTINEL');
+    await session.waitFor('INPUT_FOOTER_SENTINEL');
+    for (let index = 0; index < 24; index++) session.sendKey(keys.wheelUp);
+    await session.waitFor('browsing histor', 2000);
+    await sleep(500);
+
+    const screen = await session.readScreen();
+    const inputRows = screen
+      .map((line, index) => ({ line, index }))
+      .filter(({ line }) => line.includes('INPUT_FOOTER_SENTINEL'));
+    expect(inputRows).toHaveLength(1);
+
+    const inputRow = inputRows[0]!.index;
+    expect(screen[inputRow - 1]).toContain('╭');
+    expect(screen[inputRow]).toContain('│');
+    expect(screen[inputRow + 1]).toContain('╰');
   }, 20_000);
 
   it('Home / End keys do not crash', async () => {

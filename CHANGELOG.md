@@ -6,6 +6,9 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Windows now defaults to the full-frame TUI renderer so deep transcript scrolling cannot corrupt
+  or erase the fixed input and status footer. Incremental rendering remains available through an
+  explicit `BOOK_TUI_RENDERER=incremental` override.
 - Mouse-wheel scrolling now reaches conversation history when the Windows CLI runs from WSL,
   instead of being translated into Up/Down prompt-history navigation by the outer terminal.
 
