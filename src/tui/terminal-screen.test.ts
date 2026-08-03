@@ -57,4 +57,40 @@ describe('terminal screen replay', () => {
     expect(countScreenOccurrences(screen, 'Working 1s')).toBe(0);
     expect(countScreenOccurrences(screen, 'Working 2s')).toBe(1);
   });
+
+  it.each([false, true])(
+    'keeps a fixed input footer after repeated deep scrolling (incremental=%s)',
+    async (incremental) => {
+      const logUpdate = await loadInkLogUpdate();
+      const writes: string[] = [];
+      const log = logUpdate.create(
+        { isTTY: true, rows: 30, write: (value) => writes.push(value) },
+        { incremental, showCursor: true },
+      );
+      const transcript = Array.from(
+        { length: 120 },
+        (_, index) => `Transcript row ${String(index).padStart(3, '0')}`,
+      );
+      const frame = (scrollTop: number, tick: number) =>
+        [
+          `History position ${scrollTop} tick ${tick}`,
+          ...transcript.slice(scrollTop, scrollTop + 20),
+          '╭────────────────────────────────────────────────────────────╮',
+          '│ › INPUT_FOOTER_SENTINEL                                    │',
+          '╰────────────────────────────────────────────────────────────╯',
+          'accept edits  model  ctx 0%',
+        ].join('\n') + '\n';
+
+      log(frame(96, 0));
+      for (let tick = 1; tick <= 48; tick++) {
+        log(frame(96 - tick * 2, tick));
+      }
+
+      const screen = await replayTerminalOutput(writes.join(''), { cols: 80, rows: 30 });
+      expect(screen.filter((line) => line.includes('INPUT_FOOTER_SENTINEL'))).toHaveLength(1);
+      expect(screen).toContain('╭────────────────────────────────────────────────────────────╮');
+      expect(screen).toContain('╰────────────────────────────────────────────────────────────╯');
+      expect(screen).toContain('accept edits  model  ctx 0%');
+    },
+  );
 });

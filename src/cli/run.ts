@@ -253,6 +253,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         isTTY: process.stdout.isTTY === true,
         screenReader: config.accessibility.screenReader,
         incrementalRendererPatched: isInkIncrementalRendererPatched(),
+        platform: process.platform,
       });
       await installInkScrollRenderer(rendererMode === 'experimental-scroll');
       app = render(

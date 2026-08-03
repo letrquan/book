@@ -4,6 +4,7 @@ interface TuiRendererContext {
   isTTY?: boolean;
   screenReader?: boolean;
   incrementalRendererPatched?: boolean;
+  platform?: NodeJS.Platform;
 }
 
 export function resolveTuiRendererMode(
@@ -12,8 +13,8 @@ export function resolveTuiRendererMode(
 ): TuiRendererMode {
   if (context.isTTY === false || context.screenReader) return 'safe';
   if (context.incrementalRendererPatched === false) return 'safe';
-  if (value === undefined) return 'incremental';
   if (value === 'incremental') return 'incremental';
   if (value === 'experimental-scroll') return 'experimental-scroll';
+  if (value === undefined) return context.platform === 'win32' ? 'safe' : 'incremental';
   return 'safe';
 }
