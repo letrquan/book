@@ -17,7 +17,10 @@ export function loadInteractiveAssets(
 ): InteractiveAssets {
   return {
     commands: discoverCommands(config.workspace),
-    skills: discoverSkills(config.workspace),
+    skills: discoverSkills(config.workspace, config.settings.skills.overrides, {
+      executionOverrides: config.settings.skills.execution,
+      enabled: config.settings.skills.enabled,
+    }),
     customThemes: listCustomThemes(config.workspace),
     initialTheme: resolveTheme(config.workspace, config.settings.theme ?? 'dark'),
   };

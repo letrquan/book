@@ -4,7 +4,7 @@ import { useTheme } from '../theme.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
 import { truncateDisplay } from './word-wrap.js';
 
-export type ConfigSection = 'model' | 'effort' | 'theme' | 'agents' | 'permission-mode';
+export type ConfigSection = 'model' | 'effort' | 'theme' | 'agents' | 'skills' | 'permission-mode';
 
 interface ConfigMenuProps {
   model: string;
@@ -13,6 +13,7 @@ interface ConfigMenuProps {
   memoryAutoSave: boolean;
   showThinking: boolean;
   agentCount: number;
+  skillCount: number;
   defaultPermissionMode: string;
   terminalWidth?: number;
   onOpen: (section: ConfigSection) => void;
@@ -28,6 +29,7 @@ const ROWS = [
   'theme',
   'permission-mode',
   'agents',
+  'skills',
   'memory',
 ] as const;
 type Row = (typeof ROWS)[number];
@@ -39,6 +41,7 @@ export function ConfigMenu({
   memoryAutoSave,
   showThinking,
   agentCount,
+  skillCount,
   defaultPermissionMode,
   terminalWidth = 80,
   onOpen,
@@ -74,6 +77,7 @@ export function ConfigMenu({
     else if (shortcut === 'i') onToggleThinking();
     else if (shortcut === 't') onOpen('theme');
     else if (shortcut === 'a') onOpen('agents');
+    else if (shortcut === 's') onOpen('skills');
     else if (shortcut === 'p') onOpen('permission-mode');
   });
 
@@ -105,6 +109,12 @@ export function ConfigMenu({
       description: 'Choose a model for explorer, patcher, or validator',
     },
     {
+      row: 'skills',
+      label: 'Skills',
+      value: `${skillCount} discovered`,
+      description: 'Control automatic matching and explicit use',
+    },
+    {
       row: 'memory',
       label: 'Memory auto-capture',
       value: memoryAutoSave ? 'on' : 'off',
@@ -128,7 +138,7 @@ export function ConfigMenu({
         ))}
       </Box>
       <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter toggle/open · I thinking · M model · P permissions · A agents · Esc close
+        ↑↓ select · Enter toggle/open · S skills · M model · P permissions · Esc close
       </Text>
     </SoftPanel>
   );

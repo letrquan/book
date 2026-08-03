@@ -199,6 +199,23 @@ export const uiSettingsSchema = z.object({
 
 export type UiSettings = z.infer<typeof uiSettingsSchema>;
 
+export const skillActivationSchema = z.enum(['auto', 'name-only', 'manual', 'off']);
+export type SkillActivation = z.infer<typeof skillActivationSchema>;
+
+export const skillExecutionSchema = z.enum(['inherit', 'ask', 'deny']);
+export type SkillExecution = z.infer<typeof skillExecutionSchema>;
+
+export const skillSettingsSchema = z.object({
+  /** Emergency switch that removes skill prompt and runtime effects without deleting packages. */
+  enabled: z.boolean().default(true),
+  /** Per-skill visibility overrides keyed by the skill's declared name. */
+  overrides: z.record(skillActivationSchema).default({}),
+  /** Per-skill activation consent policy. Tool calls still use the normal permission system. */
+  execution: z.record(skillExecutionSchema).default({}),
+});
+
+export type SkillSettings = z.infer<typeof skillSettingsSchema>;
+
 export type ProviderModelConfig = z.infer<typeof providerModelSchema>;
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;
 
@@ -215,6 +232,7 @@ export const bookSettingsSchema = z.object({
   /** TUI color theme: dark, light, auto, or a custom theme filename. */
   theme: z.string().min(1).optional(),
   ui: uiSettingsSchema.default({}),
+  skills: skillSettingsSchema.default({}),
   autoCompactEnabled: z.boolean().optional(),
   /** Permission mode used by each host when no invocation-specific mode is supplied. */
   defaultMode: z
@@ -295,6 +313,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   env: {},
   provider: {},
   ui: { showThinking: true },
+  skills: { enabled: true, overrides: {}, execution: {} },
   retry: {
     maxAttempts: 10,
     baseDelayMs: 1000,

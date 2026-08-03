@@ -212,21 +212,23 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
   const byName = new Map(
     definitions.map((definition) => [canonicalToolName(definition.name), definition]),
   );
-  const ruleSets: CapabilityRule[][] = options.capabilityRules
-    ? [parseCapabilityRules(options.capabilityRules)]
-    : [];
+  const ruleSets = new Map<number, CapabilityRule[]>();
+  let nextRuleSetId = 1;
+  if (options.capabilityRules) ruleSets.set(0, parseCapabilityRules(options.capabilityRules));
   const role = options.isSubagent ? 'child' : 'root';
   const state: ToolDiscoveryState = options.isSubagent
     ? { clock: 0, loaded: new Map() }
     : (context.runtime?.toolDiscoveryState ?? { clock: 0, loaded: new Map() });
   let activeSnapshot = new Set<string>();
 
-  const authorized = (): ToolDefinition[] =>
+  const authorized = (additionalRules?: CapabilityRule[]): ToolDefinition[] =>
     definitions.filter((definition) => {
       const name = canonicalToolName(definition.name);
       if (name === 'ToolSearch') return true;
       if (!definition.catalog?.roles?.includes(role)) return false;
-      if (ruleSets.some((rules) => !isToolDefinitionAllowed(rules, definition))) return false;
+      if ([...ruleSets.values()].some((rules) => !isToolDefinitionAllowed(rules, definition)))
+        return false;
+      if (additionalRules && !isToolDefinitionAllowed(additionalRules, definition)) return false;
       return isModeAvailable(definition, context) && isRuntimeAvailable(definition, context);
     });
 
@@ -357,15 +359,30 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     );
   };
 
-  const restrict = (rawRules: string[]): void => {
-    ruleSets.push(parseCapabilityRules(rawRules));
+  const pushRestriction = (rawRules: string[]): (() => void) => {
+    const id = nextRuleSetId++;
+    ruleSets.set(id, parseCapabilityRules(rawRules));
     trimLoaded();
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      ruleSets.delete(id);
+      trimLoaded();
+    };
+  };
+
+  const previewRestriction = (rawRules: string[]): ToolDefinition[] =>
+    authorized(parseCapabilityRules(rawRules));
+
+  const restrict = (rawRules: string[]): void => {
+    pushRestriction(rawRules);
   };
 
   const canExecute = (call: ToolCall): boolean => {
     const name = canonicalToolName(call.name);
     if (!activeSnapshot.has(name)) return false;
-    if (!ruleSets.every((rules) => isToolCallAllowed(rules, call))) return false;
+    if (![...ruleSets.values()].every((rules) => isToolCallAllowed(rules, call))) return false;
     if (state.loaded.has(name)) state.loaded.set(name, ++state.clock);
     return true;
   };
@@ -398,5 +415,14 @@ export function createToolSurface(options: SurfaceOptions): ToolDiscoveryContext
     return `${deferred.length} authorized tools are deferred: ${categoryText}.${namespaceText} Call ToolSearch when the active tools do not cover the task.`;
   };
 
-  return { search, activate, restrict, canExecute, activeDefinitions, catalogSummary };
+  return {
+    search,
+    activate,
+    restrict,
+    pushRestriction,
+    previewRestriction,
+    canExecute,
+    activeDefinitions,
+    catalogSummary,
+  };
 }

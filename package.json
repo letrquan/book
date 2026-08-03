@@ -67,6 +67,7 @@
     "verify:ink-patch": "node scripts/verify-ink-patch.mjs",
     "bench:runtime": "tsx src/tui/__benchmarks__/runtime.bench.ts",
     "eval:edit": "tsx scripts/edit-eval.ts",
+    "eval:skills": "tsx scripts/skill-eval.ts",
     "apply:ink-patch": "node scripts/apply-ink-patch.mjs",
     "lint": "eslint src/ --ext .ts,.tsx --max-warnings 0",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",

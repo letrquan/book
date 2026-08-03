@@ -215,6 +215,10 @@ export interface EvidenceItem {
 
 export type AgentRuntimeEvent =
   | {
+      type: 'skill_lifecycle';
+      event: import('../skill-registry.js').SkillLifecycleEvent;
+    }
+  | {
       type: 'agent_status';
       agent: AgentSummary;
       parentSessionId?: string;

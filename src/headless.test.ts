@@ -175,18 +175,56 @@ describe('runHeadless — text output', () => {
       onAgentEvent: (event) => events.push(event),
     });
 
-    expect(events.map((event) => event.type)).toEqual([
-      'run_started',
-      'system',
-      'session',
-      'text',
-      'result',
-      'done',
-    ]);
+    const eventTypes = events.map((event) => event.type);
+    expect(eventTypes.slice(0, 3)).toEqual(['run_started', 'system', 'session']);
+    expect(eventTypes.slice(-3)).toEqual(['text', 'result', 'done']);
+    expect(
+      events
+        .filter((event) => event.type === 'skill_lifecycle')
+        .every((event) => events.indexOf(event) < eventTypes.indexOf('text')),
+    ).toBe(true);
     expect(events.find((event) => event.type === 'text')).toEqual({
       type: 'text',
       content: 'Hello!',
     });
+  });
+
+  it('forwards redacted skill lifecycle events in headless mode', async () => {
+    const workspace = makeWorkspace();
+    const skillRoot = join(workspace, '.book', 'skills', 'review');
+    mkdirSync(skillRoot, { recursive: true });
+    writeFileSync(
+      join(skillRoot, 'SKILL.md'),
+      [
+        '---',
+        'name: review',
+        'description: Review changes',
+        '---',
+        'Private review procedure.',
+      ].join('\n'),
+    );
+    const events: AgentEvent[] = [];
+
+    await runHeadless(freshConfig({ workspace }), createDefaultRegistry(), {
+      prompt: '$review inspect this change',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout: { write: () => true },
+      onAgentEvent: (event) => events.push(event),
+    });
+
+    const lifecycle = events.filter((event) => event.type === 'skill_lifecycle');
+    expect(lifecycle).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'skill_lifecycle',
+          event: expect.objectContaining({ type: 'skill_activation_applied', skill: 'review' }),
+        }),
+      ]),
+    );
+    expect(JSON.stringify(lifecycle)).not.toContain('Private review procedure.');
   });
 
   it('creates one independently finalized root run per streamed user request', async () => {

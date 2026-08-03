@@ -21,6 +21,7 @@ describe('ConfigMenu', () => {
           memoryAutoSave={false}
           showThinking
           agentCount={3}
+          skillCount={4}
           defaultPermissionMode="default"
           onOpen={onOpen}
           onToggleMemory={() => {}}
@@ -45,6 +46,7 @@ describe('ConfigMenu', () => {
           memoryAutoSave={false}
           showThinking
           agentCount={3}
+          skillCount={4}
           defaultPermissionMode="accept-edits"
           onOpen={onOpen}
           onToggleMemory={() => {}}
@@ -60,6 +62,31 @@ describe('ConfigMenu', () => {
     expect(onOpen).toHaveBeenCalledWith('permission-mode');
   });
 
+  it('opens skill management from settings', () => {
+    const onOpen = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          themeName="dark"
+          memoryAutoSave={false}
+          showThinking
+          agentCount={3}
+          skillCount={4}
+          defaultPermissionMode="default"
+          onOpen={onOpen}
+          onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    expect(view.lastFrame()).toContain('4 discovered');
+    view.stdin.write('s');
+    expect(onOpen).toHaveBeenCalledWith('skills');
+  });
+
   it('shows and toggles model thinking from the keyboard shortcut', () => {
     const onToggleThinking = vi.fn();
     const view = render(
@@ -70,6 +97,7 @@ describe('ConfigMenu', () => {
           memoryAutoSave={false}
           showThinking={false}
           agentCount={3}
+          skillCount={4}
           defaultPermissionMode="default"
           onOpen={() => {}}
           onToggleMemory={() => {}}
@@ -94,6 +122,7 @@ describe('ConfigMenu', () => {
           memoryAutoSave={false}
           showThinking
           agentCount={3}
+          skillCount={4}
           defaultPermissionMode="default"
           terminalWidth={42}
           onOpen={() => {}}

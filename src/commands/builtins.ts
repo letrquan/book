@@ -30,6 +30,8 @@ import {
 } from '../memory-store.js';
 import { costReport, failureTotal, PRICING, usageReport } from '../pricing.js';
 import { buildContextBreakdown, buildContextReport } from '../context-report.js';
+import type { SkillRegistrySnapshot } from '../skill-registry.js';
+import { buildSkillReport } from '../skill-report.js';
 
 export interface BuiltinCommand {
   name: string;
@@ -56,6 +58,7 @@ export interface BuiltinCommandContext {
   compactBoundaries: CompactBoundary[];
   commandCount: number;
   skillCount: number;
+  skillSnapshot?: SkillRegistrySnapshot;
   /** Per-session tool call/failure counters keyed by canonical tool name. */
   toolCallStats?: ReadonlyMap<string, { calls: number; failures: Record<string, number> }>;
   resolveAmbientContext: () => {
@@ -77,12 +80,12 @@ export type BuiltinCommandEffect =
   | { type: 'resume-conversation'; session?: string }
   | { type: 'compact'; focus?: string }
   | { type: 'exit' }
-  | { type: 'show-modal'; modal: 'config' | 'model' | 'rewind' | 'theme' | 'effort' }
+  | { type: 'show-modal'; modal: 'config' | 'model' | 'rewind' | 'theme' | 'effort' | 'skills' }
   | { type: 'set-theme'; preference: string }
   | { type: 'set-model'; selection: string }
   | { type: 'set-effort'; level: EffortLevel }
   | { type: 'set-memory-auto-save'; enabled: boolean }
-  | { type: 'toggle-panel'; panel: 'help' | 'status' | 'permissions' | 'skills' }
+  | { type: 'toggle-panel'; panel: 'help' | 'status' | 'permissions' }
   | { type: 'add-task'; subject: string }
   | { type: 'show-diff' }
   | { type: 'reload-assets' }
@@ -520,8 +523,14 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   },
   {
     name: 'skills',
-    description: 'List available skills',
-    execute: () => ({ type: 'toggle-panel', panel: 'skills' }),
+    description: 'Manage available skills',
+    argumentHint: '[status]',
+    execute: ({ rawArguments }, context) =>
+      rawArguments === 'status'
+        ? { type: 'local-message', content: buildSkillReport(context.skillSnapshot) }
+        : rawArguments
+          ? { type: 'local-message', content: 'Usage: /skills [status]' }
+          : { type: 'show-modal', modal: 'skills' },
   },
   {
     name: 'init',
@@ -538,7 +547,7 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   },
   {
     name: 'reload-skills',
-    description: 'Re-scan command and skill directories',
+    description: 'Reload commands and skills',
     execute: () => ({ type: 'reload-assets' }),
   },
   {

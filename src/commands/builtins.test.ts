@@ -10,7 +10,7 @@ import {
 } from './builtins.js';
 import { defaultConfig } from '../test/fixtures.js';
 
-function context(): BuiltinCommandContext {
+function context(overrides: Partial<BuiltinCommandContext> = {}): BuiltinCommandContext {
   return {
     workspace: process.cwd(),
     sessionId: 'session-1',
@@ -31,6 +31,7 @@ function context(): BuiltinCommandContext {
       hasMemoryIndex: false,
       hasClaudeMdLoader: false,
     }),
+    ...overrides,
   };
 }
 
@@ -67,6 +68,25 @@ describe('built-in command contract', () => {
       type: 'toggle-panel',
       panel: 'help',
     });
+    expect(registry.execute('skills', '', context())).toEqual({
+      type: 'show-modal',
+      modal: 'skills',
+    });
+    expect(
+      registry.execute(
+        'skills',
+        'status',
+        context({
+          skillSnapshot: {
+            catalogDigest: 'catalog',
+            skills: [],
+            active: [],
+            previous: [],
+            events: [],
+          },
+        }),
+      ),
+    ).toEqual({ type: 'local-message', content: expect.stringContaining('Catalog: catalog') });
     expect(registry.execute('providers', 'unexpected', context())).toEqual({
       type: 'local-message',
       content: 'Usage: /providers',

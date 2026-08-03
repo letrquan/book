@@ -9,7 +9,12 @@ import type { ToolContext, ToolDefinition } from '../types/tools.js';
 import { createHash } from 'crypto';
 import { readFile, stat } from 'fs/promises';
 import { workspaceIdentity } from '../tools/file-provenance.js';
-import { discoverSkills, generateSkillListing } from '../skills.js';
+import {
+  applySkillOverrides,
+  discoverSkills,
+  generateSkillListing,
+  skillRoots,
+} from '../skills.js';
 import { discoverCommands, generateCommandListing } from '../commands/loader.js';
 import { BUILTIN_COMMANDS } from '../commands/builtins.js';
 import { discoverProjectInstructions, renderProjectInstructions } from '../claude-md.js';
@@ -46,6 +51,7 @@ export class AgentContextCache {
   invalidateWorkspace(workspace: string): void {
     this.turnFingerprints.delete(workspace);
     this.turnGit.delete(workspace);
+    this.discoveries.delete(workspace);
   }
 
   discovery(workspace: string): StaticDiscovery {
@@ -104,12 +110,11 @@ function contextSourceFingerprint(workspace: string): string {
   };
 
   const home = homedir();
-  addTree(join(home, '.book', 'skills'), 3);
+  for (const root of skillRoots(workspace, { homeDir: home })) addTree(root.path, 5);
   addTree(join(home, '.book', 'commands'), 2);
   addTree(join(home, '.book', 'agents'), 2);
   addTree(join(home, '.book', 'AGENTS.md'), 0);
   addTree(join(home, '.claude', 'CLAUDE.md'), 0);
-  addTree(join(workspace, '.book', 'skills'), 3);
   addTree(join(workspace, '.book', 'commands'), 2);
   addTree(join(workspace, '.book', 'agents'), 2);
   addTree(join(workspace, '.claude'), 3);
@@ -372,7 +377,12 @@ export async function buildSystemPromptZones(
   cache?: AgentContextCache,
 ): Promise<SystemPromptZones> {
   const discovery = cache?.discovery(config.workspace);
-  const skills = discovery?.skills ?? discoverSkills(config.workspace);
+  const skills = applySkillOverrides(
+    discovery?.skills ?? discoverSkills(config.workspace),
+    config.settings.skills.overrides,
+    config.settings.skills.execution,
+    config.settings.skills.enabled,
+  );
   const cmdList = mergeCommands(
     commands ?? discovery?.commands ?? discoverCommands(config.workspace),
   );
@@ -395,7 +405,13 @@ export async function buildSystemPromptZones(
       `- Current date: ${new Date().toISOString().split('T')[0]}`,
       ...(git ? [`- Git: ${git}`] : []),
     ].join('\n'),
-    generateSkillListing(skills, 1536),
+    generateSkillListing(
+      skills,
+      Math.min(
+        8000,
+        Math.max(512, Math.floor((config.modelInfo?.contextWindow ?? 100_000) * 0.08)),
+      ),
+    ),
     generateCommandListing(cmdList, 1536),
     overrides?.hideAgents || config.settings.agents.mode === 'off'
       ? ''

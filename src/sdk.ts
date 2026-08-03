@@ -195,6 +195,58 @@ export { AgentManager };
 export { createDefaultRegistry, createRegistry } from './tools/registry.js';
 export { createToolSurface } from './tools/catalog.js';
 export { toolFailure, toolSuccess } from './tools/result.js';
+export {
+  applySkillOverrides,
+  buildSkillListing,
+  discoverSkills,
+  explicitSkillMentions,
+  generateSkillListing,
+  loadSkillBody,
+  skillRoots,
+} from './skills.js';
+export type {
+  DiscoverSkillsOptions,
+  LoadedSkillBody,
+  ShadowedSkill,
+  Skill,
+  SkillIssue,
+  SkillListingResult,
+  SkillResource,
+  SkillRoot,
+  SkillRootKind,
+  SkillSource,
+} from './skills.js';
+export {
+  SkillRegistry,
+  SkillRegistryError,
+  type SkillActivationFrame,
+  type SkillActivationFrameSummary,
+  type SkillActivationReason,
+  type SkillLifecycleEvent,
+  type SkillLifecycleEventType,
+  type SkillRegistrySnapshot,
+} from './skill-registry.js';
+export {
+  DEFAULT_SKILL_EVALUATION_THRESHOLDS,
+  DEFAULT_SKILL_EVALUATION_FIXTURES,
+  SKILL_EVALUATION_CATEGORIES,
+  evaluateSkillActivation,
+  observeSkillEvaluation,
+  renderSkillEvaluationReport,
+  runSkillActivationEvaluation,
+  writeSkillEvaluationReport,
+} from './skill-evaluation.js';
+export type {
+  SkillEvaluationCategory,
+  SkillEvaluationFixture,
+  SkillEvaluationObservation,
+  SkillEvaluationOutcome,
+  SkillEvaluationPromptFixture,
+  SkillEvaluationReport,
+  SkillEvaluationThresholds,
+} from './skill-evaluation.js';
+export { SessionRuntime } from './session/runtime.js';
+export { buildSkillReport } from './skill-report.js';
 export function createAgentManager(config: AgentConfig): AgentManager {
   return new AgentManager(config, createDefaultRegistry({ agents: true }).getDefinitions());
 }

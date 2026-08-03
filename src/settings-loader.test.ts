@@ -146,6 +146,21 @@ describe('resolveSettings — layered merging', () => {
     expect(result.memory).toEqual({ enabled: true, autoSave: true, requireApproval: true });
   });
 
+  it('fills skill settings added after older settings files were written', () => {
+    const projectSettingsDir = join(dir, '.book');
+    mkdirSync(projectSettingsDir, { recursive: true });
+    writeFileSync(
+      join(projectSettingsDir, 'settings.json'),
+      JSON.stringify({ skills: { overrides: { review: 'manual' } } }),
+    );
+
+    expect(resolveSettings(dir).skills).toEqual({
+      enabled: true,
+      overrides: { review: 'manual' },
+      execution: {},
+    });
+  });
+
   it('project overrides user', () => {
     // User settings
     const userSettingsDir = join(userDir, '.book');
