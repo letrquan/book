@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'crypto';
 import { execFile, spawn } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
-import { homedir, tmpdir } from 'os';
+import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import type { AgentApplyResult, AgentRecord, AgentSnapshot, PatchCandidate } from './types.js';
+import { resolveBookHome } from '../book-home.js';
 
 interface GitResult {
   stdout: string;
@@ -178,7 +179,7 @@ export async function createSyntheticSnapshot(
 export async function createAgentWorktree(
   snapshot: AgentSnapshot,
   agentId: string,
-  worktreeRoot = join(homedir(), '.book', 'worktrees'),
+  worktreeRoot = join(resolveBookHome(), 'worktrees'),
   startCommit = snapshot.commit,
 ): Promise<{ path: string; branch: string }> {
   const path = join(worktreeRoot, snapshot.repoHash, agentId);

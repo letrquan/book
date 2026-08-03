@@ -27,6 +27,57 @@ export interface AgentRunAccounting {
   readonly missingSources: readonly string[];
 }
 
+export interface AgentRunAmbientSnapshot {
+  readonly schemaVersion: 1;
+  readonly fingerprint: string;
+  readonly capturedAt: number;
+  readonly model: {
+    readonly provider: string;
+    readonly requestedModel: string;
+    readonly modelSelection?: string;
+    readonly endpointFingerprint: string;
+    readonly effort?: string;
+    readonly maxTokens: number;
+    readonly maxTurns?: number;
+    readonly modelInfoFingerprint: string;
+  };
+  readonly settings: {
+    readonly fingerprint: string;
+    readonly agentsMode: 'adaptive' | 'manual' | 'off';
+  };
+  readonly tools: {
+    readonly fingerprint: string;
+    readonly count: number;
+    readonly names: readonly string[];
+  };
+  readonly memory: {
+    readonly fingerprint: string;
+    readonly enabled: boolean;
+    readonly indexLoaded: boolean;
+  };
+  readonly policies: {
+    readonly permissionMode: import('./runtime.js').PermissionMode;
+    readonly hooksFingerprint: string;
+    readonly contextFingerprint: string;
+    readonly networkFingerprint: string;
+    readonly delegationFingerprint: string;
+  };
+  readonly runtime: {
+    readonly nodeVersion: string;
+    readonly platform: NodeJS.Platform;
+    readonly architecture: string;
+    readonly timezone: string;
+    readonly environmentFingerprint: string;
+    readonly workspaceFingerprint: string;
+  };
+  readonly bookHome: {
+    readonly pathFingerprint: string;
+    readonly isolation: 'shared' | 'configured' | 'isolated';
+  };
+  readonly completeness: 'partial' | 'complete';
+  readonly missingSources: readonly string[];
+}
+
 /** Runtime attribution for one user request or a linked child execution. */
 export interface AgentRunContext {
   /** Unique execution identity. A resumed request receives a new value. */
@@ -47,6 +98,7 @@ export interface AgentRunResult {
   readonly outcome: import('./terminal.js').AgentTerminalOutcome;
   readonly usage: import('./messages.js').Usage | null;
   readonly accounting?: AgentRunAccounting;
+  readonly ambient?: AgentRunAmbientSnapshot;
 }
 
 export function createAgentRunContext(options: {

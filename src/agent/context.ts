@@ -16,6 +16,7 @@ import { discoverProjectInstructions, renderProjectInstructions } from '../claud
 import { discoverAgents, type SubagentDef } from '../subagent-discovery.js';
 import { runGit } from '../tools/git.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
+import { resolveBookHome } from '../book-home.js';
 import { resolveAgentProfile } from '../agents/profile-resolver.js';
 import { toolResultModelContent } from '../tools/result.js';
 import { resolveEditFormat, type EditFormat } from '../models.js';
@@ -104,10 +105,11 @@ function contextSourceFingerprint(workspace: string): string {
   };
 
   const home = homedir();
-  addTree(join(home, '.book', 'skills'), 3);
-  addTree(join(home, '.book', 'commands'), 2);
-  addTree(join(home, '.book', 'agents'), 2);
-  addTree(join(home, '.book', 'AGENTS.md'), 0);
+  const bookHome = resolveBookHome();
+  addTree(join(bookHome, 'skills'), 3);
+  addTree(join(bookHome, 'commands'), 2);
+  addTree(join(bookHome, 'agents'), 2);
+  addTree(join(bookHome, 'AGENTS.md'), 0);
   addTree(join(home, '.claude', 'CLAUDE.md'), 0);
   addTree(join(workspace, '.book', 'skills'), 3);
   addTree(join(workspace, '.book', 'commands'), 2);

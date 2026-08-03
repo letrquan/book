@@ -9,9 +9,9 @@ import {
   writeFileSync,
 } from 'fs';
 import { createHash } from 'crypto';
-import { homedir } from 'os';
 import { basename, isAbsolute, join, relative, resolve } from 'path';
 import { parseFrontmatter } from './frontmatter.js';
+import { resolveBookHome } from './book-home.js';
 
 export const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const;
 export type MemoryType = (typeof MEMORY_TYPES)[number];
@@ -79,7 +79,7 @@ export function slugifyWorkspace(workspace: string): string {
 }
 
 function bookRoot(opts?: MemoryStoreOptions): string {
-  return opts?.bookRoot ?? join(homedir(), '.book');
+  return opts?.bookRoot ?? resolveBookHome();
 }
 
 export function getProjectMemoryDir(workspace: string, opts?: MemoryStoreOptions): string {

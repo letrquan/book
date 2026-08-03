@@ -11,9 +11,10 @@ import {
   writeFileSync,
   type Dirent,
 } from 'node:fs';
-import { homedir, hostname as readHostname } from 'node:os';
+import { hostname as readHostname } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { createDebugLogger } from '../debug-log.js';
+import { resolveBookHome } from '../book-home.js';
 import { deriveAgentDisplayName } from './naming.js';
 import {
   AtomicJsonWriter,
@@ -223,7 +224,7 @@ export class AgentStore {
 
   constructor(
     repoHash: string,
-    root = join(homedir(), '.book', 'agents'),
+    root = join(resolveBookHome(), 'agents'),
     enabled = true,
     options: AgentStoreOptions = {},
   ) {

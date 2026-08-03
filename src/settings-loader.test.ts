@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, normalize } from 'path';
@@ -11,12 +11,10 @@ let userDir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'book-settings-'));
   userDir = mkdtempSync(join(tmpdir(), 'book-user-'));
-  // Override homedir by using process.env for the test — but our loader uses
-  // homedir() from os. Instead, we test mergeSettings directly and test
-  // resolveSettings with real temp paths.
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
   rmSync(userDir, { recursive: true, force: true });
 });
@@ -146,8 +144,16 @@ describe('resolveSettings — layered merging', () => {
     expect(result.memory).toEqual({ enabled: true, autoSave: true, requireApproval: true });
   });
 
+  it('loads user settings from BOOK_HOME', () => {
+    const bookHome = join(userDir, 'isolated-book-home');
+    mkdirSync(bookHome, { recursive: true });
+    writeFileSync(join(bookHome, 'settings.json'), JSON.stringify({ model: 'isolated-model' }));
+    vi.stubEnv('BOOK_HOME', bookHome);
+
+    expect(resolveSettings(dir).model).toBe('isolated-model');
+  });
+
   it('project overrides user', () => {
-    // User settings
     const userSettingsDir = join(userDir, '.book');
     mkdirSync(userSettingsDir, { recursive: true });
     writeFileSync(
@@ -155,7 +161,6 @@ describe('resolveSettings — layered merging', () => {
       JSON.stringify({ model: 'user-model', maxTurns: 5 }),
     );
 
-    // Project settings
     const projectSettingsDir = join(dir, '.book');
     mkdirSync(projectSettingsDir, { recursive: true });
     writeFileSync(
@@ -163,9 +168,11 @@ describe('resolveSettings — layered merging', () => {
       JSON.stringify({ model: 'project-model' }),
     );
 
-    // resolveSettings uses homedir() — we can't easily mock that in this test
-    // without vitest mocking. Instead, we test the merge logic directly.
-    // For the real integration test, see the integration test below.
+    vi.stubEnv('BOOK_HOME', userSettingsDir);
+
+    const result = resolveSettings(dir);
+    expect(result.model).toBe('project-model');
+    expect(result.maxTurns).toBe(5);
   });
 
   it('local overrides project', () => {

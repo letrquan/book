@@ -46,6 +46,7 @@ import {
 } from './agent-events.js';
 import { selectSession, type SessionBootstrap } from './resolve.js';
 import { SessionRuntime, type SessionRuntimeOptions } from './runtime.js';
+import { createRunAmbientSnapshot } from './run-ambient.js';
 import { deriveSessionName } from './name.js';
 
 export type AgentLoopRunner = typeof runAgentLoop;
@@ -129,6 +130,7 @@ export interface AgentSessionRecordUserRequest {
 export interface AgentSessionSendControl {
   signal?: AbortSignal;
   isCurrent: () => boolean;
+  runContext: AgentRunContext;
 }
 
 export interface AgentSessionSendRequest {
@@ -147,6 +149,8 @@ export interface AgentSessionSendRequest {
   callbacks: AgentSessionRunCallbacks;
   /** Frozen attribution for this request; created once when omitted. */
   runContext?: AgentRunContext;
+  /** Optional hard USD ceiling for this root run. */
+  maxBudgetUsd?: number;
   source?: AgentRunSource;
   resumedFromRunId?: string;
   options?: Omit<
@@ -188,6 +192,8 @@ export interface AgentSessionCompactRequest {
   sessionId?: string;
   transcriptOrdinal: number;
   options: Omit<RunCompactOptions, 'sessionId'>;
+  runContext?: AgentRunContext;
+  runtime?: SessionRuntime;
   timelineStore?: Pick<SessionStoreInterface, 'append'>;
   isCurrent?: () => boolean;
   onCommitted?: (
@@ -289,15 +295,27 @@ export class AgentSession {
     if (!operation) {
       return { status: 'rejected', activeKind: this.operations.activeKind };
     }
-    const control: AgentSessionSendControl = {
-      signal: operation.signal,
-      isCurrent: () => operation.isCurrent() && request.isCurrent?.() !== false,
-    };
     const runtime = request.runtime ?? this.runtime;
     let userMessagePersisted = false;
     let runOutcome: AgentTerminalOutcome | undefined;
 
     try {
+      const userMessage = request.createUserMessage();
+      const runContext =
+        request.runContext ??
+        createAgentRunContext({
+          sessionId: request.sessionId,
+          runId: userMessage.id,
+          source: request.source ?? 'internal',
+          resumedFromRunId: request.resumedFromRunId,
+        });
+      runtime.runAccounting.startRoot(runContext, request.maxBudgetUsd);
+      const control: AgentSessionSendControl = {
+        signal: operation.signal,
+        isCurrent: () => operation.isCurrent() && request.isCurrent?.() !== false,
+        runContext,
+      };
+
       try {
         await request.beforePrepare?.(control);
       } catch (error) {
@@ -305,7 +323,6 @@ export class AgentSession {
       }
       if (!control.isCurrent() || control.signal?.aborted) return { status: 'cancelled' };
 
-      const userMessage = request.createUserMessage();
       request.onPreparing?.(userMessage, control);
 
       let prepared: Extract<AgentSessionPrepareSendResult, { status: 'prepared' }>;
@@ -358,14 +375,8 @@ export class AgentSession {
               request.callbacks.onTerminal?.(outcome);
             },
           },
-          runContext:
-            request.runContext ??
-            createAgentRunContext({
-              sessionId: request.sessionId,
-              runId: userMessage.id,
-              source: request.source ?? 'internal',
-              resumedFromRunId: request.resumedFromRunId,
-            }),
+          runContext,
+          maxBudgetUsd: request.maxBudgetUsd,
           options: {
             ...request.options,
             runtime,
@@ -641,9 +652,34 @@ export class AgentSession {
   }
 
   async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {
+    const runtime = request.runtime ?? this.runtime;
+    if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
     const result = await this.compactRunner(request.config, request.history, {
       ...request.options,
       sessionId: request.sessionId,
+      beforeModelCall: request.runContext
+        ? (model) => {
+            const requestCheck = request.options.beforeModelCall?.(model);
+            if (requestCheck && !requestCheck.allowed) return requestCheck;
+            return runtime.runAccounting.checkBeforeModelCall(request.runContext!.rootRunId, model);
+          }
+        : request.options.beforeModelCall,
+      onUsage: request.runContext
+        ? (usage, metadata) => {
+            runtime.runAccounting.record(request.runContext!, usage, metadata);
+            request.options.onUsage?.(usage, metadata);
+          }
+        : request.options.onUsage,
+      onUsageMissing: request.runContext
+        ? (metadata) => {
+            runtime.runAccounting.markUsageUnknown(
+              request.runContext!,
+              metadata,
+              'compaction_usage',
+            );
+            request.options.onUsageMissing?.(metadata);
+          }
+        : request.options.onUsageMissing,
     });
     if (result.status !== 'compacted') return { result };
     if (request.isCurrent?.() === false) return { result };
@@ -717,6 +753,15 @@ export class AgentSession {
       });
     const runtime = request.options?.runtime ?? this.runtime;
     runtime.runAccounting.startRoot(runContext, request.maxBudgetUsd);
+    const effectiveConfig = request.options?.modelOverride
+      ? { ...request.config, model: request.options.modelOverride }
+      : request.config;
+    const ambient = runtime.recordRunAmbientSnapshot(
+      runContext.runId,
+      createRunAmbientSnapshot(effectiveConfig, request.registry, {
+        permissionMode: request.mode,
+      }),
+    );
     const finalizeOutcome = (outcome: AgentTerminalOutcome): AgentTerminalOutcome => {
       if (!terminalOutcome) {
         terminalOutcome = outcome;
@@ -729,8 +774,8 @@ export class AgentSession {
       if (runGeneration === this.runGeneration) this.emit(event, callbacks.onEvent);
       else callbacks.onEvent(event);
     };
-    emit({ type: 'run_started', context: runContext });
-    emit({ type: 'system', model: request.config.model, cwd: request.config.workspace });
+    emit({ type: 'run_started', context: runContext, ambient });
+    emit({ type: 'system', model: effectiveConfig.model, cwd: request.config.workspace });
     emit({ type: 'session', sessionId: request.sessionId });
     const unsubscribeShellEvents = runtime.shellManager.subscribe((event) => emit(event));
 

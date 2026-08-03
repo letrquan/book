@@ -17,6 +17,7 @@ interface ExecutionState {
   costStatus: 'known' | 'estimated' | 'unknown';
   readonly unknownModels: Set<string>;
   readonly modelIdentities: AgentModelIdentity[];
+  readonly missingSources: Set<string>;
 }
 
 interface RootState {
@@ -67,6 +68,17 @@ function mergeCostStatus(
   return 'known';
 }
 
+function missingUsageIdentity(metadata: ProviderResponseMetadata): AgentModelIdentity {
+  return {
+    provider: metadata.provider,
+    requestedModel: metadata.requestedModel,
+    responseModel: metadata.responseModel,
+    responseId: metadata.responseId,
+    finishReasons: metadata.finishReasons,
+    status: metadata.responseModel ? 'verified' : 'unverifiable',
+  };
+}
+
 export interface BudgetCheck {
   allowed: boolean;
   status: Exclude<BudgetStatus, 'not_configured'>;
@@ -76,8 +88,8 @@ export interface BudgetCheck {
 /**
  * In-memory accounting shared by all executions in one logical session.
  *
- * This intentionally reports partial completeness until compaction and failed provider attempts
- * emit usage events. It is safer to expose that gap than to present a clean but incomplete total.
+ * This intentionally reports partial completeness until failed provider attempts emit usage
+ * events. It is safer to expose that gap than to present a clean but incomplete total.
  */
 export class RunAccounting {
   private readonly roots = new Map<string, RootState>();
@@ -110,6 +122,7 @@ export class RunAccounting {
         costStatus: 'known',
         unknownModels: new Set<string>(),
         modelIdentities: [],
+        missingSources: new Set<string>(),
       } satisfies ExecutionState);
     const responseQuote = metadata.responseModel
       ? estimateUsageCost(metadata.responseModel, usage)
@@ -129,6 +142,42 @@ export class RunAccounting {
       execution.costUsd = null;
       execution.unknownModels.add(quote.model);
     }
+    if (
+      !execution.modelIdentities.some(
+        (item) => item.responseId === identity.responseId && item.responseId !== undefined,
+      )
+    ) {
+      execution.modelIdentities.push(identity);
+    }
+    root.executions.set(context.runId, execution);
+  }
+
+  markUsageUnknown(
+    context: AgentRunContext,
+    metadata: ProviderResponseMetadata,
+    source: string,
+  ): void {
+    const root = this.roots.get(context.rootRunId) ?? {
+      rootRunId: context.rootRunId,
+      executions: new Map<string, ExecutionState>(),
+    };
+    this.roots.set(context.rootRunId, root);
+    const execution =
+      root.executions.get(context.runId) ??
+      ({
+        context,
+        usage: null,
+        costUsd: 0,
+        costStatus: 'known',
+        unknownModels: new Set<string>(),
+        modelIdentities: [],
+        missingSources: new Set<string>(),
+      } satisfies ExecutionState);
+    const identity = missingUsageIdentity(metadata);
+    execution.costUsd = null;
+    execution.costStatus = 'unknown';
+    execution.unknownModels.add(metadata.responseModel ?? metadata.requestedModel);
+    execution.missingSources.add(source);
     if (
       !execution.modelIdentities.some(
         (item) => item.responseId === identity.responseId && item.responseId !== undefined,
@@ -213,12 +262,14 @@ export class RunAccounting {
     let costStatus: AgentRunAccounting['costStatus'] = 'known';
     const unknownModels = new Set<string>();
     const modelIdentities: AgentModelIdentity[] = [];
+    const missingSources = new Set<string>(['failed_provider_attempt_usage']);
     for (const execution of executions) {
       if (execution.usage) inclusiveUsage = addUsage(inclusiveUsage, execution.usage);
       if (execution.costUsd !== null) inclusiveCost += execution.costUsd;
       else costStatus = 'unknown';
       if (execution.costStatus === 'estimated' && costStatus === 'known') costStatus = 'estimated';
       for (const model of execution.unknownModels) unknownModels.add(model);
+      for (const source of execution.missingSources) missingSources.add(source);
       for (const identity of execution.modelIdentities) {
         if (
           !modelIdentities.some(
@@ -249,7 +300,7 @@ export class RunAccounting {
       budgetStatus,
       modelIdentities,
       completeness: 'partial',
-      missingSources: ['compaction_usage', 'failed_provider_attempt_usage'],
+      missingSources: [...missingSources],
     };
   }
 }

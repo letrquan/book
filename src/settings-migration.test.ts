@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -13,6 +13,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
   rmSync(fakeHome, { recursive: true, force: true });
 });
@@ -20,6 +21,18 @@ afterEach(() => {
 describe('migrateLegacyPermissions', () => {
   it('returns false when no legacy permissions.json exists', () => {
     expect(migrateLegacyPermissions(dir, fakeHome)).toBe(false);
+  });
+
+  it('loads the legacy permissions file from BOOK_HOME by default', () => {
+    writeFileSync(
+      join(fakeHome, 'permissions.json'),
+      JSON.stringify({ rules: [{ toolName: 'Read', effect: 'allow' }] }),
+    );
+    vi.stubEnv('BOOK_HOME', fakeHome);
+
+    expect(migrateLegacyPermissions(dir)).toBe(true);
+    const local = JSON.parse(readFileSync(join(dir, '.book', 'settings.local.json'), 'utf-8'));
+    expect(local.permissions.allow).toContain('Read');
   });
 
   it('returns false when legacy file has no rules', () => {

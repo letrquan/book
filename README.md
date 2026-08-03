@@ -103,6 +103,11 @@ Settings are loaded in priority order (later wins):
 3. `.book/settings.local.json` (local, should be gitignored)
 4. `--settings <path>` CLI flag
 
+Set `BOOK_HOME` to replace the default `~/.book` user-state root. This relocates user settings,
+sessions, memory, managed-agent state and worktrees, jobs, rewind snapshots, telemetry, tool output,
+MCP configuration, and user-level skills, commands, agents, and `AGENTS.md` discovery. Project-local
+`.book/` directories are unchanged.
+
 Legacy `.bookrc.json` is still supported but deprecated. Use `--no-settings` to skip all `settings.json` layers (defaults + legacy only).
 
 Scalar values use the highest-priority layer. Permission rules, hook lists, and
@@ -307,6 +312,7 @@ Project themes can override any token in `.book/themes/<name>.json`. They appear
 | `BOOK_MODEL`                                                                                      | Default model                                                     |
 | `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                                 |
 | `BOOK_EFFORT`                                                                                     | Thinking effort level                                             |
+| `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                               |
 | `BOOK_WORKSPACE`                                                                                  | Default workspace                                                 |
 | `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                          |
 | `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                          |

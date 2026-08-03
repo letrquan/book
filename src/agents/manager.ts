@@ -33,6 +33,7 @@ import { projectAgentCompletion, projectAgentSummary } from './projections.js';
 import { projectToolResultForDisplay, redactToolCallForDisplay } from './activity.js';
 import { AgentStore, type AgentStoreWriteResult } from './store.js';
 import { permissionRuleForToolCall } from '../permissions.js';
+import { createRunAmbientSnapshot } from '../session/run-ambient.js';
 import type {
   AgentApplyResult,
   AgentActivity,
@@ -59,6 +60,7 @@ interface ManagerOptions {
   eventSink?: (event: AgentRuntimeEvent) => void;
   hookEventSink?: (event: string, payload: Record<string, unknown>) => void;
   runLoop?: typeof runAgentLoop;
+  compactRunner?: typeof runCompact;
   findGitRoot?: typeof findGitRoot;
   createSnapshot?: typeof createSyntheticSnapshot;
   createWorktree?: typeof createAgentWorktree;
@@ -179,7 +181,7 @@ export class AgentManager {
   private readonly idleWaiters = new Set<() => void>();
   private active = 0;
   private interactivePermissions = false;
-  private permissionMode = 'default';
+  private permissionMode: PermissionMode = 'default';
   private permissionModeOverride?: PermissionMode;
   private readonly subscribers = new Set<(event: AgentRuntimeEvent) => void>();
   private legacyEventSink?: (event: AgentRuntimeEvent) => void;
@@ -1280,6 +1282,7 @@ export class AgentManager {
     const runtime = new SessionRuntime({
       toolExecutionScheduler: this.options.runtime?.toolExecutionScheduler,
       runAccounting: this.options.runtime?.runAccounting,
+      runAmbientSnapshots: this.options.runtime?.runAmbientSnapshots,
       // Children inherit a copy of the parent's file observations so files the
       // parent already Read (or the user @-mentioned) stay editable without a
       // redundant re-Read. Worktree children key by their own workspace, so
@@ -1438,6 +1441,22 @@ export class AgentManager {
         parentRunId: record.parentRunId,
         source: 'internal',
       });
+      runtime.recordRunAmbientSnapshot(
+        runContext.runId,
+        createRunAmbientSnapshot(agentConfig, registry, {
+          permissionMode: this.permissionMode,
+        }),
+      );
+      const recordUsage = (usage: Usage): void => {
+        record.usage = accumulateUsage(record.usage, usage);
+        record.runUsage = accumulateUsage(record.runUsage, usage);
+        this.store?.saveAgent(record, { defer: true });
+        this.emit({
+          type: 'agent_status',
+          agent: projectAgentSummary(record),
+          parentSessionId: record.parentSessionId,
+        });
+      };
       const updated = await (this.options.runLoop ?? runAgentLoop)(
         agentConfig,
         registry,
@@ -1484,16 +1503,7 @@ export class AgentManager {
               this.permissionResolvers.set(request.id, resolvePromise);
             });
           },
-          onUsage: (usage) => {
-            record.usage = accumulateUsage(record.usage, usage);
-            record.runUsage = accumulateUsage(record.runUsage, usage);
-            this.store?.saveAgent(record, { defer: true });
-            this.emit({
-              type: 'agent_status',
-              agent: projectAgentSummary(record),
-              parentSessionId: record.parentSessionId,
-            });
-          },
+          onUsage: recordUsage,
           onAssistantMessageComplete: (message) => {
             this.flushTextDelta(record.id);
             if (!record.transcript.some((candidate) => candidate.id === message.id)) {
@@ -1538,10 +1548,19 @@ export class AgentManager {
           onCompact: (history, usage) => {
             record.runMetrics!.compactions++;
             const activity = startActivity('compacting', 'Compacting context');
-            return runCompact(agentConfig, history, {
+            return (this.options.compactRunner ?? runCompact)(agentConfig, history, {
               trigger: 'auto',
               preContextTokens: usage ? usagePressureTokens(usage) : undefined,
               signal: controller.signal,
+              beforeModelCall: (model) =>
+                runtime.runAccounting.checkBeforeModelCall(runContext.rootRunId, model),
+              onUsage: (compactUsage, metadata) => {
+                runtime.runAccounting.record(runContext, compactUsage, metadata);
+                recordUsage(compactUsage);
+              },
+              onUsageMissing: (metadata) => {
+                runtime.runAccounting.markUsageUnknown(runContext, metadata, 'compaction_usage');
+              },
             }).then(
               (result) => {
                 finishActivityById(activity.id, result.status === 'failed');

@@ -1,10 +1,10 @@
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 import { spawn, type ChildProcess } from 'child_process';
 import type { ToolDefinition, ToolContext } from './types/tools.js';
 import { toolFailure, toolSuccess } from './tools/result.js';
 import { getPackageVersion } from './version-info.js';
+import { resolveBookHome } from './book-home.js';
 
 export interface McpServerConfig {
   command: string;
@@ -54,11 +54,9 @@ const DEFAULT_INITIALIZATION_TIMEOUT_MS = 10_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_STDERR_BYTES = 8_192;
 
-export function loadMcpConfig(
-  workspace: string,
-  home = homedir(),
-): Record<string, McpServerConfig> {
-  const sources = [join(home, '.book', 'mcp.json'), join(workspace, '.mcp.json')];
+export function loadMcpConfig(workspace: string, home?: string): Record<string, McpServerConfig> {
+  const bookHome = home ? join(home, '.book') : resolveBookHome();
+  const sources = [join(bookHome, 'mcp.json'), join(workspace, '.mcp.json')];
   const servers: Record<string, McpServerConfig> = {};
 
   for (const path of sources) {

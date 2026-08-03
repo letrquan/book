@@ -7,7 +7,6 @@ import { SessionStore } from '../session/store.js';
 import { connectMcpServers } from '../mcp.js';
 import { exit } from './exit.js';
 import { join } from 'path';
-import { homedir } from 'os';
 import type { AgentConfig } from '../types/runtime.js';
 import type { RewindSnapshotStoreInterface } from '../types/sessions.js';
 import { resolveSessionBootstrap } from '../session/resolve.js';
@@ -26,8 +25,9 @@ import { isInkIncrementalRendererPatched } from './ink-patch.js';
 import { resolveTuiRendererMode } from './tui-renderer-mode.js';
 import { resolvePermissionMode } from '../permission-mode.js';
 import { spawn } from 'node:child_process';
+import { resolveBookHome } from '../book-home.js';
 
-const SESSION_ROOT = join(homedir(), '.book', 'sessions');
+const SESSION_ROOT = join(resolveBookHome(), 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
 const ENABLE_MOUSE_TRACKING = '\x1b[?1000h';
 const ENABLE_SGR_MOUSE = '\x1b[?1006h';

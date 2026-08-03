@@ -14,7 +14,6 @@ import {
 } from 'fs';
 import { lstat, mkdir, readFile, readdir, readlink, rename, rm, writeFile } from 'fs/promises';
 import { createHash, randomUUID } from 'crypto';
-import { homedir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import ignore from 'ignore';
 import type {
@@ -24,6 +23,7 @@ import type {
   RewindSnapshotManifest,
   RewindSnapshotStoreInterface,
 } from '../types/sessions.js';
+import { resolveBookHome } from '../book-home.js';
 
 export const REWIND_MAX_ENTRIES = 20_000;
 export const REWIND_MAX_FILE_BYTES = 16 * 1024 * 1024;
@@ -84,7 +84,7 @@ export function rewindWorkspaceHash(workspace: string): string {
 }
 
 export function persistentRewindRoot(workspace: string): string {
-  return join(homedir(), '.book', 'rewind', rewindWorkspaceHash(workspace));
+  return join(resolveBookHome(), 'rewind', rewindWorkspaceHash(workspace));
 }
 
 class UnavailableRewindSnapshotStore implements RewindSnapshotStoreInterface {

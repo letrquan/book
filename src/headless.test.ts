@@ -138,6 +138,12 @@ describe('runHeadless — text output', () => {
       ],
       completeness: 'partial',
     });
+    expect(result.runs?.[0]?.ambient).toMatchObject({
+      schemaVersion: 1,
+      model: { requestedModel: 'gpt-5' },
+      settings: { agentsMode: 'adaptive' },
+      completeness: 'partial',
+    });
   });
 
   it('fails before a budgeted call when model pricing is unknown', async () => {
@@ -186,6 +192,12 @@ describe('runHeadless — text output', () => {
     expect(events.find((event) => event.type === 'text')).toEqual({
       type: 'text',
       content: 'Hello!',
+    });
+    expect(events.find((event) => event.type === 'run_started')).toMatchObject({
+      ambient: {
+        schemaVersion: 1,
+        settings: { agentsMode: 'adaptive' },
+      },
     });
   });
 

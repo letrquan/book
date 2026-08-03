@@ -5,6 +5,7 @@ import { AgentContextCache } from '../agent/context.js';
 import { ToolExecutionScheduler } from '../tools/execution-scheduler.js';
 import { RunAccounting } from './run-accounting.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
+import type { AgentRunAmbientSnapshot } from '../types/runs.js';
 
 export interface SessionRuntimeOptions {
   tasks?: AgentTask[];
@@ -14,6 +15,7 @@ export interface SessionRuntimeOptions {
   agentContextCache?: AgentContextCache;
   toolExecutionScheduler?: ToolExecutionScheduler;
   runAccounting?: RunAccounting;
+  runAmbientSnapshots?: Map<string, AgentRunAmbientSnapshot>;
   traceId?: string;
 }
 
@@ -27,6 +29,7 @@ export class SessionRuntime {
   readonly toolExecutionScheduler: ToolExecutionScheduler;
   readonly traceId: string;
   readonly runAccounting: RunAccounting;
+  readonly runAmbientSnapshots: Map<string, AgentRunAmbientSnapshot>;
   readonly shellManager: ShellJobManager;
   /** Advisory memory of recent identical tool failures (registry circuit breaker). */
   readonly recentToolFailures = new Map<string, number>();
@@ -46,6 +49,7 @@ export class SessionRuntime {
     this.agentContextCache = options.agentContextCache ?? new AgentContextCache();
     this.toolExecutionScheduler = options.toolExecutionScheduler ?? new ToolExecutionScheduler();
     this.runAccounting = options.runAccounting ?? new RunAccounting();
+    this.runAmbientSnapshots = options.runAmbientSnapshots ?? new Map();
     this.shellManager = new ShellJobManager(this.backgroundShells);
     this.traceId = options.traceId ?? crypto.randomUUID();
   }
@@ -79,6 +83,20 @@ export class SessionRuntime {
 
   releaseChildProcess(child: ChildProcess): void {
     this.childProcesses.delete(child);
+  }
+
+  recordRunAmbientSnapshot(
+    runId: string,
+    snapshot: AgentRunAmbientSnapshot,
+  ): AgentRunAmbientSnapshot {
+    const existing = this.runAmbientSnapshots.get(runId);
+    if (existing) return existing;
+    this.runAmbientSnapshots.set(runId, snapshot);
+    return snapshot;
+  }
+
+  snapshotRunAmbient(runId: string): AgentRunAmbientSnapshot | undefined {
+    return this.runAmbientSnapshots.get(runId);
   }
 
   get isDisposed(): boolean {

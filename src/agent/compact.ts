@@ -9,7 +9,11 @@ import type {
   ConversationCheckpointV2,
 } from '../types/sessions.js';
 import type { Message, Usage } from '../types/messages.js';
-import type { ProviderMessage, SystemPromptZones } from '../types/providers.js';
+import type {
+  ProviderMessage,
+  ProviderResponseMetadata,
+  SystemPromptZones,
+} from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
 import { createProvider, type Provider } from '../provider/index.js';
 import { isContextOverflowError } from '../provider/reliability.js';
@@ -307,6 +311,9 @@ export interface RunCompactOptions {
   onHookEvent?: (event: string, payload: Record<string, unknown>) => void;
   minMessages?: number;
   provider?: Provider;
+  beforeModelCall?: (model: string) => { allowed: boolean; message?: string };
+  onUsage?: (usage: Usage, metadata: ProviderResponseMetadata) => void;
+  onUsageMissing?: (metadata: ProviderResponseMetadata) => void;
 }
 
 export async function runCompact(
@@ -440,6 +447,7 @@ export async function runCompact(
         checkpointBudget,
         options.signal,
         options.provider,
+        options,
       );
       if (!generated.ok) {
         if (generated.contextOverflow) {
@@ -469,6 +477,7 @@ export async function runCompact(
           checkpointBudget,
           options.signal,
           options.provider,
+          options,
         );
         if (!generated.ok) {
           if (generated.contextOverflow) {
@@ -971,9 +980,24 @@ async function generateCheckpoint(
   maxOutputTokens: number,
   signal?: AbortSignal,
   provider: Provider = createProvider(config),
+  options?: Pick<RunCompactOptions, 'beforeModelCall' | 'onUsage' | 'onUsageMissing'>,
 ): Promise<GenerateResult> {
+  const budget = options?.beforeModelCall?.(config.model);
+  if (budget && !budget.allowed) {
+    return {
+      ok: false,
+      contextOverflow: false,
+      result: {
+        status: 'failed',
+        reason: 'budget-overflow',
+        error: budget.message ?? 'Run budget cannot be enforced for compaction.',
+      },
+    };
+  }
+
   let text = '';
   let sawDone = false;
+  let usageRecorded = false;
   try {
     for await (const event of provider.stream(
       config,
@@ -992,7 +1016,21 @@ async function generateCheckpoint(
         };
       }
       if (event.type === 'text' && event.content) text += event.content;
-      if (event.type === 'done') sawDone = true;
+      if (event.type === 'done') {
+        sawDone = true;
+        if (!usageRecorded) {
+          usageRecorded = true;
+          const metadata: ProviderResponseMetadata = {
+            provider: provider.id,
+            requestedModel: config.model,
+            responseModel: event.responseModel,
+            responseId: event.responseId,
+            finishReasons: event.finishReasons,
+          };
+          if (event.usage) options?.onUsage?.(event.usage, metadata);
+          else options?.onUsageMissing?.(metadata);
+        }
+      }
       if (event.type === 'error') {
         const error = event.error ?? 'Checkpoint generation failed.';
         return {

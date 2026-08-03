@@ -404,6 +404,78 @@ describe('runCompact', () => {
     }
   });
 
+  it('reports checkpoint usage with provider response identity', async () => {
+    const onUsage = vi.fn();
+    const usage: Usage = { promptTokens: 11, completionTokens: 3, totalTokens: 14 };
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield {
+        type: 'done',
+        usage,
+        responseModel: 'resolved-model',
+        responseId: 'compact-response',
+        finishReasons: ['stop'],
+      };
+    });
+
+    const result = await runCompact(makeConfig({ model: 'requested-model' }), twoTurns, {
+      trigger: 'manual',
+      onUsage,
+    });
+
+    expect(result.status).toBe('compacted');
+    expect(onUsage).toHaveBeenCalledOnce();
+    expect(onUsage).toHaveBeenCalledWith(usage, {
+      provider: 'test',
+      requestedModel: 'requested-model',
+      responseModel: 'resolved-model',
+      responseId: 'compact-response',
+      finishReasons: ['stop'],
+    });
+  });
+
+  it('reports checkpoint completions that omit usage', async () => {
+    const onUsageMissing = vi.fn();
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield {
+        type: 'done',
+        responseModel: 'resolved-model',
+        responseId: 'compact-response-without-usage',
+        finishReasons: ['stop'],
+      };
+    });
+
+    const result = await runCompact(makeConfig({ model: 'requested-model' }), twoTurns, {
+      trigger: 'manual',
+      onUsageMissing,
+    });
+
+    expect(result.status).toBe('compacted');
+    expect(onUsageMissing).toHaveBeenCalledOnce();
+    expect(onUsageMissing).toHaveBeenCalledWith({
+      provider: 'test',
+      requestedModel: 'requested-model',
+      responseModel: 'resolved-model',
+      responseId: 'compact-response-without-usage',
+      finishReasons: ['stop'],
+    });
+  });
+
+  it('checks the root budget before starting a checkpoint model call', async () => {
+    const result = await runCompact(makeConfig(), twoTurns, {
+      trigger: 'manual',
+      beforeModelCall: () => ({ allowed: false, message: 'budget exhausted' }),
+    });
+
+    expect(result).toEqual({
+      status: 'failed',
+      reason: 'budget-overflow',
+      error: 'budget exhausted',
+    });
+    expect(mockedStream).not.toHaveBeenCalled();
+  });
+
   it('fails closed on provider error events', async () => {
     mockedStream.mockImplementation(async function* () {
       yield { type: 'text', content: 'partial' };

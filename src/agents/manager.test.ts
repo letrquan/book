@@ -11,6 +11,8 @@ import { AgentStore } from './store.js';
 import type { AtomicJsonWriter } from './atomic-json.js';
 import { repositoryHash } from './git-isolation.js';
 import type { AgentRuntimeEvent, AgentSnapshot } from './types.js';
+import { createAgentRunContext } from '../types/runs.js';
+import { SessionRuntime } from '../session/runtime.js';
 
 const tempRoots: string[] = [];
 
@@ -351,6 +353,197 @@ describe('AgentManager lifecycle', () => {
       usage: { totalTokens: 10 },
       result: 'Finished second',
     });
+    manager.dispose();
+  });
+
+  it('attributes managed-child compaction usage to the shared root accounting', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root, model: 'gpt-5' });
+    config.settings.agents.persist = false;
+    const runtime = new SessionRuntime();
+    const parentContext = createAgentRunContext({
+      sessionId: 'parent-session',
+      runId: 'parent-run',
+      source: 'headless',
+      startedAt: 1,
+    });
+    runtime.runAccounting.startRoot(parentContext, 1);
+    const budgetChecks: unknown[] = [];
+    const compactRunner = vi.fn(async (_config, _history, options) => {
+      budgetChecks.push(options.beforeModelCall?.('gpt-5'));
+      options.onUsage?.(
+        { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
+        {
+          provider: 'openai-compatible',
+          requestedModel: 'gpt-5',
+          responseModel: 'gpt-5',
+          responseId: 'child-compact-response',
+        },
+      );
+      return { status: 'skipped' as const, reason: 'too-short' as const };
+    });
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runtime,
+      compactRunner,
+      runLoop: async (_config, _registry, prompt, history, callbacks) => {
+        await callbacks.onCompact?.(history, null);
+        return [
+          ...history,
+          {
+            id: 'assistant-child-compact',
+            role: 'assistant',
+            content: `Finished ${prompt}`,
+            includeInContext: true,
+            timestamp: Date.now(),
+          },
+        ];
+      },
+    });
+
+    const spawned = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'inspect',
+      rootRunId: parentContext.rootRunId,
+      parentRunId: parentContext.runId,
+    });
+    const finished = await manager.wait(spawned.id, 1000);
+
+    expect(budgetChecks).toEqual([{ allowed: true, status: 'within' }]);
+    expect(finished).toMatchObject({
+      runUsage: { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
+      usage: { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
+      runMetrics: { compactions: 1 },
+    });
+    expect(runtime.runAccounting.snapshotRun(finished.runId!)).toMatchObject({
+      directUsage: { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
+      modelIdentities: [{ responseId: 'child-compact-response', status: 'verified' }],
+      missingSources: ['failed_provider_attempt_usage'],
+    });
+    expect(runtime.snapshotRunAmbient(finished.runId!)).toMatchObject({
+      schemaVersion: 1,
+      model: { requestedModel: 'gpt-5' },
+      settings: { agentsMode: 'adaptive' },
+      policies: { permissionMode: 'default' },
+      completeness: 'partial',
+    });
+    manager.dispose();
+  });
+
+  it('marks shared root accounting unknown when managed-child compaction omits usage', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root, model: 'gpt-5' });
+    config.settings.agents.persist = false;
+    const runtime = new SessionRuntime();
+    const parentContext = createAgentRunContext({
+      sessionId: 'parent-session',
+      runId: 'parent-run',
+      source: 'headless',
+      startedAt: 1,
+    });
+    runtime.runAccounting.startRoot(parentContext, 1);
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runtime,
+      compactRunner: async (_config, _history, options) => {
+        options.onUsageMissing?.({
+          provider: 'openai-compatible',
+          requestedModel: 'gpt-5',
+          responseModel: 'gpt-5',
+          responseId: 'child-compact-without-usage',
+        });
+        return { status: 'skipped' as const, reason: 'too-short' as const };
+      },
+      runLoop: async (_config, _registry, prompt, history, callbacks) => {
+        await callbacks.onCompact?.(history, null);
+        return [
+          ...history,
+          {
+            id: 'assistant-child-compact-without-usage',
+            role: 'assistant',
+            content: `Finished ${prompt}`,
+            includeInContext: true,
+            timestamp: Date.now(),
+          },
+        ];
+      },
+    });
+
+    const spawned = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'inspect',
+      rootRunId: parentContext.rootRunId,
+      parentRunId: parentContext.runId,
+    });
+    const finished = await manager.wait(spawned.id, 1000);
+
+    expect(runtime.runAccounting.snapshotRun(finished.runId!)).toMatchObject({
+      costUsd: null,
+      costStatus: 'unknown',
+      budgetStatus: 'unknown',
+      missingSources: ['failed_provider_attempt_usage', 'compaction_usage'],
+    });
+    expect(
+      runtime.runAccounting.checkBeforeModelCall(parentContext.rootRunId, 'gpt-5'),
+    ).toMatchObject({ allowed: false, status: 'unknown' });
+    manager.dispose();
+  });
+
+  it('passes an exhausted root budget to managed-child compaction before its model call', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root, model: 'gpt-5' });
+    config.settings.agents.persist = false;
+    const runtime = new SessionRuntime();
+    const parentContext = createAgentRunContext({
+      sessionId: 'parent-session',
+      runId: 'parent-run',
+      source: 'headless',
+      startedAt: 1,
+    });
+    runtime.runAccounting.startRoot(parentContext, 0);
+    const budgetChecks: unknown[] = [];
+    const compactRunner = vi.fn(async (_config, _history, options) => {
+      const budget = options.beforeModelCall?.('gpt-5');
+      budgetChecks.push(budget);
+      return {
+        status: 'failed' as const,
+        reason: 'budget-overflow' as const,
+        error: budget?.message ?? 'budget blocked',
+      };
+    });
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runtime,
+      compactRunner,
+      runLoop: async (_config, _registry, prompt, history, callbacks) => {
+        await callbacks.onCompact?.(history, null);
+        return [
+          ...history,
+          {
+            id: 'assistant-child-budget',
+            role: 'assistant',
+            content: `Finished ${prompt}`,
+            includeInContext: true,
+            timestamp: Date.now(),
+          },
+        ];
+      },
+    });
+
+    const spawned = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'inspect',
+      rootRunId: parentContext.rootRunId,
+      parentRunId: parentContext.runId,
+    });
+    const finished = await manager.wait(spawned.id, 1000);
+
+    expect(budgetChecks).toEqual([expect.objectContaining({ allowed: false, status: 'exceeded' })]);
+    expect(finished.runUsage).toBeUndefined();
+    expect(compactRunner).toHaveBeenCalledOnce();
     manager.dispose();
   });
 

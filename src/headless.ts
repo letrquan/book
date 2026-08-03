@@ -123,6 +123,7 @@ export async function runHeadless(
         outcome,
         usage: agent.runUsage ?? null,
         accounting: runtime.runAccounting.snapshotRun(agent.runId),
+        ambient: runtime.snapshotRunAmbient(agent.runId),
       });
     };
     const recordManagedCompletionResult = (notification: AgentCompletionNotification): void => {
@@ -162,6 +163,7 @@ export async function runHeadless(
         outcome,
         usage: completion.usage ?? null,
         accounting: runtime.runAccounting.snapshotRun(notification.runId),
+        ambient: runtime.snapshotRunAmbient(notification.runId),
       });
     };
     const rootContexts = new Map<string, AgentRunContext>();
@@ -239,6 +241,8 @@ export async function runHeadless(
           history,
           sessionId,
           transcriptOrdinal: transcript.length,
+          runContext,
+          runtime,
           timelineStore: store,
           onCommitted: (_result, boundary) => compactBoundaries.push(boundary),
           options: {
@@ -306,6 +310,7 @@ export async function runHeadless(
             createTerminalOutcome('interrupted', 'missing_terminal', { partialOutput: false }),
           usage: runtime.runAccounting.snapshotRun(runContext.runId)?.directUsage ?? lastUsage,
           accounting: runtime.runAccounting.snapshotRun(runContext.runId),
+          ambient: runtime.snapshotRunAmbient(runContext.runId),
         });
         throw error;
       }
@@ -324,6 +329,7 @@ export async function runHeadless(
           }),
         usage: runtime.runAccounting.snapshotRun(runContext.runId)?.directUsage ?? lastUsage,
         accounting: runtime.runAccounting.snapshotRun(runContext.runId),
+        ambient: runtime.snapshotRunAmbient(runContext.runId),
       });
     };
 
@@ -354,6 +360,28 @@ export async function runHeadless(
     }
 
     for (const prompt of prompts) {
+      const userMessage: Message = {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: prompt,
+        includeInContext: true,
+        kind: 'conversation',
+        timestamp: Date.now(),
+      };
+      const runContext = createAgentRunContext({
+        sessionId: runtimeSessionId,
+        runId: userMessage.id,
+        source: opts.runSource ?? 'headless',
+        resumedFromRunId:
+          runResults.length === 0
+            ? (opts.resumedFromRunId ??
+              (opts.history.length > 0
+                ? [...opts.history].reverse().find((message) => message.role === 'user')?.id
+                : undefined))
+            : undefined,
+      });
+      runtime.runAccounting.startRoot(runContext, opts.maxBudgetUsd);
+
       // Cross-turn auto-compact before appending the new user message.
       const contextLimit = resolveContextLimit(config);
       const hostCompactAttemptKey = `${usagePressureTokens(lastUsage)}:${contextHistory.length}`;
@@ -370,6 +398,8 @@ export async function runHeadless(
             history: contextHistory,
             sessionId,
             transcriptOrdinal: transcript.length,
+            runContext,
+            runtime,
             timelineStore: store,
             onCommitted: (compactResult, boundary) => {
               contextHistory.length = 0;
@@ -393,14 +423,6 @@ export async function runHeadless(
         }
       }
 
-      const userMessage: Message = {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: prompt,
-        includeInContext: true,
-        kind: 'conversation',
-        timestamp: Date.now(),
-      };
       const recorded = await agentSession.recordUserMessage({
         config,
         sessionId: runtimeSessionId,
@@ -415,18 +437,6 @@ export async function runHeadless(
       sessionName = recorded.sessionName;
       const contextMessage = recorded.contextMessage;
       transcript.push(userMessage);
-      const runContext = createAgentRunContext({
-        sessionId: runtimeSessionId,
-        runId: userMessage.id,
-        source: opts.runSource ?? 'headless',
-        resumedFromRunId:
-          runResults.length === 0
-            ? (opts.resumedFromRunId ??
-              (opts.history.length > 0
-                ? [...opts.history].reverse().find((message) => message.role === 'user')?.id
-                : undefined))
-            : undefined,
-      });
       rootContexts.set(runContext.rootRunId, runContext);
       await runParentTurn(contextMessage, prompt, userMessage, runContext);
     }
@@ -629,7 +639,7 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
 
   switch (event.type) {
     case 'run_started':
-      emit({ type: 'run_start', run: event.context });
+      emit({ type: 'run_start', run: event.context, ambient: event.ambient });
       break;
     case 'text':
       if (opts.includePartialMessages !== false) emit({ type: 'assistant', text: event.content });

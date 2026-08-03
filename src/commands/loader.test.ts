@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -12,6 +12,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -139,6 +140,23 @@ describe('discoverCommands', () => {
     expect(result).toEqual([]);
   });
 
+  it('discovers user commands from BOOK_HOME', () => {
+    const bookHome = join(dir, 'isolated-book-home');
+    const commandsDir = join(bookHome, 'commands');
+    const workspace = join(dir, 'workspace');
+    mkdirSync(commandsDir, { recursive: true });
+    mkdirSync(workspace);
+    writeFileSync(
+      join(commandsDir, 'global.md'),
+      '---\ndescription: Isolated user command\n---\nGlobal body',
+    );
+    vi.stubEnv('BOOK_HOME', bookHome);
+
+    expect(discoverCommands(workspace)).toEqual([
+      expect.objectContaining({ name: 'global', source: 'user' }),
+    ]);
+  });
+
   it('discovers commands from .book/commands/*.md', () => {
     const cmdsDir = join(dir, '.book', 'commands');
     mkdirSync(cmdsDir, { recursive: true });
@@ -166,12 +184,17 @@ describe('discoverCommands', () => {
   });
 
   it('project commands override user commands with same name', () => {
-    // We can't easily mock homedir() without vitest mocking, so instead we
-    // test that the Map-based dedup works correctly by verifying that
-    // later entries override earlier ones.
+    const bookHome = join(dir, 'isolated-book-home');
+    const userCommandsDir = join(bookHome, 'commands');
+    mkdirSync(userCommandsDir, { recursive: true });
+    writeFileSync(
+      join(userCommandsDir, 'same.md'),
+      '---\ndescription: User version\n---\nUser body',
+    );
     const cmdsDir = join(dir, '.book', 'commands');
     mkdirSync(cmdsDir, { recursive: true });
     writeFileSync(join(cmdsDir, 'same.md'), '---\ndescription: Project version\n---\nProject body');
+    vi.stubEnv('BOOK_HOME', bookHome);
 
     const result = discoverCommands(dir);
     expect(result.find((c) => c.name === 'same')?.description).toBe('Project version');

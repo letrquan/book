@@ -12,7 +12,6 @@
  * the reader consumes the active file plus that backup.
  */
 import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type {
   ModelStatRow,
@@ -21,6 +20,7 @@ import type {
   ToolUseRecord,
 } from './types/tool-telemetry.js';
 import { createDebugLogger, positiveInteger } from './debug-log.js';
+import { resolveBookHome } from './book-home.js';
 
 const log = createDebugLogger('tool-telemetry');
 
@@ -30,7 +30,7 @@ const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
 
 /** Resolve the telemetry directory, honoring an env override for tests/CI. */
 export function defaultToolTelemetryDir(): string {
-  return process.env.BOOK_TOOL_TELEMETRY_DIR || join(homedir(), '.book', 'telemetry');
+  return process.env.BOOK_TOOL_TELEMETRY_DIR || join(resolveBookHome(), 'telemetry');
 }
 
 function logPath(root: string): string {

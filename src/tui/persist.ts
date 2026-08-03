@@ -10,13 +10,13 @@
  * they follow the user across folders rather than being re-entered per project.
  */
 import { existsSync } from 'fs';
-import { homedir } from 'os';
 import { join } from 'path';
 import {
   formatSettingsDiagnostics,
   readSettingsDocument,
   SettingsRepository,
 } from '../settings-repository.js';
+import { resolveBookHome } from '../book-home.js';
 
 const LOCAL_DIR = '.book';
 const LOCAL_FILE = 'settings.local.json';
@@ -29,7 +29,7 @@ function localSettingsPath(workspace: string): string {
 
 /** Absolute path to the user-global settings file (~/.book/settings.json). */
 function globalSettingsPath(): string {
-  return join(homedir(), LOCAL_DIR, GLOBAL_FILE);
+  return join(resolveBookHome(), GLOBAL_FILE);
 }
 
 /** Human-readable labels used in provider-removal diagnostics. */

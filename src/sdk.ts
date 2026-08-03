@@ -1,6 +1,5 @@
 /** Book Agent SDK — programmatic API for embedding Book as a library. */
 
-import { homedir } from 'os';
 import { join } from 'path';
 import type { UserQuestionHandler } from './types/tools.js';
 import type { AgentConfig } from './types/runtime.js';
@@ -24,6 +23,7 @@ import {
   getDebugLogPath,
 } from './debug-log.js';
 import { resolvePermissionMode } from './permission-mode.js';
+import { resolveBookHome } from './book-home.js';
 
 export type QueryEvent = AgentEvent;
 
@@ -101,7 +101,7 @@ export async function* query(
 
   const persistSession = options.persistSession !== false;
   const sessionStore = persistSession
-    ? (options.sessionStore ?? new SessionStore(join(homedir(), '.book', 'sessions')))
+    ? (options.sessionStore ?? new SessionStore(join(resolveBookHome(), 'sessions')))
     : undefined;
   const bootstrap = resolveSessionBootstrap(sessionStore, {
     cwd: config.workspace,
@@ -233,6 +233,7 @@ export type {
 export type {
   AgentModelIdentity,
   AgentModelIdentityStatus,
+  AgentRunAmbientSnapshot,
   AgentRunAccounting,
   AgentRunContext,
   AgentRunResult,

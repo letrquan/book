@@ -1,8 +1,8 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, extname, relative } from 'path';
-import { homedir } from 'os';
 import { parseFrontmatter } from './frontmatter.js';
 import { canonicalToolName } from './tools/aliases.js';
+import { resolveBookHome } from './book-home.js';
 
 const KNOWN_AGENT_TOOLS = new Set([
   '*',
@@ -131,7 +131,7 @@ function markdownFiles(root: string): string[] {
  *   2. .book/agents/*.md    (project)
  */
 export function discoverAgents(workspace: string): SubagentDef[] {
-  const userDir = join(homedir(), '.book', 'agents');
+  const userDir = join(resolveBookHome(), 'agents');
   const projectDir = join(workspace, '.book', 'agents');
 
   const byName = new Map<string, SubagentDef>();

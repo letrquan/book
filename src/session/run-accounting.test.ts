@@ -48,6 +48,7 @@ describe('RunAccounting', () => {
       inclusiveUsage: usage(14, 7),
       runIds: ['root', 'child'],
       budgetStatus: 'within',
+      missingSources: ['failed_provider_attempt_usage'],
     });
   });
 
@@ -62,6 +63,36 @@ describe('RunAccounting', () => {
     expect(accounting.snapshotRoot(root.rootRunId)).toMatchObject({
       costStatus: 'estimated',
       modelIdentities: [{ status: 'requested_only' }],
+    });
+  });
+
+  it('fails future budget checks closed when a compaction omits usage', () => {
+    const accounting = new RunAccounting();
+    const root = context('root');
+    accounting.startRoot(root, 1);
+
+    accounting.markUsageUnknown(
+      root,
+      {
+        provider: 'openai-compatible',
+        requestedModel: 'gpt-5',
+        responseModel: 'gpt-5-2025-08-07',
+        responseId: 'compact-without-usage',
+      },
+      'compaction_usage',
+    );
+
+    expect(accounting.snapshotRoot(root.rootRunId)).toMatchObject({
+      costUsd: null,
+      costStatus: 'unknown',
+      budgetStatus: 'unknown',
+      unknownModels: ['gpt-5-2025-08-07'],
+      modelIdentities: [{ responseId: 'compact-without-usage', status: 'verified' }],
+      missingSources: ['failed_provider_attempt_usage', 'compaction_usage'],
+    });
+    expect(accounting.checkBeforeModelCall(root.rootRunId, 'gpt-5')).toMatchObject({
+      allowed: false,
+      status: 'unknown',
     });
   });
 

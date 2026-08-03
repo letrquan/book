@@ -1,6 +1,5 @@
 import { readFileSync, existsSync } from 'fs';
 import { join, normalize } from 'path';
-import { homedir } from 'os';
 import {
   bookSettingsSchema,
   DEFAULT_SETTINGS,
@@ -8,6 +7,7 @@ import {
   type ResolvedSettings,
 } from './settings.js';
 import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
+import { resolveBookHome } from './book-home.js';
 
 const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
 
@@ -158,7 +158,10 @@ export function resolveSettings(
 
   // Layer 1: User settings (~/.book/settings.json)
   const userPath =
-    paths.userSettingsPath ?? join(paths.home ?? homedir(), '.book', 'settings.json');
+    paths.userSettingsPath ??
+    (paths.home
+      ? join(paths.home, '.book', 'settings.json')
+      : join(resolveBookHome(), 'settings.json'));
   const user = loadSettingsFile(userPath);
   if (user) resolved = mergeLayer(resolved, user, true);
 
@@ -191,8 +194,8 @@ export { loadSettingsFile };
  * @param home - User home directory; injectable for isolated migration tests
  * @returns true if migration occurred, false otherwise
  */
-export function migrateLegacyPermissions(workspace: string, home = homedir()): boolean {
-  const legacyPath = join(home, '.book', 'permissions.json');
+export function migrateLegacyPermissions(workspace: string, home?: string): boolean {
+  const legacyPath = join(home ? join(home, '.book') : resolveBookHome(), 'permissions.json');
   if (!existsSync(legacyPath)) return false;
   const markerPath = join(workspace, '.book', 'migrations.json');
   try {

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, parse, resolve } from 'path';
+import { resolveBookHome } from './book-home.js';
 
 export type ProjectInstructionLayer = 'user' | 'project' | 'local' | 'rule';
 
@@ -36,17 +37,19 @@ function ancestorsFromRoot(workspace: string): string[] {
 
 export function discoverProjectInstructions(
   workspace: string,
-  homeDir = homedir(),
+  homeDir?: string,
 ): ProjectInstructionSource[] {
   const sources: ProjectInstructionSource[] = [];
   const workspaceRoot = resolve(workspace);
+  const systemHome = homeDir ?? homedir();
+  const bookHome = homeDir ? join(homeDir, '.book') : resolveBookHome();
   const add = (path: string, layer: ProjectInstructionLayer) => {
     const source = readSource(path, layer);
     if (source) sources.push(source);
   };
 
-  add(join(homeDir, '.claude', 'CLAUDE.md'), 'user');
-  add(join(homeDir, '.book', 'AGENTS.md'), 'user');
+  add(join(systemHome, '.claude', 'CLAUDE.md'), 'user');
+  add(join(bookHome, 'AGENTS.md'), 'user');
 
   for (const dir of ancestorsFromRoot(workspaceRoot)) {
     add(join(dir, 'AGENTS.md'), 'project');

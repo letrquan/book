@@ -14,6 +14,8 @@ import type {
 } from '../types/sessions.js';
 import type { Message } from '../types/messages.js';
 import { createSessionFixture } from '../test/session-fixture.js';
+import { createAgentRunContext } from '../types/runs.js';
+import { SessionRuntime } from './runtime.js';
 
 function compactedResult(): Extract<CompactResult, { status: 'compacted' }> {
   const replacementHistory: Message[] = [
@@ -94,18 +96,22 @@ describe('AgentSession', () => {
       config: defaultConfig(),
       registry: {} as ToolRegistry,
       displayMessage: 'hello',
-      createUserMessage: () => ({
-        id: 'user-send',
-        role: 'user',
-        content: 'hello',
-        includeInContext: true,
-        timestamp: 10,
-      }),
+      createUserMessage: () => {
+        order.push('create-user-message');
+        return {
+          id: 'user-send',
+          role: 'user',
+          content: 'hello',
+          includeInContext: true,
+          timestamp: 10,
+        };
+      },
       history: [],
       sessionId: 'session-1',
       callbacks: { onEvent: () => {}, onTurnStart: () => {} },
-      beforePrepare: () => {
+      beforePrepare: (control) => {
         order.push('before-prepare');
+        expect(control.runContext.runId).toBe('user-send');
       },
       onPreparing: () => {
         order.push('preparing');
@@ -120,7 +126,13 @@ describe('AgentSession', () => {
       messages: [message],
       outcome: { status: 'completed', reason: 'normal_completion', partialOutput: false },
     });
-    expect(order).toEqual(['before-prepare', 'preparing', 'prepared', 'run:hello:0']);
+    expect(order).toEqual([
+      'create-user-message',
+      'before-prepare',
+      'preparing',
+      'prepared',
+      'run:hello:0',
+    ]);
     expect(session.operations.activeKind).toBeNull();
   });
 
@@ -775,6 +787,89 @@ describe('AgentSession', () => {
     expect(postCompactCalled).toBe(false);
   });
 
+  it('attributes compaction usage to the active root run', async () => {
+    const runtime = new SessionRuntime();
+    const runContext = createAgentRunContext({
+      sessionId: 'session-1',
+      runId: 'root-run',
+      source: 'headless',
+      startedAt: 1,
+    });
+    const session = new AgentSession({
+      runtime,
+      compactRunner: async (_config, _history, options) => {
+        options.onUsage?.(
+          { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
+          {
+            provider: 'openai-compatible',
+            requestedModel: 'gpt-5',
+            responseModel: 'gpt-5',
+            responseId: 'compact-response',
+          },
+        );
+        return compactedResult();
+      },
+    });
+
+    await session.compact({
+      config: defaultConfig({ model: 'gpt-5' }),
+      history: [],
+      sessionId: 'session-1',
+      transcriptOrdinal: 0,
+      runContext,
+      runtime,
+      options: { trigger: 'auto' },
+    });
+
+    expect(runtime.runAccounting.snapshotRoot(runContext.rootRunId)).toMatchObject({
+      directUsage: { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
+      inclusiveUsage: { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
+      modelIdentities: [{ responseId: 'compact-response', status: 'verified' }],
+      missingSources: ['failed_provider_attempt_usage'],
+    });
+  });
+
+  it('marks root accounting unknown when compaction completes without usage', async () => {
+    const runtime = new SessionRuntime();
+    const runContext = createAgentRunContext({
+      sessionId: 'session-1',
+      runId: 'root-run',
+      source: 'headless',
+      startedAt: 1,
+    });
+    runtime.runAccounting.startRoot(runContext, 1);
+    const session = new AgentSession({
+      runtime,
+      compactRunner: async (_config, _history, options) => {
+        options.onUsageMissing?.({
+          provider: 'openai-compatible',
+          requestedModel: 'gpt-5',
+          responseModel: 'gpt-5',
+          responseId: 'compact-response-without-usage',
+        });
+        return compactedResult();
+      },
+    });
+
+    await session.compact({
+      config: defaultConfig({ model: 'gpt-5' }),
+      history: [],
+      sessionId: 'session-1',
+      transcriptOrdinal: 0,
+      runContext,
+      runtime,
+      options: { trigger: 'auto' },
+    });
+
+    expect(runtime.runAccounting.snapshotRoot(runContext.rootRunId)).toMatchObject({
+      costUsd: null,
+      costStatus: 'unknown',
+      budgetStatus: 'unknown',
+      modelIdentities: [{ responseId: 'compact-response-without-usage', status: 'verified' }],
+      missingSources: ['failed_provider_attempt_usage', 'compaction_usage'],
+    });
+  });
+
   it('settles session lifecycle hooks exactly once per session transition', async () => {
     const starts: Array<[string, string]> = [];
     const ends: Array<[string, string]> = [];
@@ -1026,6 +1121,10 @@ describe('AgentSession', () => {
     expect(snapshot).toMatchObject({
       status: 'completed',
       sessionId: 'session-1',
+      ambient: {
+        schemaVersion: 1,
+        settings: { agentsMode: 'adaptive' },
+      },
       assistantText: 'hello',
       toolCalls: [toolCall],
       toolResults: [toolResult],
@@ -1040,7 +1139,34 @@ describe('AgentSession', () => {
       sessionId: 'session-1',
       source: 'internal',
     });
+    expect(started?.ambient.fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(terminal?.runContext).toEqual(started?.context);
+  });
+
+  it('snapshots the effective model override and resolved permission mode', async () => {
+    const session = new AgentSession({
+      runLoop: async () => [],
+    });
+    const events: AgentEvent[] = [];
+
+    await session.run({
+      config: defaultConfig({ model: 'gpt-5', provider: 'auto' }),
+      registry: {} as ToolRegistry,
+      prompt: 'prompt',
+      history: [],
+      mode: 'plan',
+      sessionId: 'session-override',
+      callbacks: { onEvent: (event) => events.push(event), onTurnStart: () => {} },
+      options: { modelOverride: 'claude-sonnet-5' },
+    });
+
+    const started = events.find((event) => event.type === 'run_started');
+    const system = events.find((event) => event.type === 'system');
+    expect(started?.ambient).toMatchObject({
+      model: { provider: 'anthropic', requestedModel: 'claude-sonnet-5' },
+      policies: { permissionMode: 'plan' },
+    });
+    expect(system).toMatchObject({ model: 'claude-sonnet-5' });
   });
 
   it('delegates non-interactive host decisions while retaining question events', async () => {

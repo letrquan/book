@@ -8,6 +8,7 @@ import type {
   UserQuestionResponse,
 } from '../../types/tools.js';
 import type { PermissionMode, RetryPhase } from '../../types/runtime.js';
+import { createAgentRunContext, type AgentRunContext } from '../../types/runs.js';
 import type { CommandContext } from '../../types/commands.js';
 import type {
   SessionMeta,
@@ -572,6 +573,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       let activeAccumulator: MessageAccumulator | null = null;
       let activeUserMessage: Message | undefined;
       let placeholder: Message | undefined;
+      let activeRunContext: AgentRunContext | undefined;
 
       log.info('send message', {
         len: userMessage.length,
@@ -587,6 +589,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
 
       const beforePrepare = async (control: AgentSessionSendControl) => {
         operationIsCurrent = control.isCurrent;
+        activeRunContext = control.runContext;
         // Cross-turn auto-compact before appending the new user message.
         const contextLimit = resolveContextLimit(liveConfig);
         const hostCompactAttemptKey = `${usagePressureTokens(hostUsageRef.current)}:${contextHistoryRef.current.length}`;
@@ -610,6 +613,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               history: contextHistoryRef.current,
               sessionId: activeSessionId,
               transcriptOrdinal: messagesRef.current.length,
+              runContext: control.runContext,
+              runtime: agentSession.getRuntime(),
               timelineStore,
               isCurrent: stillCurrent,
               onCommitted: projectCompactResult,
@@ -804,6 +809,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               history,
               sessionId: activeSessionId,
               transcriptOrdinal: messagesRef.current.length,
+              runContext: activeRunContext,
+              runtime: agentSession.getRuntime(),
               timelineStore,
               isCurrent: stillCurrent,
               onCommitted: projectCompactResult,
@@ -1123,11 +1130,17 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       });
 
       try {
+        const runContext = createAgentRunContext({
+          sessionId: activeSessionId,
+          source: 'tui',
+        });
         const outcome = await agentSession.compact({
           config: liveConfigRef.current,
           history: contextHistoryRef.current,
           sessionId: activeSessionId,
           transcriptOrdinal: messagesRef.current.length,
+          runContext,
+          runtime: agentSession.getRuntime(),
           timelineStore,
           isCurrent: stillCurrent,
           onCommitted: projectCompactResult,

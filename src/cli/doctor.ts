@@ -3,6 +3,7 @@ import { getPackageVersion } from '../version-info.js';
 import { collectAgentDiagnostics } from '../agents/diagnostics.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { discoverAgents } from '../subagent-discovery.js';
+import { resolveBookHome } from '../book-home.js';
 
 export async function runDoctorCommand(workspace: string): Promise<void> {
   runConfigMigrations(workspace);
@@ -24,9 +25,8 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   console.log('Settings layers:');
   const { existsSync } = await import('fs');
   const { join } = await import('path');
-  const { homedir } = await import('os');
   const layers = [
-    ['User', join(homedir(), '.book', 'settings.json')],
+    ['User', join(resolveBookHome(), 'settings.json')],
     ['Project', join(config.workspace, '.book', 'settings.json')],
     ['Local', join(config.workspace, '.book', 'settings.local.json')],
   ];

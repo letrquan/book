@@ -1,6 +1,6 @@
 import type { AgentRecord, AgentRuntimeEvent, EvidenceItem } from '../agents/types.js';
 import type { Message, Usage } from '../types/messages.js';
-import type { AgentRunContext, AgentRunResult } from '../types/runs.js';
+import type { AgentRunAmbientSnapshot, AgentRunContext, AgentRunResult } from '../types/runs.js';
 import type { ShellJobEvent } from '../jobs/shell-manager.js';
 import { isTerminalStatus, type AgentTerminalOutcome } from '../types/terminal.js';
 import type {
@@ -11,7 +11,7 @@ import type {
 } from '../types/tools.js';
 
 export type AgentEvent =
-  | { type: 'run_started'; context: AgentRunContext }
+  | { type: 'run_started'; context: AgentRunContext; ambient: AgentRunAmbientSnapshot }
   | { type: 'system'; model: string; cwd: string }
   | { type: 'session'; sessionId: string }
   | { type: 'text'; content: string }
@@ -78,6 +78,7 @@ export interface AgentSessionSnapshot {
   usage: Usage | null;
   terminal?: AgentTerminalOutcome;
   runContext?: AgentRunContext;
+  ambient?: AgentRunAmbientSnapshot;
   error?: string;
 }
 
@@ -110,7 +111,12 @@ export function reduceAgentSessionSnapshot(
 
   switch (event.type) {
     case 'run_started':
-      return { ...snapshot, status: 'running', runContext: event.context };
+      return {
+        ...snapshot,
+        status: 'running',
+        runContext: event.context,
+        ambient: event.ambient,
+      };
     case 'system':
       return { ...snapshot, status: 'running', model: event.model, cwd: event.cwd };
     case 'session':

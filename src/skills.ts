@@ -1,7 +1,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 import { parseFrontmatter } from './frontmatter.js';
+import { resolveBookHome } from './book-home.js';
 
 /**
  * A skill definition loaded from .book/skills/<name>/SKILL.md or
@@ -88,7 +88,7 @@ function loadSkillFile(dirPath: string, source: 'user' | 'project'): Skill | nul
  * Also supports flat variant: ~/.book/skills/<name>.skill.md
  */
 export function discoverSkills(workspace: string): Skill[] {
-  const userDir = join(homedir(), '.book', 'skills');
+  const userDir = join(resolveBookHome(), 'skills');
   const projectDir = join(workspace, '.book', 'skills');
 
   const byName = new Map<string, Skill>();

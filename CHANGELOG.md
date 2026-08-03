@@ -14,6 +14,10 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- `BOOK_HOME` can now relocate Book's user-global state from `~/.book`, including settings,
+  sessions, memory, managed-agent state, jobs, rewind snapshots, telemetry, tool output, MCP
+  configuration, and user-level discovery. Project-local `.book/` state remains unchanged.
+
 - Unified `/jobs` TUI management for managed agents and background shell jobs, with `/tasks` kept
   as an alias. Background shells support session or explicit persistent lifetimes, bounded output,
   optional parent-agent completion delivery, restart reattachment, stop/dismiss controls, and SDK/

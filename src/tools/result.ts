@@ -1,5 +1,4 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type {
   ToolResult,
@@ -11,9 +10,10 @@ import type {
 import { canonicalToolName } from './aliases.js';
 import { getPrimaryArg } from './primary-arg.js';
 import { isFileMutatingTool } from './tool-capabilities.js';
+import { resolveBookHome } from '../book-home.js';
 
 export const TOOL_RESULT_MAX_BYTES = 50 * 1024;
-const TOOL_OUTPUT_DIRECTORY = join(homedir(), '.book', 'tool-output');
+const TOOL_OUTPUT_DIRECTORY = join(resolveBookHome(), 'tool-output');
 
 interface ToolResultOptions<TData> {
   toolCallId?: string;

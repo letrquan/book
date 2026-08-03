@@ -8,10 +8,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { repositoryHash } from '../agents/git-isolation.js';
 import type { BackgroundShellNotify, BackgroundShellStatus } from '../types/runtime.js';
+import { resolveBookHome } from '../book-home.js';
 
 export interface PersistentShellSpec {
   version: 1;
@@ -79,7 +79,7 @@ export interface PersistentJobPaths {
 
 export function persistentJobPaths(
   workspace: string,
-  root = join(homedir(), '.book', 'jobs'),
+  root = join(resolveBookHome(), 'jobs'),
 ): PersistentJobPaths {
   const repositoryRoot = join(root, repositoryHash(workspace));
   return {

@@ -1,8 +1,8 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, extname } from 'path';
-import { homedir } from 'os';
 import { parseFrontmatter } from '../frontmatter.js';
 import type { SlashCommand } from '../types/commands.js';
+import { resolveBookHome } from '../book-home.js';
 
 /**
  * Load a single .md command file. Returns null if the file doesn't exist.
@@ -40,7 +40,7 @@ function loadCommandFile(filePath: string, source: 'user' | 'project'): SlashCom
  * Project commands with the same name as a user command override the user one.
  */
 export function discoverCommands(workspace: string): SlashCommand[] {
-  const userDir = join(homedir(), '.book', 'commands');
+  const userDir = join(resolveBookHome(), 'commands');
   const projectDir = join(workspace, '.book', 'commands');
 
   const byName = new Map<string, SlashCommand>();
