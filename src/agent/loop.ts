@@ -133,6 +133,8 @@ export async function runAgentLoop(
     agentId?: string;
     agentRole?: import('../agents/types.js').AgentRole;
     parentSessionId?: string;
+    /** Non-owning managed-agent coordinator used by child-only evidence tools. */
+    agentManager?: ToolContext['agentManager'];
     /** Mutable resources owned by the logical session. */
     runtime?: SessionRuntime;
     /** Frozen attribution for this root or linked child execution. */
@@ -359,7 +361,7 @@ export async function runAgentLoop(
     userQuestionHandler: callbacks.onUserQuestionRequired,
     agentPath: options?.agentPath ?? [],
     availableTools: availableToolDefinitions,
-    agentManager: runtime.agentManager,
+    agentManager: options?.agentManager ?? runtime.agentManager,
     agentId: options?.agentId,
     agentRole: options?.agentRole,
     parentSessionId: options?.parentSessionId,

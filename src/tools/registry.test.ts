@@ -75,6 +75,43 @@ describe('createDefaultRegistry — canonical CC tool names', () => {
   it('resolves apply_patch to the canonical ApplyPatch tool', () => {
     expect(createDefaultRegistry().getTool('apply_patch')?.name).toBe('ApplyPatch');
   });
+
+  it.each(['parent:Glob', 'default:Glob', 'tool:Glob', 'glob_files'])(
+    'resolves provider-compatible name %s to Glob',
+    (name) => {
+      expect(createDefaultRegistry().getTool(name)?.name).toBe('Glob');
+    },
+  );
+
+  it('preserves an exact registered name before unwrapping a provider prefix', () => {
+    const registry = createRegistry();
+    registry.register({
+      name: 'Glob',
+      description: 'canonical',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => toolSuccess('canonical'),
+    });
+    registry.register({
+      name: 'tool:Glob',
+      description: 'exact',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => toolSuccess('exact'),
+    });
+
+    expect(registry.getTool('tool:Glob')?.description).toBe('exact');
+  });
+
+  it('keeps non-equivalent namespaced commands unknown', async () => {
+    const result = await createDefaultRegistry().execute(
+      { id: 'unknown-pnpm', name: 'pnpm:list', arguments: {} },
+      ctx,
+    );
+
+    expect(result).toMatchObject({
+      status: 'error',
+      structuredError: { code: 'unknown_tool' },
+    });
+  });
 });
 
 describe('tool argument validation', () => {

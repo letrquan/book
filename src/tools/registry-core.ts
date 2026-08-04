@@ -7,6 +7,7 @@ import { enrichToolResultPresentation, normalizeToolResult, toolFailure } from '
 
 const TOOL_ABORT_GRACE_MS = 250;
 const REPEATED_FAILURE_MEMORY_CAP = 32;
+const PROVIDER_TOOL_PREFIXES = ['parent:', 'default:', 'tool:'] as const;
 
 export interface PreparedToolCall {
   call: ToolCall;
@@ -16,6 +17,25 @@ export interface PreparedToolCall {
 
 export type PrepareToolCallResult =
   { status: 'ready'; prepared: PreparedToolCall } | { status: 'rejected'; result: ToolResult };
+
+function resolveRegisteredTool(
+  tools: Map<string, ToolDefinition>,
+  name: string,
+): ToolDefinition | undefined {
+  const exact = tools.get(name);
+  if (exact) return exact;
+
+  const aliased = TOOL_ALIASES[name];
+  if (aliased) {
+    const tool = tools.get(aliased);
+    if (tool) return tool;
+  }
+
+  const prefix = PROVIDER_TOOL_PREFIXES.find((candidate) => name.startsWith(candidate));
+  if (!prefix) return undefined;
+  const unwrapped = name.slice(prefix.length);
+  return tools.get(unwrapped) ?? tools.get(TOOL_ALIASES[unwrapped] ?? '');
+}
 
 function applyAliasKeys(
   target: Record<string, unknown>,
@@ -244,7 +264,7 @@ export function createRegistry() {
 
   /** Canonicalize a call's tool name and argument spellings without executing it. */
   const normalizeCall = (call: ToolCall): ToolCall => {
-    const tool = tools.get(TOOL_ALIASES[call.name] ?? call.name);
+    const tool = resolveRegisteredTool(tools, call.name);
     if (!tool) return call;
     return { ...call, name: tool.name, arguments: normalizeToolArguments(tool, call.arguments) };
   };
@@ -259,13 +279,13 @@ export function createRegistry() {
       for (const tool of toolList) this.register(tool);
     },
     getTool(name: string): ToolDefinition | undefined {
-      return tools.get(TOOL_ALIASES[name] ?? name);
+      return resolveRegisteredTool(tools, name);
     },
     getDefinitions(): ToolDefinition[] {
       return Array.from(tools.values());
     },
     prepare(call: ToolCall, context: ToolContext): PrepareToolCallResult {
-      const tool = tools.get(TOOL_ALIASES[call.name] ?? call.name);
+      const tool = resolveRegisteredTool(tools, call.name);
       if (!tool) {
         return {
           status: 'rejected',

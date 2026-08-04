@@ -1590,6 +1590,7 @@ export class AgentManager {
           agentId: record.id,
           agentRole: record.role,
           parentSessionId: record.parentSessionId,
+          agentManager: this,
           runContext,
           runtime,
         },

@@ -6,6 +6,7 @@ export const TOOL_ALIASES: Record<string, string> = {
   multi_edit: 'MultiEdit',
   apply_patch: 'ApplyPatch',
   glob: 'Glob',
+  glob_files: 'Glob',
   grep: 'Grep',
   bash: 'Bash',
   // Legacy snake_case git tool names — backward compatible.

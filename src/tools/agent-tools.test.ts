@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AgentManager } from '../agents/manager.js';
 import { AgentStore } from '../agents/store.js';
 import type { AtomicJsonWriter } from '../agents/atomic-json.js';
@@ -47,6 +47,52 @@ describe('managed-agent tool presentation', () => {
     );
     expect(row.summary).toBe('Spawned Atlas');
     expect(row.summary).not.toContain('{');
+  });
+});
+
+describe('managed-agent manager reuse', () => {
+  it('refreshes a cached root manager before using it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'book-agent-tools-refresh-'));
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const manager = new AgentManager(config, [], {
+      storeRoot: root,
+      findGitRoot: async () => undefined,
+    });
+    const runtime = new SessionRuntime();
+    runtime.agentManager = manager;
+    const nextConfig = defaultConfig({ workspace: root });
+    const onAgentEvent = vi.fn();
+    const onHookEvent = vi.fn();
+    const updateConfig = vi.spyOn(manager, 'updateConfig');
+    const setPermissionMode = vi.spyOn(manager, 'setPermissionMode');
+    const setEventSink = vi.spyOn(manager, 'setEventSink');
+
+    try {
+      const listTool = agentLifecycleTools.find((tool) => tool.name === 'AgentList')!;
+      await expect(
+        listTool.execute(
+          {},
+          {
+            workspaceRoot: root,
+            env: {},
+            agentConfig: nextConfig,
+            availableTools: [],
+            currentMode: 'plan',
+            onAgentEvent,
+            onHookEvent,
+            runtime,
+          },
+        ),
+      ).resolves.toMatchObject({ status: 'success' });
+
+      expect(updateConfig).toHaveBeenCalledWith(nextConfig);
+      expect(setPermissionMode).toHaveBeenCalledWith('plan');
+      expect(setEventSink).toHaveBeenCalledWith(onAgentEvent, onHookEvent);
+    } finally {
+      manager.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

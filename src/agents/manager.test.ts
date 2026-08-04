@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message } from '../types/messages.js';
+import type { ToolContext } from '../types/tools.js';
 import { defaultConfig, toolResult } from '../test/fixtures.js';
 import { AgentManager } from './manager.js';
 import { AgentStore } from './store.js';
@@ -13,6 +14,7 @@ import { repositoryHash } from './git-isolation.js';
 import type { AgentRuntimeEvent, AgentSnapshot } from './types.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { SessionRuntime } from '../session/runtime.js';
+import { evidenceTools } from '../tools/agent-tools.js';
 
 const tempRoots: string[] = [];
 
@@ -40,7 +42,52 @@ function snapshot(root: string): AgentSnapshot {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of tempRoots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
+});
+
+it('lets a managed child publish evidence through its owning manager', async () => {
+  const root = tempRoot();
+  const bookHome = tempRoot();
+  vi.stubEnv('BOOK_HOME', bookHome);
+  const config = defaultConfig({ workspace: root });
+  config.settings.agents.persist = true;
+  const manager = new AgentManager(config, evidenceTools, {
+    findGitRoot: async () => undefined,
+    runLoop: async (childConfig, registry, _prompt, history, _callbacks, mode, options) => {
+      const publish = registry.getTool('EvidencePublish');
+      expect(publish).toBeDefined();
+      const result = await publish!.execute(
+        { kind: 'finding', summary: 'Published by the managed child' },
+        {
+          workspaceRoot: childConfig.workspace,
+          env: {},
+          agentConfig: childConfig,
+          availableTools: registry.getDefinitions(),
+          currentMode: mode as ToolContext['currentMode'],
+          agentId: options?.agentId,
+          agentManager: options?.agentManager,
+          runtime: options?.runtime,
+        },
+      );
+      expect(result).toMatchObject({ status: 'success' });
+      return history;
+    },
+  });
+
+  try {
+    const record = await manager.spawn({ agent: 'explorer', prompt: 'inspect' });
+    await manager.wait(record.id, 1000);
+
+    const [evidence] = await manager.listEvidence({ includeUnverified: true });
+    expect(evidence).toMatchObject({
+      sourceAgentId: record.id,
+      summary: 'Published by the managed child',
+    });
+    expect((await manager.get(record.id))?.producedEvidenceIds).toEqual([evidence.id]);
+  } finally {
+    manager.dispose();
+  }
 });
 
 describe('AgentManager lifecycle', () => {

@@ -3038,7 +3038,7 @@ describe('runAgentLoop tool-call statistics', () => {
         stream: async function* () {
           yield {
             type: 'tool_call' as const,
-            toolCall: { id: 'tel-1', name: 'Echo', arguments: { value: 'ok' } },
+            toolCall: { id: 'tel-1', name: 'tool:Echo', arguments: { value: 'ok' } },
           };
           yield {
             type: 'tool_call' as const,
@@ -3059,16 +3059,15 @@ describe('runAgentLoop tool-call statistics', () => {
         execute: async (args) => toolSuccess(String(args.value ?? '')),
       });
       const runtime = new SessionRuntime();
+      const config = defaultConfig({ maxTurns: 1, model: 'test-model' });
+      config.settings.observability.toolTelemetry = true;
 
-      await runAgentLoop(
-        defaultConfig({ maxTurns: 1, model: 'test-model' }),
-        registry,
-        'hello',
-        [],
-        noopCallbacks(),
-        'default',
-        { provider, isNewSession: false, runtime, toolTelemetryRoot: telemetryRoot },
-      );
+      await runAgentLoop(config, registry, 'hello', [], noopCallbacks(), 'default', {
+        provider,
+        isNewSession: false,
+        runtime,
+        toolTelemetryRoot: telemetryRoot,
+      });
 
       // Telemetry is written fire-and-forget; poll until the append settles.
       let records = await readToolUseRecords(telemetryRoot);

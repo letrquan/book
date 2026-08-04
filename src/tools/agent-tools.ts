@@ -66,6 +66,9 @@ function fail(error: unknown): ToolResult {
 }
 
 function manager(ctx: ToolContext) {
+  // Child loops must use the parent-owned manager; root loops go through the
+  // factory so cached managers refresh config, mode, and event sinks per turn.
+  if (ctx.agentManager && ctx.agentId) return ctx.agentManager;
   if (!ctx.agentConfig || !ctx.availableTools) {
     throw new Error('Managed agent tools require an active root agent session.');
   }

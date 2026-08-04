@@ -6,6 +6,11 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Managed children now publish and review evidence through their owning agent manager instead of
+  being rejected as owned by another live Book process.
+- Provider-emitted `parent:`, `default:`, and `tool:` wrappers resolve to an existing registered
+  tool, and `glob_files` resolves to `Glob`; unrelated namespaced commands remain rejected.
+- Vitest runs no longer append synthetic tool calls to the user-global `book tool-stats` history.
 - Windows now defaults to the full-frame TUI renderer so deep transcript scrolling cannot corrupt
   or erase the fixed input and status footer. Incremental rendering remains available through an
   explicit `BOOK_TUI_RENDERER=incremental` override.

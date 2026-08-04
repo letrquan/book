@@ -5,6 +5,9 @@ import { DEFAULT_SETTINGS } from '../settings.js';
 import { toolFailure, toolSuccess } from '../tools/result.js';
 
 export function defaultConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
+  const settings = structuredClone(DEFAULT_SETTINGS);
+  // Tests opt into persistent telemetry explicitly so local runs never pollute user history.
+  settings.observability.toolTelemetry = false;
   return {
     apiKey: 'k',
     baseUrl: 'http://x/v1',
@@ -15,7 +18,7 @@ export function defaultConfig(overrides: Partial<AgentConfig> = {}): AgentConfig
     workspace: '.',
     animation: { typewriterSpeed: 3, spinnerStyle: 'braille' },
     accessibility: { screenReader: false, reducedMotion: false },
-    settings: structuredClone(DEFAULT_SETTINGS),
+    settings,
     retry: {
       maxAttempts: 3,
       baseDelayMs: 0,
