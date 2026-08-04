@@ -19,6 +19,10 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- New empty startup sessions now open with an optional full-screen magical fire sequence that
+  burns into the Book welcome. It is deterministic, skippable with Esc or typing, automatically
+  bypassed for reduced-motion and screen-reader modes, and configurable through `/config` or
+  `ui.startupAnimation`.
 - Adaptive-harness evaluations now have a reusable external-process runner that provisions fresh
   workspace, `BOOK_HOME`, user-config, cache, and temporary directories; copies only explicitly
   allowlisted ambient variables; bounds captured output; and distinguishes failure, timeout,

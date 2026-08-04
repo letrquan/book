@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { parseMouseWheelDirection, parseSgrMouseEvent, parseSgrMouseEvents } from './mouse.js';
+import {
+  parseMouseWheelDirection,
+  parseSgrMouseEvent,
+  parseSgrMouseEvents,
+  stripSgrMouseSequences,
+} from './mouse.js';
+
+describe('stripSgrMouseSequences', () => {
+  it('removes mouse reports before and after Ink consumes the escape byte', () => {
+    expect(stripSgrMouseSequences('\x1b[<64;13;20M')).toBe('');
+    expect(stripSgrMouseSequences('[<0;13;20m')).toBe('');
+    expect(stripSgrMouseSequences('before\x1b[<32;4;7Mafter')).toBe('beforeafter');
+  });
+});
 
 describe('parseSgrMouseEvent', () => {
   it('parses left clicks, releases, movement, coordinates, and modifiers', () => {

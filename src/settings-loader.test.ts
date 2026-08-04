@@ -139,6 +139,16 @@ describe('mergeSettings', () => {
       ui: { showThinking: false },
     } as Partial<ResolvedSettings>);
     expect(result.ui.showThinking).toBe(false);
+    expect(result.ui.startupAnimation).toBe(true);
+  });
+
+  it('merges the startup animation setting without losing other UI settings', () => {
+    const base = structuredClone(DEFAULT_SETTINGS);
+    const result = mergeSettings(base, {
+      ui: { startupAnimation: false },
+    } as Partial<ResolvedSettings>);
+    expect(result.ui.startupAnimation).toBe(false);
+    expect(result.ui.showThinking).toBe(true);
   });
 });
 

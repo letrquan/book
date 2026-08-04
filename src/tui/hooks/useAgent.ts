@@ -1710,6 +1710,22 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [config.workspace],
   );
 
+  const setStartupAnimation = useCallback(
+    (enabled: boolean) => {
+      const result = persistSettingLocal(config.workspace, 'ui.startupAnimation', enabled);
+      if (!result.ok) return result;
+      setLiveConfig((current) => ({
+        ...current,
+        settings: {
+          ...current.settings,
+          ui: { ...current.settings.ui, startupAnimation: enabled },
+        },
+      }));
+      return { ok: true };
+    },
+    [config.workspace],
+  );
+
   // Add an allow rule from the "Always allow" approval flow (CC-aligned) and
   // surface it live in settings so the next call is auto-allowed.
   const persistPermissionRule = useCallback(
@@ -1806,6 +1822,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setSkillsEnabled,
     setMemoryAutoSave,
     setShowThinking,
+    setStartupAnimation,
 
     /** Reload the memory snapshot after approve/discard so the next agent turn picks up changes. */
     refreshMemoryContext: () => {

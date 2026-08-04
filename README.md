@@ -135,8 +135,10 @@ Writes use an atomic sibling-file replacement, and malformed or non-object
 invalid setting path; provider secrets are redacted.
 
 Inside the TUI, `/config` opens a visual settings menu. Use it to change the main model, effort,
-theme, memory auto-capture, or the model assigned to each managed-agent profile. Subagent model
-changes apply immediately to newly spawned runs and are saved in `.book/settings.local.json`.
+theme, memory auto-capture, startup fire, or the model assigned to each managed-agent profile.
+The startup fire plays only for a new, empty launch session and is skipped automatically for
+screen-reader or reduced-motion mode. Press Esc to skip it. TUI preference changes are saved in
+`.book/settings.local.json`; set `ui.startupAnimation` to `false` there to disable the effect.
 
 ### File mutations
 
@@ -245,6 +247,10 @@ The benchmark requires configured provider credentials and is not part of CI.
     "enabled": true,
     "autoSave": true,
     "requireApproval": true
+  },
+  "ui": {
+    "showThinking": true,
+    "startupAnimation": true
   },
   "toolDiscovery": {
     "mode": "auto",

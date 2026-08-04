@@ -1,7 +1,7 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import { isTranscriptScrollActive } from './scroll-activity.js';
 
-export type UiClockRate = 'fast' | 'slow';
+export type UiClockRate = 'cinematic' | 'fast' | 'slow';
 
 interface ClockState {
   revision: number;
@@ -10,11 +10,13 @@ interface ClockState {
 }
 
 const CLOCK_INTERVAL_MS: Record<UiClockRate, number> = {
+  cinematic: 50,
   fast: 100,
   slow: 1000,
 };
 
 const clocks: Record<UiClockRate, ClockState> = {
+  cinematic: { revision: 0, timer: null, listeners: new Set() },
   fast: { revision: 0, timer: null, listeners: new Set() },
   slow: { revision: 0, timer: null, listeners: new Set() },
 };
@@ -23,7 +25,7 @@ function startClock(rate: UiClockRate): void {
   const clock = clocks[rate];
   if (clock.timer !== null) return;
   clock.timer = setInterval(() => {
-    if (rate === 'fast' && isTranscriptScrollActive()) return;
+    if (rate !== 'slow' && isTranscriptScrollActive()) return;
     clock.revision++;
     for (const listener of clock.listeners) listener();
   }, CLOCK_INTERVAL_MS[rate]);

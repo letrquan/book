@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
-import { App, ownsModalInput, providerRemovalMessage } from './app.js';
+import { act } from 'react';
+import { App, ownsModalInput, providerRemovalMessage, shouldPlayStartupFire } from './app.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { SlashCommand } from '../types/commands.js';
 import { DEFAULT_THEME } from '../types/theme.js';
@@ -149,6 +150,7 @@ function pendingAgentState() {
     setCompactModel: vi.fn(() => ({ ok: true })),
     setMemoryAutoSave: vi.fn(),
     setShowThinking: vi.fn(() => ({ ok: true })),
+    setStartupAnimation: vi.fn(() => ({ ok: true })),
     refreshMemoryContext: vi.fn(),
     turnDurationMs: 0,
     retryPhase: 'none',
@@ -170,6 +172,39 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+describe('startup fire eligibility', () => {
+  it('plays only for a newly created, empty startup session with motion enabled', () => {
+    const startupConfig = config();
+    startupConfig.accessibility = { screenReader: false, reducedMotion: false };
+
+    expect(shouldPlayStartupFire(startupConfig, testSession)).toBe(true);
+    expect(
+      shouldPlayStartupFire(
+        { ...startupConfig, accessibility: { screenReader: false, reducedMotion: true } },
+        testSession,
+      ),
+    ).toBe(false);
+    expect(
+      shouldPlayStartupFire(startupConfig, { ...testSession, source: 'resume', created: false }),
+    ).toBe(false);
+    expect(
+      shouldPlayStartupFire(startupConfig, { ...testSession, source: 'clear', created: true }),
+    ).toBe(false);
+    expect(shouldPlayStartupFire(startupConfig, { ...testSession, history: [{} as never] })).toBe(
+      false,
+    );
+
+    const animationDisabled = {
+      ...startupConfig,
+      settings: {
+        ...startupConfig.settings,
+        ui: { ...startupConfig.settings.ui, startupAnimation: false },
+      },
+    };
+    expect(shouldPlayStartupFire(animationDisabled, testSession)).toBe(false);
+  });
+});
+
 describe('App session commands', () => {
   const submit = async (view: ReturnType<typeof render>, value: string) => {
     view.stdin.write(value);
@@ -177,6 +212,82 @@ describe('App session commands', () => {
     view.stdin.write('\r');
     await new Promise((resolve) => setTimeout(resolve, 75));
   };
+
+  it('forwards typed input unchanged when it skips the startup fire', async () => {
+    const startupConfig = config();
+    startupConfig.accessibility = { screenReader: false, reducedMotion: false };
+    const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
+    agentState.liveConfig = startupConfig;
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={startupConfig} session={testSession} />);
+    expect(stripAnsi(view.lastFrame())).toContain('Esc skip');
+
+    view.stdin.write('preserve this draft');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(stripAnsi(view.lastFrame())).toContain('preserve this draft');
+    expect(agentState.send).not.toHaveBeenCalled();
+  });
+
+  it('ignores mouse reports while the startup fire is active', async () => {
+    const startupConfig = config();
+    startupConfig.accessibility = { screenReader: false, reducedMotion: false };
+    const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
+    agentState.liveConfig = startupConfig;
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={startupConfig} session={testSession} />);
+    view.stdin.write('\x1b[<64;13;20M');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(stripAnsi(view.lastFrame())).toContain('Esc skip');
+    expect(stripAnsi(view.lastFrame())).not.toContain('[<64;13;20M');
+
+    view.stdin.write('draft');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stripAnsi(view.lastFrame())).toContain('draft');
+    expect(stripAnsi(view.lastFrame())).not.toContain('[<64;13;20M');
+  });
+
+  it('accumulates paste chunks received before the startup fire rerenders', async () => {
+    const startupConfig = config();
+    startupConfig.accessibility = { screenReader: false, reducedMotion: false };
+    const agentState = { ...pendingAgentState(), isThinking: false, pendingPlanApproval: null };
+    agentState.liveConfig = startupConfig;
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+
+    const view = render(<App config={startupConfig} session={testSession} />);
+    act(() => {
+      view.stdin.write('chunk one ');
+      view.stdin.write('chunk two');
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(stripAnsi(view.lastFrame())).toContain('chunk one chunk two');
+    expect(agentState.send).not.toHaveBeenCalled();
+  });
 
   it('revalidates vision support when the model changes after an image is attached', async () => {
     const attachment = {

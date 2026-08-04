@@ -5,6 +5,7 @@ import { InputBar } from './components/InputBar.js';
 import { QueuedInputPreview } from './components/QueuedInputPreview.js';
 import { StatusLine } from './components/StatusLine.js';
 import { WorkingIndicator } from './components/WorkingIndicator.js';
+import { StartupFire } from './components/StartupFire.js';
 import { CompactDiffCard } from './components/CompactDiffCard.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { TaskList } from './components/TaskList.js';
@@ -93,6 +94,7 @@ import {
   type QueuedInput,
 } from './queued-inputs.js';
 import { readClipboardImage } from '../input/clipboard-image.js';
+import { stripSgrMouseSequences } from './mouse.js';
 
 const uiLog = createUiDebugLogger('tui:app');
 
@@ -124,6 +126,24 @@ export function ownsModalInput(
     showAgentProfilePicker ||
     showSkills,
   );
+}
+
+export function shouldPlayStartupFire(config: AgentConfig, session: SessionBootstrap): boolean {
+  return Boolean(
+    config.settings.ui.startupAnimation &&
+    !config.accessibility.screenReader &&
+    !config.accessibility.reducedMotion &&
+    session.source === 'startup' &&
+    session.created &&
+    (session.transcript ?? session.history).length === 0,
+  );
+}
+
+function containsDraftInput(input: string): boolean {
+  return Array.from(input).some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint >= 0x20 && codePoint !== 0x7f;
+  });
 }
 
 type ApplyThemeResult = { ok: true; theme: ResolvedTheme } | { ok: false; error: string };
@@ -249,6 +269,7 @@ export function App({
     setSkillsEnabled,
     setMemoryAutoSave,
     setShowThinking,
+    setStartupAnimation,
     refreshMemoryContext,
     persistPermissionRule,
     setDefaultPermissionMode,
@@ -281,6 +302,9 @@ export function App({
   const backgroundShells = useBackgroundShells(shellManager, sessionId);
 
   const [showTasks, setShowTasks] = useState(false);
+  const [startupFireActive, setStartupFireActive] = useState(() =>
+    shouldPlayStartupFire(config, session),
+  );
   const [showHelp, setShowHelp] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showStatus, setShowStatus] = useState(false);
@@ -326,6 +350,7 @@ export function App({
   const editingQueuedInputRef = useRef<QueuedInput | undefined>(undefined);
   const dispatchingQueuedIdRef = useRef<string | undefined>(undefined);
   const draftRef = useRef('');
+  const startupDraftRef = useRef('');
   const draftAttachmentsRef = useRef<ImageAttachment[]>([]);
   const queueDrainRunningRef = useRef(false);
   const shellCompletionDeliveryRef = useRef(false);
@@ -857,6 +882,33 @@ export function App({
   useDebugValueChange(uiLog, 'showAgentProfilePicker', showAgentProfilePicker, (v) => String(v));
 
   useInput((input, key) => {
+    if (startupFireActive) {
+      if (key.ctrl && input === 'c') {
+        uiLog.event('input:Ctrl+C', { action: 'exit-startup-fire' });
+        void endCurrentSession('exit').finally(exitApp);
+        return;
+      }
+      if (key.escape) {
+        uiLog.event('input:Escape', { action: 'skip-startup-fire' });
+        setStartupFireActive(false);
+        return;
+      }
+      const draftInput = stripSgrMouseSequences(input);
+      if (!key.ctrl && !key.meta && containsDraftInput(draftInput)) {
+        uiLog.event('input:printable', { action: 'skip-startup-fire' });
+        // React may deliver several stdin chunks before the splash dismissal commits.
+        startupDraftRef.current += draftInput;
+        const startupDraft = startupDraftRef.current;
+        setDraftRestore((current) => ({
+          key: (current?.key ?? 0) + 1,
+          value: startupDraft,
+        }));
+        setStartupFireActive(false);
+        return;
+      }
+      return;
+    }
+
     // Modal prompts own the keyboard until they resolve. Let their own
     // useInput handlers receive the event, but do not open another modal or
     // mutate surrounding UI state from this global handler.
@@ -1605,6 +1657,20 @@ export function App({
     showAgentProfilePicker ||
     showSkills;
 
+  if (startupFireActive) {
+    return (
+      <AppProviders theme={currentTheme.tokens} density={density}>
+        <ErrorBoundary>
+          <StartupFire
+            width={termWidth}
+            height={Math.max(1, termHeight - 1)}
+            onComplete={() => setStartupFireActive(false)}
+          />
+        </ErrorBoundary>
+      </AppProviders>
+    );
+  }
+
   return (
     <AppProviders theme={currentTheme.tokens} density={density}>
       <ErrorBoundary>
@@ -2194,6 +2260,7 @@ export function App({
                 themeName={currentTheme.preference}
                 memoryAutoSave={liveConfig.settings.memory.autoSave}
                 showThinking={liveConfig.settings.ui.showThinking}
+                startupAnimation={liveConfig.settings.ui.startupAnimation}
                 agentCount={agentProfiles.length}
                 skillCount={skills.length}
                 defaultPermissionMode={resolvePermissionMode(liveConfig.settings)}
@@ -2233,6 +2300,14 @@ export function App({
                   const result = setShowThinking(!liveConfig.settings.ui.showThinking);
                   if (!result.ok)
                     addLocalMessage(`✕ ${result.error ?? 'Could not save thinking setting.'}`);
+                }}
+                onToggleStartupAnimation={() => {
+                  const result = setStartupAnimation(!liveConfig.settings.ui.startupAnimation);
+                  if (!result.ok) {
+                    addLocalMessage(
+                      `✕ ${result.error ?? 'Could not save startup animation setting.'}`,
+                    );
+                  }
                 }}
                 onCancel={() => setShowConfigPicker(false)}
               />
