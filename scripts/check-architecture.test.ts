@@ -66,4 +66,74 @@ describe('checkArchitecture', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('keeps offline harness evaluation out of the live runtime', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      mkdirSync(join(dir, 'agent'));
+      mkdirSync(join(dir, 'harness'));
+      mkdirSync(join(dir, 'harness', 'evaluation'));
+      writeFileSync(
+        join(dir, 'agent', 'loop.ts'),
+        "import type { Report } from '../harness/evaluation/report.js';\nexport type LoopReport = Report;\n",
+      );
+      writeFileSync(
+        join(dir, 'harness', 'evaluation', 'report.ts'),
+        'export interface Report {}\n',
+      );
+
+      expect(checkArchitecture(dir)).toContainEqual(
+        expect.objectContaining({
+          kind: 'harness-boundary',
+          source: 'agent/loop.ts',
+          target: 'harness/evaluation/report.ts',
+        }),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prevents offline evaluation from importing the live runtime', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      mkdirSync(join(dir, 'agent'));
+      mkdirSync(join(dir, 'harness'));
+      mkdirSync(join(dir, 'harness', 'evaluation'));
+      writeFileSync(join(dir, 'agent', 'loop.ts'), 'export const run = () => {};\n');
+      writeFileSync(
+        join(dir, 'harness', 'evaluation', 'replay.ts'),
+        "import { run } from '../../agent/loop.js';\nrun();\n",
+      );
+
+      expect(checkArchitecture(dir)).toContainEqual(
+        expect.objectContaining({
+          kind: 'harness-boundary',
+          source: 'harness/evaluation/replay.ts',
+          target: 'agent/loop.ts',
+        }),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the trusted kernel independent from harness policy', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      mkdirSync(join(dir, 'harness'));
+      writeFileSync(join(dir, 'permissions.ts'), "import './harness/policy.js';\n");
+      writeFileSync(join(dir, 'harness', 'policy.ts'), 'export {};\n');
+
+      expect(checkArchitecture(dir)).toContainEqual(
+        expect.objectContaining({
+          kind: 'harness-boundary',
+          source: 'permissions.ts',
+          target: 'harness/policy.ts',
+        }),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

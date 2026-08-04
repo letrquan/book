@@ -3,7 +3,7 @@ import { dirname, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 interface Violation {
-  kind: 'layer' | 'entrypoint' | 'cycle' | 'type-hub' | 'blocking-process';
+  kind: 'layer' | 'entrypoint' | 'cycle' | 'type-hub' | 'blocking-process' | 'harness-boundary';
   source: string;
   target: string;
   detail: string;
@@ -12,6 +12,33 @@ interface Violation {
 const IMPORT_PATTERN = /(?:import|export)\s+(type\s+)?(?:[^'";]+?\s+from\s+)?['"]([^'"]+)['"]/g;
 const CHILD_PROCESS_IMPORT_PATTERN = /from\s+['"](?:node:)?child_process['"]/;
 const SYNC_PROCESS_API_PATTERN = /\b(?:execFileSync|execSync|spawnSync)\b/;
+const LIVE_RUNTIME_PREFIXES = [
+  'agent/',
+  'agents/',
+  'cli/',
+  'commands/',
+  'provider/',
+  'session/',
+  'tools/',
+  'tui/',
+];
+const LIVE_RUNTIME_FILES = new Set(['headless.ts', 'index.ts', 'sdk.ts']);
+const TRUSTED_KERNEL_FILES = new Set([
+  'permission-mode.ts',
+  'permissions.ts',
+  'sandbox.ts',
+  'secret-detect.ts',
+]);
+
+function isEvaluationModule(path: string): boolean {
+  return path.startsWith('harness/evaluation/');
+}
+
+function isLiveRuntimeModule(path: string): boolean {
+  return (
+    LIVE_RUNTIME_FILES.has(path) || LIVE_RUNTIME_PREFIXES.some((prefix) => path.startsWith(prefix))
+  );
+}
 function sourceFiles(root: string): string[] {
   const files: string[] = [];
   const visit = (directory: string) => {
@@ -62,10 +89,36 @@ export function checkArchitecture(srcRoot: string): Violation[] {
       });
     }
     for (const match of text.matchAll(IMPORT_PATTERN)) {
-      if (match[1]) continue;
       const dependency = resolveImport(file, match[2]);
       if (!dependency || !dependency.startsWith(root)) continue;
       const targetName = relative(root, dependency).replaceAll('\\', '/');
+      if (!isEvaluationModule(sourceName) && isEvaluationModule(targetName)) {
+        violations.push({
+          kind: 'harness-boundary',
+          source: sourceName,
+          target: targetName,
+          detail:
+            'Live and shared runtime code must not import offline harness evaluation modules.',
+        });
+      }
+      if (isEvaluationModule(sourceName) && isLiveRuntimeModule(targetName)) {
+        violations.push({
+          kind: 'harness-boundary',
+          source: sourceName,
+          target: targetName,
+          detail:
+            'Offline harness evaluation must consume completed evidence, not live runtime modules.',
+        });
+      }
+      if (TRUSTED_KERNEL_FILES.has(sourceName) && targetName.startsWith('harness/')) {
+        violations.push({
+          kind: 'harness-boundary',
+          source: sourceName,
+          target: targetName,
+          detail: 'Trusted permission and sandbox modules must not depend on the adaptive harness.',
+        });
+      }
+      if (match[1]) continue;
       dependencies.push(targetName);
 
       if (!sourceName.startsWith('tui/') && targetName.startsWith('tui/')) {

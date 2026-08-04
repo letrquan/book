@@ -10,35 +10,28 @@
  * Requires a reachable provider (BOOK_API_KEY / settings). Never part of CI.
  */
 
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { query } from '../src/sdk.js';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadConfig } from '../src/config.js';
+import { runEvaluationProcess } from '../src/harness/evaluation/runner.js';
 import { slugifyWorkspace } from '../src/memory-store.js';
 import { formatFailureCounts } from '../src/pricing.js';
+import { isAnthropicProvider } from '../src/provider/index.js';
+import type { AgentConfig } from '../src/types/runtime.js';
 import { EVAL_TASKS, type EvalTask } from './edit-eval-fixtures.js';
 
-interface TaskOutcome {
-  name: string;
-  category: string;
-  success: boolean;
-  verified: boolean;
-  runError?: string;
-  durationMs: number;
-  mutationCalls: Record<string, number>;
-  failuresByCode: Record<string, number>;
-  toolCalls: number;
-  totalTokens?: number;
-}
-
-const MUTATION_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'ApplyPatch', 'NotebookEdit']);
+import type { EditEvalTaskOutcome as TaskOutcome } from './edit-eval-worker.js';
 const TASK_TIMEOUT_MS = (() => {
   const raw = process.env.BOOK_EVAL_TIMEOUT_MS;
   const parsed = raw === undefined ? NaN : Number(raw);
   // Empty or non-numeric values must not collapse to a 0/NaN (≈1ms) timeout.
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 240_000;
 })();
+const EDIT_EVAL_WORKER = fileURLToPath(new URL('./edit-eval-worker.ts', import.meta.url));
+const TSX_LOADER = import.meta.resolve('tsx');
 
 function parseArgs(argv: string[]): { model?: string; filter?: string } {
   const args: { model?: string; filter?: string } = {};
@@ -57,8 +50,7 @@ async function runCommand(command: string, commandArgs: string[], cwd: string): 
   });
 }
 
-async function seedWorkspace(task: EvalTask): Promise<string> {
-  const workspace = await mkdtemp(join(tmpdir(), 'book-edit-eval-'));
+async function seedWorkspace(task: EvalTask, workspace: string): Promise<void> {
   for (const [relativePath, content] of Object.entries(task.files)) {
     const target = join(workspace, relativePath);
     await mkdir(dirname(target), { recursive: true });
@@ -71,90 +63,92 @@ async function seedWorkspace(task: EvalTask): Promise<string> {
     ['-c', 'user.email=eval@book', '-c', 'user.name=book-eval', 'commit', '-qm', 'seed'],
     workspace,
   );
-  return workspace;
 }
 
-async function runTask(task: EvalTask, model?: string): Promise<TaskOutcome> {
+export function createEditEvaluationSettings(config: AgentConfig): Record<string, unknown> {
+  const providerId = 'evaluation';
+  const settings: Record<string, unknown> = {
+    model: `${providerId}/${config.model}`,
+    provider: {
+      [providerId]: {
+        type: isAnthropicProvider(config) ? 'anthropic' : 'openai',
+        baseURL: config.baseUrl,
+        apiKey: '{env:BOOK_API_KEY}',
+        models: { [config.model]: config.modelInfo ?? {} },
+      },
+    },
+    retry: { ...config.retry },
+    agents: { mode: 'off' },
+    memory: { enabled: false },
+    skills: { enabled: false },
+    observability: { toolTelemetry: false },
+  };
+  if (config.maxTokensExplicit) settings.maxTokens = config.maxTokens;
+  if (config.effortExplicit && config.effort) settings.effort = config.effort;
+  return settings;
+}
+
+export async function runEditEvalTask(task: EvalTask, model?: string): Promise<TaskOutcome> {
   const startedAt = Date.now();
-  const outcome: TaskOutcome = {
+  const failedOutcome = (runError: string): TaskOutcome => ({
     name: task.name,
     category: task.category,
     success: false,
     verified: false,
-    durationMs: 0,
+    runError,
+    durationMs: Date.now() - startedAt,
     mutationCalls: {},
     failuresByCode: {},
     toolCalls: 0,
-  };
-  const workspace = await seedWorkspace(task);
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(new Error('eval task timeout')),
-    TASK_TIMEOUT_MS,
-  );
-
+  });
+  const configWorkspace = await mkdtemp(join(tmpdir(), 'book-edit-eval-config-'));
+  let config: ReturnType<typeof loadConfig>;
   try {
-    const events = query(
-      `${task.instruction}\n\nWork only inside this workspace. When the change is complete, stop.`,
-      {
-        workspace,
-        model,
-        permissionMode: 'bypassPermissions',
-        persistSession: false,
-        agents: 'off',
-        maxTurns: 16,
-        signal: controller.signal,
-      },
-    );
-    for await (const event of events) {
-      if (event.type === 'tool_use') {
-        outcome.toolCalls++;
-        const name = event.toolCall.name;
-        if (MUTATION_TOOLS.has(name)) {
-          outcome.mutationCalls[name] = (outcome.mutationCalls[name] ?? 0) + 1;
-        }
-      } else if (event.type === 'tool_result') {
-        const error = event.toolResult.structuredError;
-        if (error)
-          outcome.failuresByCode[error.code] = (outcome.failuresByCode[error.code] ?? 0) + 1;
-      } else if (event.type === 'result') {
-        outcome.totalTokens = event.usage?.totalTokens;
-      } else if (event.type === 'error') {
-        outcome.runError = event.error;
-      }
-    }
-  } catch (error) {
-    outcome.runError = error instanceof Error ? error.message : String(error);
-  } finally {
-    clearTimeout(timeout);
-  }
-
-  const contents = new Map<string, string | null>();
-  const readWorkspaceFile = (relativePath: string): string | null => {
-    if (!contents.has(relativePath)) contents.set(relativePath, null);
-    return contents.get(relativePath) ?? null;
-  };
-  for (const relativePath of collectVerifyPaths(task)) {
     try {
-      contents.set(relativePath, await readFile(join(workspace, relativePath), 'utf8'));
-    } catch {
-      contents.set(relativePath, null);
+      config = loadConfig(configWorkspace, { modelOverride: model });
+    } catch (error) {
+      return failedOutcome(error instanceof Error ? error.message : String(error));
     }
+  } finally {
+    await rm(configWorkspace, { recursive: true, force: true });
   }
-  try {
-    outcome.verified = task.verify(readWorkspaceFile);
-  } catch {
-    outcome.verified = false;
-  }
-  outcome.success = outcome.verified && !outcome.runError;
-  outcome.durationMs = Date.now() - startedAt;
-  await rm(workspace, { recursive: true, force: true });
-  return outcome;
-}
+  const isolatedSettings = createEditEvaluationSettings(config);
 
-/** Seeded files plus paths the fixture declares it creates. */
-function collectVerifyPaths(task: EvalTask): string[] {
-  return [...new Set([...Object.keys(task.files), ...(task.createdFiles ?? [])])];
+  let processResult: Awaited<ReturnType<typeof runEvaluationProcess>>;
+  try {
+    processResult = await runEvaluationProcess({
+      command: process.execPath,
+      args: ['--import', TSX_LOADER, EDIT_EVAL_WORKER, '--task', task.name],
+      timeoutMs: TASK_TIMEOUT_MS,
+      env: { BOOK_API_KEY: config.apiKey },
+      prepare: async ({ workspace, bookHome }) => {
+        await seedWorkspace(task, workspace);
+        await writeFile(
+          join(bookHome, 'settings.json'),
+          JSON.stringify(isolatedSettings, null, 2),
+          'utf8',
+        );
+      },
+    });
+  } catch (error) {
+    return failedOutcome(error instanceof Error ? error.message : String(error));
+  }
+  let outcome: TaskOutcome;
+  if (processResult.status === 'completed') {
+    try {
+      const line = processResult.stdout.trim().split(/\r?\n/).at(-1);
+      if (!line) throw new Error('Edit evaluation worker returned no result.');
+      outcome = JSON.parse(line) as TaskOutcome;
+    } catch (error) {
+      outcome = failedOutcome(error instanceof Error ? error.message : String(error));
+    }
+  } else {
+    outcome = failedOutcome(
+      processResult.stderr.trim() || `Evaluation process ${processResult.status}.`,
+    );
+  }
+  outcome.durationMs = Date.now() - startedAt;
+  return outcome;
 }
 
 async function main(): Promise<void> {
@@ -172,7 +166,7 @@ async function main(): Promise<void> {
   const outcomes: TaskOutcome[] = [];
   for (const task of tasks) {
     process.stdout.write(`  ${task.name} ... `);
-    const outcome = await runTask(task, model);
+    const outcome = await runEditEvalTask(task, model);
     outcomes.push(outcome);
     const failures = formatFailureCounts(outcome.failuresByCode);
     console.log(
@@ -235,4 +229,5 @@ async function main(): Promise<void> {
   if (passed < outcomes.length) process.exitCode = 1;
 }
 
-await main();
+const currentFile = fileURLToPath(import.meta.url);
+if (process.argv[1] && resolve(process.argv[1]) === currentFile) await main();

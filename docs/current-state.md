@@ -59,7 +59,12 @@ reference for roadmap and design documents.
 - Managed-agent planning-task linkage, rerun, and task-aware cleanup from the background-job plan
   are not implemented; executable jobs and planning tasks remain separate.
 - The adaptive-harness roadmap is not a live learning system. Runtime attribution/accounting
-  preconditions are in progress; workflow selection and evolution phases remain inactive.
+  preconditions are in progress. A disposable external-process runner and architecture boundaries
+  now support trusted built-in evaluation fixtures, and the edit-reliability evaluation uses that
+  boundary with bounded process-tree teardown and generated settings that retain the effective
+  provider model ID, model metadata, and provider-option explicitness. Other eval scripts,
+  project-controlled execution, workspace trust, and container-grade isolation are not yet
+  integrated; workflow selection and evolution phases remain inactive.
 
 ## Verification
 

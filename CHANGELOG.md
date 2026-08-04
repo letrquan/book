@@ -19,6 +19,18 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Adaptive-harness evaluations now have a reusable external-process runner that provisions fresh
+  workspace, `BOOK_HOME`, user-config, cache, and temporary directories; copies only explicitly
+  allowlisted ambient variables; bounds captured output; and distinguishes failure, timeout,
+  cancellation, and spawn errors. Timeout and cancellation terminate the evaluator process tree
+  with bounded graceful and forced teardown. This is a reproducibility boundary for trusted
+  built-in fixtures, not a security sandbox for project-controlled commands. `npm run eval:edit`
+  now runs every trial through this boundary with managed agents disabled and generated isolated
+  settings that preserve the resolved provider-facing model ID, model metadata, retry policy, and
+  whether output-token and reasoning-effort options were explicitly configured.
+- Architecture checks now keep offline harness evaluation code out of the live agent runtime,
+  prevent evaluators from importing live execution modules, and keep permission/sandbox kernel
+  modules independent from harness policy.
 - `BOOK_HOME` can now relocate Book's user-global state from `~/.book`, including settings,
   sessions, memory, managed-agent state, jobs, rewind snapshots, telemetry, tool output, MCP
   configuration, and user-level discovery. Project-local `.book/` state remains unchanged.
