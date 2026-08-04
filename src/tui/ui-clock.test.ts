@@ -38,4 +38,18 @@ describe('shared UI clock', () => {
 
     unsubscribe();
   });
+
+  it('ticks the cinematic clock every 50ms and cleans it up', () => {
+    vi.useFakeTimers();
+    const listener = vi.fn();
+    const unsubscribe = subscribeUiClock('cinematic', listener);
+
+    vi.advanceTimersByTime(49);
+    expect(listener).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(listener).toHaveBeenCalledOnce();
+
+    unsubscribe();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });

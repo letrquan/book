@@ -24,6 +24,7 @@ import {
 } from '../../commands/filter.js';
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
+import { stripSgrMouseSequences } from '../mouse.js';
 import { InputBox } from './InputBox.js';
 
 const uiLog = createUiDebugLogger('tui:inputbar');
@@ -92,13 +93,6 @@ interface InputBarProps {
  */
 function normalizeInput(value: string): string {
   return value.normalize('NFC');
-}
-
-/**
- * Strip SGR mouse escape sequences before they can become prompt text.
- */
-function stripMouseSequences(val: string): string {
-  return val.replace(/\[<[0-9;]*[Mm]/g, '');
 }
 
 function getFilteredCommands(commands: SlashCommand[], filter: string): CommandItem[] {
@@ -502,7 +496,7 @@ export function InputBar({
   });
 
   const safeOnChange = useCallback((val: string) => {
-    const clean = normalizeInput(stripMouseSequences(val));
+    const clean = normalizeInput(stripSgrMouseSequences(val));
     setValue(clean);
 
     // Detect / at start for command menu.

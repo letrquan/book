@@ -15,6 +15,12 @@ export interface SgrMouseEvent {
 
 const SGR_MOUSE_PATTERN = /^\x1b\[<(\d+);(\d+);(\d+)(M|m)$/;
 const SGR_MOUSE_SEQUENCE_PATTERN = /\x1b\[<\d+;\d+;\d+[Mm]/g;
+const INK_SGR_MOUSE_SEQUENCE_PATTERN = /(?:\x1b)?\[<\d+;\d+;\d+[Mm]/g;
+
+/** Remove complete SGR mouse reports, with or without the escape byte Ink may consume. */
+export function stripSgrMouseSequences(input: string): string {
+  return input.replace(INK_SGR_MOUSE_SEQUENCE_PATTERN, '');
+}
 
 /** Parse an SGR mouse report into a typed, 1-based terminal event. */
 export function parseSgrMouseEvent(input: string): SgrMouseEvent | null {

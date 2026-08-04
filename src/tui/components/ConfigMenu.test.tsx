@@ -139,6 +139,34 @@ describe('ConfigMenu', () => {
     expect(onToggleThinking).toHaveBeenCalledOnce();
   });
 
+  it('shows and toggles startup fire from the keyboard shortcut', () => {
+    const onToggleStartupAnimation = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          themeName="dark"
+          memoryAutoSave={false}
+          showThinking
+          startupAnimation={false}
+          agentCount={3}
+          skillCount={4}
+          defaultPermissionMode="default"
+          onOpen={() => {}}
+          onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
+          onToggleStartupAnimation={onToggleStartupAnimation}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    expect(view.lastFrame()).toContain('Startup fire');
+    expect(view.lastFrame()).toContain('off');
+    view.stdin.write('f');
+    expect(onToggleStartupAnimation).toHaveBeenCalledOnce();
+  });
+
   it('fits narrow terminals', () => {
     const view = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>

@@ -14,6 +14,7 @@ interface ConfigMenuProps {
   themeName: string;
   memoryAutoSave: boolean;
   showThinking: boolean;
+  startupAnimation?: boolean;
   agentCount: number;
   skillCount: number;
   defaultPermissionMode: string;
@@ -21,6 +22,7 @@ interface ConfigMenuProps {
   onOpen: (section: ConfigSection) => void;
   onToggleMemory: () => void;
   onToggleThinking: () => void;
+  onToggleStartupAnimation?: () => void;
   onCancel: () => void;
 }
 
@@ -29,6 +31,7 @@ const ROWS = [
   'compact-model',
   'effort',
   'thinking',
+  'startup-animation',
   'theme',
   'permission-mode',
   'agents',
@@ -44,6 +47,7 @@ export function ConfigMenu({
   themeName,
   memoryAutoSave,
   showThinking,
+  startupAnimation = true,
   agentCount,
   skillCount,
   defaultPermissionMode,
@@ -51,6 +55,7 @@ export function ConfigMenu({
   onOpen,
   onToggleMemory,
   onToggleThinking,
+  onToggleStartupAnimation = () => {},
   onCancel,
 }: ConfigMenuProps) {
   const theme = useTheme();
@@ -72,6 +77,7 @@ export function ConfigMenu({
       const row = ROWS[selected];
       if (row === 'memory') onToggleMemory();
       else if (row === 'thinking') onToggleThinking();
+      else if (row === 'startup-animation') onToggleStartupAnimation();
       else onOpen(row);
       return;
     }
@@ -80,6 +86,7 @@ export function ConfigMenu({
     else if (shortcut === 'c') onOpen('compact-model');
     else if (shortcut === 'e') onOpen('effort');
     else if (shortcut === 'i') onToggleThinking();
+    else if (shortcut === 'f') onToggleStartupAnimation();
     else if (shortcut === 't') onOpen('theme');
     else if (shortcut === 'a') onOpen('agents');
     else if (shortcut === 's') onOpen('skills');
@@ -105,6 +112,12 @@ export function ConfigMenu({
       label: 'Show thinking',
       value: showThinking ? 'on' : 'off',
       description: 'Display the model reasoning in the transcript',
+    },
+    {
+      row: 'startup-animation',
+      label: 'Startup fire',
+      value: startupAnimation ? 'on' : 'off',
+      description: 'Burn the terminal into the Book welcome screen',
     },
     { row: 'theme', label: 'Theme', value: themeName, description: 'Terminal color palette' },
     {
@@ -149,7 +162,7 @@ export function ConfigMenu({
         ))}
       </Box>
       <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter toggle/open · M model · C compact · S skills · P permissions · Esc close
+        ↑↓ select · Enter · F fire · M model · C compact · S skills · P permissions · Esc close
       </Text>
     </SoftPanel>
   );
