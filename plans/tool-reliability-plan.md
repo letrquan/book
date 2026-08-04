@@ -1,9 +1,13 @@
 # Plan: Tool Reliability for Heterogeneous Models
 
 - **Date:** 2026-07-26
-- **Status:** Draft — awaiting review
+- **Status:** Complete; implemented 2026-07-26 and hardened through 2026-08-04
 - **Scope:** Built-in tool argument contracts, edit-tool failure behavior, tool-failure observability, and model-conditional mutation guidance
 - **Goal:** Reduce tool-call failures (especially file mutations) across non-frontier and non-Anthropic models without per-model profiles, adaptive behavior, or changes to canonical tool semantics.
+
+The motivation and design sections below are retained as the decision record. The authoritative
+implementation status is the tracking table at the end of this document; the README "File
+mutations" section describes current user-facing behavior.
 
 **Relationship to the adaptive harness plan:** none of this implements or advances
 [adaptive-harness-implementation-plan.md](adaptive-harness-implementation-plan.md). Phases 1 and 3

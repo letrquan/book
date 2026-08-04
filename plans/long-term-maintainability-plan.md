@@ -1,7 +1,7 @@
 # Plan: Long-Term Maintainability Hardening
 
 - **Date:** 2026-07-21
-- **Status:** Proposed
+- **Status:** Substantially implemented; final audit/ledger updated 2026-08-04
 - **Scope:** Settings safety, SDK and MCP contracts, test trust, command dispatch, agent-session orchestration, dependency boundaries, provider infrastructure, performance, and release hygiene
 - **Goal:** Keep Book easy to change over multiple years by making critical behavior explicit, testable, replaceable, and owned by small modules instead of a few high-churn coordinators.
 
@@ -26,7 +26,11 @@ The target development experience is:
 
 This plan deliberately avoids a large rewrite. Each phase must leave the repository releasable and may be delivered as several small pull requests.
 
-## Current Baseline
+## Historical Baseline
+
+The measurements in this section were collected on 2026-07-21 and are retained for context. They
+are not a statement of the current source tree; see the implementation ledger and
+[docs/current-state.md](../docs/current-state.md) for current status.
 
 Audit measurements from 2026-07-21:
 
@@ -717,37 +721,38 @@ Qualitative success is equally important:
 
 ## Implementation Tracking Ledger
 
-Update this table as pull requests land.
+The original table was not updated as the work landed. It is reconciled here against the current
+source tree and test configuration.
 
 | Phase | Status | Pull requests | Verification record | Notes |
 | --- | --- | --- | --- | --- |
-| 0 - Contract freeze | Not started | | | |
-| 1 - Settings safety | Not started | | | |
-| 2 - SDK/stream/MCP | Not started | | | |
-| 3 - CI trust | Not started | | | |
-| 4 - Command registry | Not started | | | |
-| 5 - AgentSession | Not started | | | |
-| 6 - Boundaries/runtime/types | Not started | | | |
-| 7 - Provider port | Not started | | | |
-| 8 - Performance/release | Not started | | | |
+| 0 - Contract freeze | Implemented | co-located unit/contract tests | `npm run check` | Contracts are enforced by strict schemas and architecture checks. |
+| 1 - Settings safety | Implemented | `src/settings-repository.ts`, settings tests | `npm run test:unit` | Layered resolution, atomic writes, migration, and redaction are shipped. |
+| 2 - SDK/stream/MCP | Implemented | SDK, stream-json, MCP contract tests | `npm run test:contract` | Typed SDK events and bounded MCP lifecycle are shipped. |
+| 3 - CI trust | Implemented | `.github/workflows/ci.yml` | CI matrix | Node 20/24 Ubuntu/Windows, audits, smoke, coverage, and UI budgets are defined. |
+| 4 - Command registry | Implemented | `src/commands/*` tests | `npm run test:unit` | Exact-match registry and built-in/custom loading are shipped. |
+| 5 - AgentSession | Implemented | `src/session/*` tests | `npm run test:unit` | TUI, headless, and SDK share session lifecycle services. |
+| 6 - Boundaries/runtime/types | Implemented | `scripts/check-architecture.ts` | `npm run architecture:check` | Type hubs, cycles, entrypoint imports, TUI imports, and sync process APIs are rejected. |
+| 7 - Provider port | Implemented | provider port/reliability tests | `npm run test:unit` | Providers share the port and transport/retry reliability contracts. |
+| 8 - Performance/release | Implemented with follow-up gates | renderer tests, release scripts | `npm run release:check`, `npm run bench:ui` | Windows ConPTY soak and distribution decision remain release follow-ups. |
 
 ## Definition of Done
 
 This maintainability program is complete when:
 
-- [ ] settings writes are validated, atomic, shared by all hosts, and unable to destroy malformed files;
-- [ ] SDK events stream directly and documented persistence/resume behavior is tested;
-- [ ] stream-json handles arbitrary chunk boundaries;
-- [ ] MCP requests are timeout-, abort-, exit-, and disconnect-safe;
-- [ ] required tests are deterministic without live credentials;
-- [ ] Windows and Ubuntu CI are trustworthy;
-- [ ] lint has zero warnings and architecture violations fail CI;
-- [ ] slash commands use one exact-match registry;
-- [ ] TUI, headless, and SDK share one AgentSession lifecycle;
-- [ ] runtime state is separate from immutable configuration;
-- [ ] runtime and type import graphs are cycle-free;
-- [ ] TUI is an enforced leaf layer;
-- [ ] providers implement an injected port and share transport reliability code;
-- [ ] blocking process work is removed from interactive render/input paths;
-- [ ] release version metadata is consistent and automatically checked;
-- [ ] README, roadmap, and implementation agree on which product surfaces are stable.
+- [x] settings writes are validated, atomic, shared by all hosts, and unable to destroy malformed files;
+- [x] SDK events stream directly and documented persistence/resume behavior is tested;
+- [x] stream-json handles arbitrary chunk boundaries;
+- [x] MCP requests are timeout-, abort-, exit-, and disconnect-safe;
+- [x] required tests are deterministic without live credentials;
+- [x] Windows and Ubuntu CI matrices are defined and exercised in GitHub Actions;
+- [x] lint has zero warnings and architecture violations fail CI;
+- [x] slash commands use one exact-match registry;
+- [x] TUI, headless, and SDK share one AgentSession lifecycle;
+- [x] runtime state is separate from immutable configuration;
+- [x] runtime and type import graphs are cycle-free;
+- [x] TUI is an enforced leaf layer;
+- [x] providers implement an injected port and share transport reliability code;
+- [x] blocking process work is removed from interactive render/input paths;
+- [x] release version metadata is consistent and automatically checked;
+- [x] README, roadmap, and implementation agree on which product surfaces are stable.

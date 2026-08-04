@@ -1,7 +1,7 @@
 # Plan: Adaptive Harness With Verified Self-Improvement
 
 - **Date:** 2026-07-20
-- **Status:** Draft
+- **Status:** Preconditions in progress; phases 0-8 inactive; phase 9 is a future gate
 - **Scope:** Agent-runtime integration, prompt and capability layers, context and tool-surface contracts, skills, workflow selection, run evidence, evaluation, and safe workflow evolution
 - **Goal:** Improve Book's task outcomes over time by selecting and evolving workflows for the current model, project, user context, and task without degrading models that perform best with minimal scaffolding.
 

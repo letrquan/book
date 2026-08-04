@@ -128,6 +128,9 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Documentation now reflects the current proprietary/source-distributed package status, shipped
+  CLI and runtime surfaces, open security boundaries, and implementation status of historical
+  roadmap documents.
 - `WebFetch` now returns structured provenance and Markdown/text/sanitized-HTML formats, uses a
   real HTML parser, preserves bounded complete output through the shared tool-output path, rejects
   binary content, and treats its legacy `prompt` argument as metadata instead of claiming to
@@ -212,7 +215,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-07-14
 
-First public-ready release of Book — an open-source, provider-agnostic AI coding agent CLI with a Claude Code–style terminal UI.
+First public-ready release of Book, a provider-agnostic AI coding agent CLI with a Claude Code-style terminal UI.
 
 ### Added
 

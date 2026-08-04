@@ -7,6 +7,10 @@
 - **Blocks:** Phase 4 selector may not use capability-routing evidence before this phase is verified
 - **Tracking rule:** Update this status and the parent plan ledger in the same change.
 
+The runtime already has hybrid tool discovery and advisory explorer routing, but this phase remains
+"Not started": the routing bundle has not been isolated, evaluated against the defined matrix, or
+verified behind the Phase 3A capability manifest and trust gates.
+
 > The parent plan's original intent, non-negotiable invariants, architecture boundaries, stop
 > conditions, and anti-drift review apply to every task in this phase.
 

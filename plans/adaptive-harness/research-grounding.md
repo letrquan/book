@@ -7,6 +7,12 @@ primary external sources.
 until the blockers and questions below are resolved. This document is a required input
 to the Phase 0 verification packet.
 
+**2026-08-04 update:** Terminal framing, end-to-end budget/accounting, provider identity,
+versioned pricing, run IDs, and ambient run fingerprints have since landed. The historical findings
+below explain why those fixes were required. Remaining preconditions are tracked in the parent
+plan's implementation ledger, especially evaluator isolation, workspace trust, permission ceilings,
+and a disposable verified `BOOK_HOME`.
+
 The companion [Agent Capability Research and Gap Analysis](agent-capability-research.md) covers
 the previously under-specified prompt, skill, tool-contract, context, model-adapter, verification,
 delegation, hook, and user-interaction surfaces. Its fixed implementation gates are
@@ -24,8 +30,8 @@ without improving the requested task:
 
 - Managed agent routing is already enabled by default through `settings.agents.mode`,
   while the plan treats multi-agent coordination as future work.
-- `maxBudgetUsd` is exposed at the headless boundary but is not enforced end to end;
-  root usage is not accumulated consistently and legacy child usage is discarded.
+- `maxBudgetUsd` was exposed at the headless boundary without end-to-end enforcement at the time of
+  this review. Root/child/resume accounting and fail-closed budget enforcement have since landed.
 - Provider terminal failures must never be returned as ordinary completed history. A
   regression exposed after the adaptive-harness accounting change (`fab5211`) showed that
   an OpenAI-compatible stream can close after partial output without `[DONE]` or a

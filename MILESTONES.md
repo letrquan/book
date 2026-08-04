@@ -1,283 +1,82 @@
-# Book Milestone Plan
-
-Goal: make Book a working Claude Code clone first, then a custom harness platform.
-
-Each phase lists exactly what's missing and what to build. `[has]` = already exists. `[STUB]` = exists but delegates to agent instead of doing the real thing. `[MISSING]` = doesn't exist.
-
----
-
-## Phase 1: Make it actually work as a Claude Code clone
-
-### 1a. Anthropic provider [has] ✅ (2026-07-03)
-
-Without this, Book can't use Claude models at all. Currently only OpenAI-compatible.
-
-- [x] `src/provider/anthropic.ts` — Anthropic Messages API streaming (SSE)
-- [x] `src/provider/index.ts` — Auto-detect provider from `baseUrl`
-- [x] Support `cache_control` blocks for prompt caching
-- [x] Support extended thinking (`thinking` param, `--effort` flag)
-- [x] `stream_options.include_usage` for token tracking
-- [x] **CLI flags**: `--effort` (low/medium/high/xhigh/max)
-- [x] `--effort` also writable via `BOOK_EFFORT` env var
-- [x] Use adaptive thinking by default: `thinking: {type: "adaptive", display: "omitted"}`
-- [x] Anthropic SSE events handled: message_start, content_block_start/delta/stop, message_delta/stop, ping, error
-- [x] Message format conversion: system prompt extraction, tool results → tool_result blocks
-- [x] Tool definition conversion: OpenAI format → Anthropic `{name, description, input_schema}`
-
-### 1b. CLAUDE.md loader [has] ✅ (2026-07-04)
-
-Book starts every session with Claude-Code-style project instructions loaded.
-
-- [x] Walk tree from workspace to root, collecting CLAUDE.md files
-- [x] `~/.claude/CLAUDE.md` (user-global, always loaded)
-- [x] `./CLAUDE.md` or `./.claude/CLAUDE.md` (project, version-controlled)
-- [x] `CLAUDE.local.md` (personal, gitignored)
-- [x] `.claude/rules/*.md` (modular rules; currently injected as standing prompt guidance)
-- [x] Merge order: user → project → local → rules (later wins)
-
-### 1c. Rich system prompt [has] ✅ (2026-07-09)
-
-Book now builds a structured Claude-Code-style prompt from local project context, split into a cacheable static prefix and dynamic per-turn suffix.
-
-- [x] Inject CLAUDE.md content
-- [x] Inject auto memory (MEMORY.md index)
-- [x] Inject git branch/status
-- [x] Inject platform info (OS, hostname, date)
-- [x] Inject skill listing with descriptions
-- [x] Inject slash command listing
-- [x] Inject subagent listing
-- [x] Purpose-named managed-agent runs with profile/model metadata and compact parent projections
-- [x] Read-only Explore routing works outside Git; patch/validation retain worktree safeguards
-- [x] Claude-style prompt-adjacent task panel, child transcript navigation, and automatic completion delivery
-- [x] Durable automatic child completion delivery with semantic transcript notifications and direct child follow-ups
-- [x] Inject agent todo list (when non-empty)
-- [x] Inject MCP tool descriptions (via active ToolDefinition descriptions)
-- [x] Two-zone: cached static prefix + dynamic per-turn suffix — `buildSystemPromptZones()` emits cached prefix + dynamic suffix; Anthropic caches only the static system block.
-- [x] Structure: persona → CLAUDE.md/rules → context → tools → memory → guardrails
-
-### 1d. Auto memory system [has] ✅ (2026-07-04)
-
-Without persistence, every session is amnesia. Memory makes the agent compound across sessions.
-
-- [x] File-based store in `~/.book/projects/<project>/memory/` — `memory-store.ts` `getProjectMemoryDir()`
-- [x] `MEMORY.md` index (first 200 lines loaded at session start) — `loadMemoryContext()`, `DEFAULT_MAX_INDEX_LINES = 200`
-- [x] 4 memory types: user, feedback, project, reference — `MEMORY_TYPES`
-- [x] YAML frontmatter on each memory file — `renderMemoryMarkdown()` writes `type/status/source/created/updated/confidence/tags`
-- [x] Write memories on user corrections/confirmations — `memory-autosave.ts` `detectMemoryCandidate()` + `maybeCaptureMemoryCandidate()`, called from `agent/loop.ts` on every user turn
-- [x] `/memory` command showing loaded files, toggle auto-save — handler in `tui/app.tsx`, subcommands `status|inbox|approve|discard|on|off|path`
-- [x] Settings: `enabled`, `autoSave`, `requireApproval` — `memorySettingsSchema` in `settings.ts`
-
-**Beyond spec (approval flow):** auto-captured candidates land in `.inbox/` as `pending`; `/memory approve` or `/memory discard` commits them, with symlink + path-escape guards (`approveMemoryCandidate`/`discardMemoryCandidate`). `secret-detect.ts` rejects secrets/unfit text before writing. `agent/context.ts` injects the loaded `MEMORY.md` index into the system prompt (feeds 1c's "Inject auto memory" item).
-
-### 1e. Missing tools (basic coverage)
-
-**Task tools** [has] ✅ (2026-07-06) — CC deprecated TodoWrite for these:
-
-- [x] `TaskCreate` — create a task with status/dependencies/metadata
-- [x] `TaskList` — list all tasks
-- [x] `TaskGet` — get task details
-- [x] `TaskUpdate` — update status, dependencies, delete tasks
-- [x] `TaskStop` — stop an in-progress tool-managed task (background process/subagent stopping deferred until shell/background infra exists)
-
-Task state is shared via `AgentConfig` across agent-loop invocations in a session; blocked tasks cannot be moved to `in_progress`, and completed/deleted dependencies unblock dependents.
-
-**Shell tools** [has] ✅ (2026-07-06):
-
-- [x] `BashOutput` — read output from a backgrounded shell by ID
-- [x] `KillShell` — terminate a backgrounded shell by ID
-- [x] `run_in_background` param on Bash
-
-Background shell state is shared via `AgentConfig` for TUI/headless session continuity. Background stdout/stderr pipes are unrefed, spawn failures are surfaced before returning a shell ID, explicit background timeouts terminate shells, and `KillShell` waits for process exit before reporting terminal status. Session-exit cleanup and TaskStop ownership integration are deferred until shell ownership semantics are defined.
-
-**Plan mode tools** [has] ✅ (2026-07-09):
-
-- [x] `EnterPlanMode` — agent enters plan mode (read-only tools auto-approved)
-- [x] `ExitPlanMode` — agent presents plan for user approval
-
-Plan mode is enforced in the agent loop: read-only exploration/status tools auto-run, mutating tools are blocked with `SKIPPED`, and `ExitPlanMode` gates leaving plan mode on host approval (TUI prompt; headless rejects by default unless bypassing permissions).
-
-At the approval prompt the user can also choose **"Approve, fresh context"** (shortcut `F`): the loop restores the pre-plan mode and stops the current turn, then the TUI starts a fresh conversation seeded with only the approved plan (like Codex/Claude Code handoff). The planning conversation is preserved as its own session; implementation begins with a clean context window.
-
-**Structured user questions** [has] ✅ (2026-07-18):
-
-- [x] `AskUserQuestion` — 1-4 structured single/multi-select questions with host-provided free-text answers
-- [x] Root and nested `Task` subagents route questions through one cancellable host interaction channel
-- [x] Step-by-step TUI wizard, typed SDK callback, and deterministic non-interactive stream-json fallback
-
-**Code intelligence** [MISSING]:
-
-- `LSP` — go-to-definition, find-references, diagnostics, hover
-
-**Other tools** [PARTIAL ✅ 2026-07-11]:
-
-- [x] `NotebookEdit` — replace/delete cells by ID, insert at the beginning or after a target, preserve unrelated notebook data, and return file mutation diffs
-- [x] `ToolSearch` — deferred/adaptive tool loading to keep initial context lean (`src/tools/tool-search.ts`, `catalog.ts`; capability-scoped next-turn activation)
-- [ ] `ReportFindings` — structured code-review findings output
-- [ ] `Workflow` — multi-agent orchestration scripts (pipeline/parallel)
-- [ ] `Monitor` — run command in background, react to each output line
-
-### 1f. Built-in slash commands that actually work [PARTIAL ✅ 2026-07-13]
-
-The STUB commands now do the real thing locally (no longer delegate to the agent for local-side work). Several previously-missing commands were added; the rest are blocked on subsystems from later phases (1b/1d/1h/1i, Phase 2) and are annotated with their blocker.
-
-| Command            | Book status                                                                                                                        | What CC actually does                                       |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `/init`            | ✅ real (tool-restricted prompt → agent analyzes + writes CLAUDE.md)                                                               | Generates CLAUDE.md from codebase analysis                  |
-| `/model`           | ✅ real (arrow-key picker + effort axis; `/model <name>` switches)                                                                 | Opens model picker UI with effort level                     |
-| `/effort`          | ✅ real (direct level selection or dedicated arrow-key picker; persists the project-local default)                                 | Changes thinking effort without opening `/model`            |
-| `/config`          | ✅ real (no-arg dump, `key=value` persist to settings.local.json, `--help`)                                                        | Opens settings interface, supports key=value                |
-| `/permissions`     | ✅ real (toggle view of mode + allow/ask/deny rules)                                                                               | Interactive dialog: add/remove rules, view scopes           |
-| `/cost`            | ✅ real (token counts + local USD estimate from PRICING table)                                                                     | Shows real session cost with per-model breakdown            |
-| `/memory`          | ✅ real (reads `~/.book/projects/<slug>/memory/` + MEMORY.md index)                                                                | Shows loaded files, toggle auto-save, browse                |
-| `/diff`            | ✅ real (`git diff` output locally)                                                                                                | Shows git diff                                              |
-| `/export`          | ✅ real (writes messages to file)                                                                                                  | Exports conversation to file                                |
-| `/skills`          | ✅ real (toggle listing of discovered skills)                                                                                      | List available skills                                       |
-| `/compact`         | ✅ v2 — compacts provider context to a grounded checkpoint plus an exact recent tail; the full transcript remains scrollable       | Compacts provider context without deleting transcript       |
-| `/clear`           | ✅ real — saves the previous conversation, optionally names it, and starts a fresh persisted session (`/new` and `/reset` aliases) | Starts a new conversation without deleting the previous one |
-| `/resume`          | ✅ real — interactive current-workspace picker or direct id/name/unique-prefix selection; restores tool-bearing history            | Resumes a previous session                                  |
-| `/rewind`          | ✅ real — restores conversation, code, or both to immediately before a selected active user prompt                                 | Rewinds conversation and/or workspace files                 |
-| `/help`            | exists                                                                                                                             | OK                                                          |
-| `/status`          | exists                                                                                                                             | OK                                                          |
-| `/theme`           | exists                                                                                                                             | OK                                                          |
-| `/doctor`          | basic CLI command                                                                                                                  | Full diagnostic with fix-it button                          |
-| `/usage`           | ✅ real (NEW) — session cost & token usage (alias `/stats`)                                                                        | —                                                           |
-| `/context`         | ✅ real (NEW) — message/tool-call counts + char/4 token estimate, ambient context breakdown                                        | —                                                           |
-| `/review`          | ✅ real (NEW) — tool-restricted prompt drives an agent review of the current diff                                                  | —                                                           |
-| `/security-review` | ✅ real (NEW) — OWASP-shaped agent audit of the current diff                                                                       | —                                                           |
-| `/release-notes`   | ✅ real (NEW) — installed version + CHANGELOG.md tail                                                                              | —                                                           |
-| `/feedback`        | ✅ real (NEW) — writes a non-secret session snapshot to `.book/feedback/`                                                          | —                                                           |
-
-**Still-missing built-in commands** (blocked on later phases, not implemented here):
-
-- `/vim` — toggle vim editing mode **(blocked on 1h: vim input mode)**
-- `/keybindings` — create/edit keyboard shortcuts config **(blocked on 1i: keybindings)**
-- `/terminal-setup` — configure Shift+Enter for terminal **(blocked on 1h/1i)**
-- `/agents` / `/subagents` — manage subagents (create, edit, list) **(needs richer subagent infra)**
-- `/workflows` — list/manage workflows **(blocked on 1e: Workflow tool)**
-- `/plugin` — manage plugins **(Phase 3: plugin system)**
-- `/mcp` — manage MCP servers interactively **(needs interactive MCP manager)**
-- `/add-dir` — add additional working directories **(blocked on 1g: `--add-dir` flag)**
-- `/ide` — connect to IDE extension **(Phase 3)**
-
-> `/memory` is fully wired now that 1d's auto-write + approval flow have landed — candidates are captured to `.inbox/` and surface in `/memory inbox` for review, `/memory approve|discard` commits them. `/usage` tracks the active model only; a per-model breakdown across a multi-model session is deferred (needs accounting plumbing in Phase 2/3).
->
-> **Session lifecycle completed 2026-07-13:** the TUI and headless modes share the append-only JSONL session store and launch-time resolution. `/clear`, `/new`, and `/reset` preserve the prior conversation and switch to a new isolated provider history; `/resume` and `/continue` restore complete assistant/tool turns. Session changes abort and generation-guard late streams, reset conversation-scoped task/todo/input state, reload approved memory, and emit ordered `SessionEnd`/`SessionStart` hooks with `BOOK_SESSION_ID`. Interactive launch now honors `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; stream-JSON keeps emitting newly created durable session IDs.
-
-### 1g. CLI flags [MISSING]
-
-Book has: `--workspace`, `--model`, `--print`, `--output-format`, `--input-format`, `--max-turns`, `--max-budget-usd`, `--permission-mode`, `--verbose`, `--json-schema`, `--resume`, `--continue`, `--session-id`, `--name`, `--no-session-persistence`, `--fork-session`, `--scrollback`, `--settings`, `--no-settings`, `--effort`
-
-> Deferred in the 2026-07-09 milestone pass: this slice focused on 1c prompt caching and 1h/1i TUI keybindings. CLI flag plumbing touches CLI/headless/TUI/SDK paths and should be handled in a dedicated follow-up.
-
-Missing:
-
-- `--system-prompt <text>` — inject one-off system prompt
-- `--context <text>` — add extra context text
-- `--allowed-tools <list>` — restrict tools (e.g. `Read,Grep`)
-- `--disallowed-tools <list>` — block specific tools
-- `--bare` — minimal mode: skip plugins, MCP, auto memory, CLAUDE.md
-- `--add-dir <path>` — add additional working directories
-- `--agents <json>` — spawn background agents from CLI
-- `--bg <prompt>` — run a background session
-- `--fallback-model <model>` — fallback model chain
-- `--mcp-config <path>` — MCP server config file
-- `--plugin-dir <path>` — plugin directory
-- `--dangerously-skip-permissions` — skip all permission prompts
-- `--debug <filter>` — debug logging with filter
-
-### 1h. Input/editing features [PARTIAL ✅ 2026-07-09]
-
-- [x] **Multiline input quick win** — Ctrl+J and terminal-supported Shift+Enter append a newline without submitting
-- [ ] **Vim mode** — vim keybindings in the input area (hjkl, visual mode, operators)
-- [ ] **Ctrl+R history search** — reverse search through command history
-- [ ] **External editor** — Ctrl+G to open prompt in $EDITOR
-- [ ] **Image paste** — Ctrl+V to paste image from clipboard
-- [ ] **Stash prompt** — Ctrl+S to stash current input
-- [ ] **Fullscreen rendering** — alt-screen mode (Book uses pi-style scrollback, CC has fullscreen mode with mouse support)
-- [ ] **Terminal bell** — notification when Claude finishes a response
-
-### 1i. Keyboard shortcuts [PARTIAL ✅ 2026-07-09]
-
-Book has: Esc (cancel), Ctrl+C (cancel current turn), Ctrl+T (tasks), Ctrl+L (redraw), Ctrl+J / Shift+Enter (newline, terminal support permitting), Alt+M (cycle mode), Meta+P (model picker), Up/Down (history), Ctrl+/ (keyboard shortcuts reference)
-
-Missing:
-
-- Ctrl+R — reverse history search
-- Ctrl+G — open external editor
-- Ctrl+S — stash current prompt
-- Ctrl+V — paste image
-- Meta+O — toggle fast mode
-- Meta+T — toggle extended thinking
-- Ctrl+X Ctrl+K — kill all background agents
-
-### 1j. TUI rendering and lifecycle stability [has] ✅ (2026-07-13)
-
-Book's Pi-style terminal scrollback and visible per-invocation tool UI are now stable across streaming completion, narrow layouts, and Windows ConPTY redraws.
-
-- [x] Synchronous single-flight send guard prevents duplicate agent runs from same-tick submissions
-- [x] Tool calls/results upsert by stable invocation id, including nested tool traces
-- [x] Permission and plan-approval promises settle on resolve, cancel, clear, and unmount
-- [x] Deterministic dynamic-to-Static ownership handoff replaces the timer-only transition and preserves FIFO ordering
-- [x] Responsive Markdown tables use display-width measurement, wrapped cells, and a stacked narrow-screen fallback
-- [x] Fenced code preserves all source text while wrapping highlighted segments within the available width
-- [x] Assistant messages, tool output, arguments, errors, and unified diffs receive real terminal-width budgets
-- [x] CJK, emoji, combining marks, headings, nested Markdown, and long unbroken content stay width-bounded
-- [x] Model-picker and consumed Ctrl/Alt shortcuts cannot leak printable characters into the prompt editor
-- [x] Ctrl+L and terminal resize clear and replay the viewport without duplicating completed messages
-- [x] Spinner help no longer advertises unsupported application-level scrolling keys
-
-**Verification:** 713 tests passed (4 skipped), typecheck and production build passed, targeted formatting and diff checks passed, and the UI benchmark showed no material regression. Real Windows ConPTY replay verified a 40-column CJK table, wrapped fenced code, unique completion output, Ctrl+L redraw, resize behavior, and model-picker input isolation. (ESLint has since been unblocked: Book migrated to a flat `eslint.config.js`, and `npm run lint` runs clean as part of `npm run check`.)
-
----
-
-## Phase 2: Harness platform (what makes it YOUR platform)
-
-Once Phase 1 is done, Book is a working CC clone. Phase 2 is where it diverges — these are the extension points for your own experiments.
-
-### 2a. Provider abstraction [MISSING]
-
-The agent loop hard-imports the provider. Make it pluggable.
-
-- `Provider` interface: `stream(messages, tools, opts) → AsyncGenerator<ProviderStreamEvent>`
-- Provider factory in config — select by `baseUrl` or explicit `--provider` flag
-- Mock provider for testing (no network needed)
-
-### 2b. Agent loop hooks [MISSING]
-
-Intercept every stage of the loop without forking.
-
-- `onPreModelCall(messages, tools)` — modify messages/tools before API call
-- `onPostModelCall(response)` — inspect model response
-- `onPreToolDispatch(toolCall)` — intercept/modify individual tool calls
-- `onPostToolDispatch(result)` — inspect tool results
-- `onCompactionDecision(usage)` — override compaction trigger
-- `onTurnComplete(turn)` — per-turn telemetry
-- Dynamic tool registration at runtime
-- Custom system prompt parts (register a function → string)
-- Configurable compaction strategy
-- `--harness <path>` CLI flag to load a harness module
-
-### 2c. Working SDK [MISSING]
-
-The `query()` SDK parses its own stdout JSON. Fix it to emit typed events directly.
-
-- Emit typed events: `system`, `text`, `tool_use`, `tool_result`, `error`, `result`, `done`
-- [x] Session resume in headless and interactive TUI modes (completed 2026-07-13)
-- CI-friendly exit codes (0=success, 1=error, 2=max turns/failed)
-- `--max-budget-usd` enforced (stop loop when cost exceeds budget)
-- `--json-schema` wired through provider for structured output
-
----
-
-## Phase 3: Polish (later)
-
-- **Plugin system** — marketplace, discovery, `/plugin` command
-- **Cost tracking** — per-model pricing, `/cost` with breakdown, usage attribution
-- **Scheduled tasks** — cron-based execution, `/schedule`, `/loop`
-- **IDE integration** — VS Code extension basics (at minimum LSP integration)
-- **Multi-repo** — `--add-dir`, cross-directory tool access
-- **Bundled skills** — `/batch`, `/code-review`, `/simplify`, `/init` (real implementation)
-- **Auth/OAuth** — `/login`, credential management
-- **Observability** — OpenTelemetry, structured logging
-- **Concurrent tool execution** ✅ — parallel-safe tool calls run in bounded ordered waves (`src/tools/execution-scheduler.ts`)
-- **Worktree isolation** ✅ — managed patcher/validator agents run in isolated git worktrees (`src/agents/git-isolation.ts`)
+# Book Milestones
+
+Status date: 2026-08-04. This roadmap records shipped foundations and remaining work. For exact
+runtime defaults and known boundaries, see [docs/current-state.md](docs/current-state.md).
+
+## Shipped Foundation
+
+- [x] Anthropic Messages and OpenAI-compatible provider ports with streaming, retries, usage,
+  model discovery, prompt caching, configurable effort, and BYOK provider management.
+- [x] Interactive TUI, print/headless hosts, JSON/stream-JSON protocols, public `query()` SDK,
+  shared session lifecycle, resume/fork/name support, compaction, rewind, and structured output.
+- [x] Layered settings, atomic settings repository, migration/redaction, permission modes and rules,
+  lifecycle hooks, optional bubblewrap sandbox, project/user instructions, themes, and auto-memory.
+- [x] Provider-neutral tool registry with closed schemas, aliases, capability intersections,
+  model-conditional mutation guidance, read-before-edit, tool discovery, bounded parallel-safe
+  waves, retries/timeouts, structured errors, and persistent tool telemetry.
+- [x] File, patch, shell, Git, web, notebook, todo, planning task, plan-mode, clarification,
+  session-history, skill, MCP, and managed-agent tool families.
+- [x] Managed explorer/patcher/validator agents with strict tool capabilities, concurrency limits,
+  non-Git read-only exploration, Git worktrees for mutation/validation, evidence gates, completion
+  delivery, resumable transcripts, ownership, retention, and recovery.
+- [x] Background job manager with `/jobs`, session and explicit persistent shell lifetimes,
+  restart reattachment, bounded logs/output, notifications, stop/dismiss, and SDK/stream events.
+- [x] First-class interoperable skill system with multi-root discovery, metadata-first prompting,
+  explicit/manual/automatic activation policies, consent, safe resources, reload/watch behavior,
+  TUI management, diagnostics, and evaluation tooling.
+- [x] Architecture and release gates: strict TypeScript, no import cycles, TUI leaf enforcement,
+  no synchronous production child-process APIs, unit/contract/integration tiers, coverage/UI
+  budgets, package smoke, audits, and main-branch stabilization checks.
+
+## Current Priorities
+
+### 1. Trust Boundary and Sandbox Hardening
+
+- [ ] Add a user-owned workspace trust database and a first-open review flow.
+- [ ] Disable or separately approve project hooks, MCP commands, provider credentials/endpoints,
+  executable custom-command substitutions, and privileged agent definitions in untrusted projects.
+- [ ] Rebuild shell sandbox execution around structured argv instead of a wrapped command string.
+- [ ] Enforce declared filesystem/network sandbox policies and define fail-closed behavior on
+  unsupported platforms.
+- [ ] Bind provider credentials to approved origins and restrict lower-trust secret resolution.
+
+See [plans/security-assessment.md](plans/security-assessment.md) for the current risk register.
+
+### 2. Release Readiness
+
+- [ ] Decide the distribution identity: keep GitHub/source-only distribution or choose an
+  available scoped npm package name and remove `private: true` intentionally.
+- [ ] Complete the renderer real-PTY matrix and interactive soak on Windows and Unix terminals.
+- [ ] Maintain three eligible green main-branch CI runs with no open lifecycle/accounting
+  regression issues before advancing runtime-attribution work.
+- [ ] Cut the next version only after `npm run release:check`, full Node 20/24 validation, package
+  inspection, changelog promotion, and installed-artifact smoke tests.
+
+### 3. Background Job Follow-up
+
+- [x] Evented shell manager, unified TUI panel, host events, and persistent runner.
+- [ ] Link planning tasks to executable jobs without conflating their state machines.
+- [ ] Add permission-preserving rerun, task-aware stop behavior, cleanup commands, and richer doctor
+  diagnostics for stale/lost persistent jobs.
+
+### 4. Adaptive Harness
+
+- [x] Stabilize terminal framing, root/child/resume accounting, budget enforcement, provider
+  identity, versioned pricing, run IDs, and ambient run fingerprints.
+- [ ] Finish the remaining evaluator, architecture, workspace-trust, permission-ceiling, and
+  isolated-home preconditions.
+- [ ] Phase 0: freeze the evaluation contract and deterministic corpus.
+- [ ] Phases 1-3B: add an inert harness boundary, evidence ledger, fixed workflows, explicit
+  capability manifests, and reliable deterministic routing.
+- [ ] Phases 4-8: selector, externally grounded outcomes, shadow evaluation, scoped canaries, and
+  bounded workflow evolution. None of these phases currently controls live runtime behavior.
+- [ ] Phase 9 remains a future research gate for cross-context transfer.
+
+The authoritative phase ledger is
+[plans/adaptive-harness-implementation-plan.md](plans/adaptive-harness-implementation-plan.md).
+
+## Documentation Rule
+
+When a product surface changes, update the implementation, focused tests, `CHANGELOG.md`, the
+relevant README section, and [docs/current-state.md](docs/current-state.md) in the same change. Plans
+must identify whether they are proposed, partially implemented, complete, or historical.

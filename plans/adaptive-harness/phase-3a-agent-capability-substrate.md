@@ -7,6 +7,11 @@
 - **Blocks:** Phase 3B routing and Phase 4 selector may not use capability evidence before this phase is verified
 - **Tracking rule:** Update this status and the parent plan ledger in the same change.
 
+Some fixed-runtime prerequisites (skills, capability intersections, tool discovery, provider
+metadata, and run attribution) landed independently in July/August 2026. This phase remains "Not
+started" because its versioned manifest, evaluation, trust preconditions, and verification packet
+have not been completed.
+
 > The parent plan's original intent, non-negotiable invariants, architecture boundaries, stop
 > conditions, and anti-drift review apply to every task in this phase.
 

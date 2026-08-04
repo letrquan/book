@@ -1,7 +1,7 @@
 # Plan: User-Managed Background Jobs
 
 - **Date:** 2026-08-01
-- **Status:** Proposed for review
+- **Status:** Implemented through Phase 4; Phase 5 task linkage/rerun follow-up is not implemented
 - **Scope:** Background shell lifecycle, managed-agent presentation, TUI job management,
   completion delivery, persistence, restart recovery, SDK events, and task linkage
 - **Goal:** Let users inspect and control every background execution from the TUI, while adding
@@ -28,6 +28,11 @@ The implementation should not begin until these product choices are accepted or 
    controls are in scope. OS-level process suspension is not.
 
 Recommended decisions are reflected throughout the plan.
+
+Current runtime behavior is documented in the README "Managed agents" section and
+[docs/current-state.md](../docs/current-state.md). The review and baseline sections below are kept
+as the design record; phases 0-4 shipped on 2026-08-01. Planning tasks and executable jobs remain
+separate because Phase 5 has not landed.
 
 ## Desired User Experience
 

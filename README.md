@@ -1,6 +1,9 @@
 # Book
 
-AI coding agent CLI with rich terminal UI. An open-source, provider-agnostic alternative to Claude Code.
+AI coding agent CLI with rich terminal UI. A provider-agnostic alternative to Claude Code.
+
+The implementation-backed status snapshot is [docs/current-state.md](./docs/current-state.md).
+This repository is proprietary and is currently distributed from source/GitHub rather than npm.
 
 ## Features
 
@@ -12,12 +15,12 @@ AI coding agent CLI with rich terminal UI. An open-source, provider-agnostic alt
 - **Tools**: a provider-neutral capability catalog keeps a practical core loaded and uses `ToolSearch` to activate up to five authorized git, web, session, skill, agent, notebook, or MCP definitions on the next model turn. File, shell, task, clarification, and plan tools stay immediately available when permitted. Existing names such as `Read`, `Bash`, and `AgentSpawn` remain stable.
 - **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`.
 - **Permissions**: allow/ask/deny rule matching with six modes — `default`, `acceptEdits` (`accept-edits`), `plan`, `auto`, `dontAsk`, `bypassPermissions` — see `/permissions` or `--permission-mode`.
-- **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events.
+- **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events. Review project-controlled hooks and provider/MCP settings before using an untrusted workspace.
 - **Verified managed agents**: adaptive model-directed routing, purpose-named runs, compact parent-facing results, live TUI monitoring, profile model overrides, read-only non-Git exploration, resumable isolated worktrees, strict capabilities, typed evidence, independent validation, and explicit patch application. Built-in `explorer`, `patcher`, and `validator` profiles can be overridden under `.book/agents/`.
 - **MCP**: stdio-transport MCP client for tool servers.
 - **CLI helpers**: `book doctor` (diagnose env/config), `book config` (get/set/list settings), and `book tool-stats` (measure tool use across sessions — fail counts, rates, durations).
 
-See [`MILESTONES.md`](./MILESTONES.md) for the full progress roadmap (Phase 1 Claude-Code-parity work, Phase 2 harness extension points, Phase 3 polish). See [`CHANGELOG.md`](./CHANGELOG.md) for release notes.
+See [`docs/current-state.md`](./docs/current-state.md) for the verified product snapshot, [`MILESTONES.md`](./MILESTONES.md) for the current roadmap, and [`CHANGELOG.md`](./CHANGELOG.md) for release notes.
 
 ## Installation
 
@@ -78,6 +81,7 @@ book tool-stats --since 7       # only the last 7 days
 | `-m, --model <model>`                 | Model override                                                                     |
 | `-p, --print [prompt]`                | Non-interactive / CI mode                                                          |
 | `--output-format <fmt>`               | `text` \| `json` \| `stream-json`                                                  |
+| `--input-format <fmt>`                | `text` \| `stream-json` (print mode input)                                         |
 | `--permission-mode <mode>`            | `default` \| `acceptEdits` \| `plan` \| `auto` \| `dontAsk` \| `bypassPermissions` |
 | `--effort <level>`                    | Thinking effort: `low` \| `medium` \| `high` \| `xhigh` \| `max`                   |
 | `--provider <type>`                   | `anthropic` \| `openai` \| `auto`                                                  |
@@ -93,6 +97,10 @@ book tool-stats --since 7       # only the last 7 days
 | `--settings <path>` / `--no-settings` | Ad-hoc settings file, or skip all layers                                           |
 | `--scrollback`                        | Terminal-native scrollback instead of full-screen TUI                              |
 | `--agents <mode>`                     | `adaptive` (default) \| `manual` \| `off`                                          |
+| `--verbose`                           | Full turn-by-turn output in print mode                                             |
+| `--include-hook-events`               | Include hook lifecycle events in stream-JSON output                                |
+| `--include-partial-messages`          | Include partial assistant text deltas in stream-JSON output                        |
+| `--prompt-suggestions`                | Ask for follow-up prompt suggestions after completion                              |
 
 ## Configuration
 
@@ -353,12 +361,15 @@ Project themes can override any token in `.book/themes/<name>.json`. They appear
 | `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                               |
 | `BOOK_WORKSPACE`                                                                                  | Default workspace                                                 |
 | `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                          |
+| `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                        |
 | `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                          |
+| `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout and telemetry location                               |
 | `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)          |
 | `BOOK_WEB_ALLOW_PRIVATE_NETWORK`                                                                  | Opt into local/private web destinations (disabled by default)     |
 | `BOOK_WEB_MAX_REDIRECTS`                                                                          | Same-origin redirect limit for `WebFetch` (default 5, maximum 10) |
 | `BOOK_TUI_RENDERER`                                                                               | `safe`, `incremental`, or experimental scroll renderer            |
 | `BOOK_DEBUG` / `BOOK_DEBUG_UI` / `BOOK_DEBUG_RENDER` / `BOOK_DEBUG_FLOW`                          | Debug logging flags                                               |
+| `BOOK_DEBUG_FILE` / `BOOK_DEBUG_STDERR` / `BOOK_DEBUG_MAX_BYTES` / `BOOK_DEBUG_BACKUPS`           | Debug log destination and rotation controls                       |
 
 `WebFetch` requires HTTPS by default, validates DNS results and the address used by the network
 connection, blocks private/special-use destinations, and stops on cross-origin redirects so the
@@ -384,7 +395,19 @@ description: Check for spelling errors
 Run a spell check on the codebase and fix any issues found.
 ```
 
-Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`), background-job controls (`/jobs`, with `/tasks` as an alias), managed-agent controls (`/agents`, `/agent`), config (`/model`, `/providers`, `/effort [low|medium|high|xhigh|max]`, `/config`, `/permissions`, `/theme`), inspection (`/status`, `/cost`, `/usage`, `/context`, `/diff`, `/skills`, `/memory`), and agent prompts (`/init`, `/review`, `/security-review`). `/model` switches models, while `/providers` opens the same picker for provider management. BYOK providers you add — their credentials, model catalog, and the active model selection — are saved to the user-global `~/.book/settings.json` so they are shared across every project rather than re-entered per folder; such providers are labeled `[BYOK]`, and selecting one of their models and pressing `Alt+D` removes it from `~/.book/settings.json`. `/effort` opens a picker when called without an argument and saves successful selections to `.book/settings.local.json`.
+Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, `/exit`,
+`/help`), task and job controls (`/task`, `/jobs`, with `/tasks` as an alias), managed-agent
+controls (`/agents`, `/agent`), config (`/model`, `/providers`,
+`/effort [low|medium|high|xhigh|max]`, `/config`, `/permissions`, `/theme`), inspection
+(`/status`, `/cost`, `/usage` with `/stats` as an alias, `/context`, `/diff`, `/skills`,
+`/memory`), local output and reload (`/export`, `/reload-skills`), release/support
+(`/release-notes`, `/feedback`), and agent prompts (`/init`, `/review`, `/security-review`).
+`/model` switches models, while `/providers` opens the same picker for provider management. BYOK
+providers you add - their credentials, model catalog, and active model selection - are saved to the
+user-global `~/.book/settings.json` so they are shared across projects; such providers are labeled
+`[BYOK]`, and selecting one of their models and pressing `Alt+D` removes it. `/effort` opens a
+picker when called without an argument and saves successful selections to
+`.book/settings.local.json`.
 
 `/skills` opens the interactive skill manager. Select a skill with `↑`/`↓`, press `Space` to cycle its visibility (`auto`, `name-only`, `manual`, or `off`), press `E` to cycle execution consent (`inherit`, `ask`, or `deny`), and press `Enter` to prepare an explicit `$skill-name` request. `G` toggles the global emergency switch, `R` reloads the catalog, and `/reload-skills` performs the same reload from the command line. Overrides are saved in `.book/settings.local.json` under `skills.overrides`, `skills.execution`, and `skills.enabled`.
 
@@ -513,6 +536,12 @@ npm run lint         # ESLint
 npm run format       # Prettier
 npm run format:check
 npm run bench:ui     # TUI micro-benchmarks
+npm run bench:runtime # Runtime micro-benchmarks
+npm run eval:edit    # Edit reliability evaluation (configured provider)
+npm run eval:compact # Compaction paired evaluation (configured provider)
+npm run eval:skills  # Skill activation evaluation
+npm run verify:ink-patch
+npm run release:check # Version, audit, and package smoke checks
 ```
 
 Main-branch runtime work also follows the [stabilization gate](docs/stabilization.md): three

@@ -1,6 +1,7 @@
 # TUI Renderer Performance Recovery Plan
 
-Status: implemented through the guarded incremental rollout; real-PTY soak remains pending
+Status: implemented through the guarded rollout; Windows now defaults to `safe`, other interactive
+terminals default to `incremental`, and the full real-PTY soak remains pending
 
 ## Implementation Status (2026-07-29)
 
@@ -8,8 +9,9 @@ Completed:
 
 - Backported Ink issue #909's one-line trailing-newline fix to Ink 6.8.0 with `patch-package` and
   install-time verification.
-- Added safe, incremental, and experimental-scroll modes. Incremental is now the interactive
-  default; safe remains the emergency fallback and is forced for non-TTY and screen-reader output.
+- Added safe, incremental, and experimental-scroll modes. Incremental is the default on
+  non-Windows interactive terminals; safe is the Windows default and remains the fallback for
+  non-TTY and screen-reader output.
 - Added xterm.js screen replay regressions for middle-row updates, prompts, and activity rows.
 - Removed direct calls to Ink's private root layout/render methods from transcript scrolling while
   preserving memoized transcript children.
@@ -22,7 +24,8 @@ Still required for the rollout follow-up:
 
 - Complete the full Windows ConPTY and Unix PTY scenario matrix and ten-minute interactive soaks.
 - Add resize/Unicode/long-running managed-agent screen cases to the replay suite.
-- Keep incremental as the default only while those terminal correctness gates remain at zero errors.
+- Keep incremental as the non-Windows default only while those terminal correctness gates remain at
+  zero errors; re-enable it by default on Windows only after ConPTY gates pass.
 
 ## Objective
 

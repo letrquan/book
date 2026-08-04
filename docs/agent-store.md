@@ -4,6 +4,10 @@ Book stores managed-agent plans, records, summaries, evidence, snapshots, and in
 `~/.book/agents/<repo-hash>/`. Detailed records are authoritative; summaries are rebuildable
 projections used for fast listing.
 
+This policy describes managed agents only. Persistent background shell jobs use the separate jobs
+store and runner in `src/jobs/` and `src/job-runner.ts`; in-memory planning tasks are not executable
+jobs and are not persisted in this agent store.
+
 ## Write policy
 
 - JSON is written to an exclusive temp file in the target directory, fsynced, closed, and renamed

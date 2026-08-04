@@ -4,31 +4,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project: Book — AI Coding Agent CLI
 
-Book is an open-source, provider-agnostic alternative to Claude Code. It provides an interactive terminal UI (TUI) and headless/CI mode for AI-assisted coding.
+Book is a proprietary, provider-agnostic alternative to Claude Code. It provides an interactive terminal UI (TUI), print/headless mode, an SDK, and managed background execution for AI-assisted coding.
 
-**Tech stack**: TypeScript (ES2022/ESM, `moduleResolution: bundler`), React 19 via Ink v7 for the TUI, tsup for building, Vitest for testing, Zod v4 for config validation. Node.js 20+.
+**Tech stack**: TypeScript (ES2022/ESM, `moduleResolution: bundler`), React 19 via Ink 6.8.0 for the TUI, tsup for building, Vitest 4 for testing, Zod 3 for config validation. Node.js 20+.
 
-**Version**: `0.1.0` (see `package.json` / `CHANGELOG.md`). Roadmap lives in `MILESTONES.md`. `README.md` is the most detailed and current product reference — consult it when a surface here looks thin.
+**Version**: `0.1.0` plus the unreleased changes in `CHANGELOG.md`. `docs/current-state.md` is the authoritative status snapshot, `README.md` is the usage reference, and `MILESTONES.md` tracks remaining work.
 
 ## Architecture
 
 ```
 src/
-  index.ts              CLI entry (Commander.js) — flags + `doctor` / `config` subcommands
+  index.ts              CLI entry (Commander.js) — flags + doctor/config/tool-stats subcommands
   sdk.ts                Programmatic SDK (`query()` async generator)
+  job-runner.ts         Detached runner for persistent background shell jobs
   cli/                  run.ts (interactive/headless wiring), doctor.ts, config-cmd.ts,
                         scrollback.ts, exit.ts (process.exit abstraction), utils.ts
   types/                Shared domain types (no runtime imports). NOTE: a top-level
                         src/types.ts hub is FORBIDDEN by the architecture check.
   config.ts             Config loading (env vars, settings.json, legacy .bookrc.json)
-  settings*.ts          settings.ts (Zod schemas), settings-loader.ts (layered resolver),
-                        settings-redaction.ts (redact secrets on dump)
+  settings*.ts          schemas, layered resolution, atomic repository writes, migration,
+                        redaction, and CLI-safe configuration access
+  book-home.ts          BOOK_HOME resolution for user-global state
   frontmatter.ts        Shared YAML frontmatter parser
   permissions.ts        Permission rule parsing/evaluation
   hooks.ts              Lifecycle hook runner (JSON-over-stdio contract)
   sandbox.ts            Bash sandbox via bubblewrap
   claude-md.ts          CLAUDE.md / AGENTS.md / rules tree-walk loader
-  skills.ts             Skill discovery from .book/skills/
+  skills.ts             Multi-root SKILL.md discovery/validation and prompt catalog
+  skill-registry.ts     Lazy bodies/resources, activation frames, consent, and diagnostics
+  skill-watcher.ts      Debounced safe-boundary skill reload
   subagent.ts           Subagent runner
   subagent-discovery.ts Subagent discovery from .book/agents/
   mcp.ts                MCP client (stdio transport)
@@ -43,6 +47,7 @@ src/
   async.ts              Small async utilities
   memory-*.ts           memory-store.ts (file store + MEMORY.md index),
                         memory-autosave.ts (capture candidates), memory-display.ts (/memory)
+  jobs/                 Background shell manager, persistent state, and restart recovery
   agent/
     loop.ts             Core agent loop (runAgentLoop)
     context.ts          System prompt builder (two-zone cache split), message formatter
@@ -59,7 +64,7 @@ src/
     builtins.ts         Built-in slash command catalog
     builtins-prompts.ts Prompt bodies for agent-backed commands (/init, /review, …)
     init-prompt.ts      /init prompt template
-    loader.ts           Slash command discovery from .book/commands/*.md
+    loader.ts           Slash command discovery from user/project .book/commands/*.md
     resolve.ts          Argument parsing, variable/shell substitution, env var resolution
     filter.ts / recent.ts  Command menu filtering, recent-command helpers
   provider/
@@ -95,11 +100,11 @@ src/
     plan-mode.ts        EnterPlanMode / ExitPlanMode
     ask-user-question.ts  AskUserQuestion validation + pending-request tool
     notebook.ts         NotebookEdit
-    skills-tool.ts      InvokeSkill
+    skills-tool.ts      InvokeSkill / ReadSkillResource
     diff.ts             Unified diff generator
   test/                 Shared test doubles (scripted-provider, async-event-collector)
   tui/                  Ink/React TUI (see below) — a leaf of the import graph
-  __benchmarks__/       ui.bench.tsx (bench:ui), runtime.bench.ts (bench:runtime)
+  tui/__benchmarks__/   ui.bench.tsx (bench:ui), runtime.bench.ts (bench:runtime)
 ```
 
 The `tui/` tree (root `app.tsx`, `hooks/`, and `components/`) is broad but discoverable; browse it directly. Key entry points: `tui/app.tsx` (slash-command dispatch, overlays), `tui/hooks/useAgent.ts` (core agent state), `tui/components/ChatPanel.tsx` / `TranscriptView.tsx` (rendering).
@@ -130,7 +135,7 @@ Other conventions:
 
 Framework: Vitest, with a shared `vitest.config.ts` base and three tiers (each its own config):
 
-- `npm run test:unit` — deterministic unit suite (`vitest.unit.config.ts`, `maxWorkers: 4`). Excludes contract tests and a few heavy integration tests.
+- `npm run test:unit` — deterministic unit suite (`vitest.unit.config.ts`, `maxWorkers: 1`). Excludes contract tests and the process/PTY-heavy integration set.
 - `npm run test:contract` — `*.contract.test.ts` only (`vitest.contract.config.ts`).
 - `npm run test:integration` — the heavy PTY/process/git-isolation tests, pinned to one worker (`vitest.integration.config.ts`, `maxWorkers: 1`).
 - `npm test` — runs `pretest` (a full `npm run build`) then all three tiers in sequence. Prefer a single tier while iterating; the build step makes the full run slow.
@@ -176,7 +181,7 @@ Settings are loaded in priority order (last wins):
 
 Scalar values take the highest-priority layer. Permission rules, hook lists, and `additionalDirectories` accumulate across layers; other arrays are replaced by the highest layer that defines them. Legacy `.bookrc.json` is still supported but deprecated. `--no-settings` skips all `settings.json` layers. Local writes are atomic and validate the whole document before replacing the file.
 
-Env overrides commonly used in development: `BOOK_API_KEY`, `BOOK_BASE_URL`, `BOOK_MODEL`, `BOOK_PROVIDER`, `BOOK_EFFORT`, `BOOK_WORKSPACE`, `BOOK_DEBUG*`.
+Env overrides commonly used in development: `BOOK_API_KEY`, `BOOK_BASE_URL`, `BOOK_MODEL`, `BOOK_COMPACT_MODEL`, `BOOK_PROVIDER`, `BOOK_EFFORT`, `BOOK_HOME`, `BOOK_WORKSPACE`, `BOOK_TUI_RENDERER`, and `BOOK_DEBUG*`.
 
 ## Notable product surfaces (keep docs in sync)
 
@@ -188,4 +193,5 @@ When changing these, update `README.md` / `CHANGELOG.md` / `MILESTONES.md` as ap
 - Permission modes: `PermissionMode` in `src/types/runtime.ts`
 - Memory paths and approval flow in `src/memory-store.ts` / `src/memory-autosave.ts`
 - Managed-agent behavior in `src/agents/` (README "Managed agents" is the detailed spec)
-```
+- Background shell behavior in `src/jobs/` and `src/job-runner.ts`
+- Skill behavior in `src/skills.ts`, `src/skill-registry.ts`, and `src/tools/skills-tool.ts`

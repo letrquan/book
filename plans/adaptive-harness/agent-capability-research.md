@@ -7,6 +7,12 @@ verification, subagents, hooks, model adaptation, user interaction, security, an
 automatic selection. The adaptive harness must be able to measure and version the complete harness
 that surrounds a model, not only a workflow ID.
 
+**2026-08-04 update:** This remains a research and gap-analysis record. Fixed-runtime work has
+since delivered the first-class skill registry, capability intersections, tool discovery,
+model-conditional mutation guidance, stricter agent allowlists, and additional run attribution.
+Those shipped primitives do not mark adaptive-harness Phase 3A or 3B verified; their phase gates and
+evaluation evidence remain outstanding.
+
 ## Executive Finding
 
 The base model is only one part of observed coding-agent quality. A production agent is the combined
