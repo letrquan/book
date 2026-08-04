@@ -144,6 +144,49 @@ describe('tool surface discovery', () => {
     expect(surface.activeDefinitions().map((tool) => tool.name)).not.toContain('Bash');
   });
 
+  it('restores the parent surface after a scoped restriction is disposed', () => {
+    const surface = createToolSurface({
+      config: config(),
+      context: context(),
+      definitions: [definition('Read'), definition('Bash'), definition('Write')],
+    });
+    const dispose = surface.pushRestriction(['Read', 'Bash']);
+    expect(surface.activeDefinitions().map((tool) => tool.name)).toEqual(['Read', 'Bash']);
+
+    dispose();
+    dispose();
+    expect(surface.activeDefinitions().map((tool) => tool.name)).toEqual(['Read', 'Bash', 'Write']);
+  });
+
+  it('intersects and independently restores nested restrictions', () => {
+    const surface = createToolSurface({
+      config: config(),
+      context: context(),
+      definitions: [definition('Read'), definition('Bash'), definition('Write')],
+    });
+    const disposeOuter = surface.pushRestriction(['Read', 'Bash']);
+    const disposeInner = surface.pushRestriction(['Read']);
+    expect(surface.activeDefinitions().map((tool) => tool.name)).toEqual(['Read']);
+
+    disposeInner();
+    expect(surface.activeDefinitions().map((tool) => tool.name)).toEqual(['Read', 'Bash']);
+    disposeOuter();
+    expect(surface.activeDefinitions().map((tool) => tool.name)).toEqual(['Read', 'Bash', 'Write']);
+  });
+
+  it('previews a scoped restriction without mutating the active surface', () => {
+    const surface = createToolSurface({
+      config: config(),
+      context: context(),
+      definitions: [definition('Read'), definition('Bash'), definition('Write')],
+    });
+    const dispose = surface.pushRestriction(['Read', 'Bash']);
+
+    expect(surface.previewRestriction(['Write']).map((tool) => tool.name)).toEqual(['ToolSearch']);
+    expect(surface.activeDefinitions().map((tool) => tool.name)).toEqual(['Read', 'Bash']);
+    dispose();
+  });
+
   it('canonicalizes model-facing names and infers catalog effects', () => {
     const registry = createRegistry();
     registry.register(definition('read_file', 'Read a file'));

@@ -37,9 +37,18 @@ import {
   persistSettingGlobal,
   persistSettingsGlobal,
   persistPermissionRuleLocal,
+  persistSkillActivationLocal,
+  persistSkillExecutionLocal,
+  persistSkillsEnabledLocal,
   clearLocalSettings,
 } from '../persist.js';
-import { DEFAULT_SETTINGS, providerConfigSchema, type ResolvedSettings } from '../../settings.js';
+import {
+  DEFAULT_SETTINGS,
+  providerConfigSchema,
+  type ResolvedSettings,
+  type SkillActivation,
+  type SkillExecution,
+} from '../../settings.js';
 import { resolveSettings } from '../../settings-loader.js';
 import { providerConfigFromDraft, type ProviderSaveRequest } from '../model-options.js';
 import type { ProviderRemovalResult } from '../components/ModelPicker.js';
@@ -1609,6 +1618,68 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [config.workspace],
   );
 
+  const setSkillActivation = useCallback(
+    (skillName: string, activation: SkillActivation) => {
+      const persisted = persistSkillActivationLocal(config.workspace, skillName, activation);
+      if (!persisted.ok) return persisted;
+
+      setLiveConfig((current) => ({
+        ...current,
+        settings: {
+          ...current.settings,
+          skills: {
+            ...current.settings.skills,
+            overrides: {
+              ...current.settings.skills.overrides,
+              [skillName]: activation,
+            },
+          },
+        },
+      }));
+      return { ok: true };
+    },
+    [config.workspace],
+  );
+
+  const setSkillExecution = useCallback(
+    (skillName: string, execution: SkillExecution) => {
+      const persisted = persistSkillExecutionLocal(config.workspace, skillName, execution);
+      if (!persisted.ok) return persisted;
+
+      setLiveConfig((current) => ({
+        ...current,
+        settings: {
+          ...current.settings,
+          skills: {
+            ...current.settings.skills,
+            execution: {
+              ...current.settings.skills.execution,
+              [skillName]: execution,
+            },
+          },
+        },
+      }));
+      return { ok: true };
+    },
+    [config.workspace],
+  );
+
+  const setSkillsEnabled = useCallback(
+    (enabled: boolean) => {
+      const persisted = persistSkillsEnabledLocal(config.workspace, enabled);
+      if (!persisted.ok) return persisted;
+      setLiveConfig((current) => ({
+        ...current,
+        settings: {
+          ...current.settings,
+          skills: { ...current.settings.skills, enabled },
+        },
+      }));
+      return { ok: true };
+    },
+    [config.workspace],
+  );
+
   const setMemoryAutoSave = useCallback(
     (enabled: boolean) => {
       setLiveConfig((c) => ({
@@ -1730,6 +1801,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setEffort,
     setAgentProfileModel,
     setCompactModel,
+    setSkillActivation,
+    setSkillExecution,
+    setSkillsEnabled,
     setMemoryAutoSave,
     setShowThinking,
 

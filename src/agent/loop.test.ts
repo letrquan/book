@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { requiresToolPermission, runAgentLoop } from './loop.js';
@@ -14,6 +14,28 @@ import { SessionRuntime } from '../session/runtime.js';
 import type { Provider } from '../provider/index.js';
 import type { CompactResult } from '../types/sessions.js';
 import type { AgentTerminalOutcome } from '../types/terminal.js';
+
+function writeLoopSkill(
+  workspace: string,
+  name: string,
+  options: { activation?: 'auto' | 'manual'; allowedTools?: string[]; body?: string } = {},
+): void {
+  const root = join(workspace, '.book', 'skills', name);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(root, 'SKILL.md'),
+    [
+      '---',
+      `name: ${name}`,
+      `description: Use the ${name} workflow`,
+      ...(options.allowedTools?.length
+        ? ['allowed-tools:', ...options.allowedTools.map((tool) => `- ${tool}`)]
+        : []),
+      '---',
+      options.body ?? `Follow the ${name} procedure.`,
+    ].join('\n'),
+  );
+}
 
 function compactedForRetry(): Extract<CompactResult, { status: 'compacted' }> {
   return {
@@ -59,6 +81,474 @@ describe('persistent background shell permissions', () => {
     expect(requiresToolPermission('auto', true)).toBe(true);
     expect(requiresToolPermission('bypassPermissions', true)).toBe(false);
     expect(requiresToolPermission('auto', false)).toBe(false);
+  });
+});
+
+describe('runAgentLoop skill lifecycle', () => {
+  it('injects an explicitly mentioned skill into the first provider request', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-explicit-skill-'));
+    try {
+      writeLoopSkill(workspace, 'review', { body: 'Apply the explicit review checklist.' });
+      let systemPrompt = '';
+      let toolNames: string[] = [];
+      const lifecycleEvents: string[] = [];
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* (_config, messages, tools) {
+          systemPrompt = messages
+            .filter((message) => message.role === 'system')
+            .map((message) => JSON.stringify(message.content))
+            .join('\n');
+          toolNames = tools.map((tool) => tool.name);
+          yield { type: 'text', content: 'done' };
+          yield { type: 'done' };
+        },
+      };
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 1 }),
+        createDefaultRegistry(),
+        '$review inspect this change',
+        [],
+        noopCallbacks({
+          onAgentEvent: (event) => {
+            if (event.type === 'skill_lifecycle') lifecycleEvents.push(event.event.type);
+          },
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(systemPrompt).toContain('Apply the explicit review checklist.');
+      expect(systemPrompt).toContain('reason: user');
+      expect(toolNames).toContain('InvokeSkill');
+      expect(lifecycleEvents).toEqual(
+        expect.arrayContaining(['skill_discovered', 'skill_activation_applied']),
+      );
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('activates a model-selected skill for the next request and intersects its tools', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-model-skill-'));
+    try {
+      writeLoopSkill(workspace, 'review', {
+        allowedTools: ['Read'],
+        body: 'Apply the model-selected review checklist.',
+      });
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 2 });
+      runtimeConfig.settings.skills.overrides.review = 'auto';
+      const prompts: string[] = [];
+      const toolSurfaces: string[][] = [];
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* (_config, messages, tools) {
+          providerTurn++;
+          prompts.push(
+            messages
+              .filter((message) => message.role === 'system')
+              .map((message) => JSON.stringify(message.content))
+              .join('\n'),
+          );
+          toolSurfaces.push(tools.map((tool) => tool.name));
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: { id: 'skill-1', name: 'InvokeSkill', arguments: { skill: 'review' } },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'inspect this change',
+        [],
+        noopCallbacks(),
+        'auto',
+        { provider, isNewSession: false },
+      );
+
+      expect(prompts[0]).not.toContain('Apply the model-selected review checklist.');
+      expect(prompts[1]).toContain('Apply the model-selected review checklist.');
+      expect(prompts[1]).toContain('reason: model');
+      expect(toolSurfaces[1]).toContain('Read');
+      expect(toolSurfaces[1]).toContain('ReadSkillResource');
+      expect(toolSurfaces[1]).not.toContain('Bash');
+      expect(toolSurfaces[1]).not.toContain('Write');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('expires active skill frames after a provider failure', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-skill-provider-error-'));
+    const runtime = new SessionRuntime();
+    try {
+      writeLoopSkill(workspace, 'review');
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 2 });
+      runtimeConfig.settings.skills.overrides.review = 'auto';
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: { id: 'skill-error', name: 'InvokeSkill', arguments: { skill: 'review' } },
+            };
+            yield { type: 'done' };
+            return;
+          }
+          yield { type: 'error', error: 'provider failed', errorCode: 'provider_error' };
+        },
+      };
+
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'inspect this change',
+        [],
+        noopCallbacks(),
+        'auto',
+        { provider, isNewSession: false, runtime },
+      );
+
+      expect(runtime.inspectSkills()?.active).toHaveLength(0);
+      expect(runtime.inspectSkills()?.previous).toEqual([
+        expect.objectContaining({ skillName: 'review', reason: 'model' }),
+      ]);
+    } finally {
+      runtime.dispose();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('composes multiple active skills and intersects their tool ceilings', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-multi-skill-'));
+    try {
+      writeLoopSkill(workspace, 'read-review', {
+        allowedTools: ['Read'],
+        body: 'Use the read review procedure.',
+      });
+      writeLoopSkill(workspace, 'write-review', {
+        allowedTools: ['Write'],
+        body: 'Use the write review procedure.',
+      });
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 3 });
+      runtimeConfig.settings.skills.overrides['read-review'] = 'auto';
+      runtimeConfig.settings.skills.overrides['write-review'] = 'auto';
+      const toolSurfaces: string[][] = [];
+      const results: ToolResult[] = [];
+      let providerTurn = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* (_config, _messages, tools) {
+          providerTurn++;
+          toolSurfaces.push(tools.map((tool) => tool.name));
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'skill-read',
+                name: 'InvokeSkill',
+                arguments: { skill: 'read-review' },
+              },
+            };
+          } else if (providerTurn === 2) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'skill-write',
+                name: 'InvokeSkill',
+                arguments: { skill: 'write-review' },
+              },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'review this change',
+        [],
+        noopCallbacks({ onToolResult: (result) => results.push(result) }),
+        'auto',
+        { provider, isNewSession: false },
+      );
+
+      expect(results[1]).toMatchObject({
+        status: 'blocked',
+        structuredError: { code: 'skill_tool_intersection_empty' },
+      });
+      expect(toolSurfaces[2]).toContain('InvokeSkill');
+      expect(toolSurfaces[2]).toContain('ReadSkillResource');
+      expect(toolSurfaces[2]).toContain('Read');
+      expect(toolSurfaces[2]).not.toContain('Write');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects conflicting explicit skill ceilings before the first provider request', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-explicit-conflict-'));
+    try {
+      writeLoopSkill(workspace, 'read-review', {
+        allowedTools: ['Read'],
+        body: 'Use the read review procedure.',
+      });
+      writeLoopSkill(workspace, 'write-review', {
+        allowedTools: ['Write'],
+        body: 'Use the write review procedure.',
+      });
+      let systemPrompt = '';
+      let toolNames: string[] = [];
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* (_config, messages, tools) {
+          systemPrompt = JSON.stringify(messages);
+          toolNames = tools.map((tool) => tool.name);
+          yield { type: 'text', content: 'done' };
+          yield { type: 'done' };
+        },
+      };
+
+      await runAgentLoop(
+        defaultConfig({ workspace, maxTurns: 1 }),
+        createDefaultRegistry(),
+        '$read-review $write-review inspect this change',
+        [],
+        noopCallbacks(),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(systemPrompt).toContain('Use the read review procedure.');
+      expect(systemPrompt).not.toContain('Use the write review procedure.');
+      expect(systemPrompt).toContain('no task tools would remain');
+      expect(toolNames).toContain('Read');
+      expect(toolNames).not.toContain('Write');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('reports an explicitly requested disabled skill before the first provider request', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-explicit-disabled-skill-'));
+    try {
+      writeLoopSkill(workspace, 'review', { body: 'This body must remain inactive.' });
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 1 });
+      runtimeConfig.settings.skills.overrides.review = 'off';
+      let systemPrompt = '';
+      const lifecycleCodes: string[] = [];
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* (_config, messages) {
+          systemPrompt = JSON.stringify(messages);
+          yield { type: 'text', content: 'done' };
+          yield { type: 'done' };
+        },
+      };
+
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        '$review inspect this change',
+        [],
+        noopCallbacks({
+          onAgentEvent: (event) => {
+            if (event.type !== 'skill_lifecycle') return;
+            const code = event.event.details?.code;
+            if (typeof code === 'string') lifecycleCodes.push(code);
+          },
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(systemPrompt).toContain('Skill is disabled: \\"review\\".');
+      expect(systemPrompt).not.toContain('This body must remain inactive.');
+      expect(lifecycleCodes).toContain('skill_disabled');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('reports execution-denied explicit skills with the stable policy code', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-explicit-denied-skill-'));
+    try {
+      writeLoopSkill(workspace, 'review', { body: 'This body must remain inactive.' });
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 1 });
+      runtimeConfig.settings.skills.execution.review = 'deny';
+      let systemPrompt = '';
+      const lifecycleCodes: string[] = [];
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* (_config, messages) {
+          systemPrompt = JSON.stringify(messages);
+          yield { type: 'text', content: 'done' };
+          yield { type: 'done' };
+        },
+      };
+
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        '$review inspect this change',
+        [],
+        noopCallbacks({
+          onAgentEvent: (event) => {
+            if (event.type !== 'skill_lifecycle') return;
+            const code = event.event.details?.code;
+            if (typeof code === 'string') lifecycleCodes.push(code);
+          },
+        }),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(systemPrompt).toContain('Skill activation is denied: review');
+      expect(systemPrompt).not.toContain('This body must remain inactive.');
+      expect(lifecycleCodes).toContain('skill_execution_denied');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('asks before activating skills configured for consent', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-skill-consent-'));
+    try {
+      writeLoopSkill(workspace, 'review');
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 2 });
+      runtimeConfig.settings.skills.overrides.review = 'auto';
+      runtimeConfig.settings.skills.execution.review = 'ask';
+      let providerTurn = 0;
+      let permissionPrompts = 0;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          providerTurn++;
+          if (providerTurn === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: { id: 'skill-ask', name: 'InvokeSkill', arguments: { skill: 'review' } },
+            };
+          } else {
+            yield { type: 'text', content: 'done' };
+          }
+          yield { type: 'done' };
+        },
+      };
+
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'review this change',
+        [],
+        noopCallbacks({
+          onPermissionRequired: async () => {
+            permissionPrompts++;
+            return 'allow';
+          },
+        }),
+        'auto',
+        { provider, isNewSession: false },
+      );
+
+      expect(permissionPrompts).toBe(1);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('denies implicit project-skill consent in dontAsk mode without prompting', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-skill-dont-ask-'));
+    try {
+      writeLoopSkill(workspace, 'review');
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 1 });
+      runtimeConfig.settings.skills.overrides.review = 'auto';
+      const permissionPrompt = vi.fn();
+      const results: ToolResult[] = [];
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'skill-denied', name: 'InvokeSkill', arguments: { skill: 'review' } },
+          };
+          yield { type: 'done' };
+        },
+      };
+
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        'review this change',
+        [],
+        noopCallbacks({
+          onPermissionRequired: permissionPrompt,
+          onToolResult: (result) => results.push(result),
+        }),
+        'dontAsk',
+        { provider, isNewSession: false },
+      );
+
+      expect(permissionPrompt).not.toHaveBeenCalled();
+      expect(results[0]).toMatchObject({
+        status: 'blocked',
+        structuredError: { code: 'permission_denied' },
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('removes skill prompt and tool effects when skills are globally disabled', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-skills-off-'));
+    try {
+      writeLoopSkill(workspace, 'review', { body: 'This must remain hidden.' });
+      const runtimeConfig = defaultConfig({ workspace, maxTurns: 1 });
+      runtimeConfig.settings.skills.enabled = false;
+      let systemPrompt = '';
+      let toolNames: string[] = [];
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* (_config, messages, tools) {
+          systemPrompt = JSON.stringify(messages);
+          toolNames = tools.map((tool) => tool.name);
+          yield { type: 'text', content: 'done' };
+          yield { type: 'done' };
+        },
+      };
+
+      await runAgentLoop(
+        runtimeConfig,
+        createDefaultRegistry(),
+        '$review inspect this change',
+        [],
+        noopCallbacks(),
+        'default',
+        { provider, isNewSession: false },
+      );
+
+      expect(systemPrompt).not.toContain('This must remain hidden.');
+      expect(systemPrompt).not.toContain('Available skills');
+      expect(toolNames).not.toContain('InvokeSkill');
+      expect(toolNames).not.toContain('ReadSkillResource');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });
 

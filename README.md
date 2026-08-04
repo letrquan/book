@@ -386,6 +386,85 @@ Run a spell check on the codebase and fix any issues found.
 
 Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`), background-job controls (`/jobs`, with `/tasks` as an alias), managed-agent controls (`/agents`, `/agent`), config (`/model`, `/providers`, `/effort [low|medium|high|xhigh|max]`, `/config`, `/permissions`, `/theme`), inspection (`/status`, `/cost`, `/usage`, `/context`, `/diff`, `/skills`, `/memory`), and agent prompts (`/init`, `/review`, `/security-review`). `/model` switches models, while `/providers` opens the same picker for provider management. BYOK providers you add — their credentials, model catalog, and the active model selection — are saved to the user-global `~/.book/settings.json` so they are shared across every project rather than re-entered per folder; such providers are labeled `[BYOK]`, and selecting one of their models and pressing `Alt+D` removes it from `~/.book/settings.json`. `/effort` opens a picker when called without an argument and saves successful selections to `.book/settings.local.json`.
 
+`/skills` opens the interactive skill manager. Select a skill with `↑`/`↓`, press `Space` to cycle its visibility (`auto`, `name-only`, `manual`, or `off`), press `E` to cycle execution consent (`inherit`, `ask`, or `deny`), and press `Enter` to prepare an explicit `$skill-name` request. `G` toggles the global emergency switch, `R` reloads the catalog, and `/reload-skills` performs the same reload from the command line. Overrides are saved in `.book/settings.local.json` under `skills.overrides`, `skills.execution`, and `skills.enabled`.
+
+### Skills
+
+Book reads interoperable directory packages whose entrypoint is `SKILL.md`:
+
+```text
+<root>/<skill-name>/
+  SKILL.md
+  references/   optional text references
+  assets/       optional templates or other files
+  scripts/      optional packaged scripts (never auto-executed)
+```
+
+`SKILL.md` must start with YAML frontmatter containing `name` and `description`. The body is loaded
+only after activation; metadata, validation issues, resource manifests, and digests are available
+for inspection without putting the body in the initial prompt. Use `references/` and `assets/` for
+supporting material; Book reads declared resources only through `ReadSkillResource`, as untrusted
+content. Scripts remain ordinary resources and can run only through Book's existing execution tools
+and their normal approvals.
+
+Discovery scans these roots from lowest to highest precedence: user `~/.claude/skills`, user
+`~/.agents/skills`, user `~/.config/opencode/skills`, user `~/.book/skills`, then the matching
+`.claude/skills`, `.agents/skills`, `.opencode/skills`, and `.book/skills` directories from the Git
+root to the current working directory. Deeper project directories and native `.book` roots win;
+duplicate names are shadowed rather than merged and are shown in `/skills` diagnostics. Skill
+directories may be symlinked after canonical path and size checks; resource symlinks are rejected.
+
+Visibility controls determine whether metadata participates in automatic matching: `auto` exposes
+name and description, `name-only` exposes only the name, `manual` requires explicit `$skill-name`,
+and `off` disables the skill. Project-sourced implicit activation requires consent. `ask` always
+requests consent, while `deny` fails closed; no skill can grant tools, bypass permissions, alter the
+sandbox, or execute a packaged script implicitly. Active instructions are scoped to the current run
+by default (or the next model step for `lifetime: turn`) and tool declarations are intersections
+with Book's existing authorized surface.
+
+Newly discovered skills start in `manual` mode. After evaluating representative positive and
+negative prompts, enable automatic matching per skill from `/skills` or by setting its override to
+`auto`; this keeps implicit activation available without treating unmeasured skill descriptions as
+a safe release default.
+
+Use `/skills status` for a body-free runtime report containing the catalog digest, active and
+previous activation frames, effective tool intersection, validation failures, prompt-catalog
+omissions, and recent lifecycle outcomes. The equivalent settings shape is:
+
+```json
+{
+  "skills": {
+    "enabled": true,
+    "overrides": {
+      "review": "auto",
+      "deploy": "manual"
+    },
+    "execution": {
+      "deploy": "ask"
+    }
+  }
+}
+```
+
+For portable packages, move an existing `.claude/skills/<name>/` or
+`.opencode/skills/<name>/` directory to `.agents/skills/<name>/` without changing its `SKILL.md`.
+Book continues to discover the compatibility locations, so migration can be gradual; use
+`.book/skills/<name>/` only when the package intentionally depends on Book-specific behavior.
+
+Book watches skill roots and applies changes at the next safe run boundary. If an editor, network
+filesystem, or platform watcher misses an update, use `R` in the manager or `/reload-skills` and
+inspect `/skills status`; watcher errors are also shown in the manager. Reload clears lazy body
+caches, expires affected frames, refreshes the catalog digest, and invalidates agent context without
+rewriting an in-flight request.
+
+Activation quality can be gated with
+`npm run eval:skills -- observations.jsonl [report.json] [report.md]`. The report measures precision,
+recall, false-activation cost, prompt/body token cost, activation latency, consent prompts, task
+completion, corrections, and skill-caused tool failures across direct, indirect, negative,
+ambiguous, conflicting, disabled, invalid, missing-body, and missing-resource cases. Reports retain
+prompt hashes and aggregate evidence rather than raw prompts, skill bodies, or resource contents.
+Run `npm run eval:skills -- --help` to print the command syntax.
+
 `/rewind` first selects an active user prompt, then restores Conversation, Code, or Both to the state immediately before that prompt. Files are captured into local content-addressed snapshots under `~/.book/rewind/`; `--no-session-persistence` uses temporary storage that is removed on exit. `.git` and workspace-local `.book/` state are never captured by default, Git HEAD and the index are never moved, and Code/Both are disabled when HEAD drifted or a checkpoint exceeded its safety limits. Use `.book/rewindignore` to override the default exclusions for dependency, build, cache, coverage, and virtual-environment directories, or to explicitly opt selected `.book` paths back in. Other hidden, gitignored, and secret-like workspace files remain restorable; their contents stay in local blobs and are never written to session JSON or model context.
 
 ## SDK Usage

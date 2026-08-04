@@ -36,7 +36,8 @@ export type AgentEvent =
           | 'agent_message'
           | 'agent_completion'
           | 'agent_permission'
-          | 'agent_persistence';
+          | 'agent_persistence'
+          | 'skill_lifecycle';
       }
     >
   | { type: 'evidence_update'; evidence: EvidenceItem }
@@ -158,6 +159,7 @@ export function reduceAgentSessionSnapshot(
     case 'agent_completion':
     case 'agent_permission':
     case 'agent_persistence':
+    case 'skill_lifecycle':
     case 'background_job_start':
     case 'background_job_update':
     case 'background_job_output':

@@ -252,7 +252,8 @@ describe('TUI slash commands', () => {
   }, 20_000);
 
   it('/help toggle hides the help panel', async () => {
-    session = await startAndWait();
+    // Full-frame rendering makes the post-toggle terminal state directly assertable.
+    session = await startAndWait({ BOOK_TUI_RENDERER: 'safe' });
     await submitInteractive(session, '/help');
     await session.waitFor('Slash Commands', 5000);
     const beforeToggle = session.readRaw().length;

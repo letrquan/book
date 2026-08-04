@@ -17,6 +17,19 @@ All notable changes to this project are documented in this file.
 - `BOOK_HOME` can now relocate Book's user-global state from `~/.book`, including settings,
   sessions, memory, managed-agent state, jobs, rewind snapshots, telemetry, tool output, MCP
   configuration, and user-level discovery. Project-local `.book/` state remains unchanged.
+- `/skills` now opens a keyboard-driven skill manager with Codex/Claude Code-inspired
+  visibility controls (`auto`, `name-only`, `manual`, and `off`), explicit-use handoff,
+  scope/path details, reload support, and a matching entry in `/config`.
+- Skills now use metadata-first `SKILL.md` discovery with portable `.agents/skills` compatibility,
+  `.claude/skills` and OpenCode roots, lazy bodies/resources, scoped tool intersections, consent
+  policies, lifecycle diagnostics, and debounced safe-boundary reloads. Existing `.book/skills`
+  packages continue to work; third-party skills can be migrated by placing the same package under
+  `.agents/skills/<name>/`. `/skills status` provides a body-free runtime report with catalog and
+  prompt-omission diagnostics, active frames, effective tools, validation failures, and recent
+  lifecycle outcomes. Conflicting skill restrictions now fail visibly instead of activating an
+  empty tool surface, resource reads verify content digests against post-discovery substitution,
+  and `npm run eval:skills` gates implicit rollout using privacy-safe activation metrics. Newly
+  discovered skills default to explicit/manual use until that evaluation supports enabling `auto`.
 
 - Unified `/jobs` TUI management for managed agents and background shell jobs, with `/tasks` kept
   as an alias. Background shells support session or explicit persistent lifetimes, bounded output,

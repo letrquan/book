@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
+import { resolve } from 'node:path';
 import type { AgentTask, BackgroundShellStore } from '../types/runtime.js';
 import type { FileObservation, ToolDiscoveryState } from '../types/tools.js';
 import { AgentContextCache } from '../agent/context.js';
@@ -6,6 +7,10 @@ import { ToolExecutionScheduler } from '../tools/execution-scheduler.js';
 import { RunAccounting } from './run-accounting.js';
 import { ShellJobManager } from '../jobs/shell-manager.js';
 import type { AgentRunAmbientSnapshot } from '../types/runs.js';
+import { SkillRegistry } from '../skill-registry.js';
+import type { SkillRegistrySnapshot } from '../skill-registry.js';
+import type { SkillSettings } from '../settings.js';
+import { SkillWatcher } from '../skill-watcher.js';
 
 export interface SessionRuntimeOptions {
   tasks?: AgentTask[];
@@ -17,6 +22,7 @@ export interface SessionRuntimeOptions {
   runAccounting?: RunAccounting;
   runAmbientSnapshots?: Map<string, AgentRunAmbientSnapshot>;
   traceId?: string;
+  skillRegistry?: SkillRegistry;
 }
 
 /** Mutable resources owned by one logical agent session. */
@@ -31,6 +37,12 @@ export class SessionRuntime {
   readonly runAccounting: RunAccounting;
   readonly runAmbientSnapshots: Map<string, AgentRunAmbientSnapshot>;
   readonly shellManager: ShellJobManager;
+  private skillRegistry?: SkillRegistry;
+  private skillWatcher?: SkillWatcher;
+  private skillWatcherWorkspace?: string;
+  private skillCatalogDirty = false;
+  private skillWatcherFailure?: string;
+  private readonly skillChangeListeners = new Set<() => void>();
   /** Advisory memory of recent identical tool failures (registry circuit breaker). */
   readonly recentToolFailures = new Map<string, number>();
   /** Per-session tool call/failure counters keyed by canonical tool name. */
@@ -52,6 +64,95 @@ export class SessionRuntime {
     this.runAmbientSnapshots = options.runAmbientSnapshots ?? new Map();
     this.shellManager = new ShellJobManager(this.backgroundShells);
     this.traceId = options.traceId ?? crypto.randomUUID();
+    this.skillRegistry = options.skillRegistry;
+  }
+
+  skills(workspace: string, settings: SkillSettings): SkillRegistry {
+    const normalizedWorkspace = resolve(workspace);
+    if (!settings.enabled) this.stopSkillWatcher(normalizedWorkspace);
+    if (!this.skillRegistry || this.skillRegistry.workspace !== normalizedWorkspace) {
+      this.skillRegistry = new SkillRegistry(normalizedWorkspace, settings);
+    } else {
+      this.skillRegistry.updateSettings(settings);
+    }
+    return this.skillRegistry;
+  }
+
+  reloadSkills(workspace: string, settings: SkillSettings, cause = 'manual'): SkillRegistry {
+    const normalizedWorkspace = resolve(workspace);
+    if (!settings.enabled) this.stopSkillWatcher(normalizedWorkspace);
+    let registry: SkillRegistry;
+    if (!this.skillRegistry || this.skillRegistry.workspace !== normalizedWorkspace) {
+      registry = new SkillRegistry(normalizedWorkspace, settings);
+      this.skillRegistry = registry;
+    } else {
+      registry = this.skillRegistry;
+      if (!registry.updateSettings(settings)) registry.reload(cause);
+    }
+    this.skillCatalogDirty = false;
+    this.skillWatcherFailure = undefined;
+    this.agentContextCache.invalidateWorkspace(workspace);
+    return registry;
+  }
+
+  consumeSkillChanges(workspace: string, settings: SkillSettings): SkillRegistry {
+    if (!settings.enabled) {
+      this.stopSkillWatcher(resolve(workspace));
+      this.skillCatalogDirty = false;
+      this.skillWatcherFailure = undefined;
+      return this.skills(workspace, settings);
+    }
+    this.ensureSkillWatcher(workspace);
+    return this.skillCatalogDirty
+      ? this.reloadSkills(workspace, settings, 'watcher')
+      : this.skills(workspace, settings);
+  }
+
+  subscribeSkillChanges(workspace: string, listener: () => void, enabled = true): () => void {
+    if (!enabled) {
+      this.stopSkillWatcher(resolve(workspace));
+      return () => undefined;
+    }
+    this.ensureSkillWatcher(workspace);
+    this.skillChangeListeners.add(listener);
+    return () => this.skillChangeListeners.delete(listener);
+  }
+
+  get skillWatcherError(): string | undefined {
+    return this.skillWatcherFailure;
+  }
+
+  inspectSkills(currentTurn = 0): SkillRegistrySnapshot | undefined {
+    return this.skillRegistry?.inspect(currentTurn);
+  }
+
+  private ensureSkillWatcher(workspace: string): void {
+    const normalizedWorkspace = resolve(workspace);
+    if (this.skillWatcher && this.skillWatcherWorkspace === normalizedWorkspace) return;
+    this.skillWatcher?.close();
+    this.skillWatcherWorkspace = normalizedWorkspace;
+    this.skillWatcher = new SkillWatcher(normalizedWorkspace, {
+      onDirty: () => {
+        this.skillCatalogDirty = true;
+        this.skillWatcherFailure = undefined;
+        for (const listener of this.skillChangeListeners) listener();
+      },
+      onError: (error) => {
+        this.skillWatcherFailure = error.message;
+        this.skillRegistry?.recordWatcherFailure(error.message);
+        for (const listener of this.skillChangeListeners) listener();
+      },
+    });
+    this.skillWatcher.start();
+  }
+
+  private stopSkillWatcher(workspace: string): void {
+    const normalizedWorkspace = resolve(workspace);
+    if (this.skillWatcherWorkspace !== normalizedWorkspace && !this.skillWatcher) return;
+    this.skillWatcher?.close();
+    this.skillWatcher = undefined;
+    this.skillWatcherWorkspace = undefined;
+    this.skillChangeListeners.clear();
   }
 
   trackAbortController(controller: AbortController): AbortController {
@@ -121,6 +222,11 @@ export class SessionRuntime {
       if (!child.killed) child.kill();
     }
     this.shellManager.dispose();
+    this.skillWatcher?.close();
+    this.skillWatcher = undefined;
+    this.skillRegistry?.dispose();
+    this.skillRegistry = undefined;
+    this.skillChangeListeners.clear();
     this.agentManager?.dispose();
     this.agentManager = undefined;
     this.childProcesses.clear();

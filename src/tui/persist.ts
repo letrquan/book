@@ -17,6 +17,7 @@ import {
   SettingsRepository,
 } from '../settings-repository.js';
 import { resolveBookHome } from '../book-home.js';
+import type { SkillActivation, SkillExecution } from '../settings.js';
 
 const LOCAL_DIR = '.book';
 const LOCAL_FILE = 'settings.local.json';
@@ -139,6 +140,59 @@ export function persistAgentProfileModel(
   return result.ok
     ? { ok: true }
     : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+}
+
+/** Persist a skill override without treating dots in a skill name as path separators. */
+export function persistSkillActivationLocal(
+  workspace: string,
+  skillName: string,
+  activation: SkillActivation,
+): { ok: boolean; error?: string } {
+  const result = new SettingsRepository(localSettingsPath(workspace)).update((candidate) => {
+    const skills =
+      candidate.skills && typeof candidate.skills === 'object' && !Array.isArray(candidate.skills)
+        ? (candidate.skills as Record<string, unknown>)
+        : {};
+    const overrides =
+      skills.overrides && typeof skills.overrides === 'object' && !Array.isArray(skills.overrides)
+        ? (skills.overrides as Record<string, unknown>)
+        : {};
+    overrides[skillName] = activation;
+    candidate.skills = { ...skills, overrides };
+  });
+  return result.ok
+    ? { ok: true }
+    : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+}
+
+/** Persist a per-skill consent policy without splitting dotted names into paths. */
+export function persistSkillExecutionLocal(
+  workspace: string,
+  skillName: string,
+  execution: SkillExecution,
+): { ok: boolean; error?: string } {
+  const result = new SettingsRepository(localSettingsPath(workspace)).update((candidate) => {
+    const skills =
+      candidate.skills && typeof candidate.skills === 'object' && !Array.isArray(candidate.skills)
+        ? (candidate.skills as Record<string, unknown>)
+        : {};
+    const policies =
+      skills.execution && typeof skills.execution === 'object' && !Array.isArray(skills.execution)
+        ? (skills.execution as Record<string, unknown>)
+        : {};
+    policies[skillName] = execution;
+    candidate.skills = { ...skills, execution: policies };
+  });
+  return result.ok
+    ? { ok: true }
+    : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+}
+
+export function persistSkillsEnabledLocal(
+  workspace: string,
+  enabled: boolean,
+): { ok: boolean; error?: string } {
+  return persistSettingLocal(workspace, 'skills.enabled', enabled);
 }
 
 /**

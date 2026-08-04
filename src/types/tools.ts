@@ -231,6 +231,8 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** Stable trace identity of the tool currently executing. */
   currentToolTraceId?: string;
+  /** Current model-loop turn, used for bounded skill activation frames. */
+  currentTurn?: number;
   /** Observer for display-only tools invoked inside Task subagents. */
   nestedToolObserver?: NestedToolObserver;
   /** Agent todo list — written by TodoWrite, read by the loop for context injection. */
@@ -296,6 +298,10 @@ export interface ToolDiscoveryContext {
   activate(names: string[]): string[];
   /** Intersect the current surface with an additional command/skill capability policy. */
   restrict(rules: string[]): void;
+  /** Add a scoped capability intersection and return a disposer that restores the parent surface. */
+  pushRestriction(rules: string[]): () => void;
+  /** Preview the authorized definitions after an additional scoped intersection. */
+  previewRestriction(rules: string[]): ToolDefinition[];
   /** Whether a tool is currently visible and executable for this turn. */
   canExecute(call: ToolCall): boolean;
   /** Definitions to send to the provider for the current request. */

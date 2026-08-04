@@ -10,6 +10,9 @@ import {
   persistSettingGlobal,
   persistSettingsGlobal,
   persistAgentProfileModel,
+  persistSkillActivationLocal,
+  persistSkillExecutionLocal,
+  persistSkillsEnabledLocal,
   readSettingsLocal,
   readSettingsGlobal,
   removeProviderLocal,
@@ -106,6 +109,23 @@ describe('persistAgentProfileModel', () => {
     expect(persistAgentProfileModel(dir, 'code.review').ok).toBe(true);
     expect(readSettingsLocal(dir)).toMatchObject({
       agents: { profiles: { 'code.review': { model: 'inherit' } } },
+    });
+  });
+});
+
+describe('persistSkillActivationLocal', () => {
+  it('keeps dotted skill names as literal override keys', () => {
+    expect(persistSkillActivationLocal(dir, 'release.v2', 'manual').ok).toBe(true);
+    expect(readSettingsLocal(dir)).toMatchObject({
+      skills: { overrides: { 'release.v2': 'manual' } },
+    });
+  });
+
+  it('persists consent policies and the global switch independently', () => {
+    expect(persistSkillExecutionLocal(dir, 'release.v2', 'ask').ok).toBe(true);
+    expect(persistSkillsEnabledLocal(dir, false).ok).toBe(true);
+    expect(readSettingsLocal(dir)).toMatchObject({
+      skills: { enabled: false, execution: { 'release.v2': 'ask' } },
     });
   });
 });

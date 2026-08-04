@@ -14,6 +14,7 @@ import { EffortPicker } from './components/EffortPicker.js';
 import { PermissionModePicker } from './components/PermissionModePicker.js';
 import { ThemePicker } from './components/ThemePicker.js';
 import { ConfigMenu, type ConfigSection } from './components/ConfigMenu.js';
+import { SkillManager } from './components/SkillManager.js';
 import { AgentProfilePicker } from './components/AgentProfilePicker.js';
 import { SessionPicker } from './components/SessionPicker.js';
 import { RewindPicker } from './components/RewindPicker.js';
@@ -53,7 +54,7 @@ import {
   type BuiltinCommandContext,
   type BuiltinCommandEffect,
 } from '../commands/builtins.js';
-import { discoverSkills } from '../skills.js';
+import { discoverSkills, type Skill } from '../skills.js';
 import { runGit } from '../tools/git.js';
 import { getMemoryIndex } from '../memory-display.js';
 import { discoverClaudeMd } from '../claude-md.js';
@@ -107,6 +108,7 @@ export function ownsModalInput(
   showConfigPicker = false,
   showAgentProfilePicker = false,
   showPermissionModePicker = false,
+  showSkills = false,
 ): boolean {
   return Boolean(
     pendingPermission ||
@@ -119,7 +121,8 @@ export function ownsModalInput(
     showThemePicker ||
     showRewindPicker ||
     showConfigPicker ||
-    showAgentProfilePicker,
+    showAgentProfilePicker ||
+    showSkills,
   );
 }
 
@@ -241,6 +244,9 @@ export function App({
     setEffort,
     setAgentProfileModel,
     setCompactModel,
+    setSkillActivation,
+    setSkillExecution,
+    setSkillsEnabled,
     setMemoryAutoSave,
     setShowThinking,
     refreshMemoryContext,
@@ -487,8 +493,34 @@ export function App({
   );
   const builtinCommandRegistry = useMemo(() => createBuiltinCommandRegistry(), []);
   const [skills, setSkills] = useState(
-    () => interactiveAssets?.skills ?? discoverSkills(config.workspace),
+    () =>
+      interactiveAssets?.skills ??
+      discoverSkills(config.workspace, config.settings.skills.overrides, {
+        executionOverrides: config.settings.skills.execution,
+        enabled: config.settings.skills.enabled,
+      }),
   );
+  const [skillCatalogDirty, setSkillCatalogDirty] = useState(false);
+  const [skillWatcherError, setSkillWatcherError] = useState<string>();
+  useEffect(() => {
+    if (!runtime) return;
+    return runtime.subscribeSkillChanges(
+      config.workspace,
+      () => {
+        const watcherError = runtime.skillWatcherError;
+        setSkillWatcherError(watcherError);
+        if (!watcherError) setSkillCatalogDirty(true);
+      },
+      liveConfig.settings.skills.enabled,
+    );
+  }, [config.workspace, liveConfig.settings.skills.enabled, runtime]);
+  useEffect(() => {
+    if (!runtime || !skillCatalogDirty || isThinking) return;
+    const refreshed = runtime.consumeSkillChanges(config.workspace, liveConfig.settings.skills);
+    setSkills(refreshed.list());
+    setSkillWatcherError(undefined);
+    setSkillCatalogDirty(false);
+  }, [config.workspace, isThinking, liveConfig.settings.skills, runtime, skillCatalogDirty]);
   const [agentProfiles, setAgentProfiles] = useState(() =>
     withBuiltInAgents(discoverAgents(config.workspace)),
   );
@@ -841,6 +873,7 @@ export function App({
         showConfigPicker,
         showAgentProfilePicker,
         showPermissionModePicker,
+        showSkills,
       )
     ) {
       if (key.escape) {
@@ -1129,6 +1162,7 @@ export function App({
           compactBoundaries,
           commandCount: commands.length,
           skillCount: skills.length,
+          skillSnapshot: runtime?.inspectSkills(currentTurn),
           toolCallStats: runtime?.toolCallStats,
           resolveAmbientContext: () => ({
             subagentCount: discoverAgents(config.workspace).length,
@@ -1198,6 +1232,7 @@ export function App({
             setSelectingCompactModel(false);
             setShowModelPicker(true);
           } else if (effect.modal === 'rewind') setShowRewindPicker(true);
+          else if (effect.modal === 'skills') setShowSkills(true);
           else if (effect.modal === 'theme') {
             setCustomThemes(listCustomThemes(config.workspace));
             setShowThemePicker(true);
@@ -1237,8 +1272,7 @@ export function App({
         if (effect?.type === 'toggle-panel') {
           if (effect.panel === 'help') setShowHelp((current) => !current);
           else if (effect.panel === 'status') setShowStatus((current) => !current);
-          else if (effect.panel === 'permissions') setShowPermissions((current) => !current);
-          else setShowSkills((current) => !current);
+          else setShowPermissions((current) => !current);
           return;
         }
         if (effect?.type === 'add-task') {
@@ -1258,7 +1292,19 @@ export function App({
         }
         if (effect?.type === 'reload-assets') {
           setCommands(discoverCommands(config.workspace));
-          setSkills(discoverSkills(config.workspace));
+          const refreshedSkills = runtime?.reloadSkills(
+            config.workspace,
+            liveConfig.settings.skills,
+            'command',
+          );
+          setSkills(
+            refreshedSkills?.list() ??
+              discoverSkills(config.workspace, liveConfig.settings.skills.overrides, {
+                executionOverrides: liveConfig.settings.skills.execution,
+                enabled: liveConfig.settings.skills.enabled,
+              }),
+          );
+          setSkillWatcherError(runtime?.skillWatcherError);
           setCustomThemes(listCustomThemes(config.workspace));
           setAgentProfiles(withBuiltInAgents(discoverAgents(config.workspace)));
           addLocalMessage('Commands and skills have been reloaded.');
@@ -1462,7 +1508,8 @@ export function App({
         showThemePicker ||
         showRewindPicker ||
         showConfigPicker ||
-        showAgentProfilePicker
+        showAgentProfilePicker ||
+        showSkills
       )
         return true;
       if (key.ctrl && input === 'c') {
@@ -1537,6 +1584,7 @@ export function App({
       showRewindPicker,
       showConfigPicker,
       showAgentProfilePicker,
+      showSkills,
       expandedToolId,
       focusedToolId,
       messages,
@@ -1554,7 +1602,8 @@ export function App({
     showSessionPicker ||
     showRewindPicker ||
     showConfigPicker ||
-    showAgentProfilePicker;
+    showAgentProfilePicker ||
+    showSkills;
 
   return (
     <AppProviders theme={currentTheme.tokens} density={density}>
@@ -1654,6 +1703,7 @@ export function App({
                   </Text>
                   <Box flexDirection="column">
                     <HelpRow label="/help" description="Toggle this help" theme={theme} />
+                    <HelpRow label="/exit" description="Exit book" theme={theme} />
                     <HelpRow
                       label="/clear [name]"
                       description="Start new; save previous (/new, /reset)"
@@ -1711,9 +1761,13 @@ export function App({
                     <HelpRow label="/memory" description="Manage memory" theme={theme} />
                     <HelpRow label="/permissions" description="Permission rules" theme={theme} />
                     <HelpRow label="/cost" description="Token usage/cost" theme={theme} />
-                    <HelpRow label="/skills" description="List skills" theme={theme} />
+                    <HelpRow label="/skills" description="Manage skills" theme={theme} />
                     <HelpRow label="/init" description="Initialize CLAUDE.md" theme={theme} />
-                    <HelpRow label="/reload-skills" description="Reload commands" theme={theme} />
+                    <HelpRow
+                      label="/reload-skills"
+                      description="Reload commands and skills"
+                      theme={theme}
+                    />
                     <HelpRow
                       label="/export [file]"
                       description="Export conversation"
@@ -1749,7 +1803,6 @@ export function App({
                       description="Save a bug-report snapshot"
                       theme={theme}
                     />
-                    <HelpRow label="/exit" description="Exit book" theme={theme} />
                     {commands.length > 0 && (
                       <>
                         <Text color={theme.subtle} dimColor>
@@ -1887,34 +1940,6 @@ export function App({
                           {' '}
                           {r}
                         </Text>
-                      ))
-                    )}
-                  </Box>
-                </Box>
-              )}
-              {showSkills && (
-                <Box
-                  flexDirection="column"
-                  borderStyle="round"
-                  borderColor={theme.border}
-                  paddingX={1}
-                >
-                  <Text bold color={theme.brand}>
-                    Skills ({skills.length})
-                  </Text>
-                  <Box flexDirection="column">
-                    {skills.length === 0 ? (
-                      <Text color={theme.subtle} dimColor>
-                        (none discovered in .book/skills/ or ~/.book/skills/)
-                      </Text>
-                    ) : (
-                      skills.map((s) => (
-                        <HelpRow
-                          key={s.name}
-                          label={s.name}
-                          description={s.description}
-                          theme={theme}
-                        />
                       ))
                     )}
                   </Box>
@@ -2094,6 +2119,73 @@ export function App({
                 onCancel={() => setShowRewindPicker(false)}
               />
             ) : null}
+            {showSkills ? (
+              <SkillManager
+                skills={skills}
+                enabled={liveConfig.settings.skills.enabled}
+                watcherError={skillWatcherError}
+                lifecycleEvents={runtime?.inspectSkills(currentTurn)?.events}
+                activeSkillNames={runtime
+                  ?.inspectSkills(currentTurn)
+                  ?.active.map((frame) => frame.skillName)}
+                terminalWidth={termWidth}
+                maxVisible={Math.max(3, Math.min(10, termHeight - 10))}
+                onChangeActivation={(skillName, activation) => {
+                  const result = setSkillActivation(skillName, activation);
+                  if (!result.ok) return result;
+                  setSkills((current) =>
+                    current.map((skill) =>
+                      skill.name === skillName ? { ...skill, activation } : skill,
+                    ),
+                  );
+                  return result;
+                }}
+                onChangeExecution={(skillName, execution) => {
+                  const result = setSkillExecution(skillName, execution);
+                  if (!result.ok) return result;
+                  setSkills((current) =>
+                    current.map((skill) =>
+                      skill.name === skillName ? { ...skill, execution } : skill,
+                    ),
+                  );
+                  return result;
+                }}
+                onChangeEnabled={(enabled) => {
+                  const result = setSkillsEnabled(enabled);
+                  if (result.ok) {
+                    setSkills(
+                      discoverSkills(config.workspace, liveConfig.settings.skills.overrides, {
+                        executionOverrides: liveConfig.settings.skills.execution,
+                        enabled,
+                      }),
+                    );
+                  }
+                  return result;
+                }}
+                onUse={(skill: Skill) => {
+                  setDraftRestore((current) => ({
+                    key: (current?.key ?? 0) + 1,
+                    value: `$${skill.name} `,
+                  }));
+                  setShowSkills(false);
+                }}
+                onReload={() => {
+                  const refreshed = runtime?.reloadSkills(
+                    config.workspace,
+                    liveConfig.settings.skills,
+                  );
+                  setSkills(
+                    refreshed?.list() ??
+                      discoverSkills(config.workspace, liveConfig.settings.skills.overrides, {
+                        executionOverrides: liveConfig.settings.skills.execution,
+                        enabled: liveConfig.settings.skills.enabled,
+                      }),
+                  );
+                  setSkillWatcherError(runtime?.skillWatcherError);
+                }}
+                onCancel={() => setShowSkills(false)}
+              />
+            ) : null}
             {showConfigPicker ? (
               <ConfigMenu
                 model={liveConfig.modelSelection ?? liveConfig.model}
@@ -2103,6 +2195,7 @@ export function App({
                 memoryAutoSave={liveConfig.settings.memory.autoSave}
                 showThinking={liveConfig.settings.ui.showThinking}
                 agentCount={agentProfiles.length}
+                skillCount={skills.length}
                 defaultPermissionMode={resolvePermissionMode(liveConfig.settings)}
                 terminalWidth={termWidth}
                 onOpen={(section: ConfigSection) => {
@@ -2129,6 +2222,8 @@ export function App({
                     setShowThemePicker(true);
                   } else if (section === 'permission-mode') {
                     setShowPermissionModePicker(true);
+                  } else if (section === 'skills') {
+                    setShowSkills(true);
                   } else {
                     setShowAgentProfilePicker(true);
                   }
@@ -2413,6 +2508,7 @@ export function App({
                   showConfigPicker,
                   showAgentProfilePicker,
                   showPermissionModePicker,
+                  showSkills,
                 ) ||
                 transcriptMode === 'detailed' ||
                 managedAgents.surface === 'tasks' ||

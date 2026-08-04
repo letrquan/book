@@ -128,7 +128,9 @@ describe('managed agent capabilities', () => {
         toolDiscovery: {
           search: () => [],
           activate: () => [],
+          pushRestriction: () => () => {},
           restrict: () => {},
+          previewRestriction: () => [],
           canExecute: () => true,
           activeDefinitions: () => [],
           catalogSummary: () => '',
