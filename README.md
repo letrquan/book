@@ -183,6 +183,35 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   and `npm run eval:edit` runs a deterministic ~25-task edit-reliability eval against the
   configured model, writing a report to `.book/reports/`.
 
+`npm run eval:compact` runs a real-provider paired benchmark for `/compact`. Every probe runs
+against the original history and the compacted history, so the report can separate baseline model
+errors from compaction regressions. The default `--suite smoke` keeps the original five low-cost
+static-recall probes. `--suite standard` runs 11 probes spanning static recall, knowledge updates,
+conflict resolution, temporal reasoning, multi-hop synthesis, and abstention. Evidence is placed
+early, late, or across the synthetic history, which remains larger than 6,000 estimated tokens.
+
+The V2 report includes per-model and per-category accuracy, retained baseline answers, regressions,
+improvements, JSON/tool protocol failures, compression ratio, prompt and net-token savings,
+measured cost savings when model pricing is known, and token/cost break-even estimates that include
+the one-time compaction call. Reports are written to `.book/reports/compact-eval-v2-*.{json,md}`.
+
+```bash
+npm run eval:compact -- --model 9router/qc/qwen3.7-max --suite smoke
+npm run eval:compact -- --models 9router/ag/gemini-3.6-flash-high,9router/qc/qwen3.7-max --suite standard
+npm run eval:compact -- --model 9router/qc/qwen3.7-max --suite standard --repeat 3 --include-no-history
+```
+
+Use repeated `--model` flags or comma-separated `--models` for cross-model comparisons. `--repeat`
+measures run-to-run stability, `--include-no-history` detects probes that can pass without evidence,
+and `--probes <count>` or `--context-window <tokens>` constrains cost and context. Experiments can
+set `--checkpoint-tokens <tokens>` to override the reducer output cap without changing the
+production default; the JSON report records the requested cap, realized checkpoint size, and full
+checkpoint. `--compact-effort low|medium|high|xhigh|max` overrides reasoning effort only for the
+compaction call, making it possible to test a cheaper reducer while keeping probe models fixed.
+`--compact-model <model>` routes only the compaction call through another configured model, so a
+cheaper reducer or a higher-fidelity reducer can be evaluated independently from the probe model.
+The benchmark requires configured provider credentials and is not part of CI.
+
 `Write` remains appropriate for generated or intentional full-file replacement. The
 `apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not silently reinterpreted.
 
@@ -191,6 +220,7 @@ Mutation reliability guardrails, tuned for heterogeneous models:
 ```json
 {
   "model": "claude-opus-4-6",
+  "compactModel": "9router/ag/gemini-3.6-flash-high",
   "effort": "high",
   "defaultMode": "default",
   "permissions": {
@@ -234,6 +264,14 @@ Mutation reliability guardrails, tuned for heterogeneous models:
   }
 }
 ```
+
+`compactModel` is optional. When set, manual and automatic `/compact` calls use that configured
+provider/model only for checkpoint generation while normal agent turns continue on `model`. The
+`BOOK_COMPACT_MODEL` environment variable overrides the setting. This is useful when a cheaper
+reducer preserves the active model's accuracy; validate the pairing with `npm run eval:compact`
+before making it a shared default. You can set it without editing JSON:
+open `/config` and choose **Compact model** (shortcut `C`), or run
+`/config compact-model 9router/ag/gemini-3.6-flash-high` (or `/config compactModel=...`).
 
 `toolDiscovery.mode` accepts `auto`, `eager`, or `deferred`. Auto mode sends all authorized definitions only when there are at most ten and their schemas fit the configured budget; otherwise the provider receives the practical core plus `ToolSearch`. Search never returns tools outside the current command, skill, agent-role, permission-mode, or runtime-state capability intersection.
 

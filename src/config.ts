@@ -129,6 +129,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const effortExplicit = Boolean(process.env.BOOK_EFFORT || settings.effort);
   const rawModel =
     options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
+  const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
   const defaultApiKey = process.env.BOOK_API_KEY || '';
   const defaultBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl || DEFAULT_OPENAI_BASE_URL;
   const defaultMaxTokens =
@@ -141,6 +142,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     baseUrl: defaultBaseUrl,
     model: rawModel,
     modelSelection: rawModel,
+    compactModel,
     // Undefined = unlimited. Only set when env/settings/legacy explicitly provide a value.
     maxTurns: process.env.BOOK_MAX_TURNS
       ? parseInt(process.env.BOOK_MAX_TURNS, 10)
@@ -249,6 +251,15 @@ export function resolveModelProviderConfig(
     modelInfo: provider.models[model],
     provider: provider.type,
   };
+}
+
+/** Resolve the optional reducer model without changing the active agent model. */
+export function resolveCompactModelConfig(config: AgentConfig): AgentConfig {
+  const compactModel = config.compactModel?.trim() || config.settings.compactModel?.trim();
+  if (!compactModel || compactModel === config.modelSelection || compactModel === config.model) {
+    return config;
+  }
+  return applyModelDefaults(resolveModelProviderConfig(config, compactModel));
 }
 
 export function resolveSecret(raw: string | undefined, workspace: string): string | undefined {

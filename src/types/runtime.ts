@@ -96,6 +96,8 @@ export interface AgentConfig {
   model: string;
   /** Raw picker/settings reference, including provider prefix when configured. */
   modelSelection?: string;
+  /** Optional provider/model used only for historical conversation compaction. */
+  compactModel?: string;
   /** Max agent turns per user message. Undefined = unlimited. */
   maxTurns?: number;
   maxTokens: number;

@@ -1595,6 +1595,20 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [config.workspace],
   );
 
+  const setCompactModel = useCallback(
+    (model: string) => {
+      const result = persistSettingLocal(config.workspace, 'compactModel', model);
+      if (!result.ok) return result;
+      setLiveConfig((current) => ({
+        ...current,
+        compactModel: model,
+        settings: { ...current.settings, compactModel: model },
+      }));
+      return { ok: true };
+    },
+    [config.workspace],
+  );
+
   const setMemoryAutoSave = useCallback(
     (enabled: boolean) => {
       setLiveConfig((c) => ({
@@ -1715,6 +1729,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     removeProvider,
     setEffort,
     setAgentProfileModel,
+    setCompactModel,
     setMemoryAutoSave,
     setShowThinking,
 

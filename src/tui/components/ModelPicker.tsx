@@ -25,6 +25,7 @@ export type ProviderRemovalResult =
     };
 
 interface ModelPickerProps {
+  title?: string;
   options: ModelPickerOption[];
   currentModel: string;
   currentEffort?: AgentConfig['effort'];
@@ -51,6 +52,7 @@ interface ModelPickerProps {
 const EMPTY_PROVIDER_IDS: ReadonlySet<string> = new Set();
 
 export function ModelPicker({
+  title,
   options,
   currentModel,
   currentEffort,
@@ -352,7 +354,7 @@ export function ModelPicker({
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
       <Text bold color={theme.brand}>
-        {allowProviderManagement ? 'Models & BYOK providers' : 'Choose subagent model'}
+        {title ?? (allowProviderManagement ? 'Models & BYOK providers' : 'Choose subagent model')}
       </Text>
       <Text color={theme.brand}>Filter: {filter || '(type to filter)'}</Text>
       <Box flexDirection="column">

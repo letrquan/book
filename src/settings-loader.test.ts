@@ -37,10 +37,16 @@ describe('loadSettingsFile', () => {
   it('loads a valid settings file', () => {
     writeFileSync(
       join(dir, 'good.json'),
-      JSON.stringify({ model: 'gpt-4o', maxTurns: 10, theme: 'paper-ink' }),
+      JSON.stringify({
+        model: 'gpt-4o',
+        compactModel: 'router/flash-reducer',
+        maxTurns: 10,
+        theme: 'paper-ink',
+      }),
     );
     const result = loadSettingsFile(join(dir, 'good.json'));
     expect(result?.model).toBe('gpt-4o');
+    expect(result?.compactModel).toBe('router/flash-reducer');
     expect(result?.maxTurns).toBe(10);
     expect(result?.theme).toBe('paper-ink');
   });

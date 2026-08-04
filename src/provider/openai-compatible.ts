@@ -128,6 +128,7 @@ export async function* chatCompletionStream(
   if (options?.maxOutputTokens || config.maxTokensExplicit || config.modelInfo?.maxOutputTokens) {
     body.max_tokens = options?.maxOutputTokens ?? config.maxTokens;
   }
+  if (config.effortExplicit && config.effort) body.reasoning_effort = config.effort;
 
   if (tools.length > 0) {
     body.tools = convertTools(tools);

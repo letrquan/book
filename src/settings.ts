@@ -208,6 +208,8 @@ export type ProviderConfig = z.infer<typeof providerConfigSchema>;
  */
 export const bookSettingsSchema = z.object({
   model: z.string().optional(),
+  /** Optional model used only to generate historical conversation checkpoints. */
+  compactModel: z.string().min(1).optional(),
   /** Max agent turns per user message. Omit for unlimited. */
   maxTurns: z.number().int().min(1).optional(),
   maxTokens: z.number().int().min(1000).optional(),
@@ -244,6 +246,7 @@ export type ResolvedSettings = Required<
   Omit<
     BookSettings,
     | 'model'
+    | 'compactModel'
     | 'maxTurns'
     | 'maxTokens'
     | 'effort'
@@ -256,6 +259,7 @@ export type ResolvedSettings = Required<
   Pick<
     BookSettings,
     | 'model'
+    | 'compactModel'
     | 'maxTurns'
     | 'maxTokens'
     | 'effort'

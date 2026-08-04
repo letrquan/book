@@ -476,6 +476,69 @@ describe('runCompact', () => {
     expect(mockedStream).not.toHaveBeenCalled();
   });
 
+  it('supports bounded output and effort overrides for evaluation experiments', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield {
+        type: 'done',
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      };
+    });
+
+    await runCompact(makeConfig(), twoTurns, {
+      trigger: 'manual',
+      checkpointMaxTokens: 768,
+      effort: 'low',
+    });
+
+    expect(mockedStream).toHaveBeenCalledTimes(1);
+    expect(mockedStream.mock.calls[0]?.[0]).toMatchObject({ effort: 'low', effortExplicit: true });
+    expect(mockedStream.mock.calls[0]?.[1][0].content).toContain('accepted and rejected decisions');
+    expect(mockedStream.mock.calls[0]?.[3]).toMatchObject({ maxOutputTokens: 768 });
+  });
+
+  it('routes checkpoint generation through the configured compact model', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const base = makeConfig();
+    const config = makeConfig({
+      model: 'qwen',
+      modelSelection: 'router/qwen',
+      compactModel: 'router/gemini-flash',
+      settings: {
+        ...base.settings,
+        provider: {
+          router: {
+            type: 'openai',
+            baseURL: 'https://router.example/v1',
+            apiKey: 'router-key',
+            models: {
+              'gemini-flash': {
+                contextWindow: 1_000_000,
+                effort: { default: 'high', levels: ['low', 'high'] },
+              },
+            },
+          },
+        },
+      },
+      effortExplicit: false,
+      defaultEffort: 'medium',
+    });
+
+    await runCompact(config, twoTurns, { trigger: 'manual' });
+
+    expect(mockedStream).toHaveBeenCalledTimes(1);
+    expect(mockedStream.mock.calls[0]?.[0]).toMatchObject({
+      model: 'gemini-flash',
+      modelSelection: 'router/gemini-flash',
+      baseUrl: 'https://router.example/v1',
+      apiKey: 'router-key',
+      effort: 'high',
+    });
+  });
+
   it('fails closed on provider error events', async () => {
     mockedStream.mockImplementation(async function* () {
       yield { type: 'text', content: 'partial' };
