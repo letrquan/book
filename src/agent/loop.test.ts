@@ -14,6 +14,7 @@ import { SessionRuntime } from '../session/runtime.js';
 import type { Provider } from '../provider/index.js';
 import type { CompactResult } from '../types/sessions.js';
 import type { AgentTerminalOutcome } from '../types/terminal.js';
+import { createAgentRunContext } from '../types/runs.js';
 
 function writeLoopSkill(
   workspace: string,
@@ -1766,6 +1767,14 @@ describe('runAgentLoop error handling', () => {
     );
 
     const retryCalls: Array<{ phase: string; attempt: number }> = [];
+    const runtime = new SessionRuntime();
+    const runContext = createAgentRunContext({
+      sessionId: 'retry-session',
+      runId: 'retry-run',
+      source: 'headless',
+      startedAt: 1,
+    });
+    runtime.runAccounting.startRoot(runContext);
     const cfg = defaultConfig({
       retry: {
         maxAttempts: 3,
@@ -1789,10 +1798,17 @@ describe('runAgentLoop error handling', () => {
           retryCalls.push({ phase, attempt });
         },
       }),
+      'default',
+      { runtime, runContext },
     );
 
     expect(retryCalls.length).toBeGreaterThanOrEqual(2);
     expect(retryCalls[0].phase).toBe('transport');
+    expect(runtime.runAccounting.snapshotRun(runContext.runId)).toMatchObject({
+      completeness: 'partial',
+      costStatus: 'unknown',
+      missingSources: expect.arrayContaining(['failed_provider_attempt_usage']),
+    });
   });
 
   it('calls onStreamStall when stream hangs and stops loop with error', async () => {

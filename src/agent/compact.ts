@@ -1022,7 +1022,15 @@ async function generateCheckpoint(
         { role: 'user', content: prompt },
       ],
       [],
-      { signal, maxOutputTokens },
+      {
+        signal,
+        maxOutputTokens,
+        onRetry: () =>
+          options?.onUsageMissing?.({
+            provider: provider.id,
+            requestedModel: config.model,
+          }),
+      },
     )) {
       if (signal?.aborted) {
         return {

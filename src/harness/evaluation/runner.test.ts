@@ -1,8 +1,17 @@
-import { access, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  truncate,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runEvaluationProcess } from './runner.js';
+import { resolveEvaluationRuntimeRevision, runEvaluationProcess } from './runner.js';
 
 describe('runEvaluationProcess', () => {
   it('runs in a fresh workspace with isolated Book and user-state paths', async () => {
@@ -154,6 +163,88 @@ describe('runEvaluationProcess', () => {
       },
     });
     expect(result).toMatchObject({ status: 'completed', stdout: 'ready' });
+  });
+
+  it('freezes evaluation controls and fingerprints the materialized fixture', async () => {
+    const run = () =>
+      runEvaluationProcess({
+        command: process.execPath,
+        args: [
+          '-e',
+          'process.stdout.write(JSON.stringify({date:process.env.BOOK_EVALUATION_DATE,seed:process.env.BOOK_EVALUATION_RANDOM_SEED,runtime:process.env.BOOK_EVALUATION_RUNTIME_REVISION,fixture:process.env.BOOK_EVALUATION_FIXTURE_REVISION}))',
+        ],
+        timeoutMs: 5_000,
+        evaluationDate: '2030-02-03',
+        randomSeed: 'case-1-attempt-1',
+        runtimeRevision: 'runtime-revision-1',
+        prepare: async ({ workspace }) => {
+          await writeFile(join(workspace, 'fixture.txt'), 'stable fixture', 'utf8');
+        },
+      });
+
+    const first = await run();
+    const second = await run();
+
+    expect(first.fixtureRevisionStatus).toBe('captured');
+    expect(first.fixtureRevision).toBe(second.fixtureRevision);
+    expect(JSON.parse(first.stdout)).toEqual({
+      date: '2030-02-03',
+      seed: 'case-1-attempt-1',
+      runtime: 'runtime-revision-1',
+      fixture: first.fixtureRevision,
+    });
+  });
+
+  it('excludes nested Git metadata from the materialized fixture identity', async () => {
+    const run = (metadata: string) =>
+      runEvaluationProcess({
+        command: process.execPath,
+        args: ['-e', 'process.stdout.write("ok")'],
+        timeoutMs: 5_000,
+        prepare: async ({ workspace }) => {
+          const nestedGit = join(workspace, 'nested', '.git');
+          await mkdir(nestedGit, { recursive: true });
+          await writeFile(join(workspace, 'nested', 'fixture.txt'), 'stable', 'utf8');
+          await writeFile(join(nestedGit, 'state'), metadata, 'utf8');
+        },
+      });
+
+    const first = await run('first');
+    const second = await run('second');
+
+    expect(first.fixtureRevisionStatus).toBe('captured');
+    expect(first.fixtureRevision).toBe(second.fixtureRevision);
+  });
+
+  it('marks oversized fixture files incomplete without loading them into memory', async () => {
+    const result = await runEvaluationProcess({
+      command: process.execPath,
+      args: ['-e', 'process.stdout.write("ok")'],
+      timeoutMs: 5_000,
+      prepare: async ({ workspace }) => {
+        const oversized = join(workspace, 'oversized-fixture.bin');
+        await writeFile(oversized, '');
+        await truncate(oversized, 100 * 1024 * 1024 + 1);
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      stdout: 'ok',
+      fixtureRevisionStatus: 'incomplete',
+    });
+  });
+
+  it('falls back to a package-state runtime revision outside Git', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'book-harness-runtime-revision-'));
+    try {
+      await writeFile(join(root, 'package.json'), '{"name":"fixture","version":"1.0.0"}');
+      await expect(resolveEvaluationRuntimeRevision(root)).resolves.toMatch(
+        /^package-state:[a-f0-9]{64}$/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('does not allow callers to replace runner-owned isolation variables', async () => {

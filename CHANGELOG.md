@@ -31,7 +31,23 @@ All notable changes to this project are documented in this file.
   built-in fixtures, not a security sandbox for project-controlled commands. `npm run eval:edit`
   now runs every trial through this boundary with managed agents disabled and generated isolated
   settings that preserve the resolved provider-facing model ID, model metadata, retry policy, and
-  whether output-token and reasoning-effort options were explicitly configured.
+  whether output-token and reasoning-effort options were explicitly configured. The provider-backed
+  `npm run eval:compact` benchmark now uses the same isolated settings and secret references, and
+  `npm run eval:skills` parses its observation corpus in a bounded disposable worker. Ambient run
+  snapshots now use schema version 2 to identify isolated evaluation Book-home contents with a
+  bounded secret-safe digest while normalizing evaluator-owned temporary paths and run IDs. The
+  same snapshot now fingerprints effective command and skill registries from content digests
+  without retaining command or skill bodies. The runner now owns and reports prompt date, random
+  seed, exact dirty/untracked runtime revision, and materialized-fixture revision. Provider-backed
+  edit and compaction evaluations fail closed unless terminal, ambient, accounting, usage, pricing,
+  model identity, Book-home isolation, and single-agent run-boundary evidence are eligible;
+  paired compact comparisons also reject mismatched ambient, pricing, budget, or resolved-model
+  identities; compact reports use schema version 3 and evaluator workers reject stale or malformed
+  report shapes;
+  compaction includes reducer calls and treats retried or usage-less attempts as partial evidence.
+  Offline skill-observation reports explicitly mark provider-run eligibility as not applicable while
+  retaining the same runner controls. These changes make Tier A/B ready for trusted built-in Phase 0
+  work without admitting Tier C project-controlled or adversarial execution.
 - Architecture checks now keep offline harness evaluation code out of the live agent runtime,
   prevent evaluators from importing live execution modules, and keep permission/sandbox kernel
   modules independent from harness policy.

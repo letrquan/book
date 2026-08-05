@@ -1,11 +1,15 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 
 const DEFAULT_OUTPUT_LIMIT_BYTES = 1024 * 1024;
 const DEFAULT_TERMINATION_GRACE_MS = 1_000;
+const DEFAULT_TREE_MAX_FILES = 10_000;
+const DEFAULT_TREE_MAX_BYTES = 100 * 1024 * 1024;
+const FINGERPRINT_CHUNK_BYTES = 64 * 1024;
+const EVALUATION_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DEFAULT_ENVIRONMENT_KEYS = [
   'CI',
   'COMSPEC',
@@ -22,6 +26,10 @@ const DEFAULT_ENVIRONMENT_KEYS = [
 const RESERVED_ENVIRONMENT_KEYS = new Set([
   'APPDATA',
   'BOOK_EVALUATION_RUN_ID',
+  'BOOK_EVALUATION_DATE',
+  'BOOK_EVALUATION_FIXTURE_REVISION',
+  'BOOK_EVALUATION_RANDOM_SEED',
+  'BOOK_EVALUATION_RUNTIME_REVISION',
   'BOOK_HOME',
   'HOME',
   'LOCALAPPDATA',
@@ -50,6 +58,9 @@ export interface EvaluationProcessOptions {
   env?: Record<string, string>;
   maxOutputBytes?: number;
   terminationGraceMs?: number;
+  evaluationDate?: string;
+  randomSeed?: string;
+  runtimeRevision?: string;
   retainWorkspace?: boolean;
   signal?: AbortSignal;
   prepare?: (workspace: EvaluationWorkspace) => Promise<void>;
@@ -63,7 +74,30 @@ export interface EvaluationProcessResult extends EvaluationWorkspace {
   stderr: string;
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
+  evaluationDate: string;
+  randomSeed: string;
+  runtimeRevision: string;
+  fixtureRevision: string;
+  fixtureRevisionStatus: 'captured' | 'incomplete';
   retained: boolean;
+}
+
+export interface EvaluationControls {
+  evaluationDate: string;
+  randomSeed: string;
+  runtimeRevision: string;
+  fixtureRevision: string;
+  fixtureRevisionStatus: 'captured' | 'incomplete';
+}
+
+export function evaluationControlsFromResult(result: EvaluationProcessResult): EvaluationControls {
+  return {
+    evaluationDate: result.evaluationDate,
+    randomSeed: result.randomSeed,
+    runtimeRevision: result.runtimeRevision,
+    fixtureRevision: result.fixtureRevision,
+    fixtureRevisionStatus: result.fixtureRevisionStatus,
+  };
 }
 
 interface BoundedOutput {
@@ -97,6 +131,7 @@ function assertEnvironmentKeyIsNotReserved(key: string): void {
 
 function buildEvaluationEnvironment(
   workspace: EvaluationWorkspace,
+  controls: EvaluationControls,
   sourceEnv: NodeJS.ProcessEnv,
   allowlist: string[],
   explicit: Record<string, string>,
@@ -114,6 +149,11 @@ function buildEvaluationEnvironment(
 
   environment.BOOK_HOME = workspace.bookHome;
   environment.BOOK_EVALUATION_RUN_ID = workspace.runId;
+  environment.BOOK_EVALUATION_DATE = controls.evaluationDate;
+  environment.BOOK_EVALUATION_RANDOM_SEED = controls.randomSeed;
+  environment.BOOK_EVALUATION_RUNTIME_REVISION = controls.runtimeRevision;
+  environment.BOOK_EVALUATION_FIXTURE_REVISION =
+    controls.fixtureRevisionStatus === 'captured' ? controls.fixtureRevision : '<incomplete>';
   environment.HOME = workspace.root;
   environment.USERPROFILE = workspace.root;
   environment.APPDATA = join(workspace.root, 'app-data');
@@ -124,6 +164,162 @@ function buildEvaluationEnvironment(
   environment.TMP = workspace.temporaryDirectory;
   environment.NO_COLOR = '1';
   return environment;
+}
+
+async function fingerprintEvaluationTree(root: string): Promise<{
+  revision: string;
+  status: 'captured' | 'incomplete';
+}> {
+  const hash = createHash('sha256');
+  let fileCount = 0;
+  let totalBytes = 0;
+  let incomplete = false;
+
+  const fingerprintFile = async (
+    path: string,
+    remainingBytes: number,
+  ): Promise<{ bytes: number; digest: string } | undefined> => {
+    let file;
+    try {
+      file = await open(path, 'r');
+      const metadata = await file.stat();
+      if (!metadata.isFile() || metadata.size > remainingBytes) return undefined;
+
+      const digest = createHash('sha256');
+      const buffer = Buffer.allocUnsafe(
+        Math.max(1, Math.min(FINGERPRINT_CHUNK_BYTES, metadata.size)),
+      );
+      let offset = 0;
+      while (offset < metadata.size) {
+        const length = Math.min(buffer.byteLength, metadata.size - offset);
+        const { bytesRead } = await file.read(buffer, 0, length, offset);
+        if (bytesRead === 0) return undefined;
+        digest.update(buffer.subarray(0, bytesRead));
+        offset += bytesRead;
+      }
+      if ((await file.stat()).size !== metadata.size) return undefined;
+      return { bytes: metadata.size, digest: digest.digest('hex') };
+    } catch {
+      return undefined;
+    } finally {
+      await file?.close().catch(() => undefined);
+    }
+  };
+
+  const visit = async (directory: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      incomplete = true;
+      return;
+    }
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (entry.name === '.git') continue;
+      const path = join(directory, entry.name);
+      const relativePath = relative(root, path).split(sep).join('/');
+      if (entry.isSymbolicLink()) {
+        incomplete = true;
+        hash.update(`symlink:${relativePath}\n`);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        hash.update(`directory:${relativePath}\n`);
+        await visit(path);
+        continue;
+      }
+      if (!entry.isFile() || fileCount >= DEFAULT_TREE_MAX_FILES) {
+        incomplete = true;
+        continue;
+      }
+      const content = await fingerprintFile(path, DEFAULT_TREE_MAX_BYTES - totalBytes);
+      if (!content) {
+        incomplete = true;
+        continue;
+      }
+      fileCount += 1;
+      totalBytes += content.bytes;
+      hash.update(`file:${relativePath}:${content.bytes}:`);
+      hash.update(content.digest);
+      hash.update('\n');
+    }
+  };
+
+  await visit(root);
+  return { revision: hash.digest('hex'), status: incomplete ? 'incomplete' : 'captured' };
+}
+
+/** Fingerprint the exact evaluator source state, including dirty and untracked files. */
+export async function resolveEvaluationRuntimeRevision(
+  repositoryRoot = process.cwd(),
+): Promise<string> {
+  const root = resolve(repositoryRoot);
+  const execute = (args: string[]): Promise<string> =>
+    new Promise((resolveOutput, rejectOutput) => {
+      execFile(
+        'git',
+        args,
+        {
+          cwd: root,
+          encoding: 'utf8',
+          maxBuffer: 64 * 1024 * 1024,
+          windowsHide: true,
+        },
+        (error, stdout) => {
+          if (error) rejectOutput(error);
+          else resolveOutput(stdout);
+        },
+      );
+    });
+
+  let head: string;
+  try {
+    head = (await execute(['rev-parse', 'HEAD'])).trim();
+  } catch {
+    try {
+      const packageDocument = await readFile(join(root, 'package.json'));
+      const lockPath = join(root, 'package-lock.json');
+      const fallback = createHash('sha256').update(packageDocument);
+      try {
+        fallback.update(await readFile(lockPath));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      return `package-state:${fallback.digest('hex')}`;
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  try {
+    const state = createHash('sha256');
+    state.update(await execute(['diff', '--binary', 'HEAD', '--']));
+    const untracked = (await execute(['ls-files', '--others', '--exclude-standard', '-z']))
+      .split('\0')
+      .filter(Boolean)
+      .sort();
+    let untrackedBytes = 0;
+    for (const relativePath of untracked) {
+      const path = resolve(root, relativePath);
+      if (!path.startsWith(`${root}${sep}`) || !(await stat(path)).isFile()) {
+        throw new Error(
+          `Untracked evaluator source is not a regular repository file: ${relativePath}`,
+        );
+      }
+      const content = await readFile(path);
+      untrackedBytes += content.byteLength;
+      if (untrackedBytes > DEFAULT_TREE_MAX_BYTES) {
+        throw new Error('Untracked evaluator source exceeds the revision fingerprint budget.');
+      }
+      state.update(relativePath.split(sep).join('/'));
+      state.update('\0');
+      state.update(content);
+      state.update('\0');
+    }
+    return `git:${head}:state:${state.digest('hex')}`;
+  } catch {
+    return 'unknown';
+  }
 }
 
 function appendBounded(output: BoundedOutput, chunk: Buffer, limit: number): void {
@@ -264,13 +460,29 @@ export async function runEvaluationProcess(
   if (!Number.isFinite(terminationGraceMs) || terminationGraceMs <= 0) {
     throw new Error('Evaluation termination grace period must be a positive finite number.');
   }
+  const evaluationDate = options.evaluationDate ?? new Date().toISOString().split('T')[0];
+  if (!EVALUATION_DATE_PATTERN.test(evaluationDate)) {
+    throw new Error('Evaluation date must use YYYY-MM-DD.');
+  }
+  const randomSeed = options.randomSeed?.trim() || randomUUID();
+  const runtimeRevision =
+    options.runtimeRevision?.trim() || (await resolveEvaluationRuntimeRevision());
 
   const workspace = await createEvaluationWorkspace(options.temporaryRoot);
   let retainCompletedWorkspace = false;
   try {
     await options.prepare?.(workspace);
+    const fixture = await fingerprintEvaluationTree(workspace.workspace);
+    const controls: EvaluationControls = {
+      evaluationDate,
+      randomSeed,
+      runtimeRevision,
+      fixtureRevision: fixture.revision,
+      fixtureRevisionStatus: fixture.status,
+    };
     const environment = buildEvaluationEnvironment(
       workspace,
+      controls,
       options.sourceEnv ?? process.env,
       options.envAllowlist ?? [],
       options.env ?? {},
@@ -313,6 +525,7 @@ export async function runEvaluationProcess(
           stderr: `${spawnMessage}${outputText(stderr)}`,
           stdoutTruncated: stdout.truncated,
           stderrTruncated: stderr.truncated,
+          ...controls,
           retained: options.retainWorkspace === true,
         });
       };

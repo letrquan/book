@@ -136,10 +136,10 @@ describe('runHeadless — text output', () => {
           responseId: 'response-1',
         },
       ],
-      completeness: 'partial',
+      completeness: 'complete',
     });
     expect(result.runs?.[0]?.ambient).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       model: { requestedModel: 'gpt-5' },
       settings: { agentsMode: 'adaptive' },
       completeness: 'partial',
@@ -195,7 +195,7 @@ describe('runHeadless — text output', () => {
     });
     expect(events.find((event) => event.type === 'run_started')).toMatchObject({
       ambient: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         settings: { agentsMode: 'adaptive' },
       },
     });

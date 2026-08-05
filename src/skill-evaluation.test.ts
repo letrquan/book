@@ -78,6 +78,23 @@ describe('skill activation evaluation', () => {
     expect(report.activationLatencyMs.median).toBe(4);
     expect(renderSkillEvaluationReport(report)).toContain('All thresholds passed');
     expect(JSON.stringify(report)).not.toContain('raw prompt');
+
+    const renderedWithControls = renderSkillEvaluationReport({
+      ...report,
+      evaluation: {
+        evidenceKind: 'offline-observation',
+        providerRunEligibility: 'not-applicable',
+        controls: {
+          evaluationDate: '2026-08-05',
+          randomSeed: 'seed-1',
+          runtimeRevision: 'runtime-1',
+          fixtureRevision: 'fixture-1',
+          fixtureRevisionStatus: 'captured',
+        },
+      },
+    });
+    expect(renderedWithControls).toContain('Provider run eligibility: not-applicable');
+    expect(renderedWithControls).toContain('Runtime revision: runtime-1');
   });
 
   it('detects false activation cost and unnecessary consent prompts', () => {

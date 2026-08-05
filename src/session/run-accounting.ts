@@ -88,16 +88,32 @@ export interface BudgetCheck {
 /**
  * In-memory accounting shared by all executions in one logical session.
  *
- * This intentionally reports partial completeness until failed provider attempts emit usage
- * events. It is safer to expose that gap than to present a clean but incomplete total.
+ * Missing provider-attempt usage is recorded only when such an attempt actually occurs.
  */
 export class RunAccounting {
   private readonly roots = new Map<string, RootState>();
+
+  private ensureExecution(root: RootState, context: AgentRunContext): ExecutionState {
+    const existing = root.executions.get(context.runId);
+    if (existing) return existing;
+    const execution = {
+      context,
+      usage: null,
+      costUsd: 0,
+      costStatus: 'known',
+      unknownModels: new Set<string>(),
+      modelIdentities: [],
+      missingSources: new Set<string>(),
+    } satisfies ExecutionState;
+    root.executions.set(context.runId, execution);
+    return execution;
+  }
 
   startRoot(context: AgentRunContext, budgetUsd?: number): void {
     const current = this.roots.get(context.rootRunId);
     if (current) {
       if (budgetUsd !== undefined) current.budgetUsd = budgetUsd;
+      this.ensureExecution(current, context);
       return;
     }
     this.roots.set(context.rootRunId, {
@@ -105,6 +121,16 @@ export class RunAccounting {
       budgetUsd,
       executions: new Map(),
     });
+    this.ensureExecution(this.roots.get(context.rootRunId)!, context);
+  }
+
+  startExecution(context: AgentRunContext): void {
+    const root = this.roots.get(context.rootRunId) ?? {
+      rootRunId: context.rootRunId,
+      executions: new Map<string, ExecutionState>(),
+    };
+    this.roots.set(context.rootRunId, root);
+    this.ensureExecution(root, context);
   }
 
   record(context: AgentRunContext, usage: Usage, metadata: ProviderResponseMetadata): void {
@@ -113,17 +139,7 @@ export class RunAccounting {
       executions: new Map<string, ExecutionState>(),
     };
     this.roots.set(context.rootRunId, root);
-    const execution =
-      root.executions.get(context.runId) ??
-      ({
-        context,
-        usage: null,
-        costUsd: 0,
-        costStatus: 'known',
-        unknownModels: new Set<string>(),
-        modelIdentities: [],
-        missingSources: new Set<string>(),
-      } satisfies ExecutionState);
+    const execution = this.ensureExecution(root, context);
     const responseQuote = metadata.responseModel
       ? estimateUsageCost(metadata.responseModel, usage)
       : undefined;
@@ -162,17 +178,7 @@ export class RunAccounting {
       executions: new Map<string, ExecutionState>(),
     };
     this.roots.set(context.rootRunId, root);
-    const execution =
-      root.executions.get(context.runId) ??
-      ({
-        context,
-        usage: null,
-        costUsd: 0,
-        costStatus: 'known',
-        unknownModels: new Set<string>(),
-        modelIdentities: [],
-        missingSources: new Set<string>(),
-      } satisfies ExecutionState);
+    const execution = this.ensureExecution(root, context);
     const identity = missingUsageIdentity(metadata);
     execution.costUsd = null;
     execution.costStatus = 'unknown';
@@ -262,7 +268,7 @@ export class RunAccounting {
     let costStatus: AgentRunAccounting['costStatus'] = 'known';
     const unknownModels = new Set<string>();
     const modelIdentities: AgentModelIdentity[] = [];
-    const missingSources = new Set<string>(['failed_provider_attempt_usage']);
+    const missingSources = new Set<string>();
     for (const execution of executions) {
       if (execution.usage) inclusiveUsage = addUsage(inclusiveUsage, execution.usage);
       if (execution.costUsd !== null) inclusiveCost += execution.costUsd;
@@ -299,7 +305,7 @@ export class RunAccounting {
       budgetUsd: root.budgetUsd,
       budgetStatus,
       modelIdentities,
-      completeness: 'partial',
+      completeness: missingSources.size === 0 ? 'complete' : 'partial',
       missingSources: [...missingSources],
     };
   }

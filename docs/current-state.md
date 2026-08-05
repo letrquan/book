@@ -58,13 +58,21 @@ reference for roadmap and design documents.
   configured `sandbox.failIfUnavailable` policy and may run unsandboxed.
 - Managed-agent planning-task linkage, rerun, and task-aware cleanup from the background-job plan
   are not implemented; executable jobs and planning tasks remain separate.
-- The adaptive-harness roadmap is not a live learning system. Runtime attribution/accounting
-  preconditions are in progress. A disposable external-process runner and architecture boundaries
-  now support trusted built-in evaluation fixtures, and the edit-reliability evaluation uses that
-  boundary with bounded process-tree teardown and generated settings that retain the effective
-  provider model ID, model metadata, and provider-option explicitness. Other eval scripts,
-  project-controlled execution, workspace trust, and container-grade isolation are not yet
-  integrated; workflow selection and evolution phases remain inactive.
+- The adaptive-harness roadmap is not a live learning system. Tier A/B attribution, accounting, and
+  evaluator preconditions are verified for trusted built-in, single-agent evaluation, but Phase 0
+  remains inactive until a dedicated status change. The edit-reliability, compaction, and skill
+  evaluation entry points use that boundary with bounded process-tree teardown; provider-backed
+  evaluations receive generated settings that retain effective provider model IDs, model metadata,
+  and retry policy without writing resolved secrets to settings. Edit trials also retain
+  provider-option explicitness, while compaction keeps its predeclared benchmark output limits.
+  Ambient snapshot schema version 2 records a bounded content identity for isolated evaluation
+  Book homes, fingerprints effective command and skill registries, and normalizes disposable paths
+  and evaluation IDs across otherwise equivalent arms. Evaluator reports retain runner-owned date,
+  seed, runtime, and fixture identities; provider-backed edit/compaction success is rejected when
+  run evidence is ineligible, and compact paired probes reject mismatched ambient/pricing/budget/
+  resolved-model identities, while offline skill observation marks provider eligibility as not
+  applicable. Tier C project-controlled execution, workspace trust, permission ceilings, and
+  container-grade isolation remain blocked; workflow selection and evolution phases remain inactive.
 
 ## Verification
 

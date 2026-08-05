@@ -462,6 +462,30 @@ describe('runCompact', () => {
     });
   });
 
+  it('marks retried checkpoint attempts as missing usage', async () => {
+    const onUsageMissing = vi.fn();
+    mockedStream.mockImplementation(async function* (_config, _messages, _tools, options) {
+      options?.onRetry?.(1, 2, 0);
+      yield { type: 'text', content: validCheckpoint() };
+      yield {
+        type: 'done',
+        usage: { promptTokens: 11, completionTokens: 3, totalTokens: 14 },
+        responseModel: 'resolved-model',
+      };
+    });
+
+    const result = await runCompact(makeConfig({ model: 'requested-model' }), twoTurns, {
+      trigger: 'manual',
+      onUsageMissing,
+    });
+
+    expect(result.status).toBe('compacted');
+    expect(onUsageMissing).toHaveBeenCalledWith({
+      provider: 'test',
+      requestedModel: 'requested-model',
+    });
+  });
+
   it('checks the root budget before starting a checkpoint model call', async () => {
     const result = await runCompact(makeConfig(), twoTurns, {
       trigger: 'manual',

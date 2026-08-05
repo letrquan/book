@@ -825,7 +825,8 @@ describe('AgentSession', () => {
       directUsage: { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
       inclusiveUsage: { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
       modelIdentities: [{ responseId: 'compact-response', status: 'verified' }],
-      missingSources: ['failed_provider_attempt_usage'],
+      completeness: 'complete',
+      missingSources: [],
     });
   });
 
@@ -866,7 +867,7 @@ describe('AgentSession', () => {
       costStatus: 'unknown',
       budgetStatus: 'unknown',
       modelIdentities: [{ responseId: 'compact-response-without-usage', status: 'verified' }],
-      missingSources: ['failed_provider_attempt_usage', 'compaction_usage'],
+      missingSources: ['compaction_usage'],
     });
   });
 
@@ -1122,7 +1123,7 @@ describe('AgentSession', () => {
       status: 'completed',
       sessionId: 'session-1',
       ambient: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         settings: { agentsMode: 'adaptive' },
       },
       assistantText: 'hello',

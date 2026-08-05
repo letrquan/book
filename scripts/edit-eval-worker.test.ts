@@ -4,11 +4,15 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runEvaluationProcess } from '../src/harness/evaluation/runner.js';
+import { evaluateRunEligibility } from '../src/harness/evaluation/eligibility.js';
 import { query } from '../src/sdk.js';
 import type { EvalTask } from './edit-eval-fixtures.js';
 import { runEditEvalWorker } from './edit-eval-worker.js';
 
 vi.mock('../src/sdk.js', () => ({ query: vi.fn() }));
+vi.mock('../src/harness/evaluation/eligibility.js', () => ({
+  evaluateRunEligibility: vi.fn(),
+}));
 
 async function* events(values: unknown[]): ReturnType<typeof query> {
   for (const value of values) yield value as never;
@@ -23,6 +27,13 @@ describe('runEditEvalWorker', () => {
     workspace = await mkdtemp(join(tmpdir(), 'book-edit-worker-'));
     process.chdir(workspace);
     vi.mocked(query).mockReset();
+    vi.mocked(evaluateRunEligibility).mockReturnValue({
+      eligible: true,
+      reasons: [],
+      rootRunId: 'root-run',
+      ambientFingerprint: 'ambient',
+      pricingVersion: 'pricing',
+    });
   });
 
   afterEach(async () => {
@@ -73,6 +84,39 @@ describe('runEditEvalWorker', () => {
       mutationCalls: { Edit: 1 },
       failuresByCode: { transient_failure: 1 },
       totalTokens: 42,
+      attribution: { eligible: true },
+    });
+  });
+
+  it('fails closed when the final run evidence is not attributable', async () => {
+    const task: EvalTask = {
+      name: 'worker-ineligible',
+      category: 'test',
+      files: { 'value.txt': 'expected' },
+      instruction: 'Inspect value.txt.',
+      verify: (read) => read('value.txt') === 'expected',
+    };
+    await writeFile(join(workspace, 'value.txt'), 'expected', 'utf8');
+    vi.mocked(evaluateRunEligibility).mockReturnValue({
+      eligible: false,
+      reasons: ['ambient_partial:random_seed'],
+    });
+    vi.mocked(query).mockReturnValue(
+      events([
+        {
+          type: 'result',
+          usage: { totalTokens: 42 },
+          outcome: { status: 'completed', reason: 'normal_completion' },
+          runs: [],
+        },
+      ]),
+    );
+
+    await expect(runEditEvalWorker(task)).resolves.toMatchObject({
+      success: false,
+      verified: true,
+      runError: 'ineligible evaluation evidence: ambient_partial:random_seed',
+      attribution: { eligible: false },
     });
   });
 

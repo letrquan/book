@@ -16,7 +16,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
-import { runEvaluationProcess } from '../src/harness/evaluation/runner.js';
+import {
+  evaluationControlsFromResult,
+  runEvaluationProcess,
+} from '../src/harness/evaluation/runner.js';
 import { slugifyWorkspace } from '../src/memory-store.js';
 import { formatFailureCounts } from '../src/pricing.js';
 import { isAnthropicProvider } from '../src/provider/index.js';
@@ -24,6 +27,24 @@ import type { AgentConfig } from '../src/types/runtime.js';
 import { EVAL_TASKS, type EvalTask } from './edit-eval-fixtures.js';
 
 import type { EditEvalTaskOutcome as TaskOutcome } from './edit-eval-worker.js';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function isFiniteNumberRecord(value: unknown): value is Record<string, number> {
+  return isRecord(value) && Object.values(value).every((item) => Number.isFinite(item));
+}
+
+function isEligibility(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.eligible === 'boolean' &&
+    Array.isArray(value.reasons) &&
+    value.reasons.every((reason) => typeof reason === 'string')
+  );
+}
+
 const TASK_TIMEOUT_MS = (() => {
   const raw = process.env.BOOK_EVAL_TIMEOUT_MS;
   const parsed = raw === undefined ? NaN : Number(raw);
@@ -138,7 +159,27 @@ export async function runEditEvalTask(task: EvalTask, model?: string): Promise<T
     try {
       const line = processResult.stdout.trim().split(/\r?\n/).at(-1);
       if (!line) throw new Error('Edit evaluation worker returned no result.');
-      outcome = JSON.parse(line) as TaskOutcome;
+      const parsed: unknown = JSON.parse(line);
+      if (
+        !isRecord(parsed) ||
+        parsed.name !== task.name ||
+        parsed.category !== task.category ||
+        typeof parsed.success !== 'boolean' ||
+        typeof parsed.verified !== 'boolean' ||
+        !Number.isFinite(parsed.durationMs) ||
+        !Number.isFinite(parsed.toolCalls) ||
+        !isFiniteNumberRecord(parsed.mutationCalls) ||
+        !isFiniteNumberRecord(parsed.failuresByCode) ||
+        (parsed.runError !== undefined && typeof parsed.runError !== 'string') ||
+        (parsed.totalTokens !== undefined && !Number.isFinite(parsed.totalTokens)) ||
+        (parsed.attribution !== undefined && !isEligibility(parsed.attribution))
+      ) {
+        throw new Error('Edit evaluation worker returned a malformed or mismatched task result.');
+      }
+      outcome = parsed as unknown as TaskOutcome;
+      if (outcome.success && (!outcome.verified || outcome.attribution?.eligible !== true)) {
+        throw new Error('Edit evaluation worker returned success without eligible run evidence.');
+      }
     } catch (error) {
       outcome = failedOutcome(error instanceof Error ? error.message : String(error));
     }
@@ -147,6 +188,7 @@ export async function runEditEvalTask(task: EvalTask, model?: string): Promise<T
       processResult.stderr.trim() || `Evaluation process ${processResult.status}.`,
     );
   }
+  outcome.controls = evaluationControlsFromResult(processResult);
   outcome.durationMs = Date.now() - startedAt;
   return outcome;
 }
@@ -210,11 +252,24 @@ async function main(): Promise<void> {
     }`,
     `- Tool failures: ${formatFailureCounts(failureTotals) || 'none'}`,
     '',
-    '| Task | Category | Result | Duration | Mutation calls | Tool failures |',
+    '## Evaluator Controls',
+    '',
+    '| Task | Date | Seed | Runtime | Fixture | Fixture capture |',
     '| --- | --- | --- | --- | --- | --- |',
+    ...outcomes.map((outcome) => {
+      const controls = outcome.controls;
+      return controls
+        ? `| ${outcome.name} | ${controls.evaluationDate} | ${controls.randomSeed} | ${controls.runtimeRevision} | ${controls.fixtureRevision} | ${controls.fixtureRevisionStatus} |`
+        : `| ${outcome.name} | unavailable | unavailable | unavailable | unavailable | unavailable |`;
+    }),
+    '',
+    '## Task Results',
+    '',
+    '| Task | Category | Result | Attribution | Duration | Mutation calls | Tool failures |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
     ...outcomes.map(
       (outcome) =>
-        `| ${outcome.name} | ${outcome.category} | ${outcome.success ? 'pass' : 'FAIL'} | ${(outcome.durationMs / 1000).toFixed(1)}s | ${
+        `| ${outcome.name} | ${outcome.category} | ${outcome.success ? 'pass' : 'FAIL'} | ${outcome.attribution?.eligible ? 'eligible' : `ineligible:${outcome.attribution?.reasons.join(',') ?? 'missing'}`} | ${(outcome.durationMs / 1000).toFixed(1)}s | ${
           Object.entries(outcome.mutationCalls)
             .map(([tool, count]) => `${tool} ×${count}`)
             .join(', ') || '—'

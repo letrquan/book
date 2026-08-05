@@ -760,6 +760,11 @@ export class AgentSession {
       runContext.runId,
       createRunAmbientSnapshot(effectiveConfig, request.registry, {
         permissionMode: request.mode,
+        commands: request.options?.commands,
+        systemPromptAppend: request.options?.systemPromptAppend,
+        hideAgents: request.options?.hideAgents,
+        planMode: request.mode === 'plan',
+        allowedTools: request.options?.allowedTools,
       }),
     );
     const finalizeOutcome = (outcome: AgentTerminalOutcome): AgentTerminalOutcome => {

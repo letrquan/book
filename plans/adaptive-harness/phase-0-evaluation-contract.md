@@ -2,7 +2,8 @@
 
 - **Parent plan:** [Adaptive Harness Implementation Plan](../adaptive-harness-implementation-plan.md)
 - **Status:** Not started
-- **Depends on:** Parent-plan Pre-Phase-0 Runtime Preconditions verified
+- **Depends on:** Parent-plan Tier A/B preconditions verified for trusted built-in evaluation; Tier C
+  verified before any project-controlled or adversarial fixture
 - **Tracking rule:** Update this status and the parent plan ledger in the same change.
 
 > The parent plan's original intent, non-negotiable invariants, architecture boundaries, stop conditions, and anti-drift review apply to every task in this phase.
@@ -10,6 +11,32 @@
 ---
 
 **Objective:** Define what improvement means before adding adaptive behavior.
+
+#### Entry Boundary (2026-08-05)
+
+Tier A/B runtime and evaluator prerequisites are verified for trusted built-in, single-agent,
+non-adversarial work. That scope is ready to begin Phase 0, but Phase 0 is intentionally not
+activated by the prerequisite change: its status remains `Not started` until a dedicated Phase 0
+change updates this file and the parent ledger together.
+
+The allowed initial scope is evaluator-owned manifests, schemas, deterministic file predicates,
+fixed built-in fixture materialization, report formats, and non-adversarial provider-backed trials.
+Every provider-backed trial must pass the shared fail-closed run-eligibility check before semantic or
+final-state verifier success can count. Paired arms must share the same runner-owned date and stable
+seed and must match runtime, fixture, prompt, Book-home, tool, model, and policy identities. Offline
+skill-observation reports are not provider trials; they mark provider-run eligibility
+`not-applicable` while retaining runner control metadata.
+
+The compact evaluator additionally applies a comparison-level gate to every paired probe. It marks
+the comparison invalid when ambient fingerprints, pricing versions, budgets, or resolved provider
+model identities differ, even when each arm is individually eligible. Compact reports use schema
+version 3, and built-in evaluator parents reject stale or malformed worker result shapes.
+
+Tier C remains an explicit exclusion. Project-controlled setup/reset/cleanup/verifier commands,
+hooks, MCP servers, provider endpoints, executable command expansions, privileged skills, subagent
+definitions, network access, credential-bearing integrations, and adversarial repositories remain
+ineligible until workspace trust, permission ceilings, origin binding, truthful sandbox/network
+controls, and container-grade isolation are verified.
 
 **Deliverables:**
 
@@ -176,6 +203,11 @@ experiment after each independent axis has passed its own gate.
 
 All arms must use the same model version, provider settings, tool-surface fingerprint, runtime/environment profile, repository revision, budgets, and evaluator version.
 
+Any provider-backed arm with missing or ineligible run evidence is an `unknown`/infrastructure
+outcome, never a success. Deterministic verifier success cannot override missing usage, unknown
+pricing, unverifiable model identity, partial ambient evidence, non-completed terminal status, or a
+run-boundary mismatch.
+
 For capability experiments, also lock the prompt-layer, skill registry and activation policy, context
 policy, model-adapter, hook policy, verifier, and delegation fingerprints. A workflow result is not
 attributable when any of those changed silently.
@@ -282,11 +314,12 @@ If the project chooses a different location, record the decision before Phase 1 
 
 #### Phase 0 Research Closure Gate
 
-Before implementation, answer the Phase 0 questions in
+Phase 0 begins by answering the Phase 0 questions in
 [research-grounding.md](research-grounding.md): trusted command execution, experimental unit,
 repeated-trial design, missingness, multiplicity, human-rubric reliability, exact identity, and
-external-runner isolation. Adversarial setup/verifier fixtures cannot run in Book's unsandboxed
-Windows shell path.
+external-runner isolation. No comparative corpus result is promotion evidence until those answers
+are versioned in the evaluation contract. Adversarial or project-controlled setup/verifier fixtures
+cannot run in Book's unsandboxed Windows shell path and remain blocked by Tier C.
 
 #### Phase 0 Test Matrix
 

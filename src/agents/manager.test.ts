@@ -466,10 +466,11 @@ describe('AgentManager lifecycle', () => {
     expect(runtime.runAccounting.snapshotRun(finished.runId!)).toMatchObject({
       directUsage: { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
       modelIdentities: [{ responseId: 'child-compact-response', status: 'verified' }],
-      missingSources: ['failed_provider_attempt_usage'],
+      completeness: 'complete',
+      missingSources: [],
     });
     expect(runtime.snapshotRunAmbient(finished.runId!)).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       model: { requestedModel: 'gpt-5' },
       settings: { agentsMode: 'adaptive' },
       policies: { permissionMode: 'default' },
@@ -530,7 +531,7 @@ describe('AgentManager lifecycle', () => {
       costUsd: null,
       costStatus: 'unknown',
       budgetStatus: 'unknown',
-      missingSources: ['failed_provider_attempt_usage', 'compaction_usage'],
+      missingSources: ['compaction_usage'],
     });
     expect(
       runtime.runAccounting.checkBeforeModelCall(parentContext.rootRunId, 'gpt-5'),

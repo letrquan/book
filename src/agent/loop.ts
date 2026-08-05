@@ -663,6 +663,13 @@ export async function runAgentLoop(
       const stream = provider.stream(effectiveConfig, messages, activeDefinitions, {
         signal,
         onRetry: (attempt, max, delayMs) => {
+          if (options?.runContext) {
+            runtime.runAccounting.markUsageUnknown(
+              options.runContext,
+              { provider: provider.id, requestedModel: effectiveConfig.model },
+              'failed_provider_attempt_usage',
+            );
+          }
           callbacks.onRetry?.(max === -1 ? 'watchdog' : 'transport', attempt, max, delayMs);
         },
         onStreamStall: (countdownMs) => {
@@ -737,6 +744,13 @@ export async function runAgentLoop(
       } catch (e) {
         // Abort looks like an AbortError; keep whatever content we have and stop.
         if (signal?.aborted) {
+          if (options?.runContext && !turnUsage) {
+            runtime.runAccounting.markUsageUnknown(
+              options.runContext,
+              responseMetadata ?? { provider: provider.id, requestedModel: effectiveConfig.model },
+              'cancelled_provider_attempt_usage',
+            );
+          }
           break;
         }
         streamError = e instanceof Error ? e.message : String(e);
@@ -745,6 +759,17 @@ export async function runAgentLoop(
 
       assistantContent = textBuffer;
       recordTurnUsage();
+      if (options?.runContext && !turnUsage) {
+        runtime.runAccounting.markUsageUnknown(
+          options.runContext,
+          responseMetadata ?? { provider: provider.id, requestedModel: effectiveConfig.model },
+          signal?.aborted
+            ? 'cancelled_provider_attempt_usage'
+            : streamError
+              ? 'provider_attempt_usage'
+              : 'provider_usage',
+        );
+      }
 
       const finishReason = responseMetadata?.finishReasons?.find((reason) =>
         [

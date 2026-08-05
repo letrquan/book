@@ -7,11 +7,12 @@ primary external sources.
 until the blockers and questions below are resolved. This document is a required input
 to the Phase 0 verification packet.
 
-**2026-08-04 update:** Terminal framing, end-to-end budget/accounting, provider identity,
-versioned pricing, run IDs, and ambient run fingerprints have since landed. The historical findings
-below explain why those fixes were required. Remaining preconditions are tracked in the parent
-plan's implementation ledger, especially evaluator isolation, workspace trust, permission ceilings,
-and a disposable verified `BOOK_HOME`.
+**2026-08-05 update:** Terminal framing, end-to-end budget/accounting, provider identity,
+versioned pricing, run IDs, complete controlled-run ambient fingerprints, and trusted built-in
+evaluator isolation have since landed. Tier A/B readiness is verified for trusted built-in,
+single-agent evaluation; Phase 0 remains inactive until its status is changed in a dedicated update.
+Tier C remains blocked for project-controlled or adversarial execution, especially workspace trust,
+permission ceilings, credential/network boundaries, and container-grade isolation.
 
 The companion [Agent Capability Research and Gap Analysis](agent-capability-research.md) covers
 the previously under-specified prompt, skill, tool-contract, context, model-adapter, verification,
@@ -137,7 +138,33 @@ tracked as a prerequisite batch before collecting promotion evidence:
 12. Make sandbox, network, credential-origin, web-fetch, MCP-startup, and command-expansion policies
     truthful and fail-closed before adversarial harness fixtures are eligible.
 
+### 2026-08-05 readiness disposition
+
+Items 1-10 are implemented for evaluator-controlled, isolated, single-agent runs. The reusable
+eligibility check rejects missing run evidence, non-completed outcomes, child-run confounding,
+partial ambient/accounting snapshots, shared or uncaptured Book-home state, missing usage, unknown
+cost, unknown budgets, and unverifiable model identity. The built-in edit and compaction evaluators
+apply that check before accepting semantic success. Compaction accounts for reducer calls and marks
+retried or usage-less attempts partial. The offline skill-observation evaluator does not execute a
+provider run, so provider-run eligibility is explicitly `not-applicable`; it still records the
+runner-owned date, seed, runtime revision, and materialized observation-fixture revision.
+
+The runner fingerprints exact dirty and untracked evaluator source state, fingerprints the
+materialized fixture tree, owns the prompt date and random seed, isolates Book home and user-state
+directories, sanitizes the environment, and tears down the evaluator process tree within bounded
+limits. This closes Tier A/B for trusted built-in evaluation and is sufficient to start Phase 0
+contract and non-adversarial fixture work.
+
+Items 11-12 remain the Tier C gate. No project-controlled or adversarial setup, reset, cleanup,
+verifier, hook, MCP, provider, executable command, skill, subagent, network, or credential-bearing
+fixture becomes eligible because Tier A/B passed.
+
 ## Research Questions That Must Have Answers
+
+The Phase 0 questions below are the first deliverable of Phase 0, not permission to collect
+comparison evidence before the answers exist. Tier A/B readiness permits the dedicated Phase 0
+contract and trusted built-in fixture work to begin. Provider-backed comparative reports remain
+non-promotional until the experimental, statistical, verifier, and missingness rules are frozen.
 
 ### Phase 0: What exactly is comparable?
 
@@ -395,7 +422,7 @@ sources below were rechecked on 2026-07-28:
 9. **Phase 4:** deterministic shadow selector using original-intent features and an
    abstaining confidence policy.
 10. **Phase 5:** immutable verifiers, typed outcomes, missingness policy, and explicit
-   feedback/rubric contracts.
+    feedback/rubric contracts.
 11. **Phase 6:** isolated replay, nested held-in/held-out evaluation, multiplicity and
     sequentially valid reporting.
 12. **Phase 7:** salted canary assignment, numerical rollback rules, signed registry, and

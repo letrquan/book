@@ -1,6 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import {
+  evaluateRunEligibility,
+  type EvaluationEligibility,
+} from '../src/harness/evaluation/eligibility.js';
+import type { EvaluationControls } from '../src/harness/evaluation/runner.js';
 import { query } from '../src/sdk.js';
 import { EVAL_TASKS, type EvalTask } from './edit-eval-fixtures.js';
 
@@ -15,6 +20,8 @@ export interface EditEvalTaskOutcome {
   failuresByCode: Record<string, number>;
   toolCalls: number;
   totalTokens?: number;
+  attribution?: EvaluationEligibility;
+  controls?: EvaluationControls;
 }
 
 const MUTATION_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'ApplyPatch', 'NotebookEdit']);
@@ -74,6 +81,10 @@ export async function runEditEvalWorker(
         }
       } else if (event.type === 'result') {
         outcome.totalTokens = event.usage?.totalTokens;
+        outcome.attribution = evaluateRunEligibility(event.runs);
+        if (!outcome.attribution.eligible && !outcome.runError) {
+          outcome.runError = `ineligible evaluation evidence: ${outcome.attribution.reasons.join('; ')}`;
+        }
         if (event.outcome?.status !== undefined && event.outcome.status !== 'completed') {
           outcome.runError = `${event.outcome.status}: ${event.outcome.reason}`;
         }
@@ -102,7 +113,7 @@ export async function runEditEvalWorker(
   } catch {
     outcome.verified = false;
   }
-  outcome.success = outcome.verified && !outcome.runError;
+  outcome.success = outcome.verified && !outcome.runError && outcome.attribution?.eligible === true;
   outcome.durationMs = Date.now() - startedAt;
   return outcome;
 }

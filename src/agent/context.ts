@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, statSync } from 'fs';
 import { platform, release, hostname, homedir } from 'os';
-import { dirname, join, parse, resolve } from 'path';
+import { dirname, join, parse, resolve, sep } from 'path';
 import type { AgentConfig } from '../types/runtime.js';
 import type { ImageAttachment, Message } from '../types/messages.js';
 import type { ProviderMessage, SystemPromptZones } from '../types/providers.js';
@@ -32,6 +32,38 @@ interface StaticDiscovery {
   commands: SlashCommand[];
   projectInstructions: string;
   agents: SubagentDef[];
+}
+
+const EVALUATION_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+export const SYSTEM_PROMPT_VERSION = 'book-system-prompt-v1';
+
+/** Return the date exposed to the model, with evaluator-controlled runs frozen. */
+export function promptCurrentDate(): string {
+  const configured = process.env.BOOK_EVALUATION_DATE?.trim();
+  return configured && EVALUATION_DATE_PATTERN.test(configured)
+    ? configured
+    : new Date().toISOString().split('T')[0];
+}
+
+function evaluationIsolationEnabled(): boolean {
+  return Boolean(process.env.BOOK_HOME?.trim() && process.env.BOOK_EVALUATION_RUN_ID?.trim());
+}
+
+/** Hide evaluator-owned temporary paths so equivalent arms receive the same prompt. */
+export function normalizePromptPath(path: string, workspace: string): string {
+  if (!evaluationIsolationEnabled()) return path;
+  const replacements = [
+    [resolve(workspace), '<evaluation-workspace>'],
+    [resolveBookHome(), '<evaluation-book-home>'],
+    [resolve(homedir()), '<evaluation-home>'],
+  ].sort(([left], [right]) => right.length - left.length);
+  for (const [root, label] of replacements) {
+    if (path === root) return label;
+    const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
+    if (path.startsWith(prefix))
+      return `${label}/${path.slice(prefix.length).replaceAll(sep, '/')}`;
+  }
+  return path;
 }
 
 export class AgentContextCache {
@@ -67,7 +99,12 @@ export class AgentContextCache {
       fingerprint,
       skills: discoverSkills(workspace),
       commands: discoverCommands(workspace),
-      projectInstructions: renderProjectInstructions(discoverProjectInstructions(workspace)),
+      projectInstructions: renderProjectInstructions(
+        discoverProjectInstructions(workspace).map((source) => ({
+          ...source,
+          path: normalizePromptPath(source.path, workspace),
+        })),
+      ),
       agents: discoverAgents(workspace),
     };
     this.discoveries.set(workspace, discovery);
@@ -392,7 +429,12 @@ export async function buildSystemPromptZones(
   );
   const projectInstructions =
     discovery?.projectInstructions ??
-    renderProjectInstructions(discoverProjectInstructions(config.workspace));
+    renderProjectInstructions(
+      discoverProjectInstructions(config.workspace).map((source) => ({
+        ...source,
+        path: normalizePromptPath(source.path, config.workspace),
+      })),
+    );
   const git = await (cache?.git(config.workspace, signal) ?? gitContext(config.workspace, signal));
 
   const staticSections = [
@@ -405,8 +447,8 @@ export async function buildSystemPromptZones(
     [
       '## Workspace context',
       `- OS: ${platform()} ${release()} (${hostname()})`,
-      `- Workspace: ${config.workspace}`,
-      `- Current date: ${new Date().toISOString().split('T')[0]}`,
+      `- Workspace: ${normalizePromptPath(config.workspace, config.workspace)}`,
+      `- Current date: ${promptCurrentDate()}`,
       ...(git ? [`- Git: ${git}`] : []),
     ].join('\n'),
     generateSkillListing(

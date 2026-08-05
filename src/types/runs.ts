@@ -28,7 +28,7 @@ export interface AgentRunAccounting {
 }
 
 export interface AgentRunAmbientSnapshot {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly fingerprint: string;
   readonly capturedAt: number;
   readonly model: {
@@ -49,6 +49,35 @@ export interface AgentRunAmbientSnapshot {
     readonly fingerprint: string;
     readonly count: number;
     readonly names: readonly string[];
+    readonly activationState: 'fresh' | 'unverified';
+  };
+  readonly commands: {
+    readonly fingerprint: string;
+    readonly count: number;
+    readonly names: readonly string[];
+  };
+  readonly skills: {
+    readonly fingerprint: string;
+    readonly count: number;
+    readonly names: readonly string[];
+    readonly activationState: 'disabled' | 'not-captured';
+  };
+  readonly mcp: {
+    readonly fingerprint: string;
+    readonly count: number;
+    readonly names: readonly string[];
+  };
+  readonly agents: {
+    readonly fingerprint: string;
+    readonly count: number;
+    readonly names: readonly string[];
+    readonly mode: 'adaptive' | 'manual' | 'off';
+  };
+  readonly prompt: {
+    readonly fingerprint: string;
+    readonly systemPromptVersion: string;
+    readonly date: string;
+    readonly projectInstructionCount: number;
   };
   readonly memory: {
     readonly fingerprint: string;
@@ -63,6 +92,10 @@ export interface AgentRunAmbientSnapshot {
     readonly delegationFingerprint: string;
   };
   readonly runtime: {
+    readonly packageVersion: string;
+    readonly runtimeRevision: string;
+    readonly fixtureRevision: string;
+    readonly randomSeed: string;
     readonly nodeVersion: string;
     readonly platform: NodeJS.Platform;
     readonly architecture: string;
@@ -73,6 +106,10 @@ export interface AgentRunAmbientSnapshot {
   readonly bookHome: {
     readonly pathFingerprint: string;
     readonly isolation: 'shared' | 'configured' | 'isolated';
+    readonly contentsFingerprint?: string;
+    readonly contentsStatus: 'not-captured' | 'captured' | 'incomplete';
+    readonly fileCount?: number;
+    readonly totalBytes?: number;
   };
   readonly completeness: 'partial' | 'complete';
   readonly missingSources: readonly string[];

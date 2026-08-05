@@ -15,21 +15,34 @@
  * Requires a reachable provider (BOOK_API_KEY / settings). Never part of CI.
  */
 
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { loadConfig } from '../src/config.js';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadConfig, resolveCompactModelConfig } from '../src/config.js';
 import {
   estimateHistoryTokens,
   estimateProviderRequestTokens,
   runCompact,
 } from '../src/agent/compact.js';
 import { runAgentLoop } from '../src/agent/loop.js';
-import { createProvider, type Provider } from '../src/provider/index.js';
+import { createProvider, isAnthropicProvider, type Provider } from '../src/provider/index.js';
+import {
+  evaluationControlsFromResult,
+  runEvaluationProcess,
+  type EvaluationControls,
+} from '../src/harness/evaluation/runner.js';
+import {
+  evaluateComparisonEligibility,
+  evaluateRunEligibility,
+  type EvaluationComparisonEligibility,
+  type EvaluationEligibility,
+} from '../src/harness/evaluation/eligibility.js';
 import { estimateUsageCost, PRICING_VERSION } from '../src/pricing.js';
+import { createRunAmbientSnapshot } from '../src/session/run-ambient.js';
 import { createRegistry } from '../src/tools/registry.js';
 import { SessionRuntime } from '../src/session/runtime.js';
-import { createAgentRunContext } from '../src/types/runs.js';
+import { createAgentRunContext, type AgentRunResult } from '../src/types/runs.js';
 import type { AgentConfig } from '../src/types/runtime.js';
 import type {
   AgentLoopCallbacks,
@@ -38,7 +51,7 @@ import type {
 } from '../src/types/providers.js';
 import type { Message, Usage } from '../src/types/messages.js';
 import type { CompactResult, ConversationCheckpointV2 } from '../src/types/sessions.js';
-import type { AgentTerminalOutcome } from '../src/types/terminal.js';
+import { createTerminalOutcome, type AgentTerminalOutcome } from '../src/types/terminal.js';
 
 export type CompactEvalSuite = 'smoke' | 'standard';
 export type ProbeCategory =
@@ -105,6 +118,7 @@ export type ProbeFailureKind =
   | 'invalid-format'
   | 'empty-output'
   | 'unexpected-tool-call'
+  | 'ineligible-evidence'
   | 'runtime-error';
 
 export interface ProbeRunResult extends ProbeGrade {
@@ -116,6 +130,7 @@ export interface ProbeRunResult extends ProbeGrade {
   terminalStatus?: AgentTerminalOutcome['status'];
   terminalReason?: AgentTerminalOutcome['reason'];
   usage: UsageTotals;
+  attribution: EvaluationEligibility;
 }
 
 export interface ProbeResult {
@@ -126,10 +141,11 @@ export interface ProbeResult {
   control: ProbeRunResult;
   treatment: ProbeRunResult;
   noHistory?: ProbeRunResult;
+  comparison: EvaluationComparisonEligibility;
 }
 
 export interface CompactEvalRunResult {
-  version: 2;
+  version: 3;
   model: string;
   repetition: number;
   suite: CompactEvalSuite;
@@ -154,6 +170,7 @@ export interface CompactEvalRunResult {
     checkpoint?: ConversationCheckpointV2;
     effort?: AgentConfig['effort'];
     model: string;
+    attribution: EvaluationEligibility;
   };
   probes: ProbeResult[];
   control: Meter;
@@ -162,7 +179,7 @@ export interface CompactEvalRunResult {
 }
 
 export interface CompactEvalBundle {
-  version: 2;
+  version: 3;
   createdAt: string;
   options: {
     suite: CompactEvalSuite;
@@ -174,6 +191,13 @@ export interface CompactEvalBundle {
     compactEffort?: AgentConfig['effort'];
     compactModel?: string;
   };
+  controls: Array<
+    EvaluationControls & {
+      model: string;
+      compactModel: string;
+      repetition: number;
+    }
+  >;
   runs: CompactEvalRunResult[];
 }
 
@@ -189,6 +213,16 @@ export interface CompactEvalOptions {
   compactModel?: string;
   json: boolean;
 }
+
+const COMPACT_EVAL_WORKER = fileURLToPath(new URL('./compact-eval-worker.ts', import.meta.url));
+export const COMPACT_EVAL_FIXTURE_FILENAME = 'compact-eval-fixture.json';
+const TSX_LOADER = import.meta.resolve('tsx');
+const COMPACT_EVAL_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024;
+const COMPACT_EVAL_TIMEOUT_MS = (() => {
+  const raw = process.env.BOOK_COMPACT_EVAL_TIMEOUT_MS;
+  const parsed = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30 * 60_000;
+})();
 
 const EMPTY_USAGE: UsageTotals = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -530,11 +564,13 @@ function failureKindFor(options: {
   toolCalls: string[];
   errors: string[];
   terminal?: AgentTerminalOutcome;
+  attribution: EvaluationEligibility;
 }): ProbeFailureKind {
   if (options.toolCalls.length > 0) return 'unexpected-tool-call';
   if (options.errors.length > 0 || (options.terminal && options.terminal.status !== 'completed')) {
     return 'runtime-error';
   }
+  if (!options.attribution.eligible) return 'ineligible-evidence';
   if (!options.output.trim()) return 'empty-output';
   if (!options.grade.pass) return 'wrong-answer';
   if (!options.grade.formatCompliant) return 'invalid-format';
@@ -567,23 +603,44 @@ async function runProbe(
   };
   const runtime = new SessionRuntime();
   const runContext = createAgentRunContext({ sessionId: crypto.randomUUID(), source: 'headless' });
-  await runAgentLoop(
-    config,
-    createRegistry(),
-    probe.prompt,
-    history,
-    callbacks,
-    'bypassPermissions',
-    {
-      manageSessionHooks: false,
-      isNewSession: true,
-      runtime,
-      runContext,
-      provider,
-    },
+  runtime.runAccounting.startRoot(runContext);
+  const registry = createRegistry();
+  const ambient = runtime.recordRunAmbientSnapshot(
+    runContext.runId,
+    createRunAmbientSnapshot(config, registry, { permissionMode: 'bypassPermissions' }),
   );
+  await runAgentLoop(config, registry, probe.prompt, history, callbacks, 'bypassPermissions', {
+    manageSessionHooks: false,
+    isNewSession: true,
+    runtime,
+    runContext,
+    provider,
+  });
+  const accounting = runtime.runAccounting.snapshotRun(runContext.runId);
+  const usage = accounting?.directUsage ?? null;
+  const outcome =
+    terminal ??
+    createTerminalOutcome('failed', 'runtime_error', {
+      partialOutput: Boolean(output),
+      message: 'Compact evaluation probe ended without a terminal outcome.',
+    });
+  const evidence: AgentRunResult = {
+    context: runContext,
+    outcome,
+    usage,
+    accounting,
+    ambient,
+  };
+  const attribution = evaluateRunEligibility([evidence]);
   const grade = gradeProbe(output, probe.expectation);
-  const failureKind = failureKindFor({ grade, output, toolCalls, errors, terminal });
+  const failureKind = failureKindFor({
+    grade,
+    output,
+    toolCalls,
+    errors,
+    terminal: outcome,
+    attribution,
+  });
   return {
     ...grade,
     semanticPass: grade.pass,
@@ -592,9 +649,10 @@ async function runProbe(
     outputPreview: output.replace(/\s+/g, ' ').trim().slice(0, 240),
     toolCalls,
     errors,
-    terminalStatus: terminal?.status,
-    terminalReason: terminal?.reason,
-    usage: usageTotals(runtime.runAccounting.snapshotRun(runContext.runId)?.directUsage),
+    terminalStatus: outcome.status,
+    terminalReason: outcome.reason,
+    usage: usageTotals(usage),
+    attribution,
   };
 }
 
@@ -636,6 +694,19 @@ async function runFixture(options: {
   const treatment = createMeter();
   const noHistory = options.includeNoHistory ? createMeter() : undefined;
   const compactProvider = createMeteredProvider(compactConfig, treatment);
+  const compactRuntime = new SessionRuntime();
+  const compactRunContext = createAgentRunContext({
+    sessionId: crypto.randomUUID(),
+    source: 'headless',
+  });
+  compactRuntime.runAccounting.startRoot(compactRunContext);
+  const compactRegistry = createRegistry();
+  const compactAmbient = compactRuntime.recordRunAmbientSnapshot(
+    compactRunContext.runId,
+    createRunAmbientSnapshot(compactConfig, compactRegistry, {
+      permissionMode: 'bypassPermissions',
+    }),
+  );
   const compact = await runCompact(compactConfig, fixture.history, {
     trigger: 'manual',
     provider: compactProvider,
@@ -643,7 +714,37 @@ async function runFixture(options: {
     preContextTokens: estimateHistoryTokens(fixture.history),
     checkpointMaxTokens: options.checkpointTokens,
     effort: options.compactEffort,
+    beforeModelCall: (model) =>
+      compactRuntime.runAccounting.checkBeforeModelCall(compactRunContext.rootRunId, model),
+    onUsage: (usage, metadata) =>
+      compactRuntime.runAccounting.record(compactRunContext, usage, metadata),
+    onUsageMissing: (metadata) =>
+      compactRuntime.runAccounting.markUsageUnknown(
+        compactRunContext,
+        metadata,
+        'compact_provider_usage',
+      ),
   });
+  const compactAccounting = compactRuntime.runAccounting.snapshotRun(compactRunContext.runId);
+  const compactOutcome =
+    compact.status === 'compacted'
+      ? createTerminalOutcome('completed', 'normal_completion', { partialOutput: false })
+      : createTerminalOutcome('failed', 'runtime_error', {
+          partialOutput: false,
+          message:
+            compact.status === 'failed'
+              ? compact.error
+              : `Compaction did not run: ${compact.reason}.`,
+        });
+  const compactAttribution = evaluateRunEligibility([
+    {
+      context: compactRunContext,
+      outcome: compactOutcome,
+      usage: compactAccounting?.directUsage ?? null,
+      accounting: compactAccounting,
+      ambient: compactAmbient,
+    },
+  ]);
   const compactUsage = { ...treatment.usage };
   const compactCostUsd = treatment.costUsd;
   const compactEstimatedPromptTokens = treatment.calls.reduce(
@@ -669,20 +770,28 @@ async function runFixture(options: {
     const noHistoryResult = noHistory
       ? await runProbe(config, [], probe, createMeteredProvider(config, noHistory))
       : undefined;
+    const comparison = evaluateComparisonEligibility([
+      controlResult.attribution,
+      treatmentResult.attribution,
+      ...(noHistoryResult ? [noHistoryResult.attribution] : []),
+    ]);
+    const invalidate = (result: ProbeRunResult): ProbeRunResult =>
+      comparison.eligible ? result : { ...result, pass: false, failureKind: 'ineligible-evidence' };
     probes.push({
       name: probe.name,
       category: probe.category,
       evidencePosition: probe.evidencePosition,
       evidenceMessageIds: probe.evidenceMessageIds,
-      control: controlResult,
-      treatment: treatmentResult,
-      noHistory: noHistoryResult,
+      control: invalidate(controlResult),
+      treatment: invalidate(treatmentResult),
+      noHistory: noHistoryResult ? invalidate(noHistoryResult) : undefined,
+      comparison,
     });
   }
   const preContextTokens = compact.status === 'compacted' ? compact.preContextTokens : undefined;
   const postContextTokens = compact.status === 'compacted' ? compact.postContextTokens : undefined;
   return {
-    version: 2,
+    version: 3,
     model: options.model,
     repetition: options.repetition,
     suite: options.suite,
@@ -713,6 +822,7 @@ async function runFixture(options: {
       checkpoint: compact.status === 'compacted' ? compact.checkpoint : undefined,
       effort: options.compactEffort,
       model: options.compactModel,
+      attribution: compactAttribution,
     },
     probes,
     control,
@@ -738,6 +848,10 @@ export function breakEvenProbeCount(
 
 function formatUsd(value: number | null): string {
   return value === null ? 'pricing unknown' : `$${value.toFixed(6)}`;
+}
+
+function shortIdentity(value: string): string {
+  return value.length > 16 ? value.slice(0, 16) : value;
 }
 
 function formatPct(value: number | null): string {
@@ -905,6 +1019,7 @@ function aggregateRows(
 }
 
 export function renderBenchmarkReport(bundle: CompactEvalBundle): string {
+  const controls = bundle.controls ?? [];
   const modelRows = aggregateRows(bundle.runs, (run) => run.model, false);
   const categoryRows = aggregateRows(
     bundle.runs,
@@ -923,6 +1038,19 @@ export function renderBenchmarkReport(bundle: CompactEvalBundle): string {
     `- Compaction effort: ${bundle.options.compactEffort ?? 'production default'}`,
     `- Compaction model: ${bundle.options.compactModel ?? 'same as probe model'}`,
     `- Pricing table: ${PRICING_VERSION}`,
+    '',
+    '## Evaluator Controls',
+    '',
+    ...(controls.length > 0
+      ? [
+          '| Model | Reducer | Rep | Date | Seed | Runtime | Fixture | Fixture capture |',
+          '| --- | --- | ---: | --- | --- | --- | --- | --- |',
+          ...controls.map(
+            (control) =>
+              `| ${control.model} | ${control.compactModel} | ${control.repetition} | ${control.evaluationDate} | ${shortIdentity(control.randomSeed)} | ${shortIdentity(control.runtimeRevision)} | ${shortIdentity(control.fixtureRevision)} | ${control.fixtureRevisionStatus} |`,
+          ),
+        ]
+      : ['- Not available for in-process execution.']),
     '',
     '## Model Summary',
     '',
@@ -944,21 +1072,21 @@ export function renderBenchmarkReport(bundle: CompactEvalBundle): string {
     '',
     '## Run Details',
     '',
-    '| Model | Reducer | Rep | Compact | Pre → post | Compression | Output cap | Checkpoint | Calls | Tokens | Cost |',
-    '| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+    '| Model | Reducer | Rep | Compact | Attribution | Pre → post | Compression | Output cap | Checkpoint | Calls | Tokens | Cost |',
+    '| --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
     ...bundle.runs.map(
       (run) =>
-        `| ${run.model} | ${run.compact.model} | ${run.repetition} | ${run.compact.status}${run.compact.degraded ? ' degraded' : ''} | ${(run.compact.preContextTokens ?? 0).toLocaleString()} → ${(run.compact.postContextTokens ?? 0).toLocaleString()} | ${run.compact.compressionRatio === undefined ? 'n/a' : `${(run.compact.compressionRatio * 100).toFixed(1)}%`} | ${run.compact.outputCapTokens?.toLocaleString() ?? 'default'} | ${run.compact.checkpointTokens?.toLocaleString() ?? 'n/a'} | ${run.compact.modelCalls ?? 0} | ${run.compact.usage.totalTokens.toLocaleString()} | ${formatUsd(run.compact.costUsd)} |`,
+        `| ${run.model} | ${run.compact.model} | ${run.repetition} | ${run.compact.status}${run.compact.degraded ? ' degraded' : ''} | ${run.compact.attribution.eligible ? 'eligible' : `INELIGIBLE:${run.compact.attribution.reasons.join(',')}`} | ${(run.compact.preContextTokens ?? 0).toLocaleString()} → ${(run.compact.postContextTokens ?? 0).toLocaleString()} | ${run.compact.compressionRatio === undefined ? 'n/a' : `${(run.compact.compressionRatio * 100).toFixed(1)}%`} | ${run.compact.outputCapTokens?.toLocaleString() ?? 'default'} | ${run.compact.checkpointTokens?.toLocaleString() ?? 'n/a'} | ${run.compact.modelCalls ?? 0} | ${run.compact.usage.totalTokens.toLocaleString()} | ${formatUsd(run.compact.costUsd)} |`,
     ),
     '',
     '## Probe Diagnostics',
     '',
-    '| Model | Rep | Probe | Category | Evidence | Full | Compact | No history |',
-    '| --- | ---: | --- | --- | --- | --- | --- | --- |',
+    '| Model | Rep | Probe | Category | Evidence | Comparison | Full | Compact | No history |',
+    '| --- | ---: | --- | --- | --- | --- | --- | --- | --- |',
     ...bundle.runs.flatMap((run) =>
       run.probes.map(
         (probe) =>
-          `| ${run.model} | ${run.repetition} | ${probe.name} | ${probe.category} | ${probe.evidencePosition} | ${passLabel(probe.control)} | ${passLabel(probe.treatment)} | ${probe.noHistory ? passLabel(probe.noHistory) : '—'} |`,
+          `| ${run.model} | ${run.repetition} | ${probe.name} | ${probe.category} | ${probe.evidencePosition} | ${probe.comparison.eligible ? 'eligible' : `INELIGIBLE:${probe.comparison.reasons.join(',')}`} | ${passLabel(probe.control)} | ${passLabel(probe.treatment)} | ${probe.noHistory ? passLabel(probe.noHistory) : '—'} |`,
       ),
     ),
     '',
@@ -1026,59 +1154,273 @@ export function parseArgs(argv: string[]): CompactEvalOptions {
   return options;
 }
 
-function benchmarkFailed(bundle: CompactEvalBundle): boolean {
+export function benchmarkFailed(bundle: CompactEvalBundle): boolean {
   return bundle.runs.some(
     (run) =>
       run.compact.status !== 'compacted' ||
+      !run.compact.attribution.eligible ||
+      run.probes.some(
+        (probe) =>
+          !probe.comparison.eligible ||
+          !probe.control.attribution.eligible ||
+          !probe.treatment.attribution.eligible ||
+          probe.noHistory?.attribution.eligible === false,
+      ) ||
       run.probes.some((probe) => probe.control.pass && !probe.treatment.pass),
   );
 }
 
-async function main(): Promise<void> {
-  const options = parseArgs(process.argv.slice(2));
-  const workspace = await mkdtemp(join(tmpdir(), 'book-compact-eval-'));
+function providerSettings(config: AgentConfig, apiKeyEnvironmentVariable: string) {
+  return {
+    type: isAnthropicProvider(config) ? ('anthropic' as const) : ('openai' as const),
+    baseURL: config.baseUrl,
+    apiKey: `{env:${apiKeyEnvironmentVariable}}`,
+    models: { [config.model]: config.modelInfo ?? {} },
+  };
+}
+
+export function createCompactEvaluationSettings(
+  probeConfig: AgentConfig,
+  compactConfig: AgentConfig,
+): Record<string, unknown> {
+  const settings: Record<string, unknown> = {
+    model: `evaluation-probe/${probeConfig.model}`,
+    compactModel: `evaluation-compact/${compactConfig.model}`,
+    provider: {
+      'evaluation-probe': providerSettings(probeConfig, 'BOOK_EVAL_PROBE_API_KEY'),
+      'evaluation-compact': providerSettings(compactConfig, 'BOOK_EVAL_COMPACT_API_KEY'),
+    },
+    retry: { ...probeConfig.retry },
+    agents: { mode: 'off' },
+    memory: { enabled: false },
+    skills: { enabled: false },
+    observability: { toolTelemetry: false },
+  };
+  if (probeConfig.effortExplicit && probeConfig.effort) settings.effort = probeConfig.effort;
+  return settings;
+}
+
+export async function runCompactEvaluationInProcess(
+  options: CompactEvalOptions,
+  fixture: CompactEvalFixture = buildCompactEvalFixture(),
+): Promise<CompactEvalBundle> {
+  const requestedModels = options.models.length > 0 ? options.models : [undefined];
+  const runs: CompactEvalRunResult[] = [];
+  for (const requestedModel of requestedModels) {
+    const loaded = loadConfig(process.cwd(), {
+      modelOverride: requestedModel,
+      allowMissingApiKey: true,
+    });
+    const config = withBenchmarkConfig(loaded, options.contextWindow);
+    const model = requestedModel ?? config.modelSelection ?? config.model;
+    const compactLoaded = options.compactModel
+      ? loadConfig(process.cwd(), {
+          modelOverride: options.compactModel,
+          allowMissingApiKey: true,
+        })
+      : resolveCompactModelConfig(loaded);
+    const compactConfig = withBenchmarkConfig(compactLoaded, options.contextWindow);
+    const compactModel = options.compactModel ?? loaded.compactModel ?? model;
+    for (let repetition = 1; repetition <= options.repetitions; repetition++) {
+      console.error(
+        `compact-eval: ${model} repetition ${repetition}/${options.repetitions} (${options.suite})`,
+      );
+      runs.push(
+        await runFixture({
+          config,
+          compactConfig,
+          model,
+          compactModel,
+          repetition,
+          fixture: structuredClone(fixture),
+          suite: options.suite,
+          probeLimit: options.probeLimit,
+          includeNoHistory: options.includeNoHistory,
+          checkpointTokens: options.checkpointTokens,
+          compactEffort: options.compactEffort,
+        }),
+      );
+    }
+  }
+  return {
+    version: 3,
+    createdAt: new Date().toISOString(),
+    options: {
+      suite: options.suite,
+      contextWindow: options.contextWindow,
+      repetitions: options.repetitions,
+      includeNoHistory: options.includeNoHistory,
+      probeLimit: options.probeLimit,
+      checkpointTokens: options.checkpointTokens,
+      compactEffort: options.compactEffort,
+      compactModel: options.compactModel,
+    },
+    controls: [],
+    runs,
+  };
+}
+
+function workerArgs(
+  options: CompactEvalOptions,
+  probeModel: string,
+  compactModel: string,
+  repetitions = options.repetitions,
+): string[] {
+  const args = [
+    '--suite',
+    options.suite,
+    '--repeat',
+    String(repetitions),
+    '--context-window',
+    String(options.contextWindow),
+    '--model',
+    probeModel,
+    '--compact-model',
+    compactModel,
+  ];
+  if (options.probeLimit !== undefined) args.push('--probes', String(options.probeLimit));
+  if (options.checkpointTokens !== undefined) {
+    args.push('--checkpoint-tokens', String(options.checkpointTokens));
+  }
+  if (options.compactEffort) args.push('--compact-effort', options.compactEffort);
+  if (options.includeNoHistory) args.push('--include-no-history');
+  return args;
+}
+
+function parseWorkerBundle(stdout: string): CompactEvalBundle {
+  const line = stdout.trim().split(/\r?\n/).at(-1);
+  if (!line) throw new Error('Compact evaluation worker returned no result.');
+  const parsed: unknown = JSON.parse(line);
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    Boolean(value && typeof value === 'object' && !Array.isArray(value));
+  const isStringArray = (value: unknown): value is string[] =>
+    Array.isArray(value) && value.every((item) => typeof item === 'string');
+  const eligibilityIsValid = (value: unknown): value is EvaluationEligibility =>
+    isRecord(value) &&
+    typeof value.eligible === 'boolean' &&
+    isStringArray(value.reasons) &&
+    (value.rootRunId === undefined || typeof value.rootRunId === 'string') &&
+    (value.ambientFingerprint === undefined || typeof value.ambientFingerprint === 'string') &&
+    (value.pricingVersion === undefined || typeof value.pricingVersion === 'string') &&
+    (value.budgetUsd === undefined || Number.isFinite(value.budgetUsd)) &&
+    (value.modelIdentityFingerprint === undefined ||
+      typeof value.modelIdentityFingerprint === 'string');
+  const comparisonIsValid = (value: unknown): value is EvaluationComparisonEligibility =>
+    eligibilityIsValid(value as EvaluationEligibility);
+  const runs = isRecord(parsed) && Array.isArray(parsed.runs) ? parsed.runs : undefined;
+  const run = runs?.[0];
+  const probes = isRecord(run) && Array.isArray(run.probes) ? run.probes : undefined;
+  const compact = isRecord(run) && isRecord(run.compact) ? run.compact : undefined;
+  if (
+    !isRecord(parsed) ||
+    parsed.version !== 3 ||
+    !runs ||
+    runs.length !== 1 ||
+    !Array.isArray(parsed.controls) ||
+    !isRecord(run) ||
+    run.version !== 3 ||
+    !probes ||
+    probes.length === 0 ||
+    !compact ||
+    !eligibilityIsValid(compact.attribution) ||
+    probes.some((probe) => {
+      if (!isRecord(probe) || !isRecord(probe.control) || !isRecord(probe.treatment)) {
+        return true;
+      }
+      return (
+        !comparisonIsValid(probe.comparison) ||
+        !eligibilityIsValid(probe.control.attribution) ||
+        !eligibilityIsValid(probe.treatment.attribution) ||
+        (probe.noHistory !== undefined &&
+          (!isRecord(probe.noHistory) || !eligibilityIsValid(probe.noHistory.attribution)))
+      );
+    })
+  ) {
+    throw new Error('Compact evaluation worker returned an unsupported report schema.');
+  }
+  return parsed as CompactEvalBundle;
+}
+
+export async function runCompactEvaluationIsolated(
+  options: CompactEvalOptions,
+): Promise<CompactEvalBundle> {
+  const configWorkspace = await mkdtemp(join(tmpdir(), 'book-compact-eval-config-'));
   try {
-    await mkdir(join(workspace, '.book'), { recursive: true });
     const requestedModels = options.models.length > 0 ? options.models : [undefined];
     const runs: CompactEvalRunResult[] = [];
+    const controls: CompactEvalBundle['controls'] = [];
+    let effectiveCompactModel = options.compactModel;
     for (const requestedModel of requestedModels) {
-      const loaded = loadConfig(workspace, {
+      const probeConfig = loadConfig(configWorkspace, {
         modelOverride: requestedModel,
         allowMissingApiKey: true,
       });
-      const config = withBenchmarkConfig(loaded, options.contextWindow);
-      const model = requestedModel ?? config.modelSelection ?? config.model;
-      const compactLoaded = options.compactModel
-        ? loadConfig(workspace, {
+      effectiveCompactModel ??= probeConfig.compactModel;
+      const compactConfig = options.compactModel
+        ? loadConfig(configWorkspace, {
             modelOverride: options.compactModel,
             allowMissingApiKey: true,
           })
-        : loaded;
-      const compactConfig = withBenchmarkConfig(compactLoaded, options.contextWindow);
-      const compactModel = options.compactModel ?? model;
+        : resolveCompactModelConfig(probeConfig);
+      const settings = createCompactEvaluationSettings(probeConfig, compactConfig);
+      const model = requestedModel ?? probeConfig.modelSelection ?? probeConfig.model;
+      const compactModel = effectiveCompactModel ?? model;
       for (let repetition = 1; repetition <= options.repetitions; repetition++) {
-        console.error(
-          `compact-eval: ${model} repetition ${repetition}/${options.repetitions} (${options.suite})`,
-        );
+        const fixture = buildCompactEvalFixture();
+        const processResult = await runEvaluationProcess({
+          command: process.execPath,
+          args: [
+            '--import',
+            TSX_LOADER,
+            COMPACT_EVAL_WORKER,
+            ...workerArgs(
+              options,
+              `evaluation-probe/${probeConfig.model}`,
+              `evaluation-compact/${compactConfig.model}`,
+              1,
+            ),
+          ],
+          timeoutMs: COMPACT_EVAL_TIMEOUT_MS,
+          maxOutputBytes: COMPACT_EVAL_OUTPUT_LIMIT_BYTES,
+          env: {
+            BOOK_EVAL_PROBE_API_KEY: probeConfig.apiKey,
+            BOOK_EVAL_COMPACT_API_KEY: compactConfig.apiKey,
+          },
+          prepare: async ({ bookHome, workspace }) => {
+            await Promise.all([
+              writeFile(join(bookHome, 'settings.json'), JSON.stringify(settings, null, 2), 'utf8'),
+              writeFile(
+                join(workspace, COMPACT_EVAL_FIXTURE_FILENAME),
+                JSON.stringify(fixture),
+                'utf8',
+              ),
+            ]);
+          },
+        });
+        if (processResult.status !== 'completed') {
+          throw new Error(
+            processResult.stderr.trim() || `Compact evaluation process ${processResult.status}.`,
+          );
+        }
+        const workerBundle = parseWorkerBundle(processResult.stdout);
+        controls.push({
+          ...evaluationControlsFromResult(processResult),
+          model,
+          compactModel,
+          repetition,
+        });
         runs.push(
-          await runFixture({
-            config,
-            compactConfig,
+          ...workerBundle.runs.map((run) => ({
+            ...run,
             model,
-            compactModel,
             repetition,
-            fixture: buildCompactEvalFixture(),
-            suite: options.suite,
-            probeLimit: options.probeLimit,
-            includeNoHistory: options.includeNoHistory,
-            checkpointTokens: options.checkpointTokens,
-            compactEffort: options.compactEffort,
-          }),
+            compact: { ...run.compact, model: compactModel },
+          })),
         );
       }
     }
-    const bundle: CompactEvalBundle = {
-      version: 2,
+    return {
+      version: 3,
       createdAt: new Date().toISOString(),
       options: {
         suite: options.suite,
@@ -1088,34 +1430,41 @@ async function main(): Promise<void> {
         probeLimit: options.probeLimit,
         checkpointTokens: options.checkpointTokens,
         compactEffort: options.compactEffort,
-        compactModel: options.compactModel,
+        compactModel: effectiveCompactModel,
       },
+      controls,
       runs,
     };
-    const stamp = bundle.createdAt.replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
-    const modelSlug =
-      options.models.length === 1
-        ? options.models[0]!.replace(/[^a-zA-Z0-9._-]+/g, '-')
-        : options.models.length > 1
-          ? `multi-${options.models.length}`
-          : 'configured-default';
-    const capSlug = options.checkpointTokens ? `-cap${options.checkpointTokens}` : '';
-    const effortSlug = options.compactEffort ? `-effort${options.compactEffort}` : '';
-    const reducerSlug = options.compactModel
-      ? `-reducer${options.compactModel.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
-      : '';
-    const base = `compact-eval-v2-${options.suite}-${modelSlug}${capSlug}${effortSlug}${reducerSlug}-${stamp}`;
-    const reportDir = join(process.cwd(), '.book', 'reports');
-    const markdown = renderBenchmarkReport(bundle);
-    await mkdir(reportDir, { recursive: true });
-    await writeFile(join(reportDir, `${base}.json`), JSON.stringify(bundle, null, 2), 'utf8');
-    await writeFile(join(reportDir, `${base}.md`), markdown, 'utf8');
-    if (options.json) console.log(JSON.stringify(bundle, null, 2));
-    else console.log(`${markdown}\nReports: .book/reports/${base}.{json,md}`);
-    if (benchmarkFailed(bundle)) process.exitCode = 1;
   } finally {
-    await rm(workspace, { recursive: true, force: true });
+    await rm(configWorkspace, { recursive: true, force: true });
   }
 }
 
-if (process.argv[1]?.endsWith('compact-eval.ts')) await main();
+async function main(): Promise<void> {
+  const options = parseArgs(process.argv.slice(2));
+  const bundle = await runCompactEvaluationIsolated(options);
+  const stamp = bundle.createdAt.replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  const modelSlug =
+    options.models.length === 1
+      ? options.models[0]!.replace(/[^a-zA-Z0-9._-]+/g, '-')
+      : options.models.length > 1
+        ? `multi-${options.models.length}`
+        : 'configured-default';
+  const capSlug = options.checkpointTokens ? `-cap${options.checkpointTokens}` : '';
+  const effortSlug = options.compactEffort ? `-effort${options.compactEffort}` : '';
+  const reducerSlug = bundle.options.compactModel
+    ? `-reducer${bundle.options.compactModel.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
+    : '';
+  const base = `compact-eval-v3-${options.suite}-${modelSlug}${capSlug}${effortSlug}${reducerSlug}-${stamp}`;
+  const reportDir = join(process.cwd(), '.book', 'reports');
+  const markdown = renderBenchmarkReport(bundle);
+  await mkdir(reportDir, { recursive: true });
+  await writeFile(join(reportDir, `${base}.json`), JSON.stringify(bundle, null, 2), 'utf8');
+  await writeFile(join(reportDir, `${base}.md`), markdown, 'utf8');
+  if (options.json) console.log(JSON.stringify(bundle, null, 2));
+  else console.log(`${markdown}\nReports: .book/reports/${base}.{json,md}`);
+  if (benchmarkFailed(bundle)) process.exitCode = 1;
+}
+
+const currentFile = fileURLToPath(import.meta.url);
+if (process.argv[1] && resolve(process.argv[1]) === currentFile) await main();

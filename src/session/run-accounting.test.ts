@@ -48,7 +48,8 @@ describe('RunAccounting', () => {
       inclusiveUsage: usage(14, 7),
       runIds: ['root', 'child'],
       budgetStatus: 'within',
-      missingSources: ['failed_provider_attempt_usage'],
+      completeness: 'complete',
+      missingSources: [],
     });
   });
 
@@ -88,11 +89,30 @@ describe('RunAccounting', () => {
       budgetStatus: 'unknown',
       unknownModels: ['gpt-5-2025-08-07'],
       modelIdentities: [{ responseId: 'compact-without-usage', status: 'verified' }],
-      missingSources: ['failed_provider_attempt_usage', 'compaction_usage'],
+      missingSources: ['compaction_usage'],
     });
     expect(accounting.checkBeforeModelCall(root.rootRunId, 'gpt-5')).toMatchObject({
       allowed: false,
       status: 'unknown',
+    });
+  });
+
+  it('becomes partial only when a provider attempt has unknown usage', () => {
+    const accounting = new RunAccounting();
+    const root = context('root');
+    accounting.startRoot(root, 1);
+
+    accounting.markUsageUnknown(
+      root,
+      { provider: 'openai-compatible', requestedModel: 'gpt-5' },
+      'failed_provider_attempt_usage',
+    );
+
+    expect(accounting.snapshotRoot(root.rootRunId)).toMatchObject({
+      completeness: 'partial',
+      costStatus: 'unknown',
+      budgetStatus: 'unknown',
+      missingSources: ['failed_provider_attempt_usage'],
     });
   });
 

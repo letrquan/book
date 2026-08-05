@@ -5,7 +5,24 @@ import type { EvalTask } from './edit-eval-fixtures.js';
 import { createEditEvaluationSettings, runEditEvalTask } from './edit-eval.js';
 
 vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }));
-vi.mock('../src/harness/evaluation/runner.js', () => ({ runEvaluationProcess: vi.fn() }));
+vi.mock('../src/harness/evaluation/runner.js', () => ({
+  runEvaluationProcess: vi.fn(),
+  evaluationControlsFromResult: vi.fn((result) => ({
+    evaluationDate: result.evaluationDate,
+    randomSeed: result.randomSeed,
+    runtimeRevision: result.runtimeRevision,
+    fixtureRevision: result.fixtureRevision,
+    fixtureRevisionStatus: result.fixtureRevisionStatus,
+  })),
+}));
+
+const controls = {
+  evaluationDate: '2026-08-05',
+  randomSeed: 'seed-1',
+  runtimeRevision: 'runtime-1',
+  fixtureRevision: 'fixture-1',
+  fixtureRevisionStatus: 'captured' as const,
+};
 
 const TASK: EvalTask = {
   name: 'parent-task',
@@ -68,14 +85,20 @@ describe('runEditEvalTask', () => {
         mutationCalls: { Edit: 1 },
         failuresByCode: {},
         toolCalls: 1,
+        attribution: {
+          eligible: true,
+          reasons: [],
+        },
       }),
       stderr: '',
+      ...controls,
     } as never);
 
     await expect(runEditEvalTask(TASK)).resolves.toMatchObject({
       success: true,
       verified: true,
       mutationCalls: { Edit: 1 },
+      controls,
     });
     expect(runEvaluationProcess).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -117,5 +140,65 @@ describe('runEditEvalTask', () => {
     } as never);
 
     expect(settings).toMatchObject({ maxTokens: 4096, effort: 'medium' });
+  });
+
+  it('rejects worker success without eligible run evidence', async () => {
+    vi.mocked(loadConfig).mockReturnValue({
+      apiKey: 'key',
+      baseUrl: 'https://provider.example/v1',
+      model: 'model-id',
+      provider: 'openai',
+      retry: {},
+    } as never);
+    vi.mocked(runEvaluationProcess).mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({
+        name: TASK.name,
+        category: TASK.category,
+        success: true,
+        verified: true,
+        durationMs: 1,
+        mutationCalls: {},
+        failuresByCode: {},
+        toolCalls: 0,
+      }),
+      stderr: '',
+      ...controls,
+    } as never);
+
+    await expect(runEditEvalTask(TASK)).resolves.toMatchObject({
+      success: false,
+      runError: 'Edit evaluation worker returned success without eligible run evidence.',
+    });
+  });
+
+  it('rejects malformed worker task results', async () => {
+    vi.mocked(loadConfig).mockReturnValue({
+      apiKey: 'key',
+      baseUrl: 'https://provider.example/v1',
+      model: 'model-id',
+      provider: 'openai',
+      retry: {},
+    } as never);
+    vi.mocked(runEvaluationProcess).mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({
+        name: TASK.name,
+        category: TASK.category,
+        success: false,
+        verified: false,
+        durationMs: 1,
+        mutationCalls: [],
+        failuresByCode: {},
+        toolCalls: 0,
+      }),
+      stderr: '',
+      ...controls,
+    } as never);
+
+    await expect(runEditEvalTask(TASK)).resolves.toMatchObject({
+      success: false,
+      runError: 'Edit evaluation worker returned a malformed or mismatched task result.',
+    });
   });
 });

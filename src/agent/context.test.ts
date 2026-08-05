@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   AgentContextCache,
   buildMessages,
@@ -15,6 +15,10 @@ import { userMsg, assistantMsg, toolCall, toolResult, defaultConfig } from '../t
 import { toolSuccess } from '../tools/result.js';
 
 const config = defaultConfig();
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 function tool(name: string, description: string): ToolDefinition {
   return {
@@ -393,6 +397,31 @@ describe('buildMessages', () => {
       expect(systemPrefix(out)).toContain(`- Workspace: ${dir}`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes evaluator-owned paths and freezes the prompt date', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'book-context-evaluation-'));
+    const workspace = join(root, 'workspace');
+    const bookHome = join(root, 'book-home');
+    mkdirSync(workspace);
+    mkdirSync(bookHome);
+    writeFileSync(join(workspace, 'AGENTS.md'), 'Use evaluation instructions.', 'utf8');
+    vi.stubEnv('BOOK_HOME', bookHome);
+    vi.stubEnv('BOOK_EVALUATION_RUN_ID', 'evaluation-run');
+    vi.stubEnv('BOOK_EVALUATION_DATE', '2030-02-03');
+
+    try {
+      const evaluationConfig = defaultConfig({ workspace });
+      evaluationConfig.settings.agents.mode = 'off';
+      const prompt = await buildSystemPrompt(evaluationConfig, [], undefined, []);
+
+      expect(prompt).toContain('- Workspace: <evaluation-workspace>');
+      expect(prompt).toContain('- Current date: 2030-02-03');
+      expect(prompt).toContain('### project: <evaluation-workspace>/AGENTS.md');
+      expect(prompt).not.toContain(workspace);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

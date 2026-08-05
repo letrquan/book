@@ -1441,10 +1441,16 @@ export class AgentManager {
         parentRunId: record.parentRunId,
         source: 'internal',
       });
+      const systemPromptAppend = this.systemPrompt(record, definition, snapshot);
+      runtime.runAccounting.startExecution(runContext);
       runtime.recordRunAmbientSnapshot(
         runContext.runId,
         createRunAmbientSnapshot(agentConfig, registry, {
           permissionMode: this.permissionMode,
+          systemPromptAppend,
+          hideAgents: true,
+          planMode: this.permissionMode === 'plan',
+          allowedTools: definition.allowedTools,
         }),
       );
       const recordUsage = (usage: Usage): void => {
@@ -1585,7 +1591,7 @@ export class AgentManager {
           manageSessionHooks: false,
           isSubagent: true,
           agentPath: [record.name],
-          systemPromptAppend: this.systemPrompt(record, definition, snapshot),
+          systemPromptAppend,
           hideAgents: true,
           agentId: record.id,
           agentRole: record.role,

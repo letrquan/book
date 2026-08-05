@@ -32,9 +32,9 @@ export function getPackageVersion(): string {
   // package.json is at the workspace root in dev, and bundled by tsup in dist.
   const dir = thisDir();
   const candidates = [
-    join(process.cwd(), 'package.json'),
     dir ? join(dir, '..', 'package.json') : '',
     dir ? join(dir, 'package.json') : '',
+    join(process.cwd(), 'package.json'),
   ].filter(Boolean) as string[];
   for (const p of candidates) {
     if (!existsSync(p)) continue;

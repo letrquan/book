@@ -71,6 +71,18 @@ export interface SkillEvaluationThresholds {
   maximumSkillToolFailures: number;
 }
 
+export interface SkillEvaluationExecution {
+  evidenceKind: 'offline-observation';
+  providerRunEligibility: 'not-applicable';
+  controls: {
+    evaluationDate: string;
+    randomSeed: string;
+    runtimeRevision: string;
+    fixtureRevision: string;
+    fixtureRevisionStatus: 'captured' | 'incomplete';
+  };
+}
+
 export interface SkillEvaluationReport {
   generatedAt: string;
   fixtureCount: number;
@@ -100,6 +112,7 @@ export interface SkillEvaluationReport {
   rolloutReady: boolean;
   reasons: string[];
   observations: SkillEvaluationObservation[];
+  evaluation?: SkillEvaluationExecution;
 }
 
 export const DEFAULT_SKILL_EVALUATION_THRESHOLDS: SkillEvaluationThresholds = {
@@ -447,6 +460,16 @@ export function renderSkillEvaluationReport(report: SkillEvaluationReport): stri
     `Unnecessary permission prompts: ${report.unnecessaryPermissionPrompts}`,
     `Skill-caused tool failures: ${report.skillToolFailures}`,
     `Blocking mismatches: ${report.blockingMismatches}`,
+    ...(report.evaluation
+      ? [
+          `Evidence kind: ${report.evaluation.evidenceKind}`,
+          `Provider run eligibility: ${report.evaluation.providerRunEligibility}`,
+          `Evaluation date: ${report.evaluation.controls.evaluationDate}`,
+          `Evaluation seed: ${report.evaluation.controls.randomSeed}`,
+          `Runtime revision: ${report.evaluation.controls.runtimeRevision}`,
+          `Fixture revision: ${report.evaluation.controls.fixtureRevision} (${report.evaluation.controls.fixtureRevisionStatus})`,
+        ]
+      : []),
     '',
     '## Fixture Coverage',
     '',
