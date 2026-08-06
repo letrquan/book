@@ -16,6 +16,8 @@ import type { Message } from '../types/messages.js';
 import { createSessionFixture } from '../test/session-fixture.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { SessionRuntime } from './runtime.js';
+import { freezeHarnessRunContext } from '../harness/coordinator.js';
+import type { HarnessRunContext } from '../harness/contracts.js';
 
 function compactedResult(): Extract<CompactResult, { status: 'compacted' }> {
   const replacementHistory: Message[] = [
@@ -134,6 +136,44 @@ describe('AgentSession', () => {
       'run:hello:0',
     ]);
     expect(session.operations.activeKind).toBeNull();
+  });
+
+  it('keeps harness context request-scoped across sends', async () => {
+    const seen: Array<Readonly<HarnessRunContext> | undefined> = [];
+    const session = new AgentSession({
+      runLoop: async (_config, _registry, _prompt, history, _callbacks, _mode, options) => {
+        seen.push(options?.harnessContext);
+        return history;
+      },
+    });
+    let userMessage = 0;
+    const send = (harnessContext?: Readonly<HarnessRunContext>) =>
+      session.send({
+        config: defaultConfig(),
+        registry: {} as ToolRegistry,
+        displayMessage: 'hello',
+        createUserMessage: () => ({
+          id: `user-harness-${++userMessage}`,
+          role: 'user',
+          content: 'hello',
+          includeInContext: true,
+          timestamp: userMessage,
+        }),
+        history: [],
+        sessionId: 'session-harness',
+        harnessContext,
+        callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+      });
+    const context = freezeHarnessRunContext({
+      runId: 'harness-run',
+      mode: 'observe',
+      policyVersion: 'policy-v1',
+    });
+
+    await send(context);
+    await send();
+
+    expect(seen).toEqual([context, undefined]);
   });
 
   it('rejects overlapping sends without creating a second transaction', async () => {

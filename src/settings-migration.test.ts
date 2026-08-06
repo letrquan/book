@@ -117,4 +117,21 @@ describe('migrateLegacyPermissions', () => {
     writeFileSync(join(fakeHome, '.book', 'permissions.json'), '{not json');
     expect(migrateLegacyPermissions(dir, fakeHome)).toBe(false);
   });
+
+  it('rejects an unavailable harness mode before creating migration storage', () => {
+    mkdirSync(join(fakeHome, '.book'), { recursive: true });
+    writeFileSync(
+      join(fakeHome, '.book', 'permissions.json'),
+      JSON.stringify({ rules: [{ toolName: 'Read', effect: 'allow' }] }),
+    );
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(
+      join(dir, '.book', 'settings.json'),
+      JSON.stringify({ harness: { mode: 'shadow' } }),
+    );
+
+    expect(() => migrateLegacyPermissions(dir, fakeHome)).toThrow('Harness mode "shadow"');
+    expect(existsSync(join(dir, '.book', 'settings.local.json'))).toBe(false);
+    expect(existsSync(join(dir, '.book', 'migrations.json'))).toBe(false);
+  });
 });

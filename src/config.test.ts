@@ -6,7 +6,7 @@ import {
   resolveCompactModelConfig,
   resolveModelProviderConfig,
 } from './config.js';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { defaultConfig } from './test/fixtures.js';
 import { tmpdir } from 'os';
@@ -83,6 +83,59 @@ describe('loadConfig permission defaults', () => {
 
     const config = loadConfig(workspace);
     expect(config.settings.defaultMode).toBe('plan');
+  });
+});
+
+describe('loadConfig harness boundary', () => {
+  it('loads the inert off mode', () => {
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ harness: { mode: 'off' } }),
+    );
+
+    expect(loadConfig(workspace).settings.harness.mode).toBe('off');
+  });
+
+  it('rejects a valid future mode before constructing runtime configuration', () => {
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ harness: { mode: 'shadow' } }),
+    );
+
+    expect(() => loadConfig(workspace)).toThrow('Harness mode "shadow"');
+  });
+
+  it('rejects an unavailable mode before a requested migration creates storage', () => {
+    const bookHome = join(workspace, 'isolated-book-home');
+    mkdirSync(bookHome, { recursive: true });
+    writeFileSync(
+      join(bookHome, 'permissions.json'),
+      JSON.stringify({ rules: [{ toolName: 'Read', effect: 'allow' }] }),
+    );
+    process.env.BOOK_HOME = bookHome;
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ harness: { mode: 'shadow' } }),
+    );
+
+    expect(() => loadConfig(workspace, { runMigrations: true })).toThrow('Harness mode "shadow"');
+    expect(existsSync(join(workspace, '.book', 'settings.local.json'))).toBe(false);
+    expect(existsSync(join(workspace, '.book', 'migrations.json'))).toBe(false);
+  });
+
+  it('re-resolves settings after a requested migration succeeds', () => {
+    const bookHome = join(workspace, 'isolated-book-home');
+    mkdirSync(bookHome, { recursive: true });
+    writeFileSync(
+      join(bookHome, 'permissions.json'),
+      JSON.stringify({ rules: [{ toolName: 'Read', effect: 'allow' }] }),
+    );
+    process.env.BOOK_HOME = bookHome;
+
+    const config = loadConfig(workspace, { runMigrations: true });
+
+    expect(config.settings.permissions.allow).toContain('Read');
+    expect(existsSync(join(workspace, '.book', 'migrations.json'))).toBe(true);
   });
 });
 

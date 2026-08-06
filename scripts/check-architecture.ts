@@ -22,7 +22,14 @@ const LIVE_RUNTIME_PREFIXES = [
   'tools/',
   'tui/',
 ];
-const LIVE_RUNTIME_FILES = new Set(['headless.ts', 'index.ts', 'sdk.ts']);
+const LIVE_RUNTIME_FILES = new Set([
+  'config.ts',
+  'headless.ts',
+  'index.ts',
+  'sdk.ts',
+  'settings-loader.ts',
+  'settings-repository.ts',
+]);
 const TRUSTED_KERNEL_FILES = new Set([
   'permission-mode.ts',
   'permissions.ts',
@@ -32,6 +39,10 @@ const TRUSTED_KERNEL_FILES = new Set([
 
 function isEvaluationModule(path: string): boolean {
   return path.startsWith('harness/evaluation/');
+}
+
+function isHarnessRuntimeBoundary(path: string): boolean {
+  return path === 'harness/contracts.ts' || path === 'harness/coordinator.ts';
 }
 
 function isLiveRuntimeModule(path: string): boolean {
@@ -116,6 +127,31 @@ export function checkArchitecture(srcRoot: string): Violation[] {
           source: sourceName,
           target: targetName,
           detail: 'Trusted permission and sandbox modules must not depend on the adaptive harness.',
+        });
+      }
+      if (
+        isLiveRuntimeModule(sourceName) &&
+        targetName.startsWith('harness/') &&
+        !isEvaluationModule(targetName) &&
+        !isHarnessRuntimeBoundary(targetName)
+      ) {
+        violations.push({
+          kind: 'harness-boundary',
+          source: sourceName,
+          target: targetName,
+          detail: 'Live runtime code may import only the harness contracts or coordinator facade.',
+        });
+      }
+      if (
+        (sourceName.startsWith('agent/') || sourceName.startsWith('agents/')) &&
+        targetName.startsWith('harness/') &&
+        targetName !== 'harness/contracts.ts'
+      ) {
+        violations.push({
+          kind: 'harness-boundary',
+          source: sourceName,
+          target: targetName,
+          detail: 'The agent runtime may depend only on shared harness contracts.',
         });
       }
       if (match[1]) continue;

@@ -4,12 +4,7 @@ import { join } from 'path';
 import type { UserQuestionHandler } from './types/tools.js';
 import type { AgentConfig } from './types/runtime.js';
 import type { SessionStoreInterface } from './types/sessions.js';
-import {
-  freezeAgentConfig,
-  loadConfig,
-  runConfigMigrations,
-  type LoadConfigOptions,
-} from './config.js';
+import { freezeAgentConfig, loadConfig, type LoadConfigOptions } from './config.js';
 import { runHeadless } from './headless.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { connectMcpServers, disconnectMcpServers } from './mcp.js';
@@ -75,10 +70,10 @@ export async function* query(
   options: QueryOptions = {},
 ): AsyncGenerator<QueryEvent, void, undefined> {
   const workspace = options.workspace || process.cwd();
-  if (!options.noSettings) runConfigMigrations(workspace);
   const loadedConfig = loadConfig(workspace, {
     settingsOverridePath: options.settingsPath,
     noSettings: options.noSettings,
+    runMigrations: !options.noSettings,
   });
   const config = freezeAgentConfig({
     ...loadedConfig,

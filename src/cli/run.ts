@@ -1,6 +1,6 @@
 import { render } from 'ink';
 import { createElement } from 'react';
-import { freezeAgentConfig, loadConfig, runConfigMigrations } from '../config.js';
+import { freezeAgentConfig, loadConfig } from '../config.js';
 import { runHeadless } from '../headless.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { SessionStore } from '../session/store.js';
@@ -116,10 +116,10 @@ export function enterInteractiveScreen(
 export async function runMainAction(options: Record<string, unknown>): Promise<void> {
   try {
     const requestedWorkspace = options.workspace as string | undefined;
-    if (options.settings !== false) runConfigMigrations(requestedWorkspace);
     const config = loadConfig(requestedWorkspace, {
       settingsOverridePath: options.settings as string | undefined,
       noSettings: options.settings === false,
+      runMigrations: options.settings !== false,
       modelOverride: options.model as string | undefined,
       allowMissingApiKey: options.print === undefined && !options.scrollback,
     }) as AgentConfig;

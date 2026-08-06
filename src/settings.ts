@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { HarnessMode } from './harness/contracts.js';
 
 /**
  * Permission rule: "Tool" or "Tool(specifier)" where specifier is a glob pattern
@@ -192,6 +193,20 @@ export const observabilitySettingsSchema = z.object({
 
 export type ObservabilitySettings = z.infer<typeof observabilitySettingsSchema>;
 
+export const harnessModeSchema: z.ZodType<HarnessMode> = z.enum([
+  'off',
+  'observe',
+  'shadow',
+  'active',
+  'learn',
+]);
+
+export const harnessSettingsSchema = z.object({
+  mode: harnessModeSchema.default('off'),
+});
+
+export type HarnessSettings = z.infer<typeof harnessSettingsSchema>;
+
 export const uiSettingsSchema = z.object({
   /** Show provider-native and embedded model reasoning in the interactive transcript. */
   showThinking: z.boolean().default(true),
@@ -255,6 +270,7 @@ export const bookSettingsSchema = z.object({
   toolDiscovery: toolDiscoverySettingsSchema.default({}),
   toolExecution: toolExecutionSettingsSchema.default({}),
   observability: observabilitySettingsSchema.default({}),
+  harness: harnessSettingsSchema.default({}),
 });
 
 export type BookSettings = z.infer<typeof bookSettingsSchema>;
@@ -363,5 +379,8 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   observability: {
     toolTelemetry: true,
     toolTelemetryRetentionDays: 30,
+  },
+  harness: {
+    mode: 'off',
   },
 };

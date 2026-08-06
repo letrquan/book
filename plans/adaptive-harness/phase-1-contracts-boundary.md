@@ -1,14 +1,13 @@
 # Phase 1: Add Contracts and a Disabled Harness Boundary
 
 - **Parent plan:** [Adaptive Harness Implementation Plan](../adaptive-harness-implementation-plan.md)
-- **Status:** Not started
+- **Status:** Verified (2026-08-06)
 - **Depends on:** Phase 0 verified
 - **Tracking rule:** Update this status and the parent plan ledger in the same change.
 
 > The parent plan's original intent, non-negotiable invariants, architecture boundaries, stop conditions, and anti-drift review apply to every task in this phase.
 
 ---
-
 
 **Objective:** Create clean module boundaries without changing runtime behavior.
 
@@ -80,8 +79,11 @@ interface WorkflowDecision {
 
 interface HarnessCoordinator {
   prepareRun(input: PrepareRunInput): Promise<PreparedRun>;
-  observe(runId: string, event: HarnessEvent): void;
-  finalizeRun(runId: string, result: FinalizeRunInput): Promise<void>;
+  observe(runId: string, event: HarnessEvent): HarnessObserverEnqueueResult;
+  finalizeRun(
+    runId: string,
+    result: FinalizeRunInput,
+  ): Promise<HarnessObserverFlushResult>;
 }
 ```
 
@@ -213,6 +215,11 @@ The capability matrix must explicitly cover skill activation authority, scoped s
 tool-contract versioning, context retrieval policy, provider prompt flattening, model identity, and
 subagent preload/handoff behavior. Prompt text alone must never be reported as enforcement.
 
+The Phase 1 matrix is published in
+[Phase 1 Capability and Authority Matrix](phase-1-capability-matrix.md). The first release is
+settings/CLI-only; dedicated SDK and headless harness options remain deferred until an enabled mode
+exists.
+
 #### Phase 1 File Plan
 
 ```text
@@ -261,6 +268,56 @@ npm run test:unit -- src/agent/context.test.ts
 npm run test:unit -- src/settings-loader.test.ts
 npm test
 ```
+
+#### Verification Record (2026-08-06)
+
+- Code boundary: Phase 1 change based on `c953b04`; `src/harness/contracts.ts` contains shared
+  descriptive types, while `src/harness/coordinator.ts` exposes only the disabled facade.
+- Availability: `off` is the only enabled mode. `observe`, `shadow`, `active`, and `learn` pass enum
+  parsing but fail the availability gate during settings resolution and before migrations, settings
+  locks, storage creation, legacy-config inspection, or runtime setup.
+- Off-path behavior: omitted harness settings and explicit `off` produce identical provider
+  messages and tool definitions. The disabled coordinator returns no run context or run ID and
+  creates no files or directories.
+- Context ownership: `HarnessRunContext` is readonly, host-frozen, optional, and request-scoped. It
+  is separate from the always-on `AgentRunContext`, is not stored on `AgentConfig`, and does not
+  survive into a later request when omitted.
+- Capability boundary: the versioned manifest, workspace-trust, external-integration,
+  compatibility, observer lifecycle, requested/effective, workflow-reference, and trusted-kernel
+  contracts are defined without importing provider, TUI, tool, evaluator, or learner
+  implementations.
+- Contract hardening: managed-agent runtime imports obey the same contracts-only boundary as the
+  root agent; observer enqueue/flush outcomes are returned to callers; synchronous overflow policy
+  cannot claim to block producers; and event strings require bounded, non-secret ingress values.
+- Public surface: settings/CLI configuration only for Phase 1. No dedicated SDK/headless harness
+  option is exposed while every non-off mode is unavailable.
+- Verification: format, lint, type, and architecture gates passed; 177 of 178 unit files passed in
+  the final loaded-run sweep (1,800 passing tests, 5 skipped), and its single unrelated startup-fire
+  timing assertion passed immediately in isolation. All 4 contract files passed (31 tests), focused
+  Phase 1 unit tests passed (58 tests), the CLI settings integration passed (4 tests), and
+  `npm run build` passed. The earlier clean integration baseline remains 82 passing and 7 skipped;
+  repeated final broad integration attempts were not reusable evidence because Windows PTY and
+  background-shell cleanup became contaminated by orphaned test processes.
+- Trust scope: Tier C remains blocked. Phase 1 starts no project hook, provider integration, MCP
+  process, web request, skill execution, or subagent on behalf of the harness.
+
+#### Anti-Drift Review
+
+- Measurement/selection value: the phase establishes inspectable boundaries required for later
+  evidence and selection; it claims no outcome improvement.
+- Minimal path: the default and only available mode is `off`, with no hidden adaptive behavior.
+- Current intent and scope: no historical signal or selector exists, so current user intent and
+  existing runtime behavior remain authoritative.
+- Reversibility: removing the optional context, settings entry, contracts, and coordinator requires
+  no stored-data migration.
+- External evidence: verification uses provider-request capture, filesystem checks, architecture
+  checks, and repository tests rather than model self-assessment.
+- Kernel integrity: permissions, sandboxing, secrets, budgets, tool contracts, evaluator rules,
+  runtime correctness, and promotion authority are excluded from workflow control.
+- Compatibility and trust: no fingerprint or integration is collected in `off`; all future states
+  remain descriptive and requested/effective values are distinct.
+- Simplicity: no model-specific profile, learner, workflow registry, evidence ledger, or adaptive
+  policy was introduced.
 
 **Exit gate:** The harness can be compiled in but is inert and removable.
 

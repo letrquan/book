@@ -136,4 +136,92 @@ describe('checkArchitecture', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('limits live runtime imports to the harness contracts and coordinator facade', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      mkdirSync(join(dir, 'session'));
+      mkdirSync(join(dir, 'harness'));
+      writeFileSync(join(dir, 'session', 'runner.ts'), "import '../harness/policy.js';\n");
+      writeFileSync(join(dir, 'harness', 'policy.ts'), 'export {};\n');
+
+      expect(checkArchitecture(dir)).toContainEqual(
+        expect.objectContaining({
+          kind: 'harness-boundary',
+          source: 'session/runner.ts',
+          target: 'harness/policy.ts',
+        }),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('allows the agent runtime to import contracts but not the coordinator', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      mkdirSync(join(dir, 'agent'));
+      mkdirSync(join(dir, 'harness'));
+      writeFileSync(
+        join(dir, 'agent', 'loop.ts'),
+        "import type { HarnessRunContext } from '../harness/contracts.js';\n" +
+          "import { createHarnessCoordinator } from '../harness/coordinator.js';\n" +
+          'export type Context = HarnessRunContext;\nvoid createHarnessCoordinator;\n',
+      );
+      writeFileSync(
+        join(dir, 'harness', 'contracts.ts'),
+        'export interface HarnessRunContext {}\n',
+      );
+      writeFileSync(
+        join(dir, 'harness', 'coordinator.ts'),
+        'export const createHarnessCoordinator = () => {};\n',
+      );
+
+      expect(checkArchitecture(dir)).toContainEqual(
+        expect.objectContaining({
+          kind: 'harness-boundary',
+          source: 'agent/loop.ts',
+          target: 'harness/coordinator.ts',
+          detail: 'The agent runtime may depend only on shared harness contracts.',
+        }),
+      );
+      expect(checkArchitecture(dir)).not.toContainEqual(
+        expect.objectContaining({
+          source: 'agent/loop.ts',
+          target: 'harness/contracts.ts',
+          kind: 'harness-boundary',
+        }),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies the contracts-only boundary to managed agents', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      mkdirSync(join(dir, 'agents'));
+      mkdirSync(join(dir, 'harness'));
+      writeFileSync(
+        join(dir, 'agents', 'manager.ts'),
+        "import { createHarnessCoordinator } from '../harness/coordinator.js';\n" +
+          'void createHarnessCoordinator;\n',
+      );
+      writeFileSync(
+        join(dir, 'harness', 'coordinator.ts'),
+        'export const createHarnessCoordinator = () => {};\n',
+      );
+
+      expect(checkArchitecture(dir)).toContainEqual(
+        expect.objectContaining({
+          kind: 'harness-boundary',
+          source: 'agents/manager.ts',
+          target: 'harness/coordinator.ts',
+          detail: 'The agent runtime may depend only on shared harness contracts.',
+        }),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

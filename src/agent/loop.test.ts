@@ -85,6 +85,47 @@ describe('persistent background shell permissions', () => {
   });
 });
 
+describe('runAgentLoop harness off boundary', () => {
+  it('keeps provider messages and tools identical when harness settings are omitted or off', async () => {
+    const captureRequest = async (runtimeConfig: ReturnType<typeof defaultConfig>) => {
+      let captured: { messages: unknown; tools: unknown } | undefined;
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* (_config, messages, tools) {
+          captured = {
+            messages: structuredClone(messages),
+            tools: structuredClone(tools),
+          };
+          yield { type: 'text', content: 'done' };
+          yield { type: 'done' };
+        },
+      };
+      const runtime = new SessionRuntime();
+      try {
+        await runAgentLoop(
+          runtimeConfig,
+          createRegistry(),
+          'hello',
+          [],
+          noopCallbacks(),
+          'default',
+          { provider, isNewSession: false, runtime },
+        );
+        return captured;
+      } finally {
+        runtime.dispose();
+      }
+    };
+
+    const omitted = defaultConfig({ maxTurns: 1 });
+    delete (omitted.settings as Partial<typeof omitted.settings>).harness;
+    const explicitOff = defaultConfig({ maxTurns: 1 });
+    explicitOff.settings.harness.mode = 'off';
+
+    expect(await captureRequest(explicitOff)).toEqual(await captureRequest(omitted));
+  });
+});
+
 describe('runAgentLoop skill lifecycle', () => {
   it('injects an explicitly mentioned skill into the first provider request', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'book-loop-explicit-skill-'));

@@ -27,4 +27,11 @@ describe('settings redaction', () => {
       'https://example.test',
     );
   });
+
+  it('keeps the non-sensitive harness mode inspectable', () => {
+    const settings = { harness: { mode: 'off' }, provider: {} };
+
+    expect(redactSettingsForDisplay(settings)).toEqual(settings);
+    expect(redactSettingValue('harness.mode', 'off')).toBe('off');
+  });
 });

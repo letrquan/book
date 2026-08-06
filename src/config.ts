@@ -6,6 +6,7 @@ import type { AgentConfig, RetryConfig } from './types/runtime.js';
 import { resolveSettings, migrateLegacyPermissions } from './settings-loader.js';
 import { DEFAULT_SETTINGS } from './settings.js';
 import { loadMemoryContext } from './memory-store.js';
+import { assertHarnessModeAvailable } from './harness/coordinator.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
@@ -68,15 +69,22 @@ export interface LoadConfigOptions {
   settingsOverridePath?: string;
   /** If true, skip all settings.json layers entirely (use defaults + legacy .bookrc.json). */
   noSettings?: boolean;
+  /** Run storage migrations after the effective settings and harness mode are validated. */
+  runMigrations?: boolean;
   /** CLI -m/--model override, applied before provider registry resolution. */
   modelOverride?: string;
   /** Let the interactive TUI start before a BYOK credential has been added. */
   allowMissingApiKey?: boolean;
 }
 
-export function runConfigMigrations(workspace?: string): boolean {
+export function runConfigMigrations(
+  workspace?: string,
+  options: Pick<LoadConfigOptions, 'settingsOverridePath' | 'noSettings'> = {},
+): boolean {
+  if (options.noSettings) return false;
   const resolvedWorkspace = workspace || process.env.BOOK_WORKSPACE || process.cwd();
-  return migrateLegacyPermissions(resolvedWorkspace);
+  const settings = resolveSettings(resolvedWorkspace, options.settingsOverridePath);
+  return migrateLegacyPermissions(resolvedWorkspace, undefined, settings);
 }
 
 export function loadConfig(workspace?: string, options?: LoadConfigOptions): AgentConfig {
@@ -84,14 +92,20 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const noSettings = options?.noSettings ?? false;
   const resolvedWorkspace = workspace || process.env.BOOK_WORKSPACE || process.cwd();
 
-  // Load legacy .bookrc.json (deprecated) for backward compat.
-  const legacy = loadLegacyConfig(resolvedWorkspace);
-
   // Resolve layered settings.json from user/project/local scopes, or skip
   // entirely when --no-settings is set (useful for scripted/isolated runs).
-  const settings = noSettings
+  let settings = noSettings
     ? structuredClone(DEFAULT_SETTINGS)
     : resolveSettings(resolvedWorkspace, settingsOverridePath);
+  assertHarnessModeAvailable(settings.harness.mode);
+
+  if (!noSettings && options?.runMigrations) {
+    const migrated = migrateLegacyPermissions(resolvedWorkspace, undefined, settings);
+    if (migrated) settings = resolveSettings(resolvedWorkspace, settingsOverridePath);
+  }
+
+  // Load legacy .bookrc.json (deprecated) only after settings availability is accepted.
+  const legacy = loadLegacyConfig(resolvedWorkspace);
 
   // Resolve retry configuration: env vars take precedence over settings.json.
   const retry: RetryConfig = {

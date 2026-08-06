@@ -44,6 +44,27 @@ describe('SettingsRepository', () => {
     }
   });
 
+  it('rejects valid harness modes that are unavailable in this build', () => {
+    const item = fixture();
+    try {
+      const result = new SettingsRepository(item.path).set({ 'harness.mode': 'shadow' });
+
+      expect(result.ok).toBe(false);
+      expect(existsSync(item.path)).toBe(false);
+      expect(existsSync(join(item.dir, '.book'))).toBe(false);
+      if (!result.ok) {
+        expect(result.diagnostics).toContainEqual(
+          expect.objectContaining({
+            issuePath: 'harness.mode',
+            message: expect.stringContaining('valid but unavailable'),
+          }),
+        );
+      }
+    } finally {
+      item.cleanup();
+    }
+  });
+
   it('preserves malformed JSON instead of replacing it', () => {
     const item = fixture();
     try {

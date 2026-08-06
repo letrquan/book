@@ -51,6 +51,15 @@ describe('loadSettingsFile', () => {
     expect(result?.theme).toBe('paper-ink');
   });
 
+  it('rejects an invalid harness mode', () => {
+    writeFileSync(
+      join(dir, 'bad-harness.json'),
+      JSON.stringify({ harness: { mode: 'sometimes' } }),
+    );
+
+    expect(() => loadSettingsFile(join(dir, 'bad-harness.json'))).toThrow(/Invalid settings/);
+  });
+
   it('keeps compact provider registry metadata', () => {
     writeFileSync(
       join(dir, 'provider.json'),
@@ -354,4 +363,24 @@ describe('resolveSettings — layered merging', () => {
     });
     expect(result.disableBypassPermissionsMode).toBe(true);
   });
+});
+
+describe('harness settings', () => {
+  it('defaults to the disabled mode', () => {
+    expect(resolveSettings(dir).harness).toEqual({ mode: 'off' });
+  });
+
+  it.each(['observe', 'shadow', 'active', 'learn'] as const)(
+    'rejects the valid but unavailable %s mode after settings resolution',
+    (mode) => {
+      const projectSettingsDir = join(dir, '.book');
+      mkdirSync(projectSettingsDir, { recursive: true });
+      writeFileSync(
+        join(projectSettingsDir, 'settings.json'),
+        JSON.stringify({ harness: { mode } }),
+      );
+
+      expect(() => resolveSettings(dir)).toThrow(`Harness mode "${mode}"`);
+    },
+  );
 });

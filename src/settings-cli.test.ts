@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { execFileSync } from 'child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { execFileSync, spawnSync } from 'child_process';
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SETTINGS_TOP_LEVEL_KEYS } from './settings-repository.js';
@@ -16,6 +16,7 @@ function isolatedEnv() {
   delete env.BOOK_BASE_URL;
   delete env.BOOK_MODEL;
   delete env.BOOK_PROVIDER;
+  delete env.BOOK_HOME;
   return { ...env, HOME: dir, USERPROFILE: dir };
 }
 
@@ -78,5 +79,32 @@ describe('CLI --settings flag', () => {
     const stdout = runCli(['--no-settings', 'config', '--workspace', dir, 'get', 'model']);
 
     expect(stdout.trim()).toBe('Key model is not set (no value).');
+  }, 20000);
+
+  it('rejects an unavailable harness mode without creating project storage', () => {
+    dir = mkdtempSync(join(tmpdir(), 'book-cli-'));
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        'src/index.ts',
+        'config',
+        '--workspace',
+        dir,
+        'set',
+        'harness.mode',
+        'shadow',
+      ],
+      {
+        env: isolatedEnv(),
+        encoding: 'utf8',
+        timeout: 15_000,
+      },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Harness mode "shadow"');
+    expect(existsSync(join(dir, '.book'))).toBe(false);
   }, 20000);
 });

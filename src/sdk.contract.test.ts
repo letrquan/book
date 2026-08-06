@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { HeadlessOptions } from './types/public-sdk.js';
 import { createSessionFixture, type SessionFixture } from './test/session-fixture.js';
 
@@ -59,9 +61,11 @@ import { query } from './sdk.js';
 
 let sessionFixture: SessionFixture | undefined;
 let previousApiKey: string | undefined;
+let previousBookHome: string | undefined;
 
 beforeEach(() => {
   previousApiKey = process.env.BOOK_API_KEY;
+  previousBookHome = process.env.BOOK_HOME;
   process.env.BOOK_API_KEY = 'test-key';
 });
 
@@ -70,6 +74,8 @@ afterEach(() => {
   sessionFixture = undefined;
   if (previousApiKey === undefined) delete process.env.BOOK_API_KEY;
   else process.env.BOOK_API_KEY = previousApiKey;
+  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
+  else process.env.BOOK_HOME = previousBookHome;
 });
 
 describe('SDK runtime event bridge', () => {
@@ -120,5 +126,30 @@ describe('SDK runtime event bridge', () => {
     const forwardedTypes: string[] = [];
     for await (const event of forwarded) forwardedTypes.push(event.type);
     expect(forwardedTypes).toContain('agent_text_delta');
+  });
+
+  it('rejects an unavailable harness mode before SDK startup migrations write files', async () => {
+    sessionFixture = createSessionFixture('book-sdk-harness-');
+    const bookHome = join(sessionFixture.root, 'book-home');
+    mkdirSync(bookHome, { recursive: true });
+    writeFileSync(
+      join(bookHome, 'permissions.json'),
+      JSON.stringify({ rules: [{ toolName: 'Read', effect: 'allow' }] }),
+    );
+    process.env.BOOK_HOME = bookHome;
+    mkdirSync(join(sessionFixture.root, '.book'), { recursive: true });
+    writeFileSync(
+      join(sessionFixture.root, '.book', 'settings.json'),
+      JSON.stringify({ harness: { mode: 'shadow' } }),
+    );
+
+    const iterator = query('unreachable', {
+      workspace: sessionFixture.root,
+      persistSession: false,
+    });
+
+    await expect(iterator.next()).rejects.toThrow('Harness mode "shadow"');
+    expect(existsSync(join(sessionFixture.root, '.book', 'settings.local.json'))).toBe(false);
+    expect(existsSync(join(sessionFixture.root, '.book', 'migrations.json'))).toBe(false);
   });
 });

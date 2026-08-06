@@ -48,6 +48,7 @@ import { selectSession, type SessionBootstrap } from './resolve.js';
 import { SessionRuntime, type SessionRuntimeOptions } from './runtime.js';
 import { createRunAmbientSnapshot } from './run-ambient.js';
 import { deriveSessionName } from './name.js';
+import type { HarnessRunContext } from '../harness/contracts.js';
 
 export type AgentLoopRunner = typeof runAgentLoop;
 type AgentLoopOptions = NonNullable<Parameters<AgentLoopRunner>[6]>;
@@ -89,6 +90,8 @@ export interface AgentSessionRunRequest {
   callbacks: AgentSessionRunCallbacks;
   /** Frozen attribution for this request; created once when omitted. */
   runContext?: AgentRunContext;
+  /** Optional frozen harness metadata; absent when harness mode is off. */
+  harnessContext?: Readonly<HarnessRunContext>;
   /** Optional hard USD ceiling for this root run. */
   maxBudgetUsd?: number;
   source?: AgentRunSource;
@@ -149,6 +152,8 @@ export interface AgentSessionSendRequest {
   callbacks: AgentSessionRunCallbacks;
   /** Frozen attribution for this request; created once when omitted. */
   runContext?: AgentRunContext;
+  /** Optional frozen harness metadata; absent when harness mode is off. */
+  harnessContext?: Readonly<HarnessRunContext>;
   /** Optional hard USD ceiling for this root run. */
   maxBudgetUsd?: number;
   source?: AgentRunSource;
@@ -376,6 +381,7 @@ export class AgentSession {
             },
           },
           runContext,
+          harnessContext: request.harnessContext,
           maxBudgetUsd: request.maxBudgetUsd,
           options: {
             ...request.options,
@@ -875,6 +881,7 @@ export class AgentSession {
           ...request.options,
           runtime,
           runContext,
+          harnessContext: request.harnessContext ?? request.options?.harnessContext,
           resolveAttachment:
             request.options?.resolveAttachment ??
             (request.timelineStore?.readImageAttachment

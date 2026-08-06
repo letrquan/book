@@ -1,4 +1,5 @@
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
+import type { HarnessRunContext } from '../harness/contracts.js';
 import { createHash } from 'node:crypto';
 import type {
   ImageAttachment,
@@ -139,6 +140,8 @@ export async function runAgentLoop(
     runtime?: SessionRuntime;
     /** Frozen attribution for this root or linked child execution. */
     runContext?: AgentRunContext;
+    /** Optional frozen harness metadata; absent when harness mode is off. */
+    harnessContext?: Readonly<HarnessRunContext>;
     /** Override user-local oversized tool-output storage (primarily for isolated hosts/tests). */
     toolOutputRoot?: string;
     /** Override user-local tool-use telemetry storage (primarily for isolated hosts/tests). */

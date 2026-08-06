@@ -13,8 +13,9 @@ import {
 import { basename, dirname, join } from 'path';
 import type { ZodIssue } from 'zod';
 import { deleteNestedValue, setNestedValue } from './cli/utils.js';
-import { bookSettingsSchema } from './settings.js';
+import { bookSettingsSchema, harnessModeSchema } from './settings.js';
 import { redactSettingValue } from './settings-redaction.js';
+import { assertHarnessModeAvailable } from './harness/coordinator.js';
 
 export type SettingsDocumentReadResult =
   | { status: 'absent'; path: string }
@@ -118,6 +119,29 @@ function validateTopLevelKeys(
     }));
 }
 
+function preflightHarnessMode(
+  path: string,
+  values: Record<string, unknown>,
+): SettingsDiagnostic | undefined {
+  const requested: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(values)) setNestedValue(requested, key, value);
+  const harness = requested.harness;
+  if (harness === null || typeof harness !== 'object' || Array.isArray(harness)) return undefined;
+
+  const parsed = harnessModeSchema.safeParse((harness as Record<string, unknown>).mode);
+  if (!parsed.success) return undefined;
+  try {
+    assertHarnessModeAvailable(parsed.data);
+    return undefined;
+  } catch (error) {
+    return {
+      path,
+      issuePath: 'harness.mode',
+      message: safeMessage(error),
+    };
+  }
+}
+
 export class SettingsRepository {
   private readonly writeAtomic: (path: string, contents: string) => void;
 
@@ -155,6 +179,11 @@ export class SettingsRepository {
     mutation: (candidate: Record<string, unknown>) => void,
     values: Record<string, unknown>,
   ): SettingsMutationResult {
+    const availabilityDiagnostic = preflightHarnessMode(this.path, values);
+    if (availabilityDiagnostic) {
+      return { ok: false, path: this.path, diagnostics: [availabilityDiagnostic] };
+    }
+
     let lock: number | undefined;
     try {
       lock = this.acquireLock();
@@ -230,6 +259,17 @@ export class SettingsRepository {
         ? []
         : validation.error.issues.map((issue) => issueDiagnostic(this.path, issue))),
     ];
+    if (validation.success) {
+      try {
+        assertHarnessModeAvailable(validation.data.harness.mode);
+      } catch (error) {
+        diagnostics.push({
+          path: this.path,
+          issuePath: 'harness.mode',
+          message: safeMessage(error),
+        });
+      }
+    }
     if (diagnostics.length > 0) return { ok: false, path: this.path, diagnostics };
 
     try {

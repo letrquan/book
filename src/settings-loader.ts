@@ -8,6 +8,7 @@ import {
 } from './settings.js';
 import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
 import { resolveBookHome } from './book-home.js';
+import { assertHarnessModeAvailable } from './harness/coordinator.js';
 
 const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
 
@@ -181,7 +182,9 @@ export function resolveSettings(
     if (override) resolved = mergeLayer(resolved, override, true);
   }
 
-  return bookSettingsSchema.parse(resolved) as ResolvedSettings;
+  const settings = bookSettingsSchema.parse(resolved) as ResolvedSettings;
+  assertHarnessModeAvailable(settings.harness.mode);
+  return settings;
 }
 
 export { loadSettingsFile };
@@ -192,9 +195,21 @@ export { loadSettingsFile };
  * load when the legacy file exists and the local settings don't have rules yet.
  *
  * @param home - User home directory; injectable for isolated migration tests
+ * @param validatedSettings - Already-resolved settings from the startup preflight
  * @returns true if migration occurred, false otherwise
  */
-export function migrateLegacyPermissions(workspace: string, home?: string): boolean {
+export function migrateLegacyPermissions(
+  workspace: string,
+  home?: string,
+  validatedSettings?: ResolvedSettings,
+): boolean {
+  // Direct callers must observe the same fail-before-storage boundary as the
+  // normal startup path. Internal callers pass already-resolved settings to
+  // avoid reading the layers twice on the common off path.
+  const settings =
+    validatedSettings ?? resolveSettings(workspace, undefined, home ? { home } : undefined);
+  assertHarnessModeAvailable(settings.harness.mode);
+
   const legacyPath = join(home ? join(home, '.book') : resolveBookHome(), 'permissions.json');
   if (!existsSync(legacyPath)) return false;
   const markerPath = join(workspace, '.book', 'migrations.json');
