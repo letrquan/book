@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultConfig } from '../test/fixtures.js';
+import { discoverSkills } from '../skills.js';
 import { createRegistry } from '../tools/registry.js';
 import { toolSuccess } from '../tools/result.js';
 import type { ToolDefinition } from '../types/tools.js';
@@ -278,7 +279,10 @@ describe('createRunAmbientSnapshot', () => {
     vi.stubEnv('BOOK_EVALUATION_RUN_ID', 'evaluation-run');
     const config = defaultConfig({ workspace });
 
-    const first = createRunAmbientSnapshot(config, createRegistry(), { capturedAt: 1 });
+    const first = createRunAmbientSnapshot(config, createRegistry(), {
+      capturedAt: 1,
+      skills: discoverSkills(workspace, {}, { includeUser: false, projectRoot: workspace }),
+    });
     writeFileSync(
       commandPath,
       ['---', 'description: Review changes', '---', 'command-secret-two'].join('\n'),
@@ -289,7 +293,10 @@ describe('createRunAmbientSnapshot', () => {
       ['---', 'name: review', 'description: Review changes', '---', 'skill-secret-two'].join('\n'),
       'utf8',
     );
-    const changed = createRunAmbientSnapshot(config, createRegistry(), { capturedAt: 1 });
+    const changed = createRunAmbientSnapshot(config, createRegistry(), {
+      capturedAt: 1,
+      skills: discoverSkills(workspace, {}, { includeUser: false, projectRoot: workspace }),
+    });
 
     expect(first.commands).toMatchObject({ count: 1, names: ['review'] });
     expect(first.skills).toMatchObject({ count: 1, names: ['review'] });

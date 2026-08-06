@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "long-horizon-terminal-v1",
+  "status": "blocked-pending-tier-c-runner",
+  "resultNamespace": "external/long-horizon-terminal",
+  "preserveExternalEvaluator": true,
+  "requiredIdentityFields": ["corpus-version", "evaluator-version", "fixture-digest", "runtime-fingerprint", "environment-fingerprint", "tool-surface-fingerprint", "policy-fingerprint", "budget-fingerprint", "pricing-version", "resolved-model", "evaluation-date", "random-seed"],
+  "promotionSubstitute": false
+}

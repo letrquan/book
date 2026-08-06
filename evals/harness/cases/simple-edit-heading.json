@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "harness-corpus-v1",
+  "evaluatorVersion": "phase0-contract-v1",
+  "id": "simple-edit-heading",
+  "taskClass": "simple-edit",
+  "evidenceKind": "machine-verifiable",
+  "eligibility": "provider-trial",
+  "prompt": "Change the README heading to Clear Title. Preserve the blank line and body exactly.",
+  "trial": {
+    "experimentalUnit": "root-request",
+    "clusterKey": "simple-edit-heading",
+    "isolation": "fresh-materialization",
+    "attemptsPerArm": 3,
+    "paired": true,
+    "sameSeedAcrossArms": true
+  },
+  "fixture": {
+    "source": "fixtures/simple-edit-heading",
+    "revision": "simple-edit-heading-v1",
+    "treeDigest": "sha256:86198622d9f654e06e09313bbb422807ba08de97264a98cb0b4e457772feea1a",
+    "reset": "rematerialize",
+    "ownership": "evaluator"
+  },
+  "modelSliceIds": ["primary-exact-model"],
+  "compatibility": {
+    "runtimeProfile": "node20-book-clean",
+    "environmentProfile": "isolated-local-no-network",
+    "toolSurfaceProfile": "read-edit-minimal-v1",
+    "policyProfile": "trusted-built-in-v1",
+    "agentsMode": "off"
+  },
+  "risk": "low",
+  "allowedTools": ["Read", "Edit"],
+  "expectedArtifacts": ["README.md"],
+  "verifiers": [
+    {
+      "id": "readme-content",
+      "kind": "file",
+      "required": true,
+      "path": "README.md",
+      "assertion": "utf8-equals",
+      "expectedText": "# Clear Title\n\nA small fixture.\n"
+    }
+  ],
+  "budgets": { "maxTurns": 6, "maxTokens": 6000, "maxCostUsd": 0.4, "timeoutMs": 90000 },
+  "metrics": {
+    "primary": "required-verifier-success-rate",
+    "guardrails": ["unknown-rate", "diff-size", "cost-usd", "latency-ms"],
+    "minimumAttemptsPerArm": 3,
+    "minimumDetectableEffect": "0.15 absolute success-rate and above measured noise floor",
+    "maximumCostIncreaseRatio": 0.25,
+    "maximumLatencyIncreaseRatio": 0.25,
+    "nonInferiorityMargins": { "unknown-rate": "0.00", "diff-size": "0.10" }
+  },
+  "tags": ["baseline", "simple-edit", "exact-final-state"],
+  "knownUnknowns": ["Equivalent newline encodings are not accepted by this exact fixture."]
+}

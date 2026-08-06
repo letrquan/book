@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "harness-corpus-v1",
+  "evaluatorVersion": "phase0-contract-v1",
+  "id": "long-horizon-resume",
+  "taskClass": "long-horizon",
+  "evidenceKind": "machine-verifiable",
+  "eligibility": "provider-trial",
+  "prompt": "Resume from checkpoint.json and complete tasks.md. Create decision-log.md preserving the recorded failure and decision without retrying the failed write-before-reading approach.",
+  "trial": {
+    "experimentalUnit": "root-request",
+    "clusterKey": "long-horizon-resume",
+    "isolation": "fresh-materialization",
+    "attemptsPerArm": 3,
+    "paired": true,
+    "sameSeedAcrossArms": true
+  },
+  "fixture": {
+    "source": "fixtures/long-horizon-resume",
+    "revision": "long-horizon-resume-v1",
+    "treeDigest": "sha256:bc561bdde1e47bc84ce01e8bc8a53b77dee27773c6c65c88aab723a8e6e3daf9",
+    "reset": "rematerialize",
+    "ownership": "evaluator"
+  },
+  "modelSliceIds": ["primary-exact-model"],
+  "compatibility": {
+    "runtimeProfile": "node20-book-clean",
+    "environmentProfile": "isolated-local-no-network",
+    "toolSurfaceProfile": "read-write-minimal-v1",
+    "policyProfile": "trusted-built-in-v1",
+    "agentsMode": "off"
+  },
+  "risk": "medium",
+  "allowedTools": ["Read", "Write"],
+  "expectedArtifacts": ["decision-log.md"],
+  "verifiers": [
+    {
+      "id": "decision-log-content",
+      "kind": "file",
+      "required": true,
+      "path": "decision-log.md",
+      "assertion": "utf8-equals",
+      "expectedText": "# Decision Log\n\nFailed attempt: write-before-reading-constraints\n\nDecision: Preserve failures in the final decision log.\n"
+    }
+  ],
+  "budgets": { "maxTurns": 20, "maxTokens": 20000, "maxCostUsd": 1.5, "timeoutMs": 300000 },
+  "metrics": {
+    "primary": "resume-state-preservation-rate",
+    "guardrails": ["unknown-rate", "repeated-failed-actions", "cost-usd", "latency-ms"],
+    "minimumAttemptsPerArm": 3,
+    "minimumDetectableEffect": "0.15 absolute success-rate and above measured noise floor",
+    "maximumCostIncreaseRatio": 0.25,
+    "maximumLatencyIncreaseRatio": 0.25,
+    "nonInferiorityMargins": { "unknown-rate": "0.00", "repeated-failed-actions": "0" }
+  },
+  "tags": ["long-horizon", "context-exhaustion", "compaction", "checkpoint", "resume", "failure-retention"],
+  "knownUnknowns": ["This static fixture tests preserved state, not live process interruption timing."]
+}

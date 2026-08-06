@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+evals/harness/reports/
 .env
 *.log
 *.log.*

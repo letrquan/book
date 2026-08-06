@@ -32,6 +32,7 @@ export interface RunAmbientSnapshotOptions {
   capturedAt?: number;
   permissionMode?: PermissionMode;
   commands?: readonly SlashCommand[];
+  skills?: readonly Skill[];
   systemPromptAppend?: string;
   hideAgents?: boolean;
   planMode?: boolean;
@@ -343,10 +344,13 @@ export function createRunAmbientSnapshot(
   const commandDefinitions = [...(resolvedOptions.commands ?? discoverCommands(config.workspace))]
     .map(commandProjection)
     .sort((left, right) => String(left.name).localeCompare(String(right.name)));
-  const skillDefinitions = discoverSkills(config.workspace, config.settings.skills.overrides, {
-    executionOverrides: config.settings.skills.execution,
-    enabled: config.settings.skills.enabled,
-  })
+  const skillDefinitions = [
+    ...(resolvedOptions.skills ??
+      discoverSkills(config.workspace, config.settings.skills.overrides, {
+        executionOverrides: config.settings.skills.execution,
+        enabled: config.settings.skills.enabled,
+      })),
+  ]
     .map(skillProjection)
     .sort((left, right) => String(left.name).localeCompare(String(right.name)));
   const mcpDefinitions = mcpProjection(config);

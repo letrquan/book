@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "harness-corpus-v1",
+  "evaluatorVersion": "phase0-contract-v1",
+  "scope": "trusted-built-in-non-adversarial",
+  "reportSchemaVersion": 1,
+  "caseFiles": [
+    "cases/read-only-inventory.json",
+    "cases/simple-edit-heading.json",
+    "cases/bug-fix-sum.json",
+    "cases/multi-file-rename.json",
+    "cases/review-auth-boundary.json",
+    "cases/research-source-synthesis.json",
+    "cases/long-horizon-resume.json",
+    "cases/tool-contract-recovery.json",
+    "cases/untrusted-input-boundary.json",
+    "cases/workspace-trust-boundary.json",
+    "cases/external-integration-boundary.json"
+  ],
+  "arms": [
+    {
+      "id": "A/base",
+      "availability": "current",
+      "description": "Current Book behavior with harness mode off and agents mode off."
+    },
+    {
+      "id": "B/fixed",
+      "availability": "future",
+      "description": "A predeclared fixed workflow, introduced only after its runtime contract exists."
+    },
+    {
+      "id": "C/adaptive-shadow",
+      "availability": "future",
+      "description": "Selector output recorded without changing runtime behavior."
+    },
+    {
+      "id": "D/candidate",
+      "availability": "future",
+      "description": "A bounded evolved workflow available only in Phase 8."
+    }
+  ],
+  "routingArms": [
+    "current-routing",
+    "hybrid-routing",
+    "child-eager-routing",
+    "adaptive-explorer-routing"
+  ],
+  "modelSlices": [
+    {
+      "id": "primary-exact-model",
+      "provider": "provider-backed",
+      "requestedModel": "predeclared-exact-model-id",
+      "resolvedIdentity": "response-required"
+    },
+    {
+      "id": "offline-contract",
+      "provider": "not-applicable",
+      "requestedModel": "not-applicable",
+      "resolvedIdentity": "response-required"
+    }
+  ],
+  "statistics": {
+    "assignment": "paired-randomized-order",
+    "experimentalUnit": "root-request",
+    "clusterUnit": "case-project-session",
+    "alpha": 0.05,
+    "power": 0.8,
+    "multiplicity": "holm-primary-family-guardrails-non-inferiority",
+    "unknownPolicy": "retain-in-denominator-and-report-by-arm",
+    "tieBreak": "simpler-workflow",
+    "minimumControlRunsForNoiseFloor": 5
+  },
+  "trustBoundary": {
+    "projectCommands": "blocked",
+    "adversarialFixtures": "blocked",
+    "network": "off",
+    "credentials": "forbidden",
+    "symlinks": "forbidden"
+  },
+  "compatibilityFields": [
+    "corpus-version",
+    "evaluator-version",
+    "fixture-digest",
+    "runtime-fingerprint",
+    "environment-fingerprint",
+    "tool-surface-fingerprint",
+    "policy-fingerprint",
+    "budget-fingerprint",
+    "pricing-version",
+    "resolved-model",
+    "evaluation-date",
+    "random-seed"
+  ]
+}

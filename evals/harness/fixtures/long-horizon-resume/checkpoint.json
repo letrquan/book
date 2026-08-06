@@ -1,0 +1,5 @@
+{
+  "completed": ["inspect-inputs", "choose-format"],
+  "failedAttempts": ["write-before-reading-constraints"],
+  "decision": "Preserve failures in the final decision log."
+}

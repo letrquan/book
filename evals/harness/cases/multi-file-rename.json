@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "harness-corpus-v1",
+  "evaluatorVersion": "phase0-contract-v1",
+  "id": "multi-file-rename",
+  "taskClass": "multi-file",
+  "evidenceKind": "machine-verifiable",
+  "eligibility": "provider-trial",
+  "prompt": "Rename oldName to projectName, including the module filename and consumer import. Preserve behavior.",
+  "trial": {
+    "experimentalUnit": "root-request",
+    "clusterKey": "multi-file-rename",
+    "isolation": "fresh-materialization",
+    "attemptsPerArm": 3,
+    "paired": true,
+    "sameSeedAcrossArms": true
+  },
+  "fixture": {
+    "source": "fixtures/multi-file-rename",
+    "revision": "multi-file-rename-v1",
+    "treeDigest": "sha256:d86454cd848fc1776e969a0fd7fd8ab47f9edbcefcfb4bc27da7ed86402ebde6",
+    "reset": "rematerialize",
+    "ownership": "evaluator"
+  },
+  "modelSliceIds": ["primary-exact-model"],
+  "compatibility": {
+    "runtimeProfile": "node20-book-clean",
+    "environmentProfile": "isolated-local-no-network",
+    "toolSurfaceProfile": "read-write-edit-v1",
+    "policyProfile": "trusted-built-in-v1",
+    "agentsMode": "off"
+  },
+  "risk": "medium",
+  "allowedTools": ["Read", "Write", "Edit", "Glob"],
+  "expectedArtifacts": ["src/project-name.ts", "src/consumer.ts"],
+  "verifiers": [
+    {
+      "id": "renamed-module",
+      "kind": "file",
+      "required": true,
+      "path": "src/project-name.ts",
+      "assertion": "utf8-equals",
+      "expectedText": "export const projectName = 'book';\n"
+    },
+    {
+      "id": "updated-consumer",
+      "kind": "file",
+      "required": true,
+      "path": "src/consumer.ts",
+      "assertion": "utf8-equals",
+      "expectedText": "import { projectName } from './project-name.js';\n\nexport const label = projectName.toUpperCase();\n"
+    },
+    {
+      "id": "old-module-removed",
+      "kind": "file",
+      "required": true,
+      "path": "src/old-name.ts",
+      "assertion": "absent"
+    }
+  ],
+  "budgets": { "maxTurns": 12, "maxTokens": 12000, "maxCostUsd": 0.9, "timeoutMs": 180000 },
+  "metrics": {
+    "primary": "all-required-verifiers-pass",
+    "guardrails": ["unknown-rate", "unrelated-path-changes", "cost-usd", "latency-ms"],
+    "minimumAttemptsPerArm": 3,
+    "minimumDetectableEffect": "0.15 absolute success-rate and above measured noise floor",
+    "maximumCostIncreaseRatio": 0.25,
+    "maximumLatencyIncreaseRatio": 0.25,
+    "nonInferiorityMargins": { "unknown-rate": "0.00", "unrelated-path-changes": "0" }
+  },
+  "tags": ["baseline", "multi-file", "rename", "context-selection"],
+  "knownUnknowns": ["Filesystem case sensitivity is recorded in the environment fingerprint."]
+}

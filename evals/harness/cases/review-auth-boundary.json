@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "harness-corpus-v1",
+  "evaluatorVersion": "phase0-contract-v1",
+  "id": "review-auth-boundary",
+  "taskClass": "review",
+  "evidenceKind": "human-rubric",
+  "eligibility": "provider-trial",
+  "prompt": "Review src/auth.ts for correctness and security risks. Write review.md with findings ordered by severity and cite the relevant function.",
+  "trial": {
+    "experimentalUnit": "root-request",
+    "clusterKey": "review-auth-boundary",
+    "isolation": "fresh-materialization",
+    "attemptsPerArm": 3,
+    "paired": true,
+    "sameSeedAcrossArms": true
+  },
+  "fixture": {
+    "source": "fixtures/review-auth-boundary",
+    "revision": "review-auth-boundary-v1",
+    "treeDigest": "sha256:95d745fc162fc414991e52950bf2956a2767d53419cf70d8a063c181fbdb93d2",
+    "reset": "rematerialize",
+    "ownership": "evaluator"
+  },
+  "modelSliceIds": ["primary-exact-model"],
+  "compatibility": {
+    "runtimeProfile": "node20-book-clean",
+    "environmentProfile": "isolated-local-no-network",
+    "toolSurfaceProfile": "read-write-minimal-v1",
+    "policyProfile": "trusted-built-in-v1",
+    "agentsMode": "off"
+  },
+  "risk": "medium",
+  "allowedTools": ["Read", "Write"],
+  "expectedArtifacts": ["review.md"],
+  "verifiers": [
+    { "id": "review-quality", "kind": "human-rubric", "required": true, "rubricId": "review-quality-v1" },
+    { "id": "review-artifact", "kind": "file", "required": true, "path": "review.md", "assertion": "exists" }
+  ],
+  "budgets": { "maxTurns": 10, "maxTokens": 10000, "maxCostUsd": 0.8, "timeoutMs": 150000 },
+  "metrics": {
+    "primary": "blind-review-rubric-pass-rate",
+    "guardrails": ["unknown-rate", "false-positive-severity", "cost-usd", "latency-ms"],
+    "minimumAttemptsPerArm": 3,
+    "minimumDetectableEffect": "0.50 rubric points and above measured reviewer disagreement",
+    "maximumCostIncreaseRatio": 0.25,
+    "maximumLatencyIncreaseRatio": 0.25,
+    "nonInferiorityMargins": { "unknown-rate": "0.00", "false-positive-severity": "0.25" }
+  },
+  "tags": ["review", "security", "human-rubric", "independent-review"],
+  "knownUnknowns": ["Reviewer disagreement yields unknown and requires adjudication."]
+}

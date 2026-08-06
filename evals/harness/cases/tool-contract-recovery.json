@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "harness-corpus-v1",
+  "evaluatorVersion": "phase0-contract-v1",
+  "id": "tool-contract-recovery",
+  "taskClass": "bug-fix",
+  "evidenceKind": "machine-verifiable",
+  "eligibility": "offline-only",
+  "prompt": "Read tool-result.json. Preserve the two partial items and write recovery.json with action retry and reason OUTPUT_TRUNCATED. Do not treat partial success as total failure.",
+  "trial": {
+    "experimentalUnit": "root-request",
+    "clusterKey": "tool-contract-recovery",
+    "isolation": "fresh-materialization",
+    "attemptsPerArm": 3,
+    "paired": true,
+    "sameSeedAcrossArms": true
+  },
+  "fixture": {
+    "source": "fixtures/tool-contract-recovery",
+    "revision": "tool-contract-recovery-v1",
+    "treeDigest": "sha256:83009ee35939114abdab5b3c30d70edd9b6b6ce5bb6efb7f4adda626cd541813",
+    "reset": "rematerialize",
+    "ownership": "evaluator"
+  },
+  "modelSliceIds": ["offline-contract"],
+  "compatibility": {
+    "runtimeProfile": "node20-book-clean",
+    "environmentProfile": "isolated-local-no-network",
+    "toolSurfaceProfile": "offline-contract-v1",
+    "policyProfile": "trusted-built-in-v1",
+    "agentsMode": "off"
+  },
+  "risk": "low",
+  "allowedTools": ["Read", "Write"],
+  "expectedArtifacts": ["recovery.json"],
+  "verifiers": [
+    {
+      "id": "recovery-content",
+      "kind": "file",
+      "required": true,
+      "path": "recovery.json",
+      "assertion": "utf8-equals",
+      "expectedText": "{\n  \"items\": [\"alpha\", \"beta\"],\n  \"action\": \"retry\",\n  \"reason\": \"OUTPUT_TRUNCATED\"\n}\n"
+    }
+  ],
+  "budgets": { "maxTurns": 8, "maxTokens": 8000, "maxCostUsd": 0.5, "timeoutMs": 120000 },
+  "metrics": {
+    "primary": "structured-recovery-success-rate",
+    "guardrails": ["unknown-rate", "partial-result-loss", "retry-loop", "latency-ms"],
+    "minimumAttemptsPerArm": 3,
+    "minimumDetectableEffect": "0.15 absolute success-rate and above measured noise floor",
+    "maximumCostIncreaseRatio": 0.25,
+    "maximumLatencyIncreaseRatio": 0.25,
+    "nonInferiorityMargins": { "unknown-rate": "0.00", "partial-result-loss": "0" }
+  },
+  "tags": ["tool-contract", "structured-error", "retry", "partial-result", "oversized-output"],
+  "knownUnknowns": ["Live timeout and cancellation behavior require runtime evidence in later phases."]
+}

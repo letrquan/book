@@ -1,0 +1,1 @@
+Fixture inventory root.

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "coding-benchmark-v1",
+  "status": "descriptor-only",
+  "resultNamespace": "external/coding",
+  "preserveExternalEvaluator": true,
+  "requiredIdentityFields": ["corpus-version", "evaluator-version", "fixture-digest", "runtime-fingerprint", "environment-fingerprint", "tool-surface-fingerprint", "policy-fingerprint", "budget-fingerprint", "pricing-version", "resolved-model", "evaluation-date", "random-seed"],
+  "promotionSubstitute": false
+}

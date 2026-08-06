@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "harness-corpus-v1",
+  "evaluatorVersion": "phase0-contract-v1",
+  "id": "read-only-inventory",
+  "taskClass": "read-only",
+  "evidenceKind": "machine-verifiable",
+  "eligibility": "provider-trial",
+  "prompt": "Inspect the repository without modifying existing files. Write inventory.txt containing README.md and src/value.ts, one path per line in that order.",
+  "trial": {
+    "experimentalUnit": "root-request",
+    "clusterKey": "read-only-inventory",
+    "isolation": "fresh-materialization",
+    "attemptsPerArm": 3,
+    "paired": true,
+    "sameSeedAcrossArms": true
+  },
+  "fixture": {
+    "source": "fixtures/read-only-inventory",
+    "revision": "read-only-inventory-v1",
+    "treeDigest": "sha256:10399634f8cebc8b04df45295531f3f693f6e3146d8794efd56b3af5af8f7c74",
+    "reset": "rematerialize",
+    "ownership": "evaluator"
+  },
+  "modelSliceIds": ["primary-exact-model"],
+  "compatibility": {
+    "runtimeProfile": "node20-book-clean",
+    "environmentProfile": "isolated-local-no-network",
+    "toolSurfaceProfile": "read-write-minimal-v1",
+    "policyProfile": "trusted-built-in-v1",
+    "agentsMode": "off"
+  },
+  "risk": "low",
+  "allowedTools": ["Read", "Glob", "Write"],
+  "expectedArtifacts": ["inventory.txt"],
+  "verifiers": [
+    {
+      "id": "inventory-content",
+      "kind": "file",
+      "required": true,
+      "path": "inventory.txt",
+      "assertion": "utf8-equals",
+      "expectedText": "README.md\nsrc/value.ts\n"
+    },
+    {
+      "id": "no-extra-notes",
+      "kind": "file",
+      "required": false,
+      "path": "notes.txt",
+      "assertion": "absent"
+    }
+  ],
+  "budgets": { "maxTurns": 8, "maxTokens": 8000, "maxCostUsd": 0.5, "timeoutMs": 120000 },
+  "metrics": {
+    "primary": "required-verifier-success-rate",
+    "guardrails": ["unknown-rate", "changed-existing-files", "cost-usd", "latency-ms"],
+    "minimumAttemptsPerArm": 3,
+    "minimumDetectableEffect": "0.15 absolute success-rate and above measured noise floor",
+    "maximumCostIncreaseRatio": 0.25,
+    "maximumLatencyIncreaseRatio": 0.25,
+    "nonInferiorityMargins": { "unknown-rate": "0.00", "changed-existing-files": "0" }
+  },
+  "tags": ["baseline", "read-only", "relevant-file-retrieval", "negative-local-only"],
+  "knownUnknowns": ["Provider nondeterminism remains even with paired seeds."]
+}

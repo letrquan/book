@@ -1,0 +1,8 @@
+{
+  "status": "partial",
+  "items": ["alpha", "beta"],
+  "error": {
+    "code": "OUTPUT_TRUNCATED",
+    "retryable": true
+  }
+}

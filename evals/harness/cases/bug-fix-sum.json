@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "harness-corpus-v1",
+  "evaluatorVersion": "phase0-contract-v1",
+  "id": "bug-fix-sum",
+  "taskClass": "bug-fix",
+  "evidenceKind": "machine-verifiable",
+  "eligibility": "provider-trial",
+  "prompt": "Fix sum so it includes every array element. Do not change the exported signature.",
+  "trial": {
+    "experimentalUnit": "root-request",
+    "clusterKey": "bug-fix-sum",
+    "isolation": "fresh-materialization",
+    "attemptsPerArm": 3,
+    "paired": true,
+    "sameSeedAcrossArms": true
+  },
+  "fixture": {
+    "source": "fixtures/bug-fix-sum",
+    "revision": "bug-fix-sum-v1",
+    "treeDigest": "sha256:c51410d7b6b61eaee0f63fd1fc477081b71bf6516aae9bc33418c7466a740f31",
+    "reset": "rematerialize",
+    "ownership": "evaluator"
+  },
+  "modelSliceIds": ["primary-exact-model"],
+  "compatibility": {
+    "runtimeProfile": "node20-book-clean",
+    "environmentProfile": "isolated-local-no-network",
+    "toolSurfaceProfile": "read-edit-minimal-v1",
+    "policyProfile": "trusted-built-in-v1",
+    "agentsMode": "off"
+  },
+  "risk": "low",
+  "allowedTools": ["Read", "Edit"],
+  "expectedArtifacts": ["src/sum.ts"],
+  "verifiers": [
+    {
+      "id": "sum-content",
+      "kind": "file",
+      "required": true,
+      "path": "src/sum.ts",
+      "assertion": "utf8-equals",
+      "expectedText": "export function sum(values: number[]): number {\n  return values.reduce((total, value) => total + value, 0);\n}\n"
+    }
+  ],
+  "budgets": { "maxTurns": 8, "maxTokens": 8000, "maxCostUsd": 0.6, "timeoutMs": 120000 },
+  "metrics": {
+    "primary": "required-verifier-success-rate",
+    "guardrails": ["unknown-rate", "signature-change", "cost-usd", "latency-ms"],
+    "minimumAttemptsPerArm": 3,
+    "minimumDetectableEffect": "0.15 absolute success-rate and above measured noise floor",
+    "maximumCostIncreaseRatio": 0.25,
+    "maximumLatencyIncreaseRatio": 0.25,
+    "nonInferiorityMargins": { "unknown-rate": "0.00", "signature-change": "0" }
+  },
+  "tags": ["baseline", "bug-fix", "boundary-behavior"],
+  "knownUnknowns": ["Semantically correct alternative implementations are intentionally excluded in v1."]
+}

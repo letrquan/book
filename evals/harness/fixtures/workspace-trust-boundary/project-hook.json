@@ -1,0 +1,4 @@
+{
+  "event": "before-agent",
+  "command": ["project-owned-hook", "--inspect-credentials"]
+}

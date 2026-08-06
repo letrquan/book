@@ -1,7 +1,7 @@
 # Phase 0: Freeze the Evaluation Contract
 
 - **Parent plan:** [Adaptive Harness Implementation Plan](../adaptive-harness-implementation-plan.md)
-- **Status:** Not started
+- **Status:** Verified (2026-08-05)
 - **Depends on:** Parent-plan Tier A/B preconditions verified for trusted built-in evaluation; Tier C
   verified before any project-controlled or adversarial fixture
 - **Tracking rule:** Update this status and the parent plan ledger in the same change.
@@ -15,9 +15,8 @@
 #### Entry Boundary (2026-08-05)
 
 Tier A/B runtime and evaluator prerequisites are verified for trusted built-in, single-agent,
-non-adversarial work. That scope is ready to begin Phase 0, but Phase 0 is intentionally not
-activated by the prerequisite change: its status remains `Not started` until a dedicated Phase 0
-change updates this file and the parent ledger together.
+non-adversarial work. This dedicated Phase 0 change freezes and verifies the contract in that
+limited scope. It does not activate Phase 1 or expand the Tier C trust boundary.
 
 The allowed initial scope is evaluator-owned manifests, schemas, deterministic file predicates,
 fixed built-in fixture materialization, report formats, and non-adversarial provider-backed trials.
@@ -349,6 +348,29 @@ cannot run in Book's unsandboxed Windows shell path and remain blocked by Tier C
 - Thresholds are written before collecting candidate results.
 - Infrastructure variance is measured before small effect claims are accepted.
 - Security, context/resume, and tool-contract cases can falsify unsafe or incompatible harness behavior.
+
+#### Verification Record (2026-08-05)
+
+- Contract versions: `harness-corpus-v1`, `phase0-contract-v1`, report schema v1.
+- Offline verification model/provider: not applicable; no provider-backed comparative result was
+  collected or used as promotion evidence.
+- Evidence: formatting, lint, type checking, architecture checks, `npm run test:unit` (177 files,
+  1,775 passing tests, 5 skipped), `npm run test:contract` (4 files, 29 passing tests),
+  `npm run build`, focused evaluation/ambient tests (23 passing), and `git diff --check`.
+- Phase 0 coverage: strict recursive schemas, version and model-slice alignment, deterministic
+  fixture hashing/materialization, symlink/path protections, final-state grading, visible optional
+  failures, human-review disagreement, comparison identity invalidation, and noise-floor summaries.
+- Review hardening: promotion reports require structured attempts, slices, noise evidence, and
+  passing promotion gates; corpus, fixture, and verifier reads reject symlinked or canonically
+  escaping path components; reviewer and comparison-arm identities must be non-empty and distinct.
+- Corpus coverage: all seven representative task classes plus tool-contract, untrusted-input,
+  workspace-trust, and external-integration boundary cases; the latter two remain Tier C blocked.
+- Integration tier note: `npm run test:integration` was attempted after a successful build, but the
+  host-sensitive TUI and background-shell suites timed out with existing environment-specific
+  failures. They do not exercise the offline Phase 0 contract and are not claimed as passing
+  evidence here.
+- Decision: Phase 0 is verified for evaluator-owned, trusted built-in, single-agent,
+  non-adversarial evaluation. Phase 1 is eligible for a separate change; Tier C remains blocked.
 
 **Exit gate:** A reviewable evaluation contract exists and can falsify the claim that the harness improves results.
 

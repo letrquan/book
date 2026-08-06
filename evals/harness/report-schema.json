@@ -1,0 +1,438 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "book-harness-report-v1",
+  "title": "Book Adaptive Harness Evaluation Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "corpusVersion",
+    "evaluatorVersion",
+    "generatedAt",
+    "attempts",
+    "slices",
+    "noiseFloor",
+    "promotionChecks",
+    "decision",
+    "harnessCard"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "corpusVersion": { "$ref": "#/$defs/nonEmptyString" },
+    "evaluatorVersion": { "$ref": "#/$defs/nonEmptyString" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "attempts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/attempt" }
+    },
+    "slices": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/slice" }
+    },
+    "noiseFloor": { "$ref": "#/$defs/noiseFloor" },
+    "promotionChecks": { "$ref": "#/$defs/promotionChecks" },
+    "decision": {
+      "enum": ["promote", "hold", "reject", "rollback", "insufficient-evidence"]
+    },
+    "harnessCard": { "$ref": "#/$defs/nonEmptyString" },
+    "limitations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" },
+      "uniqueItems": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "decision": { "const": "promote" } },
+        "required": ["decision"]
+      },
+      "then": {
+        "properties": {
+          "attempts": {
+            "type": "array",
+            "minItems": 6,
+            "items": { "$ref": "#/$defs/attempt" }
+          },
+          "noiseFloor": {
+            "allOf": [
+              { "$ref": "#/$defs/noiseFloor" },
+              {
+                "properties": {
+                  "sampleCount": { "minimum": 5 },
+                  "sufficient": { "const": true }
+                }
+              }
+            ]
+          },
+          "promotionChecks": {
+            "allOf": [
+              { "$ref": "#/$defs/promotionChecks" },
+              {
+                "properties": {
+                  "comparisonEligible": { "const": true },
+                  "primaryFamilyPassed": { "const": true },
+                  "safetyGuardrailsPassed": { "const": true },
+                  "nonInferiorityPassed": { "const": true },
+                  "missingnessAcceptable": { "const": true },
+                  "localHeldOutPassed": { "const": true },
+                  "effectAboveNoiseFloor": { "const": true }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "nonNegativeInteger": { "type": "integer", "minimum": 0 },
+    "nonNegativeNumber": { "type": "number", "minimum": 0 },
+    "outcomeCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "success",
+        "failure",
+        "partial",
+        "unknown",
+        "timeout",
+        "evaluatorFailure",
+        "setupFailure"
+      ],
+      "properties": {
+        "success": { "$ref": "#/$defs/nonNegativeInteger" },
+        "failure": { "$ref": "#/$defs/nonNegativeInteger" },
+        "partial": { "$ref": "#/$defs/nonNegativeInteger" },
+        "unknown": { "$ref": "#/$defs/nonNegativeInteger" },
+        "timeout": { "$ref": "#/$defs/nonNegativeInteger" },
+        "evaluatorFailure": { "$ref": "#/$defs/nonNegativeInteger" },
+        "setupFailure": { "$ref": "#/$defs/nonNegativeInteger" }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "requestedModel",
+        "resolvedModel",
+        "modelConfigDigest",
+        "pricingVersion"
+      ],
+      "properties": {
+        "provider": { "$ref": "#/$defs/nonEmptyString" },
+        "requestedModel": { "$ref": "#/$defs/nonEmptyString" },
+        "resolvedModel": { "$ref": "#/$defs/nonEmptyString" },
+        "modelConfigDigest": { "$ref": "#/$defs/nonEmptyString" },
+        "pricingVersion": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "fingerprints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixture",
+        "runtime",
+        "environment",
+        "toolSurface",
+        "policy",
+        "budget",
+        "prompt",
+        "bookHome"
+      ],
+      "properties": {
+        "fixture": { "$ref": "#/$defs/nonEmptyString" },
+        "runtime": { "$ref": "#/$defs/nonEmptyString" },
+        "environment": { "$ref": "#/$defs/nonEmptyString" },
+        "toolSurface": { "$ref": "#/$defs/nonEmptyString" },
+        "policy": { "$ref": "#/$defs/nonEmptyString" },
+        "budget": { "$ref": "#/$defs/nonEmptyString" },
+        "prompt": { "$ref": "#/$defs/nonEmptyString" },
+        "bookHome": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "verifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "required", "status", "detail"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "kind": { "enum": ["file", "diff", "command", "human-rubric"] },
+        "required": { "type": "boolean" },
+        "status": { "enum": ["passed", "failed", "unknown"] },
+        "detail": { "$ref": "#/$defs/nonEmptyString" },
+        "evidenceDigest": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "turns",
+        "promptTokens",
+        "completionTokens",
+        "totalTokens",
+        "costUsd",
+        "costStatus",
+        "toolFailures",
+        "retries"
+      ],
+      "properties": {
+        "turns": { "$ref": "#/$defs/nonNegativeInteger" },
+        "promptTokens": { "$ref": "#/$defs/nonNegativeInteger" },
+        "completionTokens": { "$ref": "#/$defs/nonNegativeInteger" },
+        "totalTokens": { "$ref": "#/$defs/nonNegativeInteger" },
+        "costUsd": { "type": ["number", "null"], "minimum": 0 },
+        "costStatus": { "enum": ["known", "unknown", "not-applicable"] },
+        "toolFailures": { "$ref": "#/$defs/nonNegativeInteger" },
+        "retries": { "$ref": "#/$defs/nonNegativeInteger" },
+        "changedFileCount": { "$ref": "#/$defs/nonNegativeInteger" },
+        "diffBytes": { "$ref": "#/$defs/nonNegativeInteger" }
+      }
+    },
+    "eligibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eligible", "reasons"],
+      "properties": {
+        "eligible": { "type": "boolean" },
+        "reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "capabilityManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "componentIds"],
+      "properties": {
+        "digest": { "$ref": "#/$defs/nonEmptyString" },
+        "componentIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "promptLayerTokens": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stablePrefix", "dynamicPolicy", "skillBodies", "total", "cachePrefixChurn"],
+      "properties": {
+        "stablePrefix": { "$ref": "#/$defs/nonNegativeInteger" },
+        "dynamicPolicy": { "$ref": "#/$defs/nonNegativeInteger" },
+        "skillBodies": { "$ref": "#/$defs/nonNegativeInteger" },
+        "total": { "$ref": "#/$defs/nonNegativeInteger" },
+        "cachePrefixChurn": { "type": "boolean" }
+      }
+    },
+    "skillActivation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "bodyTokens", "resourceTokens", "latencyMs", "falseTrigger"],
+      "properties": {
+        "decision": { "enum": ["activated", "not-activated", "unavailable", "not-applicable"] },
+        "skillId": { "type": ["string", "null"], "minLength": 1 },
+        "bodyTokens": { "$ref": "#/$defs/nonNegativeInteger" },
+        "resourceTokens": { "$ref": "#/$defs/nonNegativeInteger" },
+        "latencyMs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "falseTrigger": { "type": "boolean" }
+      }
+    },
+    "toolRouting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selectedTool", "searchUsed", "schemaTokens", "malformedCalls", "recovered"],
+      "properties": {
+        "selectedTool": { "type": ["string", "null"], "minLength": 1 },
+        "searchUsed": { "type": "boolean" },
+        "schemaTokens": { "$ref": "#/$defs/nonNegativeInteger" },
+        "malformedCalls": { "$ref": "#/$defs/nonNegativeInteger" },
+        "recovered": { "type": "boolean" }
+      }
+    },
+    "contextContribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relevantFileRecall", "repeatedReads", "compactionLoss", "summary"],
+      "properties": {
+        "relevantFileRecall": { "type": "number", "minimum": 0, "maximum": 1 },
+        "repeatedReads": { "$ref": "#/$defs/nonNegativeInteger" },
+        "compactionLoss": { "type": "boolean" },
+        "summary": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caseId",
+        "trialId",
+        "attempt",
+        "clusterKey",
+        "arm",
+        "model",
+        "fingerprints",
+        "outcome",
+        "verifiers",
+        "usage",
+        "latencyMs",
+        "eligibility"
+      ],
+      "properties": {
+        "caseId": { "$ref": "#/$defs/nonEmptyString" },
+        "trialId": { "$ref": "#/$defs/nonEmptyString" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "clusterKey": { "$ref": "#/$defs/nonEmptyString" },
+        "arm": { "$ref": "#/$defs/nonEmptyString" },
+        "model": { "$ref": "#/$defs/model" },
+        "fingerprints": { "$ref": "#/$defs/fingerprints" },
+        "outcome": {
+          "enum": [
+            "success",
+            "failure",
+            "partial",
+            "unknown",
+            "timeout",
+            "evaluator-failure",
+            "setup-failure"
+          ]
+        },
+        "verifiers": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/verifier" }
+        },
+        "usage": { "$ref": "#/$defs/usage" },
+        "latencyMs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "eligibility": { "$ref": "#/$defs/eligibility" },
+        "changedFiles": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "uniqueItems": true
+        },
+        "userResult": { "enum": ["accepted", "corrected", "rejected", "unknown"] },
+        "capabilityManifest": { "$ref": "#/$defs/capabilityManifest" },
+        "promptLayerTokens": { "$ref": "#/$defs/promptLayerTokens" },
+        "skillActivation": { "$ref": "#/$defs/skillActivation" },
+        "toolRouting": { "$ref": "#/$defs/toolRouting" },
+        "contextContribution": { "$ref": "#/$defs/contextContribution" }
+      }
+    },
+    "metricResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value", "threshold", "passed"],
+      "properties": {
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "value": { "type": "number" },
+        "threshold": { "$ref": "#/$defs/nonEmptyString" },
+        "passed": { "type": "boolean" }
+      }
+    },
+    "slice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "taskClass",
+        "caseIds",
+        "arms",
+        "attemptCount",
+        "outcomes",
+        "primaryMetric",
+        "guardrails"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "taskClass": {
+          "enum": [
+            "read-only",
+            "simple-edit",
+            "bug-fix",
+            "multi-file",
+            "review",
+            "research",
+            "long-horizon"
+          ]
+        },
+        "caseIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "uniqueItems": true
+        },
+        "arms": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "uniqueItems": true
+        },
+        "attemptCount": { "type": "integer", "minimum": 1 },
+        "outcomes": { "$ref": "#/$defs/outcomeCounts" },
+        "primaryMetric": { "$ref": "#/$defs/metricResult" },
+        "guardrails": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/metricResult" }
+        }
+      }
+    },
+    "noiseFloor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sampleCount",
+        "sufficient",
+        "successRate",
+        "unknownRate",
+        "setupFailureRate",
+        "minimumDetectableSuccessRateDelta"
+      ],
+      "properties": {
+        "sampleCount": { "type": "integer", "minimum": 1 },
+        "sufficient": { "type": "boolean" },
+        "successRate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "unknownRate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "setupFailureRate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "meanLatencyMs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "latencyStdDevMs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "minimumDetectableSuccessRateDelta": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "promotionChecks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "comparisonEligible",
+        "primaryFamilyPassed",
+        "safetyGuardrailsPassed",
+        "nonInferiorityPassed",
+        "missingnessAcceptable",
+        "localHeldOutPassed",
+        "effectAboveNoiseFloor",
+        "reasons"
+      ],
+      "properties": {
+        "comparisonEligible": { "type": "boolean" },
+        "primaryFamilyPassed": { "type": "boolean" },
+        "safetyGuardrailsPassed": { "type": "boolean" },
+        "nonInferiorityPassed": { "type": "boolean" },
+        "missingnessAcceptable": { "type": "boolean" },
+        "localHeldOutPassed": { "type": "boolean" },
+        "effectAboveNoiseFloor": { "type": "boolean" },
+        "reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "harness-corpus-v1",
+  "evaluatorVersion": "phase0-contract-v1",
+  "id": "research-source-synthesis",
+  "taskClass": "research",
+  "evidenceKind": "human-rubric",
+  "eligibility": "provider-trial",
+  "prompt": "Research this deeply using only docs/source-a.md and docs/source-b.md. Write synthesis.md that distinguishes expiry, invalidation, and offline behavior, and cite both local sources.",
+  "trial": {
+    "experimentalUnit": "root-request",
+    "clusterKey": "research-source-synthesis",
+    "isolation": "fresh-materialization",
+    "attemptsPerArm": 3,
+    "paired": true,
+    "sameSeedAcrossArms": true
+  },
+  "fixture": {
+    "source": "fixtures/research-source-synthesis",
+    "revision": "research-source-synthesis-v1",
+    "treeDigest": "sha256:fd2328bfc509de1faca33e9c48ad6e18c40af7db032a078336093323cd2ad8dc",
+    "reset": "rematerialize",
+    "ownership": "evaluator"
+  },
+  "modelSliceIds": ["primary-exact-model"],
+  "compatibility": {
+    "runtimeProfile": "node20-book-clean",
+    "environmentProfile": "isolated-local-no-network",
+    "toolSurfaceProfile": "read-write-minimal-v1",
+    "policyProfile": "trusted-built-in-v1",
+    "agentsMode": "off"
+  },
+  "risk": "low",
+  "allowedTools": ["Read", "Write"],
+  "expectedArtifacts": ["synthesis.md"],
+  "verifiers": [
+    { "id": "research-quality", "kind": "human-rubric", "required": true, "rubricId": "research-quality-v1" },
+    { "id": "synthesis-artifact", "kind": "file", "required": true, "path": "synthesis.md", "assertion": "exists" }
+  ],
+  "budgets": { "maxTurns": 12, "maxTokens": 12000, "maxCostUsd": 0.9, "timeoutMs": 180000 },
+  "metrics": {
+    "primary": "blind-research-rubric-pass-rate",
+    "guardrails": ["unknown-rate", "unsupported-claims", "cost-usd", "latency-ms"],
+    "minimumAttemptsPerArm": 3,
+    "minimumDetectableEffect": "0.50 rubric points and above measured reviewer disagreement",
+    "maximumCostIncreaseRatio": 0.25,
+    "maximumLatencyIncreaseRatio": 0.25,
+    "nonInferiorityMargins": { "unknown-rate": "0.00", "unsupported-claims": "0" }
+  },
+  "tags": ["research", "human-rubric", "source-grounding", "no-web"],
+  "knownUnknowns": ["Writing quality beyond the rubric remains observational."]
+}
