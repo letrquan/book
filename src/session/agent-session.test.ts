@@ -18,6 +18,7 @@ import { createAgentRunContext } from '../types/runs.js';
 import { SessionRuntime } from './runtime.js';
 import { freezeHarnessRunContext } from '../harness/coordinator.js';
 import type { HarnessRunContext } from '../harness/contracts.js';
+import { ZeroMemRuntime } from '../agent/zero-mem-runtime.js';
 
 function compactedResult(): Extract<CompactResult, { status: 'compacted' }> {
   const replacementHistory: Message[] = [
@@ -64,6 +65,92 @@ function compactedResult(): Extract<CompactResult, { status: 'compacted' }> {
 }
 
 describe('AgentSession', () => {
+  it('uses Zero-Mem query context without enabling checkpoint compaction', async () => {
+    const evidence: Message = {
+      id: 'zero-evidence',
+      role: 'user',
+      content: 'retrieved evidence',
+      includeInContext: true,
+      timestamp: 1,
+    };
+    const zeroMemRuntime = new ZeroMemRuntime();
+    vi.spyOn(zeroMemRuntime, 'prepare').mockResolvedValue({
+      history: [evidence],
+      sourceMessages: 2,
+      indexedMessages: 2,
+      loadMs: 1,
+      indexMs: 2,
+      semanticModel: 'test-zero-mem',
+    });
+    const runtime = new SessionRuntime({ zeroMemRuntime });
+    const runLoop = vi.fn<AgentLoopRunner>(
+      async (config, _registry, _prompt, history, callbacks) => {
+        expect(config.autoCompactEnabled).toBe(false);
+        expect(history).toEqual([evidence]);
+        expect(callbacks.onCompact).toBeUndefined();
+        return history;
+      },
+    );
+    const session = new AgentSession({ runLoop, runtime });
+
+    await session.run({
+      config: defaultConfig({ compactStrategy: 'zero-mem', autoCompactEnabled: true }),
+      registry: {} as ToolRegistry,
+      prompt: 'What happened?',
+      history: [],
+      transcript: [
+        {
+          id: 'prior',
+          role: 'user',
+          content: 'A prior fact.',
+          includeInContext: true,
+          timestamp: 1,
+        },
+      ],
+      sessionId: 'session-zero',
+      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+    });
+
+    expect(zeroMemRuntime.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ query: 'What happened?', sessionId: 'session-zero' }),
+    );
+  });
+
+  it('warms Zero-Mem for manual compact without calling the summary reducer', async () => {
+    const zeroMemRuntime = new ZeroMemRuntime();
+    vi.spyOn(zeroMemRuntime, 'warm').mockResolvedValue({
+      sourceMessages: 3,
+      indexedMessages: 3,
+      loadMs: 1,
+      indexMs: 2,
+      semanticModel: 'test-zero-mem',
+    });
+    const compactRunner = vi.fn();
+    const session = new AgentSession({
+      compactRunner,
+      runtime: new SessionRuntime({ zeroMemRuntime }),
+    });
+    const sourceHistory: Message[] = [
+      { id: 'fact', role: 'user', content: 'fact', includeInContext: true, timestamp: 1 },
+    ];
+
+    const outcome = await session.compact({
+      config: defaultConfig({ compactStrategy: 'zero-mem' }),
+      history: [],
+      sourceHistory,
+      sessionId: 'session-zero',
+      transcriptOrdinal: 1,
+      options: { trigger: 'manual' },
+    });
+
+    expect(compactRunner).not.toHaveBeenCalled();
+    expect(zeroMemRuntime.warm).toHaveBeenCalledWith(sourceHistory, 'session-zero', undefined);
+    expect(outcome.result).toMatchObject({
+      status: 'skipped',
+      message: expect.stringContaining('3 trace messages'),
+    });
+  });
+
   it('owns and replaces session runtime resources during reset', () => {
     const session = new AgentSession();
     const first = session.getRuntime();

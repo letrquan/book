@@ -264,6 +264,7 @@ export function App({
     setEffort,
     setAgentProfileModel,
     setCompactModel,
+    setCompactStrategy,
     setSkillActivation,
     setSkillExecution,
     setSkillsEnabled,
@@ -2255,6 +2256,7 @@ export function App({
             {showConfigPicker ? (
               <ConfigMenu
                 model={liveConfig.modelSelection ?? liveConfig.model}
+                compactStrategy={liveConfig.compactStrategy}
                 compactModel={liveConfig.compactModel ?? liveConfig.settings.compactModel}
                 effort={liveConfig.effort}
                 themeName={currentTheme.preference}
@@ -2294,6 +2296,16 @@ export function App({
                   } else {
                     setShowAgentProfilePicker(true);
                   }
+                }}
+                onToggleCompactStrategy={() => {
+                  const strategy =
+                    liveConfig.compactStrategy === 'summary' ? 'zero-mem' : 'summary';
+                  const result = setCompactStrategy(strategy);
+                  addLocalMessage(
+                    result.ok
+                      ? `Compact strategy set to ${strategy}.`
+                      : `✕ ${result.error ?? 'Could not save compact strategy.'}`,
+                  );
                 }}
                 onToggleMemory={() => setMemoryAutoSave(!liveConfig.settings.memory.autoSave)}
                 onToggleThinking={() => {

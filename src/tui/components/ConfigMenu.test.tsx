@@ -62,6 +62,34 @@ describe('ConfigMenu', () => {
     expect(onOpen).toHaveBeenCalledWith('compact-model');
   });
 
+  it('shows and toggles the compact strategy', () => {
+    const onToggleCompactStrategy = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          compactStrategy="zero-mem"
+          themeName="dark"
+          memoryAutoSave={false}
+          showThinking
+          agentCount={3}
+          skillCount={4}
+          defaultPermissionMode="default"
+          onOpen={() => {}}
+          onToggleCompactStrategy={onToggleCompactStrategy}
+          onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    expect(view.lastFrame()).toContain('Compact strategy');
+    expect(view.lastFrame()).toContain('zero-mem');
+    view.stdin.write('r');
+    expect(onToggleCompactStrategy).toHaveBeenCalledOnce();
+  });
+
   it('shows and opens the global default permission setting', () => {
     const onOpen = vi.fn();
     const view = render(

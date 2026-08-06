@@ -131,7 +131,9 @@ function configCommandEffect(
       type: 'local-message',
       content:
         formatSettingsKeyHelp('Settable keys (dot-separated):') +
-        '\n\nUsage: /config <key>=<value>\n       /config compact-model <provider/model>',
+        '\n\nUsage: /config <key>=<value>\n' +
+        '       /config compact-model <provider/model>\n' +
+        '       /config compact-strategy <summary|zero-mem>',
     };
   }
   const compactModelMatch = rawArguments.match(/^compact-model\s+(.+)$/i);
@@ -141,15 +143,26 @@ function configCommandEffect(
       context,
     );
   }
+  const compactStrategyMatch = rawArguments.match(/^compact-strategy\s+(summary|zero-mem)$/i);
+  if (compactStrategyMatch?.[1]) {
+    return configCommandEffect(
+      `compactStrategy=${JSON.stringify(compactStrategyMatch[1].toLowerCase())}`,
+      context,
+    );
+  }
   if (!rawArguments.includes('=')) {
     return { type: 'local-message', content: 'Usage: /config [key=value] or /config --help' };
   }
 
   const separator = rawArguments.indexOf('=');
+  const rawKey = rawArguments.slice(0, separator).trim();
+  const normalizedKey = rawKey.toLowerCase();
   const key =
-    rawArguments.slice(0, separator).trim().toLowerCase() === 'compact-model'
+    normalizedKey === 'compact-model'
       ? 'compactModel'
-      : rawArguments.slice(0, separator).trim();
+      : normalizedKey === 'compact-strategy'
+        ? 'compactStrategy'
+        : rawKey;
   const rawValue = rawArguments.slice(separator + 1).trim();
   let value: unknown = rawValue;
   try {

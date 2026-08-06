@@ -1,6 +1,11 @@
 import type { AgentRuntimeEvent } from '../agents/types.js';
 import { runAgentLoop } from '../agent/loop.js';
-import { runCompact, runPostCompactHooks, type RunCompactOptions } from '../agent/compact.js';
+import {
+  resolveContextLimit,
+  runCompact,
+  runPostCompactHooks,
+  type RunCompactOptions,
+} from '../agent/compact.js';
 import { runSessionEnd, runSessionStart } from './lifecycle.js';
 import type { SessionLifecycleOptions } from './lifecycle.js';
 import type { ToolRegistry } from '../tools/registry.js';
@@ -83,6 +88,9 @@ export interface AgentSessionRunRequest {
   registry: ToolRegistry;
   prompt: string;
   history: Message[];
+  /** Authoritative display transcript used when Zero-Mem builds query-time context. */
+  transcript?: readonly Message[];
+  compactBoundaries?: readonly CompactBoundary[];
   mode?: PermissionMode;
   sessionId: string;
   timelineStore?: Pick<SessionStoreInterface, 'append'> &
@@ -143,6 +151,9 @@ export interface AgentSessionSendRequest {
   contextMessage?: string;
   createUserMessage: () => Message;
   history: Message[] | (() => Message[]);
+  /** Authoritative display transcript used when Zero-Mem builds query-time context. */
+  transcript?: readonly Message[] | (() => readonly Message[]);
+  compactBoundaries?: readonly CompactBoundary[];
   mode?: PermissionMode;
   sessionId: string;
   sessionName?: string;
@@ -194,6 +205,9 @@ export type AgentSessionSendResult =
 export interface AgentSessionCompactRequest {
   config: AgentConfig;
   history: readonly Message[];
+  /** Authoritative trace used to initialize Zero-Mem without replacing history. */
+  sourceHistory?: readonly Message[];
+  compactBoundaries?: readonly CompactBoundary[];
   sessionId?: string;
   transcriptOrdinal: number;
   options: Omit<RunCompactOptions, 'sessionId'>;
@@ -357,6 +371,8 @@ export class AgentSession {
 
       try {
         const history = typeof request.history === 'function' ? request.history() : request.history;
+        const transcript =
+          typeof request.transcript === 'function' ? request.transcript() : request.transcript;
         const registry =
           request.registry ??
           this.registryFactory?.({
@@ -370,6 +386,8 @@ export class AgentSession {
           registry,
           prompt: prepared.contextMessage,
           history,
+          transcript,
+          compactBoundaries: request.compactBoundaries,
           mode: request.mode,
           sessionId: request.sessionId,
           timelineStore: request.timelineStore,
@@ -659,6 +677,20 @@ export class AgentSession {
 
   async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {
     const runtime = request.runtime ?? this.runtime;
+    if (request.config.compactStrategy === 'zero-mem') {
+      const warmed = await runtime.zeroMemRuntime.warm(
+        request.sourceHistory ?? request.history,
+        request.sessionId ?? 'session',
+        request.compactBoundaries,
+      );
+      return {
+        result: {
+          status: 'skipped',
+          reason: 'disabled',
+          message: `Zero-Mem index ready for ${warmed.indexedMessages} trace message${warmed.indexedMessages === 1 ? '' : 's'}; history was not replaced.`,
+        },
+      };
+    }
     if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
     const result = await this.compactRunner(request.config, request.history, {
       ...request.options,
@@ -758,10 +790,26 @@ export class AgentSession {
         resumedFromRunId: request.resumedFromRunId,
       });
     const runtime = request.options?.runtime ?? this.runtime;
+    let effectiveHistory = request.history;
+    let loopConfig = request.config;
+    if (request.config.compactStrategy === 'zero-mem' && !request.options?.isSubagent) {
+      const contextLimit = resolveContextLimit(request.config);
+      const prepared = await runtime.zeroMemRuntime.prepare({
+        transcript: request.transcript ?? request.history,
+        query: request.options?.displayMessage ?? request.prompt,
+        sessionId: request.sessionId,
+        compactBoundaries: request.compactBoundaries,
+        currentMessageId: request.options?.userMessageId,
+        timestamp: request.options?.userMessageTimestamp,
+        maxContextTokens: Math.max(1, Math.min(32_000, Math.floor(contextLimit * 0.5))),
+      });
+      effectiveHistory = prepared.history;
+      loopConfig = { ...request.config, autoCompactEnabled: false };
+    }
     runtime.runAccounting.startRoot(runContext, request.maxBudgetUsd);
     const effectiveConfig = request.options?.modelOverride
-      ? { ...request.config, model: request.options.modelOverride }
-      : request.config;
+      ? { ...loopConfig, model: request.options.modelOverride }
+      : loopConfig;
     const ambient = runtime.recordRunAmbientSnapshot(
       runContext.runId,
       createRunAmbientSnapshot(effectiveConfig, request.registry, {
@@ -792,10 +840,10 @@ export class AgentSession {
 
     try {
       const messages = await this.runLoop(
-        request.config,
+        loopConfig,
         request.registry,
         request.prompt,
-        request.history,
+        effectiveHistory,
         {
           onText: (content: string) => {
             streamedAssistantText += content;
@@ -847,7 +895,7 @@ export class AgentSession {
           getMode: callbacks.getMode,
           onModeChange: callbacks.onModeChange,
           onPlanHandoff: callbacks.onPlanHandoff,
-          onCompact: callbacks.onCompact,
+          onCompact: loopConfig.compactStrategy === 'zero-mem' ? undefined : callbacks.onCompact,
           onAssistantMessageComplete: (message) => {
             if (request.isCurrent?.() === false) return;
             request.timelineStore?.append(request.sessionId, {
@@ -893,7 +941,7 @@ export class AgentSession {
       );
       const partialOutput =
         streamedAssistantText.length > 0 ||
-        messages.slice(request.history.length).some((message) => message.role === 'assistant');
+        messages.slice(effectiveHistory.length).some((message) => message.role === 'assistant');
       const outcome = finalizeOutcome(
         terminalOutcome ??
           (request.signal?.aborted

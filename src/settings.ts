@@ -236,12 +236,17 @@ export type SkillSettings = z.infer<typeof skillSettingsSchema>;
 export type ProviderModelConfig = z.infer<typeof providerModelSchema>;
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;
 
+export const compactStrategySchema = z.enum(['summary', 'zero-mem']);
+export type CompactStrategy = z.infer<typeof compactStrategySchema>;
+
 /**
  * Full settings.json schema — all keys that book supports.
  * New keys added in later milestones extend this schema.
  */
 export const bookSettingsSchema = z.object({
   model: z.string().optional(),
+  /** Default strategy used to reduce historical conversation context. */
+  compactStrategy: compactStrategySchema.optional(),
   /** Optional model used only to generate historical conversation checkpoints. */
   compactModel: z.string().min(1).optional(),
   /** Max agent turns per user message. Omit for unlimited. */
@@ -309,6 +314,7 @@ export type ResolvedSettings = Required<
  * Default settings used as the base layer before user/project/local override.
  */
 export const DEFAULT_SETTINGS: ResolvedSettings = {
+  compactStrategy: 'summary',
   permissions: { allow: [], ask: [], deny: [] },
   sandbox: {
     enabled: false,

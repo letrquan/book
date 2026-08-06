@@ -1,0 +1,246 @@
+{
+  "version": 2,
+  "createdAt": "2026-08-06T07:36:42.976Z",
+  "options": {
+    "models": [],
+    "suite": "standard",
+    "contextWindow": 24000,
+    "repetitions": 1,
+    "topK": 5,
+    "closureK": 3,
+    "json": false,
+    "retrievalOnly": true
+  },
+  "semanticModel": "Xenova/bge-m3+Xenova/bert-base-NER:q8:cpu",
+  "semanticModelLoadMs": 4234,
+  "historyTokens": 7985,
+  "historyMessages": 74,
+  "indexMs": 76939,
+  "probes": [
+    {
+      "name": "runtime-constraint",
+      "category": "static-recall",
+      "expectedMessageIds": [
+        "compact-eval-0",
+        "compact-eval-1"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-0",
+        "compact-eval-1",
+        "compact-eval-2",
+        "compact-eval-3",
+        "compact-eval-4"
+      ],
+      "evidenceHits": 2,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 253,
+      "retrievalMs": 194
+    },
+    {
+      "name": "public-api-constraint",
+      "category": "static-recall",
+      "expectedMessageIds": [
+        "compact-eval-0",
+        "compact-eval-1"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-0",
+        "compact-eval-1",
+        "compact-eval-2",
+        "compact-eval-3",
+        "compact-eval-4"
+      ],
+      "evidenceHits": 2,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 253,
+      "retrievalMs": 149
+    },
+    {
+      "name": "accepted-decision",
+      "category": "static-recall",
+      "expectedMessageIds": [
+        "compact-eval-2",
+        "compact-eval-3"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-0",
+        "compact-eval-2",
+        "compact-eval-3",
+        "compact-eval-4",
+        "compact-eval-5"
+      ],
+      "evidenceHits": 2,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 245,
+      "retrievalMs": 183
+    },
+    {
+      "name": "rejected-decision",
+      "category": "static-recall",
+      "expectedMessageIds": [
+        "compact-eval-2",
+        "compact-eval-3"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-0",
+        "compact-eval-2",
+        "compact-eval-3",
+        "compact-eval-4",
+        "compact-eval-5"
+      ],
+      "evidenceHits": 2,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 245,
+      "retrievalMs": 107
+    },
+    {
+      "name": "open-thread",
+      "category": "static-recall",
+      "expectedMessageIds": [
+        "compact-eval-4",
+        "compact-eval-5"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-1",
+        "compact-eval-2",
+        "compact-eval-3",
+        "compact-eval-4",
+        "compact-eval-5"
+      ],
+      "evidenceHits": 2,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 239,
+      "retrievalMs": 85
+    },
+    {
+      "name": "current-region-update",
+      "category": "knowledge-update",
+      "expectedMessageIds": [
+        "compact-eval-26",
+        "compact-eval-27"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-27",
+        "compact-eval-28"
+      ],
+      "evidenceHits": 1,
+      "evidenceRecall": 0.5,
+      "evidenceSufficient": true,
+      "contextTokens": 112,
+      "retrievalMs": 105
+    },
+    {
+      "name": "package-manager-correction",
+      "category": "conflict-resolution",
+      "expectedMessageIds": [
+        "compact-eval-28",
+        "compact-eval-29"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-28",
+        "compact-eval-29"
+      ],
+      "evidenceHits": 2,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 108,
+      "retrievalMs": 99
+    },
+    {
+      "name": "first-passing-day",
+      "category": "temporal-reasoning",
+      "expectedMessageIds": [
+        "compact-eval-30",
+        "compact-eval-32",
+        "compact-eval-52"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-49",
+        "compact-eval-50",
+        "compact-eval-51",
+        "compact-eval-52",
+        "compact-eval-53"
+      ],
+      "evidenceHits": 1,
+      "evidenceRecall": 0.3333333333333333,
+      "evidenceSufficient": true,
+      "contextTokens": 646,
+      "retrievalMs": 103
+    },
+    {
+      "name": "current-patch-state",
+      "category": "temporal-reasoning",
+      "expectedMessageIds": [
+        "compact-eval-32",
+        "compact-eval-52",
+        "compact-eval-58"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-59",
+        "compact-eval-61"
+      ],
+      "evidenceHits": 0,
+      "evidenceRecall": 0,
+      "evidenceSufficient": false,
+      "contextTokens": 257,
+      "retrievalMs": 148
+    },
+    {
+      "name": "unit-conversion-reasoning",
+      "category": "multi-hop",
+      "expectedMessageIds": [
+        "compact-eval-34",
+        "compact-eval-54",
+        "compact-eval-56"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-34",
+        "compact-eval-54",
+        "compact-eval-56",
+        "compact-eval-57",
+        "compact-eval-58"
+      ],
+      "evidenceHits": 3,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 200,
+      "retrievalMs": 114
+    },
+    {
+      "name": "missing-secret-abstention",
+      "category": "abstention",
+      "expectedMessageIds": [],
+      "retrievedMessageIds": [],
+      "evidenceHits": 0,
+      "evidenceRecall": null,
+      "evidenceSufficient": true,
+      "contextTokens": 57,
+      "retrievalMs": 73
+    },
+    {
+      "name": "semantic-alias-recall",
+      "category": "static-recall",
+      "expectedMessageIds": [
+        "zero-mem-semantic-alias-user",
+        "zero-mem-semantic-alias-assistant"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-69",
+        "compact-eval-70",
+        "compact-eval-71",
+        "zero-mem-semantic-alias-user",
+        "zero-mem-semantic-alias-assistant"
+      ],
+      "evidenceHits": 2,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 210,
+      "retrievalMs": 76
+    }
+  ]
+}

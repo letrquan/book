@@ -45,6 +45,7 @@ import {
 import {
   DEFAULT_SETTINGS,
   providerConfigSchema,
+  type CompactStrategy,
   type ResolvedSettings,
   type SkillActivation,
   type SkillExecution,
@@ -603,6 +604,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         const contextLimit = resolveContextLimit(liveConfig);
         const hostCompactAttemptKey = `${usagePressureTokens(hostUsageRef.current)}:${contextHistoryRef.current.length}`;
         if (
+          liveConfig.compactStrategy === 'summary' &&
           liveConfig.autoCompactEnabled !== false &&
           contextLimit != null &&
           shouldCompact(hostUsageRef.current, contextLimit) &&
@@ -620,6 +622,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             const autoOutcome = await agentSession.compact({
               config: liveConfig,
               history: contextHistoryRef.current,
+              sourceHistory: messagesRef.current,
+              compactBoundaries,
               sessionId: activeSessionId,
               transcriptOrdinal: messagesRef.current.length,
               runContext: control.runContext,
@@ -726,6 +730,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         contextMessage: messageOptions?.contextMessage,
         createUserMessage,
         history: () => contextHistoryRef.current,
+        transcript: () => messagesRef.current,
+        compactBoundaries,
         mode: modeRef.current,
         sessionId: activeSessionId,
         source: 'tui',
@@ -816,6 +822,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             const outcome = await agentSession.compact({
               config: liveConfigRef.current,
               history,
+              sourceHistory: messagesRef.current,
+              compactBoundaries,
               sessionId: activeSessionId,
               transcriptOrdinal: messagesRef.current.length,
               runContext: activeRunContext,
@@ -958,6 +966,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [
       liveConfig,
       clearCountdown,
+      compactBoundaries,
       finalizeStreamingMessages,
       timelineStore,
       projectCompactResult,
@@ -1146,6 +1155,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         const outcome = await agentSession.compact({
           config: liveConfigRef.current,
           history: contextHistoryRef.current,
+          sourceHistory: messagesRef.current,
+          compactBoundaries,
           sessionId: activeSessionId,
           transcriptOrdinal: messagesRef.current.length,
           runContext,
@@ -1212,7 +1223,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         operation.release();
       }
     },
-    [agentSession, operations, projectCompactResult, timelineStore],
+    [agentSession, compactBoundaries, operations, projectCompactResult, timelineStore],
   );
 
   const getRewindTargets = useCallback((): RewindTarget[] => {
@@ -1618,6 +1629,27 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [config.workspace],
   );
 
+  const setCompactStrategy = useCallback(
+    (strategy: CompactStrategy) => {
+      const result = persistSettingLocal(config.workspace, 'compactStrategy', strategy);
+      if (!result.ok) return result;
+      setLiveConfig((current) => ({
+        ...current,
+        compactStrategy: strategy,
+        settings: { ...current.settings, compactStrategy: strategy },
+      }));
+      if (strategy === 'summary') {
+        contextHistoryRef.current = messagesRef.current.filter(
+          (message) => message.includeInContext && message.kind !== 'local',
+        );
+        hostUsageRef.current = null;
+        setUsage(null);
+      }
+      return { ok: true };
+    },
+    [config.workspace],
+  );
+
   const setSkillActivation = useCallback(
     (skillName: string, activation: SkillActivation) => {
       const persisted = persistSkillActivationLocal(config.workspace, skillName, activation);
@@ -1817,6 +1849,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setEffort,
     setAgentProfileModel,
     setCompactModel,
+    setCompactStrategy,
     setSkillActivation,
     setSkillExecution,
     setSkillsEnabled,

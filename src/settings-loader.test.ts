@@ -39,6 +39,7 @@ describe('loadSettingsFile', () => {
       join(dir, 'good.json'),
       JSON.stringify({
         model: 'gpt-4o',
+        compactStrategy: 'zero-mem',
         compactModel: 'router/flash-reducer',
         maxTurns: 10,
         theme: 'paper-ink',
@@ -46,6 +47,7 @@ describe('loadSettingsFile', () => {
     );
     const result = loadSettingsFile(join(dir, 'good.json'));
     expect(result?.model).toBe('gpt-4o');
+    expect(result?.compactStrategy).toBe('zero-mem');
     expect(result?.compactModel).toBe('router/flash-reducer');
     expect(result?.maxTurns).toBe(10);
     expect(result?.theme).toBe('paper-ink');
@@ -165,6 +167,7 @@ describe('resolveSettings — layered merging', () => {
   it('returns defaults when no settings files exist', () => {
     const result = resolveSettings(dir);
     expect(result.permissions.allow).toEqual([]);
+    expect(result.compactStrategy).toBe('summary');
     expect(result.sandbox.enabled).toBe(false);
     expect(result.memory).toEqual({ enabled: true, autoSave: true, requireApproval: true });
   });
