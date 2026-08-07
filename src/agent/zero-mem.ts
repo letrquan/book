@@ -235,6 +235,19 @@ const TEMPORAL_CUES = [
   'superseded',
 ];
 
+const RELATIONAL_TERMS = new Set([
+  'between',
+  'both',
+  'combine',
+  'connect',
+  'connected',
+  'connection',
+  'destination',
+  'distributed',
+  'relationship',
+  'source',
+]);
+
 const NON_TOPICAL_SUBJECT_TERMS = new Set([...TEMPORAL_CUES, 'state', 'value']);
 const TRACE_LINK_STOP_TERMS = new Set([
   ...NON_TOPICAL_SUBJECT_TERMS,
@@ -345,13 +358,13 @@ function retrievalQuery(value: string): string {
     /\s+If the history does not contain it,[\s\S]*$/i,
     '',
   );
-  const questionEnd = withoutFallback.indexOf('?');
-  return (questionEnd >= 0 ? withoutFallback.slice(0, questionEnd + 1) : withoutFallback).trim();
+  return withoutFallback.trim();
 }
 
 function tokenize(value: string): string[] {
   const results: string[] = [];
-  for (const raw of value.match(TOKEN_PATTERN) ?? []) {
+  const normalizedSensitivePhrases = value.replace(/\bapi(?:[\s_-]+)key\b/gi, 'api-key');
+  for (const raw of normalizedSensitivePhrases.match(TOKEN_PATTERN) ?? []) {
     const token = raw.toLocaleLowerCase();
     const variants = new Set([token, ...token.split(/[._:/()-]+/)]);
     for (const variant of [...variants]) {
@@ -488,16 +501,18 @@ function profileQuery(
   const focusedQuery = retrievalQuery(query);
   const normalizedQuery = normalizeText(focusedQuery);
   const keywords = tokenize(focusedQuery);
-  const temporalCues = TEMPORAL_CUES.filter((cue) => normalizedQuery.includes(cue));
+  const queryWords = new Set(
+    (normalizedQuery.match(/[a-z0-9]+/g) ?? []).map((word) =>
+      word === 'currently' ? 'current' : word,
+    ),
+  );
+  const temporalCues = TEMPORAL_CUES.filter((cue) => queryWords.has(cue));
   const answerType = inferAnswerType(focusedQuery);
   const relational =
-    answerType === 'explanation' ||
-    /\b(connect|relationship|between|source|destination|combine|both|distributed|why)\b/.test(
-      normalizedQuery,
-    );
+    answerType === 'explanation' || keywords.some((keyword) => RELATIONAL_TERMS.has(keyword));
   const local =
     temporalCues.length > 0 ||
-    Boolean(queryContext.boundaryId || queryContext.sessionId) ||
+    Boolean(queryContext.boundaryId) ||
     /\b(current|latest|active|now|nearby|surrounding)\b/.test(normalizedQuery);
   const subject = [
     ...new Set([
@@ -514,7 +529,7 @@ function profileQuery(
     temporalCues,
     boundary: queryContext.boundaryId,
     sessionId: queryContext.sessionId,
-    route: relational && !local ? 'relational' : local ? 'local' : 'relational',
+    route: relational && !local ? 'relational' : 'local',
   };
 }
 
@@ -1270,8 +1285,8 @@ export class ZeroMemIndex {
       episodeScores.set(episode, maximum * 0.7 + average * 0.3);
     }
     const timestampValues = this.units.map((unit) => unit.eventTime);
-    const minTimestamp = Math.min(...timestampValues, 0);
-    const maxTimestamp = Math.max(...timestampValues, 1);
+    const minTimestamp = timestampValues.length > 0 ? Math.min(...timestampValues) : 0;
+    const maxTimestamp = timestampValues.length > 0 ? Math.max(...timestampValues) : 1;
     const timestampRange = Math.max(1, maxTimestamp - minTimestamp);
     const scores = new Map<string, number>();
     for (const unit of this.units) {

@@ -75,4 +75,130 @@ describe('ZeroMemRuntime', () => {
     await expect(runtime.warm([], 'session-1')).resolves.toMatchObject({ indexedMessages: 0 });
     expect(loadModel).not.toHaveBeenCalled();
   });
+
+  it('preserves the no-evidence warning alongside the recent tail', async () => {
+    const runtime = new ZeroMemRuntime({
+      loadModel: async () => loadedModel(),
+      recentTailMessages: 1,
+    });
+    const fact = message('fact-1', 'The staging region is eu-west-1.', 1);
+    const query = message('query-1', 'What is the staging database password?', 2);
+
+    const prepared = await runtime.prepare({
+      transcript: [fact, query],
+      query: query.content,
+      currentMessageId: query.id,
+      sessionId: 'session-1',
+    });
+
+    expect(prepared.retrieval?.evidence).toEqual([]);
+    expect(prepared.history[0]?.content).toContain(
+      '[No admissible historical trace matched this query. Do not invent an answer.]',
+    );
+    expect(prepared.history[1]).toEqual(fact);
+  });
+
+  it('serializes overlapping transcript synchronizations', async () => {
+    let releaseFirstEmbedding: (() => void) | undefined;
+    let markFirstEmbeddingStarted: (() => void) | undefined;
+    const firstEmbeddingStarted = new Promise<void>((resolve) => {
+      markFirstEmbeddingStarted = resolve;
+    });
+    const firstEmbeddingGate = new Promise<void>((resolve) => {
+      releaseFirstEmbedding = resolve;
+    });
+    let embedCalls = 0;
+    const semantic = loadedModel();
+    semantic.model = {
+      name: 'serialized-zero-mem-runtime-test',
+      async embed(texts) {
+        embedCalls++;
+        if (embedCalls === 1) {
+          markFirstEmbeddingStarted?.();
+          await firstEmbeddingGate;
+        }
+        return texts.map(vectorize);
+      },
+      async extractEntities(texts) {
+        return texts.map(() => []);
+      },
+    };
+    const runtime = new ZeroMemRuntime({ loadModel: async () => semantic });
+    const first = message('fact-1', 'alpha fact.', 1);
+    const second = message('fact-2', 'beta fact.', 2);
+    const firstWarm = runtime.warm([first], 'session-1');
+
+    await firstEmbeddingStarted;
+    const secondWarm = runtime.warm([first, second], 'session-1');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(embedCalls).toBe(1);
+    releaseFirstEmbedding?.();
+    await expect(firstWarm).resolves.toMatchObject({ indexedMessages: 1 });
+    await expect(secondWarm).resolves.toMatchObject({ indexedMessages: 2 });
+    expect(embedCalls).toBe(2);
+  });
+
+  it('waits for active model work before disposing loaded pipelines', async () => {
+    let releaseEmbedding: (() => void) | undefined;
+    let markEmbeddingStarted: (() => void) | undefined;
+    const embeddingStarted = new Promise<void>((resolve) => {
+      markEmbeddingStarted = resolve;
+    });
+    const embeddingGate = new Promise<void>((resolve) => {
+      releaseEmbedding = resolve;
+    });
+    const semantic = loadedModel();
+    semantic.model = {
+      name: 'dispose-zero-mem-runtime-test',
+      async embed(texts) {
+        markEmbeddingStarted?.();
+        await embeddingGate;
+        return texts.map(vectorize);
+      },
+      async extractEntities(texts) {
+        return texts.map(() => []);
+      },
+    };
+    const runtime = new ZeroMemRuntime({ loadModel: async () => semantic });
+    const pendingWarm = runtime.warm([message('fact-1', 'alpha fact.', 1)], 'session-1');
+
+    await embeddingStarted;
+    const pendingDispose = runtime.dispose();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(semantic.dispose).not.toHaveBeenCalled();
+    releaseEmbedding?.();
+    await expect(pendingWarm).rejects.toThrow('Zero-Mem runtime was disposed.');
+    await pendingDispose;
+    expect(semantic.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('disposes a model that resolves after the runtime is disposed', async () => {
+    let resolveModel: ((model: LoadedPaperZeroMemModel) => void) | undefined;
+    const loadModel = vi.fn(
+      () =>
+        new Promise<LoadedPaperZeroMemModel>((resolve) => {
+          resolveModel = resolve;
+        }),
+    );
+    const semantic = loadedModel();
+    const runtime = new ZeroMemRuntime({ loadModel });
+    const pendingWarm = runtime.warm(
+      [message('fact-1', 'The launch color is crimson.', 1)],
+      'session-1',
+    );
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(resolveModel).toBeDefined();
+    const pendingDispose = runtime.dispose();
+    resolveModel!(semantic);
+
+    await expect(pendingWarm).rejects.toThrow('Zero-Mem runtime was disposed.');
+    await pendingDispose;
+    expect(semantic.dispose).toHaveBeenCalledOnce();
+    await expect(
+      runtime.warm([message('fact-2', 'The release region is eu-west-1.', 2)], 'session-1'),
+    ).rejects.toThrow('Zero-Mem runtime was disposed.');
+  });
 });

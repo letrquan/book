@@ -101,6 +101,13 @@ function recentTail(source: readonly Message[], count: number, maxTokens?: numbe
   return selected;
 }
 
+class ZeroMemRuntimeDisposedError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('Zero-Mem runtime was disposed.', options);
+    this.name = 'ZeroMemRuntimeDisposedError';
+  }
+}
+
 /** Session-scoped model and index cache used by production Zero-Mem context preparation. */
 export class ZeroMemRuntime {
   private readonly loadModel: () => Promise<LoadedPaperZeroMemModel>;
@@ -112,6 +119,10 @@ export class ZeroMemRuntime {
   private index?: ZeroMemIndex;
   private source: Message[] = [];
   private signatures: string[] = [];
+  private generation = 0;
+  private disposed = false;
+  private operationQueue: Promise<void> = Promise.resolve();
+  private disposePromise?: Promise<void>;
 
   constructor(options: ZeroMemRuntimeOptions = {}) {
     this.loadModel = options.loadModel ?? defaultModelLoader;
@@ -124,44 +135,54 @@ export class ZeroMemRuntime {
     sessionId: string,
     compactBoundaries: readonly CompactBoundary[] = [],
   ): Promise<ZeroMemWarmResult> {
-    await this.synchronize(transcript, sessionId, compactBoundaries);
-    return this.status();
+    return this.runExclusive(async (generation) => {
+      await this.synchronize(transcript, sessionId, compactBoundaries, generation);
+      this.assertActive(generation);
+      return this.status();
+    });
   }
 
   async prepare(request: ZeroMemPrepareRequest): Promise<ZeroMemPreparedHistory> {
-    await this.synchronize(
-      request.transcript,
-      request.sessionId,
-      request.compactBoundaries ?? [],
-      request.currentMessageId,
-    );
-    if (!this.index) return { ...this.status(), history: [] };
+    return this.runExclusive(async (generation) => {
+      await this.synchronize(
+        request.transcript,
+        request.sessionId,
+        request.compactBoundaries ?? [],
+        generation,
+        request.currentMessageId,
+      );
+      this.assertActive(generation);
+      if (!this.index) return { ...this.status(), history: [] };
 
-    const built = await this.index.buildHistory(request.query, {
-      sessionId: request.sessionId,
-      timestamp: request.timestamp,
-      maxContextTokens: request.maxContextTokens,
+      const built = await this.index.buildHistory(request.query, {
+        sessionId: request.sessionId,
+        timestamp: request.timestamp,
+        maxContextTokens: request.maxContextTokens,
+      });
+      this.assertActive(generation);
+      const tail = recentTail(
+        this.source,
+        this.recentTailMessages,
+        request.maxContextTokens
+          ? Math.max(1, Math.floor(request.maxContextTokens * 0.35))
+          : undefined,
+      );
+      return {
+        ...this.status(),
+        history: [...built.history, ...tail],
+        retrieval: built.result,
+      };
     });
-    const tail = recentTail(
-      this.source,
-      this.recentTailMessages,
-      request.maxContextTokens
-        ? Math.max(1, Math.floor(request.maxContextTokens * 0.35))
-        : undefined,
-    );
-    return {
-      ...this.status(),
-      history: [...(built.result.evidence.length > 0 ? built.history : []), ...tail],
-      retrieval: built.result,
-    };
   }
 
   private async synchronize(
     transcript: readonly Message[],
     sessionId: string,
     compactBoundaries: readonly CompactBoundary[],
+    generation: number,
     currentMessageId?: string,
   ): Promise<void> {
+    this.assertActive(generation);
     const orderedBoundaries = [...compactBoundaries].sort(
       (left, right) => left.transcriptOrdinal - right.transcriptOrdinal,
     );
@@ -196,34 +217,72 @@ export class ZeroMemRuntime {
     this.metadata.clear();
     for (const [id, value] of metadata) this.metadata.set(id, value);
 
-    const modelRuntime = await this.ensureModel();
+    const modelRuntime = await this.ensureModel(generation);
+    this.assertActive(generation);
     if (!this.index || !appendOnly) {
-      this.index = await ZeroMemIndex.create(source, {
+      const index = await ZeroMemIndex.create(source, {
         semanticModel: modelRuntime.model,
         traceMetadata: this.metadata,
         ...this.options,
       });
+      this.assertActive(generation);
+      this.index = index;
     } else if (source.length > this.source.length) {
       await this.index.append(source.slice(this.source.length));
+      this.assertActive(generation);
     }
     this.source = source;
     this.signatures = signatures;
   }
 
-  private async ensureModel(): Promise<LoadedPaperZeroMemModel> {
+  private async ensureModel(generation: number): Promise<LoadedPaperZeroMemModel> {
+    this.assertActive(generation);
     if (this.modelRuntime) return this.modelRuntime;
-    this.modelPromise ??= this.loadModel();
+    let modelPromise: Promise<LoadedPaperZeroMemModel> | undefined;
     try {
-      this.modelRuntime = await this.modelPromise;
-      return this.modelRuntime;
+      modelPromise =
+        this.modelPromise ??
+        (this.modelPromise = this.loadModel().then(async (modelRuntime) => {
+          if (this.disposed || generation !== this.generation) {
+            try {
+              await modelRuntime.dispose();
+            } catch (cause) {
+              throw new ZeroMemRuntimeDisposedError({ cause });
+            }
+            throw new ZeroMemRuntimeDisposedError();
+          }
+          this.modelRuntime = modelRuntime;
+          return modelRuntime;
+        }));
+      return await modelPromise;
     } catch (error) {
-      this.modelPromise = undefined;
+      if (modelPromise && this.modelPromise === modelPromise) this.modelPromise = undefined;
+      if (error instanceof ZeroMemRuntimeDisposedError) throw error;
       const detail = error instanceof Error ? error.message : String(error);
       const hint =
         process.env.BOOK_ZERO_MEM_LOCAL_FILES_ONLY === 'false'
           ? ''
           : ' Set BOOK_ZERO_MEM_LOCAL_FILES_ONLY=false once to permit downloading the model cache, or select compactStrategy=summary.';
       throw new Error(`Zero-Mem semantic models are unavailable.${hint} ${detail}`.trim());
+    }
+  }
+
+  private runExclusive<T>(operation: (generation: number) => Promise<T>): Promise<T> {
+    const run = this.operationQueue.then(async () => {
+      const generation = this.generation;
+      this.assertActive(generation);
+      return operation(generation);
+    });
+    this.operationQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private assertActive(generation: number): void {
+    if (this.disposed || generation !== this.generation) {
+      throw new ZeroMemRuntimeDisposedError();
     }
   }
 
@@ -237,14 +296,22 @@ export class ZeroMemRuntime {
     };
   }
 
-  async dispose(): Promise<void> {
-    const modelRuntime = this.modelRuntime;
-    this.modelRuntime = undefined;
-    this.modelPromise = undefined;
-    this.index = undefined;
-    this.source = [];
-    this.signatures = [];
-    this.metadata.clear();
-    await modelRuntime?.dispose();
+  dispose(): Promise<void> {
+    if (this.disposePromise) return this.disposePromise;
+    this.disposed = true;
+    this.generation++;
+    const pendingOperations = this.operationQueue;
+    this.disposePromise = (async () => {
+      await pendingOperations;
+      const modelRuntime = this.modelRuntime;
+      this.modelRuntime = undefined;
+      this.modelPromise = undefined;
+      this.index = undefined;
+      this.source = [];
+      this.signatures = [];
+      this.metadata.clear();
+      await modelRuntime?.dispose();
+    })();
+    return this.disposePromise;
   }
 }

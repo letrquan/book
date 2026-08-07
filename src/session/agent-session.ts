@@ -791,21 +791,11 @@ export class AgentSession {
       });
     const runtime = request.options?.runtime ?? this.runtime;
     let effectiveHistory = request.history;
-    let loopConfig = request.config;
-    if (request.config.compactStrategy === 'zero-mem' && !request.options?.isSubagent) {
-      const contextLimit = resolveContextLimit(request.config);
-      const prepared = await runtime.zeroMemRuntime.prepare({
-        transcript: request.transcript ?? request.history,
-        query: request.options?.displayMessage ?? request.prompt,
-        sessionId: request.sessionId,
-        compactBoundaries: request.compactBoundaries,
-        currentMessageId: request.options?.userMessageId,
-        timestamp: request.options?.userMessageTimestamp,
-        maxContextTokens: Math.max(1, Math.min(32_000, Math.floor(contextLimit * 0.5))),
-      });
-      effectiveHistory = prepared.history;
-      loopConfig = { ...request.config, autoCompactEnabled: false };
-    }
+    const usesZeroMem =
+      request.config.compactStrategy === 'zero-mem' && !request.options?.isSubagent;
+    const loopConfig = usesZeroMem
+      ? { ...request.config, autoCompactEnabled: false }
+      : request.config;
     runtime.runAccounting.startRoot(runContext, request.maxBudgetUsd);
     const effectiveConfig = request.options?.modelOverride
       ? { ...loopConfig, model: request.options.modelOverride }
@@ -839,6 +829,19 @@ export class AgentSession {
     const unsubscribeShellEvents = runtime.shellManager.subscribe((event) => emit(event));
 
     try {
+      if (usesZeroMem) {
+        const contextLimit = resolveContextLimit(request.config);
+        const prepared = await runtime.zeroMemRuntime.prepare({
+          transcript: request.transcript ?? request.history,
+          query: request.options?.displayMessage ?? request.prompt,
+          sessionId: request.sessionId,
+          compactBoundaries: request.compactBoundaries,
+          currentMessageId: request.options?.userMessageId,
+          timestamp: request.options?.userMessageTimestamp,
+          maxContextTokens: Math.max(1, Math.min(32_000, Math.floor(contextLimit * 0.5))),
+        });
+        effectiveHistory = prepared.history;
+      }
       const messages = await this.runLoop(
         loopConfig,
         request.registry,

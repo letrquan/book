@@ -150,6 +150,33 @@ describe('Zero-Mem paper-aligned prototype', () => {
     );
   });
 
+  it('keeps relational queries graph-first when scoped to a session', async () => {
+    const index = await ZeroMemIndex.create(
+      [
+        message('owner', 'Alice owns Project Zephyr.', 1),
+        message('storage', 'Project Zephyr uses Redis for storage.', 2),
+      ],
+      {
+        semanticModel: semanticModel(),
+        traceMetadata: {
+          owner: { sessionId: 'session-a' },
+          storage: { sessionId: 'session-a' },
+        },
+        topK: 2,
+        closureK: 1,
+      },
+    );
+
+    const result = await index.retrieve('Which storage system is connected to Alice?', {
+      sessionId: 'session-a',
+    });
+
+    expect(result.profile.route).toBe('relational');
+    expect(result.evidence.map((item) => item.message.id)).toEqual(
+      expect.arrayContaining(['owner', 'storage']),
+    );
+  });
+
   it('routes singular rejection questions with a why-clause as explanations', async () => {
     const index = await ZeroMemIndex.create(
       [message('decision', 'Redis was rejected because the benchmark must work offline.', 1)],
@@ -158,6 +185,22 @@ describe('Zero-Mem paper-aligned prototype', () => {
     const result = await index.retrieve('Which proposed dependency was rejected, and why?');
 
     expect(result.profile.answerType).toBe('explanation');
+  });
+
+  it('keeps every question in a multi-question retrieval query', async () => {
+    const query = 'What is the region? Which database was selected?';
+    const index = await ZeroMemIndex.create(
+      [
+        message('region', 'The selected region is eu-west-1.', 1),
+        message('database', 'The selected database is PostgreSQL.', 2),
+      ],
+      { semanticModel: semanticModel(), topK: 2, closureK: 0 },
+    );
+
+    const result = await index.retrieve(query);
+
+    expect(result.query).toBe(query);
+    expect(result.profile.keywords).toEqual(expect.arrayContaining(['region', 'database']));
   });
 
   it('enforces query boundaries and builds semantic episodes inside them', async () => {
@@ -210,6 +253,63 @@ describe('Zero-Mem paper-aligned prototype', () => {
     expect(episodes.find((item) => item.messageId === 'database')?.episode).not.toBe(
       episodes.find((item) => item.messageId === 'vehicle-2')?.episode,
     );
+  });
+
+  it('matches temporal cues as whole words', async () => {
+    const index = await ZeroMemIndex.create(
+      [message('fact', 'The deployment behavior is documented.', 1)],
+      { semanticModel: semanticModel() },
+    );
+
+    const result = await index.retrieve(
+      'What knowledge is known about an unknown deployment behavior?',
+    );
+
+    expect(result.profile.temporalCues).toEqual([]);
+  });
+
+  it('normalizes recency from the earliest trace timestamp', async () => {
+    const vector = (similarity: number): Float32Array =>
+      new Float32Array([similarity, Math.sqrt(Math.max(0, 1 - similarity * similarity))]);
+    const recencyModel: ZeroMemSemanticModel = {
+      name: 'recency-test-model',
+      async embed(texts) {
+        return texts.map((text) =>
+          text.includes('alpha')
+            ? vector(1)
+            : text.includes('beta')
+              ? vector(0.995)
+              : text.includes('gamma')
+                ? vector(0)
+                : vector(1),
+        );
+      },
+      async extractEntities(texts) {
+        return texts.map(() => []);
+      },
+    };
+    const start = 1_700_000_000_000;
+    const year = 365 * 24 * 60 * 60 * 1_000;
+    const index = await ZeroMemIndex.create(
+      [
+        message('old', 'Deployment region code alpha.', start),
+        message('middle', 'Deployment region code gamma.', start + year / 2),
+        message('new', 'Deployment region code beta.', start + year),
+      ],
+      {
+        semanticModel: recencyModel,
+        topK: 3,
+        closureK: 0,
+        episodeSimilarityThreshold: 0,
+      },
+    );
+
+    const result = await index.retrieve('What is the latest deployment region code?');
+    const currently = await index.retrieve('What is currently the deployment region code?');
+
+    expect(result.ranked[0]?.message.id).toBe('new');
+    expect(currently.profile.temporalCues).toEqual(['current']);
+    expect(currently.ranked[0]?.message.id).toBe('new');
   });
 
   it('prefers an authoritative current correction over stale and unrelated state phrases', async () => {
@@ -340,5 +440,23 @@ describe('Zero-Mem paper-aligned prototype', () => {
 
     expect(result.evidence).toEqual([]);
     expect(result.stats.evidenceCount).toBe(0);
+  });
+
+  it('normalizes spaced and hyphenated API key sensitivity checks', async () => {
+    const absentIndex = await ZeroMemIndex.create(
+      [message('fact', 'The staging region is eu-west-1.', 1)],
+      { semanticModel: semanticModel() },
+    );
+    const absent = await absentIndex.retrieve('What is the staging API key?');
+
+    expect(absent.evidence).toEqual([]);
+
+    const recordedIndex = await ZeroMemIndex.create(
+      [message('key', 'The staging API key is example-key-value.', 1)],
+      { semanticModel: semanticModel() },
+    );
+    const recorded = await recordedIndex.retrieve('What is the staging API-key?');
+
+    expect(recorded.evidence.map((item) => item.message.id)).toContain('key');
   });
 });

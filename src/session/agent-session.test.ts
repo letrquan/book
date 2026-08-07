@@ -116,6 +116,50 @@ describe('AgentSession', () => {
     );
   });
 
+  it('emits a terminal run failure when Zero-Mem preparation rejects', async () => {
+    const zeroMemRuntime = new ZeroMemRuntime();
+    vi.spyOn(zeroMemRuntime, 'prepare').mockRejectedValue(
+      new Error('Zero-Mem preparation failed.'),
+    );
+    const runLoop = vi.fn<AgentLoopRunner>(async () => []);
+    const session = new AgentSession({
+      runLoop,
+      runtime: new SessionRuntime({ zeroMemRuntime }),
+    });
+    const events: AgentEvent[] = [];
+
+    await expect(
+      session.run({
+        config: defaultConfig({ compactStrategy: 'zero-mem' }),
+        registry: {} as ToolRegistry,
+        prompt: 'What happened?',
+        history: [],
+        sessionId: 'session-zero',
+        callbacks: { onEvent: (event) => events.push(event), onTurnStart: () => {} },
+      }),
+    ).rejects.toThrow('Zero-Mem preparation failed.');
+
+    expect(runLoop).not.toHaveBeenCalled();
+    expect(events.map((event) => event.type)).toEqual([
+      'run_started',
+      'system',
+      'session',
+      'error',
+      'terminal',
+      'done',
+    ]);
+    expect(session.getSnapshot()).toMatchObject({
+      status: 'failed',
+      error: 'Zero-Mem preparation failed.',
+      terminal: {
+        status: 'failed',
+        reason: 'runtime_error',
+        message: 'Zero-Mem preparation failed.',
+        partialOutput: false,
+      },
+    });
+  });
+
   it('warms Zero-Mem for manual compact without calling the summary reducer', async () => {
     const zeroMemRuntime = new ZeroMemRuntime();
     vi.spyOn(zeroMemRuntime, 'warm').mockResolvedValue({
