@@ -1,9 +1,25 @@
 {
-  "schemaVersion": 1,
-  "id": "coding-benchmark-v1",
+  "schemaVersion": 2,
+  "id": "swe-bench-verified-descriptor-v1",
+  "upstream": {
+    "name": "SWE-bench Verified",
+    "release": "must-be-pinned-before-use",
+    "datasetRevision": "must-be-pinned-before-use",
+    "digestStatus": "required-before-use",
+    "licenseProvenanceStatus": "required-before-use"
+  },
   "status": "descriptor-only",
-  "resultNamespace": "external/coding",
+  "executionEligibility": "blocked-tier-c",
+  "resultNamespace": "external/swe-bench-verified",
+  "mapping": {
+    "taskClass": "bug-fix",
+    "projectRisk": "high",
+    "fixtureAuthority": "external-project-controlled",
+    "verifierClass": "project-test-command",
+    "unsupportedPhase0Fields": ["data-only-fixture", "pure-verifier", "network-off-worker"]
+  },
   "preserveExternalEvaluator": true,
-  "requiredIdentityFields": ["corpus-version", "evaluator-version", "fixture-digest", "runtime-fingerprint", "environment-fingerprint", "tool-surface-fingerprint", "policy-fingerprint", "budget-fingerprint", "pricing-version", "resolved-model", "evaluation-date", "random-seed"],
-  "promotionSubstitute": false
+  "poolWithLocalCorpus": false,
+  "promotionSubstitute": false,
+  "tierCRequiredOperations": ["repository-materialization", "setup-scripts", "tests", "container-execution"]
 }

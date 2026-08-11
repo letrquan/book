@@ -1,379 +1,344 @@
 # Phase 0: Freeze the Evaluation Contract
 
 - **Parent plan:** [Adaptive Harness Implementation Plan](../adaptive-harness-implementation-plan.md)
-- **Status:** Verified (2026-08-05)
-- **Depends on:** Parent-plan Tier A/B preconditions verified for trusted built-in evaluation; Tier C
-  verified before any project-controlled or adversarial fixture
-- **Tracking rule:** Update this status and the parent plan ledger in the same change.
+- **Status:** Verified (2026-08-11 contract-v2)
+- **Depends on:** Tier A/B for evaluator-controlled trusted built-in work; Tier C before any
+  project-controlled, executable, networked, credentialed, or adversarial evaluation
+- **Tracking rule:** Update this status and the parent ledger in the same change.
+- **Frozen decisions:** [#46](https://github.com/letrquan/book/issues/46),
+  [#47](https://github.com/letrquan/book/issues/47),
+  [#48](https://github.com/letrquan/book/issues/48), and
+  [#49](https://github.com/letrquan/book/issues/49)
 
-> The parent plan's original intent, non-negotiable invariants, architecture boundaries, stop conditions, and anti-drift review apply to every task in this phase.
+## Objective
 
----
+Define an evaluation contract that can falsify an improvement claim without granting the candidate,
+project, fixture, or model authority over its evidence. Phase 0 creates contract and calibration
+infrastructure. It does not activate a harness mode, produce promotion evidence, or weaken Tier C.
 
-**Objective:** Define what improvement means before adding adaptive behavior.
+`AVAILABLE_HARNESS_MODES` remains `['off']`.
 
-#### Entry Boundary (2026-08-05)
+## Frozen Scope
 
-Tier A/B runtime and evaluator prerequisites are verified for trusted built-in, single-agent,
-non-adversarial work. This dedicated Phase 0 change freezes and verifies the contract in that
-limited scope. It does not activate Phase 1 or expand the Tier C trust boundary.
+Phase 0 accepts only evaluator-owned data fixtures, a registered trusted built-in single-agent
+worker, a non-executable file-tool surface, network off with provider access through a host broker,
+and immutable pure post-run verifiers. The current repository does not have the packaged signed
+worker, broker, or host enforcement attestation needed for provider-grade authority. Generic child
+process runs therefore remain explicitly calibration-only.
 
-The allowed initial scope is evaluator-owned manifests, schemas, deterministic file predicates,
-fixed built-in fixture materialization, report formats, and non-adversarial provider-backed trials.
-Every provider-backed trial must pass the shared fail-closed run-eligibility check before semantic or
-final-state verifier success can count. Paired arms must share the same runner-owned date and stable
-seed and must match runtime, fixture, prompt, Book-home, tool, model, and policy identities. Offline
-skill-observation reports are not provider trials; they mark provider-run eligibility
-`not-applicable` while retaining runner control metadata.
+The following stay blocked until Tier C is separately implemented and verified:
 
-The compact evaluator additionally applies a comparison-level gate to every paired probe. It marks
-the comparison invalid when ambient fingerprints, pricing versions, budgets, or resolved provider
-model identities differ, even when each arm is individually eligible. Compact reports use schema
-version 3, and built-in evaluator parents reject stale or malformed worker result shapes.
+- project setup, reset, cleanup, test, hook, command, script, compiler, package-manager, notebook,
+  native binary, or command verifier;
+- project/provider/MCP endpoints, general network access, raw credentials, arbitrary skills,
+  project subagents, or model-controlled command expansion;
+- mutable repositories, live clones/downloads, symlinks, junctions, reparse/mount points, hard
+  links, VCS metadata, special files, or executable fixture files; and
+- SWE-bench, Terminal-Bench, or another external adapter that executes its upstream harness.
 
-Tier C remains an explicit exclusion. Project-controlled setup/reset/cleanup/verifier commands,
-hooks, MCP servers, provider endpoints, executable command expansions, privileged skills, subagent
-definitions, network access, credential-bearing integrations, and adversarial repositories remain
-ineligible until workspace trust, permission ceilings, origin binding, truthful sandbox/network
-controls, and container-grade isolation are verified.
+A fresh directory and child process are reproducibility controls, not a security sandbox.
 
-**Deliverables:**
+## Evidence Classes
 
-- Define representative task classes: read-only, simple edit, bug fix, multi-file change, review, research, and long-horizon work.
-- Define comparison arms A/B/C and the required model slices.
-- Define primary metrics, guardrail metrics, and acceptable trade-offs.
-- Define how user acceptance, correction, and unknown outcomes are recorded.
-- Create a small deterministic fixture corpus that can run without private user data.
-- Define environment, runtime, and tool-surface compatibility fingerprints plus a measured infrastructure noise floor.
-- Include context exhaustion/resume, tool-contract, and untrusted-input security fixtures.
-- Include workspace-trust and external-integration fixtures before any project-controlled process or
-  credential can be used in an evaluation arm.
-- Define versioned human rubrics for outcomes that cannot be verified automatically.
-- Define optional external benchmark adapters as portability checks, not promotion substitutes.
-- Record benchmark limitations and tasks that cannot yet be evaluated reliably.
+| Class | Purpose | Allowed disposition |
+| --- | --- | --- |
+| `calibration` | Exercise schemas, fixture materialization, verifier plumbing, reports, and obvious instability. Three attempts per arm and five repeated controls are smoke counts. | `calibration-only`; never enable, promote, directional benefit, non-inferiority, or “no regression” |
+| `confirmatory` | Test one preregistered exact claim on sealed, family-isolated evidence with adequate power and every trust/guardrail gate. | Derived `promote`, `reject`, or `insufficient-evidence` |
 
-#### Phase 0 Work Breakdown
+Thresholds, sample sizes, exclusions, the candidate, or the baseline cannot be relaxed after target
+outcomes are viewed. If the evidence or cost budget cannot meet the preregistered design, the answer
+is `insufficient-evidence`.
 
-##### 0.1 Define the evaluation case schema
+## Evaluator Trust Boundary
 
-Create a versioned manifest format for every evaluation case. A case should declare:
+Four authorities remain separate:
 
-```ts
-interface HarnessEvaluationCase {
-  schemaVersion: 1;
-  corpusVersion: string;
-  evaluatorVersion: string;
-  id: string;
-  trial: {
-    id: string;
-    attempt: number;
-    clusterKey: string;
-    isolationRef: string;
-  };
-  taskClass:
-    'read-only' | 'simple-edit' | 'bug-fix' | 'multi-file' | 'review' | 'research' | 'long-horizon';
-  prompt: string;
-  fixture: {
-    source: string;
-    revision: string;
-    treeDigest: string;
-    setup?: TrustedCommand;
-    reset?: TrustedCommand;
-    cleanup?: TrustedCommand;
-  };
-  model: {
-    provider: string;
-    requestedModel: string;
-    resolvedModel?: string;
-    configDigest: string;
-  };
-  compatibility: {
-    runtimeFingerprint: string;
-    environmentFingerprint: string;
-    toolSurfaceFingerprint: string;
-  };
-  risk: 'low' | 'medium' | 'high';
-  allowedTools: string[];
-  expectedArtifacts?: string[];
-  verifiers: Array<{
-    id: string;
-    command?: TrustedCommand;
-    kind: 'command' | 'file' | 'diff' | 'human-rubric';
-    required: boolean;
-    timeoutMs?: number;
-    expectedExitCodes?: number[];
-    expectedDigest?: string;
-  }>;
-  budgets: {
-    maxTurns?: number;
-    maxTokens?: number;
-    maxCostUsd?: number;
-    timeoutMs?: number;
-  };
-  tags: string[];
-}
+1. The immutable evaluator release owns schemas, corpus membership, registered workers, pure
+   verifiers, analysis, and build/dependency provenance.
+2. The runner host owns fresh roots, materialization, process lifecycle, budgets, broker access,
+   snapshots, reports, teardown, and quarantine.
+3. The worker may mutate only its allocated workspace through the registered non-executable tool
+   surface. It cannot mutate evaluator, corpus, holdout, verifier, policy, or trust records.
+4. A verifier runs only after the complete worker tree stops, reads an immutable final snapshot,
+   and writes a bounded typed result outside candidate state.
 
-interface TrustedCommand {
-  argv: string[];
-  cwd: string;
-  envAllowlist: string[];
-  network: 'off' | 'restricted' | 'required';
-}
-```
+### Registered worker and broker
 
-The schema is a contract, not necessarily the final runtime type. Phase 0 may represent it as JSON/Markdown fixtures before Phase 1 adds shared TypeScript contracts.
+`src/harness/evaluation/worker.ts` defines the fail-closed registration and host-attestation
+contract. Authority requires all of the following:
 
-##### 0.2 Build the initial fixture matrix
+- an absolute executable, entry module, dependency lock, evaluator release, and transitive identity
+  bound to exact digests outside candidate-writable roots;
+- a fixed bounded argv array with no shell, PATH lookup, interpolation, response file, or NUL entry;
+- an empty environment plus reviewed non-secret and runner-owned keys;
+- a fixed file-only tool surface, closed stdin, bounded output and resources, and descendants
+  forbidden;
+- filesystem, network, and process-tree enforcement verified by an authenticated host attestation;
+  and
+- worker network off, with any exact provider/origin/adapter/model traffic confined to a pinned
+  host broker and credential audience.
 
-Create at least one deterministic fixture for each machine-verifiable task class and at least one
-explicitly observational or human-rubric case for subjective classes. Prefer tiny fixture repositories
-or frozen repository revisions over mocks that bypass real file and tool behavior.
+Missing enforcement yields `calibration-only`; malformed/digest-mismatched or failed enforcement is
+blocked. The generic `runEvaluationProcess` result carries `designClass: calibration` and
+`claimAuthority: none` by construction.
 
-Each fixture should define:
+## Data-Only Fixture Contract
 
-- initial repository state;
-- exact prompt;
-- permitted files and tools;
-- expected final state or verifier commands;
-- timeout and cost ceiling;
-- known ambiguous outcomes;
-- reset procedure.
+`calibration-public-v1` contains the existing 11 prompts and tiny fixtures as calibration assets.
+Every case is recursively strict and pins:
 
-Each trial must receive a fresh materialized environment and a stable `trial.id`; repeated
-attempts of the same case are separate trials grouped by `clusterKey`. The grader evaluates the
-final environment state and verifier evidence, not the agent's self-reported completion claim.
+- calibration/split identity and no claim authority;
+- case, project, generator, and relationship family IDs;
+- exact fixture revision, normalized regular-file manifest, byte lengths, file digests, and tree
+  digest;
+- three paired smoke attempts grouped under one root/case/project/session cluster;
+- the exact model slice, compatibility profiles, budgets, allowed file tools, and expected artifacts;
+- per-outcome class and authority plus verifier or rubric release identity; and
+- limitations and known unknowns.
 
-The initial corpus must also contain targeted cases for:
+The loader rejects stale versions, duplicate IDs, unknown fields/model slices, absolute/traversing or
+non-NFC paths, case/normalization collisions, reserved names, alternate data streams, `.git`,
+symlinks/junctions/reparse points, hard links, special or executable files, and file/count/byte
+limits. It validates the source before copying, copies into an empty destination, validates the
+destination, and revalidates the source after copying. Reset always destroys and rematerializes a
+fresh root.
 
-- context exhaustion, compaction, preserved decisions/failures, interruption, and resume;
-- malformed tool arguments, ambiguous tool errors, timeout, cancellation, retry, oversized output, and partial success;
-- prompt injection or instruction-like text from repository files, tool results, and retrieved content;
-- attempted credential exposure, indirect permission escalation, poisoned memory/evidence, and unverified tool endpoints.
-- skill activation: direct, indirect, negative, ambiguous, conflicting, unavailable-body, and
-  project-skill trust cases;
-- tool-contract routing: overlapping tools, deferred discovery, malformed arguments, structured
-  errors, retry/cancellation, and partial-result recovery;
-- capability-routing behavior: current-information/web requests, direct URLs, transcripts, broad
-  repository exploration, parallel investigation, independent review, child allowlist budget
-  failures, prompt/tool-surface mismatch, and negative tasks that must not call web or delegation
-  tools or preload Git, session-history, notebook, skill, or integration tools;
-- prompt-layer behavior: stable-prefix digest changes, dynamic-policy activation, source/trust
-  provenance, budget clipping, and instruction-like untrusted content;
-- context engineering: relevant-file retrieval, repository/symbol-map quality, irrelevant-context
-  pressure, repeated reads, compaction, checkpoint freshness, and resume preservation;
-- model/provider capability: exact identity, aliases/unknown identity, provider message flattening,
-  tool-result ordering, output limits, structured output, and prompt-cache assumptions;
-- subagent capability: skill preload, restricted tools, independent review, stale snapshots, typed
-  handoffs, and duplicate-work detection;
-- deterministic controls: hook block/modify/timeout behavior, verifier authority, permission
-  decisions, and behaviors that must not depend on prompt compliance.
-- workspace trust: untrusted project hooks, providers, MCP servers, commands, skills, and subagents
-  are blocked before spawn/request; explicit trust enables only the reviewed surfaces;
-- external lifecycle: TUI/headless/SDK/CI initialization order, provider/MCP negotiation, auth,
-  timeout, cancellation, reconnect, backpressure, partial results, cleanup, and status parity;
-- web and credential boundaries: origin binding, redirect/private-address blocking, response limits,
-  environment filtering, redaction, and terminal-output sanitization.
+Only regular-file existence/absence, exact text/digest, schema, and expected/forbidden changed-path
+predicates are machine authority. There is no command verifier in the Phase 0 schema. A
+confirmatory verifier call also requires a matching read-only final-snapshot digest plus proof that
+the worker and descendants stopped.
 
-Do not use personal session transcripts in the initial corpus.
+## Outcome Classes and Human Review
 
-The capability-routing slice must preserve the exact natural-language prompts used for ranking and
-activation tests. It must include `youtube transcript`, `web tool`, `research this deeply`,
-`parallel research`, `spawn explorer`, and `inspect git history`, plus local-only negative cases that
-must not call web or delegation tools or preload Git, session-history, notebook, skill, or
-integration capabilities.
+Every declared outcome, not the entire task, is classified independently:
 
-Machine-verifiable, human-rubric, and observational cases must be labeled separately. A
-deterministic fixture does not make model execution deterministic; every model-backed case must
-declare a repeated-trial rule even when temperature is zero or a provider seed is available.
+- `machine-verifiable` may establish success or a guardrail only after identity and eligibility
+  pass;
+- `human-rubric` may affect only a separately preregistered review/research slice after the complete
+  protocol below; and
+- `observational` remains diagnostic and has no decision authority. A visible security/integrity
+  violation still trips the applicable zero-tolerance gate.
 
-##### 0.3 Define baseline execution arms
+The authoritative rubric artifacts are JSON, immutable, versioned, content-addressed, and pinned to
+an evaluator release. `review-quality-v1` and `research-quality-v1` remain calibration-only until a
+real reviewer pool and confirmatory slice exist. `boundary-evidence-v1` remains observational and
+Tier C-blocked.
 
-Document how each case is run under:
+A decision-bearing human result requires:
 
-- `A/base`: current Book behavior with harness mode `off`;
-- `B/fixed`: each manually selected fixed workflow;
-- `C/adaptive`: selector output, initially shadow-only;
-- `D/candidate`: evolved workflow, introduced only in Phase 8.
+- a canonical privacy-reviewed evidence packet that excludes arm, workflow, model/provider,
+  transcript/self-report, cost, latency, tool trace, and other ratings;
+- two authenticated, calibrated, blind, conflict-free, independent human primary reviewers with
+  distinct pseudonymous IDs and per-dimension evidence references;
+- calibration on at least 30 separate artifacts, ordinal Krippendorff alpha at least `0.80` with a
+  95% lower bound at least `0.67`, at least 90% anchor agreement, 100% seeded hard-failure detection,
+  and at least 10% blind duplicates;
+- production-batch reliability and drift checks at the same thresholds; and
+- when primaries disagree, one equally calibrated blind third reviewer, median dimension scoring
+  only where two reviewers are within one point, majority binary criteria, no overwritten raw
+  ratings, and no post-hoc consensus meeting.
 
-Phase 3B capability-routing experiments use their own fixed arms (`current-routing`,
-`hybrid-routing`, `child-eager-routing`, and `adaptive-explorer-routing`) and must not be labeled as
-workflow improvements. Routing and workflow arms may be combined only in a predeclared interaction
-experiment after each independent axis has passed its own gate.
+Missing, stale, mixed, unblinded, dependent, unauthenticated, drifted, unresolved, or model-only
+review evidence yields a typed `unknown`. A human pass cannot override a machine, identity,
+security, integrity, credential, permission, or protected-path failure.
 
-All arms must use the same model version, provider settings, tool-surface fingerprint, runtime/environment profile, repository revision, budgets, and evaluator version.
+## Experimental Design
 
-Any provider-backed arm with missing or ineligible run evidence is an `unknown`/infrastructure
-outcome, never a success. Deterministic verifier success cannot override missing usage, unknown
-pricing, unverifiable model identity, partial ambient evidence, non-completed terminal status, or a
-run-boundary mismatch.
-
-For capability experiments, also lock the prompt-layer, skill registry and activation policy, context
-policy, model-adapter, hook policy, verifier, and delegation fingerprints. A workflow result is not
-attributable when any of those changed silently.
-
-The initial corpus must also lock `settings.agents.mode`, normally to `off`, so the harness workflow
-is not confounded with Book's existing adaptive delegation. Capture a golden provider-message and
-session-behavior baseline for `A/base`; do not assume a later `minimal` workflow is equivalent.
-
-##### 0.4 Freeze metrics and decision rules
-
-For every task class, declare:
-
-- primary success metric;
-- guardrail metrics that cannot regress;
-- maximum acceptable cost/latency increase;
-- minimum sample count or uncertainty rule;
-- paired-run or repeated-control rule and the minimum detectable effect above infrastructure noise;
-- tie-breaking rule;
-- treatment of timeouts, evaluator failures, and unknown outcomes.
-- experimental/randomization unit and cluster dependencies;
-- estimand, minimum detectable effect, alpha/power or minimum-sample rule;
-- non-inferiority margins for guardrails and multiplicity handling across slices/metrics;
-- missingness policy, including when unknown/evaluator failure differs by arm;
-- trial-order, cache, rate-limit, clock, seed, and network controls.
-
-Do not require one universal scalar score. A candidate may be rejected because it improves correctness while violating a guardrail. When results are equivalent within the declared uncertainty/noise band, the simpler workflow wins.
-
-##### 0.5 Define the evaluation report format
-
-Reports must show raw counts and per-slice results before aggregates:
+One experimental unit is one root request under one arm in a fresh fixture, Book home, session/tool
+state, and process state. Child/resume lineage stays inside that unit. The offline matched block is:
 
 ```text
-case id
-model/provider/version
-runtime/environment/tool-surface fingerprints
-workflow/policy version
-success/failure/unknown
-verifier evidence
-turns/tokens/cost/latency
-tool failures/retries
-changed files/diff size
-user or reviewer result, when applicable
-control variance/noise-floor result
-harness complexity delta
-prompt tokens by layer and cache-prefix churn
-skill activation decision, body/resource tokens, activation latency, and false-trigger label
-tool-selection/search result, schema tokens, malformed-call and recovery outcome
-context contribution summary, relevant-file recall, repeated-read count, and compaction loss
-exact capability manifest and changed component IDs
+case × fixture revision × exact model × target slice × compatibility cell × repetition seed
 ```
 
-##### 0.6 Record evaluator limitations
+Every arm receives a separate fresh environment. Two-arm order is balanced `AB`/`BA`; larger designs
+use a balanced Latin/Williams schedule. Arms are interleaved over clock time with the same account,
+region, concurrency, cache/rate-limit policy, date, seed, budgets, evaluator, and compatibility
+fields. Once any arm starts, every scheduled arm is enrolled. Only a whole block may be retried under
+a preregistered retry budget, and original outcomes remain visible.
 
-Create a section for tasks that cannot yet support automatic learning. Research quality, architecture taste, maintainability, and user satisfaction may require human rubrics.
+The primary estimand is the equal-case-weighted, clustered, paired intention-to-treat difference in
+externally verified success probability against the strongest eligible fixed baseline selected on
+held-in or nested-validation evidence. `A/base` is only a compatibility reference when a stronger
+fixed baseline exists. Repetitions reduce run noise but do not create independent task diversity.
 
-Human rubrics must be versioned and define:
+Before confirmatory sizing, collect at least 20 matched held-in A/A blocks in the exact compatibility
+cell. The decision effect is the larger of the preregistered practical effect and the upper A/A noise
+bound. The default machine-success practical effect is `+0.15` absolute.
 
-- observable criteria and rating anchors;
-- blind comparison when practical;
-- reviewer identity or role and independence requirements;
-- minimum reviewer count or agreement rule;
-- treatment of disagreement and missing reviews;
-- whether a model judge is advisory, with a rule that it cannot be the sole promotion authority.
+Each proposed confirmatory slice requires at least 20 independent held-out case families, at least
+five complete matched repetitions per family, and at least 80% power at the Holm-adjusted alpha.
+These are floors; conservative power analysis may require more.
 
-Cases remain observational until the rubric is reliable enough to produce attributable outcomes.
+Promotion requires both an adjusted benefit interval excluding zero and a point estimate meeting the
+decision effect. Confirmatory inference is fixed-horizon with Holm family-wise error control at
+`0.05`. Every proposed sibling slice stays visible.
 
-##### 0.7 Define compatibility fingerprints and infrastructure noise
+### Guardrails
 
-Define stable, redacted fingerprints for:
+| Guardrail | Frozen maximum regression |
+| --- | ---: |
+| Protected/non-target success | `-0.05` absolute |
+| Unknown rate | `+0.02` absolute |
+| Timeout rate | `+0.02` absolute |
+| Evaluator-failed/post-assignment missing rate | `+0.02` absolute |
+| Mean cost and total tokens | `+25%` relative |
+| Median and p95 latency | `+25%` relative |
+| Five-point human rubric | `-0.25` points |
+| Security, permission, credential, protected-path, trust, or integrity violation | zero events |
 
-- OS, architecture, runtime and package-manager versions;
-- CPU/memory limits, sandbox/container configuration, and network policy;
-- dependency/cache state relevant to evaluation;
-- tool names, schemas, permission requirements, error semantics, and implementation versions;
-- context/compaction/checkpoint capabilities;
-- random seed and evaluator execution settings when applicable.
+Guardrails use simultaneous one-sided non-inferiority inference with adequate power. A passed primary
+endpoint cannot compensate for a failed or unknown guardrail.
 
-Run repeated base/control cases to estimate setup failures, latency variance, and success-rate variance before setting promotion thresholds. If the observed noise can explain the measured effect, report insufficient evidence.
+### Raw outcomes and missingness
 
-Keep component-level compatibility fields beside any aggregate digest. One opaque fingerprint is
-insufficient for diagnosing whether a model, tool schema, evaluator, runtime, or incidental machine
-property caused invalidation. Canonicalize structured inputs before hashing.
+Raw terminal categories are retained before mapping. Post-assignment task failure, budget exhaustion,
+runtime failure, timeout, missing artifact, execution cancellation, unknown, missing outcome, or
+evaluator failure contributes zero in the intention-to-treat success estimand and remains separately
+counted. A pre-randomization setup failure with no started arm is not enrolled but remains in the
+infrastructure report. Identity/integrity failure invalidates the whole comparison block. A live
+user cancellation remains assigned and visible.
 
-##### 0.8 Define external benchmark adapters and HarnessCard output
+No missing-at-random assumption is allowed. Promotion also requires worst-case sensitivity with
+candidate missing outcomes as failures and baseline missing outcomes as successes.
 
-Allow optional adapters for a small coding benchmark and a long-horizon terminal benchmark. Adapters must lock the same compatibility fields as local fixtures, preserve the benchmark's evaluator, and keep results separate from the primary Book corpus.
+## Corpus Roles and Compatibility
 
-Define a compact HarnessCard template covering runtime, environment, tool surface, context policy, constraints, evaluation corpus, results, limitations, and rollback. External benchmark success cannot override a failing local held-out gate.
+`evals/harness/confirmatory-corpus-contract.json` reserves `phase0-confirmatory-v1` but deliberately
+contains no fabricated families or sealed membership. It defines:
 
-#### Planned Phase 0 Artifacts
+1. `design-held-in` for A/A characterization, power inputs, baseline selection, verifier/rubric
+   calibration, and dry runs, with no promotion authority; and
+2. `promotion-sealed` for one use after candidate, baseline, hypotheses, schedule, analysis, and
+   query ledger lock.
+
+Family assignment is by relationship group. Project/fixture ancestry, shared bugs/solutions,
+templates, generators, prompt transformations, and near duplicates cannot cross public, held-in, or
+sealed roles. Leakage or ambiguous ancestry invalidates the split version.
+
+Every comparison component is preregistered as exactly one of `locked-equal`, `treatment`,
+`stratifier`, or `diagnostic`. Component values, source, version, and digest remain beside the
+overall compatibility-cell digest. Any undeclared difference or treatment drift invalidates the
+whole paired block.
+
+## Reports and Dispositions
+
+`report-schema.json` v2 is a two-branch Draft 2020-12 schema:
+
+- the calibration branch requires `claimAuthority: none` and
+  `disposition: calibration-only`; it has no promotion value; and
+- the confirmatory branch requires the preregistration, sealed identities, raw outcomes by arm,
+  clustered campaign counts, power/multiplicity inference, all guardrails, role-aware compatibility,
+  trust attestations, leakage/query checks, expiry, limitations, and rollback target.
+
+The confirmatory writer additionally reconciles raw counts, arm roles and denominators, fixed-horizon
+block arithmetic, invalid/retry records, and family repetitions. It binds the A/A noise estimate to
+the decision effect; records paired discordance, every Holm-family result and query/alpha spend;
+requires power and adjusted bounds for each applicable guardrail; and pins execution diagnostics,
+attestation subjects, independent approval, evidence dates, expiry, and revalidation triggers. The
+only treatment component is the preregistered workflow/policy digest; the complete frozen control
+surface is enumerated as locked-equal compatibility components.
+
+`assessPhase0ConfirmatoryPromotion` derives the disposition. A report cannot self-assert promotion.
+The Zod contract rejects a disposition or reason list that differs from the derived fail-closed
+assessment. Calibration and the current historical corpus can never masquerade as confirmatory
+evidence.
+
+A HarnessCard is a durable summary for one immutable report. Evidence never transfers silently to a
+different model, provider, adapter, task/risk class, evaluator, tool surface, isolation tier, corpus,
+or split.
+
+SWE-bench Verified and Terminal-Bench 2.1 remain descriptor-only, Tier C-blocked portability
+adapters. Their future scores stay in separate namespaces and cannot be pooled with or substituted
+for the local confirmatory gate.
+
+## Artifacts
 
 ```text
-evals/harness/README.md
-evals/harness/manifest.json
-evals/harness/cases/
-evals/harness/fixtures/
-evals/harness/rubrics/
-evals/harness/adapters/
-evals/harness/harness-card.md
-evals/harness/reports/        # generated and gitignored unless curated
+src/harness/evaluation/identity.ts        RFC 8785 identities
+src/harness/evaluation/contract.ts        case, fixture, verifier, and comparison contract
+src/harness/evaluation/review.ts          calibrated human-review protocol
+src/harness/evaluation/report.ts          outcomes, designs, reports, and derived dispositions
+src/harness/evaluation/worker.ts          registered worker/host-attestation boundary
+src/harness/evaluation/runner.ts          explicitly calibration-only process helper
+evals/harness/manifest.json               calibration-public-v1 manifest
+evals/harness/cases/                      11 calibration cases
+evals/harness/fixtures/                   evaluator-owned data-only fixtures
+evals/harness/rubrics/                    human rubric documents and JSON artifacts
+evals/harness/report-schema.json          report schema v2
+evals/harness/confirmatory-corpus-contract.json
+evals/harness/adapters/                   descriptor-only external adapters
+evals/harness/harness-card.md             durable summary template
 ```
 
-If the project chooses a different location, record the decision before Phase 1 and use it consistently.
+## Test Matrix
 
-#### Phase 0 Research Closure Gate
+- Strict manifests reject unknown fields, stale identities, duplicate IDs, unpinned rubrics, and
+  command verifiers.
+- Corpus and split digests bind ordered content/family membership.
+- Fixture manifests, rematerialized tree hashes, unsafe paths, symlinks, hard links, special files,
+  executable files, collisions, and source-copy races fail closed.
+- File and diff verifiers pass/fail/unknown distinctly; optional failure remains visible.
+- Confirmatory verification fails without an immutable post-worker snapshot attestation.
+- Calibration noise uses five smoke controls and never gains promotion authority; confirmatory
+  sizing requires at least 20 matched A/A blocks.
+- Comparison identity invalidates every changed locked component while allowing only the declared
+  treatment digest to differ.
+- Raw unknown/missing/evaluator outcomes remain in intention-to-treat accounting.
+- Raw counts equal assigned trials; denominators equal valid blocks; completed blocks reconcile to
+  valid/invalid records; retries bind retained originals and cannot exceed the locked budget.
+- Calibration reports cannot express promotion; confirmatory reports enforce family/repetition,
+  power, Holm, practical-effect, guardrail, trust, leakage, missingness, and zero-tolerance gates.
+- Confirmatory reports expose every sibling hypothesis, A/A noise/order evidence, per-guardrail
+  power, paired discordance, equal-case clustered analysis, and order/cache/rate-limit/concurrency
+  diagnostics.
+- Human review covers calibration, drift, two blind reviewers, third-review adjudication, raw
+  ratings, hard failures, duplicate identity, packet/rubric identity, and typed unknowns.
+- Registered workers require exact artifacts and host attestations; absent enforcement remains
+  calibration-only. A manifest-shaped attestation alone is insufficient; a host-owned verifier must
+  authenticate its digest/signature envelope and canonical protected artifacts.
+- External adapters stay descriptor-only, separate, and Tier C-blocked.
 
-Phase 0 begins by answering the Phase 0 questions in
-[research-grounding.md](research-grounding.md): trusted command execution, experimental unit,
-repeated-trial design, missingness, multiplicity, human-rubric reliability, exact identity, and
-external-runner isolation. No comparative corpus result is promotion evidence until those answers
-are versioned in the evaluation contract. Adversarial or project-controlled setup/verifier fixtures
-cannot run in Book's unsandboxed Windows shell path and remain blocked by Tier C.
+## Verification Record (2026-08-11)
 
-#### Phase 0 Test Matrix
+- **Decision:** Phase 0 contract-v2 and its calibration assets are verified. This verifies the
+  measurement contract; it is not evidence for a harness, workflow, model, or provider promotion.
+- **Pinned identities:** corpus
+  `sha256:d990f875a247363dc7fae325f2d9f6a11156c8db24b8e948064b5bb07958770f`, split
+  `sha256:8ab5d4572b0cfc0b519423d2a9cc53ad6273faa1b318ec6c4742b3a7f615fed3`, pure
+  verifier release
+  `sha256:a8735dca1237275076f604f23b5a300c025781d29a6eec0b4197c7ef0f5b002d`, review rubric
+  `sha256:1d567e7154c6047fdef5bba486544d731f06962ab7a8f6d0ffc1e0e8040341ea`, and research
+  rubric `sha256:a445e10a5e673b2c6efe282486911b76d8e8e9e2a003c5f5b1c0277d5d8bb9ee`.
+- **Aggregate gate:** `npm run check` passed formatting, full lint, strict type checking, and
+  architecture checks; the unit tier passed 185 files with 1,858 tests passed and 5 skipped; the
+  contract tier passed 4 files with 31 tests passed.
+- **Focused and artifact gates:** the focused evaluator suite passed 6 files and all 50 tests;
+  targeted evaluator lint, `npm run build`, Draft 2020-12 report-schema validation, and
+  `git diff --check` passed.
+- **Final audit hardening:** raw arm and block accounting, fixed-horizon completion, A/A noise,
+  sibling-hypothesis visibility, per-guardrail power, execution diagnostics, compatibility roles,
+  attestation authentication, rubric packet/qualification/adjudication identity, and fixture entry
+  bounds fail closed under focused regressions.
+- **Integration diagnostic:** 6 of 7 integration files completed with 70 tests passed and 7 skipped.
+  `src/tui/tui-integration.test.ts` had 13 host-sensitive startup-animation timeouts while waiting
+  for `Ask me anything.` This known TUI limitation does not exercise the offline Phase 0 contract
+  and is not claimed as passing or promotion evidence.
+- **Authority and scope:** no provider trial, confirmatory corpus membership, sealed campaign,
+  promotion claim, worker/broker host attestation, or Tier C execution is represented by this
+  source change. Tier C remains blocked and `AVAILABLE_HARNESS_MODES` remains `['off']`.
 
-- Valid and invalid evaluation manifests.
-- Fixture reset produces the same file hashes.
-- Required verifier passes only for the expected result.
-- Required verifier fails for a deliberately broken result.
-- Optional verifier failure does not silently become primary success.
-- Timeout and unknown outcomes are represented distinctly.
-- Context exhaustion/resume and prompt-injection fixtures fail when the expected runtime boundary is removed.
-- Tool-contract fixtures distinguish workflow failure from malformed or changed tool behavior.
-- Human-rubric disagreement remains visible and cannot be collapsed into success.
-- A report cannot compare arms with different model, budget, fixture revision, environment, tool surface, runtime, or evaluator versions without marking the comparison invalid.
-- Repeated base runs produce a recorded noise floor and minimum detectable effect.
-- External benchmark adapters cannot replace or weaken local held-out promotion criteria.
-- Manifest schemas reject unknown fields recursively instead of stripping them.
-- Fixture materialization matches the declared tree digest and rejects symlink/path escapes.
-- Root and child tokens/costs are cumulative; unknown pricing remains unknown rather than zero.
-- Capability-routing comparisons freeze the root exposure policy, intent-preload policy, child
-  allowlist policy, discovery-ranking version, and adaptive-delegation policy as separate fingerprints.
+## Exit and Rollback Gates
 
-**Verification:**
+**Exit gate:** The v2 contract and calibration assets pass formatting, lint, strict type checking,
+architecture checks, focused evaluation tests, unit and contract tiers, build/schema validation, and
+`git diff --check`. Calibration is structurally non-promotional, every missing authority fails
+closed, and the exact confirmatory claim can be falsified without broadening its slice.
 
-- The same task fixture can be run repeatedly with a stable expected result.
-- Metrics are computed without asking the tested model to judge itself.
-- A failed or unknown verifier cannot be recorded as success.
-- Thresholds are written before collecting candidate results.
-- Infrastructure variance is measured before small effect claims are accepted.
-- Security, context/resume, and tool-contract cases can falsify unsafe or incompatible harness behavior.
+**Rollback gate:** Revert contract-v2 as one logical change if it permits calibration promotion,
+accepts executable/project authority, loses raw missing outcomes, relaxes a frozen threshold, or
+cannot reproduce the pinned corpus/fixture/rubric identities. Runtime remains `off`; no data
+migration or live rollback is needed.
 
-#### Verification Record (2026-08-05)
-
-- Contract versions: `harness-corpus-v1`, `phase0-contract-v1`, report schema v1.
-- Offline verification model/provider: not applicable; no provider-backed comparative result was
-  collected or used as promotion evidence.
-- Evidence: formatting, lint, type checking, architecture checks, `npm run test:unit` (177 files,
-  1,775 passing tests, 5 skipped), `npm run test:contract` (4 files, 29 passing tests),
-  `npm run build`, focused evaluation/ambient tests (23 passing), and `git diff --check`.
-- Phase 0 coverage: strict recursive schemas, version and model-slice alignment, deterministic
-  fixture hashing/materialization, symlink/path protections, final-state grading, visible optional
-  failures, human-review disagreement, comparison identity invalidation, and noise-floor summaries.
-- Review hardening: promotion reports require structured attempts, slices, noise evidence, and
-  passing promotion gates; corpus, fixture, and verifier reads reject symlinked or canonically
-  escaping path components; reviewer and comparison-arm identities must be non-empty and distinct.
-- Corpus coverage: all seven representative task classes plus tool-contract, untrusted-input,
-  workspace-trust, and external-integration boundary cases; the latter two remain Tier C blocked.
-- Integration tier note: `npm run test:integration` was attempted after a successful build, but the
-  host-sensitive TUI and background-shell suites timed out with existing environment-specific
-  failures. They do not exercise the offline Phase 0 contract and are not claimed as passing
-  evidence here.
-- Decision: Phase 0 is verified for evaluator-owned, trusted built-in, single-agent,
-  non-adversarial evaluation. Phase 1 is eligible for a separate change; Tier C remains blocked.
-
-**Exit gate:** A reviewable evaluation contract exists and can falsify the claim that the harness improves results.
-
-**Rollback:** Documentation-only; revise the contract before implementation if it cannot distinguish real improvement from additional activity.
-
-**Intent check:** Are we measuring better outcomes rather than more agent behavior?
+**Intent check:** Are we measuring better externally verified outcomes rather than more agent
+activity?

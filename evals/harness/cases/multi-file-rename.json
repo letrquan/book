@@ -1,17 +1,27 @@
 {
-  "schemaVersion": 1,
-  "corpusVersion": "harness-corpus-v1",
-  "evaluatorVersion": "phase0-contract-v1",
+  "schemaVersion": 2,
+  "corpusVersion": "calibration-public-v1",
+  "evaluatorVersion": "phase0-contract-v2",
   "id": "multi-file-rename",
   "taskClass": "multi-file",
   "evidenceKind": "machine-verifiable",
-  "eligibility": "provider-trial",
+  "eligibility": "calibration-diagnostic",
+  "designClass": "calibration",
+  "claimAuthority": "none",
+  "splitRole": "calibration-public",
+  "splitVersion": "calibration-public-split-v1",
+  "splitDigest": "sha256:8ab5d4572b0cfc0b519423d2a9cc53ad6273faa1b318ec6c4742b3a7f615fed3",
+  "caseFamilyId": "multi-file-rename",
+  "projectFamilyId": "multi-file-rename",
+  "generatorFamilyId": "hand-authored-multi-file-rename",
+  "relationshipGroupId": "multi-file-rename",
   "prompt": "Rename oldName to projectName, including the module filename and consumer import. Preserve behavior.",
   "trial": {
     "experimentalUnit": "root-request",
     "clusterKey": "multi-file-rename",
     "isolation": "fresh-materialization",
     "attemptsPerArm": 3,
+    "evidencePurpose": "calibration-smoke-only",
     "paired": true,
     "sameSeedAcrossArms": true
   },
@@ -20,7 +30,23 @@
     "revision": "multi-file-rename-v1",
     "treeDigest": "sha256:d86454cd848fc1776e969a0fd7fd8ab47f9edbcefcfb4bc27da7ed86402ebde6",
     "reset": "rematerialize",
-    "ownership": "evaluator"
+    "ownership": "evaluator",
+    "files": [
+      {
+        "path": "src/consumer.ts",
+        "type": "regular",
+        "bytes": 86,
+        "digest": "sha256:75f04050e9b646417178aa0049724591fe481e733b31030a28dc32aa2083dfdd",
+        "modeClass": "data"
+      },
+      {
+        "path": "src/old-name.ts",
+        "type": "regular",
+        "bytes": 31,
+        "digest": "sha256:212ace17e798e8b269efe9546d5ca813fc97994d2adfe2da0e6d4bfb93f1937d",
+        "modeClass": "data"
+      }
+    ]
   },
   "modelSliceIds": ["primary-exact-model"],
   "compatibility": {
@@ -37,6 +63,9 @@
     {
       "id": "renamed-module",
       "kind": "file",
+      "outcomeClass": "machine-verifiable",
+      "authority": "primary",
+      "verifierReleaseDigest": "sha256:a8735dca1237275076f604f23b5a300c025781d29a6eec0b4197c7ef0f5b002d",
       "required": true,
       "path": "src/project-name.ts",
       "assertion": "utf8-equals",
@@ -45,6 +74,9 @@
     {
       "id": "updated-consumer",
       "kind": "file",
+      "outcomeClass": "machine-verifiable",
+      "authority": "primary",
+      "verifierReleaseDigest": "sha256:a8735dca1237275076f604f23b5a300c025781d29a6eec0b4197c7ef0f5b002d",
       "required": true,
       "path": "src/consumer.ts",
       "assertion": "utf8-equals",
@@ -53,9 +85,22 @@
     {
       "id": "old-module-removed",
       "kind": "file",
+      "outcomeClass": "machine-verifiable",
+      "authority": "primary",
+      "verifierReleaseDigest": "sha256:a8735dca1237275076f604f23b5a300c025781d29a6eec0b4197c7ef0f5b002d",
       "required": true,
       "path": "src/old-name.ts",
       "assertion": "absent"
+    },
+    {
+      "id": "changed-path-boundary",
+      "kind": "diff",
+      "outcomeClass": "machine-verifiable",
+      "authority": "guardrail",
+      "verifierReleaseDigest": "sha256:a8735dca1237275076f604f23b5a300c025781d29a6eec0b4197c7ef0f5b002d",
+      "required": true,
+      "expectedChangedPaths": ["src/consumer.ts", "src/old-name.ts", "src/project-name.ts"],
+      "forbiddenChangedPaths": ["package.json", "README.md"]
     }
   ],
   "budgets": { "maxTurns": 12, "maxTokens": 12000, "maxCostUsd": 0.9, "timeoutMs": 180000 },

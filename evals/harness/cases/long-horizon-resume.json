@@ -1,17 +1,27 @@
 {
-  "schemaVersion": 1,
-  "corpusVersion": "harness-corpus-v1",
-  "evaluatorVersion": "phase0-contract-v1",
+  "schemaVersion": 2,
+  "corpusVersion": "calibration-public-v1",
+  "evaluatorVersion": "phase0-contract-v2",
   "id": "long-horizon-resume",
   "taskClass": "long-horizon",
   "evidenceKind": "machine-verifiable",
-  "eligibility": "provider-trial",
+  "eligibility": "calibration-diagnostic",
+  "designClass": "calibration",
+  "claimAuthority": "none",
+  "splitRole": "calibration-public",
+  "splitVersion": "calibration-public-split-v1",
+  "splitDigest": "sha256:8ab5d4572b0cfc0b519423d2a9cc53ad6273faa1b318ec6c4742b3a7f615fed3",
+  "caseFamilyId": "long-horizon-resume",
+  "projectFamilyId": "long-horizon-resume",
+  "generatorFamilyId": "hand-authored-long-horizon-resume",
+  "relationshipGroupId": "long-horizon-resume",
   "prompt": "Resume from checkpoint.json and complete tasks.md. Create decision-log.md preserving the recorded failure and decision without retrying the failed write-before-reading approach.",
   "trial": {
     "experimentalUnit": "root-request",
     "clusterKey": "long-horizon-resume",
     "isolation": "fresh-materialization",
     "attemptsPerArm": 3,
+    "evidencePurpose": "calibration-smoke-only",
     "paired": true,
     "sameSeedAcrossArms": true
   },
@@ -20,7 +30,23 @@
     "revision": "long-horizon-resume-v1",
     "treeDigest": "sha256:bc561bdde1e47bc84ce01e8bc8a53b77dee27773c6c65c88aab723a8e6e3daf9",
     "reset": "rematerialize",
-    "ownership": "evaluator"
+    "ownership": "evaluator",
+    "files": [
+      {
+        "path": "checkpoint.json",
+        "type": "regular",
+        "bytes": 175,
+        "digest": "sha256:d8aea01443e570a39e8a8c1f6062b93a91dc324e8c48b4d1ddb4c6e8c352ecf9",
+        "modeClass": "data"
+      },
+      {
+        "path": "tasks.md",
+        "type": "regular",
+        "bytes": 149,
+        "digest": "sha256:cfaa2b2fb2e4a39e1f8dfdead986572704c31ded30f57c2dc8f74419ff448d2b",
+        "modeClass": "data"
+      }
+    ]
   },
   "modelSliceIds": ["primary-exact-model"],
   "compatibility": {
@@ -37,6 +63,9 @@
     {
       "id": "decision-log-content",
       "kind": "file",
+      "outcomeClass": "machine-verifiable",
+      "authority": "primary",
+      "verifierReleaseDigest": "sha256:a8735dca1237275076f604f23b5a300c025781d29a6eec0b4197c7ef0f5b002d",
       "required": true,
       "path": "decision-log.md",
       "assertion": "utf8-equals",

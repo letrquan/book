@@ -1,9 +1,25 @@
 {
-  "schemaVersion": 1,
-  "id": "long-horizon-terminal-v1",
-  "status": "blocked-pending-tier-c-runner",
-  "resultNamespace": "external/long-horizon-terminal",
+  "schemaVersion": 2,
+  "id": "terminal-bench-2.1-descriptor-v1",
+  "upstream": {
+    "name": "Terminal-Bench 2.1",
+    "release": "2.1",
+    "datasetRevision": "must-be-pinned-before-use",
+    "digestStatus": "required-before-use",
+    "licenseProvenanceStatus": "required-before-use"
+  },
+  "status": "descriptor-only",
+  "executionEligibility": "blocked-tier-c",
+  "resultNamespace": "external/terminal-bench-2.1",
+  "mapping": {
+    "taskClass": "long-horizon",
+    "projectRisk": "high",
+    "fixtureAuthority": "external-project-controlled",
+    "verifierClass": "project-command",
+    "unsupportedPhase0Fields": ["data-only-fixture", "pure-verifier", "network-off-worker"]
+  },
   "preserveExternalEvaluator": true,
-  "requiredIdentityFields": ["corpus-version", "evaluator-version", "fixture-digest", "runtime-fingerprint", "environment-fingerprint", "tool-surface-fingerprint", "policy-fingerprint", "budget-fingerprint", "pricing-version", "resolved-model", "evaluation-date", "random-seed"],
-  "promotionSubstitute": false
+  "poolWithLocalCorpus": false,
+  "promotionSubstitute": false,
+  "tierCRequiredOperations": ["container-execution", "shell", "package-manager", "project-verifier"]
 }

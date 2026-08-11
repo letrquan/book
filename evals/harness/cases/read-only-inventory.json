@@ -1,17 +1,27 @@
 {
-  "schemaVersion": 1,
-  "corpusVersion": "harness-corpus-v1",
-  "evaluatorVersion": "phase0-contract-v1",
+  "schemaVersion": 2,
+  "corpusVersion": "calibration-public-v1",
+  "evaluatorVersion": "phase0-contract-v2",
   "id": "read-only-inventory",
   "taskClass": "read-only",
   "evidenceKind": "machine-verifiable",
-  "eligibility": "provider-trial",
+  "eligibility": "calibration-diagnostic",
+  "designClass": "calibration",
+  "claimAuthority": "none",
+  "splitRole": "calibration-public",
+  "splitVersion": "calibration-public-split-v1",
+  "splitDigest": "sha256:8ab5d4572b0cfc0b519423d2a9cc53ad6273faa1b318ec6c4742b3a7f615fed3",
+  "caseFamilyId": "read-only-inventory",
+  "projectFamilyId": "read-only-inventory",
+  "generatorFamilyId": "hand-authored-read-only-inventory",
+  "relationshipGroupId": "read-only-inventory",
   "prompt": "Inspect the repository without modifying existing files. Write inventory.txt containing README.md and src/value.ts, one path per line in that order.",
   "trial": {
     "experimentalUnit": "root-request",
     "clusterKey": "read-only-inventory",
     "isolation": "fresh-materialization",
     "attemptsPerArm": 3,
+    "evidencePurpose": "calibration-smoke-only",
     "paired": true,
     "sameSeedAcrossArms": true
   },
@@ -20,7 +30,23 @@
     "revision": "read-only-inventory-v1",
     "treeDigest": "sha256:10399634f8cebc8b04df45295531f3f693f6e3146d8794efd56b3af5af8f7c74",
     "reset": "rematerialize",
-    "ownership": "evaluator"
+    "ownership": "evaluator",
+    "files": [
+      {
+        "path": "README.md",
+        "type": "regular",
+        "bytes": 24,
+        "digest": "sha256:46909a1a001ec27edf8892e57035951bb6340078a0e55f23b770b47cafcb4106",
+        "modeClass": "data"
+      },
+      {
+        "path": "src/value.ts",
+        "type": "regular",
+        "bytes": 25,
+        "digest": "sha256:2496df5f88b82a3a0dcd34e29ce9bdafe95fd15da04695c3cd99f74fac55e761",
+        "modeClass": "data"
+      }
+    ]
   },
   "modelSliceIds": ["primary-exact-model"],
   "compatibility": {
@@ -37,6 +63,9 @@
     {
       "id": "inventory-content",
       "kind": "file",
+      "outcomeClass": "machine-verifiable",
+      "authority": "primary",
+      "verifierReleaseDigest": "sha256:a8735dca1237275076f604f23b5a300c025781d29a6eec0b4197c7ef0f5b002d",
       "required": true,
       "path": "inventory.txt",
       "assertion": "utf8-equals",
@@ -45,6 +74,9 @@
     {
       "id": "no-extra-notes",
       "kind": "file",
+      "outcomeClass": "machine-verifiable",
+      "authority": "guardrail",
+      "verifierReleaseDigest": "sha256:a8735dca1237275076f604f23b5a300c025781d29a6eec0b4197c7ef0f5b002d",
       "required": false,
       "path": "notes.txt",
       "assertion": "absent"

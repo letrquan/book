@@ -2,29 +2,48 @@ import { createHash } from 'node:crypto';
 import { copyFile, lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
+import {
+  SAFE_ID_PATTERN,
+  SHA256_PATTERN,
+  SafeEvaluationIdSchema,
+  Sha256DigestSchema,
+  canonicalJson,
+  evaluationDigest,
+} from './identity.js';
+import { Phase0EvaluationReportSchema } from './report.js';
+import {
+  HumanRubricArtifactSchema,
+  evaluateHumanRubric,
+  type HumanRubricDecision,
+  type HumanRubricEvaluationInput,
+} from './review.js';
 
-const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
-const SAFE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+export { canonicalJson, evaluationDigest } from './identity.js';
+export { evaluateHumanRubric } from './review.js';
+export type {
+  HumanRubricDecision,
+  HumanRubricEvaluationInput,
+  HumanRubricReviewRecord,
+} from './review.js';
 
 const strictStringRecord = z.record(z.string(), z.string());
-
-const TrustedCommandSchema = z
-  .object({
-    argv: z.array(z.string().min(1)).min(1),
-    cwd: z.string().min(1),
-    envAllowlist: z.array(z.string().min(1)),
-    network: z.enum(['off', 'restricted', 'required']),
-  })
-  .strict();
+const MAX_FIXTURE_FILES = 1_000;
+const MAX_FIXTURE_ENTRIES = 2_000;
+const MAX_FIXTURE_BYTES = 10 * 1024 * 1024;
+const MAX_FIXTURE_DEPTH = 32;
+const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 
 const FileVerifierSchema = z
   .object({
-    id: z.string().regex(SAFE_ID_PATTERN),
+    id: SafeEvaluationIdSchema,
     kind: z.literal('file'),
+    outcomeClass: z.literal('machine-verifiable'),
+    authority: z.enum(['primary', 'guardrail']),
+    verifierReleaseDigest: Sha256DigestSchema,
     required: z.boolean(),
     path: z.string().min(1),
     assertion: z.enum(['exists', 'absent', 'sha256', 'utf8-equals']),
-    expectedDigest: z.string().regex(SHA256_PATTERN).optional(),
+    expectedDigest: Sha256DigestSchema.optional(),
     expectedText: z.string().optional(),
   })
   .strict()
@@ -38,50 +57,92 @@ const FileVerifierSchema = z
         message: 'utf8-equals requires expectedText',
       });
     }
+    if (value.assertion !== 'sha256' && value.expectedDigest !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'expectedDigest is permitted only for a sha256 assertion',
+      });
+    }
+    if (value.assertion !== 'utf8-equals' && value.expectedText !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'expectedText is permitted only for a utf8-equals assertion',
+      });
+    }
   });
 
 const DiffVerifierSchema = z
   .object({
-    id: z.string().regex(SAFE_ID_PATTERN),
+    id: SafeEvaluationIdSchema,
     kind: z.literal('diff'),
+    outcomeClass: z.literal('machine-verifiable'),
+    authority: z.literal('guardrail'),
+    verifierReleaseDigest: Sha256DigestSchema,
     required: z.boolean(),
     expectedChangedPaths: z.array(z.string().min(1)),
     forbiddenChangedPaths: z.array(z.string().min(1)),
   })
-  .strict();
-
-const CommandVerifierSchema = z
-  .object({
-    id: z.string().regex(SAFE_ID_PATTERN),
-    kind: z.literal('command'),
-    required: z.boolean(),
-    command: TrustedCommandSchema,
-    timeoutMs: z.number().int().positive(),
-    expectedExitCodes: z.array(z.number().int()).min(1),
-  })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const expected = new Set(value.expectedChangedPaths);
+    const forbidden = new Set(value.forbiddenChangedPaths);
+    if (expected.size !== value.expectedChangedPaths.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Expected changed paths must differ.',
+      });
+    }
+    if (forbidden.size !== value.forbiddenChangedPaths.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Forbidden changed paths must differ.',
+      });
+    }
+    if ([...expected].some((path) => forbidden.has(path))) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'A changed path cannot be both required and forbidden.',
+      });
+    }
+  });
 
 const HumanRubricVerifierSchema = z
   .object({
-    id: z.string().regex(SAFE_ID_PATTERN),
+    id: SafeEvaluationIdSchema,
     kind: z.literal('human-rubric'),
+    outcomeClass: z.literal('human-rubric'),
+    authority: z.enum(['calibration-only', 'confirmatory-eligible']),
     required: z.boolean(),
-    rubricId: z.string().regex(SAFE_ID_PATTERN),
+    rubricId: SafeEvaluationIdSchema,
+    rubricVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+    rubricDigest: Sha256DigestSchema,
+    reviewProtocol: z.literal('phase0-human-v1'),
+  })
+  .strict();
+
+const ObservationalVerifierSchema = z
+  .object({
+    id: SafeEvaluationIdSchema,
+    kind: z.literal('observational'),
+    outcomeClass: z.literal('observational'),
+    authority: z.literal('none'),
+    required: z.literal(false),
+    evidenceId: SafeEvaluationIdSchema,
   })
   .strict();
 
 export const HarnessEvaluationVerifierSchema = z.union([
   FileVerifierSchema,
   DiffVerifierSchema,
-  CommandVerifierSchema,
   HumanRubricVerifierSchema,
+  ObservationalVerifierSchema,
 ]);
 
 const MetricPolicySchema = z
   .object({
     primary: z.string().min(1),
     guardrails: z.array(z.string().min(1)).min(1),
-    minimumAttemptsPerArm: z.number().int().min(2),
+    minimumAttemptsPerArm: z.literal(3),
     minimumDetectableEffect: z.string().min(1),
     maximumCostIncreaseRatio: z.number().min(0),
     maximumLatencyIncreaseRatio: z.number().min(0),
@@ -89,9 +150,19 @@ const MetricPolicySchema = z
   })
   .strict();
 
+const FixtureFileSchema = z
+  .object({
+    path: z.string().min(1),
+    type: z.literal('regular'),
+    bytes: z.number().int().nonnegative(),
+    digest: Sha256DigestSchema,
+    modeClass: z.literal('data'),
+  })
+  .strict();
+
 export const HarnessEvaluationCaseSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     corpusVersion: z.string().min(1),
     evaluatorVersion: z.string().min(1),
     id: z.string().regex(SAFE_ID_PATTERN),
@@ -105,14 +176,24 @@ export const HarnessEvaluationCaseSchema = z
       'long-horizon',
     ]),
     evidenceKind: z.enum(['machine-verifiable', 'human-rubric', 'observational']),
-    eligibility: z.enum(['provider-trial', 'offline-only', 'blocked-tier-c']),
+    eligibility: z.enum(['blocked-tier-c', 'calibration-diagnostic', 'offline-calibration']),
+    designClass: z.literal('calibration'),
+    claimAuthority: z.literal('none'),
+    splitRole: z.literal('calibration-public'),
+    splitVersion: z.string().min(1),
+    splitDigest: Sha256DigestSchema,
+    caseFamilyId: SafeEvaluationIdSchema,
+    projectFamilyId: SafeEvaluationIdSchema,
+    generatorFamilyId: SafeEvaluationIdSchema,
+    relationshipGroupId: SafeEvaluationIdSchema,
     prompt: z.string().min(1),
     trial: z
       .object({
         experimentalUnit: z.literal('root-request'),
         clusterKey: z.string().min(1),
         isolation: z.literal('fresh-materialization'),
-        attemptsPerArm: z.number().int().min(2),
+        attemptsPerArm: z.literal(3),
+        evidencePurpose: z.literal('calibration-smoke-only'),
         paired: z.literal(true),
         sameSeedAcrossArms: z.literal(true),
       })
@@ -124,6 +205,7 @@ export const HarnessEvaluationCaseSchema = z
         treeDigest: z.string().regex(SHA256_PATTERN),
         reset: z.literal('rematerialize'),
         ownership: z.literal('evaluator'),
+        files: z.array(FixtureFileSchema).min(1),
       })
       .strict(),
     modelSliceIds: z.array(z.string().regex(SAFE_ID_PATTERN)).min(1),
@@ -152,15 +234,62 @@ export const HarnessEvaluationCaseSchema = z
     tags: z.array(z.string().regex(SAFE_ID_PATTERN)).min(1),
     knownUnknowns: z.array(z.string()),
   })
-  .strict();
+  .strict()
+  .superRefine((evaluationCase, context) => {
+    const unique = (values: readonly string[], label: string) => {
+      if (new Set(values).size !== values.length) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: `${label} must differ.` });
+      }
+    };
+    unique(
+      evaluationCase.fixture.files.map((file) => file.path),
+      'Fixture file paths',
+    );
+    unique(
+      evaluationCase.verifiers.map((verifier) => verifier.id),
+      'Verifier IDs',
+    );
+    unique(evaluationCase.modelSliceIds, 'Model-slice IDs');
+    unique(evaluationCase.allowedTools, 'Allowed tools');
+    unique(evaluationCase.expectedArtifacts, 'Expected artifacts');
+    unique(evaluationCase.tags, 'Case tags');
+  });
 
 export const HarnessEvaluationManifestSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     corpusVersion: z.string().min(1),
     evaluatorVersion: z.string().min(1),
     scope: z.literal('trusted-built-in-non-adversarial'),
-    reportSchemaVersion: z.literal(1),
+    reportSchemaVersion: z.literal(2),
+    designClass: z.literal('calibration'),
+    claimAuthority: z.literal('none'),
+    splitRole: z.literal('calibration-public'),
+    splitVersion: z.string().min(1),
+    splitDigest: Sha256DigestSchema,
+    corpusDigest: Sha256DigestSchema,
+    evaluatorRelease: z
+      .object({
+        version: z.string().min(1),
+        artifactDigest: Sha256DigestSchema,
+        provenanceDigest: Sha256DigestSchema,
+        status: z.enum(['unpackaged-calibration-source', 'packaged-signed']),
+      })
+      .strict(),
+    confirmatoryStatus: z.literal('not-instantiated'),
+    rubricArtifacts: z
+      .array(
+        z
+          .object({
+            rubricId: SafeEvaluationIdSchema,
+            rubricVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+            file: z.string().min(1),
+            digest: Sha256DigestSchema,
+            authority: z.enum(['calibration-only', 'confirmatory-eligible', 'observational']),
+          })
+          .strict(),
+      )
+      .min(2),
     caseFiles: z.array(z.string().min(1)).min(1),
     arms: z
       .array(
@@ -196,7 +325,11 @@ export const HarnessEvaluationManifestSchema = z
         multiplicity: z.literal('holm-primary-family-guardrails-non-inferiority'),
         unknownPolicy: z.literal('retain-in-denominator-and-report-by-arm'),
         tieBreak: z.literal('simpler-workflow'),
-        minimumControlRunsForNoiseFloor: z.number().int().min(3),
+        minimumControlRunsForNoiseFloor: z.literal(5),
+        minimumMatchedAaBlocksForSizing: z.number().int().min(20),
+        minimumHeldOutFamiliesForPromotion: z.number().int().min(20),
+        minimumRepetitionsPerFamilyForPromotion: z.number().int().min(5),
+        evidenceClass: z.literal('calibration'),
       })
       .strict(),
     trustBoundary: z
@@ -206,11 +339,36 @@ export const HarnessEvaluationManifestSchema = z
         network: z.literal('off'),
         credentials: z.literal('forbidden'),
         symlinks: z.literal('forbidden'),
+        commandVerifiers: z.literal('blocked'),
+        workerExecution: z.enum(['unavailable', 'attested-only']),
+        providerBroker: z.enum(['unavailable', 'required']),
       })
       .strict(),
-    compatibilityFields: z.array(z.string().regex(SAFE_ID_PATTERN)).min(8),
+    compatibilityFields: z.array(SafeEvaluationIdSchema).min(8),
   })
-  .strict();
+  .strict()
+  .superRefine((manifest, context) => {
+    const unique = (values: readonly string[], label: string) => {
+      if (new Set(values).size !== values.length) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: `${label} must differ.` });
+      }
+    };
+    unique(
+      manifest.rubricArtifacts.map((rubric) => rubric.rubricId),
+      'Rubric artifact IDs',
+    );
+    unique(manifest.caseFiles, 'Case files');
+    unique(
+      manifest.arms.map((arm) => arm.id),
+      'Arm IDs',
+    );
+    unique(manifest.routingArms, 'Routing arms');
+    unique(
+      manifest.modelSlices.map((slice) => slice.id),
+      'Model-slice IDs',
+    );
+    unique(manifest.compatibilityFields, 'Compatibility fields');
+  });
 
 export type HarnessEvaluationCase = z.infer<typeof HarnessEvaluationCaseSchema>;
 export type HarnessEvaluationManifest = z.infer<typeof HarnessEvaluationManifestSchema>;
@@ -220,6 +378,8 @@ export interface HarnessEvaluationCorpus {
   root: string;
   manifest: HarnessEvaluationManifest;
   cases: HarnessEvaluationCase[];
+  designClass: 'calibration';
+  promotionAuthority: 'none';
 }
 
 export interface EvaluationVerifierResult {
@@ -237,25 +397,27 @@ export interface EvaluationFinalStateResult {
 
 export interface EvaluationFinalStateContext {
   changedPaths?: readonly string[];
-  rubricReviews?: Readonly<Record<string, readonly HumanRubricReview[]>>;
-}
-
-export interface HumanRubricReview {
-  reviewerId: string;
-  score: number;
-  independent: boolean;
-}
-
-export interface HumanRubricDecision {
-  status: 'passed' | 'failed' | 'unknown';
-  detail: string;
-  scores: number[];
+  rubricReviews?: Readonly<Record<string, HumanRubricEvaluationInput>>;
+  verificationMode?: 'calibration' | 'confirmatory';
+  snapshot?: {
+    finalStateDigest: string;
+    readOnly: boolean;
+    workerStopped: boolean;
+    descendantsStopped: boolean;
+  };
 }
 
 export interface EvaluationComparisonIdentity {
   armId: string;
   corpusVersion: string;
+  splitRole?: string;
+  splitVersion?: string;
+  splitDigest?: string;
   evaluatorVersion: string;
+  evaluatorReleaseDigest?: string;
+  verifierReleaseDigest?: string;
+  workerRegistrationDigest?: string;
+  brokerDigest?: string;
   fixtureRevision: string;
   fixtureDigest: string;
   provider: string;
@@ -270,6 +432,8 @@ export interface EvaluationComparisonIdentity {
   pricingVersion: string;
   evaluationDate: string;
   randomSeed: string;
+  compatibilityCellDigest?: string;
+  treatmentDigest?: string;
 }
 
 export interface EvaluationContractComparison {
@@ -285,17 +449,38 @@ export interface EvaluationNoiseObservation {
 export interface EvaluationNoiseFloor {
   sampleCount: number;
   sufficient: boolean;
+  designClass: 'calibration' | 'confirmatory-sizing';
+  promotionEligible: false;
   successRate: number;
   unknownRate: number;
   setupFailureRate: number;
   meanLatencyMs?: number;
   latencyStdDevMs?: number;
   minimumDetectableSuccessRateDelta: number;
+  requiredMatchedAaBlocks: number;
 }
 
 function assertRelativePath(path: string, label: string): void {
-  if (isAbsolute(path) || path.split(/[\\/]+/).includes('..')) {
+  const segments = path.split(/[\\/]+/);
+  if (
+    !path ||
+    isAbsolute(path) ||
+    segments.some((segment) => segment === '' || segment === '.' || segment === '..')
+  ) {
     throw new Error(`${label} must stay within the evaluation corpus.`);
+  }
+  for (const segment of segments) {
+    if (
+      segment !== segment.normalize('NFC') ||
+      segment.toLowerCase() === '.git' ||
+      segment.includes(':') ||
+      segment.includes('\0') ||
+      segment.endsWith('.') ||
+      segment.endsWith(' ') ||
+      WINDOWS_RESERVED_NAME.test(segment)
+    ) {
+      throw new Error(`${label} contains a forbidden portable path segment: ${segment}.`);
+    }
   }
 }
 
@@ -383,21 +568,6 @@ async function assertConstrainedDirectory(
   return inspection.path;
 }
 
-export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
-      left.localeCompare(right),
-    );
-    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-export function evaluationDigest(value: unknown): string {
-  return `sha256:${createHash('sha256').update(canonicalJson(value)).digest('hex')}`;
-}
-
 async function readJson(path: string): Promise<unknown> {
   return JSON.parse(await readFile(path, 'utf8')) as unknown;
 }
@@ -420,6 +590,36 @@ export async function loadEvaluationCorpus(root: string): Promise<HarnessEvaluat
   const cases: HarnessEvaluationCase[] = [];
   const ids = new Set<string>();
   const modelSliceIds = new Set(manifest.modelSlices.map((slice) => slice.id));
+  const rubrics = new Map<
+    string,
+    {
+      reference: HarnessEvaluationManifest['rubricArtifacts'][number];
+      artifact: z.infer<typeof HumanRubricArtifactSchema>;
+    }
+  >();
+  for (const rubricReference of manifest.rubricArtifacts) {
+    assertRelativePath(rubricReference.file, `Rubric path ${rubricReference.rubricId}`);
+    const rubric = HumanRubricArtifactSchema.parse(
+      await readConstrainedJson(
+        absoluteRoot,
+        rubricReference.file,
+        `Rubric path ${rubricReference.rubricId}`,
+      ),
+    );
+    if (
+      rubric.rubricId !== rubricReference.rubricId ||
+      rubric.rubricVersion !== rubricReference.rubricVersion ||
+      rubric.authority !== rubricReference.authority ||
+      rubric.evaluatorReleaseDigest !== manifest.evaluatorRelease.artifactDigest ||
+      evaluationDigest(rubric) !== rubricReference.digest
+    ) {
+      throw new Error(`Rubric ${rubricReference.rubricId} identity does not match its manifest.`);
+    }
+    if (rubrics.has(rubric.rubricId)) {
+      throw new Error(`Duplicate rubric artifact id: ${rubric.rubricId}`);
+    }
+    rubrics.set(rubric.rubricId, { reference: rubricReference, artifact: rubric });
+  }
 
   for (const caseFile of manifest.caseFiles) {
     const parsed = HarnessEvaluationCaseSchema.parse(
@@ -431,6 +631,12 @@ export async function loadEvaluationCorpus(root: string): Promise<HarnessEvaluat
     if (parsed.evaluatorVersion !== manifest.evaluatorVersion) {
       throw new Error(`Case ${parsed.id} has a stale evaluator version.`);
     }
+    if (parsed.designClass && parsed.designClass !== 'calibration') {
+      throw new Error(`Case ${parsed.id} is not a calibration case.`);
+    }
+    if (parsed.claimAuthority && parsed.claimAuthority !== 'none') {
+      throw new Error(`Case ${parsed.id} declares promotion authority.`);
+    }
     if (ids.has(parsed.id)) throw new Error(`Duplicate evaluation case id: ${parsed.id}`);
     ids.add(parsed.id);
     for (const modelSliceId of parsed.modelSliceIds) {
@@ -438,28 +644,141 @@ export async function loadEvaluationCorpus(root: string): Promise<HarnessEvaluat
         throw new Error(`Case ${parsed.id} references unknown model slice ${modelSliceId}.`);
       }
     }
-    await assertConstrainedDirectory(
+    for (const expectedArtifact of parsed.expectedArtifacts) {
+      assertRelativePath(expectedArtifact, `Expected artifact ${expectedArtifact}`);
+    }
+    const fixtureSource = await assertConstrainedDirectory(
       absoluteRoot,
       parsed.fixture.source,
       `Fixture source for ${parsed.id}`,
     );
+    const fixtureInspection = await inspectEvaluationFixture(fixtureSource);
+    if (fixtureInspection.treeDigest !== parsed.fixture.treeDigest) {
+      throw new Error(`Case ${parsed.id} fixture digest does not match its source tree.`);
+    }
+    if (parsed.fixture.files) {
+      const expectedPaths = new Set(parsed.fixture.files.map((file) => file.path));
+      if (expectedPaths.size !== parsed.fixture.files.length) {
+        throw new Error(`Case ${parsed.id} declares duplicate fixture paths.`);
+      }
+      for (const file of parsed.fixture.files)
+        assertRelativePath(file.path, `Fixture file ${file.path}`);
+      if (canonicalJson(parsed.fixture.files) !== canonicalJson(fixtureInspection.files)) {
+        throw new Error(`Case ${parsed.id} fixture file manifest does not match its source tree.`);
+      }
+    }
     for (const verifier of parsed.verifiers) {
       if ('path' in verifier) assertRelativePath(verifier.path, `Verifier path ${verifier.id}`);
+      if ('expectedChangedPaths' in verifier) {
+        for (const path of [...verifier.expectedChangedPaths, ...verifier.forbiddenChangedPaths]) {
+          assertRelativePath(path, `Diff verifier path ${verifier.id}`);
+        }
+      }
+      if (verifier.kind === 'human-rubric') {
+        const rubric = rubrics.get(verifier.rubricId);
+        if (
+          !rubric ||
+          rubric.reference.rubricVersion !== verifier.rubricVersion ||
+          rubric.reference.digest !== verifier.rubricDigest ||
+          rubric.reference.authority !== verifier.authority ||
+          !rubric.artifact.eligibleSlice.taskClasses.includes(
+            parsed.taskClass as 'review' | 'research',
+          ) ||
+          !rubric.artifact.eligibleSlice.projectRisks.includes(parsed.risk)
+        ) {
+          throw new Error(`Verifier ${verifier.id} references an unpinned rubric artifact.`);
+        }
+      }
     }
     cases.push(parsed);
   }
 
-  return { root: absoluteRoot, manifest, cases };
+  if (manifest.designClass && manifest.designClass !== 'calibration') {
+    throw new Error('The Phase 0 public corpus cannot declare confirmatory authority.');
+  }
+  if (manifest.claimAuthority && manifest.claimAuthority !== 'none') {
+    throw new Error('The Phase 0 public corpus cannot declare claim authority.');
+  }
+  const corpusIdentity = cases.map((evaluationCase) => {
+    return Object.fromEntries(
+      Object.entries(evaluationCase).filter(([key]) => key !== 'splitDigest'),
+    );
+  });
+  if (manifest.corpusDigest && evaluationDigest(corpusIdentity) !== manifest.corpusDigest) {
+    throw new Error('Calibration corpus content digest does not match its cases.');
+  }
+  const splitMembership = cases.map((evaluationCase) => ({
+    splitRole: evaluationCase.splitRole,
+    caseFamilyId: evaluationCase.caseFamilyId,
+    caseId: evaluationCase.id,
+    projectFamilyId: evaluationCase.projectFamilyId,
+    generatorFamilyId: evaluationCase.generatorFamilyId,
+    relationshipGroupId: evaluationCase.relationshipGroupId,
+    fixtureRevision: evaluationCase.fixture.revision,
+    fixtureDigest: evaluationCase.fixture.treeDigest,
+    outcomes: evaluationCase.verifiers.map((verifier) => ({
+      id: verifier.id,
+      kind: verifier.kind,
+      outcomeClass: verifier.outcomeClass ?? evaluationCase.evidenceKind,
+      authority: verifier.authority ?? 'legacy-calibration',
+      verifierReleaseDigest:
+        'verifierReleaseDigest' in verifier ? (verifier.verifierReleaseDigest ?? null) : null,
+      rubricDigest: 'rubricDigest' in verifier ? (verifier.rubricDigest ?? null) : null,
+    })),
+  }));
+  const splitDigest = evaluationDigest(splitMembership);
+  if (manifest.splitDigest && splitDigest !== manifest.splitDigest) {
+    throw new Error('Calibration split digest does not match its ordered membership.');
+  }
+  if (cases.some((evaluationCase) => evaluationCase.splitDigest !== manifest.splitDigest)) {
+    throw new Error('Calibration cases do not pin the manifest split digest.');
+  }
+  return {
+    root: absoluteRoot,
+    manifest,
+    cases,
+    designClass: 'calibration',
+    promotionAuthority: 'none',
+  };
+}
+
+interface FixtureRecord {
+  path: string;
+  bytes: number;
+  digest: string;
+}
+
+interface FixtureInspectionState {
+  entryCount: number;
+  fileCount: number;
+  totalBytes: number;
+  portablePaths: Set<string>;
 }
 
 async function collectFixtureFiles(
   root: string,
   directory: string,
   canonicalRoot: string,
-): Promise<string[]> {
-  const files: string[] = [];
+  state: FixtureInspectionState,
+  depth = 0,
+): Promise<FixtureRecord[]> {
+  if (depth > MAX_FIXTURE_DEPTH) {
+    throw new Error(`Fixture exceeds the ${MAX_FIXTURE_DEPTH}-directory depth limit.`);
+  }
+  const files: FixtureRecord[] = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
+    state.entryCount += 1;
+    if (state.entryCount > MAX_FIXTURE_ENTRIES) {
+      throw new Error(`Fixture exceeds the ${MAX_FIXTURE_ENTRIES}-entry limit.`);
+    }
     const path = resolve(directory, entry.name);
+    const relativePath = relative(root, path).replaceAll('\\', '/');
+    assertRelativePath(relativePath, 'Fixture path');
+    const portablePath = relativePath.normalize('NFC').toLowerCase();
+    if (state.portablePaths.has(portablePath)) {
+      throw new Error(`Fixture path collides after case/Unicode normalization: ${relativePath}`);
+    }
+    state.portablePaths.add(portablePath);
     const metadata = await lstat(path);
     if (metadata.isSymbolicLink()) throw new Error(`Fixture symlink is forbidden: ${path}`);
     const canonicalPath = await realpath(path);
@@ -467,15 +786,42 @@ async function collectFixtureFiles(
       throw new Error(`Fixture path escapes its root: ${path}`);
     }
     if (metadata.isDirectory()) {
-      files.push(...(await collectFixtureFiles(root, path, canonicalRoot)));
-    } else if (metadata.isFile()) files.push(relative(root, path).replaceAll('\\', '/'));
-    else throw new Error(`Fixture contains unsupported entry: ${path}`);
+      const nestedFiles = await collectFixtureFiles(root, path, canonicalRoot, state, depth + 1);
+      if (nestedFiles.length === 0)
+        throw new Error(`Fixture empty directories are forbidden: ${path}`);
+      files.push(...nestedFiles);
+    } else if (metadata.isFile()) {
+      if (metadata.nlink > 1) throw new Error(`Fixture hard links are forbidden: ${path}`);
+      if ((metadata.mode & 0o111) !== 0)
+        throw new Error(`Fixture executable files are forbidden: ${path}`);
+      state.fileCount += 1;
+      if (state.fileCount > MAX_FIXTURE_FILES) {
+        throw new Error(`Fixture exceeds the ${MAX_FIXTURE_FILES}-file limit.`);
+      }
+      if (metadata.size > MAX_FIXTURE_BYTES - state.totalBytes) {
+        throw new Error(`Fixture exceeds the ${MAX_FIXTURE_BYTES}-byte limit.`);
+      }
+      const contents = await readFile(path);
+      if (contents.byteLength !== metadata.size)
+        throw new Error(`Fixture changed while reading: ${path}`);
+      state.totalBytes += contents.byteLength;
+      files.push({
+        path: relativePath,
+        bytes: contents.byteLength,
+        digest: createHash('sha256').update(contents).digest('hex'),
+      });
+    } else throw new Error(`Fixture contains unsupported entry: ${path}`);
   }
-  return files.sort();
+  return files.sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+  );
 }
 
 /** Hash paths and contents so fixture reset can be verified across materializations. */
-export async function fingerprintEvaluationFixture(root: string): Promise<string> {
+export async function inspectEvaluationFixture(root: string): Promise<{
+  treeDigest: string;
+  files: Array<{ path: string; type: 'regular'; bytes: number; digest: string; modeClass: 'data' }>;
+}> {
   const absoluteRoot = resolve(root);
   const rootMetadata = await lstat(absoluteRoot);
   if (rootMetadata.isSymbolicLink()) {
@@ -484,16 +830,28 @@ export async function fingerprintEvaluationFixture(root: string): Promise<string
   if (!rootMetadata.isDirectory())
     throw new Error(`Fixture root must be a directory: ${absoluteRoot}`);
   const canonicalRoot = await realpath(absoluteRoot);
-  const records = [];
-  for (const path of await collectFixtureFiles(absoluteRoot, absoluteRoot, canonicalRoot)) {
-    const contents = await readFile(resolveWithin(absoluteRoot, path, 'Fixture file'));
-    records.push({
-      path,
-      bytes: contents.byteLength,
-      digest: createHash('sha256').update(contents).digest('hex'),
-    });
-  }
-  return evaluationDigest(records);
+  const records = await collectFixtureFiles(absoluteRoot, absoluteRoot, canonicalRoot, {
+    entryCount: 0,
+    fileCount: 0,
+    totalBytes: 0,
+    portablePaths: new Set(),
+  });
+  if (records.length === 0) throw new Error(`Fixture must contain at least one regular file.`);
+  return {
+    treeDigest: evaluationDigest(records),
+    files: records.map((file) => ({
+      path: file.path,
+      type: 'regular',
+      bytes: file.bytes,
+      digest: `sha256:${file.digest}`,
+      modeClass: 'data',
+    })),
+  };
+}
+
+/** Hash paths and contents so fixture reset can be verified across materializations. */
+export async function fingerprintEvaluationFixture(root: string): Promise<string> {
+  return (await inspectEvaluationFixture(root)).treeDigest;
 }
 
 async function copyFixtureTree(source: string, destination: string): Promise<void> {
@@ -544,42 +902,11 @@ export async function materializeEvaluationFixture(
   if (materializedDigest !== sourceDigest) {
     throw new Error(`Fixture ${evaluationCase.id} changed during materialization.`);
   }
+  const sourceAfterCopyDigest = await fingerprintEvaluationFixture(source);
+  if (sourceAfterCopyDigest !== sourceDigest) {
+    throw new Error(`Fixture ${evaluationCase.id} source changed during materialization.`);
+  }
   return materializedDigest;
-}
-
-export function evaluateHumanRubric(
-  reviews: readonly HumanRubricReview[] | undefined,
-  options: { minimumReviewers?: number; passingScore?: number; maximumSpread?: number } = {},
-): HumanRubricDecision {
-  const minimumReviewers = options.minimumReviewers ?? 2;
-  const passingScore = options.passingScore ?? 3;
-  const maximumSpread = options.maximumSpread ?? 1;
-  const scores = reviews?.map((review) => review.score) ?? [];
-  if (!reviews || reviews.length < minimumReviewers) {
-    return { status: 'unknown', detail: 'insufficient-independent-reviews', scores };
-  }
-  if (reviews.some((review) => !review.independent)) {
-    return {
-      status: 'unknown',
-      detail: 'reviewer-independence-not-established',
-      scores,
-    };
-  }
-  const reviewerIds = reviews.map((review) => review.reviewerId.trim());
-  if (reviewerIds.some((reviewerId) => reviewerId.length === 0)) {
-    return { status: 'unknown', detail: 'reviewer-identity-missing', scores };
-  }
-  if (new Set(reviewerIds).size !== reviewerIds.length) {
-    return { status: 'unknown', detail: 'duplicate-reviewer-identity', scores };
-  }
-  const spread = Math.max(...scores) - Math.min(...scores);
-  if (spread > maximumSpread) return { status: 'unknown', detail: 'review-disagreement', scores };
-  const mean = scores.reduce((sum, score) => sum + score, 0) / scores.length;
-  return {
-    status: mean >= passingScore ? 'passed' : 'failed',
-    detail: `mean-score:${mean.toFixed(2)}`,
-    scores,
-  };
 }
 
 async function evaluateVerifier(
@@ -587,17 +914,26 @@ async function evaluateVerifier(
   workspace: string,
   context: EvaluationFinalStateContext,
 ): Promise<EvaluationVerifierResult> {
-  if (verifier.kind === 'human-rubric') {
-    const decision = evaluateHumanRubric(context.rubricReviews?.[verifier.rubricId]);
-    return { ...decision, id: verifier.id, kind: verifier.kind, required: verifier.required };
-  }
-  if (verifier.kind === 'command') {
+  if (verifier.kind === 'observational') {
     return {
       id: verifier.id,
       kind: verifier.kind,
       required: verifier.required,
       status: 'unknown',
-      detail: 'command-verifier-requires-a-separately-approved-trusted-runner',
+      detail: 'observational-evidence-has-no-decision-authority',
+    };
+  }
+  if (verifier.kind === 'human-rubric') {
+    const rubricInput = context.rubricReviews?.[verifier.rubricId];
+    const decision: HumanRubricDecision | undefined = rubricInput
+      ? evaluateHumanRubric(rubricInput)
+      : undefined;
+    return {
+      id: verifier.id,
+      kind: verifier.kind,
+      required: verifier.required,
+      status: decision?.status ?? 'unknown',
+      detail: decision?.reason ?? 'human-review-packet-missing',
     };
   }
   if (verifier.kind === 'diff') {
@@ -706,6 +1042,27 @@ export async function evaluateCaseFinalState(
   workspace: string,
   context: EvaluationFinalStateContext = {},
 ): Promise<EvaluationFinalStateResult> {
+  if (context.verificationMode === 'confirmatory') {
+    const snapshot = context.snapshot;
+    const snapshotValid =
+      snapshot?.readOnly === true &&
+      snapshot.workerStopped === true &&
+      snapshot.descendantsStopped === true &&
+      SHA256_PATTERN.test(snapshot.finalStateDigest) &&
+      snapshot.finalStateDigest === (await fingerprintEvaluationFixture(workspace));
+    if (!snapshotValid) {
+      return {
+        status: 'unknown',
+        verifiers: evaluationCase.verifiers.map((verifier) => ({
+          id: verifier.id,
+          kind: verifier.kind,
+          required: verifier.required,
+          status: 'unknown',
+          detail: 'immutable-post-worker-snapshot-attestation-missing-or-invalid',
+        })),
+      };
+    }
+  }
   const verifiers = await Promise.all(
     evaluationCase.verifiers.map((verifier) => evaluateVerifier(verifier, workspace, context)),
   );
@@ -751,13 +1108,49 @@ export function evaluateContractComparison(
     else if (values.some((value) => value !== values[0]))
       reasons.push(`comparison_${field}_mismatch`);
   }
+  const releaseFields: Array<keyof Omit<EvaluationComparisonIdentity, 'armId'>> = [
+    'splitRole',
+    'splitVersion',
+    'splitDigest',
+    'evaluatorReleaseDigest',
+    'verifierReleaseDigest',
+    'workerRegistrationDigest',
+    'brokerDigest',
+    'compatibilityCellDigest',
+  ];
+  for (const field of releaseFields) {
+    const values = arms.map((arm) => arm[field]);
+    if (values.some((value) => value !== undefined)) {
+      if (values.some((value) => !value)) reasons.push(`comparison_${field}_missing`);
+      else if (values.some((value) => value !== values[0])) {
+        reasons.push(`comparison_${field}_mismatch`);
+      }
+    }
+  }
   return { eligible: reasons.length === 0, reasons };
 }
 
 export function summarizeEvaluationNoiseFloor(
   observations: readonly EvaluationNoiseObservation[],
-  minimumRuns = 5,
+  options:
+    | number
+    | {
+        designClass?: 'calibration' | 'confirmatory-sizing';
+        minimumMatchedAaBlocks?: number;
+      } = {},
 ): EvaluationNoiseFloor {
+  const designClass =
+    typeof options === 'number' ? 'calibration' : (options.designClass ?? 'calibration');
+  const requiredMatchedAaBlocks =
+    typeof options === 'number'
+      ? options
+      : (options.minimumMatchedAaBlocks ?? (designClass === 'confirmatory-sizing' ? 20 : 5));
+  if (
+    !Number.isInteger(requiredMatchedAaBlocks) ||
+    requiredMatchedAaBlocks < (designClass === 'confirmatory-sizing' ? 20 : 1)
+  ) {
+    throw new Error('Noise-floor matched-block requirement is below the frozen design minimum.');
+  }
   const sampleCount = observations.length;
   const count = (status: EvaluationNoiseObservation['status']) =>
     observations.filter((observation) => observation.status === status).length;
@@ -782,17 +1175,21 @@ export function summarizeEvaluationNoiseFloor(
     sampleCount === 0 ? 1 : 2 * Math.sqrt((successRate * (1 - successRate)) / sampleCount);
   return {
     sampleCount,
-    sufficient: sampleCount >= minimumRuns,
+    sufficient: sampleCount >= requiredMatchedAaBlocks,
+    designClass,
+    promotionEligible: false,
     successRate,
     unknownRate,
     setupFailureRate,
     meanLatencyMs,
     latencyStdDevMs,
     minimumDetectableSuccessRateDelta: Math.max(0.1, binomialNoise),
+    requiredMatchedAaBlocks,
   };
 }
 
 export async function writeEvaluationReport(path: string, report: unknown): Promise<void> {
+  const parsed = Phase0EvaluationReportSchema.parse(report);
   await mkdir(dirname(resolve(path)), { recursive: true });
-  await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  await writeFile(path, `${JSON.stringify(parsed, null, 2)}\n`, 'utf8');
 }

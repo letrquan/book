@@ -1,17 +1,27 @@
 {
-  "schemaVersion": 1,
-  "corpusVersion": "harness-corpus-v1",
-  "evaluatorVersion": "phase0-contract-v1",
+  "schemaVersion": 2,
+  "corpusVersion": "calibration-public-v1",
+  "evaluatorVersion": "phase0-contract-v2",
   "id": "simple-edit-heading",
   "taskClass": "simple-edit",
   "evidenceKind": "machine-verifiable",
-  "eligibility": "provider-trial",
+  "eligibility": "calibration-diagnostic",
+  "designClass": "calibration",
+  "claimAuthority": "none",
+  "splitRole": "calibration-public",
+  "splitVersion": "calibration-public-split-v1",
+  "splitDigest": "sha256:8ab5d4572b0cfc0b519423d2a9cc53ad6273faa1b318ec6c4742b3a7f615fed3",
+  "caseFamilyId": "simple-edit-heading",
+  "projectFamilyId": "simple-edit-heading",
+  "generatorFamilyId": "hand-authored-simple-edit-heading",
+  "relationshipGroupId": "simple-edit-heading",
   "prompt": "Change the README heading to Clear Title. Preserve the blank line and body exactly.",
   "trial": {
     "experimentalUnit": "root-request",
     "clusterKey": "simple-edit-heading",
     "isolation": "fresh-materialization",
     "attemptsPerArm": 3,
+    "evidencePurpose": "calibration-smoke-only",
     "paired": true,
     "sameSeedAcrossArms": true
   },
@@ -20,7 +30,16 @@
     "revision": "simple-edit-heading-v1",
     "treeDigest": "sha256:86198622d9f654e06e09313bbb422807ba08de97264a98cb0b4e457772feea1a",
     "reset": "rematerialize",
-    "ownership": "evaluator"
+    "ownership": "evaluator",
+    "files": [
+      {
+        "path": "README.md",
+        "type": "regular",
+        "bytes": 34,
+        "digest": "sha256:c23e8eccb1c92501886756d2f277a6e68601b3cff8b6a3c609070bc4d12dc154",
+        "modeClass": "data"
+      }
+    ]
   },
   "modelSliceIds": ["primary-exact-model"],
   "compatibility": {
@@ -37,6 +56,9 @@
     {
       "id": "readme-content",
       "kind": "file",
+      "outcomeClass": "machine-verifiable",
+      "authority": "primary",
+      "verifierReleaseDigest": "sha256:a8735dca1237275076f604f23b5a300c025781d29a6eec0b4197c7ef0f5b002d",
       "required": true,
       "path": "README.md",
       "assertion": "utf8-equals",

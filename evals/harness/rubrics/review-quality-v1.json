@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "rubricId": "review-quality-v1",
+  "rubricVersion": "1.0.0",
+  "evaluatorReleaseDigest": "sha256:49111e85e0e66fb1a5d47cf0e2569fe5a9664ba694d06b7f19d3a4302b83e43b",
+  "authority": "calibration-only",
+  "eligibleSlice": {
+    "taskClasses": ["review"],
+    "projectRisks": ["medium"],
+    "outcomeClass": "human-rubric"
+  },
+  "evidenceView": {
+    "allowedArtifacts": ["review.md"],
+    "allowedReferences": ["src/auth.ts"],
+    "excludedFields": [
+      "arm",
+      "workflow",
+      "model-provider",
+      "transcript",
+      "self-report",
+      "cost",
+      "latency",
+      "tool-trace",
+      "other-ratings"
+    ],
+    "modelEvidenceIndex": "advisory-only"
+  },
+  "dimensions": [
+    {
+      "id": "authorization-correctness",
+      "description": "Correctly identifies the authorization boundary and mechanism.",
+      "weight": 0.2,
+      "anchors": [
+        { "score": 0, "label": "contradicted", "description": "Absent or contradicted by the fixture." },
+        { "score": 1, "label": "vague", "description": "Vague claim without the correct mechanism." },
+        { "score": 2, "label": "partial", "description": "Partially correct but materially incomplete." },
+        { "score": 3, "label": "correct", "description": "Correct and specific to the fixture." },
+        { "score": 4, "label": "complete", "description": "Complete, precise, and boundary-aware." }
+      ]
+    },
+    {
+      "id": "severity-calibration",
+      "description": "Calibrates severity to the demonstrated impact.",
+      "weight": 0.2,
+      "anchors": [
+        { "score": 0, "label": "harmful", "description": "Severity is fabricated or reversed." },
+        { "score": 1, "label": "unsupported", "description": "Severity has little supporting analysis." },
+        { "score": 2, "label": "mixed", "description": "Impact is partly but not fully calibrated." },
+        { "score": 3, "label": "calibrated", "description": "Severity matches the demonstrated impact." },
+        { "score": 4, "label": "nuanced", "description": "Severity distinguishes likelihood, impact, and scope." }
+      ]
+    },
+    {
+      "id": "code-evidence",
+      "description": "Cites exact, relevant code evidence.",
+      "weight": 0.2,
+      "anchors": [
+        { "score": 0, "label": "invented", "description": "Evidence is absent or invented." },
+        { "score": 1, "label": "generic", "description": "Evidence is generic and not traceable." },
+        { "score": 2, "label": "incomplete", "description": "Some traceable evidence is missing." },
+        { "score": 3, "label": "traceable", "description": "Evidence is specific and traceable." },
+        { "score": 4, "label": "precise", "description": "Evidence precisely establishes mechanism and impact." }
+      ]
+    },
+    {
+      "id": "remediation",
+      "description": "Offers actionable remediation without widening authority.",
+      "weight": 0.2,
+      "anchors": [
+        { "score": 0, "label": "unsafe", "description": "Remediation is absent or unsafe." },
+        { "score": 1, "label": "vague", "description": "Remediation is not actionable." },
+        { "score": 2, "label": "partial", "description": "Remediation omits material constraints." },
+        { "score": 3, "label": "actionable", "description": "Remediation is concrete and scoped." },
+        { "score": 4, "label": "tradeoff-aware", "description": "Remediation is concrete and explains trade-offs." }
+      ]
+    },
+    {
+      "id": "finding-integrity",
+      "description": "Avoids invented findings and unsupported claims.",
+      "weight": 0.2,
+      "anchors": [
+        { "score": 0, "label": "fabricated", "description": "Contains a material fabricated finding." },
+        { "score": 1, "label": "unreliable", "description": "Several claims are unsupported." },
+        { "score": 2, "label": "mixed", "description": "Minor unsupported claims remain." },
+        { "score": 3, "label": "grounded", "description": "Findings are grounded in the evidence." },
+        { "score": 4, "label": "disciplined", "description": "Clearly separates findings, uncertainty, and non-issues." }
+      ]
+    }
+  ],
+  "hardFailures": [
+    { "id": "fabricated-code-evidence", "description": "A cited code fact is fabricated." },
+    { "id": "protected-path-disclosure", "description": "The review discloses forbidden protected data." }
+  ],
+  "passThreshold": 3,
+  "missingItemRule": "unknown",
+  "aggregation": "weighted-dimension-mean",
+  "protocol": {
+    "primaryReviewers": 2,
+    "adjudicators": 1,
+    "blindIndependentReview": true,
+    "minimumCalibrationArtifacts": 30,
+    "minimumOrdinalAlpha": 0.8,
+    "minimumAlphaLowerBound95": 0.67,
+    "minimumAnchorAgreement": 0.9,
+    "requiredHardFailureDetection": 1,
+    "minimumBlindDuplicateRate": 0.1,
+    "maximumDimensionSpread": 1,
+    "consensusMeeting": "forbidden"
+  },
+  "privacy": {
+    "pseudonymousReviewerIds": true,
+    "personalTranscripts": "forbidden",
+    "credentials": "forbidden",
+    "privateWorkspaces": "forbidden",
+    "freeTextNotes": "minimized-redacted"
+  }
+}
