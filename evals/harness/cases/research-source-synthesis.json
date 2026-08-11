@@ -1,17 +1,27 @@
 {
-  "schemaVersion": 1,
-  "corpusVersion": "harness-corpus-v1",
-  "evaluatorVersion": "phase0-contract-v1",
+  "schemaVersion": 2,
+  "corpusVersion": "calibration-public-v1",
+  "evaluatorVersion": "phase0-contract-v2",
   "id": "research-source-synthesis",
   "taskClass": "research",
   "evidenceKind": "human-rubric",
-  "eligibility": "provider-trial",
+  "eligibility": "calibration-diagnostic",
+  "designClass": "calibration",
+  "claimAuthority": "none",
+  "splitRole": "calibration-public",
+  "splitVersion": "calibration-public-split-v1",
+  "splitDigest": "sha256:8ab5d4572b0cfc0b519423d2a9cc53ad6273faa1b318ec6c4742b3a7f615fed3",
+  "caseFamilyId": "research-source-synthesis",
+  "projectFamilyId": "research-source-synthesis",
+  "generatorFamilyId": "hand-authored-research-source-synthesis",
+  "relationshipGroupId": "research-source-synthesis",
   "prompt": "Research this deeply using only docs/source-a.md and docs/source-b.md. Write synthesis.md that distinguishes expiry, invalidation, and offline behavior, and cite both local sources.",
   "trial": {
     "experimentalUnit": "root-request",
     "clusterKey": "research-source-synthesis",
     "isolation": "fresh-materialization",
     "attemptsPerArm": 3,
+    "evidencePurpose": "calibration-smoke-only",
     "paired": true,
     "sameSeedAcrossArms": true
   },
@@ -20,7 +30,23 @@
     "revision": "research-source-synthesis-v1",
     "treeDigest": "sha256:fd2328bfc509de1faca33e9c48ad6e18c40af7db032a078336093323cd2ad8dc",
     "reset": "rematerialize",
-    "ownership": "evaluator"
+    "ownership": "evaluator",
+    "files": [
+      {
+        "path": "docs/source-a.md",
+        "type": "regular",
+        "bytes": 91,
+        "digest": "sha256:1d38ac2992026818b1fe470eef5a78f9e9c180bf4b6bd71c6c3eb6ec0007e90a",
+        "modeClass": "data"
+      },
+      {
+        "path": "docs/source-b.md",
+        "type": "regular",
+        "bytes": 100,
+        "digest": "sha256:5b6c9219d04ddc7d503a2c099f733264bd94e26f220ab6002183ae09e265d490",
+        "modeClass": "data"
+      }
+    ]
   },
   "modelSliceIds": ["primary-exact-model"],
   "compatibility": {
@@ -34,8 +60,27 @@
   "allowedTools": ["Read", "Write"],
   "expectedArtifacts": ["synthesis.md"],
   "verifiers": [
-    { "id": "research-quality", "kind": "human-rubric", "required": true, "rubricId": "research-quality-v1" },
-    { "id": "synthesis-artifact", "kind": "file", "required": true, "path": "synthesis.md", "assertion": "exists" }
+    {
+      "id": "research-quality",
+      "kind": "human-rubric",
+      "outcomeClass": "human-rubric",
+      "authority": "calibration-only",
+      "required": true,
+      "rubricId": "research-quality-v1",
+      "rubricVersion": "1.0.0",
+      "rubricDigest": "sha256:a445e10a5e673b2c6efe282486911b76d8e8e9e2a003c5f5b1c0277d5d8bb9ee",
+      "reviewProtocol": "phase0-human-v1"
+    },
+    {
+      "id": "synthesis-artifact",
+      "kind": "file",
+      "outcomeClass": "machine-verifiable",
+      "authority": "guardrail",
+      "verifierReleaseDigest": "sha256:a8735dca1237275076f604f23b5a300c025781d29a6eec0b4197c7ef0f5b002d",
+      "required": true,
+      "path": "synthesis.md",
+      "assertion": "exists"
+    }
   ],
   "budgets": { "maxTurns": 12, "maxTokens": 12000, "maxCostUsd": 0.9, "timeoutMs": 180000 },
   "metrics": {

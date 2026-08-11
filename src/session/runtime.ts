@@ -11,6 +11,7 @@ import { SkillRegistry } from '../skill-registry.js';
 import type { SkillRegistrySnapshot } from '../skill-registry.js';
 import type { SkillSettings } from '../settings.js';
 import { SkillWatcher } from '../skill-watcher.js';
+import { ZeroMemRuntime } from '../agent/zero-mem-runtime.js';
 
 export interface SessionRuntimeOptions {
   tasks?: AgentTask[];
@@ -23,6 +24,7 @@ export interface SessionRuntimeOptions {
   runAmbientSnapshots?: Map<string, AgentRunAmbientSnapshot>;
   traceId?: string;
   skillRegistry?: SkillRegistry;
+  zeroMemRuntime?: ZeroMemRuntime;
 }
 
 /** Mutable resources owned by one logical agent session. */
@@ -37,6 +39,7 @@ export class SessionRuntime {
   readonly runAccounting: RunAccounting;
   readonly runAmbientSnapshots: Map<string, AgentRunAmbientSnapshot>;
   readonly shellManager: ShellJobManager;
+  readonly zeroMemRuntime: ZeroMemRuntime;
   private skillRegistry?: SkillRegistry;
   private skillWatcher?: SkillWatcher;
   private skillWatcherWorkspace?: string;
@@ -63,6 +66,7 @@ export class SessionRuntime {
     this.runAccounting = options.runAccounting ?? new RunAccounting();
     this.runAmbientSnapshots = options.runAmbientSnapshots ?? new Map();
     this.shellManager = new ShellJobManager(this.backgroundShells);
+    this.zeroMemRuntime = options.zeroMemRuntime ?? new ZeroMemRuntime();
     this.traceId = options.traceId ?? crypto.randomUUID();
     this.skillRegistry = options.skillRegistry;
   }
@@ -229,6 +233,7 @@ export class SessionRuntime {
     this.skillChangeListeners.clear();
     this.agentManager?.dispose();
     this.agentManager = undefined;
+    void this.zeroMemRuntime.dispose().catch(() => undefined);
     this.childProcesses.clear();
   }
 }

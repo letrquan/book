@@ -1,17 +1,27 @@
 {
-  "schemaVersion": 1,
-  "corpusVersion": "harness-corpus-v1",
-  "evaluatorVersion": "phase0-contract-v1",
+  "schemaVersion": 2,
+  "corpusVersion": "calibration-public-v1",
+  "evaluatorVersion": "phase0-contract-v2",
   "id": "tool-contract-recovery",
   "taskClass": "bug-fix",
   "evidenceKind": "machine-verifiable",
-  "eligibility": "offline-only",
+  "eligibility": "offline-calibration",
+  "designClass": "calibration",
+  "claimAuthority": "none",
+  "splitRole": "calibration-public",
+  "splitVersion": "calibration-public-split-v1",
+  "splitDigest": "sha256:8ab5d4572b0cfc0b519423d2a9cc53ad6273faa1b318ec6c4742b3a7f615fed3",
+  "caseFamilyId": "tool-contract-recovery",
+  "projectFamilyId": "tool-contract-recovery",
+  "generatorFamilyId": "hand-authored-tool-contract-recovery",
+  "relationshipGroupId": "tool-contract-recovery",
   "prompt": "Read tool-result.json. Preserve the two partial items and write recovery.json with action retry and reason OUTPUT_TRUNCATED. Do not treat partial success as total failure.",
   "trial": {
     "experimentalUnit": "root-request",
     "clusterKey": "tool-contract-recovery",
     "isolation": "fresh-materialization",
     "attemptsPerArm": 3,
+    "evidencePurpose": "calibration-smoke-only",
     "paired": true,
     "sameSeedAcrossArms": true
   },
@@ -20,7 +30,16 @@
     "revision": "tool-contract-recovery-v1",
     "treeDigest": "sha256:83009ee35939114abdab5b3c30d70edd9b6b6ce5bb6efb7f4adda626cd541813",
     "reset": "rematerialize",
-    "ownership": "evaluator"
+    "ownership": "evaluator",
+    "files": [
+      {
+        "path": "tool-result.json",
+        "type": "regular",
+        "bytes": 128,
+        "digest": "sha256:f1942bf34b9847747684e44b9ecfe2b82a161985abe49ce4e441e3269a2faceb",
+        "modeClass": "data"
+      }
+    ]
   },
   "modelSliceIds": ["offline-contract"],
   "compatibility": {
@@ -37,6 +56,9 @@
     {
       "id": "recovery-content",
       "kind": "file",
+      "outcomeClass": "machine-verifiable",
+      "authority": "primary",
+      "verifierReleaseDigest": "sha256:a8735dca1237275076f604f23b5a300c025781d29a6eec0b4197c7ef0f5b002d",
       "required": true,
       "path": "recovery.json",
       "assertion": "utf8-equals",

@@ -13,6 +13,7 @@ function config(): AgentConfig {
     baseUrl: 'http://localhost',
     model: 'test',
     maxTokens: 128_000,
+    compactStrategy: 'summary',
     autoCompactEnabled: false,
     workspace: process.cwd(),
     animation: { typewriterSpeed: 0, spinnerStyle: 'dots' },

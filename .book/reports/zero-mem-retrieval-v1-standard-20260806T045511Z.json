@@ -1,0 +1,264 @@
+{
+  "version": 1,
+  "createdAt": "2026-08-06T04:55:11.551Z",
+  "options": {
+    "models": [],
+    "suite": "standard",
+    "contextWindow": 24000,
+    "repetitions": 1,
+    "topK": 5,
+    "closureK": 3,
+    "json": false,
+    "retrievalOnly": true
+  },
+  "historyTokens": 7940,
+  "historyMessages": 72,
+  "indexMs": 10,
+  "probes": [
+    {
+      "name": "runtime-constraint",
+      "category": "static-recall",
+      "expectedMessageIds": [
+        "compact-eval-0",
+        "compact-eval-1"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-0",
+        "compact-eval-2",
+        "compact-eval-3",
+        "compact-eval-4",
+        "compact-eval-6",
+        "compact-eval-15",
+        "compact-eval-28",
+        "compact-eval-68"
+      ],
+      "evidenceHits": 1,
+      "evidenceRecall": 0.5,
+      "evidenceSufficient": true,
+      "contextTokens": 514,
+      "retrievalMs": 24
+    },
+    {
+      "name": "public-api-constraint",
+      "category": "static-recall",
+      "expectedMessageIds": [
+        "compact-eval-0",
+        "compact-eval-1"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-0",
+        "compact-eval-2",
+        "compact-eval-4",
+        "compact-eval-6",
+        "compact-eval-15",
+        "compact-eval-28",
+        "compact-eval-34",
+        "compact-eval-56"
+      ],
+      "evidenceHits": 1,
+      "evidenceRecall": 0.5,
+      "evidenceSufficient": true,
+      "contextTokens": 503,
+      "retrievalMs": 11
+    },
+    {
+      "name": "accepted-decision",
+      "category": "static-recall",
+      "expectedMessageIds": [
+        "compact-eval-2",
+        "compact-eval-3"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-1",
+        "compact-eval-2",
+        "compact-eval-3",
+        "compact-eval-14",
+        "compact-eval-15",
+        "compact-eval-57",
+        "compact-eval-70"
+      ],
+      "evidenceHits": 2,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 595,
+      "retrievalMs": 14
+    },
+    {
+      "name": "rejected-decision",
+      "category": "static-recall",
+      "expectedMessageIds": [
+        "compact-eval-2",
+        "compact-eval-3"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-1",
+        "compact-eval-2",
+        "compact-eval-3",
+        "compact-eval-14",
+        "compact-eval-15",
+        "compact-eval-28",
+        "compact-eval-29",
+        "compact-eval-30"
+      ],
+      "evidenceHits": 2,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 631,
+      "retrievalMs": 12
+    },
+    {
+      "name": "open-thread",
+      "category": "static-recall",
+      "expectedMessageIds": [
+        "compact-eval-4",
+        "compact-eval-5"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-4",
+        "compact-eval-5",
+        "compact-eval-30",
+        "compact-eval-32",
+        "compact-eval-33",
+        "compact-eval-52",
+        "compact-eval-58",
+        "compact-eval-71"
+      ],
+      "evidenceHits": 2,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 328,
+      "retrievalMs": 11
+    },
+    {
+      "name": "current-region-update",
+      "category": "knowledge-update",
+      "expectedMessageIds": [
+        "compact-eval-6",
+        "compact-eval-26",
+        "compact-eval-27"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-25",
+        "compact-eval-26",
+        "compact-eval-27",
+        "compact-eval-58",
+        "compact-eval-68",
+        "compact-eval-69",
+        "compact-eval-70",
+        "compact-eval-71"
+      ],
+      "evidenceHits": 2,
+      "evidenceRecall": 0.6666666666666666,
+      "evidenceSufficient": true,
+      "contextTokens": 490,
+      "retrievalMs": 13
+    },
+    {
+      "name": "package-manager-correction",
+      "category": "conflict-resolution",
+      "expectedMessageIds": [
+        "compact-eval-8",
+        "compact-eval-28",
+        "compact-eval-29"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-9",
+        "compact-eval-11",
+        "compact-eval-26",
+        "compact-eval-28",
+        "compact-eval-58",
+        "compact-eval-68",
+        "compact-eval-69",
+        "compact-eval-70"
+      ],
+      "evidenceHits": 1,
+      "evidenceRecall": 0.3333333333333333,
+      "evidenceSufficient": true,
+      "contextTokens": 488,
+      "retrievalMs": 17
+    },
+    {
+      "name": "first-passing-day",
+      "category": "temporal-reasoning",
+      "expectedMessageIds": [
+        "compact-eval-30",
+        "compact-eval-32",
+        "compact-eval-52"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-30",
+        "compact-eval-31",
+        "compact-eval-32",
+        "compact-eval-51",
+        "compact-eval-52",
+        "compact-eval-53",
+        "compact-eval-54",
+        "compact-eval-55"
+      ],
+      "evidenceHits": 3,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 432,
+      "retrievalMs": 11
+    },
+    {
+      "name": "current-patch-state",
+      "category": "temporal-reasoning",
+      "expectedMessageIds": [
+        "compact-eval-32",
+        "compact-eval-52",
+        "compact-eval-58"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-30",
+        "compact-eval-32",
+        "compact-eval-33",
+        "compact-eval-52",
+        "compact-eval-58",
+        "compact-eval-59",
+        "compact-eval-63",
+        "compact-eval-69"
+      ],
+      "evidenceHits": 3,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 467,
+      "retrievalMs": 20
+    },
+    {
+      "name": "unit-conversion-reasoning",
+      "category": "multi-hop",
+      "expectedMessageIds": [
+        "compact-eval-34",
+        "compact-eval-54",
+        "compact-eval-56"
+      ],
+      "retrievedMessageIds": [
+        "compact-eval-34",
+        "compact-eval-35",
+        "compact-eval-54",
+        "compact-eval-55",
+        "compact-eval-56",
+        "compact-eval-57",
+        "compact-eval-70",
+        "compact-eval-71"
+      ],
+      "evidenceHits": 3,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 288,
+      "retrievalMs": 11
+    },
+    {
+      "name": "missing-secret-abstention",
+      "category": "abstention",
+      "expectedMessageIds": [],
+      "retrievedMessageIds": [],
+      "evidenceHits": 0,
+      "evidenceRecall": 1,
+      "evidenceSufficient": true,
+      "contextTokens": 61,
+      "retrievalMs": 1
+    }
+  ]
+}

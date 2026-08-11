@@ -1,14 +1,16 @@
 # Research Quality Rubric v1
 
-Score each criterion from 0 to 4: coverage of both sources, factual grounding, distinction among
-expiry/invalidation/offline behavior, citation accuracy, and explicit uncertainty.
+The authoritative artifact is `research-quality-v1.json` (`1.0.0`). It is calibration-only. This
+Markdown file is a readable summary and cannot be used as a decision-bearing substitute.
 
-- 0: absent, fabricated, or ignores the permitted sources.
-- 1: mostly unsupported summary.
-- 2: materially incomplete or conflates mechanisms.
-- 3: accurate synthesis with traceable citations.
-- 4: precise synthesis that also identifies limitations without unsupported claims.
+Five equal-weight 0-4 dimensions cover both-source coverage, factual grounding, distinction among
+expiry/invalidation/offline mechanisms, citation accuracy, and explicit uncertainty. The pass
+threshold is 3.0. A fabricated source/fact or evidence outside the approved packet is a hard
+failure.
 
-Pass requires a mean of at least 3.0 from two independent blinded reviewers. A score spread above
-1.0 yields unknown pending third-reviewer adjudication. Missing reviews remain unknown. Model-judge
-output is advisory only.
+Decision-bearing use requires the complete Phase 0 human protocol: a pinned blind evidence packet,
+two authenticated calibrated independent human primaries, per-dimension evidence, current pool and
+production reliability, and a blind third reviewer only for bounded adjudication. Calibration uses
+at least 30 artifacts, ordinal Krippendorff alpha at least 0.80 with a 95% lower bound at least 0.67,
+at least 90% anchor agreement, 100% seeded hard-failure detection, and at least 10% blind
+duplicates. Missing or failed requirements yield `unknown`. Model assistance is advisory only.

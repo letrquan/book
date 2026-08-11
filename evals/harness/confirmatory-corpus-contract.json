@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "phase0-confirmatory-v1",
+  "splitVersion": "unavailable-until-instantiated",
+  "status": "not-instantiated",
+  "claimAuthority": "none-until-sealed-campaign-passes",
+  "exactSlice": {
+    "providerOriginAdapterModel": "exact-and-preregistered",
+    "taskClass": "multi-file",
+    "projectRisk": "medium",
+    "outcomeClass": "machine-verifiable",
+    "fixtureAuthority": "evaluator-owned-data-only",
+    "agentClass": "trusted-built-in-single-agent",
+    "network": "off-provider-broker-only"
+  },
+  "roles": [
+    {
+      "role": "design-held-in",
+      "promotionAuthority": false,
+      "uses": ["aa-characterization", "power-inputs", "baseline-selection", "dry-runs"]
+    },
+    {
+      "role": "promotion-sealed",
+      "promotionAuthority": "conditional",
+      "minimumIndependentFamilies": 20,
+      "minimumMatchedRepetitionsPerFamily": 5,
+      "membership": "must-be-sealed-before-target-outcomes"
+    }
+  ],
+  "minimumMatchedAaBlocksBeforeSizing": 20,
+  "minimumPowerAtHolmAdjustedAlpha": 0.8,
+  "caseContract": {
+    "fixture": "evaluator-owned-data-only",
+    "minimumRegularFiles": 2,
+    "positiveFinalStateContentPredicate": "required",
+    "expectedAndForbiddenChangedPathGuardrail": "required",
+    "commandVerifiers": "forbidden",
+    "projectCodeExecution": "forbidden",
+    "networkAssertions": "forbidden",
+    "candidateSelfReportAuthority": "none"
+  },
+  "familyIsolation": {
+    "assignmentUnit": "relationship-group",
+    "crossRoleAncestry": "forbidden",
+    "nearDuplicates": "forbidden",
+    "ambiguousRelationship": "invalidates-split"
+  },
+  "requiredMembershipFields": [
+    "caseFamilyId",
+    "caseId",
+    "projectFamilyId",
+    "generatorFamilyId",
+    "relationshipGroupId",
+    "fixtureRevision",
+    "fixtureTreeDigest",
+    "verifierReleaseDigests",
+    "outcomeClasses",
+    "creationProvenance"
+  ],
+  "contentDigest": "unavailable-until-instantiated",
+  "splitDigest": "unavailable-until-instantiated",
+  "queryLedgerDigest": "unavailable-until-preregistered",
+  "memberFamilies": []
+}

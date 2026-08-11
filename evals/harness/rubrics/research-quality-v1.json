@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "rubricId": "research-quality-v1",
+  "rubricVersion": "1.0.0",
+  "evaluatorReleaseDigest": "sha256:49111e85e0e66fb1a5d47cf0e2569fe5a9664ba694d06b7f19d3a4302b83e43b",
+  "authority": "calibration-only",
+  "eligibleSlice": {
+    "taskClasses": ["research"],
+    "projectRisks": ["low"],
+    "outcomeClass": "human-rubric"
+  },
+  "evidenceView": {
+    "allowedArtifacts": ["synthesis.md"],
+    "allowedReferences": ["docs/source-a.md", "docs/source-b.md"],
+    "excludedFields": [
+      "arm",
+      "workflow",
+      "model-provider",
+      "transcript",
+      "self-report",
+      "cost",
+      "latency",
+      "tool-trace",
+      "other-ratings"
+    ],
+    "modelEvidenceIndex": "advisory-only"
+  },
+  "dimensions": [
+    {
+      "id": "source-coverage",
+      "description": "Covers both evaluator-owned sources.",
+      "weight": 0.2,
+      "anchors": [
+        { "score": 0, "label": "absent", "description": "Ignores the permitted sources." },
+        { "score": 1, "label": "single-source", "description": "Mostly summarizes one source." },
+        { "score": 2, "label": "uneven", "description": "Both sources appear but coverage is incomplete." },
+        { "score": 3, "label": "complete", "description": "Both sources are substantively covered." },
+        { "score": 4, "label": "integrated", "description": "Both sources are completely and coherently integrated." }
+      ]
+    },
+    {
+      "id": "factual-grounding",
+      "description": "Grounds claims in the frozen evidence packet.",
+      "weight": 0.2,
+      "anchors": [
+        { "score": 0, "label": "fabricated", "description": "Contains material fabrication." },
+        { "score": 1, "label": "unsupported", "description": "Most claims are unsupported." },
+        { "score": 2, "label": "partial", "description": "Material grounding gaps remain." },
+        { "score": 3, "label": "grounded", "description": "Claims are traceable to the packet." },
+        { "score": 4, "label": "precise", "description": "Claims and limitations are precisely grounded." }
+      ]
+    },
+    {
+      "id": "mechanism-distinction",
+      "description": "Distinguishes expiry, invalidation, and offline behavior.",
+      "weight": 0.2,
+      "anchors": [
+        { "score": 0, "label": "reversed", "description": "Mechanisms are absent or reversed." },
+        { "score": 1, "label": "conflated", "description": "Mechanisms are largely conflated." },
+        { "score": 2, "label": "partial", "description": "Some distinctions are incomplete." },
+        { "score": 3, "label": "distinct", "description": "All mechanisms are correctly distinguished." },
+        { "score": 4, "label": "explanatory", "description": "Distinctions include consequences and limitations." }
+      ]
+    },
+    {
+      "id": "citation-accuracy",
+      "description": "Uses accurate traceable citations to both local sources.",
+      "weight": 0.2,
+      "anchors": [
+        { "score": 0, "label": "fabricated", "description": "Citations are absent or fabricated." },
+        { "score": 1, "label": "untraceable", "description": "Citations do not support claims." },
+        { "score": 2, "label": "mixed", "description": "Some citations are incomplete or imprecise." },
+        { "score": 3, "label": "accurate", "description": "Citations accurately support the synthesis." },
+        { "score": 4, "label": "precise", "description": "Citations precisely map evidence to every key claim." }
+      ]
+    },
+    {
+      "id": "uncertainty",
+      "description": "States evidence limits and uncertainty without unsupported extrapolation.",
+      "weight": 0.2,
+      "anchors": [
+        { "score": 0, "label": "overclaiming", "description": "Materially overclaims beyond the packet." },
+        { "score": 1, "label": "implicit", "description": "Limitations are mostly omitted." },
+        { "score": 2, "label": "partial", "description": "Some limitations are stated." },
+        { "score": 3, "label": "explicit", "description": "Uncertainty and scope are explicit." },
+        { "score": 4, "label": "disciplined", "description": "Carefully separates evidence, inference, and unknowns." }
+      ]
+    }
+  ],
+  "hardFailures": [
+    { "id": "fabricated-source", "description": "A source or cited fact is fabricated." },
+    { "id": "forbidden-private-evidence", "description": "The synthesis uses evidence outside the approved packet." }
+  ],
+  "passThreshold": 3,
+  "missingItemRule": "unknown",
+  "aggregation": "weighted-dimension-mean",
+  "protocol": {
+    "primaryReviewers": 2,
+    "adjudicators": 1,
+    "blindIndependentReview": true,
+    "minimumCalibrationArtifacts": 30,
+    "minimumOrdinalAlpha": 0.8,
+    "minimumAlphaLowerBound95": 0.67,
+    "minimumAnchorAgreement": 0.9,
+    "requiredHardFailureDetection": 1,
+    "minimumBlindDuplicateRate": 0.1,
+    "maximumDimensionSpread": 1,
+    "consensusMeeting": "forbidden"
+  },
+  "privacy": {
+    "pseudonymousReviewerIds": true,
+    "personalTranscripts": "forbidden",
+    "credentials": "forbidden",
+    "privateWorkspaces": "forbidden",
+    "freeTextNotes": "minimized-redacted"
+  }
+}

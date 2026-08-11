@@ -1,17 +1,27 @@
 {
-  "schemaVersion": 1,
-  "corpusVersion": "harness-corpus-v1",
-  "evaluatorVersion": "phase0-contract-v1",
+  "schemaVersion": 2,
+  "corpusVersion": "calibration-public-v1",
+  "evaluatorVersion": "phase0-contract-v2",
   "id": "review-auth-boundary",
   "taskClass": "review",
   "evidenceKind": "human-rubric",
-  "eligibility": "provider-trial",
+  "eligibility": "calibration-diagnostic",
+  "designClass": "calibration",
+  "claimAuthority": "none",
+  "splitRole": "calibration-public",
+  "splitVersion": "calibration-public-split-v1",
+  "splitDigest": "sha256:8ab5d4572b0cfc0b519423d2a9cc53ad6273faa1b318ec6c4742b3a7f615fed3",
+  "caseFamilyId": "review-auth-boundary",
+  "projectFamilyId": "review-auth-boundary",
+  "generatorFamilyId": "hand-authored-review-auth-boundary",
+  "relationshipGroupId": "review-auth-boundary",
   "prompt": "Review src/auth.ts for correctness and security risks. Write review.md with findings ordered by severity and cite the relevant function.",
   "trial": {
     "experimentalUnit": "root-request",
     "clusterKey": "review-auth-boundary",
     "isolation": "fresh-materialization",
     "attemptsPerArm": 3,
+    "evidencePurpose": "calibration-smoke-only",
     "paired": true,
     "sameSeedAcrossArms": true
   },
@@ -20,7 +30,16 @@
     "revision": "review-auth-boundary-v1",
     "treeDigest": "sha256:95d745fc162fc414991e52950bf2956a2767d53419cf70d8a063c181fbdb93d2",
     "reset": "rematerialize",
-    "ownership": "evaluator"
+    "ownership": "evaluator",
+    "files": [
+      {
+        "path": "src/auth.ts",
+        "type": "regular",
+        "bytes": 156,
+        "digest": "sha256:81fed5b4e11754004e74872139e21db265198e76623ea98b8d6a9a88b08cf8b9",
+        "modeClass": "data"
+      }
+    ]
   },
   "modelSliceIds": ["primary-exact-model"],
   "compatibility": {
@@ -34,8 +53,27 @@
   "allowedTools": ["Read", "Write"],
   "expectedArtifacts": ["review.md"],
   "verifiers": [
-    { "id": "review-quality", "kind": "human-rubric", "required": true, "rubricId": "review-quality-v1" },
-    { "id": "review-artifact", "kind": "file", "required": true, "path": "review.md", "assertion": "exists" }
+    {
+      "id": "review-quality",
+      "kind": "human-rubric",
+      "outcomeClass": "human-rubric",
+      "authority": "calibration-only",
+      "required": true,
+      "rubricId": "review-quality-v1",
+      "rubricVersion": "1.0.0",
+      "rubricDigest": "sha256:1d567e7154c6047fdef5bba486544d731f06962ab7a8f6d0ffc1e0e8040341ea",
+      "reviewProtocol": "phase0-human-v1"
+    },
+    {
+      "id": "review-artifact",
+      "kind": "file",
+      "outcomeClass": "machine-verifiable",
+      "authority": "guardrail",
+      "verifierReleaseDigest": "sha256:a8735dca1237275076f604f23b5a300c025781d29a6eec0b4197c7ef0f5b002d",
+      "required": true,
+      "path": "review.md",
+      "assertion": "exists"
+    }
   ],
   "budgets": { "maxTurns": 10, "maxTokens": 10000, "maxCostUsd": 0.8, "timeoutMs": 150000 },
   "metrics": {

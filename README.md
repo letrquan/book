@@ -134,8 +134,9 @@ Writes use an atomic sibling-file replacement, and malformed or non-object
 `.book/settings.local.json` files are never overwritten. The reported error includes the file and
 invalid setting path; provider secrets are redacted.
 
-Inside the TUI, `/config` opens a visual settings menu. Use it to change the main model, effort,
-theme, memory auto-capture, startup fire, or the model assigned to each managed-agent profile.
+Inside the TUI, `/config` opens a visual settings menu. Use it to change the main model, compact
+strategy, compact model, effort, theme, memory auto-capture, startup fire, or the model assigned to
+each managed-agent profile.
 The startup fire plays only for a new, empty launch session and is skipped automatically for
 screen-reader or reduced-motion mode. Press Esc to skip it. TUI preference changes are saved in
 `.book/settings.local.json`; set `ui.startupAnimation` to `false` there to disable the effect.
@@ -222,6 +223,31 @@ compaction call, making it possible to test a cheaper reducer while keeping prob
 cheaper reducer or a higher-fidelity reducer can be evaluated independently from the probe model.
 The benchmark requires configured provider credentials and is not part of CI.
 
+`npm run eval:zero-mem` adds a paper-aligned experimental third arm based on Zero-Mem
+(arXiv:2607.29377v1). It uses BGE-M3 embeddings, non-generative BERT NER plus technical spans,
+occurrence-weighted entity/context edges, query-conditioned sentence propagation, PageRank with
+`gamma = 0.6`, semantic/session-aware trace regions, evidence closure, and deterministic evidence
+and answer calibration. Original messages, actions, reasoning, tool observations, attachments, and
+file observations remain the source of record; generated compact checkpoints are excluded.
+
+The paper's complete implementation is not public, so this is a defensible reproduction rather
+than an exact code replica. With provider credentials it compares full history, production
+compaction, and Zero-Mem using the same final reader and the compact arm's context size as the
+Zero-Mem evidence budget. Reader calls share a 1,024-token output cap across all arms.
+`--retrieval-only` (or `--offline`) skips the reader but still runs the real local NER and BGE-M3
+encoder. Model weights are cached outside the repository; set
+`BOOK_ZERO_MEM_MODEL_CACHE` to choose a persistent cache directory.
+Production sessions use cached weights only by default so selecting Zero-Mem never silently starts
+a model download. Set `BOOK_ZERO_MEM_LOCAL_FILES_ONLY=false` explicitly for one run to populate the
+cache, then remove it or set it back to `true`. Zero-Mem uses the optional
+`@huggingface/transformers` peer; source checkouts install it for evaluation, while packaged
+installations that enable Zero-Mem must install that peer explicitly.
+
+```bash
+BOOK_ZERO_MEM_MODEL_CACHE=/path/to/model-cache npm run eval:zero-mem -- --retrieval-only --suite standard
+BOOK_ZERO_MEM_MODEL_CACHE=/path/to/model-cache npm run eval:zero-mem -- --model 9router/cmc/deepseek/deepseek-v4-flash --suite standard
+```
+
 `Write` remains appropriate for generated or intentional full-file replacement. The
 `apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not silently reinterpreted.
 
@@ -230,6 +256,7 @@ The benchmark requires configured provider credentials and is not part of CI.
 ```json
 {
   "model": "claude-opus-4-6",
+  "compactStrategy": "summary",
   "compactModel": "9router/ag/gemini-3.6-flash-high",
   "effort": "high",
   "defaultMode": "default",
@@ -278,6 +305,14 @@ The benchmark requires configured provider credentials and is not part of CI.
   }
 }
 ```
+
+`compactStrategy` accepts `summary` (default) or `zero-mem`. `summary` preserves the existing
+LLM-generated checkpoint behavior. `zero-mem` keeps the original session transcript authoritative,
+builds a session-scoped BGE-M3/NER index, incrementally indexes completed turns, and retrieves
+query-specific evidence before each main-agent run. It does not persist retrieved evidence as a
+checkpoint. Under Zero-Mem, manual `/compact` initializes or refreshes the index and reports
+readiness without replacing conversation history. Set it from `/config` (shortcut `R`) or with
+`/config compact-strategy zero-mem`; `BOOK_COMPACT_STRATEGY` overrides the setting.
 
 `compactModel` is optional. When set, manual and automatic `/compact` calls use that configured
 provider/model only for checkpoint generation while normal agent turns continue on `model`. The
@@ -367,7 +402,9 @@ Project themes can override any token in `.book/themes/<name>.json`. They appear
 | `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                               |
 | `BOOK_WORKSPACE`                                                                                  | Default workspace                                                 |
 | `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                          |
+| `BOOK_COMPACT_STRATEGY`                                                                           | `summary` (default) or `zero-mem`                                 |
 | `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                        |
+| `BOOK_ZERO_MEM_MODEL_CACHE` / `BOOK_ZERO_MEM_LOCAL_FILES_ONLY`                                    | Zero-Mem model cache and download policy                          |
 | `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                          |
 | `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout and telemetry location                               |
 | `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)          |
@@ -545,6 +582,7 @@ npm run bench:ui     # TUI micro-benchmarks
 npm run bench:runtime # Runtime micro-benchmarks
 npm run eval:edit    # Edit reliability evaluation (configured provider)
 npm run eval:compact # Compaction paired evaluation (configured provider)
+npm run eval:zero-mem # Zero-Mem retrieval/compaction comparison
 npm run eval:skills  # Skill activation evaluation
 npm run verify:ink-patch
 npm run release:check # Version, audit, and package smoke checks

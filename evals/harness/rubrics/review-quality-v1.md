@@ -1,15 +1,15 @@
 # Review Quality Rubric v1
 
-Score each criterion from 0 to 4: correctness of the authorization finding, severity calibration,
-specific code evidence, actionable remediation, and absence of invented findings.
+The authoritative artifact is `review-quality-v1.json` (`1.0.0`). It is calibration-only. This
+Markdown file is a readable summary and cannot be used as a decision-bearing substitute.
 
-- 0: absent or contradicted by the fixture.
-- 1: vague claim without correct mechanism or evidence.
-- 2: partially correct but materially incomplete.
-- 3: correct, specific, and actionable.
-- 4: complete, precise, and distinguishes exploit impact from remediation trade-offs.
+Five equal-weight 0-4 dimensions cover authorization correctness, severity calibration, exact code
+evidence, actionable remediation, and finding integrity. The pass threshold is 3.0. Fabricated code
+evidence or protected-data disclosure is a hard failure.
 
-Pass requires a mean of at least 3.0 from two independent reviewers. Reviewers are blind to arm and
-workflow identity. A score spread above 1.0 is disagreement and yields unknown until a third
-independent adjudicator reviews the original artifact. Missing reviews remain unknown. A model
-judge may extract citations but cannot supply the only score.
+Decision-bearing use requires the complete Phase 0 human protocol: a pinned blind evidence packet,
+two authenticated calibrated independent human primaries, per-dimension evidence, current pool and
+production reliability, and a blind third reviewer only for bounded adjudication. Calibration uses
+at least 30 artifacts, ordinal Krippendorff alpha at least 0.80 with a 95% lower bound at least 0.67,
+at least 90% anchor agreement, 100% seeded hard-failure detection, and at least 10% blind
+duplicates. Missing or failed requirements yield `unknown`. Model assistance is advisory only.

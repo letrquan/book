@@ -66,6 +66,7 @@ type EvidencePosition = 'early' | 'middle' | 'late' | 'distributed' | 'absent';
 
 export type ProbeExpectation =
   | { kind: 'contains-all'; terms: string[] }
+  | { kind: 'contains-all-any'; groups: string[][] }
   | { kind: 'contains-any'; terms: string[] }
   | { kind: 'exact'; values: string[] }
   | { kind: 'abstain'; markers: string[] };
@@ -92,13 +93,13 @@ export interface UsageTotals {
   totalTokens: number;
 }
 
-interface MeterCall {
+export interface MeterCall {
   estimatedPromptTokens: number;
   usage?: Usage;
   responseModel?: string;
 }
 
-interface Meter {
+export interface Meter {
   calls: MeterCall[];
   usage: UsageTotals;
   costUsd: number | null;
@@ -132,6 +133,8 @@ export interface ProbeRunResult extends ProbeGrade {
   usage: UsageTotals;
   attribution: EvaluationEligibility;
 }
+
+export type ProbeOutputTransform = (output: string) => string;
 
 export interface ProbeResult {
   name: string;
@@ -170,6 +173,7 @@ export interface CompactEvalRunResult {
     checkpoint?: ConversationCheckpointV2;
     effort?: AgentConfig['effort'];
     model: string;
+    timeMs?: number;
     attribution: EvaluationEligibility;
   };
   probes: ProbeResult[];
@@ -216,6 +220,7 @@ export interface CompactEvalOptions {
 
 const COMPACT_EVAL_WORKER = fileURLToPath(new URL('./compact-eval-worker.ts', import.meta.url));
 export const COMPACT_EVAL_FIXTURE_FILENAME = 'compact-eval-fixture.json';
+export const COMPACT_EVAL_READER_MAX_TOKENS = 1_024;
 const TSX_LOADER = import.meta.resolve('tsx');
 const COMPACT_EVAL_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024;
 const COMPACT_EVAL_TIMEOUT_MS = (() => {
@@ -437,7 +442,14 @@ export function buildCompactEvalFixture(): CompactEvalFixture {
       evidencePosition: 'distributed',
       prompt:
         'Return JSON only as {"answer":"..."}. Is the adapter patch active now, and what latest event determines that state?',
-      expectation: { kind: 'contains-all', terms: ['not active', 'reverted', 'Thursday'] },
+      expectation: {
+        kind: 'contains-all-any',
+        groups: [
+          ['not active', 'no longer active', 'inactive'],
+          ['reverted', 'reversion'],
+          ['Thursday'],
+        ],
+      },
       evidenceMessageIds: [tuesdayPatch.userId, wednesdayPass.userId, thursdayRevert.userId],
     },
     {
@@ -467,11 +479,11 @@ export function buildCompactEvalFixture(): CompactEvalFixture {
   return { name: 'handoff-state-and-history', history, probes };
 }
 
-function createMeter(): Meter {
+export function createMeter(): Meter {
   return { calls: [], usage: { ...EMPTY_USAGE }, costUsd: 0, costStatus: 'known' };
 }
 
-function createMeteredProvider(config: AgentConfig, meter: Meter): Provider {
+export function createMeteredProvider(config: AgentConfig, meter: Meter): Provider {
   const base = createProvider(config);
   return {
     id: base.id,
@@ -535,6 +547,12 @@ export function gradeProbe(text: string, expectation: ProbeExpectation): ProbeGr
   if (expectation.kind === 'contains-all') {
     missingTerms = expectation.terms.filter((term) => !answer.includes(normalizeAnswer(term)));
     pass = missingTerms.length === 0;
+  } else if (expectation.kind === 'contains-all-any') {
+    const missingGroups = expectation.groups.filter(
+      (group) => !group.some((term) => answer.includes(normalizeAnswer(term))),
+    );
+    missingTerms = missingGroups.map((group) => group.join(' / '));
+    pass = missingGroups.length === 0;
   } else if (expectation.kind === 'contains-any') {
     pass = expectation.terms.some((term) => answer.includes(normalizeAnswer(term)));
     if (!pass) missingTerms = [...expectation.terms];
@@ -577,11 +595,12 @@ function failureKindFor(options: {
   return 'none';
 }
 
-async function runProbe(
+export async function runProbe(
   config: AgentConfig,
   history: Message[],
   probe: Probe,
   provider: Provider,
+  transformOutput?: ProbeOutputTransform,
 ): Promise<ProbeRunResult> {
   let output = '';
   const toolCalls: string[] = [];
@@ -632,10 +651,11 @@ async function runProbe(
     ambient,
   };
   const attribution = evaluateRunEligibility([evidence]);
-  const grade = gradeProbe(output, probe.expectation);
+  const gradedOutput = transformOutput ? transformOutput(output) : output;
+  const grade = gradeProbe(gradedOutput, probe.expectation);
   const failureKind = failureKindFor({
     grade,
-    output,
+    output: gradedOutput,
     toolCalls,
     errors,
     terminal: outcome,
@@ -646,7 +666,7 @@ async function runProbe(
     semanticPass: grade.pass,
     pass: grade.pass && failureKind === 'none',
     failureKind,
-    outputPreview: output.replace(/\s+/g, ' ').trim().slice(0, 240),
+    outputPreview: gradedOutput.replace(/\s+/g, ' ').trim().slice(0, 240),
     toolCalls,
     errors,
     terminalStatus: outcome.status,
@@ -656,18 +676,22 @@ async function runProbe(
   };
 }
 
-function withBenchmarkConfig(config: AgentConfig, contextWindow: number): AgentConfig {
+export function withBenchmarkConfig(config: AgentConfig, contextWindow: number): AgentConfig {
   return {
     ...config,
     autoCompactEnabled: false,
     maxTurns: 1,
-    maxTokens: 512,
+    maxTokens: COMPACT_EVAL_READER_MAX_TOKENS,
     maxTokensExplicit: true,
-    modelInfo: { ...config.modelInfo, contextWindow, maxOutputTokens: 512 },
+    modelInfo: {
+      ...config.modelInfo,
+      contextWindow,
+      maxOutputTokens: COMPACT_EVAL_READER_MAX_TOKENS,
+    },
   };
 }
 
-function selectProbes(
+export function selectProbes(
   fixture: CompactEvalFixture,
   suite: CompactEvalSuite,
   probeLimit?: number,
@@ -707,6 +731,7 @@ async function runFixture(options: {
       permissionMode: 'bypassPermissions',
     }),
   );
+  const compactStartedAt = Date.now();
   const compact = await runCompact(compactConfig, fixture.history, {
     trigger: 'manual',
     provider: compactProvider,
@@ -725,6 +750,7 @@ async function runFixture(options: {
         'compact_provider_usage',
       ),
   });
+  const compactTimeMs = Date.now() - compactStartedAt;
   const compactAccounting = compactRuntime.runAccounting.snapshotRun(compactRunContext.runId);
   const compactOutcome =
     compact.status === 'compacted'
@@ -822,6 +848,7 @@ async function runFixture(options: {
       checkpoint: compact.status === 'compacted' ? compact.checkpoint : undefined,
       effort: options.compactEffort,
       model: options.compactModel,
+      timeMs: compactTimeMs,
       attribution: compactAttribution,
     },
     probes,
@@ -1033,6 +1060,7 @@ export function renderBenchmarkReport(bundle: CompactEvalBundle): string {
     `- Suite: ${bundle.options.suite}`,
     `- Context window: ${bundle.options.contextWindow.toLocaleString()}`,
     `- Repetitions: ${bundle.options.repetitions}`,
+    `- Reader output cap: ${COMPACT_EVAL_READER_MAX_TOKENS.toLocaleString()} tokens`,
     `- No-history leakage arm: ${bundle.options.includeNoHistory ? 'enabled' : 'disabled'}`,
     `- Checkpoint output cap: ${bundle.options.checkpointTokens?.toLocaleString() ?? 'production default'}`,
     `- Compaction effort: ${bundle.options.compactEffort ?? 'production default'}`,
@@ -1072,11 +1100,11 @@ export function renderBenchmarkReport(bundle: CompactEvalBundle): string {
     '',
     '## Run Details',
     '',
-    '| Model | Reducer | Rep | Compact | Attribution | Pre → post | Compression | Output cap | Checkpoint | Calls | Tokens | Cost |',
-    '| --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+    '| Model | Reducer | Rep | Compact | Attribution | Pre → post | Compression | Output cap | Checkpoint | Calls | Tokens | Time | Cost |',
+    '| --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
     ...bundle.runs.map(
       (run) =>
-        `| ${run.model} | ${run.compact.model} | ${run.repetition} | ${run.compact.status}${run.compact.degraded ? ' degraded' : ''} | ${run.compact.attribution.eligible ? 'eligible' : `INELIGIBLE:${run.compact.attribution.reasons.join(',')}`} | ${(run.compact.preContextTokens ?? 0).toLocaleString()} → ${(run.compact.postContextTokens ?? 0).toLocaleString()} | ${run.compact.compressionRatio === undefined ? 'n/a' : `${(run.compact.compressionRatio * 100).toFixed(1)}%`} | ${run.compact.outputCapTokens?.toLocaleString() ?? 'default'} | ${run.compact.checkpointTokens?.toLocaleString() ?? 'n/a'} | ${run.compact.modelCalls ?? 0} | ${run.compact.usage.totalTokens.toLocaleString()} | ${formatUsd(run.compact.costUsd)} |`,
+        `| ${run.model} | ${run.compact.model} | ${run.repetition} | ${run.compact.status}${run.compact.degraded ? ' degraded' : ''} | ${run.compact.attribution.eligible ? 'eligible' : `INELIGIBLE:${run.compact.attribution.reasons.join(',')}`} | ${(run.compact.preContextTokens ?? 0).toLocaleString()} → ${(run.compact.postContextTokens ?? 0).toLocaleString()} | ${run.compact.compressionRatio === undefined ? 'n/a' : `${(run.compact.compressionRatio * 100).toFixed(1)}%`} | ${run.compact.outputCapTokens?.toLocaleString() ?? 'default'} | ${run.compact.checkpointTokens?.toLocaleString() ?? 'n/a'} | ${run.compact.modelCalls ?? 0} | ${run.compact.usage.totalTokens.toLocaleString()} | ${run.compact.timeMs === undefined ? 'n/a' : `${run.compact.timeMs.toLocaleString()} ms`} | ${formatUsd(run.compact.costUsd)} |`,
     ),
     '',
     '## Probe Diagnostics',

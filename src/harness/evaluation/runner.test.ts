@@ -11,7 +11,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { resolveEvaluationRuntimeRevision, runEvaluationProcess } from './runner.js';
+import {
+  CALIBRATION_PROCESS_AUTHORITY,
+  resolveEvaluationRuntimeRevision,
+  runEvaluationProcess,
+} from './runner.js';
 
 describe('runEvaluationProcess', () => {
   it('runs in a fresh workspace with isolated Book and user-state paths', async () => {
@@ -39,6 +43,11 @@ describe('runEvaluationProcess', () => {
 
     try {
       expect(result.status).toBe('completed');
+      expect(result).toMatchObject({ designClass: 'calibration', claimAuthority: 'none' });
+      expect(CALIBRATION_PROCESS_AUTHORITY).toMatchObject({
+        designClass: 'calibration',
+        claimAuthority: 'none',
+      });
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({
         cwd: result.workspace,

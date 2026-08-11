@@ -239,6 +239,8 @@ export async function runHeadless(
         const outcome = await agentSession.compact({
           config,
           history,
+          sourceHistory: transcript,
+          compactBoundaries,
           sessionId,
           transcriptOrdinal: transcript.length,
           runContext,
@@ -277,6 +279,8 @@ export async function runHeadless(
           registry,
           prompt,
           history: contextHistory,
+          transcript,
+          compactBoundaries,
           mode,
           sessionId: runtimeSessionId,
           timelineStore: store,
@@ -386,6 +390,7 @@ export async function runHeadless(
       const contextLimit = resolveContextLimit(config);
       const hostCompactAttemptKey = `${usagePressureTokens(lastUsage)}:${contextHistory.length}`;
       if (
+        config.compactStrategy === 'summary' &&
         config.autoCompactEnabled !== false &&
         contextLimit != null &&
         shouldCompact(lastUsage, contextLimit) &&
@@ -396,6 +401,8 @@ export async function runHeadless(
           const outcome = await agentSession.compact({
             config,
             history: contextHistory,
+            sourceHistory: transcript,
+            compactBoundaries,
             sessionId,
             transcriptOrdinal: transcript.length,
             runContext,

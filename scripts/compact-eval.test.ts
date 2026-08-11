@@ -196,6 +196,12 @@ describe('compact eval', () => {
       }).pass,
     ).toBe(true);
     expect(
+      gradeProbe('{"answer":"The patch is not active after the Thursday reversion."}', {
+        kind: 'contains-all-any',
+        groups: [['not active', 'inactive'], ['reverted', 'reversion'], ['Thursday']],
+      }).pass,
+    ).toBe(true);
+    expect(
       gradeProbe('{"answer":"  EU-WEST-1  "}', {
         kind: 'exact',
         values: ['eu-west-1'],

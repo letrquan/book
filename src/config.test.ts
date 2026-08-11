@@ -72,6 +72,23 @@ describe('loadConfig model defaults', () => {
     process.env.BOOK_COMPACT_MODEL = 'router/env-reducer';
     expect(loadConfig(workspace).compactModel).toBe('router/env-reducer');
   });
+
+  it('loads the compact strategy with a validated environment override', () => {
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ compactStrategy: 'zero-mem' }),
+    );
+
+    expect(loadConfig(workspace).compactStrategy).toBe('zero-mem');
+
+    process.env.BOOK_COMPACT_STRATEGY = 'SUMMARY';
+    expect(loadConfig(workspace).compactStrategy).toBe('summary');
+
+    process.env.BOOK_COMPACT_STRATEGY = 'invalid';
+    expect(() => loadConfig(workspace)).toThrow(
+      'BOOK_COMPACT_STRATEGY must be "summary" or "zero-mem"',
+    );
+  });
 });
 
 describe('loadConfig permission defaults', () => {

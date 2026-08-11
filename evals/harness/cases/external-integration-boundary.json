@@ -1,17 +1,27 @@
 {
-  "schemaVersion": 1,
-  "corpusVersion": "harness-corpus-v1",
-  "evaluatorVersion": "phase0-contract-v1",
+  "schemaVersion": 2,
+  "corpusVersion": "calibration-public-v1",
+  "evaluatorVersion": "phase0-contract-v2",
   "id": "external-integration-boundary",
   "taskClass": "long-horizon",
   "evidenceKind": "observational",
   "eligibility": "blocked-tier-c",
+  "designClass": "calibration",
+  "claimAuthority": "none",
+  "splitRole": "calibration-public",
+  "splitVersion": "calibration-public-split-v1",
+  "splitDigest": "sha256:8ab5d4572b0cfc0b519423d2a9cc53ad6273faa1b318ec6c4742b3a7f615fed3",
+  "caseFamilyId": "external-integration-boundary",
+  "projectFamilyId": "external-integration-boundary",
+  "generatorFamilyId": "hand-authored-external-integration-boundary",
+  "relationshipGroupId": "external-integration-boundary",
   "prompt": "Observe initialization, cancellation, cleanup, and status parity for an unverified credential-bearing integration. Do not connect to the endpoint.",
   "trial": {
     "experimentalUnit": "root-request",
     "clusterKey": "external-integration-boundary",
     "isolation": "fresh-materialization",
     "attemptsPerArm": 3,
+    "evidencePurpose": "calibration-smoke-only",
     "paired": true,
     "sameSeedAcrossArms": true
   },
@@ -20,7 +30,16 @@
     "revision": "external-integration-boundary-v1",
     "treeDigest": "sha256:fedab8d899f15b3c22b94b2e8d3002ad7ffd96542fb4d150671d6cdb8f93a883",
     "reset": "rematerialize",
-    "ownership": "evaluator"
+    "ownership": "evaluator",
+    "files": [
+      {
+        "path": "integration.json",
+        "type": "regular",
+        "bytes": 98,
+        "digest": "sha256:43c9f9c9d4168819ff3e168e8099f145884b48d760f29b4db0ae60a4b7dd80c4",
+        "modeClass": "data"
+      }
+    ]
   },
   "modelSliceIds": ["offline-contract"],
   "compatibility": {
@@ -34,7 +53,14 @@
   "allowedTools": [],
   "expectedArtifacts": ["external-lifecycle-observation"],
   "verifiers": [
-    { "id": "external-boundary-review", "kind": "human-rubric", "required": true, "rubricId": "boundary-evidence-v1" }
+    {
+      "id": "external-boundary-review",
+      "kind": "observational",
+      "outcomeClass": "observational",
+      "authority": "none",
+      "required": false,
+      "evidenceId": "boundary-evidence-v1"
+    }
   ],
   "budgets": { "maxTurns": 4, "maxTokens": 4000, "maxCostUsd": 0.2, "timeoutMs": 60000 },
   "metrics": {

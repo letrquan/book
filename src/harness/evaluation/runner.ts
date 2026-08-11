@@ -40,6 +40,12 @@ const RESERVED_ENVIRONMENT_KEYS = new Set([
   'XDG_CONFIG_HOME',
 ]);
 
+export const CALIBRATION_PROCESS_AUTHORITY = Object.freeze({
+  designClass: 'calibration' as const,
+  claimAuthority: 'none' as const,
+  reason: 'generic-process-runner-is-not-a-security-sandbox',
+});
+
 export interface EvaluationWorkspace {
   readonly runId: string;
   readonly root: string;
@@ -67,6 +73,8 @@ export interface EvaluationProcessOptions {
 }
 
 export interface EvaluationProcessResult extends EvaluationWorkspace {
+  designClass: 'calibration';
+  claimAuthority: 'none';
   status: 'completed' | 'failed' | 'timed-out' | 'cancelled' | 'spawn-failed';
   exitCode: number | null;
   signal: NodeJS.Signals | null;
@@ -442,8 +450,11 @@ async function createEvaluationWorkspace(temporaryRoot = tmpdir()): Promise<Eval
 }
 
 /**
- * Run a trusted built-in evaluation command in a fresh process with isolated user-state paths.
- * This is a reproducibility boundary, not a security sandbox for project-controlled commands.
+ * Run calibration infrastructure in a fresh process with isolated user-state paths.
+ *
+ * This arbitrary-command/prepare API is a reproducibility helper only. It is not registered-worker,
+ * broker, filesystem, network, or credential authority and its result can never support a
+ * confirmatory or promotion claim. See worker.ts for the fail-closed registered-worker contract.
  */
 export async function runEvaluationProcess(
   options: EvaluationProcessOptions,
@@ -518,6 +529,8 @@ export async function runEvaluationProcess(
         const spawnMessage = spawnError ? `${spawnError.message}\n` : '';
         resolveResult({
           ...workspace,
+          designClass: 'calibration',
+          claimAuthority: 'none',
           status,
           exitCode: child.exitCode,
           signal: child.signalCode,

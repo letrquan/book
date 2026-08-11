@@ -1,0 +1,2251 @@
+{
+  "version": 2,
+  "createdAt": "2026-08-06T08:47:03.290Z",
+  "options": {
+    "models": [
+      "9router/cmc/deepseek/deepseek-v4-flash"
+    ],
+    "suite": "standard",
+    "contextWindow": 24000,
+    "repetitions": 1,
+    "topK": 5,
+    "closureK": 3,
+    "json": false
+  },
+  "semanticModel": "Xenova/bge-m3+Xenova/bert-base-NER:q8:cpu",
+  "semanticModelLoadMs": 6341,
+  "runs": [
+    {
+      "model": "9router/cmc/deepseek/deepseek-v4-flash",
+      "repetition": 1,
+      "compact": {
+        "version": 3,
+        "model": "9router/cmc/deepseek/deepseek-v4-flash",
+        "repetition": 1,
+        "suite": "standard",
+        "fixture": "handoff-state-and-history-paper-alignment",
+        "historyTokens": 7985,
+        "historyMessages": 74,
+        "compact": {
+          "status": "compacted",
+          "preContextTokens": 7985,
+          "postContextTokens": 4972,
+          "compressionRatio": 0.6226675015654352,
+          "summarizedCount": 28,
+          "retainedCount": 46,
+          "modelCalls": 2,
+          "strategy": "degraded-fallback",
+          "degraded": true,
+          "usage": {
+            "promptTokens": 6216,
+            "completionTokens": 4800,
+            "totalTokens": 11016
+          },
+          "estimatedPromptTokens": 7868,
+          "costUsd": null,
+          "checkpointTokens": 181,
+          "checkpoint": {
+            "version": 2,
+            "generation": 1,
+            "state": {
+              "summary": "The summarizer returned no usable structured checkpoint. Exact history remains searchable with SessionHistorySearch and SessionHistoryRead.",
+              "status": "unknown"
+            },
+            "constraints": [],
+            "files": [],
+            "episodes": [],
+            "openThreads": [],
+            "statistics": {
+              "summarizedMessages": 28,
+              "retainedMessages": 46,
+              "preTokens": 7985,
+              "postTokens": 4972
+            },
+            "coverage": {
+              "status": "degraded",
+              "reasons": [
+                "invalid-checkpoint"
+              ],
+              "processedMessages": 28,
+              "omittedMessages": 0,
+              "partiallyProcessedMessages": 0,
+              "firstProcessedEventRef": "session://current/event/compact-eval-0",
+              "lastProcessedEventRef": "session://current/event/compact-eval-27"
+            }
+          },
+          "model": "9router/cmc/deepseek/deepseek-v4-flash",
+          "timeMs": 50581,
+          "attribution": {
+            "eligible": false,
+            "reasons": [
+              "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+              "agents_mode_not_off",
+              "book_home_not_isolated",
+              "book_home_not_captured",
+              "cost_unknown"
+            ],
+            "rootRunId": "2247404e-d14a-453b-8631-c529c01037e5",
+            "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+            "pricingVersion": "book-local-2026-07-29",
+            "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+          }
+        },
+        "probes": [
+          {
+            "name": "runtime-constraint",
+            "category": "static-recall",
+            "evidencePosition": "early",
+            "evidenceMessageIds": [
+              "compact-eval-0",
+              "compact-eval-1"
+            ],
+            "control": {
+              "pass": false,
+              "answer": "Node.js 20 or newer",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"Node.js 20 or newer\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 11895,
+                "completionTokens": 104,
+                "totalTokens": 11999
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "b5fbe2ac-0f2d-40f6-a32a-44f35ce4a62f",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "treatment": {
+              "pass": false,
+              "answer": "Node.js 20+",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"Node.js 20+\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 9897,
+                "completionTokens": 337,
+                "totalTokens": 10234
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "f6dea6f3-3574-4008-8490-19cd2e6dcfd6",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "comparison": {
+              "eligible": false,
+              "reasons": [
+                "arm_1_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown",
+                "arm_2_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown"
+              ],
+              "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+              "pricingVersion": "book-local-2026-07-29",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          {
+            "name": "public-api-constraint",
+            "category": "static-recall",
+            "evidencePosition": "early",
+            "evidenceMessageIds": [
+              "compact-eval-0",
+              "compact-eval-1"
+            ],
+            "control": {
+              "pass": false,
+              "answer": "The query() function signature must not change — \"Do not change the public query() function signature.\"",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"The query() function signature must not change — \\\"Do not change the public query() function signature.\\\"\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 11891,
+                "completionTokens": 149,
+                "totalTokens": 12040
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "60e41188-3b27-41c7-8ae6-e2f4fc765adb",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "treatment": {
+              "pass": false,
+              "answer": "No constraint about a public API that must not change was recorded in this conversation. The only API-related facts recorded are: upstream API durations are in milliseconds, database durations are in whole seconds, and the adapter divides by 1000 to convert between them.",
+              "formatCompliant": true,
+              "missingTerms": [
+                "query() function signature"
+              ],
+              "semanticPass": false,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"No constraint about a public API that must not change was recorded in this conversation. The only API-related facts recorded are: upstream API durations are in milliseconds, database durations are in whole seconds, and the adapte",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 9893,
+                "completionTokens": 426,
+                "totalTokens": 10319
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "ae8a7620-daf6-40d8-915b-5c9563fe1ebe",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "comparison": {
+              "eligible": false,
+              "reasons": [
+                "arm_1_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown",
+                "arm_2_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown"
+              ],
+              "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+              "pricingVersion": "book-local-2026-07-29",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          {
+            "name": "accepted-decision",
+            "category": "static-recall",
+            "evidencePosition": "early",
+            "evidenceMessageIds": [
+              "compact-eval-2",
+              "compact-eval-3"
+            ],
+            "control": {
+              "pass": false,
+              "answer": "workspaceHash:modelId:v3",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"workspaceHash:modelId:v3\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 11893,
+                "completionTokens": 74,
+                "totalTokens": 11967
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "9a7e1acd-bc7a-4e66-9edd-e09c3caae316",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "treatment": {
+              "pass": false,
+              "answer": "No cache-key format was accepted in the available record; I will not invent one.",
+              "formatCompliant": true,
+              "missingTerms": [
+                "workspaceHash:modelId:v3"
+              ],
+              "semanticPass": false,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"No cache-key format was accepted in the available record; I will not invent one.\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 9895,
+                "completionTokens": 814,
+                "totalTokens": 10709
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "2ca8cd21-dc19-4c2c-98fc-93dc0a93abe2",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "comparison": {
+              "eligible": false,
+              "reasons": [
+                "arm_1_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown",
+                "arm_2_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown"
+              ],
+              "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+              "pricingVersion": "book-local-2026-07-29",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          {
+            "name": "rejected-decision",
+            "category": "static-recall",
+            "evidencePosition": "early",
+            "evidenceMessageIds": [
+              "compact-eval-2",
+              "compact-eval-3"
+            ],
+            "control": {
+              "pass": false,
+              "answer": "Redis was rejected because the benchmark must work offline and without a service dependency.",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"Redis was rejected because the benchmark must work offline and without a service dependency.\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 11887,
+                "completionTokens": 111,
+                "totalTokens": 11998
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "a02e945b-9a29-4384-ba36-0827852d1366",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "treatment": {
+              "pass": false,
+              "answer": "npm was rejected as the package manager; the correction stated the repository requires pnpm 9 and the previous npm assumption must not be used.",
+              "formatCompliant": true,
+              "missingTerms": [
+                "Redis",
+                "offline"
+              ],
+              "semanticPass": false,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"npm was rejected as the package manager; the correction stated the repository requires pnpm 9 and the previous npm assumption must not be used.\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 9889,
+                "completionTokens": 96,
+                "totalTokens": 9985
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "64a4291f-5c4e-4f18-9edf-aa4100674c4c",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "comparison": {
+              "eligible": false,
+              "reasons": [
+                "arm_1_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown",
+                "arm_2_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown"
+              ],
+              "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+              "pricingVersion": "book-local-2026-07-29",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          {
+            "name": "open-thread",
+            "category": "static-recall",
+            "evidencePosition": "early",
+            "evidenceMessageIds": [
+              "compact-eval-4",
+              "compact-eval-5"
+            ],
+            "control": {
+              "pass": false,
+              "answer": "Windows CRLF fixture",
+              "formatCompliant": true,
+              "missingTerms": [
+                "still fails"
+              ],
+              "semanticPass": false,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"Windows CRLF fixture\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 11891,
+                "completionTokens": 204,
+                "totalTokens": 12095
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "0f834d8d-cf6c-453c-9aa4-c181e50c8020",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "treatment": {
+              "pass": false,
+              "answer": "No fixture name exists in the established record; the open verification item is that the adapter patch was reverted Thursday and is not active, so re-verification remains pending, but no fixture was ever named.",
+              "formatCompliant": true,
+              "missingTerms": [
+                "Windows CRLF fixture",
+                "still fails"
+              ],
+              "semanticPass": false,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"No fixture name exists in the established record; the open verification item is that the adapter patch was reverted Thursday and is not active, so re-verification remains pending, but no fixture was ever named.\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 9893,
+                "completionTokens": 730,
+                "totalTokens": 10623
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "f39caa16-c8e8-40ab-80f9-43ed348ce6d3",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "comparison": {
+              "eligible": false,
+              "reasons": [
+                "arm_1_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown",
+                "arm_2_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown"
+              ],
+              "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+              "pricingVersion": "book-local-2026-07-29",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          {
+            "name": "current-region-update",
+            "category": "knowledge-update",
+            "evidencePosition": "distributed",
+            "evidenceMessageIds": [
+              "compact-eval-26",
+              "compact-eval-27"
+            ],
+            "control": {
+              "pass": false,
+              "answer": "eu-west-1",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"eu-west-1\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 11898,
+                "completionTokens": 65,
+                "totalTokens": 11963
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "68befd9a-483a-46b9-ad50-116825018f3f",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "treatment": {
+              "pass": false,
+              "answer": "unknown",
+              "formatCompliant": true,
+              "missingTerms": [
+                "eu-west-1"
+              ],
+              "semanticPass": false,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"unknown\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 9900,
+                "completionTokens": 195,
+                "totalTokens": 10095
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "89cd2b1a-9076-4bde-8413-e0bfea1836ce",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "comparison": {
+              "eligible": false,
+              "reasons": [
+                "arm_1_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown",
+                "arm_2_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown"
+              ],
+              "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+              "pricingVersion": "book-local-2026-07-29",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          {
+            "name": "package-manager-correction",
+            "category": "conflict-resolution",
+            "evidencePosition": "distributed",
+            "evidenceMessageIds": [
+              "compact-eval-28",
+              "compact-eval-29"
+            ],
+            "control": {
+              "pass": false,
+              "answer": "pnpm 9",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"pnpm 9\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 11891,
+                "completionTokens": 28,
+                "totalTokens": 11919
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "464739cb-b70f-4323-a1b2-6783d45577e4",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "treatment": {
+              "pass": false,
+              "answer": "pnpm 9",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"pnpm 9\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 9893,
+                "completionTokens": 53,
+                "totalTokens": 9946
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "99278da6-de76-482c-a4bc-664c05e6d8e4",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "comparison": {
+              "eligible": false,
+              "reasons": [
+                "arm_1_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown",
+                "arm_2_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown"
+              ],
+              "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+              "pricingVersion": "book-local-2026-07-29",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          {
+            "name": "first-passing-day",
+            "category": "temporal-reasoning",
+            "evidencePosition": "distributed",
+            "evidenceMessageIds": [
+              "compact-eval-30",
+              "compact-eval-32",
+              "compact-eval-52"
+            ],
+            "control": {
+              "pass": false,
+              "answer": "Wednesday",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"Wednesday\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 11891,
+                "completionTokens": 56,
+                "totalTokens": 11947
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "c5bb8d7f-bdf1-420e-99b1-f7384902985a",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "treatment": {
+              "pass": false,
+              "answer": "Wednesday",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"Wednesday\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 9893,
+                "completionTokens": 39,
+                "totalTokens": 9932
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "1d05d824-2db6-438f-bcbc-135e833f22a9",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "comparison": {
+              "eligible": false,
+              "reasons": [
+                "arm_1_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown",
+                "arm_2_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown"
+              ],
+              "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+              "pricingVersion": "book-local-2026-07-29",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          {
+            "name": "current-patch-state",
+            "category": "temporal-reasoning",
+            "evidencePosition": "distributed",
+            "evidenceMessageIds": [
+              "compact-eval-58",
+              "compact-eval-59"
+            ],
+            "control": {
+              "pass": false,
+              "answer": "No, the adapter patch is not active. The latest determining event was the Thursday verification entry stating the patch was reverted after a separate regression.",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"No, the adapter patch is not active. The latest determining event was the Thursday verification entry stating the patch was reverted after a separate regression.\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 11893,
+                "completionTokens": 78,
+                "totalTokens": 11971
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "1458660f-7dc9-41d5-a83f-b5f3abe9ec2d",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "treatment": {
+              "pass": false,
+              "answer": "The adapter patch is not active now; the deciding event is the Thursday verification event stating it was reverted after a separate regression.",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"The adapter patch is not active now; the deciding event is the Thursday verification event stating it was reverted after a separate regression.\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 9895,
+                "completionTokens": 70,
+                "totalTokens": 9965
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "15042f4b-de77-4587-b6c4-35c8ccf5c1c2",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "comparison": {
+              "eligible": false,
+              "reasons": [
+                "arm_1_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown",
+                "arm_2_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown"
+              ],
+              "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+              "pricingVersion": "book-local-2026-07-29",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          {
+            "name": "unit-conversion-reasoning",
+            "category": "multi-hop",
+            "evidencePosition": "distributed",
+            "evidenceMessageIds": [
+              "compact-eval-34",
+              "compact-eval-54",
+              "compact-eval-56"
+            ],
+            "control": {
+              "pass": false,
+              "answer": "The adapter divides by 1000 to convert the upstream API's milliseconds to the database's whole seconds (1000 ms = 1 s).",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"The adapter divides by 1000 to convert the upstream API's milliseconds to the database's whole seconds (1000 ms = 1 s).\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 11897,
+                "completionTokens": 151,
+                "totalTokens": 12048
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "5eaf339d-615b-4289-a35a-3c0b78054059",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "treatment": {
+              "pass": false,
+              "answer": "The adapter divides duration values by 1000 to convert from milliseconds, the unit returned by the upstream API, to seconds, the unit in which the database persists duration values.",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"The adapter divides duration values by 1000 to convert from milliseconds, the unit returned by the upstream API, to seconds, the unit in which the database persists duration values.\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 9899,
+                "completionTokens": 251,
+                "totalTokens": 10150
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "8ecb30f8-104b-4029-83d6-86e27d04ff9a",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "comparison": {
+              "eligible": false,
+              "reasons": [
+                "arm_1_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown",
+                "arm_2_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown"
+              ],
+              "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+              "pricingVersion": "book-local-2026-07-29",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          {
+            "name": "missing-secret-abstention",
+            "category": "abstention",
+            "evidencePosition": "absent",
+            "evidenceMessageIds": [],
+            "control": {
+              "pass": false,
+              "answer": "Not recorded in the conversation history.",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"Not recorded in the conversation history.\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 11902,
+                "completionTokens": 87,
+                "totalTokens": 11989
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "5a90c1cc-87e6-485e-84b0-696419f2fab8",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "treatment": {
+              "pass": false,
+              "answer": "unknown",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"unknown\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 9904,
+                "completionTokens": 25,
+                "totalTokens": 9929
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "abe99820-eb7a-42f4-aa18-f84e01aa7c0f",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "comparison": {
+              "eligible": false,
+              "reasons": [
+                "arm_1_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown",
+                "arm_2_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown"
+              ],
+              "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+              "pricingVersion": "book-local-2026-07-29",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          },
+          {
+            "name": "semantic-alias-recall",
+            "category": "static-recall",
+            "evidencePosition": "late",
+            "evidenceMessageIds": [
+              "zero-mem-semantic-alias-user",
+              "zero-mem-semantic-alias-assistant"
+            ],
+            "control": {
+              "pass": false,
+              "answer": "crimson",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"crimson\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 11887,
+                "completionTokens": 74,
+                "totalTokens": 11961
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "7bc75483-1b9b-4850-be85-2c924965d2eb",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "treatment": {
+              "pass": false,
+              "answer": "crimson",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"crimson\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 9889,
+                "completionTokens": 19,
+                "totalTokens": 9908
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "ea85da2c-8d19-4a81-94ac-10bb8752f8bf",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            },
+            "comparison": {
+              "eligible": false,
+              "reasons": [
+                "arm_1_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown",
+                "arm_2_ineligible:ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents,agents_mode_not_off,book_home_not_isolated,book_home_not_captured,cost_unknown"
+              ],
+              "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+              "pricingVersion": "book-local-2026-07-29",
+              "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+            }
+          }
+        ],
+        "control": {
+          "calls": [
+            {
+              "estimatedPromptTokens": 14657,
+              "usage": {
+                "promptTokens": 11895,
+                "completionTokens": 104,
+                "totalTokens": 11999
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 14649,
+              "usage": {
+                "promptTokens": 11891,
+                "completionTokens": 149,
+                "totalTokens": 12040
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 14649,
+              "usage": {
+                "promptTokens": 11893,
+                "completionTokens": 74,
+                "totalTokens": 11967
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 14644,
+              "usage": {
+                "promptTokens": 11887,
+                "completionTokens": 111,
+                "totalTokens": 11998
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 14650,
+              "usage": {
+                "promptTokens": 11891,
+                "completionTokens": 204,
+                "totalTokens": 12095
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 14659,
+              "usage": {
+                "promptTokens": 11898,
+                "completionTokens": 65,
+                "totalTokens": 11963
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 14650,
+              "usage": {
+                "promptTokens": 11891,
+                "completionTokens": 28,
+                "totalTokens": 11919
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 14648,
+              "usage": {
+                "promptTokens": 11891,
+                "completionTokens": 56,
+                "totalTokens": 11947
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 14651,
+              "usage": {
+                "promptTokens": 11893,
+                "completionTokens": 78,
+                "totalTokens": 11971
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 14655,
+              "usage": {
+                "promptTokens": 11897,
+                "completionTokens": 151,
+                "totalTokens": 12048
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 14660,
+              "usage": {
+                "promptTokens": 11902,
+                "completionTokens": 87,
+                "totalTokens": 11989
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 14643,
+              "usage": {
+                "promptTokens": 11887,
+                "completionTokens": 74,
+                "totalTokens": 11961
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            }
+          ],
+          "usage": {
+            "promptTokens": 142716,
+            "completionTokens": 1181,
+            "totalTokens": 143897
+          },
+          "costUsd": null,
+          "costStatus": "unknown"
+        },
+        "treatment": {
+          "calls": [
+            {
+              "estimatedPromptTokens": 3902,
+              "usage": {
+                "promptTokens": 3076,
+                "completionTokens": 2400,
+                "totalTokens": 5476
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 3966,
+              "usage": {
+                "promptTokens": 3140,
+                "completionTokens": 2400,
+                "totalTokens": 5540
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 11644,
+              "usage": {
+                "promptTokens": 9897,
+                "completionTokens": 337,
+                "totalTokens": 10234
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 11636,
+              "usage": {
+                "promptTokens": 9893,
+                "completionTokens": 426,
+                "totalTokens": 10319
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 11636,
+              "usage": {
+                "promptTokens": 9895,
+                "completionTokens": 814,
+                "totalTokens": 10709
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 11631,
+              "usage": {
+                "promptTokens": 9889,
+                "completionTokens": 96,
+                "totalTokens": 9985
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 11637,
+              "usage": {
+                "promptTokens": 9893,
+                "completionTokens": 730,
+                "totalTokens": 10623
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 11646,
+              "usage": {
+                "promptTokens": 9900,
+                "completionTokens": 195,
+                "totalTokens": 10095
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 11637,
+              "usage": {
+                "promptTokens": 9893,
+                "completionTokens": 53,
+                "totalTokens": 9946
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 11635,
+              "usage": {
+                "promptTokens": 9893,
+                "completionTokens": 39,
+                "totalTokens": 9932
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 11638,
+              "usage": {
+                "promptTokens": 9895,
+                "completionTokens": 70,
+                "totalTokens": 9965
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 11642,
+              "usage": {
+                "promptTokens": 9899,
+                "completionTokens": 251,
+                "totalTokens": 10150
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 11647,
+              "usage": {
+                "promptTokens": 9904,
+                "completionTokens": 25,
+                "totalTokens": 9929
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 11630,
+              "usage": {
+                "promptTokens": 9889,
+                "completionTokens": 19,
+                "totalTokens": 9908
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            }
+          ],
+          "usage": {
+            "promptTokens": 124956,
+            "completionTokens": 7855,
+            "totalTokens": 132811
+          },
+          "costUsd": null,
+          "costStatus": "unknown"
+        }
+      },
+      "zeroMem": {
+        "indexMs": 161661,
+        "retrievalMs": 1069,
+        "memoryOperationTokens": 0,
+        "reader": {
+          "calls": [
+            {
+              "estimatedPromptTokens": 6925,
+              "usage": {
+                "promptTokens": 6745,
+                "completionTokens": 344,
+                "totalTokens": 7089
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 6917,
+              "usage": {
+                "promptTokens": 6741,
+                "completionTokens": 239,
+                "totalTokens": 6980
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 6909,
+              "usage": {
+                "promptTokens": 6735,
+                "completionTokens": 88,
+                "totalTokens": 6823
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 6904,
+              "usage": {
+                "promptTokens": 6729,
+                "completionTokens": 117,
+                "totalTokens": 6846
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 6904,
+              "usage": {
+                "promptTokens": 6727,
+                "completionTokens": 207,
+                "totalTokens": 6934
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 6790,
+              "usage": {
+                "promptTokens": 6621,
+                "completionTokens": 85,
+                "totalTokens": 6706
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 6773,
+              "usage": {
+                "promptTokens": 6605,
+                "completionTokens": 85,
+                "totalTokens": 6690
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 7309,
+              "usage": {
+                "promptTokens": 6989,
+                "completionTokens": 172,
+                "totalTokens": 7161
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 6843,
+              "usage": {
+                "promptTokens": 6669,
+                "completionTokens": 312,
+                "totalTokens": 6981
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 6870,
+              "usage": {
+                "promptTokens": 6694,
+                "completionTokens": 512,
+                "totalTokens": 7206
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 6732,
+              "usage": {
+                "promptTokens": 6559,
+                "completionTokens": 229,
+                "totalTokens": 6788
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            },
+            {
+              "estimatedPromptTokens": 6868,
+              "usage": {
+                "promptTokens": 6687,
+                "completionTokens": 66,
+                "totalTokens": 6753
+              },
+              "responseModel": "deepseek/deepseek-v4-flash"
+            }
+          ],
+          "usage": {
+            "promptTokens": 80501,
+            "completionTokens": 2456,
+            "totalTokens": 82957
+          },
+          "costUsd": null,
+          "costStatus": "unknown"
+        },
+        "probes": [
+          {
+            "name": "runtime-constraint",
+            "category": "static-recall",
+            "evidenceMessageIds": [
+              "compact-eval-0",
+              "compact-eval-1"
+            ],
+            "retrievedMessageIds": [
+              "compact-eval-0",
+              "compact-eval-1",
+              "compact-eval-2",
+              "compact-eval-3",
+              "compact-eval-4"
+            ],
+            "evidenceHits": 2,
+            "evidenceRecall": 1,
+            "evidenceSufficient": true,
+            "contextTokens": 253,
+            "contextBudgetTokens": 4972,
+            "retrievalMs": 78,
+            "calibration": {
+              "initialAnswer": "Node.js 20 or newer",
+              "answer": "Node.js 20 or newer",
+              "output": "{\"answer\":\"Node.js 20 or newer\"}",
+              "changed": false,
+              "supported": true,
+              "formatCompliant": true,
+              "reason": "supported",
+              "candidates": [
+                "20",
+                "v3"
+              ]
+            },
+            "reader": {
+              "pass": false,
+              "answer": "Node.js 20 or newer",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"Node.js 20 or newer\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 6745,
+                "completionTokens": 344,
+                "totalTokens": 7089
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "fba18f28-a6e5-45ce-a65a-94aa4613255f",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            }
+          },
+          {
+            "name": "public-api-constraint",
+            "category": "static-recall",
+            "evidenceMessageIds": [
+              "compact-eval-0",
+              "compact-eval-1"
+            ],
+            "retrievedMessageIds": [
+              "compact-eval-0",
+              "compact-eval-1",
+              "compact-eval-2",
+              "compact-eval-3",
+              "compact-eval-4"
+            ],
+            "evidenceHits": 2,
+            "evidenceRecall": 1,
+            "evidenceSufficient": true,
+            "contextTokens": 253,
+            "contextBudgetTokens": 4972,
+            "retrievalMs": 120,
+            "calibration": {
+              "initialAnswer": "The public API that must not change is the query() function. The exact recorded constraint is: \"the public query() function signature must remain unchanged.\"",
+              "answer": "The public API that must not change is the query() function. The exact recorded constraint is: \"the public query() function signature must remain unchanged.\"",
+              "output": "{\"answer\":\"The public API that must not change is the query() function. The exact recorded constraint is: \\\"the public query() function signature must remain unchanged.\\\"\"}",
+              "changed": false,
+              "supported": false,
+              "formatCompliant": true,
+              "reason": "unchanged",
+              "candidates": [
+                "Node.js",
+                "workspaceHash:modelId:v3"
+              ]
+            },
+            "reader": {
+              "pass": false,
+              "answer": "The public API that must not change is the query() function. The exact recorded constraint is: \"the public query() function signature must remain unchanged.\"",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"The public API that must not change is the query() function. The exact recorded constraint is: \\\"the public query() function signature must remain unchanged.\\\"\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 6741,
+                "completionTokens": 239,
+                "totalTokens": 6980
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "007422c7-0320-4808-bade-1aa90c1a0725",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            }
+          },
+          {
+            "name": "accepted-decision",
+            "category": "static-recall",
+            "evidenceMessageIds": [
+              "compact-eval-2",
+              "compact-eval-3"
+            ],
+            "retrievedMessageIds": [
+              "compact-eval-0",
+              "compact-eval-2",
+              "compact-eval-3",
+              "compact-eval-4",
+              "compact-eval-5"
+            ],
+            "evidenceHits": 2,
+            "evidenceRecall": 1,
+            "evidenceSufficient": true,
+            "contextTokens": 245,
+            "contextBudgetTokens": 4972,
+            "retrievalMs": 144,
+            "calibration": {
+              "initialAnswer": "workspaceHash:modelId:v3",
+              "answer": "workspaceHash:modelId:v3",
+              "output": "{\"answer\":\"workspaceHash:modelId:v3\"}",
+              "changed": false,
+              "supported": true,
+              "formatCompliant": true,
+              "reason": "supported",
+              "candidates": [
+                "Node.js",
+                "workspaceHash:modelId:v3"
+              ]
+            },
+            "reader": {
+              "pass": false,
+              "answer": "workspaceHash:modelId:v3",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"workspaceHash:modelId:v3\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 6735,
+                "completionTokens": 88,
+                "totalTokens": 6823
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "1ac11d52-f810-4569-af71-f615a54c0a02",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            }
+          },
+          {
+            "name": "rejected-decision",
+            "category": "static-recall",
+            "evidenceMessageIds": [
+              "compact-eval-2",
+              "compact-eval-3"
+            ],
+            "retrievedMessageIds": [
+              "compact-eval-0",
+              "compact-eval-2",
+              "compact-eval-3",
+              "compact-eval-4",
+              "compact-eval-5"
+            ],
+            "evidenceHits": 2,
+            "evidenceRecall": 1,
+            "evidenceSufficient": true,
+            "contextTokens": 245,
+            "contextBudgetTokens": 4972,
+            "retrievalMs": 120,
+            "calibration": {
+              "initialAnswer": "Redis was rejected because the benchmark must work offline and without a service dependency.",
+              "answer": "Redis was rejected because the benchmark must work offline and without a service dependency.",
+              "output": "{\"answer\":\"Redis was rejected because the benchmark must work offline and without a service dependency.\"}",
+              "changed": false,
+              "supported": false,
+              "formatCompliant": true,
+              "reason": "unchanged",
+              "candidates": []
+            },
+            "reader": {
+              "pass": false,
+              "answer": "Redis was rejected because the benchmark must work offline and without a service dependency.",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"Redis was rejected because the benchmark must work offline and without a service dependency.\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 6729,
+                "completionTokens": 117,
+                "totalTokens": 6846
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "bb6e9d89-8d98-4d50-b724-7871641bdd31",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            }
+          },
+          {
+            "name": "open-thread",
+            "category": "static-recall",
+            "evidenceMessageIds": [
+              "compact-eval-4",
+              "compact-eval-5"
+            ],
+            "retrievedMessageIds": [
+              "compact-eval-1",
+              "compact-eval-2",
+              "compact-eval-3",
+              "compact-eval-4",
+              "compact-eval-5"
+            ],
+            "evidenceHits": 2,
+            "evidenceRecall": 1,
+            "evidenceSufficient": true,
+            "contextTokens": 239,
+            "contextBudgetTokens": 4972,
+            "retrievalMs": 50,
+            "calibration": {
+              "initialAnswer": "The Windows CRLF fixture still fails and remains an open thread until verified.",
+              "answer": "The Windows CRLF fixture still fails and remains an open thread until verified.",
+              "output": "{\"answer\":\"The Windows CRLF fixture still fails and remains an open thread until verified.\"}",
+              "changed": false,
+              "supported": false,
+              "formatCompliant": true,
+              "reason": "unchanged",
+              "candidates": [
+                "Node.js",
+                "workspaceHash:modelId:v3"
+              ]
+            },
+            "reader": {
+              "pass": false,
+              "answer": "The Windows CRLF fixture still fails and remains an open thread until verified.",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"The Windows CRLF fixture still fails and remains an open thread until verified.\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 6727,
+                "completionTokens": 207,
+                "totalTokens": 6934
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "bf36e2b0-8373-44e8-99c0-36fc0d181c45",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            }
+          },
+          {
+            "name": "current-region-update",
+            "category": "knowledge-update",
+            "evidenceMessageIds": [
+              "compact-eval-26",
+              "compact-eval-27"
+            ],
+            "retrievedMessageIds": [
+              "compact-eval-26",
+              "compact-eval-27"
+            ],
+            "evidenceHits": 2,
+            "evidenceRecall": 1,
+            "evidenceSufficient": true,
+            "contextTokens": 116,
+            "contextBudgetTokens": 4972,
+            "retrievalMs": 59,
+            "calibration": {
+              "initialAnswer": "eu-west-1",
+              "answer": "eu-west-1",
+              "output": "{\"answer\":\"eu-west-1\"}",
+              "changed": false,
+              "supported": true,
+              "formatCompliant": true,
+              "reason": "supported",
+              "candidates": [
+                "eu-west-1"
+              ]
+            },
+            "reader": {
+              "pass": false,
+              "answer": "eu-west-1",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"eu-west-1\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 6621,
+                "completionTokens": 85,
+                "totalTokens": 6706
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "84b08368-316a-4655-9737-291f04a1a3c1",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            }
+          },
+          {
+            "name": "package-manager-correction",
+            "category": "conflict-resolution",
+            "evidenceMessageIds": [
+              "compact-eval-28",
+              "compact-eval-29"
+            ],
+            "retrievedMessageIds": [
+              "compact-eval-28",
+              "compact-eval-29"
+            ],
+            "evidenceHits": 2,
+            "evidenceRecall": 1,
+            "evidenceSufficient": true,
+            "contextTokens": 108,
+            "contextBudgetTokens": 4972,
+            "retrievalMs": 106,
+            "calibration": {
+              "initialAnswer": "pnpm 9",
+              "answer": "pnpm 9",
+              "output": "{\"answer\":\"pnpm 9\"}",
+              "changed": false,
+              "supported": true,
+              "formatCompliant": true,
+              "reason": "supported",
+              "candidates": [
+                "9"
+              ]
+            },
+            "reader": {
+              "pass": false,
+              "answer": "pnpm 9",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"pnpm 9\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 6605,
+                "completionTokens": 85,
+                "totalTokens": 6690
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "9b2c4ef7-9c5a-4b2d-8037-72d50f05bea0",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            }
+          },
+          {
+            "name": "first-passing-day",
+            "category": "temporal-reasoning",
+            "evidenceMessageIds": [
+              "compact-eval-30",
+              "compact-eval-32",
+              "compact-eval-52"
+            ],
+            "retrievedMessageIds": [
+              "compact-eval-49",
+              "compact-eval-50",
+              "compact-eval-51",
+              "compact-eval-52",
+              "compact-eval-53"
+            ],
+            "evidenceHits": 1,
+            "evidenceRecall": 0.3333333333333333,
+            "evidenceSufficient": true,
+            "contextTokens": 646,
+            "contextBudgetTokens": 4972,
+            "retrievalMs": 79,
+            "calibration": {
+              "initialAnswer": "Wednesday",
+              "answer": "Wednesday",
+              "output": "{\"answer\":\"Wednesday\"}",
+              "changed": false,
+              "supported": true,
+              "formatCompliant": true,
+              "reason": "supported",
+              "candidates": [
+                "Wednesday"
+              ]
+            },
+            "reader": {
+              "pass": false,
+              "answer": "Wednesday",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"Wednesday\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 6989,
+                "completionTokens": 172,
+                "totalTokens": 7161
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "dcd86d09-7a2e-425b-afca-c93d8b631910",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            }
+          },
+          {
+            "name": "current-patch-state",
+            "category": "temporal-reasoning",
+            "evidenceMessageIds": [
+              "compact-eval-58",
+              "compact-eval-59"
+            ],
+            "retrievedMessageIds": [
+              "compact-eval-56",
+              "compact-eval-57",
+              "compact-eval-58",
+              "compact-eval-59"
+            ],
+            "evidenceHits": 2,
+            "evidenceRecall": 1,
+            "evidenceSufficient": true,
+            "contextTokens": 177,
+            "contextBudgetTokens": 4972,
+            "retrievalMs": 138,
+            "calibration": {
+              "initialAnswer": "No, the adapter patch is not active now. The latest event determining that state is the Thursday verification event (trace 58), where the patch was reverted after a separate regression; trace 59 confirms it is no longer active.",
+              "answer": "No, the adapter patch is not active now. The latest event determining that state is the Thursday verification event (trace 58), where the patch was reverted after a separate regression; trace 59 confirms it is no longer active.",
+              "output": "{\"answer\":\"No, the adapter patch is not active now. The latest event determining that state is the Thursday verification event (trace 58), where the patch was reverted after a separate regression; trace 59 confirms it is no longer active.\"}",
+              "changed": false,
+              "supported": true,
+              "formatCompliant": true,
+              "reason": "supported",
+              "candidates": [
+                "not active"
+              ]
+            },
+            "reader": {
+              "pass": false,
+              "answer": "No, the adapter patch is not active now. The latest event determining that state is the Thursday verification event (trace 58), where the patch was reverted after a separate regression; trace 59 confirms it is no longer active.",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"No, the adapter patch is not active now. The latest event determining that state is the Thursday verification event (trace 58), where the patch was reverted after a separate regression; trace 59 confirms it is no longer active.\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 6669,
+                "completionTokens": 312,
+                "totalTokens": 6981
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "38fd4958-9246-494c-a1b9-7a3a6f2fb3ef",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            }
+          },
+          {
+            "name": "unit-conversion-reasoning",
+            "category": "multi-hop",
+            "evidenceMessageIds": [
+              "compact-eval-34",
+              "compact-eval-54",
+              "compact-eval-56"
+            ],
+            "retrievedMessageIds": [
+              "compact-eval-34",
+              "compact-eval-54",
+              "compact-eval-56",
+              "compact-eval-57",
+              "compact-eval-58"
+            ],
+            "evidenceHits": 3,
+            "evidenceRecall": 1,
+            "evidenceSufficient": true,
+            "contextTokens": 200,
+            "contextBudgetTokens": 4972,
+            "retrievalMs": 69,
+            "calibration": {
+              "initialAnswer": "The adapter divides by 1000 to convert duration values from milliseconds (the unit returned by the upstream API) to seconds (the unit in which the database persists durations), since 1000 milliseconds = 1 second. Note: the trace indicates that patch is currently not active, as it was reverted.",
+              "answer": "The adapter divides by 1000 to convert duration values from milliseconds (the unit returned by the upstream API) to seconds (the unit in which the database persists durations), since 1000 milliseconds = 1 second. Note: the trace indicates that patch is currently not active, as it was reverted.",
+              "output": "{\"answer\":\"The adapter divides by 1000 to convert duration values from milliseconds (the unit returned by the upstream API) to seconds (the unit in which the database persists durations), since 1000 milliseconds = 1 second. Note: the trace indicates that patch is currently not active, as it was reverted.\"}",
+              "changed": false,
+              "supported": false,
+              "formatCompliant": true,
+              "reason": "unchanged",
+              "candidates": []
+            },
+            "reader": {
+              "pass": false,
+              "answer": "The adapter divides by 1000 to convert duration values from milliseconds (the unit returned by the upstream API) to seconds (the unit in which the database persists durations), since 1000 milliseconds = 1 second. Note: the trace indicates that patch is currently not active, as it was reverted.",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"The adapter divides by 1000 to convert duration values from milliseconds (the unit returned by the upstream API) to seconds (the unit in which the database persists durations), since 1000 milliseconds = 1 second. Note: the trace ",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 6694,
+                "completionTokens": 512,
+                "totalTokens": 7206
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "824851f8-2dc6-4e82-8ea8-909b9b157bfe",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            }
+          },
+          {
+            "name": "missing-secret-abstention",
+            "category": "abstention",
+            "evidenceMessageIds": [],
+            "retrievedMessageIds": [],
+            "evidenceHits": 0,
+            "evidenceRecall": null,
+            "evidenceSufficient": true,
+            "contextTokens": 57,
+            "contextBudgetTokens": 4972,
+            "retrievalMs": 45,
+            "calibration": {
+              "initialAnswer": "The staging database password is not recorded in the available history; it is unknown, and credentials/secrets are not disclosed.",
+              "answer": "The staging database password is not recorded in the available history; it is unknown, and credentials/secrets are not disclosed.",
+              "output": "{\"answer\":\"The staging database password is not recorded in the available history; it is unknown, and credentials/secrets are not disclosed.\"}",
+              "changed": false,
+              "supported": true,
+              "formatCompliant": true,
+              "reason": "supported",
+              "candidates": []
+            },
+            "reader": {
+              "pass": false,
+              "answer": "The staging database password is not recorded in the available history; it is unknown, and credentials/secrets are not disclosed.",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"The staging database password is not recorded in the available history; it is unknown, and credentials/secrets are not disclosed.\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 6559,
+                "completionTokens": 229,
+                "totalTokens": 6788
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "ff71c69a-1a4f-40f4-bd98-421580bf57fe",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            }
+          },
+          {
+            "name": "semantic-alias-recall",
+            "category": "static-recall",
+            "evidenceMessageIds": [
+              "zero-mem-semantic-alias-user",
+              "zero-mem-semantic-alias-assistant"
+            ],
+            "retrievedMessageIds": [
+              "compact-eval-69",
+              "compact-eval-70",
+              "compact-eval-71",
+              "zero-mem-semantic-alias-user",
+              "zero-mem-semantic-alias-assistant"
+            ],
+            "evidenceHits": 2,
+            "evidenceRecall": 1,
+            "evidenceSufficient": true,
+            "contextTokens": 210,
+            "contextBudgetTokens": 4972,
+            "retrievalMs": 61,
+            "calibration": {
+              "initialAnswer": "crimson",
+              "answer": "crimson",
+              "output": "{\"answer\":\"crimson\"}",
+              "changed": false,
+              "supported": true,
+              "formatCompliant": true,
+              "reason": "supported",
+              "candidates": []
+            },
+            "reader": {
+              "pass": false,
+              "answer": "crimson",
+              "formatCompliant": true,
+              "missingTerms": [],
+              "semanticPass": true,
+              "failureKind": "ineligible-evidence",
+              "outputPreview": "{\"answer\":\"crimson\"}",
+              "toolCalls": [],
+              "errors": [],
+              "terminalStatus": "completed",
+              "terminalReason": "normal_completion",
+              "usage": {
+                "promptTokens": 6687,
+                "completionTokens": 66,
+                "totalTokens": 6753
+              },
+              "attribution": {
+                "eligible": false,
+                "reasons": [
+                  "ambient_partial:clock_control,random_seed,repository_revision,runtime_code_version,settings_env_values,tool_activation_state,skill_activation_state,book_home_isolation,book_home_contents",
+                  "agents_mode_not_off",
+                  "book_home_not_isolated",
+                  "book_home_not_captured",
+                  "cost_unknown"
+                ],
+                "rootRunId": "bf8ea0e2-7f90-431e-93af-6ee46f2468f7",
+                "ambientFingerprint": "973dc97d8ec35bd7528b340a8389581057f40390994b298e95e0681dc61babb5",
+                "pricingVersion": "book-local-2026-07-29",
+                "modelIdentityFingerprint": "0161c7f80d11cdf118a86b03adff43fe1ced3bb8fc4815ba307f9b9336a17030"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

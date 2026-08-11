@@ -1,9 +1,38 @@
 {
-  "schemaVersion": 1,
-  "corpusVersion": "harness-corpus-v1",
-  "evaluatorVersion": "phase0-contract-v1",
+  "schemaVersion": 2,
+  "corpusVersion": "calibration-public-v1",
+  "evaluatorVersion": "phase0-contract-v2",
   "scope": "trusted-built-in-non-adversarial",
-  "reportSchemaVersion": 1,
+  "reportSchemaVersion": 2,
+  "designClass": "calibration",
+  "claimAuthority": "none",
+  "splitRole": "calibration-public",
+  "splitVersion": "calibration-public-split-v1",
+  "splitDigest": "sha256:8ab5d4572b0cfc0b519423d2a9cc53ad6273faa1b318ec6c4742b3a7f615fed3",
+  "corpusDigest": "sha256:d990f875a247363dc7fae325f2d9f6a11156c8db24b8e948064b5bb07958770f",
+  "evaluatorRelease": {
+    "version": "phase0-contract-v2",
+    "artifactDigest": "sha256:49111e85e0e66fb1a5d47cf0e2569fe5a9664ba694d06b7f19d3a4302b83e43b",
+    "provenanceDigest": "sha256:f1f5a50ee6d2d2631fad7280cc381b63cd11892c86e7346e70a0fc97368e3949",
+    "status": "unpackaged-calibration-source"
+  },
+  "confirmatoryStatus": "not-instantiated",
+  "rubricArtifacts": [
+    {
+      "rubricId": "review-quality-v1",
+      "rubricVersion": "1.0.0",
+      "file": "rubrics/review-quality-v1.json",
+      "digest": "sha256:1d567e7154c6047fdef5bba486544d731f06962ab7a8f6d0ffc1e0e8040341ea",
+      "authority": "calibration-only"
+    },
+    {
+      "rubricId": "research-quality-v1",
+      "rubricVersion": "1.0.0",
+      "file": "rubrics/research-quality-v1.json",
+      "digest": "sha256:a445e10a5e673b2c6efe282486911b76d8e8e9e2a003c5f5b1c0277d5d8bb9ee",
+      "authority": "calibration-only"
+    }
+  ],
   "caseFiles": [
     "cases/read-only-inventory.json",
     "cases/simple-edit-heading.json",
@@ -68,18 +97,32 @@
     "multiplicity": "holm-primary-family-guardrails-non-inferiority",
     "unknownPolicy": "retain-in-denominator-and-report-by-arm",
     "tieBreak": "simpler-workflow",
-    "minimumControlRunsForNoiseFloor": 5
+    "minimumControlRunsForNoiseFloor": 5,
+    "minimumMatchedAaBlocksForSizing": 20,
+    "minimumHeldOutFamiliesForPromotion": 20,
+    "minimumRepetitionsPerFamilyForPromotion": 5,
+    "evidenceClass": "calibration"
   },
   "trustBoundary": {
     "projectCommands": "blocked",
     "adversarialFixtures": "blocked",
     "network": "off",
     "credentials": "forbidden",
-    "symlinks": "forbidden"
+    "symlinks": "forbidden",
+    "commandVerifiers": "blocked",
+    "workerExecution": "unavailable",
+    "providerBroker": "unavailable"
   },
   "compatibilityFields": [
     "corpus-version",
+    "corpus-digest",
+    "split-version",
+    "split-digest",
     "evaluator-version",
+    "evaluator-release-digest",
+    "verifier-release-digest",
+    "worker-registration-digest",
+    "broker-digest",
     "fixture-digest",
     "runtime-fingerprint",
     "environment-fingerprint",
@@ -89,6 +132,7 @@
     "pricing-version",
     "resolved-model",
     "evaluation-date",
-    "random-seed"
+    "random-seed",
+    "compatibility-cell-digest"
   ]
 }

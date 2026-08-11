@@ -1,5 +1,5 @@
 import type { ChildProcess } from 'child_process';
-import type { ProviderModelConfig, ResolvedSettings } from '../settings.js';
+import type { CompactStrategy, ProviderModelConfig, ResolvedSettings } from '../settings.js';
 import type { LoadedMemoryContext } from '../memory-store.js';
 
 export type PermissionMode =
@@ -98,6 +98,8 @@ export interface AgentConfig {
   modelSelection?: string;
   /** Optional provider/model used only for historical conversation compaction. */
   compactModel?: string;
+  /** Historical context reduction strategy selected for this runtime. */
+  compactStrategy: CompactStrategy;
   /** Max agent turns per user message. Undefined = unlimited. */
   maxTurns?: number;
   maxTokens: number;

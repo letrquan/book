@@ -1,17 +1,27 @@
 {
-  "schemaVersion": 1,
-  "corpusVersion": "harness-corpus-v1",
-  "evaluatorVersion": "phase0-contract-v1",
+  "schemaVersion": 2,
+  "corpusVersion": "calibration-public-v1",
+  "evaluatorVersion": "phase0-contract-v2",
   "id": "bug-fix-sum",
   "taskClass": "bug-fix",
   "evidenceKind": "machine-verifiable",
-  "eligibility": "provider-trial",
+  "eligibility": "calibration-diagnostic",
+  "designClass": "calibration",
+  "claimAuthority": "none",
+  "splitRole": "calibration-public",
+  "splitVersion": "calibration-public-split-v1",
+  "splitDigest": "sha256:8ab5d4572b0cfc0b519423d2a9cc53ad6273faa1b318ec6c4742b3a7f615fed3",
+  "caseFamilyId": "bug-fix-sum",
+  "projectFamilyId": "bug-fix-sum",
+  "generatorFamilyId": "hand-authored-bug-fix-sum",
+  "relationshipGroupId": "bug-fix-sum",
   "prompt": "Fix sum so it includes every array element. Do not change the exported signature.",
   "trial": {
     "experimentalUnit": "root-request",
     "clusterKey": "bug-fix-sum",
     "isolation": "fresh-materialization",
     "attemptsPerArm": 3,
+    "evidencePurpose": "calibration-smoke-only",
     "paired": true,
     "sameSeedAcrossArms": true
   },
@@ -20,7 +30,16 @@
     "revision": "bug-fix-sum-v1",
     "treeDigest": "sha256:c51410d7b6b61eaee0f63fd1fc477081b71bf6516aae9bc33418c7466a740f31",
     "reset": "rematerialize",
-    "ownership": "evaluator"
+    "ownership": "evaluator",
+    "files": [
+      {
+        "path": "src/sum.ts",
+        "type": "regular",
+        "bytes": 119,
+        "digest": "sha256:9b08c4144dfff4759306702a5407dc7ed5aa71b59c1cf504cc4c24b32db09770",
+        "modeClass": "data"
+      }
+    ]
   },
   "modelSliceIds": ["primary-exact-model"],
   "compatibility": {
@@ -37,6 +56,9 @@
     {
       "id": "sum-content",
       "kind": "file",
+      "outcomeClass": "machine-verifiable",
+      "authority": "primary",
+      "verifierReleaseDigest": "sha256:a8735dca1237275076f604f23b5a300c025781d29a6eec0b4197c7ef0f5b002d",
       "required": true,
       "path": "src/sum.ts",
       "assertion": "utf8-equals",

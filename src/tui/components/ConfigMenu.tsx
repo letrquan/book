@@ -1,5 +1,6 @@
 import { Box, Text, useInput } from 'ink';
 import { useState } from 'react';
+import type { CompactStrategy } from '../../settings.js';
 import { useTheme } from '../theme.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
 import { truncateDisplay } from './word-wrap.js';
@@ -9,6 +10,7 @@ export type ConfigSection =
 
 interface ConfigMenuProps {
   model: string;
+  compactStrategy?: CompactStrategy;
   compactModel?: string;
   effort?: string;
   themeName: string;
@@ -20,6 +22,7 @@ interface ConfigMenuProps {
   defaultPermissionMode: string;
   terminalWidth?: number;
   onOpen: (section: ConfigSection) => void;
+  onToggleCompactStrategy?: () => void;
   onToggleMemory: () => void;
   onToggleThinking: () => void;
   onToggleStartupAnimation?: () => void;
@@ -28,6 +31,7 @@ interface ConfigMenuProps {
 
 const ROWS = [
   'model',
+  'compact-strategy',
   'compact-model',
   'effort',
   'thinking',
@@ -42,6 +46,7 @@ type Row = (typeof ROWS)[number];
 
 export function ConfigMenu({
   model,
+  compactStrategy = 'summary',
   compactModel,
   effort,
   themeName,
@@ -53,6 +58,7 @@ export function ConfigMenu({
   defaultPermissionMode,
   terminalWidth = 80,
   onOpen,
+  onToggleCompactStrategy = () => {},
   onToggleMemory,
   onToggleThinking,
   onToggleStartupAnimation = () => {},
@@ -76,6 +82,7 @@ export function ConfigMenu({
     if (key.return) {
       const row = ROWS[selected];
       if (row === 'memory') onToggleMemory();
+      else if (row === 'compact-strategy') onToggleCompactStrategy();
       else if (row === 'thinking') onToggleThinking();
       else if (row === 'startup-animation') onToggleStartupAnimation();
       else onOpen(row);
@@ -84,6 +91,7 @@ export function ConfigMenu({
     const shortcut = input.toLowerCase();
     if (shortcut === 'm') onOpen('model');
     else if (shortcut === 'c') onOpen('compact-model');
+    else if (shortcut === 'r') onToggleCompactStrategy();
     else if (shortcut === 'e') onOpen('effort');
     else if (shortcut === 'i') onToggleThinking();
     else if (shortcut === 'f') onToggleStartupAnimation();
@@ -95,6 +103,12 @@ export function ConfigMenu({
 
   const rows: Array<{ row: Row; label: string; value: string; description: string }> = [
     { row: 'model', label: 'Model', value: model, description: 'Default model for the main agent' },
+    {
+      row: 'compact-strategy',
+      label: 'Compact strategy',
+      value: compactStrategy,
+      description: 'Summary checkpoint or Zero-Mem retrieval',
+    },
     {
       row: 'compact-model',
       label: 'Compact model',
@@ -162,7 +176,7 @@ export function ConfigMenu({
         ))}
       </Box>
       <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter · F fire · M model · C compact · S skills · P permissions · Esc close
+        ↑↓ select · Enter · M model · R strategy · C compact · S skills · P permissions · Esc close
       </Text>
     </SoftPanel>
   );
