@@ -160,6 +160,8 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Detailed tool rows now keep raw call parameter lists out of both visual and screen-reader
+  transcripts while retaining concise summaries and result output.
 - Documentation now reflects the current proprietary/source-distributed package status, shipped
   CLI and runtime surfaces, open security boundaries, and implementation status of historical
   roadmap documents.

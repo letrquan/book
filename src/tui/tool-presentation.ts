@@ -18,7 +18,6 @@ export interface ToolPresentation {
   metadata: string[];
   summary: string;
   previewType: ToolPreviewType;
-  showArguments: boolean;
   hasDetails: boolean;
   hasHiddenContent: boolean;
   filePath?: string;
@@ -261,7 +260,6 @@ export function deriveToolPresentation(
   let target = primary || undefined;
   let metadata: string[] = [];
   let previewType: ToolPreviewType = result?.content ? 'text' : 'none';
-  const showArguments = !isFileMutatingTool(canonicalName);
   let filePath: string | undefined;
 
   if (result?.version === 2 && result.presentation) {
@@ -289,8 +287,7 @@ export function deriveToolPresentation(
     if (duration) metadata.push(duration);
     const retryAttempt = result.metrics?.retryAttempt;
     if (retryAttempt && retryAttempt > 1) metadata.push(`attempt ${retryAttempt}`);
-    const hasDetails =
-      (showArguments && Object.keys(args).length > 0) || Boolean(structured.details);
+    const hasDetails = Boolean(structured.details);
     return {
       canonicalName,
       status,
@@ -299,7 +296,6 @@ export function deriveToolPresentation(
       metadata,
       summary: structured.summary || `${title}${target ? `(${target})` : ''}`,
       previewType,
-      showArguments,
       hasDetails,
       hasHiddenContent: hasDetails,
       filePath,
@@ -384,7 +380,7 @@ export function deriveToolPresentation(
   const targetText = target ? `(${target})` : '';
   const metadataText = metadata.length > 0 ? ` · ${metadata.join(' ')}` : '';
   const summary = `${title}${targetText}${metadataText}`;
-  const hasDetails = (showArguments && Object.keys(args).length > 0) || Boolean(result?.content);
+  const hasDetails = Boolean(result?.content);
 
   return {
     canonicalName,
@@ -394,7 +390,6 @@ export function deriveToolPresentation(
     metadata,
     summary,
     previewType,
-    showArguments,
     hasDetails,
     hasHiddenContent: hasDetails,
     filePath,

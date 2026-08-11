@@ -1046,7 +1046,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).not.toContain('more lines hidden');
   });
 
-  it('keeps compact tools concise and exposes every result in detailed mode', () => {
+  it('keeps compact tools concise and exposes results without parameters in detailed mode', () => {
     const message: Message = {
       ...msg('a1', 'assistant', 'Inspecting.'),
       toolCalls: [
@@ -1088,9 +1088,9 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-    expect(frame(view.lastFrame)).toContain('filePath: src/a.ts');
+    expect(frame(view.lastFrame)).not.toContain('filePath: src/a.ts');
     expect(frame(view.lastFrame)).toContain('READ_RESULT_MARKER');
-    expect(frame(view.lastFrame)).toContain('command: npm test');
+    expect(frame(view.lastFrame)).not.toContain('command: npm test');
     expect(frame(view.lastFrame)).toContain('BASH_RESULT_MARKER');
   });
 
@@ -1207,7 +1207,8 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-    expect(frame(view.lastFrame)).toContain('command: npm test');
+    expect(frame(view.lastFrame)).toContain('Bash(npm test)');
+    expect(frame(view.lastFrame)).not.toContain('command: npm test');
 
     const completed: Message = {
       ...running,
@@ -1247,7 +1248,7 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-    expect(frame(view.lastFrame)).toContain('command: npm test');
+    expect(frame(view.lastFrame)).not.toContain('command: npm test');
     expect(frame(view.lastFrame)).toContain('PASSED_MARKER');
   });
 

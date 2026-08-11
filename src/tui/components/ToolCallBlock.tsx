@@ -88,15 +88,6 @@ function statusSymbol(status: ToolPresentationStatus): string {
   return '◌';
 }
 
-function stringifyArg(value: unknown): string {
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
 function useRunningElapsed(isRunning: boolean): number {
   const startedAtRef = useRef(Date.now());
   const tick = useUiClock('fast', isRunning);
@@ -111,11 +102,9 @@ function useRunningElapsed(isRunning: boolean): number {
 
 function ScreenReaderTool({
   presentation,
-  args,
   result,
 }: {
   presentation: ReturnType<typeof deriveToolPresentation>;
-  args: Record<string, unknown>;
   result?: ToolResult;
 }) {
   const status =
@@ -139,11 +128,6 @@ function ScreenReaderTool({
       <Text>
         {status} {accessibleSummary}
       </Text>
-      {(presentation.showArguments ? Object.entries(args) : []).map(([key, value]) => (
-        <Text key={key}>
-          {key}: {stringifyArg(value)}
-        </Text>
-      ))}
       {result?.content ? <Text>{result.content}</Text> : null}
       {result?.structuredError && result.status !== 'blocked' ? (
         <Text>Error: {result.structuredError.message}</Text>
@@ -171,7 +155,6 @@ function ToolCallBlockInner({
   const registry = useToolRowInteractionRegistry();
   const summaryRef = useRef<DOMElement>(null);
   const blockWidth = Math.max(12, Math.floor(terminalWidth) - 2);
-  const detailWidth = Math.max(8, blockWidth - 6);
   const presentation = useMemo(
     () => deriveToolPresentation(name, args, result, { isPending, nestedActivityCount }),
     [args, isPending, name, nestedActivityCount, result],
@@ -214,7 +197,7 @@ function ToolCallBlockInner({
   if (screenReader) {
     return (
       <Box flexDirection="column" marginLeft={2} width={blockWidth}>
-        <ScreenReaderTool presentation={presentation} args={args} result={result} />
+        <ScreenReaderTool presentation={presentation} result={result} />
       </Box>
     );
   }
@@ -241,33 +224,6 @@ function ToolCallBlockInner({
         )}
         <Text color={presentation.status === 'failure' ? theme.error : theme.text}>{summary}</Text>
       </Box>
-      {isExpanded && presentation.showArguments && Object.keys(args).length > 0 ? (
-        <Box
-          marginLeft={4}
-          flexDirection="column"
-          borderLeft
-          borderLeftColor={theme.toolRail}
-          paddingLeft={1}
-        >
-          {Object.entries(args).map(([key, value]) => {
-            const prefix = `${key}: `;
-            return (
-              <Box key={key}>
-                <Text color={theme.subtle} dimColor>
-                  {prefix}
-                </Text>
-                <Text color={theme.text}>
-                  {truncateDisplay(
-                    stringifyArg(value),
-                    Math.max(4, detailWidth - displayWidth(prefix)),
-                  )}
-                </Text>
-              </Box>
-            );
-          })}
-        </Box>
-      ) : null}
-
       {isExpanded && result && isDiffOutput(name, result) ? (
         <DiffBlock
           output={result.content}

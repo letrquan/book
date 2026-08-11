@@ -45,7 +45,6 @@ describe('deriveToolPresentation', () => {
       }),
     );
     expect(create.summary).toBe('Create(src/new.ts) · +2');
-    expect(create.showArguments).toBe(false);
 
     expect(
       deriveToolPresentation(
@@ -92,7 +91,7 @@ describe('deriveToolPresentation', () => {
         result({ output: 'passed', durationMs: 1250 }),
       ).summary,
     ).toBe('Bash(npm test) · 1 line, 6 B 1.3s');
-    expect(deriveToolPresentation('Bash', { command: 'npm test' }).showArguments).toBe(true);
+    expect(deriveToolPresentation('Bash', { command: 'npm test' }).hasHiddenContent).toBe(false);
   });
 
   it('uses domains for fetches and reports task activity without raw trace JSON', () => {
@@ -120,13 +119,12 @@ describe('deriveToolPresentation', () => {
     expect(presentation.summary).toBe('Bash(npm test) · failed 500ms');
   });
 
-  it('does not mark an argument-suppressed mutation error as expandable', () => {
+  it('does not treat raw arguments as expandable transcript content', () => {
     const presentation = deriveToolPresentation(
       'Edit',
       { filePath: 'src/a.ts', oldString: 'old', newString: 'new' },
       result({ success: false, error: 'old string not found' }),
     );
-    expect(presentation.showArguments).toBe(false);
     expect(presentation.hasHiddenContent).toBe(false);
   });
 });
