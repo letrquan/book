@@ -149,7 +149,52 @@ describe('ToolCallBlock', () => {
     expect(rendered).not.toContain('more lines hidden');
   });
 
-  it('uses width-aware truncation for long arguments and errors', () => {
+  it('omits raw parameters from visual and screen-reader transcripts', () => {
+    const args = {
+      command: 'npm test',
+      workdir: 'PRIVATE_WORKDIR_MARKER',
+      run_in_background: false,
+      title: 'PRIVATE_TITLE_MARKER',
+    };
+    const view = render(
+      withTheme(
+        <ToolCallBlock
+          name="Bash"
+          args={args}
+          result={successResult('call-private-args', 'VISIBLE_OUTPUT_MARKER')}
+          isExpanded
+          reducedMotion
+        />,
+      ),
+    );
+
+    let rendered = frame(view.lastFrame);
+    expect(rendered).toContain('Bash(npm test)');
+    expect(rendered).toContain('VISIBLE_OUTPUT_MARKER');
+    expect(rendered).not.toContain('command:');
+    expect(rendered).not.toContain('PRIVATE_WORKDIR_MARKER');
+    expect(rendered).not.toContain('PRIVATE_TITLE_MARKER');
+
+    view.rerender(
+      withTheme(
+        <ToolCallBlock
+          name="Bash"
+          args={args}
+          result={successResult('call-private-args', 'VISIBLE_OUTPUT_MARKER')}
+          isExpanded
+          screenReader
+          reducedMotion
+        />,
+      ),
+    );
+    rendered = frame(view.lastFrame);
+    expect(rendered).toContain('VISIBLE_OUTPUT_MARKER');
+    expect(rendered).not.toContain('command:');
+    expect(rendered).not.toContain('PRIVATE_WORKDIR_MARKER');
+    expect(rendered).not.toContain('PRIVATE_TITLE_MARKER');
+  });
+
+  it('uses width-aware truncation for long summaries and errors', () => {
     const longCommand = '🙂'.repeat(60);
     const longError = 'error-' + '🙂'.repeat(80);
     const view = render(
@@ -396,7 +441,7 @@ describe('ToolCallBlock', () => {
     expect(frame(killView.lastFrame)).toContain('Kill shell(shell_1)');
   });
 
-  it('bounds expanded output, arguments, and errors to a narrow width', () => {
+  it('bounds expanded output, summaries, and errors to a narrow width', () => {
     const width = 40;
     const view = render(
       withTheme(
