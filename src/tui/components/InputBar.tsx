@@ -4,9 +4,11 @@ import { useInput } from 'ink';
 import { useTheme } from '../theme.js';
 import { CommandMenu } from './CommandMenu.js';
 import { FileMentionMenu } from './FileMentionMenu.js';
+import { SkillMentionMenu } from './SkillMentionMenu.js';
 import type { PermissionMode } from '../../types/runtime.js';
 import type { ImageAttachment } from '../../types/messages.js';
 import type { SlashCommand } from '../../types/commands.js';
+import type { Skill } from '../../skills.js';
 import { modeColorToken } from '../mode-style.js';
 import { floatingFrameMetrics } from './chrome.js';
 import {
@@ -16,6 +18,13 @@ import {
   type ActiveFileMention,
   type FileMentionCandidate,
 } from '../../input/file-mentions.js';
+import {
+  findActiveSkillMention,
+  getSkillMentionCandidates,
+  replaceActiveSkillMention,
+  type ActiveSkillMention,
+  type SkillMentionCandidate,
+} from '../../input/skill-mentions.js';
 import { recordCommandUse } from '../../commands/recent.js';
 import {
   getCommandsForEmptyQuery,
@@ -84,6 +93,8 @@ interface InputBarProps {
   ) => boolean;
   /** Commands for the autocomplete menu (from discoverCommands). */
   commands?: SlashCommand[];
+  /** Discovered skills offered for explicit `$name` invocation. */
+  skills?: Skill[];
   /** Keyed request used by conversation rewind to restore a prior prompt draft. */
   draftRestore?: { key: number; value: string; attachments?: ImageAttachment[] };
 }
@@ -117,6 +128,15 @@ function getSelectedFileMention(
   candidates: FileMentionCandidate[],
   selectedIndex: number,
 ): FileMentionCandidate | null {
+  if (candidates.length === 0) return null;
+  const index = Math.max(0, Math.min(selectedIndex, candidates.length - 1));
+  return candidates[index];
+}
+
+function getSelectedSkillMention(
+  candidates: SkillMentionCandidate[],
+  selectedIndex: number,
+): SkillMentionCandidate | null {
   if (candidates.length === 0) return null;
   const index = Math.max(0, Math.min(selectedIndex, candidates.length - 1));
   return candidates[index];
@@ -158,6 +178,7 @@ export function InputBar({
   onGlobalShortcut,
   inputSuppressed = false,
   commands = [],
+  skills = [],
   terminalWidth = 80,
   maxMenuRows = 8,
   compact = false,
@@ -191,6 +212,19 @@ export function InputBar({
   const fileMentionRef = useRef<ActiveFileMention | null>(null);
   const fileSelectedRef = useRef(0);
   const fileCandidatesRef = useRef<FileMentionCandidate[]>([]);
+
+  // Skill mention menu state
+  const [skillMenuVisible, setSkillMenuVisible] = useState(false);
+  const [skillMention, setSkillMention] = useState<ActiveSkillMention | null>(null);
+  const [skillSelected, setSkillSelected] = useState(0);
+  const skillMenuVisibleRef = useRef(false);
+  const skillMentionRef = useRef<ActiveSkillMention | null>(null);
+  const skillSelectedRef = useRef(0);
+  const skillCandidates = useMemo(
+    () => getSkillMentionCandidates(skills, skillMention?.query ?? ''),
+    [skillMention?.query, skills],
+  );
+  const skillCandidatesRef = useRef<SkillMentionCandidate[]>([]);
 
   useEffect(() => {
     onDraftChange?.(value, attachments.length > 0 ? attachments : undefined);
@@ -269,6 +303,10 @@ export function InputBar({
   fileMentionRef.current = fileMention;
   fileSelectedRef.current = fileSelected;
   fileCandidatesRef.current = fileCandidates;
+  skillMenuVisibleRef.current = skillMenuVisible;
+  skillMentionRef.current = skillMention;
+  skillSelectedRef.current = skillSelected;
+  skillCandidatesRef.current = skillCandidates;
 
   useEffect(() => {
     if (!draftRestore) return;
@@ -281,6 +319,9 @@ export function InputBar({
     setFileMention(null);
     setFileCandidates([]);
     setFileSelected(0);
+    setSkillMenuVisible(false);
+    setSkillMention(null);
+    setSkillSelected(0);
   }, [draftRestore?.key]);
 
   const acceptSelectedFileMention = useCallback(
@@ -297,6 +338,26 @@ export function InputBar({
       setFileCandidates([]);
       setFileSelected(0);
       uiLog.event(`input:${trigger}`, { action: 'autofill-file-mention', path: selected.path });
+      return true;
+    },
+    [],
+  );
+
+  const acceptSelectedSkillMention = useCallback(
+    (currentValue: string, trigger: 'Tab' | 'Enter'): boolean => {
+      const mention = skillMentionRef.current;
+      const selected = getSelectedSkillMention(
+        skillCandidatesRef.current,
+        skillSelectedRef.current,
+      );
+      if (!mention || !selected) return false;
+
+      const nextValue = replaceActiveSkillMention(currentValue, mention, selected.name);
+      setValue(nextValue);
+      setSkillMention(null);
+      setSkillMenuVisible(false);
+      setSkillSelected(0);
+      uiLog.event(`input:${trigger}`, { action: 'autofill-skill-mention', skill: selected.name });
       return true;
     },
     [],
@@ -379,6 +440,36 @@ export function InputBar({
       // Character keys update the filter via onChange — stay visible so the
       // user can continue typing the command name. The menu is dismissed by
       // onChange when a space is typed or the leading / is removed.
+    }
+
+    // ---- Explicit skill mention menu keyboard handling ----
+    if (skillMenuVisible) {
+      if (key.escape) {
+        setSkillMenuVisible(false);
+        setSkillMention(null);
+        setSkillSelected(0);
+        uiLog.event('input:Escape', { action: 'dismiss-skill-menu' });
+        return;
+      }
+      if (key.tab) {
+        acceptSelectedSkillMention(value, 'Tab');
+        return;
+      }
+      if (key.downArrow) {
+        setSkillSelected((prev) => {
+          const next = prev + 1;
+          return next >= skillCandidates.length ? 0 : next;
+        });
+        return;
+      }
+      if (key.upArrow) {
+        setSkillSelected((prev) => {
+          const next = prev - 1;
+          return next < 0 ? Math.max(0, skillCandidates.length - 1) : next;
+        });
+        return;
+      }
+      if (key.return) return;
     }
 
     // ---- File mention menu keyboard handling ----
@@ -511,6 +602,9 @@ export function InputBar({
       setFileMenuVisible(false);
       setFileMention(null);
       setFileCandidates([]);
+      setSkillMenuVisible(false);
+      setSkillMention(null);
+      setSkillSelected(0);
       return;
     } else if (clean.startsWith('/') && clean.includes(' ')) {
       // User typed a space after command name — dismiss menu, they're typing args.
@@ -524,6 +618,27 @@ export function InputBar({
       }
       setMenuVisible(false);
     }
+
+    const activeSkillMention = findActiveSkillMention(clean);
+    if (activeSkillMention) {
+      if (!skillMenuVisibleRef.current) {
+        uiLog.event('skill-menu:visible', { filter: activeSkillMention.query });
+      }
+      setSkillMention(activeSkillMention);
+      setSkillSelected(0);
+      setSkillMenuVisible(true);
+      setFileMenuVisible(false);
+      setFileMention(null);
+      setFileCandidates([]);
+      setFileSelected(0);
+      return;
+    }
+    if (skillMenuVisibleRef.current) {
+      uiLog.event('skill-menu:hidden', { reason: 'no-active-mention' });
+    }
+    setSkillMenuVisible(false);
+    setSkillMention(null);
+    setSkillSelected(0);
 
     const activeMention = findActiveFileMention(clean);
     setFileMention(activeMention);
@@ -586,6 +701,10 @@ export function InputBar({
         return;
       }
 
+      if (skillMenuVisibleRef.current && acceptSelectedSkillMention(val, 'Enter')) {
+        return;
+      }
+
       if (fileMenuVisibleRef.current && acceptSelectedFileMention(val, 'Enter')) {
         return;
       }
@@ -597,6 +716,9 @@ export function InputBar({
       setFileMention(null);
       setFileCandidates([]);
       setFileSelected(0);
+      setSkillMenuVisible(false);
+      setSkillMention(null);
+      setSkillSelected(0);
 
       const normalized = normalizeInput(val);
       if (!normalized.trim() && attachments.length === 0) {
@@ -642,6 +764,7 @@ export function InputBar({
     },
     [
       acceptSelectedFileMention,
+      acceptSelectedSkillMention,
       commands,
       onQueue,
       onSubmit,
@@ -673,6 +796,7 @@ export function InputBar({
 
   const selIdx = Math.max(0, Math.min(menuSelected, filteredCmds.length - 1));
   const fileSelIdx = Math.max(0, Math.min(fileSelected, fileCandidates.length - 1));
+  const skillSelIdx = Math.max(0, Math.min(skillSelected, skillCandidates.length - 1));
 
   return (
     <Box flexDirection="column" width={outerWidth}>
@@ -687,11 +811,22 @@ export function InputBar({
         reducedMotion={reducedMotion}
         screenReader={screenReader}
       />
+      <SkillMentionMenu
+        items={skillCandidates}
+        filterText={skillMention?.query ?? ''}
+        selectedIndex={skillSelIdx}
+        visible={skillMenuVisible && !menuVisible}
+        terminalWidth={outerWidth}
+        maxRows={maxMenuRows}
+        compact={compact}
+        reducedMotion={reducedMotion}
+        screenReader={screenReader}
+      />
       <FileMentionMenu
         items={fileCandidates}
         filterText={fileMention?.query ?? ''}
         selectedIndex={fileSelIdx}
-        visible={fileMenuVisible && !menuVisible}
+        visible={fileMenuVisible && !menuVisible && !skillMenuVisible}
         terminalWidth={outerWidth}
         maxRows={maxMenuRows}
         compact={compact}

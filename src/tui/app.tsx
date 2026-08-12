@@ -2603,6 +2603,7 @@ export function App({
               }
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
+              skills={skills}
               terminalWidth={termWidth}
               maxMenuRows={maxCommandMenuRows}
               compact={isNarrow || isTiny}

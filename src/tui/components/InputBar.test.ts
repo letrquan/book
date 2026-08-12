@@ -9,6 +9,7 @@ import { InputBar } from './InputBar.js';
 import { MODE_COLOR_TOKENS } from '../mode-style.js';
 import { displayWidth } from './word-wrap.js';
 import type { ImageAttachment } from '../../types/messages.js';
+import type { Skill } from '../../skills.js';
 
 /**
  * Tests for InputBar: responsive editor box, bottom-pinning layout,
@@ -61,6 +62,33 @@ function expectFrameWithinWidth(frame: string | undefined, width: number): void 
 
 function tick(ms = 0): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function mentionSkill(overrides: Partial<Skill> = {}): Skill {
+  return {
+    id: 'agents:/skills/wayfinder/SKILL.md',
+    version: 'unversioned',
+    descriptorDigest: 'descriptor',
+    resourceDigest: 'resources',
+    name: 'wayfinder',
+    description: 'Plan a huge chunk of work',
+    metadata: {},
+    lifetime: 'run',
+    path: '/skills/wayfinder/SKILL.md',
+    rootPath: '/skills/wayfinder',
+    source: 'user',
+    rootKind: 'agents',
+    activation: 'manual',
+    execution: 'inherit',
+    invocationCount: 0,
+    entryByteSize: 0,
+    entryMtimeMs: 0,
+    resources: [],
+    issues: [],
+    valid: true,
+    shadowed: [],
+    ...overrides,
+  };
 }
 
 describe('InputBar editor box', () => {
@@ -461,6 +489,28 @@ describe('InputBar command menu', () => {
     view.stdin.write('\r');
     await tick(20);
     expect(submitted).toEqual(['restored prompt']);
+  });
+});
+
+describe('InputBar skill mention menu', () => {
+  it('offers and completes an explicit `$name` invocation', async () => {
+    const submitted: string[] = [];
+    const view = render(inputBar((value) => submitted.push(value), { skills: [mentionSkill()] }));
+    await tick();
+
+    view.stdin.write('$way');
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).toContain('$wayfinder');
+
+    view.stdin.write('\t');
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).toContain('$wayfinder ');
+
+    view.stdin.write('fix it');
+    await tick(20);
+    view.stdin.write('\r');
+    await tick(20);
+    expect(submitted).toEqual(['$wayfinder fix it']);
   });
 });
 

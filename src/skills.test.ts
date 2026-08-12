@@ -70,6 +70,69 @@ afterEach(() => {
 });
 
 describe('parseFrontmatter', () => {
+  it('parses CRLF frontmatter used by global Windows skill packages', () => {
+    const raw = [
+      '---',
+      'name: wayfinder',
+      'description: Plan a huge chunk of work',
+      '---',
+      'Instructions.',
+    ].join('\r\n');
+
+    const { body, frontmatter } = parseFrontmatter(raw);
+
+    expect(frontmatter).toMatchObject({
+      name: 'wayfinder',
+      description: 'Plan a huge chunk of work',
+    });
+    expect(body).toBe('Instructions.');
+  });
+
+  it('discovers a CRLF global-style package as valid metadata', () => {
+    const skillDir = join(dir, '.agents', 'skills', 'wayfinder');
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      join(skillDir, 'SKILL.md'),
+      [
+        '---',
+        'name: wayfinder',
+        'description: Plan a huge chunk of work',
+        '---',
+        'Instructions.',
+      ].join('\r\n'),
+    );
+
+    const [wayfinder] = discoverSkills(dir);
+
+    expect(wayfinder).toMatchObject({
+      name: 'wayfinder',
+      valid: true,
+      description: 'Plan a huge chunk of work',
+    });
+    expect(wayfinder.issues).toEqual([]);
+  });
+
+  it('accepts interoperable invocation-control metadata without an invalid warning', () => {
+    const skillDir = join(dir, '.agents', 'skills', 'wayfinder');
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      join(skillDir, 'SKILL.md'),
+      [
+        '---',
+        'name: wayfinder',
+        'description: Plan a huge chunk of work',
+        'disable-model-invocation: true',
+        '---',
+        'Instructions.',
+      ].join('\n'),
+    );
+
+    const [wayfinder] = discoverSkills(dir);
+
+    expect(wayfinder.valid).toBe(true);
+    expect(wayfinder.issues).toEqual([]);
+  });
+
   it('parses skill-specific YAML frontmatter', () => {
     const raw = [
       '---',
