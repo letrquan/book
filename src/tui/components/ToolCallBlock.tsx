@@ -239,7 +239,12 @@ function ToolCallBlockInner({
             {statusSymbol(presentation.status)}{' '}
           </Text>
         )}
-        <Text color={presentation.status === 'failure' ? theme.error : theme.text}>{summary}</Text>
+        <Text
+          color={presentation.status === 'failure' ? theme.error : theme.text}
+          dimColor={presentation.status !== 'failure'}
+        >
+          {summary}
+        </Text>
       </Box>
       {isExpanded && presentation.showArguments && Object.keys(args).length > 0 ? (
         <Box
@@ -256,7 +261,7 @@ function ToolCallBlockInner({
                 <Text color={theme.subtle} dimColor>
                   {prefix}
                 </Text>
-                <Text color={theme.text}>
+                <Text color={theme.text} dimColor>
                   {truncateDisplay(
                     stringifyArg(value),
                     Math.max(4, detailWidth - displayWidth(prefix)),
@@ -378,14 +383,16 @@ function OutputBlock({
                   color={segment.color}
                   bold={segment.bold}
                   italic={segment.italic}
-                  dimColor={segment.dimColor}
+                  dimColor
                 >
                   {segment.text}
                 </Text>
               ))}
             </Text>
           ) : (
-            <Text color={theme.text}>{line}</Text>
+            <Text color={theme.text} dimColor>
+              {line}
+            </Text>
           )}
         </Box>
       ))}
