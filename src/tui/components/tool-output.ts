@@ -42,15 +42,15 @@ export function prepareToolOutputDisplay(
   const widthLimit = Math.max(0, Math.floor(maxLineWidth));
   const visibleIndices = selectVisibleLineIndices(rawLines.length, lineLimit, strategy);
   const visibleRawLines = visibleIndices.map((index) => rawLines[index] ?? '');
-  const visibleIndexSet = new Set(visibleIndices);
-  const lineByteSizes = rawLines.map((line, index) =>
-    Buffer.byteLength(`${line}${index < rawLines.length - 1 ? '\n' : ''}`, 'utf8'),
-  );
-  const totalBytes = lineByteSizes.reduce((total, bytes) => total + bytes, 0);
-  const visibleBytes = lineByteSizes.reduce(
-    (total, bytes, index) => total + (visibleIndexSet.has(index) ? bytes : 0),
-    0,
-  );
+  // Measure the whole output in one call and only the visible lines
+  // individually — a per-line map allocates a string and a Buffer measurement
+  // for every line of a potentially huge output just to fill in the footer.
+  const totalBytes = Buffer.byteLength(output, 'utf8');
+  let visibleBytes = 0;
+  for (const index of visibleIndices) {
+    visibleBytes +=
+      Buffer.byteLength(rawLines[index] ?? '', 'utf8') + (index < rawLines.length - 1 ? 1 : 0);
+  }
   let truncatedLines = 0;
   const lines = visibleRawLines.map((line) => {
     const next = truncateDisplay(line, widthLimit);

@@ -107,6 +107,8 @@ function projectChildToolUses(
   return [...byId.values()].sort((left, right) => left.startedAt - right.startedAt);
 }
 
+const EMPTY_TRACES: ReadonlyMap<string, ManagedAgentTrace> = new Map();
+
 /**
  * Build UI-only traces for managed AgentSpawn calls. Parent Message objects are
  * left untouched so child activity never enters provider context or persistence.
@@ -116,6 +118,9 @@ export function projectManagedAgentTraces(
   records: ReadonlyMap<string, AgentRecord>,
   activities: ReadonlyMap<string, AgentActivity[]>,
 ): ReadonlyMap<string, ManagedAgentTrace> {
+  // Traces require a live agent record; skip the transcript scan entirely (and
+  // keep a stable identity) while no managed agents exist.
+  if (records.size === 0) return EMPTY_TRACES;
   const traces = new Map<string, ManagedAgentTrace>();
   for (const message of messages) {
     if (message.role !== 'assistant') continue;

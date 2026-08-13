@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './runtime-env.js';
 import { program } from 'commander';
 import { runDoctorCommand } from './cli/doctor.js';
 import { runToolStatsCommand } from './cli/tool-stats.js';

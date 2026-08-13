@@ -92,6 +92,45 @@ describe('useBackgroundShells', () => {
     await vi.waitFor(() => expect(latest?.lastCompletion).toBeUndefined());
   });
 
+  it('keeps shells state identity stable across output churn', async () => {
+    vi.useFakeTimers();
+    let listener: ((event: ShellJobEvent) => void) | undefined;
+    const manager = {
+      // list() clones records on every call, like the real manager.
+      list: vi.fn(() => [{ ...shell('running') }]),
+      listPendingAgentCompletions: vi.fn(() => []),
+      listPendingUiCompletions: vi.fn(() => []),
+      subscribe: vi.fn((next: (event: ShellJobEvent) => void) => {
+        listener = next;
+        return vi.fn();
+      }),
+    } as unknown as ShellJobManager;
+    let latest: BackgroundShellState | undefined;
+
+    function Harness() {
+      latest = useBackgroundShells(manager, 'session-1');
+      return <Text>{latest.shells.length}</Text>;
+    }
+
+    render(<Harness />);
+    await vi.waitFor(() => expect(latest?.shells).toHaveLength(1));
+    const initialList = latest?.shells;
+    const initialListCalls = (manager.list as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    for (let index = 0; index < 50; index++) {
+      listener?.({ type: 'background_job_output', jobId: 'shell_1', revision: index });
+    }
+    vi.advanceTimersByTime(1000);
+
+    // Refreshes are coalesced (not one list() per chunk) and the state object
+    // keeps its identity because nothing the list renders has changed.
+    const listCallsDuringChurn =
+      (manager.list as ReturnType<typeof vi.fn>).mock.calls.length - initialListCalls;
+    expect(listCallsDuringChurn).toBeLessThanOrEqual(2);
+    expect(latest?.shells).toBe(initialList);
+    vi.useRealTimers();
+  });
+
   it('ignores agent completions from another session', async () => {
     let listener: ((event: ShellJobEvent) => void) | undefined;
     const manager = {

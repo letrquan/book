@@ -11,11 +11,8 @@ import {
   getFileMutationDisplaySummary,
   isRenderableFileMutationDiff,
 } from '../file-mutation-display.js';
-import {
-  deriveToolPresentation,
-  formatDuration,
-  type ToolPresentationStatus,
-} from '../tool-presentation.js';
+import { deriveToolPresentation, type ToolPresentationStatus } from '../tool-presentation.js';
+import { formatElapsedDuration } from './SubagentRow.js';
 import { useToolRowInteractionRegistry } from './tool-row-interactions.js';
 import { useUiClock } from '../ui-clock.js';
 import type { ToolResult } from '../../types/tools.js';
@@ -90,7 +87,10 @@ function statusSymbol(status: ToolPresentationStatus): string {
 
 function useRunningElapsed(isRunning: boolean): number {
   const startedAtRef = useRef(Date.now());
-  const tick = useUiClock('fast', isRunning);
+  // The 1s clock keeps a running row to one re-render per second; the fast
+  // clock forced 10 renders + full Yoga layouts per second for every running
+  // tool. Second granularity in the label (formatElapsedDuration) matches.
+  const tick = useUiClock('slow', isRunning);
 
   useEffect(() => {
     startedAtRef.current = Date.now();
@@ -160,8 +160,13 @@ function ToolCallBlockInner({
     [args, isPending, name, nestedActivityCount, result],
   );
   const isRunning = presentation.status === 'running';
-  const runningElapsedMs = useRunningElapsed(isRunning);
-  const elapsed = isRunning ? formatDuration(runningElapsedMs) : undefined;
+  // Under reducedMotion the row must not tick at all: the spinner is frozen,
+  // so a changing elapsed label would be the only remaining animation.
+  const runningElapsedMs = useRunningElapsed(isRunning && !reducedMotion);
+  const elapsed =
+    isRunning && !reducedMotion
+      ? formatElapsedDuration(Math.floor(runningElapsedMs / 1000))
+      : undefined;
   const inlineError = result?.status !== 'blocked' ? result?.structuredError?.message : undefined;
   const elapsedSuffix = elapsed ? ` · ${elapsed}` : '';
   const mutationSummary = useMemo(
@@ -297,8 +302,14 @@ function OutputBlock({
     () => (language ? highlightCode(displayText, language, theme) : undefined),
     [displayText, language, theme],
   );
+  // The markdown sniff regex scans the whole output string; memoize it so an
+  // expanded multi-MB result pays that once per output, not once per render.
+  const renderAsMarkdown = useMemo(
+    () => !language && looksLikeMarkdown(output, toolName),
+    [language, output, toolName],
+  );
 
-  if (looksLikeMarkdown(output, toolName) && !language) {
+  if (renderAsMarkdown) {
     return (
       <Box
         marginLeft={2}

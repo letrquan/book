@@ -211,10 +211,7 @@ export function ChatPanelInner({
     getKey: getTimelineKey,
     estimateRows,
   });
-  const estimatedLayoutRows = useMemo(
-    () => visibleTimeline.reduce((total, entry) => total + estimateRows(entry), 0),
-    [estimateRows, visibleTimeline],
-  );
+  const estimatedLayoutRows = virtualTimeline.estimatedTotalRows;
   useEffect(() => {
     // Re-measure only when the estimated row count changes. MarkdownBlock and
     // virtual rows also notify for content whose measured height differs from
@@ -426,6 +423,8 @@ interface TimelineCache {
   prefixLast?: Message;
   boundaries?: CompactBoundary[];
   prefix: Array<Message | CompactBoundary>;
+  composed?: Array<Message | CompactBoundary>;
+  composedActive?: Message;
 }
 
 function useIncrementalTimeline(
@@ -468,9 +467,14 @@ function useIncrementalTimeline(
     };
   }
   const active = messages[streamingIndex];
-  return active.kind === 'agent-notification'
-    ? cache.current.prefix
-    : [...cache.current.prefix, active];
+  if (active.kind === 'agent-notification') return cache.current.prefix;
+  // Reuse the composed array while the active message object is unchanged so
+  // re-renders without new deltas keep a stable timeline identity downstream.
+  if (cache.current.composedActive !== active) {
+    cache.current.composed = [...cache.current.prefix, active];
+    cache.current.composedActive = active;
+  }
+  return cache.current.composed!;
 }
 
 function buildTimeline(
