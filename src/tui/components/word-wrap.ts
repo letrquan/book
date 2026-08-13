@@ -13,7 +13,7 @@
 /**
  * Strip ANSI escape sequences from a string for accurate width measurement.
  */
-function stripAnsi(text: string): string {
+export function stripAnsi(text: string): string {
   return text.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
 }
 
@@ -473,6 +473,28 @@ export function truncateDisplay(text: string, maxWidth: number, suffix = '…'):
   }
 
   return out + suffix;
+}
+
+/**
+ * Clip ANSI-stripped text to at most `maxWidth` display columns. Unlike
+ * `truncateDisplay` there is no ellipsis; a wide character that would cross
+ * the boundary is dropped entirely.
+ */
+export function sliceDisplayWidth(text: string, maxWidth: number): string {
+  const limit = Math.max(0, Math.floor(maxWidth));
+  const plain = stripAnsi(text);
+  if (limit === 0) return '';
+  if (displayWidth(plain) <= limit) return plain;
+
+  let width = 0;
+  let out = '';
+  for (const ch of plain) {
+    const chWidth = displayWidth(ch);
+    if (width + chWidth > limit) break;
+    out += ch;
+    width += chWidth;
+  }
+  return out;
 }
 
 /**

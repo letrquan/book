@@ -1,4 +1,4 @@
-import { Box, Text, measureElement, useInput, useStdin, type DOMElement } from 'ink';
+import { Box, Text, measureElement, useInput, useStdin, useStdout, type DOMElement } from 'ink';
 import {
   useCallback,
   useEffect,
@@ -22,6 +22,15 @@ import {
   type TranscriptScrollState,
 } from '../transcript-scroll.js';
 import { parseSgrMouseEvents } from '../mouse.js';
+import { writeClipboard } from '../clipboard.js';
+import { getFrameLines, getLastCursorPosition } from '../frame-buffer.js';
+import { paintSelectionRows, restoreSelectionRows } from '../selection-highlight.js';
+import {
+  extractSelectedText,
+  normalizeSelectionRange,
+  type SelectionCell,
+  type SelectionRowRange,
+} from '../text-selection.js';
 import {
   TranscriptHistoryContext,
   TranscriptLayoutContext,
@@ -46,10 +55,19 @@ interface TranscriptViewProps {
   /** Structural layout changes outside transcript components that self-report height updates. */
   layoutRevision?: unknown;
   onToggleTool?: (toolId: string) => void;
+  onNotify?: (message: string) => void;
+  onRedrawViewport?: () => void;
 }
 
 const INITIAL_METRICS: TranscriptMetrics = { contentRows: 0, viewportRows: 1 };
 const MOUSE_WHEEL_ROWS = 3;
+
+interface DragState {
+  anchor: SelectionCell;
+  focus: SelectionCell;
+  dragged: boolean;
+  painted: SelectionRowRange | null;
+}
 
 function getAbsolutePosition(node: DOMElement): { x: number; y: number } | undefined {
   let current: DOMElement | undefined = node;
@@ -104,9 +122,12 @@ export function TranscriptView({
   followRequestKey = 0,
   layoutRevision,
   onToggleTool,
+  onNotify,
+  onRedrawViewport,
 }: TranscriptViewProps) {
   const theme = useTheme();
   const { internal_eventEmitter } = useStdin();
+  const { stdout } = useStdout();
   const viewportRef = useRef<DOMElement>(null);
   const contentRef = useRef<DOMElement>(null);
   const metricsRef = useRef(INITIAL_METRICS);
@@ -117,6 +138,9 @@ export function TranscriptView({
   const wheelImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
   const layoutMeasureImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
   const onToggleToolRef = useRef(onToggleTool);
+  const onNotifyRef = useRef(onNotify);
+  const onRedrawViewportRef = useRef(onRedrawViewport);
+  const dragRef = useRef<DragState | null>(null);
   const [renderedScrollTop, setRenderedScrollTop] = useState(0);
   const [followBottom, setFollowBottom] = useState(true);
   const [hasNewOutput, setHasNewOutput] = useState(false);
@@ -207,6 +231,8 @@ export function TranscriptView({
   );
 
   onToggleToolRef.current = onToggleTool;
+  onNotifyRef.current = onNotify;
+  onRedrawViewportRef.current = onRedrawViewport;
 
   const cancelWheelScroll = useCallback(() => {
     pendingWheelRowsRef.current = 0;
@@ -323,12 +349,72 @@ export function TranscriptView({
   useEffect(() => {
     if (!isActive) return;
 
+    const writeStdout = (data: string) => stdout.write(data);
+
+    const viewportRowSpan = (): { top: number; bottom: number } | null => {
+      if (!viewportRef.current) return null;
+      const position = getAbsolutePosition(viewportRef.current);
+      if (!position) return null;
+      const rows = Math.max(1, Math.floor(measureElement(viewportRef.current).height));
+      return { top: position.y + 1, bottom: position.y + rows };
+    };
+
+    const restorePainted = () => {
+      const drag = dragRef.current;
+      if (!drag?.painted) return;
+      restoreSelectionRows(writeStdout, getFrameLines(), drag.painted, getLastCursorPosition());
+      drag.painted = null;
+    };
+
+    const cancelDrag = () => {
+      restorePainted();
+      dragRef.current = null;
+    };
+
+    const toggleToolAt = (x: number, y: number) => {
+      const toggleTool = onToggleToolRef.current;
+      if (!toggleTool) return;
+
+      const cellX = x - 1;
+      const cellY = y - 1;
+      for (const registration of toolRowsRef.current.values()) {
+        if (!registration.expandable || !registration.element.current) continue;
+        const rect = measureElement(registration.element.current);
+        const position = getAbsolutePosition(registration.element.current);
+        if (
+          position &&
+          cellX >= position.x &&
+          cellX < position.x + rect.width &&
+          cellY >= position.y &&
+          cellY < position.y + rect.height
+        ) {
+          toggleTool(registration.id);
+          break;
+        }
+      }
+    };
+
+    const finishDragSelection = (drag: DragState) => {
+      restorePainted();
+      const frameLines = getFrameLines();
+      if (frameLines.length === 0) {
+        onRedrawViewportRef.current?.();
+        return;
+      }
+      const range = normalizeSelectionRange(drag.anchor, drag.focus);
+      const text = extractSelectedText(frameLines, range);
+      if (!text) return;
+      void writeClipboard(text);
+      onNotifyRef.current?.('Copied selection to clipboard.');
+    };
+
     const handleMouseInput = (input: string) => {
       const events = parseSgrMouseEvents(input);
       if (events.length === 0) return;
 
       for (const event of events) {
         if (event.type === 'wheel') {
+          if (dragRef.current) cancelDrag();
           const rows = event.button === 'wheel-up' ? -MOUSE_WHEEL_ROWS : MOUSE_WHEEL_ROWS;
           if (rows < 0 && stateRef.current.scrollTop === 0 && historyLoaderRef.current?.('page')) {
             continue;
@@ -337,26 +423,44 @@ export function TranscriptView({
           continue;
         }
 
-        const toggleTool = onToggleToolRef.current;
-        if (event.type !== 'press' || event.button !== 'left' || !toggleTool) continue;
+        if (event.button !== 'left') continue;
 
-        const x = event.x - 1;
-        const y = event.y - 1;
-        for (const registration of toolRowsRef.current.values()) {
-          if (!registration.expandable || !registration.element.current) continue;
-          const rect = measureElement(registration.element.current);
-          const position = getAbsolutePosition(registration.element.current);
-          if (
-            position &&
-            x >= position.x &&
-            x < position.x + rect.width &&
-            y >= position.y &&
-            y < position.y + rect.height
-          ) {
-            toggleTool(registration.id);
-            break;
-          }
+        if (event.type === 'press') {
+          const span = viewportRowSpan();
+          if (!span || event.y < span.top || event.y > span.bottom) continue;
+          dragRef.current = {
+            anchor: { x: event.x, y: event.y },
+            focus: { x: event.x, y: event.y },
+            dragged: false,
+            painted: null,
+          };
+          continue;
         }
+
+        const drag = dragRef.current;
+        if (!drag) continue;
+
+        if (event.type === 'move') {
+          if (event.x !== drag.anchor.x || event.y !== drag.anchor.y) drag.dragged = true;
+          if (!drag.dragged) continue;
+          const span = viewportRowSpan();
+          const focusY = span ? Math.min(Math.max(event.y, span.top), span.bottom) : event.y;
+          drag.focus = { x: event.x, y: focusY };
+          restorePainted();
+          const range = normalizeSelectionRange(drag.anchor, drag.focus);
+          paintSelectionRows(writeStdout, getFrameLines(), range, stdout.columns ?? 80);
+          drag.painted = range;
+          continue;
+        }
+
+        if (event.type !== 'release') continue;
+        dragRef.current = null;
+        const moved = drag.dragged || event.x !== drag.anchor.x || event.y !== drag.anchor.y;
+        if (!moved) {
+          toggleToolAt(event.x, event.y);
+          continue;
+        }
+        finishDragSelection(drag);
       }
     };
 
@@ -364,8 +468,28 @@ export function TranscriptView({
     return () => {
       internal_eventEmitter.removeListener('input', handleMouseInput);
       cancelWheelScroll();
+      if (dragRef.current?.painted) {
+        restoreSelectionRows(
+          writeStdout,
+          getFrameLines(),
+          dragRef.current.painted,
+          getLastCursorPosition(),
+        );
+      }
+      dragRef.current = null;
     };
-  }, [cancelWheelScroll, internal_eventEmitter, isActive, scheduleWheelScroll]);
+  }, [cancelWheelScroll, internal_eventEmitter, isActive, scheduleWheelScroll, stdout]);
+
+  useEffect(() => {
+    // A resize repaints the whole frame, invalidating any highlight overlay.
+    const handleResize = () => {
+      dragRef.current = null;
+    };
+    stdout.on('resize', handleResize);
+    return () => {
+      stdout.off('resize', handleResize);
+    };
+  }, [stdout]);
 
   useInput(
     (input, key) => {

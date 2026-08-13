@@ -11,13 +11,19 @@ import { ChatPanel } from './ChatPanel.js';
 import { toolSuccess } from '../../tools/result.js';
 import type { Message } from '../../types/messages.js';
 import { useTranscriptHistoryLoader, type TranscriptHistoryLoader } from '../transcript-layout.js';
+import { setFrameSnapshotForTesting } from '../frame-buffer.js';
 
-const { setTranscriptScrollHintSpy } = vi.hoisted(() => ({
+const { setTranscriptScrollHintSpy, writeClipboardMock } = vi.hoisted(() => ({
   setTranscriptScrollHintSpy: vi.fn(),
+  writeClipboardMock: vi.fn<(text: string) => Promise<boolean>>(),
 }));
 
 vi.mock('../ink-scroll-renderer.js', () => ({
   setTranscriptScrollHint: setTranscriptScrollHintSpy,
+}));
+
+vi.mock('../clipboard.js', () => ({
+  writeClipboard: writeClipboardMock,
 }));
 
 function Rows({ labels }: { labels: string[] }) {
@@ -309,7 +315,7 @@ describe('TranscriptView', () => {
     expect(frameLines(app.lastFrame())).toEqual(['C', 'D', 'E', 'F']);
   });
 
-  it('toggles only expandable tool summary rows on left-button presses', () => {
+  it('toggles only expandable tool summary rows on left-button clicks', () => {
     const onToggleTool = vi.fn();
     const app = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>
@@ -328,12 +334,80 @@ describe('TranscriptView', () => {
     );
 
     act(() => app.stdin.write('\x1b[<0;4;2M'));
-    expect(onToggleTool).toHaveBeenCalledWith('tool-1');
+    expect(onToggleTool).not.toHaveBeenCalled();
 
     act(() => app.stdin.write('\x1b[<0;4;2m'));
-    act(() => app.stdin.write('\x1b[<32;4;2M'));
-    act(() => app.stdin.write('\x1b[<0;4;5M'));
+    expect(onToggleTool).toHaveBeenCalledWith('tool-1');
+
+    // A release at a different cell without move reports is a selection.
+    act(() => app.stdin.write('\x1b[<0;4;2M'));
+    act(() => app.stdin.write('\x1b[<0;4;5m'));
     expect(onToggleTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('copies the selected rows to the clipboard on drag release', () => {
+    const onNotify = vi.fn();
+    const app = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={5} width={20} onNotify={onNotify}>
+          <Rows labels={['A', 'B', 'C', 'D', 'E', 'F']} />
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+    setFrameSnapshotForTesting('\nC\nD\nE\nF');
+    writeClipboardMock.mockClear();
+
+    act(() => app.stdin.write('\x1b[<0;3;3M'));
+    act(() => app.stdin.write('\x1b[<32;3;4M'));
+    act(() => app.stdin.write('\x1b[<0;3;4m'));
+
+    expect(writeClipboardMock).toHaveBeenCalledWith('D\nE');
+    expect(onNotify).toHaveBeenCalledWith('Copied selection to clipboard.');
+    setFrameSnapshotForTesting(null);
+  });
+
+  it('does not start a selection for presses outside the transcript viewport', () => {
+    const onNotify = vi.fn();
+    const app = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={5} width={20} onNotify={onNotify}>
+          <Rows labels={['A', 'B', 'C', 'D', 'E', 'F']} />
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+    setFrameSnapshotForTesting('\nC\nD\nE\nF');
+    writeClipboardMock.mockClear();
+
+    act(() => app.stdin.write('\x1b[<0;3;1M'));
+    act(() => app.stdin.write('\x1b[<32;3;4M'));
+    act(() => app.stdin.write('\x1b[<0;3;4m'));
+
+    expect(writeClipboardMock).not.toHaveBeenCalled();
+    expect(onNotify).not.toHaveBeenCalled();
+    setFrameSnapshotForTesting(null);
+  });
+
+  it('cancels an active drag selection when the wheel scrolls', async () => {
+    const onNotify = vi.fn();
+    const app = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={5} width={20} onNotify={onNotify}>
+          <Rows labels={['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']} />
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+    setFrameSnapshotForTesting('\nD\nE\nF\nG\nH');
+    writeClipboardMock.mockClear();
+
+    act(() => app.stdin.write('\x1b[<0;3;3M'));
+    act(() => app.stdin.write('\x1b[<32;3;4M'));
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    await flushWheelFrame();
+    act(() => app.stdin.write('\x1b[<0;3;4m'));
+
+    expect(writeClipboardMock).not.toHaveBeenCalled();
+    expect(onNotify).not.toHaveBeenCalled();
+    setFrameSnapshotForTesting(null);
   });
 
   it('follows appended output while pinned to the tail', () => {

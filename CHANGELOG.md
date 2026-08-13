@@ -19,6 +19,10 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- The full-screen TUI now supports mouse drag-to-select: dragging across transcript rows
+  highlights them and copies the selected text to the system clipboard on release, while
+  mouse-wheel scrolling and click-to-expand tool rows keep working. Shift+drag still performs
+  terminal-native selection.
 - New empty startup sessions now open with an optional full-screen magical fire sequence that
   burns into the Book welcome. It is deterministic, skippable with Esc or typing, automatically
   bypassed for reduced-motion and screen-reader modes, and configurable through `/config` or

@@ -337,6 +337,13 @@ export function App({
   const [queuedInputs, setQueuedInputs] = useState<QueuedInput[]>([]);
   const [editingQueuedInput, setEditingQueuedInput] = useState<QueuedInput | undefined>(undefined);
   const [queueNotice, setQueueNotice] = useState<string | undefined>(undefined);
+  const [copyNotice, setCopyNotice] = useState<string | undefined>(undefined);
+  const copyNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const handleCopiedNotice = useCallback((message: string) => {
+    setCopyNotice(message);
+    if (copyNoticeTimerRef.current) clearTimeout(copyNoticeTimerRef.current);
+    copyNoticeTimerRef.current = setTimeout(() => setCopyNotice(undefined), 2_000);
+  }, []);
   const [sendInFlight, setSendInFlight] = useState(false);
   const [, setQueueDrainTick] = useState(0);
   const [shellCompletionRetryTick, setShellCompletionRetryTick] = useState(0);
@@ -1688,6 +1695,8 @@ export function App({
             followRequestKey={followRequestKey}
             layoutRevision={transcriptLayoutRevision}
             onToggleTool={toggleToolExpansion}
+            onNotify={handleCopiedNotice}
+            onRedrawViewport={redrawViewport}
           >
             <Box flexDirection="column" width={termWidth}>
               {error && (
@@ -2540,7 +2549,7 @@ export function App({
             <QueuedInputPreview
               items={queuedInputs}
               terminalWidth={termWidth}
-              notice={queueNotice}
+              notice={queueNotice ?? copyNotice}
             />
             <InputBar
               key={sessionId}

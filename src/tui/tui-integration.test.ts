@@ -359,7 +359,7 @@ describe('TUI keyboard input', () => {
     // transcript instead of being translated into prompt-history arrows.
     expect(session.readRaw()).toContain('\x1b[?1049h');
     // Windows ConPTY consumes mouse-mode control sequences before onData.
-    if (!IS_WINDOWS) expect(session.readRaw()).toContain('\x1b[?1000h');
+    if (!IS_WINDOWS) expect(session.readRaw()).toContain('\x1b[?1002h');
 
     session.sendKey('MOUSE_DRAFT');
     await session.waitFor('MOUSE_DRAFT');

@@ -21,6 +21,7 @@ import {
   getDebugLogPath,
 } from '../debug-log.js';
 import { installInkScrollRenderer } from './ink-scroll-renderer.js';
+import { installFrameCapture } from './frame-buffer.js';
 import { isInkIncrementalRendererPatched } from './ink-patch.js';
 import { resolveTuiRendererMode } from './tui-renderer-mode.js';
 import { resolvePermissionMode } from '../permission-mode.js';
@@ -29,9 +30,10 @@ import { resolveBookHome } from '../book-home.js';
 
 const SESSION_ROOT = join(resolveBookHome(), 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
-const ENABLE_MOUSE_TRACKING = '\x1b[?1000h';
+const ENABLE_MOUSE_TRACKING = '\x1b[?1002h';
 const ENABLE_SGR_MOUSE = '\x1b[?1006h';
 const DISABLE_SGR_MOUSE = '\x1b[?1006l';
+const DISABLE_BUTTON_EVENT_TRACKING = '\x1b[?1002l';
 const DISABLE_MOUSE_TRACKING = '\x1b[?1000l';
 const EXIT_ALT_SCREEN = '\x1b[?1049l';
 const WSL_TERMINAL_BRIDGE_SCRIPT = `
@@ -102,12 +104,16 @@ export function enterInteractiveScreen(
   const restore = () => {
     if (restored) return;
     restored = true;
-    writeTerminalControl(stdout, DISABLE_SGR_MOUSE + DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN);
+    writeTerminalControl(
+      stdout,
+      DISABLE_SGR_MOUSE + DISABLE_BUTTON_EVENT_TRACKING + DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN,
+    );
     process.off('exit', restore);
   };
 
-  // Shift+drag remains available for terminal-native selection while mouse
-  // reporting keeps transcript wheel scrolling and tool-row clicks working.
+  // Button-event tracking reports presses, releases, and drags so the TUI can
+  // implement wheel scrolling, tool-row clicks, and drag-to-select copy. Plain
+  // drags select in-app; Shift+drag remains terminal-native selection.
   writeTerminalControl(stdout, ENTER_ALT_SCREEN + ENABLE_MOUSE_TRACKING + ENABLE_SGR_MOUSE);
   process.once('exit', restore);
   return restore;
@@ -256,6 +262,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         platform: process.platform,
       });
       await installInkScrollRenderer(rendererMode === 'experimental-scroll');
+      await installFrameCapture();
       app = render(
         createElement(App, {
           config,

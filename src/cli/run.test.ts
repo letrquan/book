@@ -19,14 +19,14 @@ describe('enterInteractiveScreen', () => {
     const { stdout, writes } = fakeStdout(true);
     const restore = enterInteractiveScreen(stdout);
 
-    expect(writes).toEqual(['\x1b[?1049h\x1b[?1000h\x1b[?1006h']);
+    expect(writes).toEqual(['\x1b[?1049h\x1b[?1002h\x1b[?1006h']);
 
     restore();
     restore();
 
     expect(writes).toEqual([
-      '\x1b[?1049h\x1b[?1000h\x1b[?1006h',
-      '\x1b[?1006l\x1b[?1000l\x1b[?1049l',
+      '\x1b[?1049h\x1b[?1002h\x1b[?1006h',
+      '\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l',
     ]);
   });
 
@@ -59,7 +59,7 @@ describe('enterInteractiveScreen', () => {
     try {
       const restore = enterInteractiveScreen(stdout);
       restore();
-      expect(writes[0]).toContain('\x1b[?1000h');
+      expect(writes[0]).toContain('\x1b[?1002h');
     } finally {
       if (previousDistro === undefined) delete process.env.WSL_DISTRO_NAME;
       else process.env.WSL_DISTRO_NAME = previousDistro;
