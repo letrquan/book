@@ -62,6 +62,7 @@ interface AgentMessageProps {
 }
 
 const NO_EXPANSION_OVERRIDES = new Map<string, boolean>();
+const NO_SHOW_ALL_TOOL_OUTPUT_IDS: ReadonlySet<string> = new Set<string>();
 function NestedToolRows({
   childrenByParent,
   parentTraceId,
@@ -337,7 +338,7 @@ export function AgentMessageInner({
   retryCountdownMs = 0,
   hideStreamingSpinner = false,
   showAllToolOutput = false,
-  showAllToolOutputIds = new Set<string>(),
+  showAllToolOutputIds = NO_SHOW_ALL_TOOL_OUTPUT_IDS,
   showThinking = true,
   trimTrailingSpacing = false,
 }: AgentMessageProps) {
@@ -351,9 +352,10 @@ export function AgentMessageInner({
   });
   // AgentSpawn has its own activity row. Keep the model text in history/context,
   // but avoid showing duplicated delegation narration in the user transcript.
-  const rawDisplayContent = isStreaming
-    ? trimPartialClosingFences(message.content)
-    : message.content;
+  const rawDisplayContent = useMemo(
+    () => (isStreaming ? trimPartialClosingFences(message.content) : message.content),
+    [isStreaming, message.content],
+  );
   const displayContent = suppressDelegationNarration ? '' : rawDisplayContent;
   const reasoningContent = message.reasoningContent;
 
@@ -383,6 +385,10 @@ export function AgentMessageInner({
   const contentWidth = terminalWidth ? Math.max(12, Math.floor(terminalWidth) - 2) : undefined;
   const mdWidth = contentWidth;
   const contentParts = useMemo(() => splitThinkBlocks(displayContent), [displayContent]);
+  const renderAsUnifiedDiff = useMemo(
+    () => displayContent.length > 0 && isUnifiedDiffLike(displayContent),
+    [displayContent],
+  );
   const embeddedThinking = useMemo(
     () => contentParts.some((part) => part.kind === 'think'),
     [contentParts],
@@ -464,7 +470,7 @@ export function AgentMessageInner({
               <Text color={theme.error}>{spinnerLabel}</Text>
             </Box>
           ) : null}
-          {isUnifiedDiffLike(displayContent) ? (
+          {renderAsUnifiedDiff ? (
             <DiffBlock output={displayContent} terminalWidth={contentWidth} />
           ) : (
             <Box flexDirection="column">

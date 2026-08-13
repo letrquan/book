@@ -408,7 +408,14 @@ function inRanges(cp: number, ranges: [number, number][]): boolean {
  * ANSI escape sequences are stripped before measurement.
  */
 export function displayWidth(text: string): number {
-  const plain = stripAnsi(text);
+  if (text.length === 0) return 0;
+  // Fast path for the per-character calls from wrap/truncate loops.
+  if (text.length === 1) {
+    const code = text.charCodeAt(0);
+    if (code >= 0x20 && code < 0x7f) return 1;
+  }
+  // Skip the regex replace when no ANSI escape can be present.
+  const plain = text.indexOf('\u001B') === -1 ? text : stripAnsi(text);
   if (ASCII_PRINTABLE.test(plain)) return plain.length;
 
   let width = 0;

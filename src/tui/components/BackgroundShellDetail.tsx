@@ -1,7 +1,13 @@
 import { Box, Text } from 'ink';
+import { useEffect, useState } from 'react';
 import type { BackgroundShellRecord } from '../../types/runtime.js';
 import { useTheme } from '../theme.js';
+import { useUiClock } from '../ui-clock.js';
 import { formatElapsedDuration } from './SubagentRow.js';
+
+/** Live-output poll cadence. Reading the tail can hit the filesystem for
+ * persistent jobs, so it must happen in an effect, never during render. */
+const OUTPUT_POLL_MS = 250;
 
 function sanitizeOutput(value: string): string {
   return value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\x1b\][^\x07]*(?:\x07|$)/g, '');
@@ -9,14 +15,24 @@ function sanitizeOutput(value: string): string {
 
 export function BackgroundShellDetail({
   shell,
-  output,
+  readTail,
   width,
 }: {
   shell: BackgroundShellRecord;
-  output: string;
+  /** Stable callback returning the current output tail for this shell. */
+  readTail: () => string;
   width: number;
 }) {
   const theme = useTheme();
+  const running = shell.finishedAt === undefined;
+  useUiClock('slow', running);
+  const [output, setOutput] = useState(readTail);
+  useEffect(() => {
+    setOutput(readTail());
+    if (!running) return;
+    const timer = setInterval(() => setOutput(readTail()), OUTPUT_POLL_MS);
+    return () => clearInterval(timer);
+  }, [readTail, running]);
   const elapsed = Math.max(
     0,
     Math.floor(((shell.finishedAt ?? Date.now()) - shell.startedAt) / 1000),

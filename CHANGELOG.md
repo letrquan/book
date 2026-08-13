@@ -6,6 +6,22 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- The CLI now defaults `NODE_ENV` to `production` before React loads, so the TUI renders with
+  production React instead of the 2-3x slower development build (an explicitly set `NODE_ENV`
+  still wins). `npm run bench:ui` measures production mode to match. Combined with new render-path
+  caching — a revision-stable transcript viewport snapshot, per-message row-estimate reuse in the
+  virtualized transcript, a stable streaming timeline identity, memoized layout-revision hashing,
+  and fast paths in `displayWidth` — long-transcript streaming updates and unrelated managed-trace
+  updates render 3-4x faster and back inside their latency budgets.
+- Background shells and long-running Bash commands no longer make the TUI sluggish. Shell output
+  events are coalesced to a 250ms refresh and the shell list bails out when nothing it renders has
+  changed, so raw stdout/stderr chunk frequency no longer drives full App re-renders and Yoga
+  layout passes. The shell detail view reads its output tail in a polling effect instead of doing
+  synchronous file I/O inside App's render. Running tool rows tick their elapsed time once per
+  second (previously 10x/s) with second granularity, and stop ticking entirely under reduced
+  motion. Large tool-output previews measure bytes with one call over the whole output instead of
+  allocating a Buffer measurement per line, and the markdown sniff over expanded output is
+  memoized.
 - Managed children now publish and review evidence through their owning agent manager instead of
   being rejected as owned by another live Book process.
 - Provider-emitted `parent:`, `default:`, and `tool:` wrappers resolve to an existing registered
