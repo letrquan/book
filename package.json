@@ -70,6 +70,7 @@
     "eval:compact": "tsx scripts/compact-eval.ts",
     "eval:zero-mem": "tsx scripts/zero-mem-eval.ts",
     "eval:skills": "tsx scripts/skill-eval.ts",
+    "eval:review": "tsx scripts/review-eval.ts",
     "apply:ink-patch": "node scripts/apply-ink-patch.mjs",
     "lint": "eslint src/ --ext .ts,.tsx --max-warnings 0",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",

@@ -66,8 +66,11 @@ import { persistSettingLocal } from './persist.js';
 import { buildModelOptions } from './model-options.js';
 import { createUiDebugLogger } from '../debug-log.js';
 import { createDefaultRegistry } from '../tools/registry.js';
-import { getOrCreateAgentManager } from '../agents/manager.js';
+import { getOrCreateAgentManager, type AgentManager } from '../agents/manager.js';
 import { installAgentImports, previewAgentImport } from '../agents/importer.js';
+import { runDeepReview, type ReviewAgentRunner } from '../review/orchestration.js';
+import { applyReviewFixes, renderFixResult, type FixAgentRunner } from '../review/fix.js';
+import type { ReviewScope } from '../review/types.js';
 import { join } from 'path';
 import {
   selectExpandedToolId,
@@ -166,6 +169,62 @@ export function providerRemovalMessage(
   }
   const models = `${result.removedModelCount} model${result.removedModelCount === 1 ? '' : 's'}`;
   return `Removed local BYOK provider ${result.providerId} and its ${models}.`;
+}
+
+function reviewRunnerFor(manager: AgentManager): ReviewAgentRunner {
+  return {
+    async spawn(agent, prompt, description) {
+      const record = await manager.spawn({ agent, prompt, description });
+      return { id: record.id, status: record.status, result: record.result, error: record.error };
+    },
+    async wait(id) {
+      const record = await manager.wait(id);
+      return { id: record.id, status: record.status, result: record.result, error: record.error };
+    },
+  };
+}
+
+function fixRunnerFor(manager: AgentManager): FixAgentRunner {
+  const base = reviewRunnerFor(manager);
+  return {
+    ...base,
+    async apply(agentId) {
+      const result = await manager.apply(agentId);
+      return {
+        status: result.status,
+        commit: result.commit,
+        error: result.error,
+      };
+    },
+  };
+}
+
+async function runReviewCommand(
+  scope: ReviewScope,
+  manager: AgentManager,
+  workspace: string,
+  report: (message: string) => void,
+): Promise<void> {
+  try {
+    if (scope.fix) {
+      const deep = await runDeepReview(reviewRunnerFor(manager), scope, workspace);
+      const confirmed = deep.report.findings.filter(
+        (finding) => finding.verification === 'confirmed',
+      );
+      if (confirmed.length === 0) {
+        report('Review found no verified findings to fix.');
+        return;
+      }
+      const fixResult = await applyReviewFixes(fixRunnerFor(manager), confirmed);
+      report(renderFixResult(fixResult));
+      return;
+    }
+
+    const result = await runDeepReview(reviewRunnerFor(manager), scope, workspace);
+    report(result.text);
+  } catch (error) {
+    report(`✕ review failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 interface AppProps {
@@ -1361,6 +1420,15 @@ export function App({
           setCustomThemes(listCustomThemes(config.workspace));
           setAgentProfiles(withBuiltInAgents(discoverAgents(config.workspace)));
           addLocalMessage('Commands and skills have been reloaded.');
+          return;
+        }
+        if (effect?.type === 'review') {
+          void runReviewCommand(
+            effect.scope,
+            managedAgentManager,
+            config.workspace,
+            addLocalMessage,
+          );
           return;
         }
         if (effect?.type === 'managed-agent') {
