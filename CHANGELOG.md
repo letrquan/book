@@ -19,6 +19,13 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- MCP now uses the official protocol SDK and works in the interactive TUI as well as print and SDK
+  runs. It supports stdio, Streamable HTTP, and legacy SSE servers; content blocks, structured
+  errors, cancellation, pagination, negotiated metadata, dynamic `tools/list_changed` refresh,
+  bounded diagnostics, and graceful remote-session termination. Project `.mcp.json` servers require
+  fingerprinted one-time approval, while `/mcp`, `book mcp list|get|add|remove`, `book doctor`, and
+  server-scoped permission rules (`mcp__server`) expose and control the resulting surface without
+  printing header or environment secrets.
 - New empty startup sessions now open with an optional full-screen magical fire sequence that
   burns into the Book welcome. It is deterministic, skippable with Esc or typing, automatically
   bypassed for reduced-motion and screen-reader modes, and configurable through `/config` or

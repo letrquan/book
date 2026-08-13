@@ -6,6 +6,16 @@ import { runConfigCommand } from './cli/config-cmd.js';
 import { runMainAction } from './cli/run.js';
 import { getPackageVersion } from './version-info.js';
 import { formatSettingsKeyHelp } from './settings-repository.js';
+import {
+  runMcpAddCommand,
+  runMcpGetCommand,
+  runMcpListCommand,
+  runMcpRemoveCommand,
+} from './cli/mcp.js';
+
+function collectOption(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
 
 program
   .name('book')
@@ -77,6 +87,67 @@ program
     }) => {
       await runToolStatsCommand(options);
     },
+  );
+
+// ---- book mcp ----
+const mcpCommand = program.command('mcp').description('Manage MCP server configurations');
+
+mcpCommand
+  .command('list')
+  .description('List resolved MCP servers without revealing secret values')
+  .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
+  .option('--json', 'Emit JSON')
+  .action((options: { workspace: string; json?: boolean }) => runMcpListCommand(options));
+
+mcpCommand
+  .command('get')
+  .description('Show one resolved MCP server without revealing secret values')
+  .argument('<name>', 'Server name')
+  .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
+  .option('--json', 'Emit JSON')
+  .action((name: string, options: { workspace: string; json?: boolean }) =>
+    runMcpGetCommand(name, options),
+  );
+
+mcpCommand
+  .command('add')
+  .description('Add an MCP server (use -- before stdio arguments that start with a dash)')
+  .argument('<name>', 'Server name')
+  .argument('<command-or-url>', 'Stdio executable or HTTP/SSE URL')
+  .argument('[server-args...]', 'Arguments for a stdio server')
+  .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
+  .option('--scope <scope>', 'user | project', 'user')
+  .option('--transport <type>', 'stdio | http | sse')
+  .option('-e, --env <KEY=VALUE>', 'Stdio environment entry (repeatable)', collectOption, [])
+  .option('-H, --header <KEY=VALUE>', 'HTTP header (repeatable)', collectOption, [])
+  .option('--cwd <path>', 'Working directory for a stdio server')
+  .option('--force', 'Replace an existing same-scope server')
+  .action(
+    (
+      name: string,
+      target: string,
+      serverArgs: string[],
+      options: {
+        workspace: string;
+        scope: 'user' | 'project';
+        transport?: 'stdio' | 'http' | 'sse';
+        env: string[];
+        header: string[];
+        cwd?: string;
+        force?: boolean;
+      },
+    ) => runMcpAddCommand(name, target, serverArgs, options),
+  );
+
+mcpCommand
+  .command('remove')
+  .alias('rm')
+  .description('Remove an MCP server from its effective scope')
+  .argument('<name>', 'Server name')
+  .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
+  .option('--scope <scope>', 'user | project')
+  .action((name: string, options: { workspace: string; scope?: 'user' | 'project' }) =>
+    runMcpRemoveCommand(name, options),
   );
 
 // ---- book config ----

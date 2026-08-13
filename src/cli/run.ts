@@ -4,7 +4,10 @@ import { freezeAgentConfig, loadConfig } from '../config.js';
 import { runHeadless } from '../headless.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { SessionStore } from '../session/store.js';
-import { connectMcpServers } from '../mcp.js';
+import { connectMcpServers, disconnectMcpServers } from '../mcp.js';
+import { McpSessionHost } from '../mcp-host.js';
+import { mcpServersToRecord, partitionMcpServersByApproval } from '../mcp-approvals.js';
+import { resolveMcpServerList } from '../mcp-config.js';
 import { exit } from './exit.js';
 import { join } from 'path';
 import type { AgentConfig } from '../types/runtime.js';
@@ -144,50 +147,67 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
 
     // Headless / print mode.
     if (options.print !== undefined) {
-      // Connect MCP servers and merge their tools into the registry.
-      const mcp = await connectMcpServers(config.workspace);
-      const registry = createDefaultRegistry({ agents: config.settings.agents.mode !== 'off' });
-      if (mcp.tools.length > 0) {
-        registry.registerAll(mcp.tools);
+      // Connect approved MCP servers and merge their tools into the registry.
+      // Project-declared servers need a prior interactive approval; there is
+      // no prompt to give one here.
+      const declaredMcpServers = resolveMcpServerList(config.workspace);
+      const mcpPartition = partitionMcpServersByApproval(declaredMcpServers, config.settings);
+      for (const server of mcpPartition.pending) {
+        console.warn(
+          `⚠  Skipping MCP server "${server.name}" (${server.path}): project-declared servers require one-time approval. Approve it in an interactive session first.`,
+        );
       }
-
-      const mode = resolvePermissionMode(config.settings, options.permissionMode);
-
-      const sessionStore = (options.sessionPersistence as boolean)
-        ? new SessionStore(SESSION_ROOT)
-        : undefined;
-      const bootstrap = resolveSessionBootstrap(sessionStore, {
-        cwd: config.workspace,
-        resume: options.resume as string | undefined,
-        continue: options.continue as boolean | undefined,
-        sessionId: options.sessionId as string | undefined,
-        sessionName: options.name as string | undefined,
-        forkSession: options.forkSession as boolean | undefined,
+      const mcp = await connectMcpServers(config.workspace, {
+        servers: mcpServersToRecord(mcpPartition.allowed),
       });
-      sessionStore?.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
+      try {
+        const registry = createDefaultRegistry({ agents: config.settings.agents.mode !== 'off' });
+        if (mcp.tools.length > 0) {
+          registry.registerAll(mcp.tools);
+        }
 
-      await runHeadless(config, registry, {
-        prompt: typeof options.print === 'string' ? (options.print as string) : undefined,
-        inputFormat: options.inputFormat as 'text' | 'stream-json',
-        outputFormat: options.outputFormat as 'text' | 'json' | 'stream-json',
-        history: bootstrap.history,
-        transcript: bootstrap.transcript,
-        compactBoundaries: bootstrap.compactBoundaries,
-        mode,
-        maxTurns: options.maxTurns ? parseInt(options.maxTurns as string, 10) : undefined,
-        maxBudgetUsd: options.maxBudgetUsd ? parseFloat(options.maxBudgetUsd as string) : undefined,
-        verbose: options.verbose as boolean | undefined,
-        jsonSchema: options.jsonSchema ? JSON.parse(options.jsonSchema as string) : undefined,
-        sessionStore,
-        sessionId: bootstrap.sessionId,
-        sessionName: bootstrap.sessionName,
-        forkSession: false,
-        sessionCreated: bootstrap.created,
-        persistSession: options.sessionPersistence as boolean | undefined,
-        includeHookEvents: options.includeHookEvents as boolean | undefined,
-        includePartialMessages: options.includePartialMessages as boolean | undefined,
-        promptSuggestions: options.promptSuggestions as boolean | undefined,
-      });
+        const mode = resolvePermissionMode(config.settings, options.permissionMode);
+
+        const sessionStore = (options.sessionPersistence as boolean)
+          ? new SessionStore(SESSION_ROOT)
+          : undefined;
+        const bootstrap = resolveSessionBootstrap(sessionStore, {
+          cwd: config.workspace,
+          resume: options.resume as string | undefined,
+          continue: options.continue as boolean | undefined,
+          sessionId: options.sessionId as string | undefined,
+          sessionName: options.name as string | undefined,
+          forkSession: options.forkSession as boolean | undefined,
+        });
+        sessionStore?.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
+
+        await runHeadless(config, registry, {
+          prompt: typeof options.print === 'string' ? (options.print as string) : undefined,
+          inputFormat: options.inputFormat as 'text' | 'stream-json',
+          outputFormat: options.outputFormat as 'text' | 'json' | 'stream-json',
+          history: bootstrap.history,
+          transcript: bootstrap.transcript,
+          compactBoundaries: bootstrap.compactBoundaries,
+          mode,
+          maxTurns: options.maxTurns ? parseInt(options.maxTurns as string, 10) : undefined,
+          maxBudgetUsd: options.maxBudgetUsd
+            ? parseFloat(options.maxBudgetUsd as string)
+            : undefined,
+          verbose: options.verbose as boolean | undefined,
+          jsonSchema: options.jsonSchema ? JSON.parse(options.jsonSchema as string) : undefined,
+          sessionStore,
+          sessionId: bootstrap.sessionId,
+          sessionName: bootstrap.sessionName,
+          forkSession: false,
+          sessionCreated: bootstrap.created,
+          persistSession: options.sessionPersistence as boolean | undefined,
+          includeHookEvents: options.includeHookEvents as boolean | undefined,
+          includePartialMessages: options.includePartialMessages as boolean | undefined,
+          promptSuggestions: options.promptSuggestions as boolean | undefined,
+        });
+      } finally {
+        await disconnectMcpServers(mcp.connections);
+      }
       return;
     }
 
@@ -240,6 +260,11 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       import('../tui/interactive-assets.js'),
     ]);
     const interactiveAssets = loadInteractiveAssets(config);
+    // Session MCP owner: user-global and previously approved project servers
+    // connect in the background; unapproved project servers surface as a
+    // one-time trust prompt inside the TUI.
+    const mcpHost = new McpSessionHost(config.workspace, config.settings);
+    mcpHost.start();
     let app: ReturnType<typeof render> | undefined;
     const redrawViewport = () => {
       app?.clear();
@@ -262,6 +287,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           permissionMode: mode,
           interactiveAssets,
           redrawViewport,
+          mcp: mcpHost,
           session: { ...bootstrap, store: sessionStore, timelineStore, snapshotStore },
         }),
         {
@@ -275,6 +301,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
     } finally {
       app?.cleanup();
       restoreScreen();
+      await mcpHost.dispose();
       ephemeralRewind?.dispose();
     }
   } catch (e) {

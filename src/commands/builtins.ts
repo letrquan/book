@@ -34,6 +34,8 @@ import { costReport, failureTotal, PRICING, usageReport } from '../pricing.js';
 import { buildContextBreakdown, buildContextReport } from '../context-report.js';
 import type { SkillRegistrySnapshot } from '../skill-registry.js';
 import { buildSkillReport } from '../skill-report.js';
+import { buildMcpStatusReport } from '../mcp-report.js';
+import type { McpHostSnapshot } from '../mcp-host.js';
 
 export interface BuiltinCommand {
   name: string;
@@ -61,6 +63,7 @@ export interface BuiltinCommandContext {
   commandCount: number;
   skillCount: number;
   skillSnapshot?: SkillRegistrySnapshot;
+  mcpSnapshot?: McpHostSnapshot;
   /** Per-session tool call/failure counters keyed by canonical tool name. */
   toolCallStats?: ReadonlyMap<string, { calls: number; failures: Record<string, number> }>;
   resolveAmbientContext: () => {
@@ -541,6 +544,15 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     name: 'permissions',
     description: 'Manage permission rules',
     execute: () => ({ type: 'toggle-panel', panel: 'permissions' }),
+  },
+  {
+    name: 'mcp',
+    description: 'Show MCP server status, trust, transports, and tool counts',
+    argumentHint: '[status]',
+    execute: ({ rawArguments }, context) =>
+      !rawArguments || rawArguments === 'status'
+        ? { type: 'local-message', content: buildMcpStatusReport(context.mcpSnapshot) }
+        : { type: 'local-message', content: 'Usage: /mcp [status]' },
   },
   {
     name: 'cost',

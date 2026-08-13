@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import type { Message, Usage, LocalCommandDisplay } from '../../types/messages.js';
 import type {
   NestedToolInvocation,
+  ToolDefinition,
   ToolResult,
   PermissionResult,
   PlanApprovalResult,
@@ -88,6 +89,8 @@ export interface UseAgentSessionOptions extends SessionBootstrap {
   store?: SessionStoreInterface;
   timelineStore?: SessionStoreInterface;
   snapshotStore?: RewindSnapshotStoreInterface;
+  /** Live extra tools (e.g. MCP) merged into each per-send registry. */
+  additionalTools?: () => ToolDefinition[];
 }
 
 function providerIdFromSelection(selection: string): string | undefined {
@@ -253,6 +256,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       runtime: new SessionRuntime({
         fileObservationLedger: buildObservationLedger(initialTranscript),
       }),
+      additionalTools: session.additionalTools,
     }),
   );
   const { interactions, operations } = agentSession;

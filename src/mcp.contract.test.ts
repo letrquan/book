@@ -49,8 +49,8 @@ describe('MCP connection safety', () => {
     expect(result.connections[0].pending.size).toBe(0);
     expect(result.tools.map((tool) => tool.name)).toEqual(['mcp__fixture__echo']);
 
-    const child = result.connections[0].process;
-    disconnectMcpServers(result.connections);
+    const child = result.connections[0].process!;
+    await disconnectMcpServers(result.connections);
     expect(result.connections[0].closed).toBe(true);
     expect(result.connections[0].pending.size).toBe(0);
     await waitForExit(child);
@@ -93,8 +93,8 @@ describe('MCP connection safety', () => {
 
     expect(result.connections).toHaveLength(1);
     expect(result.tools).toHaveLength(1);
-    disconnectMcpServers(result.connections);
-    await waitForExit(result.connections[0].process);
+    await disconnectMcpServers(result.connections);
+    await waitForExit(result.connections[0].process!);
   });
 
   it('keeps healthy servers when another server is silent', async () => {
@@ -108,8 +108,8 @@ describe('MCP connection safety', () => {
 
     expect(result.connections.map((connection) => connection.name)).toEqual(['healthy']);
     expect(result.tools.map((tool) => tool.name)).toEqual(['mcp__healthy__echo']);
-    disconnectMcpServers(result.connections);
-    await waitForExit(result.connections[0].process);
+    await disconnectMcpServers(result.connections);
+    await waitForExit(result.connections[0].process!);
   });
 
   it('clears pending requests on timeout', async () => {
@@ -128,8 +128,8 @@ describe('MCP connection safety', () => {
     expect(toolResult.status).toBe('error');
     expect(toolResult.structuredError?.message).toMatch(/timed out/i);
     expect(connection.pending.size).toBe(0);
-    disconnectMcpServers(result.connections);
-    await waitForExit(connection.process);
+    await disconnectMcpServers(result.connections);
+    await waitForExit(connection.process!);
   });
 
   it('bounds stderr context attached to request failures', async () => {
@@ -149,8 +149,8 @@ describe('MCP connection safety', () => {
     expect(toolResult.status).toBe('error');
     expect(toolResult.structuredError?.message).toContain('stderr-tail');
     expect(connection.stderr.length).toBeLessThanOrEqual(16);
-    disconnectMcpServers(result.connections);
-    await waitForExit(connection.process);
+    await disconnectMcpServers(result.connections);
+    await waitForExit(connection.process!);
   });
 
   it('clears pending requests on abort', async () => {
@@ -175,8 +175,8 @@ describe('MCP connection safety', () => {
     expect(toolResult.status).toBe('error');
     expect(toolResult.structuredError?.message).toMatch(/aborted/i);
     expect(connection.pending.size).toBe(0);
-    disconnectMcpServers(result.connections);
-    await waitForExit(connection.process);
+    await disconnectMcpServers(result.connections);
+    await waitForExit(connection.process!);
   });
 
   it('settles a pending tool request exactly once on disconnect', async () => {
@@ -192,14 +192,14 @@ describe('MCP connection safety', () => {
     );
     await waitForPending(connection);
 
-    disconnectMcpServers(result.connections);
-    disconnectMcpServers(result.connections);
+    await disconnectMcpServers(result.connections);
+    await disconnectMcpServers(result.connections);
     const toolResult = await execution;
 
     expect(toolResult.status).toBe('error');
     expect(toolResult.structuredError?.message).toMatch(/disconnected/i);
     expect(connection.pending.size).toBe(0);
     expect(connection.closed).toBe(true);
-    await waitForExit(connection.process);
+    await waitForExit(connection.process!);
   });
 });

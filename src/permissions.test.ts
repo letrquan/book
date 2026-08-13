@@ -119,6 +119,17 @@ describe('remembered permission rules', () => {
       }),
     ).toBe('WebSearch');
   });
+
+  it('matches a bare MCP server namespace without widening to other servers', () => {
+    const search = { id: '1', name: 'mcp__github__search', arguments: { query: 'book' } };
+    const create = { id: '2', name: 'mcp__github__create_issue', arguments: { title: 'Bug' } };
+    const other = { id: '3', name: 'mcp__git__search', arguments: { query: 'book' } };
+
+    expect(permissionRuleMatchesCall('mcp__github', search)).toBe(true);
+    expect(permissionRuleMatchesCall('mcp__github', create)).toBe(true);
+    expect(permissionRuleMatchesCall('mcp__github', other)).toBe(false);
+    expect(permissionRuleMatchesCall('mcp__github__search', create)).toBe(false);
+  });
 });
 
 describe('evaluatePermission', () => {
@@ -180,6 +191,20 @@ describe('evaluatePermission', () => {
     const s = settings({ deny: ['WebFetch'] });
     expect(evaluatePermission('WebFetch', { url: 'https://evil.com' }, s)).toBe('deny');
     expect(evaluatePermission('WebFetch', { url: 'https://safe.com' }, s)).toBe('deny');
+  });
+
+  it('applies deny, ask, and allow precedence to MCP server namespaces', () => {
+    const args = { title: 'Release issue' };
+    const s = settings({
+      deny: ['mcp__github__delete_issue'],
+      ask: ['mcp__github__create_issue'],
+      allow: ['mcp__github'],
+    });
+
+    expect(evaluatePermission('mcp__github__search', {}, s)).toBe('allow');
+    expect(evaluatePermission('mcp__github__create_issue', args, s)).toBe('ask');
+    expect(evaluatePermission('mcp__github__delete_issue', args, s)).toBe('deny');
+    expect(evaluatePermission('mcp__gitlab__search', {}, s)).toBe('ask');
   });
 
   it('globstar matches across path separators', () => {

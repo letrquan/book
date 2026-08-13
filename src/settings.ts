@@ -207,6 +207,24 @@ export const harnessSettingsSchema = z.object({
 
 export type HarnessSettings = z.infer<typeof harnessSettingsSchema>;
 
+export const mcpProjectServerChoiceSchema = z.object({
+  /** Hash of the server's command/args/env at decision time; a mismatch re-prompts. */
+  fingerprint: z.string().min(1),
+  choice: z.enum(['approved', 'rejected']),
+});
+
+export type McpProjectServerChoice = z.infer<typeof mcpProjectServerChoiceSchema>;
+
+export const mcpSettingsSchema = z.object({
+  /**
+   * Per-server trust decisions for workspace `.mcp.json` declarations.
+   * User-global servers (<BOOK_HOME>/.book/mcp.json) never require approval.
+   */
+  projectServers: z.record(mcpProjectServerChoiceSchema).default({}),
+});
+
+export type McpSettings = z.infer<typeof mcpSettingsSchema>;
+
 export const uiSettingsSchema = z.object({
   /** Show provider-native and embedded model reasoning in the interactive transcript. */
   showThinking: z.boolean().default(true),
@@ -276,6 +294,7 @@ export const bookSettingsSchema = z.object({
   toolExecution: toolExecutionSettingsSchema.default({}),
   observability: observabilitySettingsSchema.default({}),
   harness: harnessSettingsSchema.default({}),
+  mcp: mcpSettingsSchema.default({}),
 });
 
 export type BookSettings = z.infer<typeof bookSettingsSchema>;
@@ -388,5 +407,8 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   },
   harness: {
     mode: 'off',
+  },
+  mcp: {
+    projectServers: {},
   },
 };

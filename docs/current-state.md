@@ -21,6 +21,9 @@ reference for roadmap and design documents.
   BYOK providers, configurable effort, retries, timeouts, and token/cost accounting.
 - File, patch, shell, Git, web, notebook, task, todo, plan, clarification, session-history, MCP,
   tool-search, skill, and managed-agent tools, subject to capability and permission intersections.
+- MCP tools connect over stdio, Streamable HTTP, or legacy SSE. The interactive host prompts before
+  using project declarations, refreshes dynamic tool lists, and exposes `/mcp` plus
+  `book mcp list|get|add|remove`; print/SDK modes use only user or already-approved servers.
 - Layered settings (`~/.book`, project `.book`, local `.book`, and `--settings`), atomic writes,
   legacy `.bookrc.json` migration, permissions, hooks, optional bubblewrap sandbox, themes,
   auto-memory, rewind snapshots, telemetry, and diagnostics.
@@ -51,9 +54,11 @@ reference for roadmap and design documents.
 
 ## Known Boundaries
 
-- There is no repository trust database yet. Project settings, hooks, MCP configuration, provider
-  blocks, custom command shell substitutions, and project instructions must be reviewed before
-  opening an untrusted workspace.
+- Project MCP declarations now have an explicit per-server trust boundary: repository-controlled
+  servers are fingerprinted and require one-time approval before connection. A broader workspace
+  trust database does not exist yet, so project settings, hooks, provider blocks, custom command
+  shell substitutions, and project instructions must still be reviewed before opening an untrusted
+  workspace.
 - Bubblewrap is optional and currently Linux-oriented; when unavailable, behavior follows the
   configured `sandbox.failIfUnavailable` policy and may run unsandboxed.
 - Managed-agent planning-task linkage, rerun, and task-aware cleanup from the background-job plan

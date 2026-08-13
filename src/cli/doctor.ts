@@ -53,13 +53,16 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   console.log();
 
   // MCP.
-  const { loadMcpConfig } = await import('../mcp.js');
-  const mcpServers = loadMcpConfig(config.workspace);
+  const { formatMcpServerCommand, resolveMcpServerList } = await import('../mcp-config.js');
+  const { evaluateMcpServerApproval } = await import('../mcp-approvals.js');
+  const mcpServers = resolveMcpServerList(config.workspace);
   console.log('MCP Servers:');
-  for (const [name, cfg] of Object.entries(mcpServers)) {
-    console.log('  ' + name + ': ' + cfg.command + ' ' + (cfg.args ?? []).join(' '));
+  for (const server of mcpServers) {
+    const trust =
+      server.source === 'user' ? 'user' : `project: ${evaluateMcpServerApproval(settings, server)}`;
+    console.log('  ' + server.name + ': ' + formatMcpServerCommand(server.config) + ` [${trust}]`);
   }
-  if (Object.keys(mcpServers).length === 0) console.log('  (none)');
+  if (mcpServers.length === 0) console.log('  (none)');
   console.log();
 
   // Sandbox.
