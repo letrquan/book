@@ -349,7 +349,7 @@ Use `--json` for a machine-readable aggregate, `--since <days>` to change the wi
 
 Adaptive mode keeps targeted work inline and nudges the parent toward the read-only `explorer` profile after three successful root `Glob`/`Grep` queries. The reminder is advisory: the fourth lookup is still allowed. Broad exploration receives a purpose name such as `Trace authentication flow`; the reusable profile (`explorer`, `patcher`, or `validator`) remains separate. `--agents manual` keeps the same lifecycle tools but requires explicit user delegation; `--agents off` removes managed-agent tools and routing guidance.
 
-Explorer runs in the parent workspace with a hard read-only capability boundary and does not require Git, snapshots, or worktrees. Patcher and validator runs retain synthetic Git snapshots and isolated worktrees under `~/.book/worktrees/<repo-hash>/<agent-id>`, with per-record state and transcripts under `~/.book/agents/<repo-hash>/records/`. `agents.maxConcurrent` controls active execution while `agents.maxSpawned` caps outstanding queued/running/waiting children; completed history does not consume the cap. Parent-facing lifecycle results contain compact summaries/evidence IDs, terminal handoffs preserve up to 50 KiB, and `AgentRead` retrieves larger results in bounded chunks. The TUI and SDK host can inspect detailed transcripts separately. A patcher commit cannot be applied until a distinct validator passes the exact candidate commit.
+Explorer and `reviewer` run in the parent workspace with a hard read-only capability boundary and do not require Git, snapshots, or worktrees. `reviewer` backs `/review`: it is restricted to `Read`, `Glob`, `Grep`, `GitStatus`, `GitLog`, and `GitBranch` — deliberately no diff tool, because the host supplies the review target. Because it is a trust boundary, a project agent definition named `reviewer` cannot replace its role, tools, isolation, or body; tune it through `agents.profiles.reviewer` instead. Patcher and validator runs retain synthetic Git snapshots and isolated worktrees under `~/.book/worktrees/<repo-hash>/<agent-id>`, with per-record state and transcripts under `~/.book/agents/<repo-hash>/records/`. `agents.maxConcurrent` controls active execution while `agents.maxSpawned` caps outstanding queued/running/waiting children; completed history does not consume the cap. Parent-facing lifecycle results contain compact summaries/evidence IDs, terminal handoffs preserve up to 50 KiB, and `AgentRead` retrieves larger results in bounded chunks. The TUI and SDK host can inspect detailed transcripts separately. A patcher commit cannot be applied until a distinct validator passes the exact candidate commit.
 
 Child completion is delivered automatically to the correct parent session as a compact agent-update card and a persisted provider-facing notification; `AgentWait` is only an explicit synchronization barrier. Delivery is split into context-budgeted batches, retried with bounded backoff, and deduplicated by durable delivery ID before acknowledgement. Terminal rows freeze their duration and final preview, and lifecycle tool rows show semantic actions instead of serialized JSON prefixes.
 
@@ -444,7 +444,8 @@ controls (`/agents`, `/agent`), config (`/model`, `/providers`,
 `/effort [low|medium|high|xhigh|max]`, `/config`, `/permissions`, `/theme`), inspection
 (`/status`, `/cost`, `/usage` with `/stats` as an alias, `/context`, `/diff`, `/skills`,
 `/memory`), local output and reload (`/export`, `/reload-skills`), release/support
-(`/release-notes`, `/feedback`), and agent prompts (`/init`, `/review`, `/security-review`).
+(`/release-notes`, `/feedback`), agent prompts (`/init`, `/security-review`), and code review
+(`/review`, see below).
 `/model` switches models, while `/providers` opens the same picker for provider management. BYOK
 providers you add - their credentials, model catalog, and active model selection - are saved to the
 user-global `~/.book/settings.json` so they are shared across projects; such providers are labeled
@@ -453,6 +454,47 @@ picker when called without an argument and saves successful selections to
 `.book/settings.local.json`.
 
 `/skills` opens the interactive skill manager. Select a skill with `↑`/`↓`, press `Space` to cycle its visibility (`auto`, `name-only`, `manual`, or `off`), press `E` to cycle execution consent (`inherit`, `ask`, or `deny`), and press `Enter` to prepare an explicit `$skill-name` request. `G` toggles the global emergency switch, `R` reloads the catalog, and `/reload-skills` performs the same reload from the command line. Overrides are saved in `.book/settings.local.json` under `skills.overrides`, `skills.execution`, and `skills.enabled`.
+
+### Code review
+
+`/review` is orchestrated by the host rather than run as an ordinary prompt. Book resolves the
+change once — base commit, changed files, and a unified diff, including untracked files — and hands
+that **immutable review target** to read-only `reviewer` agents. Reviewers never choose their own
+scope, so a review cannot silently widen or drift onto unrelated changes.
+
+```text
+/review                       Review the working tree (tracked + untracked changes)
+/review --base main           Review against the merge base with a ref
+/review src/tools             Restrict the review to a file or directory
+/review main...HEAD           Review a committed range
+/review --deep                Four parallel lenses + an independent verification pass
+/review --fix                 Deep review, then apply verified findings (implies --deep)
+/review --help                Usage
+```
+
+A plain `/review` runs one structured pass. `--deep` fans out four specialized reviewers
+(correctness, security, simplification, efficiency), merges and deduplicates their findings, drops
+anything below 70% confidence, and then runs a **falsification pass**: an independent verifier tries
+to disprove each candidate against the real code. Rejected findings are dropped; findings the
+verifier could not reach stay `inconclusive` rather than being reported as real.
+
+Coverage is explicit. If a reviewer fails, times out, or does not return the required JSON, the
+report says so and the verdict is capped at `inconclusive` — a review never reports "clean" from
+incomplete coverage. Output that fails the JSON contract is preserved verbatim in the report instead
+of being discarded.
+
+`--fix` applies only verified findings, one at a time, through the patcher → validator pipeline: a
+patcher produces a patch candidate as evidence, a separate validator must approve that exact
+evidence id (agents cannot approve their own work), and only then is it applied.
+
+Drop a **`REVIEW.md`** at the workspace root to calibrate reviews for your repository — severity
+conventions, known-noisy areas, project-specific rules. It is read fresh on every run and injected
+as calibration only: it cannot change the output contract, disable verification, or broaden the
+tools a reviewer may use.
+
+To score the pipeline against a golden set, pair expectations with reports captured from real runs
+and run `npm run eval:review -- <fixtures.json>`; it prints precision, recall, F1, usefulness rate,
+and signal-to-noise ratio. See `evals/review/fixtures.example.json` for the format.
 
 ### Skills
 

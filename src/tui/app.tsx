@@ -68,8 +68,9 @@ import { createUiDebugLogger } from '../debug-log.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { getOrCreateAgentManager, type AgentManager } from '../agents/manager.js';
 import { installAgentImports, previewAgentImport } from '../agents/importer.js';
-import { runDeepReview, type ReviewAgentRunner } from '../review/orchestration.js';
-import { applyReviewFixes, renderFixResult, type FixAgentRunner } from '../review/fix.js';
+import { runDeepReview, runSingleReview } from '../review/orchestration.js';
+import { applyReviewFixes, renderFixResult } from '../review/fix.js';
+import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewScope } from '../review/types.js';
 import { join } from 'path';
 import {
@@ -171,34 +172,6 @@ export function providerRemovalMessage(
   return `Removed local BYOK provider ${result.providerId} and its ${models}.`;
 }
 
-function reviewRunnerFor(manager: AgentManager): ReviewAgentRunner {
-  return {
-    async spawn(agent, prompt, description) {
-      const record = await manager.spawn({ agent, prompt, description });
-      return { id: record.id, status: record.status, result: record.result, error: record.error };
-    },
-    async wait(id) {
-      const record = await manager.wait(id);
-      return { id: record.id, status: record.status, result: record.result, error: record.error };
-    },
-  };
-}
-
-function fixRunnerFor(manager: AgentManager): FixAgentRunner {
-  const base = reviewRunnerFor(manager);
-  return {
-    ...base,
-    async apply(agentId) {
-      const result = await manager.apply(agentId);
-      return {
-        status: result.status,
-        commit: result.commit,
-        error: result.error,
-      };
-    },
-  };
-}
-
 async function runReviewCommand(
   scope: ReviewScope,
   manager: AgentManager,
@@ -208,11 +181,12 @@ async function runReviewCommand(
   try {
     if (scope.fix) {
       const deep = await runDeepReview(reviewRunnerFor(manager), scope, workspace);
+      report(deep.text);
       const confirmed = deep.report.findings.filter(
         (finding) => finding.verification === 'confirmed',
       );
       if (confirmed.length === 0) {
-        report('Review found no verified findings to fix.');
+        report('No confirmed findings are eligible for automatic fixes.');
         return;
       }
       const fixResult = await applyReviewFixes(fixRunnerFor(manager), confirmed);
@@ -220,7 +194,10 @@ async function runReviewCommand(
       return;
     }
 
-    const result = await runDeepReview(reviewRunnerFor(manager), scope, workspace);
+    const runner = reviewRunnerFor(manager);
+    const result = scope.deep
+      ? await runDeepReview(runner, scope, workspace)
+      : await runSingleReview(runner, scope, workspace);
     report(result.text);
   } catch (error) {
     report(`✕ review failed: ${error instanceof Error ? error.message : String(error)}`);

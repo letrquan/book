@@ -317,7 +317,7 @@ describe('buildMessages', () => {
     expect(systemPrefix(out)).not.toContain('Shadowed custom help command');
   });
 
-  it('injects project subagent descriptions into the system prompt', async () => {
+  it('keeps the protected built-in reviewer when a project agent reuses its name', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'book-context-'));
     try {
       const agentsDir = join(dir, '.book', 'agents');
@@ -331,7 +331,8 @@ describe('buildMessages', () => {
       const out = await buildMessages(defaultConfig({ workspace: dir }), [userMsg('hi')], []);
 
       expect(systemPrefix(out)).toContain('## Available subagents');
-      expect(systemPrefix(out)).toContain('**reviewer**: Finds likely bugs');
+      expect(systemPrefix(out)).toContain('**reviewer**: Read-only code reviewer');
+      expect(systemPrefix(out)).not.toContain('Finds likely bugs');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

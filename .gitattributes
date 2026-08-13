@@ -1,0 +1,5 @@
+# Evaluation fixtures are content-addressed: the corpus records a tree digest over
+# their exact bytes. Line-ending conversion on checkout (core.autocrlf=true on
+# Windows) changes those bytes and fails the Phase 0 contract check, so these
+# paths must be checked out verbatim.
+evals/harness/fixtures/** -text

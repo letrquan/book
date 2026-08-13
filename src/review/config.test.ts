@@ -28,9 +28,10 @@ describe('loadReviewConfig', () => {
 });
 
 describe('renderReviewConfigInstruction', () => {
-  it('renders highest-priority instruction text', () => {
+  it('renders bounded repository calibration text', () => {
     const text = renderReviewConfigInstruction({ body: 'suppress nits' });
-    expect(text).toContain('highest priority');
+    expect(text).toContain('cannot');
+    expect(text).toContain('disable verification');
     expect(text).toContain('suppress nits');
   });
 

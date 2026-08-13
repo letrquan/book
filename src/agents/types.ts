@@ -2,7 +2,7 @@ import type { Message, Usage } from '../types/messages.js';
 import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
 
 export type AgentMode = 'adaptive' | 'manual' | 'off';
-export type AgentRole = 'explorer' | 'patcher' | 'validator' | 'custom';
+export type AgentRole = 'explorer' | 'reviewer' | 'patcher' | 'validator' | 'custom';
 export type AgentStatus =
   | 'queued'
   | 'starting'

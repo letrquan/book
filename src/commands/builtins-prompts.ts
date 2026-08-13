@@ -1,14 +1,12 @@
 /**
  * Prompt builders for action-style built-in slash commands.
  *
- * Review prompts now live in `src/review/prompts.ts`; this module preserves the
- * historical import surface so existing callers and tests keep working.
+ * `/review` is host-orchestrated (see `src/review/`) and builds its prompts from
+ * a resolved review target, so it has no prompt or tool allowlist here.
+ * `/security-review` still runs as an ordinary agent prompt.
  */
 
-export { buildReviewPrompt, buildSecurityReviewPrompt } from '../review/prompts.js';
-
-/** Tools an agent may use during a /review (read-only + git). */
-export const REVIEW_TOOLS = ['Read', 'Glob', 'Grep', 'GitStatus', 'GitDiff'] as const;
+export { buildSecurityReviewPrompt } from '../review/prompts.js';
 
 /** Tools an agent may use during a /security-review (read-only + git). */
 export const SECURITY_REVIEW_TOOLS = [

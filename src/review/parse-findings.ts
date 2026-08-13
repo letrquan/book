@@ -5,6 +5,7 @@ import {
   type ReviewFinding,
   type ReviewReport,
 } from './types.js';
+import { parseJsonObject } from './json.js';
 
 /**
  * Tolerant JSON parsing for model-produced reviews.
@@ -36,50 +37,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
-function extractJsonObject(text: string): string | undefined {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced?.[1]) return fenced[1].trim();
-
-  const start = text.indexOf('{');
-  if (start === -1) return undefined;
-
-  // Walk to the matching closing brace, respecting nested objects/strings.
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = start; index < text.length; index++) {
-    const char = text[index]!;
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-    } else if (char === '{') {
-      depth++;
-    } else if (char === '}') {
-      depth--;
-      if (depth === 0) return text.slice(start, index + 1);
-    }
-  }
-  return undefined;
+function parseJson(text: string): JsonReport | undefined {
+  return parseJsonObject(text);
 }
 
-function parseJson(text: string): JsonReport | undefined {
-  const candidate = extractJsonObject(text);
-  if (!candidate) return undefined;
-  try {
-    const value: unknown = JSON.parse(candidate);
-    return isRecord(value) ? value : undefined;
-  } catch {
-    return undefined;
-  }
+/** Whether model output satisfies the complete top-level review contract. */
+export function isStructuredReviewReport(text: string): boolean {
+  const json = parseJson(text);
+  return Boolean(
+    json &&
+    Array.isArray(json.findings) &&
+    (json.verdict === 'blocking' ||
+      json.verdict === 'recommend' ||
+      json.verdict === 'clean' ||
+      json.verdict === 'inconclusive'),
+  );
 }
 
 function coerceFinding(raw: unknown, index: number): ReviewFinding | undefined {
@@ -87,6 +59,10 @@ function coerceFinding(raw: unknown, index: number): ReviewFinding | undefined {
   const value = raw as JsonFinding;
   if (typeof value.summary !== 'string' || value.summary.trim() === '') return undefined;
   if (typeof value.file !== 'string' || value.file.trim() === '') return undefined;
+  if (typeof value.evidence !== 'string' || value.evidence.trim() === '') return undefined;
+  if (typeof value.failure !== 'string' || value.failure.trim() === '') return undefined;
+  if (typeof value.suggestedFix !== 'string' || value.suggestedFix.trim() === '') return undefined;
+  if (typeof value.confidence !== 'number' || !Number.isFinite(value.confidence)) return undefined;
 
   const severity = isReviewSeverity(value.severity) ? value.severity : 'minor';
   const category = isReviewCategory(value.category) ? value.category : 'correctness';
@@ -99,12 +75,9 @@ function coerceFinding(raw: unknown, index: number): ReviewFinding | undefined {
     file: value.file.trim(),
     line,
     summary: value.summary.trim(),
-    evidence: typeof value.evidence === 'string' ? value.evidence.trim() : '',
-    failure: typeof value.failure === 'string' ? value.failure.trim() : '',
-    suggestedFix:
-      typeof value.suggestedFix === 'string' && value.suggestedFix.trim()
-        ? value.suggestedFix.trim()
-        : undefined,
+    evidence: value.evidence.trim(),
+    failure: value.failure.trim(),
+    suggestedFix: value.suggestedFix.trim(),
     confidence: clampConfidence(value.confidence),
   };
 }

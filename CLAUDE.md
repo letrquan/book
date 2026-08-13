@@ -58,6 +58,14 @@ src/
                         profile-resolver.ts, capabilities.ts, git-isolation.ts (worktrees),
                         check.ts, evaluation.ts, completion-notification.ts, importer.ts,
                         activity.ts, projections.ts, diagnostics.ts, naming.ts, types.ts
+  review/               Host-orchestrated /review pipeline:
+                        scope.ts (argument parsing), target.ts (immutable review target: base sha,
+                        changed files, unified diff), prompts.ts (single/lens/security builders),
+                        orchestration.ts (runSingleReview, runDeepReview, coverage), runner.ts
+                        (AgentManager adapters), parse-findings.ts + json.ts (tolerant JSON),
+                        verify-findings.ts (falsification pass), findings.ts (dedupe/rank/filter),
+                        fix.ts (--fix through patcher/validator evidence), config.ts (REVIEW.md),
+                        evaluation.ts (precision/recall harness), types.ts
   rewind/               /rewind snapshots: snapshot-store.ts, environment.ts
   input/                file-mentions.ts (@file), input-expansion.ts
   commands/
@@ -193,5 +201,8 @@ When changing these, update `README.md` / `CHANGELOG.md` / `MILESTONES.md` as ap
 - Permission modes: `PermissionMode` in `src/types/runtime.ts`
 - Memory paths and approval flow in `src/memory-store.ts` / `src/memory-autosave.ts`
 - Managed-agent behavior in `src/agents/` (README "Managed agents" is the detailed spec)
+- `/review` pipeline behavior in `src/review/` (README "Code review" is the detailed spec). The
+  review target is resolved by the host, never by the reviewer — reviewer agents have no diff tool,
+  so prompt builders require a `ReviewTarget`.
 - Background shell behavior in `src/jobs/` and `src/job-runner.ts`
 - Skill behavior in `src/skills.ts`, `src/skill-registry.ts`, and `src/tools/skills-tool.ts`

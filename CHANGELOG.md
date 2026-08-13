@@ -19,6 +19,27 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- `/review` is now a host-orchestrated pipeline instead of an ordinary agent prompt. Book resolves
+  the change once into an immutable review target (base commit, changed files, and a unified diff
+  including untracked files) and hands it to read-only `reviewer` agents, so a review cannot widen
+  its own scope or drift onto unrelated changes. New flags: `--base <ref>`, `--deep`, `--fix`, plus
+  a path or `<base>...<head>` range argument. `--deep` fans out four specialized lenses
+  (correctness, security, simplification, efficiency), deduplicates and confidence-filters their
+  findings, then runs an independent falsification pass that must return one verdict per candidate.
+  Coverage is explicit: a failed, timed-out, or unstructured pass caps the verdict at
+  `inconclusive` rather than reporting a clean review, and output that fails the JSON contract is
+  preserved verbatim instead of discarded. `--fix` applies only verified findings through the
+  patcher → validator evidence pipeline, where a distinct validator must approve the exact patch
+  candidate.
+- A `REVIEW.md` at the workspace root calibrates reviews for the repository. It is injected as
+  calibration only and cannot change the output contract, disable verification, or broaden reviewer
+  tools.
+- New built-in `reviewer` managed-agent profile (read-only, no diff tool) backing `/review`. It is a
+  trust boundary: a project agent definition of the same name cannot replace its role, tools,
+  isolation, or body.
+- `npm run eval:review -- <fixtures.json>` scores review output against a golden set — precision,
+  recall, F1, usefulness rate, and signal-to-noise ratio — from reports captured on real runs. See
+  `evals/review/fixtures.example.json`.
 - New empty startup sessions now open with an optional full-screen magical fire sequence that
   burns into the Book welcome. It is deterministic, skippable with Esc or typing, automatically
   bypassed for reduced-motion and screen-reader modes, and configurable through `/config` or

@@ -19,6 +19,10 @@ runtime defaults and known boundaries, see [docs/current-state.md](docs/current-
 - [x] Managed explorer/patcher/validator agents with strict tool capabilities, concurrency limits,
   non-Git read-only exploration, Git worktrees for mutation/validation, evidence gates, completion
   delivery, resumable transcripts, ownership, retention, and recovery.
+- [x] Host-orchestrated `/review` pipeline: immutable review target resolved by the host, read-only
+  `reviewer` agents, parallel specialized lenses, independent falsification pass, explicit coverage
+  that fails closed, `REVIEW.md` calibration, evidence-gated `--fix`, and a precision/recall
+  evaluation harness.
 - [x] Background job manager with `/jobs`, session and explicit persistent shell lifetimes,
   restart reattachment, bounded logs/output, notifications, stop/dismiss, and SDK/stream events.
 - [x] First-class interoperable skill system with multi-root discovery, metadata-first prompting,
@@ -74,6 +78,14 @@ See [plans/security-assessment.md](plans/security-assessment.md) for the current
 
 The authoritative phase ledger is
 [plans/adaptive-harness-implementation-plan.md](plans/adaptive-harness-implementation-plan.md).
+
+### 5. Review Pipeline Follow-up
+
+- [ ] Run the evaluation harness end to end: execute the review pipeline over checked-in golden
+  diffs instead of scoring reports captured by hand, and gate prompt changes on the result.
+- [ ] Expose `/review` outside the TUI. The `review` command effect is handled only in
+  `src/tui/app.tsx`, so print/headless hosts cannot run it.
+- [ ] Make the confidence threshold and the fixed 10-minute pass timeout configurable per project.
 
 ## Documentation Rule
 
