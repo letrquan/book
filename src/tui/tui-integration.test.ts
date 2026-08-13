@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn } from 'node-pty';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -67,6 +67,13 @@ interface TuiSession {
  */
 async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiSession> {
   const testRoot = mkdtempSync(join(tmpdir(), 'book-tui-'));
+  // The startup fire animation delays the input bar past waitFor timeouts on
+  // loaded runners; these tests need a deterministic boot straight to the UI.
+  mkdirSync(join(testRoot, '.book'), { recursive: true });
+  writeFileSync(
+    join(testRoot, '.book', 'settings.json'),
+    JSON.stringify({ ui: { startupAnimation: false } }),
+  );
   const env = {
     ...process.env,
     // Ink suppresses intermediate frames in CI, but this child is an interactive PTY.

@@ -1,5 +1,13 @@
 import { Box, Text, useInput, useStdout, useApp } from 'ink';
-import { useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import {
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { QueuedInputPreview } from './components/QueuedInputPreview.js';
@@ -23,6 +31,7 @@ import { TranscriptView } from './components/TranscriptView.js';
 import { PermissionButtons } from './components/PermissionButtons.js';
 import { PlanApprovalActions, PlanApprovalDetails } from './components/PlanApprovalButtons.js';
 import { AskUserQuestionWizard } from './components/AskUserQuestionWizard.js';
+import { McpServerApprovalPrompt } from './components/McpServerApprovalPrompt.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
 import { useManagedAgents } from './hooks/useManagedAgents.js';
@@ -41,6 +50,7 @@ import {
   type ResolvedTheme,
 } from './theme.js';
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
+import type { McpHostSnapshot, McpSessionHost } from '../mcp-host.js';
 import { resolvePermissionMode } from '../permission-mode.js';
 import type { ImageAttachment } from '../types/messages.js';
 import type { CommandContext } from '../types/commands.js';
@@ -114,6 +124,7 @@ export function ownsModalInput(
   showAgentProfilePicker = false,
   showPermissionModePicker = false,
   showSkills = false,
+  pendingMcpApproval: unknown = undefined,
 ): boolean {
   return Boolean(
     pendingPermission ||
@@ -127,7 +138,8 @@ export function ownsModalInput(
     showRewindPicker ||
     showConfigPicker ||
     showAgentProfilePicker ||
-    showSkills,
+    showSkills ||
+    pendingMcpApproval,
   );
 }
 
@@ -227,10 +239,14 @@ async function runReviewCommand(
   }
 }
 
+const EMPTY_MCP_SNAPSHOT: McpHostSnapshot = { servers: [], pendingApprovals: [], events: [] };
+
 interface AppProps {
   config: AgentConfig;
   permissionMode?: PermissionMode;
   interactiveAssets?: InteractiveAssets;
+  /** Session MCP owner; servers connect in the background and tools join per send. */
+  mcp?: McpSessionHost;
   session: SessionBootstrap & {
     store?: SessionStoreInterface;
     timelineStore?: SessionStoreInterface;
@@ -274,6 +290,7 @@ export function App({
   session,
   redrawViewport,
   interactiveAssets,
+  mcp,
 }: AppProps) {
   const {
     messages,
@@ -338,7 +355,11 @@ export function App({
     retryAttempt,
     retryMax,
     retryCountdownMs,
-  } = useAgent(config, { ...session, permissionMode });
+  } = useAgent(config, {
+    ...session,
+    permissionMode,
+    additionalTools: mcp ? () => mcp.getToolDefinitions() : undefined,
+  });
 
   const managedAgentManager = useMemo(
     () =>
@@ -696,6 +717,55 @@ export function App({
     (event) => event.type === 'agent_permission',
   );
   const childQuestion = managedAgents.pendingQuestions[0];
+
+  const subscribeMcp = useCallback(
+    (listener: () => void) => mcp?.subscribe(listener) ?? (() => {}),
+    [mcp],
+  );
+  const readMcpSnapshot = useCallback(() => mcp?.getSnapshot() ?? EMPTY_MCP_SNAPSHOT, [mcp]);
+  const mcpSnapshot = useSyncExternalStore(subscribeMcp, readMcpSnapshot);
+  const pendingMcpApproval = mcpSnapshot.pendingApprovals[0];
+  // The trust prompt yields to every other modal surface and reappears once idle.
+  const showMcpApproval =
+    Boolean(pendingMcpApproval) &&
+    !ownsModalInput(
+      pendingPermission ?? childPermission ?? childQuestion,
+      pendingPlanApproval,
+      showModelPicker,
+      showSessionPicker,
+      pendingUserQuestion,
+      showEffortPicker,
+      showThemePicker,
+      showRewindPicker,
+      showConfigPicker,
+      showAgentProfilePicker,
+      showPermissionModePicker,
+      showSkills,
+    );
+
+  // Surface connection outcomes as transcript notices once the turn is idle;
+  // addLocalMessage drops messages mid-turn, so consumption waits for idle.
+  const lastMcpEventIdRef = useRef(0);
+  useEffect(() => {
+    const events = mcpSnapshot.events;
+    const fresh = events.filter((event) => event.id > lastMcpEventIdRef.current);
+    if (fresh.length === 0) return;
+    if (isThinking || sendInFlight) return;
+    lastMcpEventIdRef.current = fresh[fresh.length - 1].id;
+    for (const event of fresh) {
+      if (event.type === 'connected') {
+        addLocalMessage(
+          `MCP: connected to "${event.server}" (${event.toolCount} tool${event.toolCount === 1 ? '' : 's'}).`,
+        );
+      } else if (event.type === 'failed') {
+        addLocalMessage(`MCP: failed to connect "${event.server}": ${event.error}`);
+      } else if (event.type === 'disconnected') {
+        addLocalMessage(`MCP: "${event.server}" disconnected.`);
+      } else {
+        addLocalMessage(`MCP: "${event.server}" tool list updated (${event.toolCount} tools).`);
+      }
+    }
+  }, [mcpSnapshot, isThinking, sendInFlight, addLocalMessage]);
   const queueDrainBlocked = Boolean(
     isThinking ||
     sendInFlight ||
@@ -812,6 +882,11 @@ export function App({
     returnToMain,
     selectedShellId,
   ]);
+
+  const readSelectedShellTail = useCallback(
+    () => (selectedShellId ? (shellManager.readTail(selectedShellId, 16_000) ?? '') : ''),
+    [selectedShellId, shellManager],
+  );
 
   // Tab cycles focus flatly through [main, ...spawned agents], opening each
   // child's transcript directly. Wrapping past the last agent returns to main.
@@ -986,6 +1061,7 @@ export function App({
         showAgentProfilePicker,
         showPermissionModePicker,
         showSkills,
+        showMcpApproval,
       )
     ) {
       if (key.escape) {
@@ -1106,32 +1182,62 @@ export function App({
     ? wordWrap(selectedManagedAgentLiveText.slice(-1000), Math.max(1, termWidth - 2)).split('\n')
         .length
     : 0;
-  const transcriptLayoutRevision = JSON.stringify([
-    error ?? '',
-    streamingMessageId ?? '',
-    transcriptMode,
-    expandedToolId ?? '',
-    [...toolExpansionOverrides.entries()].sort(([left], [right]) => left.localeCompare(right)),
-    showAllDetailedOutput,
-    [...showAllToolOutputIds].sort(),
-    liveConfig.settings.ui.showThinking,
-    pendingPermission?.toolCall.id ?? '',
-    managedAgents.surface,
-    managedAgents.selectedAgentId ?? '',
-    selectedManagedAgentRecord?.status ?? '',
-    selectedManagedAgentRecord?.referencedEvidenceIds.length ?? 0,
-    selectedManagedAgentLiveRows,
-    showAgentPlan
-      ? agentTodos.map((todo) => [todo.status, todo.content, todo.activeForm ?? ''])
-      : [],
-    showTasks ? tasks.map((task) => [task.id, task.status, task.subject]) : [],
-    showHelp,
-    showStatus,
-    showPermissions,
-    showSkills,
-    showShortcuts,
-    pendingPlanApproval?.plan ?? '',
-  ]);
+  const transcriptLayoutRevision = useMemo(
+    () =>
+      JSON.stringify([
+        error ?? '',
+        streamingMessageId ?? '',
+        transcriptMode,
+        expandedToolId ?? '',
+        [...toolExpansionOverrides.entries()].sort(([left], [right]) =>
+          left < right ? -1 : left > right ? 1 : 0,
+        ),
+        showAllDetailedOutput,
+        [...showAllToolOutputIds].sort(),
+        liveConfig.settings.ui.showThinking,
+        pendingPermission?.toolCall.id ?? '',
+        managedAgents.surface,
+        managedAgents.selectedAgentId ?? '',
+        selectedManagedAgentRecord?.status ?? '',
+        selectedManagedAgentRecord?.referencedEvidenceIds.length ?? 0,
+        selectedManagedAgentLiveRows,
+        showAgentPlan
+          ? agentTodos.map((todo) => [todo.status, todo.content, todo.activeForm ?? ''])
+          : [],
+        showTasks ? tasks.map((task) => [task.id, task.status, task.subject]) : [],
+        showHelp,
+        showStatus,
+        showPermissions,
+        showSkills,
+        showShortcuts,
+        pendingPlanApproval?.plan ?? '',
+      ]),
+    [
+      error,
+      streamingMessageId,
+      transcriptMode,
+      expandedToolId,
+      toolExpansionOverrides,
+      showAllDetailedOutput,
+      showAllToolOutputIds,
+      liveConfig.settings.ui.showThinking,
+      pendingPermission,
+      managedAgents.surface,
+      managedAgents.selectedAgentId,
+      selectedManagedAgentRecord,
+      selectedManagedAgentLiveRows,
+      showAgentPlan,
+      agentTodos,
+      showTasks,
+      tasks,
+      showHelp,
+      showStatus,
+      showPermissions,
+      showSkills,
+      showShortcuts,
+      pendingPlanApproval,
+    ],
+  );
 
   useEffect(() => {
     setTranscriptMode('compact');
@@ -1275,6 +1381,7 @@ export function App({
           commandCount: commands.length,
           skillCount: skills.length,
           skillSnapshot: runtime?.inspectSkills(currentTurn),
+          mcpSnapshot,
           toolCallStats: runtime?.toolCallStats,
           resolveAmbientContext: () => ({
             subagentCount: discoverAgents(config.workspace).length,
@@ -1585,6 +1692,7 @@ export function App({
       turnDurationMs,
       error,
       skills,
+      mcpSnapshot,
       sessionId,
       stdout,
       isThinking,
@@ -1767,7 +1875,7 @@ export function App({
                 backgroundShells.shells.find((shell) => shell.id === selectedShellId) ? (
                   <BackgroundShellDetail
                     shell={backgroundShells.shells.find((shell) => shell.id === selectedShellId)!}
-                    output={shellManager.readTail(selectedShellId, 16_000) ?? ''}
+                    readTail={readSelectedShellTail}
                     width={termWidth}
                   />
                 ) : (
@@ -2556,6 +2664,16 @@ export function App({
                 onCancel={() => setShowThemePicker(false)}
               />
             ) : null}
+            {showMcpApproval && pendingMcpApproval && mcp ? (
+              <McpServerApprovalPrompt
+                key={pendingMcpApproval.name}
+                server={pendingMcpApproval}
+                remainingCount={mcpSnapshot.pendingApprovals.length - 1}
+                onApprove={() => mcp.approve(pendingMcpApproval.name)}
+                onReject={() => mcp.reject(pendingMcpApproval.name)}
+                onDefer={() => mcp.defer(pendingMcpApproval.name)}
+              />
+            ) : null}
           </Box>
 
           {compactUi && (compactUi.phase === 'error' || compactUi.phase === 'skipped') ? (
@@ -2664,6 +2782,7 @@ export function App({
                   showAgentProfilePicker,
                   showPermissionModePicker,
                   showSkills,
+                  showMcpApproval,
                 ) ||
                 transcriptMode === 'detailed' ||
                 managedAgents.surface === 'tasks' ||

@@ -25,6 +25,15 @@ export interface VirtualTranscriptWindow<T> extends VirtualTranscriptRange {
   entries: Array<{ item: T; index: number; key: string; measurementKey: string }>;
   measure: (measurementKey: string, rows: number) => void;
   virtualized: boolean;
+  /** Sum of the pre-measurement row estimates for all items. */
+  estimatedTotalRows: number;
+}
+
+interface DerivedItemEntry {
+  width: number;
+  key: string;
+  estimate: number;
+  measurementKey: string;
 }
 
 function lowerBound(values: readonly number[], target: number): number {
@@ -97,15 +106,41 @@ export function useVirtualTranscript<T>({
   const [heightVersion, setHeightVersion] = useState(0);
   const width = Math.max(1, Math.floor(terminalWidth));
 
-  const itemKeys = useMemo(() => items.map((item) => getKey(item)), [getKey, items]);
-  const estimatedRows = useMemo(
-    () => items.map((item) => Math.max(1, Math.ceil(estimateRows(item)))),
-    [estimateRows, items],
-  );
-  const measurementKeys = useMemo(
-    () => itemKeys.map((key, index) => `${width}:${key}:${estimatedRows[index] ?? 1}`),
-    [estimatedRows, itemKeys, width],
-  );
+  // Cache per-item derived values by item identity so a streaming update only
+  // recomputes the one message whose object changed, not the whole window.
+  const derivedCacheRef = useRef(new WeakMap<object, DerivedItemEntry>());
+  const derivedFnsRef = useRef({ getKey, estimateRows });
+  if (
+    derivedFnsRef.current.getKey !== getKey ||
+    derivedFnsRef.current.estimateRows !== estimateRows
+  ) {
+    derivedCacheRef.current = new WeakMap();
+    derivedFnsRef.current = { getKey, estimateRows };
+  }
+  const derived = useMemo(() => {
+    const cache = derivedCacheRef.current;
+    const itemKeys = new Array<string>(items.length);
+    const estimatedRows = new Array<number>(items.length);
+    const measurementKeys = new Array<string>(items.length);
+    let estimatedTotalRows = 0;
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index]!;
+      const cacheable = typeof item === 'object' && item !== null;
+      let entry = cacheable ? cache.get(item as object) : undefined;
+      if (!entry || entry.width !== width) {
+        const key = getKey(item);
+        const estimate = Math.max(1, Math.ceil(estimateRows(item)));
+        entry = { width, key, estimate, measurementKey: `${width}:${key}:${estimate}` };
+        if (cacheable) cache.set(item as object, entry);
+      }
+      itemKeys[index] = entry.key;
+      estimatedRows[index] = entry.estimate;
+      measurementKeys[index] = entry.measurementKey;
+      estimatedTotalRows += entry.estimate;
+    }
+    return { itemKeys, estimatedRows, measurementKeys, estimatedTotalRows };
+  }, [estimateRows, getKey, items, width]);
+  const { itemKeys, estimatedRows, measurementKeys, estimatedTotalRows } = derived;
   const heights = useMemo(
     () =>
       items.map((item, index) =>
@@ -162,6 +197,7 @@ export function useVirtualTranscript<T>({
     }),
     measure,
     virtualized: shouldVirtualize,
+    estimatedTotalRows,
   };
 }
 

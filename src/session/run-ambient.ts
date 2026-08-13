@@ -8,7 +8,7 @@ import { withBuiltInAgents } from '../agents/profiles.js';
 import { discoverProjectInstructions } from '../claude-md.js';
 import { createProvider } from '../provider/index.js';
 import { discoverCommands } from '../commands/loader.js';
-import { loadMcpConfig } from '../mcp.js';
+import { loadMcpConfig } from '../mcp-config.js';
 import { discoverSkills, loadSkillBody } from '../skills.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import type { AgentRunAmbientSnapshot } from '../types/runs.js';
@@ -185,9 +185,13 @@ function mcpProjection(config: AgentConfig): Array<Record<string, unknown>> {
   return Object.entries(loadMcpConfig(config.workspace))
     .map(([name, server]) => ({
       name,
+      transport: server.type ?? (server.url ? 'http' : 'stdio'),
       command: server.command,
       args: server.args,
       envKeys: Object.keys(server.env ?? {}).sort(),
+      cwd: server.cwd,
+      url: server.url,
+      headerKeys: Object.keys(server.headers ?? {}).sort(),
     }))
     .sort((left, right) => String(left.name).localeCompare(String(right.name)));
 }

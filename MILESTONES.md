@@ -33,8 +33,10 @@ runtime defaults and known boundaries, see [docs/current-state.md](docs/current-
 ### 1. Trust Boundary and Sandbox Hardening
 
 - [ ] Add a user-owned workspace trust database and a first-open review flow.
-- [ ] Disable or separately approve project hooks, MCP commands, provider credentials/endpoints,
-  executable custom-command substitutions, and privileged agent definitions in untrusted projects.
+- [ ] Disable or separately approve project hooks, provider credentials/endpoints, executable
+  custom-command substitutions, and privileged agent definitions in untrusted projects. Project
+  MCP servers now have per-server fingerprinted approval; fold that decision into the future
+  workspace-wide trust flow.
 - [ ] Rebuild shell sandbox execution around structured argv instead of a wrapped command string.
 - [ ] Enforce declared filesystem/network sandbox policies and define fail-closed behavior on
   unsupported platforms.

@@ -17,7 +17,9 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **Permissions**: allow/ask/deny rule matching with six modes — `default`, `acceptEdits` (`accept-edits`), `plan`, `auto`, `dontAsk`, `bypassPermissions` — see `/permissions` or `--permission-mode`.
 - **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events. Review project-controlled hooks and provider/MCP settings before using an untrusted workspace.
 - **Verified managed agents**: adaptive model-directed routing, purpose-named runs, compact parent-facing results, live TUI monitoring, profile model overrides, read-only non-Git exploration, resumable isolated worktrees, strict capabilities, typed evidence, independent validation, and explicit patch application. Built-in `explorer`, `patcher`, and `validator` profiles can be overridden under `.book/agents/`.
-- **MCP**: stdio-transport MCP client for tool servers.
+- **MCP**: interoperable MCP tool client with stdio, Streamable HTTP, and legacy SSE transports;
+  interactive project-server approval, secret-safe diagnostics, dynamic tool discovery, and
+  server-scoped permissions.
 - **CLI helpers**: `book doctor` (diagnose env/config), `book config` (get/set/list settings), and `book tool-stats` (measure tool use across sessions — fail counts, rates, durations).
 
 See [`docs/current-state.md`](./docs/current-state.md) for the verified product snapshot, [`MILESTONES.md`](./MILESTONES.md) for the current roadmap, and [`CHANGELOG.md`](./CHANGELOG.md) for release notes.
@@ -65,6 +67,14 @@ book doctor
 book config list
 book config get permissions.deny
 book config set permissions.allow '["Read(*)","Glob(*)","Grep(*)"]'
+
+# Manage MCP servers (JSON shape is compatible with the wider MCP ecosystem)
+book mcp list
+book mcp add github npx -- -y @modelcontextprotocol/server-github
+book mcp add remote https://mcp.example.com/mcp --transport http --scope project \
+  --header 'Authorization=${GITHUB_TOKEN}'
+book mcp get github
+book mcp remove github
 
 # Inspect and measure tool use recorded across sessions
 book tool-stats
@@ -115,6 +125,43 @@ Set `BOOK_HOME` to replace the default `~/.book` user-state root. This relocates
 sessions, memory, managed-agent state and worktrees, jobs, rewind snapshots, telemetry, tool output,
 MCP configuration, and user-level skills, commands, agents, and `AGENTS.md` discovery. Project-local
 `.book/` directories are unchanged.
+
+### MCP servers
+
+MCP declarations use the interoperable `{"mcpServers": {"name": {...}}}` shape. User-global
+servers live at `~/.book/mcp.json` (or `$BOOK_HOME/mcp.json`) and project declarations live at
+`.mcp.json`. A declaration may use the legacy stdio shape or an explicit transport:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" }
+    },
+    "remote": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+Supported transports are `stdio`, Streamable HTTP (`http`), and legacy SSE (`sse`). Variable
+references support `${NAME}` and `${NAME:-fallback}`; values are never shell-evaluated. URLs must
+be absolute HTTP(S) URLs without embedded credentials. Header names are shown in status output,
+but header values are redacted from logs, prompts, reports, and diagnostics.
+
+Project servers are untrusted repository-controlled input. Book displays the exact non-secret
+target and asks for one-time approval before launching or connecting; the decision is stored in
+`.book/settings.local.json` and is invalidated when any command, argument, environment value,
+working directory, URL, transport, or header value changes. Headless and SDK runs skip unapproved
+project servers. `/mcp` shows live status in the TUI; `book mcp list|get|add|remove` manages
+declarations. Permission rules may target one server (`mcp__github`) or one exact tool
+(`mcp__github__create_issue`).
 
 Legacy `.bookrc.json` is still supported but deprecated. Use `--no-settings` to skip all `settings.json` layers (defaults + legacy only).
 
@@ -459,7 +506,7 @@ Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, 
 `/help`), task and job controls (`/task`, `/jobs`, with `/tasks` as an alias), managed-agent
 controls (`/agents`, `/agent`), config (`/model`, `/providers`,
 `/effort [low|medium|high|xhigh|max]`, `/config`, `/permissions`, `/theme`), inspection
-(`/status`, `/cost`, `/usage` with `/stats` as an alias, `/context`, `/diff`, `/skills`,
+(`/status`, `/mcp`, `/cost`, `/usage` with `/stats` as an alias, `/context`, `/diff`, `/skills`,
 `/memory`), local output and reload (`/export`, `/reload-skills`), release/support
 (`/release-notes`, `/feedback`), and agent prompts (`/init`, `/review`, `/security-review`).
 `/model` switches models, while `/providers` opens the same picker for provider management. BYOK

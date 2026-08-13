@@ -71,7 +71,18 @@ describe('ToolCallBlock', () => {
     expect(rendered).not.toMatch(/[╰├›⌄]/);
   });
 
-  it('updates elapsed time while a tool remains active', () => {
+  it('updates elapsed time once per second while a tool remains active', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const view = render(
+      withTheme(<ToolCallBlock name="Bash" args={{ command: 'npm test' }} isExpanded />),
+    );
+
+    void act(() => vi.advanceTimersByTime(2500));
+    expect(frame(view.lastFrame)).toContain('· 2s');
+  });
+
+  it('does not tick elapsed time under reduced motion', () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     const view = render(
@@ -80,8 +91,8 @@ describe('ToolCallBlock', () => {
       ),
     );
 
-    void act(() => vi.advanceTimersByTime(1500));
-    expect(frame(view.lastFrame)).toContain('1.5s');
+    void act(() => vi.advanceTimersByTime(2500));
+    expect(frame(view.lastFrame)).not.toMatch(/· \d+s/);
   });
 
   it('renders a short collapsed preview for long tool output by default', () => {

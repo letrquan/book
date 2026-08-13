@@ -54,8 +54,19 @@ function normalizePathArg(s: string): string {
  * Read/Write/Edit-style tools so `Read(./.env)` matches a call with
  * `filePath: ".env"`.
  */
+function toolNameMatchesRule(ruleToolName: string, toolName: string): boolean {
+  if (ruleToolName === toolName) return true;
+  if (!ruleToolName.startsWith('mcp__')) return false;
+  const serverName = ruleToolName.slice('mcp__'.length);
+  // A bare MCP server namespace (mcp__github) intentionally covers every
+  // tool from that server. A full tool rule remains exact.
+  return Boolean(
+    serverName && !serverName.includes('__') && toolName.startsWith(`${ruleToolName}__`),
+  );
+}
+
 function ruleMatches(rule: ParsedRule, toolName: string, primaryArg: string): boolean {
-  if (rule.toolName !== toolName) return false;
+  if (!toolNameMatchesRule(rule.toolName, toolName)) return false;
   if (rule.pattern === null) return true; // match-all
   const normalizedArg = normalizePathArg(primaryArg);
   const normalizedPattern = rule.pattern.startsWith('./') ? rule.pattern.slice(2) : rule.pattern;

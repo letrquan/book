@@ -1,0 +1,3 @@
+# Evaluation fixture trees are hashed byte-for-byte (fixture.treeDigest);
+# line-ending conversion on checkout would change the digests on Windows.
+evals/harness/fixtures/** -text

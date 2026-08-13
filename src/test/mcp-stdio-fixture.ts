@@ -42,9 +42,17 @@ process.stdin.on('data', chunk => {
     if (mode === 'crash') throw new Error('fixture crash');
 
     const request = JSON.parse(line);
-    if (!request.id) continue;
+    if (request.id === undefined || request.id === null) continue;
     if (request.method === 'initialize') {
-      respond({ jsonrpc: '2.0', id: request.id, result: {} });
+      respond({
+        jsonrpc: '2.0',
+        id: request.id,
+        result: {
+          protocolVersion: request.params.protocolVersion,
+          capabilities: { tools: {} },
+          serverInfo: { name: 'book-mcp-fixture', version: '1.0.0' }
+        }
+      });
     } else if (request.method === 'tools/list') {
       respond({
         jsonrpc: '2.0',
@@ -58,7 +66,11 @@ process.stdin.on('data', chunk => {
         }
       });
     } else if (request.method === 'tools/call' && !mode.endsWith('call-silence')) {
-      respond({ jsonrpc: '2.0', id: request.id, result: request.params.arguments });
+      respond({
+        jsonrpc: '2.0',
+        id: request.id,
+        result: { content: [{ type: 'text', text: JSON.stringify(request.params.arguments) }] }
+      });
     }
   }
 });

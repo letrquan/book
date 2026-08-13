@@ -74,6 +74,36 @@ describe('built-in command contract', () => {
     });
     expect(
       registry.execute(
+        'mcp',
+        '',
+        context({
+          mcpSnapshot: {
+            servers: [
+              {
+                name: 'github',
+                source: 'user',
+                path: '/home/me/.book/mcp.json',
+                target: 'http https://example.test/mcp',
+                envKeys: [],
+                headerKeys: ['Authorization'],
+                fingerprint: 'fingerprint',
+                status: 'connected',
+                toolCount: 2,
+                configChangedSinceApproval: false,
+              },
+            ],
+            pendingApprovals: [],
+            events: [],
+          },
+        }),
+      ),
+    ).toEqual({ type: 'local-message', content: expect.stringContaining('github') });
+    expect(registry.execute('mcp', 'unknown', context())).toEqual({
+      type: 'local-message',
+      content: 'Usage: /mcp [status]',
+    });
+    expect(
+      registry.execute(
         'skills',
         'status',
         context({

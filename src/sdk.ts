@@ -8,6 +8,8 @@ import { freezeAgentConfig, loadConfig, type LoadConfigOptions } from './config.
 import { runHeadless } from './headless.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { connectMcpServers, disconnectMcpServers } from './mcp.js';
+import { mcpServersToRecord, partitionMcpServersByApproval } from './mcp-approvals.js';
+import { resolveMcpServerList } from './mcp-config.js';
 import { AgentManager } from './agents/manager.js';
 import { SessionStore } from './session/store.js';
 import { resolveSessionBootstrap } from './session/resolve.js';
@@ -114,7 +116,19 @@ export async function* query(
 
   const running = (async () => {
     try {
-      const mcp = await connectMcpServers(config.workspace, { signal: controller.signal });
+      // Project-declared MCP servers require a prior interactive approval;
+      // SDK runs cannot prompt, so unapproved servers are skipped with a warning.
+      const declaredMcpServers = resolveMcpServerList(config.workspace);
+      const mcpPartition = partitionMcpServersByApproval(declaredMcpServers, config.settings);
+      for (const server of mcpPartition.pending) {
+        console.warn(
+          `⚠  Skipping MCP server "${server.name}" (${server.path}): project-declared servers require one-time approval. Approve it in an interactive session first.`,
+        );
+      }
+      const mcp = await connectMcpServers(config.workspace, {
+        signal: controller.signal,
+        servers: mcpServersToRecord(mcpPartition.allowed),
+      });
       connections = mcp.connections;
       const registry = createDefaultRegistry({ agents: config.settings.agents.mode !== 'off' });
       if (mcp.tools.length > 0) registry.registerAll(mcp.tools);
@@ -165,7 +179,7 @@ export async function* query(
         });
       }
     } finally {
-      disconnectMcpServers(connections);
+      await disconnectMcpServers(connections);
       queue.push({ type: 'done' });
       queue.close();
     }
