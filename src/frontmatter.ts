@@ -9,7 +9,12 @@ export function parseFrontmatter(raw: string): {
   body: string;
   frontmatter: Record<string, unknown>;
 } {
-  const lines = raw.split('\n');
+  // Normalize line endings before looking for the closing delimiter. Skill
+  // packages are commonly authored on Windows and use CRLF; comparing a raw
+  // `---\r` line with the delimiter used to make otherwise valid metadata look
+  // like an unparsed body.
+  const normalized = raw.replace(/\r\n?/g, '\n');
+  const lines = normalized.split('\n');
   // Must start with ---
   if (lines[0]?.trim() !== '---') {
     return { body: raw, frontmatter: {} };

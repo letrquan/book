@@ -222,7 +222,12 @@ function ToolCallBlockInner({
             {statusSymbol(presentation.status)}{' '}
           </Text>
         )}
-        <Text color={presentation.status === 'failure' ? theme.error : theme.text}>{summary}</Text>
+        <Text
+          color={presentation.status === 'failure' ? theme.error : theme.text}
+          dimColor={presentation.status !== 'failure'}
+        >
+          {summary}
+        </Text>
       </Box>
       {isExpanded && result && isDiffOutput(name, result) ? (
         <DiffBlock
@@ -334,14 +339,16 @@ function OutputBlock({
                   color={segment.color}
                   bold={segment.bold}
                   italic={segment.italic}
-                  dimColor={segment.dimColor}
+                  dimColor
                 >
                   {segment.text}
                 </Text>
               ))}
             </Text>
           ) : (
-            <Text color={theme.text}>{line}</Text>
+            <Text color={theme.text} dimColor>
+              {line}
+            </Text>
           )}
         </Box>
       ))}

@@ -11,6 +11,8 @@ import {
   REVIEW_TOOLS,
   SECURITY_REVIEW_TOOLS,
 } from './builtins-prompts.js';
+import { parseReviewScope, REVIEW_USAGE } from '../review/scope.js';
+import type { ReviewScope } from '../review/types.js';
 import { CommandRegistry, type CommandAlias, type CommandDefinition } from './registry.js';
 import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
 import { EFFORT_USAGE, isEffortLevel, type EffortLevel } from './effort.js';
@@ -89,6 +91,10 @@ export type BuiltinCommandEffect =
   | { type: 'add-task'; subject: string }
   | { type: 'show-diff' }
   | { type: 'reload-assets' }
+  | {
+      type: 'review';
+      scope: ReviewScope;
+    }
   | {
       type: 'managed-agent';
       operation: 'list' | 'get' | 'send' | 'stop' | 'apply' | 'import';
@@ -610,16 +616,21 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   {
     name: 'review',
     description: 'Review current git diff (correctness & cleanups)',
-    execute: ({ rawArguments }) => {
-      const prompt = buildReviewPrompt(rawArguments);
+    execute: ({ rawArguments }, context) => {
+      const scope = parseReviewScope(rawArguments);
+      if (scope.help) return { type: 'local-message', content: REVIEW_USAGE };
+      if (scope.deep || scope.fix) {
+        return { type: 'review', scope };
+      }
+      const prompt = buildReviewPrompt(rawArguments, context.workspace);
       return promptEffect('review', 'Review current diff', prompt, [...REVIEW_TOOLS]);
     },
   },
   {
     name: 'security-review',
     description: 'Security audit of current git diff',
-    execute: ({ rawArguments }) => {
-      const prompt = buildSecurityReviewPrompt(rawArguments);
+    execute: ({ rawArguments }, context) => {
+      const prompt = buildSecurityReviewPrompt(rawArguments, context.workspace);
       return promptEffect('security-review', 'Security audit of current diff', prompt, [
         ...SECURITY_REVIEW_TOOLS,
       ]);

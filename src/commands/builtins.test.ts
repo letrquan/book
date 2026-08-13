@@ -291,7 +291,21 @@ describe('built-in command contract', () => {
       }),
     );
     if (effect?.type === 'send-prompt') {
-      expect(effect.prompt).toContain('Focus area: src/commands');
+      expect(effect.prompt).toContain('Restrict review to: src/commands');
     }
+  });
+
+  it('routes deep/fix review invocations to the review effect', () => {
+    const deep = createBuiltinCommandRegistry().execute('review', '--deep', context());
+    expect(deep).toEqual({
+      type: 'review',
+      scope: { base: undefined, target: undefined, deep: true, fix: false, help: false },
+    });
+
+    const fix = createBuiltinCommandRegistry().execute('review', '--fix --base main', context());
+    expect(fix).toEqual({
+      type: 'review',
+      scope: { base: 'main', target: undefined, deep: true, fix: true, help: false },
+    });
   });
 });

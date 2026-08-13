@@ -37,6 +37,11 @@ const KNOWN_FRONTMATTER_FIELDS = new Set([
   'model',
   'lifetime',
   'disabled',
+  // Interoperable Claude/Codex skill metadata. Invocation controls are
+  // advisory to Book's explicit `$name` UI and do not grant permissions.
+  'disable-model-invocation',
+  'user-invocable',
+  'argument-hint',
 ]);
 
 export type SkillSource = 'user' | 'project';
