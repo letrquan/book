@@ -345,6 +345,23 @@ Read            402      0    0.0%     15ms     34ms     0.0%
 
 Use `--json` for a machine-readable aggregate, `--since <days>` to change the window, `--all` for full history, and `--prune` to drop records older than the window from disk. `observability.toolTelemetryRetentionDays` sets the default reporting window and the `--prune` target; disk use is otherwise bounded by log rotation. Records store outcomes and hashes only, never prompts or file contents. This is separate from the ephemeral in-session counters shown by `/usage`.
 
+### Run evidence ledger (experimental)
+
+`harness.mode` defaults to `off`, which is fully inert: no run identity, no timers, no files. Setting
+it to `observe` records an append-only evidence ledger for each root request without changing what
+the model sees or how the run behaves. Records land in
+`~/.book/projects/<workspace-id>/harness/v1/runs/<yyyy-mm>/<root-run-id>.jsonl`, written by a single
+writer as canonical JSON lines chained by SHA-256 record hashes and closed by a signed seal that
+reports durability, dropped-event and storage-error counters, and evidence eligibility.
+
+Persisted events are an allowlist of bounded scalars — turn, model-usage, tool start/finish,
+permission decision, provider retry/stall, assistant-message, and managed-agent handoff facts, with
+OpenTelemetry-mapped names pinned to Semantic Conventions v1.44.0. Prompts, completions, tool
+arguments and output, file contents and paths, commands, URLs, and secrets are never written;
+ambiguous values are omitted and accounted for. Observation is best-effort: a storage failure marks
+the ledger incomplete and is reported to the host, but never fails or alters the user's run.
+`shadow`, `active`, and `learn` are accepted by the schema but rejected before run setup.
+
 ### Managed agents
 
 Adaptive mode keeps targeted work inline and nudges the parent toward the read-only `explorer` profile after three successful root `Glob`/`Grep` queries. The reminder is advisory: the fourth lookup is still allowed. Broad exploration receives a purpose name such as `Trace authentication flow`; the reusable profile (`explorer`, `patcher`, or `validator`) remains separate. `--agents manual` keeps the same lifecycle tools but requires explicit user delegation; `--agents off` removes managed-agent tools and routing guidance.

@@ -66,8 +66,13 @@ See [plans/security-assessment.md](plans/security-assessment.md) for the current
 - [ ] Finish the remaining evaluator, architecture, workspace-trust, permission-ceiling, and
   isolated-home preconditions.
 - [ ] Phase 0: freeze the evaluation contract and deterministic corpus.
-- [ ] Phases 1-3B: add an inert harness boundary, evidence ledger, fixed workflows, explicit
-  capability manifests, and reliable deterministic routing.
+- [x] Phase 1: inert harness boundary with `off` as the only live mode and runtime-equivalent
+  disabled behavior.
+- [x] Phase 2: observe-only append-only run-evidence ledger — sealed per-root hash-chained JSONL
+  streams, allowlist redaction, OTel-mapped telemetry, deferred headless root seals, and explicit
+  managed-continuation child linkage.
+- [ ] Phases 3-3B: fixed workflows, explicit capability manifests, and reliable deterministic
+  routing.
 - [ ] Phases 4-8: selector, externally grounded outcomes, shadow evaluation, scoped canaries, and
   bounded workflow evolution. None of these phases currently controls live runtime behavior.
 - [ ] Phase 9 remains a future research gate for cross-context transfer.

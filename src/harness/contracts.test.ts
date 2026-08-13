@@ -61,10 +61,15 @@ describe('Phase 1 harness contracts', () => {
     expect(first).toEqual({ status: 'disabled', mode: 'off' });
     expect(first).not.toHaveProperty('context');
     expect(first).not.toHaveProperty('runId');
-    expect(coordinator.observe('unused', { type: 'run-started', occurredAt: 0 })).toBe('closed');
+    expect(coordinator.observe('unused', { type: 'run-started', occurredAt: 0 })).toBe('rejected');
     await expect(
       coordinator.finalizeRun('unused', { status: 'completed', outcomes: [] }),
-    ).resolves.toEqual({ flushed: true, droppedEventCount: 0 });
+    ).resolves.toEqual({
+      flushed: false,
+      status: 'disabled',
+      droppedEventCount: 0,
+      incomplete: false,
+    });
   });
 
   it('accepts only bounded, non-secret text for event string fields', () => {
@@ -98,7 +103,7 @@ describe('Phase 1 harness contracts', () => {
     }
   });
 
-  it.each(['observe', 'shadow', 'active', 'learn'] as const)(
+  it.each(['shadow', 'active', 'learn'] as const)(
     'rejects the valid but unavailable %s mode',
     (mode) => {
       expect(() => createHarnessCoordinator(mode)).toThrow(HarnessModeUnavailableError);

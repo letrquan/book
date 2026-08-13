@@ -195,3 +195,13 @@ When changing these, update `README.md` / `CHANGELOG.md` / `MILESTONES.md` as ap
 - Managed-agent behavior in `src/agents/` (README "Managed agents" is the detailed spec)
 - Background shell behavior in `src/jobs/` and `src/job-runner.ts`
 - Skill behavior in `src/skills.ts`, `src/skill-registry.ts`, and `src/tools/skills-tool.ts`
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are tracked in GitHub Issues for `letrquan/book` using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Domain documentation uses the single-context layout: `CONTEXT.md` and `docs/adr/` at the repository root. See `docs/agents/domain.md`.

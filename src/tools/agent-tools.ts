@@ -77,6 +77,7 @@ function manager(ctx: ToolContext) {
     hookEventSink: ctx.onHookEvent,
     runtime: ctx.runtime,
     permissionMode: ctx.currentMode,
+    harnessObserver: ctx.harnessObserver,
   });
 }
 

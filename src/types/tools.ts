@@ -267,6 +267,8 @@ export interface ToolContext {
   parentSessionId?: string;
   /** Root/parent execution attribution for managed agents and evidence. */
   runContext?: AgentRunContext;
+  /** Observe-only runtime sink; absent while the harness is off. */
+  harnessObserver?: import('../harness/contracts.js').HarnessRuntimeObserver;
   /** Host sink for managed-agent lifecycle and evidence events. */
   onAgentEvent?: (event: AgentRuntimeEvent) => void;
   /** Host sink used by lifecycle hooks started from managed-agent tools. */

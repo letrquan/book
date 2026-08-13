@@ -373,7 +373,7 @@ describe('harness settings', () => {
     expect(resolveSettings(dir).harness).toEqual({ mode: 'off' });
   });
 
-  it.each(['observe', 'shadow', 'active', 'learn'] as const)(
+  it.each(['shadow', 'active', 'learn'] as const)(
     'rejects the valid but unavailable %s mode after settings resolution',
     (mode) => {
       const projectSettingsDir = join(dir, '.book');
