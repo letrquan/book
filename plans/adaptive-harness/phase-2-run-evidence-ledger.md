@@ -386,6 +386,21 @@ tests never reach; `harness.mode` is `off` in those runs, so no harness code exe
 matches the known host-sensitive TUI startup timeouts already recorded against Phase 0. Treat these
 tests as non-authoritative on this host; they are not Phase 2 evidence in either direction.
 
+Re-verified after merging `origin/main` (6 commits: official-SDK MCP rebuild, TUI render
+performance, CRLF fixture fix, and a PTY fix that disables the startup fire animation in
+integration tests — independently confirming the startup-timeout diagnosis above):
+
+```text
+npm install              required — the merge adds @modelcontextprotocol/sdk
+npm run check            format, lint (0 warnings), typecheck, architecture: PASS
+                         unit: 202/203 files, 1,972 passed, 5 skipped
+                         contract: 5 files, 33 passed
+```
+
+The single unit failure is `scripts/edit-eval-worker.test.ts`, a 5 s process-spawn timeout that
+passes in isolation on re-run and lives in `scripts/`, which this change set does not touch
+(`git diff origin/main -- scripts/` is empty). Same load-sensitive class as the TUI timeouts.
+
 Focused suites (2026-08-13): `src/harness/run-store.test.ts` (16),
 `src/harness/contracts.test.ts` (8), `src/harness/redaction.test.ts` (5),
 `src/harness/coordinator.test.ts` (4), `src/harness/observer.test.ts` (4),
