@@ -27,6 +27,7 @@ import {
   TranscriptLayoutContext,
   TranscriptViewportContext,
   type TranscriptHistoryLoader,
+  type TranscriptViewportSnapshot,
   type TranscriptViewportStore,
 } from '../transcript-layout.js';
 import { useTheme } from '../theme.js';
@@ -149,6 +150,10 @@ export function TranscriptView({
     }),
     [],
   );
+  const viewportSnapshotRef = useRef<{
+    revision: number;
+    snapshot: TranscriptViewportSnapshot;
+  } | null>(null);
   const viewportStore = useMemo<TranscriptViewportStore>(
     () => ({
       subscribe: (listener) => {
@@ -156,11 +161,20 @@ export function TranscriptView({
         return () => viewportListenersRef.current.delete(listener);
       },
       getRevision: () => viewportRevisionRef.current,
-      getSnapshot: () => ({
-        scrollTop: stateRef.current.scrollTop,
-        viewportRows: metricsRef.current.viewportRows,
-        followBottom: stateRef.current.followBottom,
-      }),
+      getSnapshot: () => {
+        // Keep the snapshot referentially stable between revisions so consumers
+        // can use it as a memo dependency without recomputing on every render.
+        const revision = viewportRevisionRef.current;
+        const cached = viewportSnapshotRef.current;
+        if (cached?.revision === revision) return cached.snapshot;
+        const snapshot = {
+          scrollTop: stateRef.current.scrollTop,
+          viewportRows: metricsRef.current.viewportRows,
+          followBottom: stateRef.current.followBottom,
+        };
+        viewportSnapshotRef.current = { revision, snapshot };
+        return snapshot;
+      },
     }),
     [],
   );

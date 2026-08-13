@@ -883,6 +883,11 @@ export function App({
     selectedShellId,
   ]);
 
+  const readSelectedShellTail = useCallback(
+    () => (selectedShellId ? (shellManager.readTail(selectedShellId, 16_000) ?? '') : ''),
+    [selectedShellId, shellManager],
+  );
+
   // Tab cycles focus flatly through [main, ...spawned agents], opening each
   // child's transcript directly. Wrapping past the last agent returns to main.
   // Returns false when there is nothing to cycle so InputBar can fall back to
@@ -1177,32 +1182,62 @@ export function App({
     ? wordWrap(selectedManagedAgentLiveText.slice(-1000), Math.max(1, termWidth - 2)).split('\n')
         .length
     : 0;
-  const transcriptLayoutRevision = JSON.stringify([
-    error ?? '',
-    streamingMessageId ?? '',
-    transcriptMode,
-    expandedToolId ?? '',
-    [...toolExpansionOverrides.entries()].sort(([left], [right]) => left.localeCompare(right)),
-    showAllDetailedOutput,
-    [...showAllToolOutputIds].sort(),
-    liveConfig.settings.ui.showThinking,
-    pendingPermission?.toolCall.id ?? '',
-    managedAgents.surface,
-    managedAgents.selectedAgentId ?? '',
-    selectedManagedAgentRecord?.status ?? '',
-    selectedManagedAgentRecord?.referencedEvidenceIds.length ?? 0,
-    selectedManagedAgentLiveRows,
-    showAgentPlan
-      ? agentTodos.map((todo) => [todo.status, todo.content, todo.activeForm ?? ''])
-      : [],
-    showTasks ? tasks.map((task) => [task.id, task.status, task.subject]) : [],
-    showHelp,
-    showStatus,
-    showPermissions,
-    showSkills,
-    showShortcuts,
-    pendingPlanApproval?.plan ?? '',
-  ]);
+  const transcriptLayoutRevision = useMemo(
+    () =>
+      JSON.stringify([
+        error ?? '',
+        streamingMessageId ?? '',
+        transcriptMode,
+        expandedToolId ?? '',
+        [...toolExpansionOverrides.entries()].sort(([left], [right]) =>
+          left < right ? -1 : left > right ? 1 : 0,
+        ),
+        showAllDetailedOutput,
+        [...showAllToolOutputIds].sort(),
+        liveConfig.settings.ui.showThinking,
+        pendingPermission?.toolCall.id ?? '',
+        managedAgents.surface,
+        managedAgents.selectedAgentId ?? '',
+        selectedManagedAgentRecord?.status ?? '',
+        selectedManagedAgentRecord?.referencedEvidenceIds.length ?? 0,
+        selectedManagedAgentLiveRows,
+        showAgentPlan
+          ? agentTodos.map((todo) => [todo.status, todo.content, todo.activeForm ?? ''])
+          : [],
+        showTasks ? tasks.map((task) => [task.id, task.status, task.subject]) : [],
+        showHelp,
+        showStatus,
+        showPermissions,
+        showSkills,
+        showShortcuts,
+        pendingPlanApproval?.plan ?? '',
+      ]),
+    [
+      error,
+      streamingMessageId,
+      transcriptMode,
+      expandedToolId,
+      toolExpansionOverrides,
+      showAllDetailedOutput,
+      showAllToolOutputIds,
+      liveConfig.settings.ui.showThinking,
+      pendingPermission,
+      managedAgents.surface,
+      managedAgents.selectedAgentId,
+      selectedManagedAgentRecord,
+      selectedManagedAgentLiveRows,
+      showAgentPlan,
+      agentTodos,
+      showTasks,
+      tasks,
+      showHelp,
+      showStatus,
+      showPermissions,
+      showSkills,
+      showShortcuts,
+      pendingPlanApproval,
+    ],
+  );
 
   useEffect(() => {
     setTranscriptMode('compact');
@@ -1840,7 +1875,7 @@ export function App({
                 backgroundShells.shells.find((shell) => shell.id === selectedShellId) ? (
                   <BackgroundShellDetail
                     shell={backgroundShells.shells.find((shell) => shell.id === selectedShellId)!}
-                    output={shellManager.readTail(selectedShellId, 16_000) ?? ''}
+                    readTail={readSelectedShellTail}
                     width={termWidth}
                   />
                 ) : (

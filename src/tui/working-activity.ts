@@ -389,9 +389,17 @@ export function deriveWorkingActivity({
     return { label: 'Waiting for permission', tone: 'waiting', blocked: true };
   }
 
-  const activeMessage = streamingMessageId
-    ? messages.find((message) => message.id === streamingMessageId)
-    : undefined;
+  // The streaming message is at (or near) the end; scan backwards so this
+  // per-render lookup stays O(1) on long transcripts.
+  let activeMessage: Message | undefined;
+  if (streamingMessageId) {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      if (messages[index].id === streamingMessageId) {
+        activeMessage = messages[index];
+        break;
+      }
+    }
+  }
   const toolText = activeToolText(activeMessage);
   if (toolText) return { label: toolText, tone: 'normal' };
   if (
