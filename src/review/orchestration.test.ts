@@ -184,6 +184,51 @@ describe('runSingleReview', () => {
     expect(result.report.verdict).toBe('clean');
     expect(result.text).toContain('no changes');
   });
+
+  it('never reports a clean review when findings were silently dropped', async () => {
+    // A valid envelope whose only finding omits suggestedFix: the per-finding
+    // contract rejects it, so the pipeline sees zero findings. Reporting that
+    // as "clean" would hide a real finding the reviewer actually produced.
+    const droppedOnly = JSON.stringify({
+      verdict: 'clean',
+      findings: [
+        {
+          severity: 'critical',
+          category: 'correctness',
+          file: 'src/a.ts',
+          line: 1,
+          summary: 'real bug the parser could not read',
+          evidence: 'x',
+          failure: 'fails',
+          confidence: 90,
+        },
+      ],
+    });
+    const result = await runSingleReview(
+      singleRunner(droppedOnly),
+      { deep: false, fix: false, help: false },
+      workspace,
+    );
+    expect(result.report.findings).toHaveLength(0);
+    expect(result.report.verdict).toBe('inconclusive');
+    const coverage = result.report.coverage?.reviewers[0];
+    expect(coverage?.status).toBe('partial');
+    expect(coverage?.droppedFindings).toBe(1);
+    expect(result.text).toContain('Coverage warning');
+    expect(result.text).toContain('1 finding(s) dropped');
+    // The reviewer's actual text must survive so the dropped finding is recoverable.
+    expect(result.text).toContain('real bug the parser could not read');
+  });
+
+  it('stays completed when every finding satisfies the contract', async () => {
+    const result = await runSingleReview(
+      singleRunner(findingJson()),
+      { deep: false, fix: false, help: false },
+      workspace,
+    );
+    expect(result.report.coverage?.reviewers[0]?.status).toBe('completed');
+    expect(result.report.coverage?.reviewers[0]?.droppedFindings).toBeUndefined();
+  });
 });
 
 describe('runDeepReview', () => {

@@ -82,7 +82,17 @@ function coerceFinding(raw: unknown, index: number): ReviewFinding | undefined {
   };
 }
 
-export function parseReviewReport(text: string): ReviewReport {
+export interface ParsedReviewReport {
+  report: ReviewReport;
+  /**
+   * Entries in the model's `findings` array that failed the per-finding
+   * contract and were discarded. Callers must surface this: a report whose
+   * findings were all dropped is otherwise indistinguishable from a clean one.
+   */
+  droppedFindings: number;
+}
+
+export function parseReviewReportDetailed(text: string): ParsedReviewReport {
   const json = parseJson(text);
   if (json) {
     const rawFindings = Array.isArray(json.findings) ? json.findings : [];
@@ -100,11 +110,15 @@ export function parseReviewReport(text: string): ReviewReport {
           ? 'recommend'
           : 'inconclusive';
 
-    return { verdict, findings };
+    return { report: { verdict, findings }, droppedFindings: rawFindings.length - findings.length };
   }
 
   // No structured block: preserve the prose without inventing findings.
-  return { verdict: 'inconclusive', findings: [] };
+  return { report: { verdict: 'inconclusive', findings: [] }, droppedFindings: 0 };
+}
+
+export function parseReviewReport(text: string): ReviewReport {
+  return parseReviewReportDetailed(text).report;
 }
 
 export function formatFinding(finding: ReviewFinding): string {

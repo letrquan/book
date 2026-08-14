@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { parseReviewReport, formatFinding, renderReviewReport } from './parse-findings.js';
+import {
+  parseReviewReport,
+  parseReviewReportDetailed,
+  formatFinding,
+  renderReviewReport,
+} from './parse-findings.js';
 
 const validJson = JSON.stringify({
   verdict: 'blocking',
@@ -79,6 +84,42 @@ describe('parseReviewReport', () => {
       delete finding[key];
       expect(parseReviewReport(JSON.stringify({ findings: [finding] })).findings).toEqual([]);
     }
+  });
+});
+
+describe('parseReviewReportDetailed', () => {
+  const good = {
+    file: 'x.ts',
+    summary: 's',
+    evidence: 'x',
+    failure: 'fails',
+    suggestedFix: 'fix',
+    confidence: 90,
+  };
+
+  it('reports zero dropped findings for a fully valid report', () => {
+    const parsed = parseReviewReportDetailed(
+      JSON.stringify({ verdict: 'recommend', findings: [good] }),
+    );
+    expect(parsed.droppedFindings).toBe(0);
+    expect(parsed.report.findings).toHaveLength(1);
+  });
+
+  it('counts findings discarded for failing the per-finding contract', () => {
+    const parsed = parseReviewReportDetailed(
+      JSON.stringify({
+        verdict: 'recommend',
+        findings: [good, { ...good, suggestedFix: undefined }, { severity: 'nit' }],
+      }),
+    );
+    expect(parsed.report.findings).toHaveLength(1);
+    expect(parsed.droppedFindings).toBe(2);
+  });
+
+  it('does not count anything as dropped when there is no structured block', () => {
+    const parsed = parseReviewReportDetailed('just prose, no json here');
+    expect(parsed.droppedFindings).toBe(0);
+    expect(parsed.report.verdict).toBe('inconclusive');
   });
 });
 
