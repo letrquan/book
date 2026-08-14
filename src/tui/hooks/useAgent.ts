@@ -196,6 +196,9 @@ interface SendMessageOptions {
   kind?: Message['kind'];
   agentNotifications?: Message['agentNotifications'];
   attachments?: Message['attachments'];
+  /** Managed-continuation linkage back to the originating root and parent run. */
+  rootRunId?: string;
+  parentRunId?: string;
 }
 
 /** Short transcript line shown for a fresh-context handoff (the full plan is the context). */
@@ -741,6 +744,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         source: 'tui',
         resumedFromRunId:
           messageOptions?.kind === 'agent-notification' ? undefined : resumedFromRunIdRef.current,
+        rootRunId:
+          messageOptions?.kind === 'agent-notification' ? messageOptions?.rootRunId : undefined,
+        parentRunId:
+          messageOptions?.kind === 'agent-notification' ? messageOptions?.parentRunId : undefined,
         sessionName: sessionNameRef.current,
         snapshotStore: session.snapshotStore,
         timelineStore,
@@ -1042,6 +1049,12 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       );
       if (fresh.length === 0) return true;
       const built = fresh.map(buildAgentCompletionMessage);
+      // Parent linkage is only truthful when every batched completion shares one root.
+      const sharedRootRunId =
+        fresh[0]?.rootRunId &&
+        fresh.every((notification) => notification.rootRunId === fresh[0]?.rootRunId)
+          ? fresh[0]?.rootRunId
+          : undefined;
       const result = await sendMessage(
         built.map((item) => item.displayMessage).join('\n'),
         undefined,
@@ -1049,6 +1062,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           contextMessage: built.map((item) => item.contextMessage).join('\n'),
           kind: 'agent-notification',
           agentNotifications: built.map((item) => item.display),
+          rootRunId: sharedRootRunId,
+          parentRunId: sharedRootRunId ? fresh[0]?.runId : undefined,
         },
       );
       return didSendMessageComplete(result);

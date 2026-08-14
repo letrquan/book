@@ -16,9 +16,13 @@ import type { Message } from '../types/messages.js';
 import { createSessionFixture } from '../test/session-fixture.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { SessionRuntime } from './runtime.js';
-import { freezeHarnessRunContext } from '../harness/coordinator.js';
-import type { HarnessRunContext } from '../harness/contracts.js';
+import { createHarnessCoordinator, freezeHarnessRunContext } from '../harness/coordinator.js';
+import type { HarnessObserverFlushResult, HarnessRunContext } from '../harness/contracts.js';
+import { RunEvidenceStore } from '../harness/run-store.js';
 import { ZeroMemRuntime } from '../agent/zero-mem-runtime.js';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 function compactedResult(): Extract<CompactResult, { status: 'compacted' }> {
   const replacementHistory: Message[] = [
@@ -1682,5 +1686,310 @@ describe('AgentSession', () => {
     expect(operation.isCurrent()).toBe(true);
     expect(session.finishSend(operation)).toBe(true);
     expect(session.finishSend(operation)).toBe(false);
+  });
+});
+
+describe('AgentSession harness observation', () => {
+  function observeFixture() {
+    const root = mkdtempSync(join(tmpdir(), 'book-session-harness-'));
+    const workspace = join(root, 'workspace');
+    const bookHome = join(root, 'book');
+    const config = defaultConfig({ workspace });
+    config.settings.harness.mode = 'observe';
+    const coordinator = createHarnessCoordinator('observe', { workspace, bookHome });
+    const store = new RunEvidenceStore({ workspace, bookHome });
+    const cleanup = () => rmSync(root, { recursive: true, force: true });
+    return { root, workspace, bookHome, config, coordinator, store, cleanup };
+  }
+
+  it('rejects unavailable modes before invoking the loop', async () => {
+    const config = defaultConfig();
+    config.settings.harness.mode = 'active';
+    const runLoop = vi.fn(async (_config, _registry, _prompt, history) => history);
+    const session = new AgentSession({ runLoop });
+    await expect(
+      session.run({
+        config,
+        registry: {} as ToolRegistry,
+        prompt: 'must not start',
+        history: [],
+        sessionId: 'session-unavailable',
+        callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+      }),
+    ).rejects.toThrow(/unavailable/);
+    expect(runLoop).not.toHaveBeenCalled();
+  });
+
+  it('seals a complete root evidence stream without changing the run result', async () => {
+    const fixture = observeFixture();
+    try {
+      const finalized: HarnessObserverFlushResult[] = [];
+      const session = new AgentSession({
+        harnessCoordinator: fixture.coordinator,
+        runLoop: async (_config, _registry, _prompt, history, callbacks, _mode, options) => {
+          callbacks.onTurnStart(1);
+          options?.harnessObserver?.observer.enqueue({
+            type: 'tool_started',
+            occurredAt: 1,
+            runId: options.harnessObserver.runId,
+            attributes: { toolName: 'Read' as never, toolCallId: 'tool-1' as never },
+          });
+          callbacks.onToolCall({ id: 'tool-1', name: 'Read', arguments: { filePath: 'a.txt' } });
+          callbacks.onToolResult({
+            version: 2,
+            toolCallId: 'tool-1',
+            status: 'success',
+            content: 'private tool output',
+          });
+          callbacks.onUsage?.(
+            { promptTokens: 5, completionTokens: 2, totalTokens: 7 },
+            { provider: 'test', requestedModel: 'm' },
+          );
+          return history;
+        },
+      });
+      const messages = await session.run({
+        config: fixture.config,
+        registry: {} as ToolRegistry,
+        prompt: 'secret-prompt-text do not persist',
+        history: [],
+        sessionId: 'session-observe-1',
+        options: { userMessageId: 'root-observe-run-1' },
+        callbacks: {
+          onEvent: () => {},
+          onTurnStart: () => {},
+          onHarnessFinalized: (result) => finalized.push(result),
+        },
+      });
+      expect(messages).toEqual([]);
+      expect(finalized).toHaveLength(1);
+      expect(finalized[0]).toMatchObject({ flushed: true, incomplete: false });
+
+      const run = await fixture.store.readRun('root-observe-run-1');
+      expect(run.status).toBe('complete');
+      expect(run.seal?.terminalStatus).toBe('completed');
+      const types = run.records.map((record) => record.eventType);
+      expect(types[0]).toBe('run_started');
+      expect(types).toContain('turn_started');
+      expect(types).toContain('tool_started');
+      expect(types).toContain('tool_finished');
+      expect(types).toContain('model_usage');
+      expect(types[types.length - 1]).toBe('run_completed');
+      // Compatibility identity must be visible in the run header for replay eligibility.
+      const header = run.records[0]!.data as {
+        metadata: Record<string, unknown>;
+      };
+      expect(typeof header.metadata.runtimeFingerprint).toBe('string');
+      expect(typeof header.metadata.toolSurfaceFingerprint).toBe('string');
+      expect(typeof header.metadata.settingsFingerprint).toBe('string');
+      expect(header.metadata.model).toBe('m');
+      expect(header.metadata.contextCapabilitiesVersion).toBe('context-v1');
+      const raw = JSON.stringify(run.records);
+      expect(raw).not.toContain('secret-prompt-text');
+      expect(raw).not.toContain('private tool output');
+      expect(raw).not.toContain('a.txt');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('keeps provider-visible inputs identical between off and observe', async () => {
+    const fixture = observeFixture();
+    try {
+      const invocations: Array<{
+        prompt: string;
+        history: Message[];
+        model: string;
+        options: Record<string, unknown>;
+      }> = [];
+      const runLoop: AgentLoopRunner = async (
+        config,
+        _registry,
+        prompt,
+        history,
+        _callbacks,
+        _mode,
+        options,
+      ) => {
+        const rest = { ...options } as Record<string, unknown>;
+        const harnessContext = rest.harnessContext;
+        delete rest.runtime;
+        delete rest.runContext;
+        delete rest.harnessContext;
+        delete rest.harnessObserver;
+        invocations.push({
+          prompt,
+          history,
+          model: config.model,
+          options: { ...rest, harnessContext },
+        });
+        return history;
+      };
+      const offConfig = defaultConfig({ workspace: fixture.workspace });
+      offConfig.settings.harness.mode = 'off';
+      const offSession = new AgentSession({ runLoop });
+      const offFinalized: HarnessObserverFlushResult[] = [];
+      await offSession.run({
+        config: offConfig,
+        registry: {} as ToolRegistry,
+        prompt: 'compare-me',
+        history: [],
+        sessionId: 'session-equiv',
+        options: { userMessageId: 'root-equiv-1' },
+        callbacks: {
+          onEvent: () => {},
+          onTurnStart: () => {},
+          onHarnessFinalized: (result) => offFinalized.push(result),
+        },
+      });
+      const observeSession = new AgentSession({
+        runLoop,
+        harnessCoordinator: fixture.coordinator,
+      });
+      await observeSession.run({
+        config: fixture.config,
+        registry: {} as ToolRegistry,
+        prompt: 'compare-me',
+        history: [],
+        sessionId: 'session-equiv',
+        options: { userMessageId: 'root-equiv-2' },
+        callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+      });
+      expect(invocations).toHaveLength(2);
+      expect(offFinalized).toHaveLength(0);
+      const [off, observe] = invocations;
+      expect(off!.prompt).toBe(observe!.prompt);
+      expect(off!.history).toEqual(observe!.history);
+      expect(off!.model).toBe(observe!.model);
+      const { harnessContext: offHarness, ...offRest } = off!.options;
+      const { harnessContext: observeHarness, ...observeRest } = observe!.options;
+      expect(offHarness).toBeUndefined();
+      expect(observeHarness).toMatchObject({ mode: 'observe', runId: 'root-equiv-2' });
+      expect({ ...offRest, userMessageId: null }).toEqual({ ...observeRest, userMessageId: null });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('seals failed and cancelled runs with their terminal statuses', async () => {
+    const fixture = observeFixture();
+    try {
+      const failingSession = new AgentSession({
+        harnessCoordinator: fixture.coordinator,
+        runLoop: async () => {
+          throw new Error('provider exploded');
+        },
+      });
+      await expect(
+        failingSession.run({
+          config: fixture.config,
+          registry: {} as ToolRegistry,
+          prompt: 'boom',
+          history: [],
+          sessionId: 'session-fail',
+          options: { userMessageId: 'root-failed-run-1' },
+          callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+        }),
+      ).rejects.toThrow('provider exploded');
+      const failedRun = await fixture.store.readRun('root-failed-run-1');
+      expect(failedRun.status).toBe('complete');
+      expect(failedRun.seal?.terminalStatus).toBe('failed');
+
+      const controller = new AbortController();
+      const cancelledSession = new AgentSession({
+        harnessCoordinator: fixture.coordinator,
+        runLoop: async () => {
+          controller.abort();
+          throw new Error('aborted mid-flight');
+        },
+      });
+      await expect(
+        cancelledSession.run({
+          config: fixture.config,
+          registry: {} as ToolRegistry,
+          prompt: 'stop',
+          history: [],
+          sessionId: 'session-cancel',
+          signal: controller.signal,
+          options: { userMessageId: 'root-cancelled-run-1' },
+          callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+        }),
+      ).rejects.toThrow('aborted mid-flight');
+      const cancelledRun = await fixture.store.readRun('root-cancelled-run-1');
+      expect(cancelledRun.status).toBe('complete');
+      expect(cancelledRun.seal?.terminalStatus).toBe('cancelled');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('contains a throwing onHarnessFinalized host callback without altering the run', async () => {
+    const fixture = observeFixture();
+    try {
+      const session = new AgentSession({
+        harnessCoordinator: fixture.coordinator,
+        runLoop: async (_config, _registry, _prompt, history) => history,
+      });
+      const messages = await session.run({
+        config: fixture.config,
+        registry: {} as ToolRegistry,
+        prompt: 'notify carefully',
+        history: [],
+        sessionId: 'session-throwing-host',
+        options: { userMessageId: 'root-throwing-host-1' },
+        callbacks: {
+          onEvent: () => {},
+          onTurnStart: () => {},
+          onHarnessFinalized: () => {
+            throw new Error('host notification bug');
+          },
+        },
+      });
+      expect(messages).toEqual([]);
+      const run = await fixture.store.readRun('root-throwing-host-1');
+      expect(run.seal?.terminalStatus).toBe('completed');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('degrades observation visibly when preparation fails, without touching the run', async () => {
+    const fixture = observeFixture();
+    try {
+      const finalized: HarnessObserverFlushResult[] = [];
+      const session = new AgentSession({
+        harnessCoordinator: {
+          prepareRun: async () => {
+            throw new Error('evidence store unavailable');
+          },
+          observe: () => 'rejected' as const,
+          finalizeRun: async () => ({ flushed: false, droppedEventCount: 0 }),
+        },
+        runLoop: async (_config, _registry, _prompt, history) => history,
+      });
+      const messages = await session.run({
+        config: fixture.config,
+        registry: {} as ToolRegistry,
+        prompt: 'still works',
+        history: [],
+        sessionId: 'session-degraded',
+        options: { userMessageId: 'root-degraded-run-1' },
+        callbacks: {
+          onEvent: () => {},
+          onTurnStart: () => {},
+          onHarnessFinalized: (result) => finalized.push(result),
+        },
+      });
+      expect(messages).toEqual([]);
+      expect(finalized).toHaveLength(1);
+      expect(finalized[0]).toMatchObject({
+        flushed: false,
+        incomplete: true,
+        failureReason: 'evidence store unavailable',
+      });
+      expect(existsSync(join(fixture.bookHome, 'projects'))).toBe(false);
+    } finally {
+      fixture.cleanup();
+    }
   });
 });

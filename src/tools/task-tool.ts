@@ -34,6 +34,7 @@ async function task(args: Record<string, unknown>, ctx: ToolContext): Promise<To
       hookEventSink: ctx.onHookEvent,
       runtime: ctx.runtime,
       permissionMode: ctx.currentMode,
+      harnessObserver: ctx.harnessObserver,
     });
     const spawned = await manager.spawn({
       agent: agentName,

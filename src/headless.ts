@@ -22,12 +22,17 @@ import {
   takeAgentCompletionBatch,
 } from './agents/completion-notification.js';
 import { resolvePermissionMode } from './permission-mode.js';
+import { assertHarnessModeAvailable, createHarnessCoordinator } from './harness/coordinator.js';
 
 export async function runHeadless(
   config: AgentConfig,
   registry: ToolRegistry,
   opts: HeadlessOptions,
 ): Promise<HeadlessResult> {
+  // Direct SDK/embedding callers may bypass settings startup. Preserve the
+  // fail-before-run-setup boundary for modes this build does not implement.
+  const harnessMode = config.settings.harness.mode;
+  assertHarnessModeAvailable(harnessMode);
   const mode = resolvePermissionMode(config.settings, opts.mode);
   const stdout = opts.stdout ?? process.stdout;
   const emit = (obj: unknown) => {
@@ -38,6 +43,12 @@ export async function runHeadless(
   };
   const agentSession = new AgentSession();
   const runtime = agentSession.getRuntime();
+  const harnessCoordinator =
+    harnessMode === 'off'
+      ? undefined
+      : createHarnessCoordinator(harnessMode, { workspace: config.workspace });
+  /** Latest terminal outcome per root; the deferred seal uses it after linked turns finish. */
+  const harnessRootOutcomes = new Map<string, AgentTerminalOutcome>();
 
   try {
     if (opts.outputFormat === 'stream-json') {
@@ -288,6 +299,8 @@ export async function runHeadless(
           callbacks: createRunCallbacks(runContext, (outcome) => {
             runOutcome = outcome;
           }),
+          harnessCoordinator,
+          harnessFinalize: false,
           runContext,
           maxBudgetUsd: opts.maxBudgetUsd,
           options: {
@@ -307,11 +320,13 @@ export async function runHeadless(
           },
         });
       } catch (error) {
+        const failedOutcome =
+          runOutcome ??
+          createTerminalOutcome('interrupted', 'missing_terminal', { partialOutput: false });
+        harnessRootOutcomes.set(runContext.rootRunId, failedOutcome);
         recordRunResult({
           context: runContext,
-          outcome:
-            runOutcome ??
-            createTerminalOutcome('interrupted', 'missing_terminal', { partialOutput: false }),
+          outcome: failedOutcome,
           usage: runtime.runAccounting.snapshotRun(runContext.runId)?.directUsage ?? lastUsage,
           accounting: runtime.runAccounting.snapshotRun(runContext.runId),
           ambient: runtime.snapshotRunAmbient(runContext.runId),
@@ -324,13 +339,15 @@ export async function runHeadless(
       );
       contextHistory.length = 0;
       contextHistory.push(...updated);
+      const turnOutcome =
+        runOutcome ??
+        createTerminalOutcome('interrupted', 'missing_terminal', {
+          partialOutput: updated.some((message) => message.role === 'assistant'),
+        });
+      harnessRootOutcomes.set(runContext.rootRunId, turnOutcome);
       recordRunResult({
         context: runContext,
-        outcome:
-          runOutcome ??
-          createTerminalOutcome('interrupted', 'missing_terminal', {
-            partialOutput: updated.some((message) => message.role === 'assistant'),
-          }),
+        outcome: turnOutcome,
         usage: runtime.runAccounting.snapshotRun(runContext.runId)?.directUsage ?? lastUsage,
         accounting: runtime.runAccounting.snapshotRun(runContext.runId),
         ambient: runtime.snapshotRunAmbient(runContext.runId),
@@ -611,6 +628,20 @@ export async function runHeadless(
 
     return result;
   } finally {
+    // Deferred root seal: linked continuation turns share each root stream, so
+    // the terminal record and seal land only after every linked turn finished.
+    if (harnessCoordinator) {
+      for (const [rootRunId, outcome] of harnessRootOutcomes) {
+        try {
+          await harnessCoordinator.finalizeRun(rootRunId, {
+            status: outcome.status === 'timed_out' ? 'timed-out' : outcome.status,
+            reasonCode: outcome.reason,
+          });
+        } catch {
+          // Evidence sealing is best-effort; the user-facing result is already decided.
+        }
+      }
+    }
     agentSession.dispose('headless_complete');
   }
 }

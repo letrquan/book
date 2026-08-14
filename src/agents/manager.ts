@@ -73,6 +73,7 @@ interface ManagerOptions {
   permissionMode?: string;
   persistPermissionRule?: (rule: string) => void;
   createStore?: (repoHash: string, root: string | undefined, enabled: boolean) => AgentStore;
+  harnessObserver?: import('../harness/contracts.js').HarnessRuntimeObserver;
 }
 
 interface SubscribeOptions {
@@ -188,6 +189,7 @@ export class AgentManager {
   private readonly textBuffers = new Map<string, string>();
   private readonly textTimers = new Map<string, NodeJS.Timeout>();
   private hookEventSink?: (event: string, payload: Record<string, unknown>) => void;
+  private harnessObserver?: import('../harness/contracts.js').HarnessRuntimeObserver;
   private exitHandler?: () => void;
   private disposed = false;
   private persistenceState: 'healthy' | 'degraded_busy' | 'degraded_unavailable' = 'healthy';
@@ -207,6 +209,7 @@ export class AgentManager {
     this.permissionMode = resolvePermissionMode(config.settings, options.permissionMode);
     this.legacyEventSink = options.eventSink;
     this.hookEventSink = options.hookEventSink;
+    this.harnessObserver = options.harnessObserver;
   }
 
   setEventSink(
@@ -215,6 +218,10 @@ export class AgentManager {
   ): void {
     if (sink) this.legacyEventSink = sink;
     if (hookSink) this.hookEventSink = hookSink;
+  }
+
+  setHarnessObserver(observer?: import('../harness/contracts.js').HarnessRuntimeObserver): void {
+    this.harnessObserver = observer;
   }
 
   updateConfig(config: AgentConfig): void {
@@ -1599,6 +1606,9 @@ export class AgentManager {
           agentManager: this,
           runContext,
           runtime,
+          harnessObserver: this.harnessObserver
+            ? { observer: this.harnessObserver.observer, runId: runContext.runId }
+            : undefined,
         },
       );
       finishRunningActivities(false);
@@ -1782,6 +1792,7 @@ export function getOrCreateAgentManager(
     options.runtime.agentManager.updateConfig(config);
     options.runtime.agentManager.setPermissionMode(options.permissionMode);
     options.runtime.agentManager.setEventSink(options.eventSink, options.hookEventSink);
+    options.runtime.agentManager.setHarnessObserver(options.harnessObserver);
     return options.runtime.agentManager;
   }
   let manager = managersByConfig.get(config);
@@ -1792,6 +1803,7 @@ export function getOrCreateAgentManager(
   manager.setEventSink(options.eventSink, options.hookEventSink);
   manager.updateConfig(config);
   manager.setPermissionMode(options.permissionMode);
+  manager.setHarnessObserver(options.harnessObserver);
   return manager;
 }
 

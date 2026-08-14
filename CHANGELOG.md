@@ -42,6 +42,18 @@ All notable changes to this project are documented in this file.
   fingerprinted one-time approval, while `/mcp`, `book mcp list|get|add|remove`, `book doctor`, and
   server-scoped permission rules (`mcp__server`) expose and control the resulting surface without
   printing header or environment secrets.
+- `harness.mode: observe` now records an append-only run-evidence ledger without changing run
+  behavior. Every root user request gets one canonical JSONL stream under
+  `BOOK_HOME/projects/<workspace-id>/harness/v1/runs/`, written by a single writer with canonical
+  JSON records, a SHA-256 previous-record hash chain, and a signed terminal seal that reports
+  durability, drop/error counters, and fail-closed evidence eligibility. Persisted events pass an
+  allowlist redaction policy (no prompts, tool arguments or output, file paths, commands, URLs, or
+  secrets); turn, tool, usage, retry, stall, permission, and managed-agent handoff facts are
+  captured as bounded scalars with OpenTelemetry-mapped names pinned to Semantic Conventions
+  v1.44.0. Headless multi-turn runs defer each root seal until linked continuation turns finish;
+  managed continuations join the originating root stream as explicit child runs. Retention cleanup
+  honors evidence pins, truncated or tampered streams read as inspectable-but-incomplete, and
+  `off` remains the inert default with no filesystem effect.
 - New empty startup sessions now open with an optional full-screen magical fire sequence that
   burns into the Book welcome. It is deterministic, skippable with Esc or typing, automatically
   bypassed for reduced-motion and screen-reader modes, and configurable through `/config` or

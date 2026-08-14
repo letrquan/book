@@ -78,6 +78,11 @@ reference for roadmap and design documents.
   resolved-model identities, while offline skill observation marks provider eligibility as not
   applicable. Tier C project-controlled execution, workspace trust, permission ceilings, and
   container-grade isolation remain blocked; workflow selection and evolution phases remain inactive.
+  `harness.mode` accepts `off` (inert default, no filesystem effect) and `observe`, which records an
+  append-only per-root evidence ledger — hash-chained canonical JSONL with a signed seal, allowlist
+  redaction, drop/error counters, fail-closed eligibility, and OTel-mapped event names — without
+  changing user- or provider-visible run behavior. `shadow`, `active`, and `learn` still fail
+  before run setup.
 
 ## Verification
 
