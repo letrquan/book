@@ -20,6 +20,11 @@ All notable changes to this project are documented in this file.
   wording, which meant cross-reviewer duplicates — the case `--deep` produces most — survived into
   the report. The wording-sensitive key remains in use for the evaluation harness, where matching a
   specific finding is the point.
+- A user or project agent definition named `reviewer` is no longer discarded without a word. The
+  built-in `reviewer` remains a trust boundary — a same-named definition still cannot replace its
+  role, tools, isolation, or body — but the suppression is now recorded and reported by
+  `book doctor`, naming the layer the ignored definition came from and pointing at
+  `agents.profiles.reviewer` for the model/effort tuning that does apply.
 - The CLI now defaults `NODE_ENV` to `production` before React loads, so the TUI renders with
   production React instead of the 2-3x slower development build (an explicitly set `NODE_ENV`
   still wins). `npm run bench:ui` measures production mode to match. Combined with new render-path

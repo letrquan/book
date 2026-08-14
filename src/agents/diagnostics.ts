@@ -9,6 +9,7 @@ export interface AgentDiagnostic {
     | 'literal-inherit'
     | 'missing-profile'
     | 'readonly-mutation'
+    | 'reserved-profile'
     | 'unknown-tool';
   message: string;
 }
@@ -79,6 +80,12 @@ export function collectAgentDiagnostics(
   }
 
   for (const profile of profiles) {
+    if (profile.suppressedOverride) {
+      diagnostics.push({
+        code: 'reserved-profile',
+        message: `${profile.name} is a reserved built-in agent, so the ${profile.suppressedOverride} definition of the same name is ignored. Rename it, or tune model/effort through agents.profiles.${profile.name}.`,
+      });
+    }
     for (const tool of profile.unknownTools ?? []) {
       diagnostics.push({
         code: 'unknown-tool',

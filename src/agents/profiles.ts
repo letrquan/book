@@ -1,7 +1,20 @@
 import type { SubagentDef } from '../subagent-discovery.js';
 import type { AgentProfile } from './types.js';
 
-export interface ManagedAgentDef extends Omit<SubagentDef, 'isolation'>, AgentProfile {}
+export interface ManagedAgentDef extends Omit<SubagentDef, 'isolation'>, AgentProfile {
+  /**
+   * A built-in whose role, tools, isolation, and body are a trust boundary. A
+   * discovered agent of the same name cannot replace it; only `agents.profiles`
+   * model/effort tuning applies.
+   */
+  reserved?: boolean;
+  /**
+   * Set when a discovered definition was suppressed because this profile is
+   * reserved. Carries the layer it came from so the user can be told which file
+   * is being ignored rather than left to wonder.
+   */
+  suppressedOverride?: 'user' | 'project';
+}
 
 export const BUILTIN_AGENTS: ManagedAgentDef[] = [
   {
@@ -38,6 +51,7 @@ export const BUILTIN_AGENTS: ManagedAgentDef[] = [
     description:
       'Read-only code reviewer for structured, evidence-backed review and independent falsification passes.',
     role: 'reviewer',
+    reserved: true,
     isolation: 'workspace-readonly',
     allowedTools: ['Read', 'Glob', 'Grep', 'GitStatus', 'GitLog', 'GitBranch'],
     body: [
@@ -118,10 +132,17 @@ export function withBuiltInAgents(discovered: SubagentDef[]): ManagedAgentDef[] 
   );
   for (const agent of discovered) {
     const builtin = BUILTIN_AGENTS.find((candidate) => candidate.name === agent.name);
-    // The reviewer is a trust boundary used by /review. Keep its role, tools,
-    // isolation, and body stable even when a project defines an agent with the
-    // same name; model/effort tuning belongs in agents.profiles.reviewer.
-    if (builtin?.role === 'reviewer') continue;
+    // A reserved built-in (the reviewer backing /review) is a trust boundary:
+    // keep its role, tools, isolation, and body even when a definition of the
+    // same name is discovered. Record the suppression rather than dropping it
+    // silently — `book doctor` reports it, and model/effort tuning still works
+    // through agents.profiles.<name>.
+    if (builtin?.reserved) {
+      if (agent.source !== 'builtin') {
+        byName.set(builtin.name, { ...builtin, suppressedOverride: agent.source });
+      }
+      continue;
+    }
     const builtinRole = builtin?.role;
     byName.set(agent.name, {
       ...agent,

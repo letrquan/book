@@ -40,4 +40,26 @@ describe('collectAgentDiagnostics', () => {
       ]),
     );
   });
+
+  it('reports a definition suppressed by a reserved built-in', () => {
+    const diagnostics = collectAgentDiagnostics(defaultConfig(), [
+      profile({
+        name: 'reviewer',
+        role: 'reviewer',
+        source: 'builtin',
+        suppressedOverride: 'project',
+      }),
+    ]);
+    const reserved = diagnostics.find((item) => item.code === 'reserved-profile');
+    expect(reserved?.message).toContain('reviewer is a reserved built-in agent');
+    expect(reserved?.message).toContain('project definition');
+    expect(reserved?.message).toContain('agents.profiles.reviewer');
+  });
+
+  it('stays quiet when no reserved profile was overridden', () => {
+    const diagnostics = collectAgentDiagnostics(defaultConfig(), [
+      profile({ name: 'reviewer', role: 'reviewer', source: 'builtin' }),
+    ]);
+    expect(diagnostics.some((item) => item.code === 'reserved-profile')).toBe(false);
+  });
 });
