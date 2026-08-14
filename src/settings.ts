@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { WORKFLOW_ID_MESSAGE, WORKFLOW_ID_PATTERN } from './harness/contracts.js';
 import type { HarnessMode } from './harness/contracts.js';
 
 /**
@@ -203,6 +204,12 @@ export const harnessModeSchema: z.ZodType<HarnessMode> = z.enum([
 
 export const harnessSettingsSchema = z.object({
   mode: harnessModeSchema.default('off'),
+  /**
+   * Explicit workflow selection by registry ID. Requires an enabled harness
+   * mode: under `off` there is no run evidence to record the choice against, so
+   * a selection fails closed rather than silently changing behavior.
+   */
+  workflow: z.string().regex(WORKFLOW_ID_PATTERN, WORKFLOW_ID_MESSAGE).optional(),
 });
 
 export type HarnessSettings = z.infer<typeof harnessSettingsSchema>;

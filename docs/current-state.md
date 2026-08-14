@@ -77,12 +77,25 @@ reference for roadmap and design documents.
   run evidence is ineligible, and compact paired probes reject mismatched ambient/pricing/budget/
   resolved-model identities, while offline skill observation marks provider eligibility as not
   applicable. Tier C project-controlled execution, workspace trust, permission ceilings, and
-  container-grade isolation remain blocked; workflow selection and evolution phases remain inactive.
+  container-grade isolation remain blocked; automatic workflow selection and evolution phases remain
+  inactive.
   `harness.mode` accepts `off` (inert default, no filesystem effect) and `observe`, which records an
   append-only per-root evidence ledger — hash-chained canonical JSONL with a signed seal, allowlist
   redaction, drop/error counters, fail-closed eligibility, and OTel-mapped event names — without
   changing user- or provider-visible run behavior. `shadow`, `active`, and `learn` still fail
   before run setup.
+- Under `observe`, a run may use one of three built-in execution workflows selected manually through
+  `harness.workflow` (settings) or `--harness-workflow` (run-scoped, not persisted, does not survive
+  resume). `minimal` renders no prompt text and leaves provider messages byte-identical to a run with
+  no harness; `safe-edit` and `verify-heavy` add bounded guidance to the dynamic prompt zone only.
+  Nothing in the workflow surface is enforced: permissions, sandboxing, budgets, retries, compaction,
+  checkpoint/resume, and tool contracts stay host-owned, unsupported requests are clamped and
+  recorded as `capability_clamped` evidence, and a definition's free-form description is never
+  rendered as an instruction. Each run records the requested and effective workflow, source, reason,
+  registry and definition digests, override scope, and declared complexity. Selection fails closed at
+  `book config set`, at config load, at the CLI flag, and at the session run boundary when the
+  harness is `off` or the ID is unknown or path-like. Project-defined workflow files are not loaded,
+  and there is still no automatic or learned selection.
 
 ## Verification
 

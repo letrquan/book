@@ -6,7 +6,7 @@ import type { AgentConfig, RetryConfig } from './types/runtime.js';
 import { resolveSettings, migrateLegacyPermissions } from './settings-loader.js';
 import { compactStrategySchema, DEFAULT_SETTINGS, type CompactStrategy } from './settings.js';
 import { loadMemoryContext } from './memory-store.js';
-import { assertHarnessModeAvailable } from './harness/coordinator.js';
+import { assertHarnessModeAvailable, assertSelectableWorkflow } from './harness/coordinator.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
@@ -98,6 +98,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     ? structuredClone(DEFAULT_SETTINGS)
     : resolveSettings(resolvedWorkspace, settingsOverridePath);
   assertHarnessModeAvailable(settings.harness.mode);
+  assertSelectableWorkflow(settings.harness.mode, settings.harness.workflow);
 
   if (!noSettings && options?.runMigrations) {
     const migrated = migrateLegacyPermissions(resolvedWorkspace, undefined, settings);

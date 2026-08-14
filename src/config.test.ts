@@ -122,6 +122,53 @@ describe('loadConfig harness boundary', () => {
     expect(() => loadConfig(workspace)).toThrow('Harness mode "shadow"');
   });
 
+  it('accepts a workflow selection under an enabled mode', () => {
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ harness: { mode: 'observe', workflow: 'safe-edit' } }),
+    );
+
+    expect(loadConfig(workspace).settings.harness.workflow).toBe('safe-edit');
+  });
+
+  it('fails closed when a workflow is selected while the harness is off', () => {
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ harness: { mode: 'off', workflow: 'safe-edit' } }),
+    );
+
+    expect(() => loadConfig(workspace)).toThrow('requires an enabled harness mode');
+  });
+
+  it('rejects an unknown workflow id at load time', () => {
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ harness: { mode: 'observe', workflow: 'does-not-exist' } }),
+    );
+
+    expect(() => loadConfig(workspace)).toThrow('Unknown harness workflow "does-not-exist"');
+  });
+
+  it('rejects a path-like workflow id before it can address the candidate store', () => {
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ harness: { mode: 'observe', workflow: '../candidates/evil' } }),
+    );
+
+    expect(() => loadConfig(workspace)).toThrow();
+  });
+
+  it('leaves an off run on the baseline label when no workflow is selected', () => {
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ harness: { mode: 'off' } }),
+    );
+
+    const config = loadConfig(workspace);
+    expect(config.settings.harness.workflow).toBeUndefined();
+    expect(config.harnessWorkflowOverride).toBeUndefined();
+  });
+
   it('rejects an unavailable mode before a requested migration creates storage', () => {
     const bookHome = join(workspace, 'isolated-book-home');
     mkdirSync(bookHome, { recursive: true });

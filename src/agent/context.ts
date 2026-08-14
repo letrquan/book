@@ -403,18 +403,33 @@ function guardrailsSection(): string {
   ].join('\n');
 }
 
+/**
+ * Host-supplied additions to the system prompt. Keep this a single named type:
+ * the callers below and the rebuild paths in `agent/loop.ts` must agree on the
+ * whole set, and an inline literal per signature invites one caller to quietly
+ * drop a field.
+ */
+export interface SystemPromptOverrides {
+  /** Extra cached-prefix text, e.g. managed-agent identity and policy. */
+  append?: string;
+  hideAgents?: boolean;
+  toolCatalogSummary?: string;
+  planMode?: boolean;
+  /**
+   * Host-rendered harness execution policy. It belongs to the dynamic zone so
+   * switching workflows does not invalidate the cached prefix, and it is kept
+   * separate from `append`, which carries unrelated cached agent text.
+   */
+  workflowPolicy?: string;
+}
+
 export async function buildSystemPromptZones(
   config: AgentConfig,
   todos: Array<{ content: string; status: string; activeForm?: string }>,
   commands?: SlashCommand[],
   tools: ToolDefinition[] = [],
   signal?: AbortSignal,
-  overrides?: {
-    append?: string;
-    hideAgents?: boolean;
-    toolCatalogSummary?: string;
-    planMode?: boolean;
-  },
+  overrides?: SystemPromptOverrides,
   cache?: AgentContextCache,
 ): Promise<SystemPromptZones> {
   const discovery = cache?.discovery(config.workspace);
@@ -474,7 +489,9 @@ export async function buildSystemPromptZones(
 
   return {
     cachedPrefix: staticSections.join('\n\n'),
-    dynamicSuffix: todoSection(todos),
+    dynamicSuffix: [overrides?.workflowPolicy ?? '', todoSection(todos)]
+      .filter(Boolean)
+      .join('\n\n'),
   };
 }
 
@@ -484,12 +501,7 @@ export async function buildSystemPrompt(
   commands?: SlashCommand[],
   tools: ToolDefinition[] = [],
   signal?: AbortSignal,
-  overrides?: {
-    append?: string;
-    hideAgents?: boolean;
-    toolCatalogSummary?: string;
-    planMode?: boolean;
-  },
+  overrides?: SystemPromptOverrides,
 ): Promise<string> {
   const zones = await buildSystemPromptZones(config, todos, commands, tools, signal, overrides);
   return [zones.cachedPrefix, zones.dynamicSuffix].filter(Boolean).join('\n\n');
@@ -502,12 +514,7 @@ export async function buildMessages(
   todos?: Array<{ content: string; status: string; activeForm?: string }>,
   commands?: SlashCommand[],
   signal?: AbortSignal,
-  systemOverrides?: {
-    append?: string;
-    hideAgents?: boolean;
-    toolCatalogSummary?: string;
-    planMode?: boolean;
-  },
+  systemOverrides?: SystemPromptOverrides,
   cache?: AgentContextCache,
   resolveAttachment?: (attachment: ImageAttachment) => Promise<Uint8Array> | Uint8Array,
 ): Promise<ProviderMessage[]> {

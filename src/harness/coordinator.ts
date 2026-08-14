@@ -10,10 +10,12 @@ import type {
   PrepareRunInput,
   PreparedRun,
   WorkflowDecision,
+  WorkflowProvenance,
 } from './contracts.js';
 import { workspaceIdentity } from '../tools/file-provenance.js';
 import { RunEvidenceStore, type RunLedgerMetadata, type RunLedgerWriter } from './run-store.js';
 import { createWriterObserver, wrapAgentLoopCallbacks } from './observer.js';
+import { BASELINE_WORKFLOW_DECISION } from './registry.js';
 import { harnessTextRejectionReason } from './redaction.js';
 
 export const AVAILABLE_HARNESS_MODES = Object.freeze(['off', 'observe'] as const);
@@ -60,7 +62,36 @@ export function freezeHarnessRunContext(context: HarnessRunContext): HarnessRunC
   return Object.freeze({
     ...context,
     workflow: context.workflow ? freezeWorkflowDecision(context.workflow) : undefined,
+    workflowClamps: context.workflowClamps ? Object.freeze([...context.workflowClamps]) : undefined,
   });
+}
+
+/**
+ * Fold workflow provenance into the ledger metadata. Only bounded identity,
+ * digests, and declared complexity are recorded; the definition's free-form
+ * description never reaches the stream.
+ */
+function withWorkflowMetadata(
+  metadata: RunLedgerMetadata,
+  workflow: WorkflowProvenance | undefined,
+): RunLedgerMetadata {
+  if (!workflow) return metadata;
+  return {
+    ...metadata,
+    workflowId: workflow.decision.id,
+    workflowVersion: workflow.decision.version,
+    workflowSource: workflow.decision.source,
+    workflowReasonCode: workflow.decision.reasonCode,
+    workflowOverrideScope: workflow.overrideScope,
+    workflowRegistryVersion: workflow.registryVersion,
+    workflowRegistryDigest: workflow.registryDigest,
+    workflowDefinitionDigest: workflow.definitionDigest,
+    workflowPolicyRenderVersion: workflow.policyRenderVersion,
+    workflowClampCount: workflow.clamps?.length ?? 0,
+    workflowActiveFieldCount: workflow.activeFieldCount,
+    workflowRenderedChars: workflow.renderedChars,
+    workflowRequestedExtraCalls: workflow.requestedExtraCalls,
+  };
 }
 
 const DISABLED_PREPARED_RUN = Object.freeze({ status: 'disabled', mode: 'off' } as const);
@@ -120,7 +151,10 @@ class ObserveHarnessCoordinator implements HarnessCoordinator {
       parentRunId: input.identity.parentRunId,
       resumedFromRunId: input.identity.resumedFromRunId,
       sessionId: input.identity.sessionId,
-      metadata: (input.metadata ?? { mode: 'observe' }) as RunLedgerMetadata,
+      metadata: withWorkflowMetadata(
+        (input.metadata ?? { mode: 'observe' }) as RunLedgerMetadata,
+        input.workflow,
+      ),
     };
     let writer = this.rootWriters.get(identity.rootRunId);
     if (writer && writer.getSeal()) {
@@ -141,6 +175,21 @@ class ObserveHarnessCoordinator implements HarnessCoordinator {
       }
       writer = await this.store.startRun(identity);
       this.rootWriters.set(identity.rootRunId, writer);
+      // Kernel restrictions on the requested workflow are recorded, never silent.
+      for (const clampRecord of input.workflow?.clamps ?? []) {
+        writer.enqueue({
+          type: 'capability_clamped',
+          runId: identity.runId,
+          occurredAt: Date.now(),
+          sourceClass: 'derived',
+          payloadClass: 'safe-metadata',
+          attributes: {
+            workflowId: input.workflow!.decision.id,
+            clampedField: clampRecord.field,
+            clampReason: clampRecord.reason,
+          } as never,
+        });
+      }
     } else if (identity.runId !== identity.rootRunId) {
       // Child execution attribution is retained in the shared root stream; it
       // must never create a second append descriptor for the same root.
@@ -161,7 +210,13 @@ class ObserveHarnessCoordinator implements HarnessCoordinator {
       sessionId: identity.sessionId,
       workspaceId: identity.workspaceId,
       mode: 'observe',
-      workflow: { id: 'baseline', version: 1, reasonCode: 'observe', source: 'baseline' },
+      workflow: input.workflow?.decision ?? BASELINE_WORKFLOW_DECISION,
+      // Empty guidance stays absent so `minimal` leaves the prompt untouched.
+      workflowPolicySection: input.workflow?.policySection || undefined,
+      workflowPolicyRenderVersion: input.workflow?.policySection
+        ? input.workflow.policyRenderVersion
+        : undefined,
+      workflowClamps: input.workflow?.clamps?.length ? input.workflow.clamps : undefined,
     });
     return {
       status: 'prepared',
@@ -211,3 +266,21 @@ export function createHarnessCoordinator(
 /** Runtime-facing facade; keeps observer implementation behind this architecture boundary. */
 export { wrapAgentLoopCallbacks };
 export type { HarnessCallbackObserverOptions } from './observer.js';
+
+/** Workflow registry surface, re-exported so live runtime code stays on this facade. */
+export {
+  BASELINE_WORKFLOW_DECISION,
+  BASELINE_WORKFLOW_ID,
+  HarnessWorkflowInvalidIdError,
+  HarnessWorkflowUnavailableError,
+  HarnessWorkflowUnknownError,
+  WORKFLOW_REGISTRY_VERSION,
+  assertSelectableWorkflow,
+  assertWorkflowSelectionAvailable,
+  builtinWorkflowRegistry,
+  createWorkflowRegistry,
+  selectWorkflow,
+} from './registry.js';
+export type { WorkflowRegistry, WorkflowSelection, WorkflowSelectionRequest } from './registry.js';
+export { MINIMAL_WORKFLOW_ID } from './workflows.js';
+export type { ResolvedWorkflow, WorkflowDefinition } from './workflows.js';
