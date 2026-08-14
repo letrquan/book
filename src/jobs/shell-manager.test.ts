@@ -126,7 +126,21 @@ describe('ShellJobManager persistent jobs', () => {
 
       expect(await manager.stop(started.id)).toBe(true);
       expect(manager.get(started.id)?.status).toBe('killed');
-      expect(() => process.kill(workerPid, 0)).toThrow();
+      // kill(pid, 0) still succeeds for a zombie that has exited but has not yet been reaped by
+      // its parent, so assert the pid disappears within a short bound rather than instantly. The
+      // bound stays tight on purpose: a tree that genuinely survives SIGKILL still fails here.
+      await waitFor(
+        () => {
+          try {
+            process.kill(workerPid, 0);
+            return false;
+          } catch {
+            return true;
+          }
+        },
+        'SIGTERM-resistant worker process to disappear',
+        2_000,
+      );
     },
     15_000,
   );

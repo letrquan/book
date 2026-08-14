@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { SessionRuntime } from './runtime.js';
@@ -91,7 +91,10 @@ describe('SessionRuntime', () => {
         ['---', 'name: review', 'description: Review changes', '---', 'body'].join('\n'),
       );
       const runtime = new SessionRuntime();
-      const first = runtime.skills(`${workspace}\\.`, DEFAULT_SETTINGS.skills);
+      // A trailing "<sep>." must normalize to the same cache key as the bare workspace. The
+      // separator has to be the platform's: on POSIX a literal "\" is an ordinary filename
+      // character, so a hardcoded "\\." names a different, nonexistent directory.
+      const first = runtime.skills(`${workspace}${sep}.`, DEFAULT_SETTINGS.skills);
       const second = runtime.skills(workspace, DEFAULT_SETTINGS.skills);
       expect(second).toBe(first);
       expect(second.list().some((skill) => skill.name === 'review')).toBe(true);

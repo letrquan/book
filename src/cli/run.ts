@@ -97,8 +97,9 @@ function collectSnapshotReferences(store: SessionStore, cwd: string): Set<string
 
 export function enterInteractiveScreen(
   stdout: Pick<NodeJS.WriteStream, 'isTTY' | 'write'> = process.stdout,
+  /** Injectable so the non-TTY bridge path is testable off win32. */
+  bridgeWslTerminal: boolean = shouldBridgeWslTerminal(),
 ): () => void {
-  const bridgeWslTerminal = shouldBridgeWslTerminal();
   if (!stdout.isTTY && !bridgeWslTerminal) return () => {};
 
   let restored = false;

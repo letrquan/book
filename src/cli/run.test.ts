@@ -57,7 +57,9 @@ describe('enterInteractiveScreen', () => {
     process.env.WSLENV = 'WT_SESSION:WT_PROFILE_ID:';
 
     try {
-      const restore = enterInteractiveScreen(stdout);
+      // The bridge decision is injected because it is win32-only by definition;
+      // shouldBridgeWslTerminal's platform/env logic is covered separately below.
+      const restore = enterInteractiveScreen(stdout, true);
       restore();
       expect(writes[0]).toContain('\x1b[?1000h');
     } finally {
