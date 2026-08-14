@@ -1,14 +1,19 @@
 import { loadReviewConfig, renderReviewConfigInstruction, type ReviewConfig } from './config.js';
 import { parseReviewScope } from './scope.js';
 import { DEFAULT_CONFIDENCE_THRESHOLD } from './types.js';
+import type { ReviewTarget } from './target.js';
+import { renderReviewTarget } from './target.js';
 
 /**
  * Review prompt builders.
  *
- * The single-pass prompt is intentionally precision-biased: segment the diff,
- * localize first, require evidence, and suppress the false-positive classes the
- * research identifies as noise. Deep review reuses the same rubric but splits
- * it across specialized parallel reviewers.
+ * The orchestrated review prompts are precision-biased: hand the reviewer an
+ * immutable target, make it segment and localize before it reports, require
+ * evidence, and suppress the false-positive classes that erode trust.
+ *
+ * Orchestrated reviewers never select their own scope. The host resolves the
+ * diff once (see `target.ts`) and embeds it here, so `target` is required —
+ * that is why the reviewer agent needs no diff tool at all.
  */
 
 const SEVERITY_RUBRIC = [
@@ -22,6 +27,7 @@ const SEVERITY_RUBRIC = [
 const ANTI_NOISE = [
   'Suppress false positives — they erode trust:',
   '- Pre-existing issues not introduced by this change.',
+  '- Intentional behavior or design decisions evident from the change and surrounding context.',
   '- Code that looks like a bug but is actually correct.',
   '- Pedantic nitpicks and general style preferences.',
   '- Anything a linter or formatter already catches.',
@@ -50,19 +56,18 @@ function scopeInstruction(args: string): string {
   return parts.join(' ');
 }
 
-function diffInstruction(scopeInstructionText: string): string {
-  const scoped = scopeInstructionText ? ` ${scopeInstructionText}` : '';
+function reviewSteps(target: ReviewTarget): string {
   return [
-    `1. Run \`git status\` and \`git diff\`${scoped} to enumerate the change. If there is no diff, say so and stop.`,
-    '2. Split the change into reviewable units (per file, then per hunk/function). Do NOT dump',
-    '   the entire diff into one read — review one unit at a time.',
+    '1. Use the immutable review target below to enumerate the change. If it is empty, say so and stop.',
+    '2. Split the change into reviewable units (per file, then per hunk/function).',
+    renderReviewTarget(target),
   ].join('\n');
 }
 
-function correctnessRubric(): string {
+function correctnessRubric(target: ReviewTarget): string {
   return [
     'Steps:',
-    diffInstruction(''),
+    reviewSteps(target),
     '3. For each unit, Read just enough surrounding context to understand the change. Never review in a vacuum.',
     '4. For each finding, localize it to an exact file:line and cite the exact code (evidence) before',
     '   explaining it. Include a concrete failure scenario and a concrete suggested fix.',
@@ -82,15 +87,12 @@ function configInstruction(config: ReviewConfig): string {
   return rendered ? `${rendered}\n` : '';
 }
 
-export function buildReviewPrompt(args: string, workspace?: string): string {
-  const config = workspace ? loadReviewConfig(workspace) : {};
-  const scoped = scopeInstruction(args);
+/** Structured single-pass prompt used by the host-managed review path. */
+export function buildSingleReviewPrompt(workspace: string, target: ReviewTarget): string {
   return [
-    'Review the current working-tree changes for correctness bugs and',
-    'reuse/simplification/efficiency cleanups.',
-    configInstruction(config),
-    correctnessRubric(),
-    scoped,
+    'Review the selected change for correctness bugs, security risks, and worthwhile cleanup.',
+    configInstruction(loadReviewConfig(workspace)),
+    correctnessRubric(target),
   ]
     .filter(Boolean)
     .join('\n');
@@ -121,7 +123,7 @@ export function buildSecurityReviewPrompt(args: string, workspace?: string): str
     '',
     ANTI_NOISE,
     '',
-    STRUCTURED_OUTPUT,
+    'Return a concise human-readable security review, most severe finding first, then a one-line verdict.',
     scoped,
   ]
     .filter(Boolean)
@@ -155,16 +157,14 @@ export const REVIEW_LENSES = [
 
 export function buildReviewerPrompt(
   lens: (typeof REVIEW_LENSES)[number],
-  args: string,
-  workspace?: string,
+  workspace: string,
+  target: ReviewTarget,
 ): string {
-  const config = workspace ? loadReviewConfig(workspace) : {};
-  const scoped = scopeInstruction(args);
   return [
     `You are the ${lens.title} reviewer. Review ONLY for: ${lens.focus}`,
-    configInstruction(config),
+    configInstruction(loadReviewConfig(workspace)),
     'Steps:',
-    diffInstruction(scoped),
+    reviewSteps(target),
     '3. For each unit, Read just enough surrounding context to understand the change.',
     '4. For each finding, localize it to an exact file:line and cite the exact code (evidence).',
     '   Include a concrete failure scenario and a concrete suggested fix.',

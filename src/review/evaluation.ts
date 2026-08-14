@@ -1,11 +1,16 @@
 import type { ReviewReport } from './types.js';
+import { findingKey, locationKey } from './findings.js';
 
 /**
  * Review evaluation harness.
  *
  * Measures precision, recall, F1, usefulness rate, and signal-to-noise ratio
- * against a small golden-diff set. This is the loop that prevents prompt and
+ * against a small golden set. This is the loop that prevents prompt and
  * pipeline regressions, mirroring the skill-evaluation module.
+ *
+ * A fixture pairs hand-authored expectations with a `ReviewReport` the pipeline
+ * actually produced, so metrics are computed from real output rather than from
+ * hand-maintained id lists that can drift away from what the reviewer emits.
  */
 
 export interface ReviewGroundTruth {
@@ -15,6 +20,35 @@ export interface ReviewGroundTruth {
   expected: string[];
   /** Finding ids the model actually produced. */
   actual: string[];
+}
+
+/** A finding a correct reviewer is expected to report for a fixture. */
+export interface ReviewExpectation {
+  file: string;
+  line?: number;
+  summary: string;
+}
+
+export interface ReviewFixture {
+  id: string;
+  expected: ReviewExpectation[];
+  /** A report produced by running the review pipeline over this fixture. */
+  report: ReviewReport;
+}
+
+/** Key a fixture's expectations and produced findings into the same id space. */
+export function groundTruthFromFixture(fixture: ReviewFixture): ReviewGroundTruth {
+  return {
+    id: fixture.id,
+    expected: [
+      ...new Set(
+        fixture.expected.map((expectation) =>
+          locationKey(expectation.file, expectation.line, expectation.summary),
+        ),
+      ),
+    ],
+    actual: [...new Set(findingIdsFromReport(fixture.report))],
+  };
 }
 
 export interface ReviewEvaluationMetrics {
@@ -82,7 +116,7 @@ export function renderReviewEvaluation(metrics: ReviewEvaluationMetrics): string
   ].join('\n');
 }
 
-/** Extract a compact finding-id set from a report for golden-diff matching. */
+/** Extract deterministic finding keys; positional model-generated ids are not stable across runs. */
 export function findingIdsFromReport(report: ReviewReport): string[] {
-  return report.findings.map((finding) => finding.id);
+  return report.findings.map(findingKey);
 }

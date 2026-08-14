@@ -15,8 +15,8 @@ export const REVIEW_USAGE = [
  * Parse `/review` arguments into a ReviewScope.
  *
  * `--base <ref>`, `--deep`, and `--fix` are flags; the first remaining token is
- * treated as a path or `base...head` range. Unknown flags are treated as a
- * target rather than silently dropped, so a typo is still visible to the agent.
+ * treated as a path or `base...head` range. Invalid invocations are rejected
+ * before any reviewer is started so a typo cannot silently widen the scope.
  */
 export function parseReviewScope(rawArguments: string): ReviewScope {
   const scope: ReviewScope = { deep: false, fix: false, help: false };
@@ -40,8 +40,8 @@ export function parseReviewScope(rawArguments: string): ReviewScope {
     }
     if (token === '--base') {
       const value = tokens[index + 1];
-      if (!value) {
-        scope.target = '--base';
+      if (!value || value.startsWith('--')) {
+        scope.error = 'Missing value for --base.';
         continue;
       }
       scope.base = value;
@@ -49,12 +49,13 @@ export function parseReviewScope(rawArguments: string): ReviewScope {
       continue;
     }
     if (token.startsWith('--base=')) {
-      scope.base = token.slice('--base='.length);
+      const value = token.slice('--base='.length);
+      if (!value) scope.error = 'Missing value for --base.';
+      else scope.base = value;
       continue;
     }
     if (token.startsWith('--')) {
-      // Unknown flag: keep it visible to the agent rather than ignoring it.
-      targets.push(token);
+      scope.error ??= `Unknown review option: ${token}`;
       continue;
     }
     targets.push(token);

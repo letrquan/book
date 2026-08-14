@@ -15,6 +15,9 @@ import type { AgentRuntimeEvent, AgentSnapshot } from './types.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { evidenceTools } from '../tools/agent-tools.js';
+import { applyReviewFixes } from '../review/fix.js';
+import { fixRunnerFor } from '../review/runner.js';
+import type { ReviewFinding } from '../review/types.js';
 
 const tempRoots: string[] = [];
 
@@ -754,6 +757,101 @@ describe('AgentManager lifecycle', () => {
     });
     expect(applyCandidate).toHaveBeenCalledOnce();
     manager.dispose();
+  });
+
+  it('runs the complete review fix adapter against manager evidence locks', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    const applyCandidate = vi.fn(async () => ({ status: 'applied' as const, commit: 'head' }));
+    const manager: AgentManager = new AgentManager(config, evidenceTools, {
+      storeRoot: tempRoot(),
+      worktreeRoot: tempRoot(),
+      findGitRoot: async () => root,
+      createSnapshot: async () => snapshot(root),
+      createWorktree: async (_snapshot, agentId) => ({ path: root, branch: `branch-${agentId}` }),
+      checkoutWorktree: async () => {},
+      commitWork: async (record) =>
+        record.role === 'patcher'
+          ? {
+              baseCommit: 'snapshot-commit',
+              headCommit: 'head',
+              branch: record.branch!,
+              agentId: record.id,
+            }
+          : undefined,
+      applyCandidate,
+      runLoop: async (_childConfig, registry, prompt, history, callbacks, mode, options) => {
+        if (options?.agentRole === 'validator') {
+          const evidenceId = (await manager.listEvidence({ includeUnverified: true })).find(
+            (item) => item.kind === 'patch_candidate',
+          )?.id;
+          expect(evidenceId).toBeDefined();
+          const review = registry.getTool('EvidenceReview');
+          expect(review).toBeDefined();
+          const toolResult = await review!.execute(
+            { evidenceId, verdict: 'pass', notes: 'Exact patch and checks are valid.' },
+            {
+              workspaceRoot: root,
+              env: {},
+              availableTools: registry.getDefinitions(),
+              currentMode: mode as ToolContext['currentMode'],
+              agentId: options.agentId,
+              agentManager: manager,
+            },
+          );
+          expect(toolResult.status).toBe('success');
+        }
+        callbacks.onDone();
+        return [
+          ...history,
+          {
+            id: `u-${prompt}`,
+            role: 'user',
+            content: prompt,
+            includeInContext: true,
+            timestamp: 1,
+          },
+          {
+            id: `a-${prompt}`,
+            role: 'assistant',
+            content: 'done',
+            includeInContext: true,
+            timestamp: 2,
+          },
+        ] as Message[];
+      },
+    });
+
+    const finding: ReviewFinding = {
+      id: 'finding-1',
+      severity: 'major',
+      category: 'correctness',
+      file: 'src/a.ts',
+      line: 3,
+      summary: 'bad behavior',
+      evidence: 'return bad',
+      failure: 'the path fails',
+      suggestedFix: 'return good',
+      confidence: 95,
+      verification: 'confirmed',
+    };
+    try {
+      const result = await applyReviewFixes(fixRunnerFor(manager), [finding]);
+      if (result.failed > 0) throw new Error(result.messages.join('\n'));
+      expect(result).toMatchObject({ attempted: 1, applied: 1, failed: 0 });
+      expect(applyCandidate).toHaveBeenCalledOnce();
+      const evidence = (await manager.listEvidence()).find(
+        (item) => item.kind === 'patch_candidate',
+      );
+      expect(evidence).toMatchObject({
+        verificationState: 'verified',
+        verdict: 'pass',
+        reviewerAgentId: expect.any(String),
+      });
+    } finally {
+      manager.dispose();
+    }
   });
 
   it('does not resurrect an agent stopped during worktree provisioning', async () => {

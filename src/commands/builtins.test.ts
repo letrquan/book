@@ -310,19 +310,12 @@ describe('built-in command contract', () => {
     });
   });
 
-  it('executes migrated prompt commands as typed effects', () => {
+  it('routes ordinary review invocations through the immutable review effect', () => {
     const effect = createBuiltinCommandRegistry().execute('review', 'src/commands', context());
-    expect(effect).toEqual(
-      expect.objectContaining({
-        type: 'send-prompt',
-        context: expect.objectContaining({
-          allowedTools: expect.arrayContaining(['Read', 'GitDiff']),
-        }),
-      }),
-    );
-    if (effect?.type === 'send-prompt') {
-      expect(effect.prompt).toContain('Restrict review to: src/commands');
-    }
+    expect(effect).toEqual({
+      type: 'review',
+      scope: { base: undefined, target: 'src/commands', deep: false, fix: false, help: false },
+    });
   });
 
   it('routes deep/fix review invocations to the review effect', () => {

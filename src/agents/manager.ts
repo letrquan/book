@@ -998,8 +998,11 @@ export class AgentManager {
 
     return new Promise((resolvePromise) => {
       let timer: NodeJS.Timeout | undefined;
+      let settled = false;
       const finish = (record: AgentRecord) => {
+        if (settled) return;
         if (!TERMINAL_STATUSES.has(record.status)) return;
+        settled = true;
         if (timer) clearTimeout(timer);
         this.waiters.get(agentId)?.delete(finish);
         resolvePromise(this.recordForReturn(record));
@@ -1009,6 +1012,8 @@ export class AgentManager {
       this.waiters.set(agentId, listeners);
       if (timeoutMs > 0) {
         timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
           listeners.delete(finish);
           if (listeners.size === 0) this.waiters.delete(agentId);
           resolvePromise(this.recordForReturn(this.agents.get(agentId)!));

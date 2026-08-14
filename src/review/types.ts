@@ -44,6 +44,20 @@ export interface ReviewFinding {
 export interface ReviewReport {
   verdict: ReviewVerdict;
   findings: ReviewFinding[];
+  /** Operational coverage metadata for deep reviews. */
+  coverage?: ReviewCoverage;
+}
+
+export interface ReviewCoverageEntry {
+  id: string;
+  status: 'completed' | 'failed' | 'timed_out' | 'unstructured';
+  findings: number;
+  error?: string;
+}
+
+export interface ReviewCoverage {
+  reviewers: ReviewCoverageEntry[];
+  verifier?: ReviewCoverageEntry;
 }
 
 export type ReviewVerificationState = 'confirmed' | 'rejected' | 'inconclusive';
@@ -61,6 +75,8 @@ export interface ReviewScope {
   deep: boolean;
   fix: boolean;
   help: boolean;
+  /** User-facing parse error. Absent for a valid invocation. */
+  error?: string;
 }
 
 export const DEFAULT_CONFIDENCE_THRESHOLD = 70;
@@ -74,6 +90,8 @@ export function isReviewCategory(value: unknown): value is ReviewCategory {
 }
 
 export function clampConfidence(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_CONFIDENCE_THRESHOLD;
+  // Missing or malformed confidence must fail closed. Returning the threshold
+  // itself would let an otherwise invalid finding pass a >= threshold filter.
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, Math.round(value)));
 }
