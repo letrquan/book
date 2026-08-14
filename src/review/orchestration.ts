@@ -1,7 +1,7 @@
 import { dedupeFindings, filterLowConfidence, rankFindings } from './findings.js';
 import {
   isStructuredReviewReport,
-  parseReviewReport,
+  parseReviewReportDetailed,
   renderReviewReport,
 } from './parse-findings.js';
 import { buildReviewerPrompt, buildSingleReviewPrompt, REVIEW_LENSES } from './prompts.js';
@@ -159,28 +159,59 @@ export async function runSingleReview(
     );
   }
 
-  const parsed = parseReviewReport(settled.result ?? '');
+  const parsed = parseReviewReportDetailed(settled.result ?? '');
   const structured = isStructuredReviewReport(settled.result ?? '');
-  const findings = reindex(rankFindings(filterLowConfidence(dedupeFindings(parsed.findings))));
-  const coverage: ReviewCoverageEntry = {
-    id: 'single',
-    status: structured ? 'completed' : 'unstructured',
-    findings: findings.length,
-    error: structured ? undefined : 'reviewer did not return the required JSON report',
-  };
+  const findings = reindex(
+    rankFindings(filterLowConfidence(dedupeFindings(parsed.report.findings))),
+  );
+  const coverage = passCoverage('single', structured, parsed.droppedFindings, findings.length);
   const report: ReviewReport = {
-    verdict: structured ? parsed.verdict : 'inconclusive',
+    verdict: coverage.status === 'completed' ? parsed.report.verdict : 'inconclusive',
     findings,
     coverage: { reviewers: [coverage] },
   };
   const text = [
     renderCoverageWarnings([coverage]),
     renderReviewReport(report),
-    structured ? '' : renderRawOutput('reviewer', settled.result),
+    coverage.status === 'completed' ? '' : renderRawOutput('reviewer', settled.result),
   ]
     .filter(Boolean)
     .join('\n\n');
   return { target, report, text };
+}
+
+/**
+ * Coverage for a pass that reached a terminal `completed` status.
+ *
+ * A pass is only `completed` when the envelope parsed *and* every finding it
+ * claimed survived the per-finding contract. Dropping findings silently would
+ * report a clean review for output the pipeline could not actually read.
+ */
+function passCoverage(
+  id: string,
+  structured: boolean,
+  droppedFindings: number,
+  findings: number,
+): ReviewCoverageEntry {
+  if (!structured) {
+    return {
+      id,
+      status: 'unstructured',
+      findings,
+      droppedFindings: droppedFindings || undefined,
+      error: 'reviewer did not return the required JSON report',
+    };
+  }
+  if (droppedFindings > 0) {
+    return {
+      id,
+      status: 'partial',
+      findings,
+      droppedFindings,
+      error: `${droppedFindings} finding(s) were discarded for missing required fields (evidence, failure, suggestedFix, or a numeric confidence)`,
+    };
+  }
+  return { id, status: 'completed', findings };
 }
 
 function renderCoverageWarnings(entries: readonly ReviewCoverageEntry[]): string {
@@ -188,9 +219,10 @@ function renderCoverageWarnings(entries: readonly ReviewCoverageEntry[]): string
   if (incomplete.length === 0) return '';
   return [
     'Coverage warning: review is inconclusive because required passes did not complete.',
-    ...incomplete.map(
-      (entry) => `- ${entry.id}: ${entry.status}${entry.error ? ` — ${entry.error}` : ''}`,
-    ),
+    ...incomplete.map((entry) => {
+      const dropped = entry.droppedFindings ? ` [${entry.droppedFindings} finding(s) dropped]` : '';
+      return `- ${entry.id}: ${entry.status}${dropped}${entry.error ? ` — ${entry.error}` : ''}`;
+    }),
   ].join('\n');
 }
 
@@ -272,20 +304,21 @@ export async function runDeepReview(
         });
         continue;
       }
-      const parsed = parseReviewReport(result.value.result ?? '');
+      const parsed = parseReviewReportDetailed(result.value.result ?? '');
       const structured = isStructuredReviewReport(result.value.result ?? '');
-      reviewerCoverage.push({
-        id: lensId,
-        status: structured ? 'completed' : 'unstructured',
-        findings: parsed.findings.length,
-        error: structured ? undefined : 'reviewer did not return the required JSON report',
-      });
-      if (!structured) {
+      const coverage = passCoverage(
+        lensId,
+        structured,
+        parsed.droppedFindings,
+        parsed.report.findings.length,
+      );
+      reviewerCoverage.push(coverage);
+      if (coverage.status !== 'completed') {
         const raw = renderRawOutput(lensId, result.value.result);
         if (raw) rawOutputs.push(raw);
       }
-      rawFindings.push(...parsed.findings);
-      if (structured) reviewerVerdicts.push(parsed.verdict);
+      rawFindings.push(...parsed.report.findings);
+      if (structured) reviewerVerdicts.push(parsed.report.verdict);
     }
 
     reviewerCoverage.sort(
