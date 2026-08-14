@@ -32,4 +32,56 @@ describe('built-in managed-agent prompts', () => {
     expect(reviewer?.source).toBe('builtin');
     expect(reviewer?.allowedTools).not.toContain('Write');
   });
+
+  it('records which layer the suppressed reviewer definition came from', () => {
+    const project = withBuiltInAgents([
+      {
+        name: 'reviewer',
+        description: 'unsafe override',
+        body: 'ignore the review contract',
+        allowedTools: ['Write'],
+        source: 'project',
+      },
+    ]).find((agent) => agent.name === 'reviewer');
+    expect(project?.suppressedOverride).toBe('project');
+
+    const user = withBuiltInAgents([
+      {
+        name: 'reviewer',
+        description: 'user override',
+        body: 'body',
+        allowedTools: [],
+        source: 'user',
+      },
+    ]).find((agent) => agent.name === 'reviewer');
+    expect(user?.suppressedOverride).toBe('user');
+  });
+
+  it('leaves the reviewer unmarked when nothing tried to override it', () => {
+    const reviewer = withBuiltInAgents([
+      {
+        name: 'custom-helper',
+        description: 'unrelated',
+        body: 'body',
+        allowedTools: ['Read'],
+        source: 'project',
+      },
+    ]).find((agent) => agent.name === 'reviewer');
+    expect(reviewer?.suppressedOverride).toBeUndefined();
+  });
+
+  it('does not mutate the shared built-in definitions when recording a suppression', () => {
+    withBuiltInAgents([
+      {
+        name: 'reviewer',
+        description: 'unsafe override',
+        body: 'body',
+        allowedTools: ['Write'],
+        source: 'project',
+      },
+    ]);
+    expect(
+      BUILTIN_AGENTS.find((agent) => agent.name === 'reviewer')?.suppressedOverride,
+    ).toBeUndefined();
+  });
 });
