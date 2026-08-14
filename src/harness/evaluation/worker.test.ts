@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -31,7 +31,12 @@ async function workerFixture(): Promise<{
   worker: RegisteredEvaluationWorker;
   attestation: RegisteredWorkerHostAttestation;
 }> {
-  const root = await mkdtemp(join(tmpdir(), 'book-registered-worker-'));
+  // The boundary rejects any artifact whose declared path is not already canonical, which is a
+  // real anti-symlink defense. CI temp roots are commonly symlinks (Windows 8.3 names such as
+  // RUNNER~1, macOS /var -> /private/var), so canonicalize the fixture root here. Otherwise the
+  // fixture — not the code under test — trips that check and every assertion below sees
+  // 'worker-artifact-not-canonical-regular-file'.
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'book-registered-worker-')));
   roots.push(root);
   const executable = join(root, 'runtime.bin');
   const entryModule = join(root, 'worker.mjs');
