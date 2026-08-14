@@ -40,7 +40,16 @@ describe('parseReviewReport', () => {
     const report = parseReviewReport(
       JSON.stringify({
         findings: [
-          { severity: 'warn', category: 'unknown', file: 'x.ts', summary: 's', confidence: 200 },
+          {
+            severity: 'warn',
+            category: 'unknown',
+            file: 'x.ts',
+            summary: 's',
+            evidence: 'x()',
+            failure: 'x fails',
+            suggestedFix: 'fix x',
+            confidence: 200,
+          },
         ],
       }),
     );
@@ -54,6 +63,22 @@ describe('parseReviewReport', () => {
   it('drops findings missing summary or file', () => {
     const report = parseReviewReport(JSON.stringify({ findings: [{ severity: 'nit' }] }));
     expect(report.findings).toEqual([]);
+  });
+
+  it('drops findings missing evidence, failure, a fix, or confidence', () => {
+    const base = {
+      file: 'x.ts',
+      summary: 's',
+      evidence: 'x',
+      failure: 'fails',
+      suggestedFix: 'fix',
+      confidence: 90,
+    };
+    for (const key of ['evidence', 'failure', 'suggestedFix', 'confidence'] as const) {
+      const finding: Record<string, unknown> = { ...base };
+      delete finding[key];
+      expect(parseReviewReport(JSON.stringify({ findings: [finding] })).findings).toEqual([]);
+    }
   });
 });
 

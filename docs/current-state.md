@@ -27,9 +27,13 @@ reference for roadmap and design documents.
 - Layered settings (`~/.book`, project `.book`, local `.book`, and `--settings`), atomic writes,
   legacy `.bookrc.json` migration, permissions, hooks, optional bubblewrap sandbox, themes,
   auto-memory, rewind snapshots, telemetry, and diagnostics.
-- Managed explorer, patcher, and validator agents with isolated worktrees where Git is available,
-  read-only non-Git exploration, evidence publication/review, completion delivery, persistence,
-  ownership checks, and recovery from interrupted storage writes.
+- Managed explorer, reviewer, patcher, and validator agents with isolated worktrees where Git is
+  available, read-only non-Git exploration, evidence publication/review, completion delivery,
+  persistence, ownership checks, and recovery from interrupted storage writes.
+- Host-orchestrated `/review` over an immutable review target, with `--base`, path and
+  `<base>...<head>` scoping, parallel specialized lenses under `--deep`, an independent
+  falsification pass, coverage that fails closed, `REVIEW.md` calibration, evidence-gated `--fix`,
+  and `npm run eval:review`.
 - Background shell jobs with session or explicit persistent lifetime, `/jobs` management, output
   inspection, stop/dismiss, restart reattachment, and SDK/stream-JSON lifecycle events.
 - Metadata-first interoperable skills from `.claude/skills`, `.agents/skills`,
@@ -63,6 +67,10 @@ reference for roadmap and design documents.
   configured `sandbox.failIfUnavailable` policy and may run unsandboxed.
 - Managed-agent planning-task linkage, rerun, and task-aware cleanup from the background-job plan
   are not implemented; executable jobs and planning tasks remain separate.
+- `/review` is TUI-only: the `review` command effect is handled in `src/tui/app.tsx`, so
+  print/headless hosts cannot run it. Its evaluation harness scores reports captured from real runs
+  rather than executing the pipeline over checked-in golden diffs. The confidence threshold (70) and
+  the per-pass timeout (10 minutes) are fixed rather than configurable.
 - The adaptive-harness roadmap is not a live learning system. Tier A/B attribution, accounting, and
   evaluator preconditions are verified for trusted built-in, single-agent evaluation, but Phase 0
   remains inactive until a dedicated status change. The edit-reliability, compaction, and skill

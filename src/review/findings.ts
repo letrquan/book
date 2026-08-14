@@ -7,11 +7,22 @@ const SEVERITY_WEIGHT: Record<ReviewSeverity, number> = {
   nit: 1,
 };
 
+/**
+ * Deterministic key for a finding location. Shared with the evaluation harness
+ * so golden expectations and produced findings are keyed identically.
+ */
+export function locationKey(file: string, line: number | undefined, summary: string): string {
+  const normalizedFile = file.replace(/\\/g, '/').toLowerCase();
+  const normalizedSummary = summary
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  return `${normalizedFile}:${line ?? 'unknown'}:${normalizedSummary}`;
+}
+
 /** Deterministic key used to collapse duplicate findings across review passes. */
 export function findingKey(finding: ReviewFinding): string {
-  const file = finding.file.replace(/\\/g, '/').toLowerCase();
-  const line = finding.line ?? 0;
-  return `${finding.category}:${file}:${line}`;
+  return locationKey(finding.file, finding.line, finding.summary);
 }
 
 export function dedupeFindings(findings: readonly ReviewFinding[]): ReviewFinding[] {
@@ -19,8 +30,13 @@ export function dedupeFindings(findings: readonly ReviewFinding[]): ReviewFindin
   for (const finding of findings) {
     const key = findingKey(finding);
     const existing = seen.get(key);
-    // Keep the higher-confidence instance when reviewers collide on a location.
-    if (!existing || finding.confidence > existing.confidence) {
+    // Prefer severity first: a high-confidence low-severity restatement must not
+    // erase a material finding at the same location.
+    if (
+      !existing ||
+      SEVERITY_WEIGHT[finding.severity] > SEVERITY_WEIGHT[existing.severity] ||
+      (finding.severity === existing.severity && finding.confidence > existing.confidence)
+    ) {
       seen.set(key, finding);
     }
   }

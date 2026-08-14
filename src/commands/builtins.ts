@@ -5,12 +5,7 @@ import type { CommandContext } from '../types/commands.js';
 import type { LocalCommandDisplay, Message, Usage } from '../types/messages.js';
 import type { CompactBoundary } from '../types/sessions.js';
 import { buildInitPrompt } from './init-prompt.js';
-import {
-  buildReviewPrompt,
-  buildSecurityReviewPrompt,
-  REVIEW_TOOLS,
-  SECURITY_REVIEW_TOOLS,
-} from './builtins-prompts.js';
+import { buildSecurityReviewPrompt, SECURITY_REVIEW_TOOLS } from './builtins-prompts.js';
 import { parseReviewScope, REVIEW_USAGE } from '../review/scope.js';
 import type { ReviewScope } from '../review/types.js';
 import { CommandRegistry, type CommandAlias, type CommandDefinition } from './registry.js';
@@ -628,14 +623,13 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   {
     name: 'review',
     description: 'Review current git diff (correctness & cleanups)',
-    execute: ({ rawArguments }, context) => {
+    execute: ({ rawArguments }) => {
       const scope = parseReviewScope(rawArguments);
       if (scope.help) return { type: 'local-message', content: REVIEW_USAGE };
-      if (scope.deep || scope.fix) {
-        return { type: 'review', scope };
+      if (scope.error) {
+        return { type: 'local-message', content: `✕ ${scope.error}\n\n${REVIEW_USAGE}` };
       }
-      const prompt = buildReviewPrompt(rawArguments, context.workspace);
-      return promptEffect('review', 'Review current diff', prompt, [...REVIEW_TOOLS]);
+      return { type: 'review', scope };
     },
   },
   {

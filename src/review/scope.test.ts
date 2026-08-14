@@ -33,8 +33,10 @@ describe('parseReviewScope', () => {
     expect(parseReviewScope('--fix')).toMatchObject({ deep: true, fix: true });
   });
 
-  it('preserves unknown flags as a visible target', () => {
-    expect(parseReviewScope('--typo')).toMatchObject({ target: '--typo' });
+  it('rejects unknown flags and missing base values', () => {
+    expect(parseReviewScope('--typo')).toMatchObject({ error: 'Unknown review option: --typo' });
+    expect(parseReviewScope('--base')).toMatchObject({ error: 'Missing value for --base.' });
+    expect(parseReviewScope('--base=')).toMatchObject({ error: 'Missing value for --base.' });
   });
 
   it('exposes usage help', () => {

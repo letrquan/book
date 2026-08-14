@@ -1,0 +1,62 @@
+[
+  {
+    "id": "missing-null-guard",
+    "expected": [
+      {
+        "file": "src/user.ts",
+        "line": 42,
+        "summary": "Missing null guard crashes on an empty profile"
+      }
+    ],
+    "report": {
+      "verdict": "recommend",
+      "findings": [
+        {
+          "severity": "major",
+          "category": "correctness",
+          "file": "src/user.ts",
+          "line": 42,
+          "summary": "Missing null guard crashes on an empty profile",
+          "evidence": "return profile.displayName.trim();",
+          "failure": "A user with no profile row throws TypeError on first sign-in.",
+          "suggestedFix": "Return an empty string when profile is undefined.",
+          "confidence": 92
+        }
+      ]
+    }
+  },
+  {
+    "id": "noisy-style-report",
+    "expected": [],
+    "report": {
+      "verdict": "recommend",
+      "findings": [
+        {
+          "severity": "nit",
+          "category": "conventions",
+          "file": "src/format.ts",
+          "line": 8,
+          "summary": "Prefer const over let for an unreassigned binding",
+          "evidence": "let separator = ', ';",
+          "failure": "None; the linter already reports this.",
+          "suggestedFix": "Use const.",
+          "confidence": 88
+        }
+      ]
+    }
+  },
+  {
+    "id": "missed-race-condition",
+    "expected": [
+      {
+        "file": "src/cache.ts",
+        "line": 17,
+        "summary": "Concurrent writes drop the second entry"
+      }
+    ],
+    "report": {
+      "verdict": "clean",
+      "findings": []
+    }
+  }
+]
