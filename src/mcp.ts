@@ -17,12 +17,19 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js';
 import {
+  ElicitRequestSchema,
   ErrorCode,
   McpError,
   ToolListChangedNotificationSchema,
   type JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
-import type { ToolDefinition, ToolContext } from './types/tools.js';
+import type {
+  ElicitationHandler,
+  ElicitationResponse,
+  ToolDefinition,
+  ToolContext,
+} from './types/tools.js';
+import { toElicitationFields, validateElicitationContent } from './mcp-elicitation.js';
 import { toolFailure, toolSuccess } from './tools/result.js';
 import { getPackageVersion } from './version-info.js';
 import {
@@ -91,6 +98,13 @@ export interface McpConnectionOptions {
   onToolListChanged?: (serverName: string) => void;
   /** Invoked when a successfully initialized server later disconnects. */
   onConnectionClosed?: (serverName: string) => void;
+  /**
+   * Host prompt for MCP form elicitation. Supplying it is what declares the
+   * `elicitation` client capability, so a host that cannot reach a user never
+   * advertises one — servers then fail the request themselves instead of
+   * waiting on a prompt nobody will see.
+   */
+  onElicit?: ElicitationHandler;
 }
 
 const DEFAULT_INITIALIZATION_TIMEOUT_MS = 10_000;
@@ -443,6 +457,68 @@ function createTransport(
   };
 }
 
+/**
+ * Route `elicitation/create` to the host prompt. Anything Book cannot present
+ * faithfully — URL mode, or a schema outside the renderable subset — is
+ * declined, which is a protocol-legal answer the server already handles.
+ */
+function registerElicitationHandler(
+  client: Client,
+  name: string,
+  options: ResolvedConnectionOptions,
+): void {
+  const onElicit = options.onElicit;
+  if (!onElicit) return;
+  let counter = 0;
+
+  client.setRequestHandler(
+    ElicitRequestSchema,
+    async (request, extra): Promise<ElicitationResponse> => {
+      const params = request.params;
+      if (params.mode === 'url') {
+        options.onDiagnostic({
+          level: 'warn',
+          message: `MCP server "${name}" requested URL elicitation, which Book does not support`,
+          server: name,
+        });
+        return { action: 'decline' };
+      }
+
+      const converted = toElicitationFields(params.requestedSchema);
+      if ('error' in converted) {
+        options.onDiagnostic({
+          level: 'warn',
+          message: `Declined an elicitation from MCP server "${name}": ${converted.error}`,
+          server: name,
+        });
+        return { action: 'decline' };
+      }
+
+      const response = await onElicit(
+        {
+          id: `${name}:${++counter}`,
+          server: name,
+          message: params.message,
+          fields: converted.fields,
+        },
+        { signal: extra?.signal },
+      );
+      if (response.action !== 'accept') return { action: response.action };
+
+      const validated = validateElicitationContent(converted.fields, response.content);
+      if ('error' in validated) {
+        options.onDiagnostic({
+          level: 'warn',
+          message: `Discarded an elicitation answer for MCP server "${name}": ${validated.error}`,
+          server: name,
+        });
+        return { action: 'cancel' };
+      }
+      return { action: 'accept', content: validated.content };
+    },
+  );
+}
+
 async function connectMcpServer(
   name: string,
   cfg: McpServerConfig,
@@ -473,7 +549,11 @@ async function connectMcpServer(
         server: name,
       });
     };
-    const client = new Client({ name: 'book', version: getPackageVersion() }, { capabilities: {} });
+    const client = new Client(
+      { name: 'book', version: getPackageVersion() },
+      { capabilities: options.onElicit ? { elicitation: { form: {} } } : {} },
+    );
+    registerElicitationHandler(client, name, options);
 
     await client.connect(transport, {
       timeout: options.initializationTimeoutMs,

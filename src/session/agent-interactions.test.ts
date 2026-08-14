@@ -1,8 +1,28 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ToolCall, UserQuestionRequest } from '../types/tools.js';
+import type { ElicitationRequest, ToolCall, UserQuestionRequest } from '../types/tools.js';
 import { AgentInteractionController } from './agent-interactions.js';
 
 const toolCall: ToolCall = { id: 'tc-1', name: 'Bash', arguments: { command: 'ls' } };
+
+function elicitationRequest(id: string): ElicitationRequest {
+  return {
+    id,
+    server: 'azure-devops',
+    message: 'Select the project.',
+    fields: [
+      {
+        name: 'project',
+        title: 'Project',
+        required: true,
+        kind: 'enum',
+        options: [
+          { value: 'alpha', label: 'Alpha' },
+          { value: 'beta', label: 'Beta' },
+        ],
+      },
+    ],
+  };
+}
 
 function question(id: string): UserQuestionRequest {
   return {
@@ -33,6 +53,7 @@ describe('AgentInteractionController', () => {
       pendingPermission: { toolCall },
       pendingPlanApproval: null,
       pendingUserQuestions: [],
+      pendingElicitations: [],
     });
     expect(controller.getSnapshot().pendingPermission).not.toHaveProperty('resolve');
 
@@ -114,19 +135,58 @@ describe('AgentInteractionController', () => {
     const permission = controller.requestPermission(toolCall);
     const plan = controller.requestPlanApproval('do the thing');
     const userQuestion = controller.requestUserQuestion(question('one'));
+    const elicitation = controller.requestElicitation(elicitationRequest('mcp-1'));
 
     expect(controller.cancelAll('unmount')).toEqual({
       permission: true,
       planApproval: true,
       userQuestions: 1,
+      elicitations: 1,
     });
     expect(controller.cancelAll('unmount')).toEqual({
       permission: false,
       planApproval: false,
       userQuestions: 0,
+      elicitations: 0,
     });
     await expect(permission).resolves.toBe('deny');
     await expect(plan).resolves.toBe('reject');
     await expect(userQuestion).resolves.toMatchObject({ action: 'cancel' });
+    await expect(elicitation).resolves.toEqual({ action: 'cancel' });
+  });
+
+  it('queues elicitations and settles them by request id', async () => {
+    const controller = new AgentInteractionController();
+    const first = controller.requestElicitation(elicitationRequest('mcp-1'));
+    const second = controller.requestElicitation(elicitationRequest('mcp-2'));
+    expect(controller.getSnapshot().pendingElicitations.map((entry) => entry.request.id)).toEqual([
+      'mcp-1',
+      'mcp-2',
+    ]);
+
+    expect(
+      controller.settleElicitation(
+        { action: 'accept', content: { project: 'beta' } },
+        'form',
+        'mcp-2',
+      ),
+    ).toBe(true);
+    await expect(second).resolves.toEqual({ action: 'accept', content: { project: 'beta' } });
+
+    expect(controller.settleElicitation({ action: 'decline' }, 'form')).toBe(true);
+    await expect(first).resolves.toEqual({ action: 'decline' });
+    expect(controller.settleElicitation({ action: 'decline' }, 'form')).toBe(false);
+  });
+
+  it('cancels a duplicate elicitation id instead of shadowing the pending one', async () => {
+    const controller = new AgentInteractionController();
+    const first = controller.requestElicitation(elicitationRequest('mcp-1'));
+    await expect(controller.requestElicitation(elicitationRequest('mcp-1'))).resolves.toEqual({
+      action: 'cancel',
+    });
+    expect(controller.getSnapshot().pendingElicitations).toHaveLength(1);
+
+    controller.cancelElicitations('cleanup');
+    await expect(first).resolves.toEqual({ action: 'cancel' });
   });
 });

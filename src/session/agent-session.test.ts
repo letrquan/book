@@ -1402,6 +1402,7 @@ describe('AgentSession', () => {
       pendingPermission: null,
       pendingPlanApproval: null,
       pendingUserQuestions: [],
+      pendingElicitations: [],
     });
   });
 
@@ -1665,6 +1666,7 @@ describe('AgentSession', () => {
       pendingPermission: null,
       pendingPlanApproval: null,
       pendingUserQuestions: [],
+      pendingElicitations: [],
     });
   });
 
@@ -1679,7 +1681,7 @@ describe('AgentSession', () => {
 
     expect(session.cancel('test')).toEqual({
       operation: { kind: 'send', aborted: true },
-      interactions: { permission: true, planApproval: false, userQuestions: 0 },
+      interactions: { permission: true, planApproval: false, userQuestions: 0, elicitations: 0 },
     });
     expect(operation.signal?.aborted).toBe(true);
     await expect(permission).resolves.toBe('deny');

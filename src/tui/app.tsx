@@ -31,6 +31,7 @@ import { TranscriptView } from './components/TranscriptView.js';
 import { PermissionButtons } from './components/PermissionButtons.js';
 import { PlanApprovalActions, PlanApprovalDetails } from './components/PlanApprovalButtons.js';
 import { AskUserQuestionWizard } from './components/AskUserQuestionWizard.js';
+import { McpElicitationForm } from './components/McpElicitationForm.js';
 import { McpServerApprovalPrompt } from './components/McpServerApprovalPrompt.js';
 import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
@@ -125,11 +126,13 @@ export function ownsModalInput(
   showPermissionModePicker = false,
   showSkills = false,
   pendingMcpApproval: unknown = undefined,
+  pendingElicitation: unknown = undefined,
 ): boolean {
   return Boolean(
     pendingPermission ||
     pendingPlanApproval ||
     pendingUserQuestion ||
+    pendingElicitation ||
     showModelPicker ||
     showSessionPicker ||
     showEffortPicker ||
@@ -310,6 +313,10 @@ export function App({
     pendingPlanApproval,
     pendingUserQuestion,
     pendingUserQuestionCount,
+    pendingElicitation,
+    pendingElicitationCount,
+    resolveElicitation,
+    elicitationHandler,
     agentTodos,
     liveConfig,
     runtime,
@@ -588,7 +595,8 @@ export function App({
       isResolvingCommand ||
       pendingPermission ||
       pendingPlanApproval ||
-      pendingUserQuestion,
+      pendingUserQuestion ||
+      pendingElicitation,
     ),
     deliver: sendAgentCompletions,
     acknowledge: managedAgents.acknowledgeCompletions,
@@ -710,7 +718,8 @@ export function App({
   const reducedMotion = Boolean(config.accessibility?.reducedMotion);
   // Keep the whole live region quiescent while the terminal viewport belongs
   // to the user reviewing a plan. Any animation repaint can snap scrollback.
-  const motionDisabled = reducedMotion || Boolean(pendingPlanApproval || pendingUserQuestion);
+  const motionDisabled =
+    reducedMotion || Boolean(pendingPlanApproval || pendingUserQuestion || pendingElicitation);
   const screenReader = Boolean(config.accessibility?.screenReader);
   const managedAgentUiEnabled = liveConfig.settings.agents.ui.enabled;
   const childPermission = managedAgents.pendingPermissions.find(
@@ -724,6 +733,13 @@ export function App({
   );
   const readMcpSnapshot = useCallback(() => mcp?.getSnapshot() ?? EMPTY_MCP_SNAPSHOT, [mcp]);
   const mcpSnapshot = useSyncExternalStore(subscribeMcp, readMcpSnapshot);
+  // Servers connect in the background; this binds their elicitation prompts to
+  // this session's interaction queue once the UI exists to answer them.
+  useEffect(() => {
+    if (!mcp) return;
+    mcp.setElicitationHandler(elicitationHandler);
+    return () => mcp.setElicitationHandler(undefined);
+  }, [mcp, elicitationHandler]);
   const pendingMcpApproval = mcpSnapshot.pendingApprovals[0];
   // The trust prompt yields to every other modal surface and reappears once idle.
   const showMcpApproval =
@@ -741,6 +757,8 @@ export function App({
       showAgentProfilePicker,
       showPermissionModePicker,
       showSkills,
+      undefined,
+      pendingElicitation,
     );
 
   // Surface connection outcomes as transcript notices once the turn is idle;
@@ -775,6 +793,7 @@ export function App({
     pendingPermission ||
     pendingPlanApproval ||
     pendingUserQuestion ||
+    pendingElicitation ||
     childPermission ||
     childQuestion ||
     editingQueuedInput ||
@@ -1062,12 +1081,13 @@ export function App({
         showPermissionModePicker,
         showSkills,
         showMcpApproval,
+        pendingElicitation,
       )
     ) {
       if (key.escape) {
         uiLog.event('input:Escape', { action: 'noop-modal-active' });
       } else if (key.ctrl && input === 'c') {
-        if (pendingUserQuestion) {
+        if (pendingUserQuestion || pendingElicitation) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
           interrupt();
         } else {
@@ -1742,7 +1762,7 @@ export function App({
       )
         return true;
       if (key.ctrl && input === 'c') {
-        if (pendingUserQuestion) {
+        if (pendingUserQuestion || pendingElicitation) {
           uiLog.event('input:Ctrl+C', { action: 'cancel-question-turn' });
           interrupt();
           return true;
@@ -1805,6 +1825,7 @@ export function App({
       pendingPermission,
       pendingPlanApproval,
       pendingUserQuestion,
+      pendingElicitation,
       redrawViewport,
       showEffortPicker,
       showPermissionModePicker,
@@ -2305,6 +2326,16 @@ export function App({
                 terminalWidth={termWidth}
               />
             ) : null}
+            {pendingElicitation ? (
+              <McpElicitationForm
+                key={pendingElicitation.request.id}
+                request={pendingElicitation.request}
+                queueLength={pendingElicitationCount}
+                terminalWidth={termWidth}
+                onResolve={resolveElicitation}
+                screenReader={screenReader}
+              />
+            ) : null}
             {pendingUserQuestion ? (
               <AskUserQuestionWizard
                 key={pendingUserQuestion.request.id}
@@ -2707,6 +2738,7 @@ export function App({
             pendingPermission={pendingPermission}
             pendingPlanApproval={pendingPlanApproval}
             pendingUserQuestion={pendingUserQuestion}
+            pendingElicitation={pendingElicitation}
             retryPhase={retryPhase}
             retryAttempt={retryAttempt}
             retryMax={retryMax}
@@ -2783,6 +2815,7 @@ export function App({
                   showPermissionModePicker,
                   showSkills,
                   showMcpApproval,
+                  pendingElicitation,
                 ) ||
                 transcriptMode === 'detailed' ||
                 managedAgents.surface === 'tasks' ||

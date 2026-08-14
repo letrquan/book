@@ -35,6 +35,14 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- MCP servers can now prompt the user mid-tool-call through form elicitation. The TUI renders the
+  requested fields — text, number, yes/no, and filterable choice lists — labelled with the server
+  that asked, and returns the answer inside the open call; declining or cancelling answers the
+  server instead of leaving it waiting. The elicitation capability is declared only when a host can
+  actually prompt, so headless and SDK runs (unless they pass `onElicit`) leave servers to fail such
+  requests themselves rather than block. Answers are validated against the requested schema before
+  they are sent, and requests Book cannot render faithfully — URL mode, or schemas outside the
+  protocol's primitive subset — are declined.
 - MCP now uses the official protocol SDK and works in the interactive TUI as well as print and SDK
   runs. It supports stdio, Streamable HTTP, and legacy SSE servers; content blocks, structured
   errors, cancellation, pagination, negotiated metadata, dynamic `tools/list_changed` refresh,

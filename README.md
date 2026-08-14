@@ -163,6 +163,19 @@ project servers. `/mcp` shows live status in the TUI; `book mcp list|get|add|rem
 declarations. Permission rules may target one server (`mcp__github`) or one exact tool
 (`mcp__github__create_issue`).
 
+Servers may ask the user for input mid-call through MCP form elicitation — a project picker, a
+confirmation, a missing parameter. The interactive TUI answers those requests: the form shows which
+server is asking, offers its fields (text, number, yes/no, and choice lists, which filter as you
+type), and returns the answer inside the still-open tool call. `D` declines, `Esc` cancels, and
+either way the server is told rather than left waiting. URL-mode elicitation is not supported and is
+declined.
+
+Only the TUI can prompt. Headless (`--print`) runs, and SDK runs without an `onElicit` callback, do
+not declare the capability at all, so a server fails such a request itself instead of blocking on a
+prompt nobody will see. For unattended runs, pass the value explicitly in the tool call or give the
+server a default — for example the Azure DevOps server reads `ado_mcp_project` from its `env` block
+and skips the project prompt entirely.
+
 Legacy `.bookrc.json` is still supported but deprecated. Use `--no-settings` to skip all `settings.json` layers (defaults + legacy only).
 
 Scalar values use the highest-priority layer. Permission rules, hook lists, and

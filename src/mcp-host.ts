@@ -27,7 +27,7 @@ import {
 } from './mcp-approvals.js';
 import { createDebugLogger } from './debug-log.js';
 import type { McpSettings } from './settings.js';
-import type { ToolDefinition } from './types/tools.js';
+import type { ElicitationHandler, ToolDefinition } from './types/tools.js';
 
 const log = createDebugLogger('mcp');
 
@@ -106,6 +106,7 @@ export class McpSessionHost {
   private readonly events: McpHostEvent[] = [];
   private readonly abortController = new AbortController();
   private readonly persistChoice: typeof persistMcpProjectServerChoice;
+  private elicitationHandler?: ElicitationHandler;
   private nextEventId = 1;
   private snapshot: McpHostSnapshot = { servers: [], pendingApprovals: [], events: [] };
   private started = false;
@@ -200,6 +201,11 @@ export class McpSessionHost {
     return () => this.listeners.delete(listener);
   }
 
+  /** Install the host prompt used to answer server elicitation requests. */
+  setElicitationHandler(handler: ElicitationHandler | undefined): void {
+    this.elicitationHandler = handler;
+  }
+
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
@@ -221,6 +227,13 @@ export class McpSessionHost {
         onDiagnostic: (diagnostic) => log.debug(diagnostic.message),
         onToolListChanged: (serverName) => this.handleToolListChanged(serverName),
         onConnectionClosed: (serverName) => this.handleConnectionClosed(serverName),
+        // Stable indirection: servers connect in the background before the UI
+        // can install its prompt, so the capability is declared up front and
+        // the handler is resolved per request.
+        onElicit: (request, context) =>
+          this.elicitationHandler
+            ? this.elicitationHandler(request, context)
+            : Promise.resolve({ action: 'decline' as const }),
       });
       const connection = result.connections[0];
       if (this.disposed) {

@@ -1,4 +1,6 @@
 import type {
+  ElicitationRequest,
+  ElicitationResponse,
   PermissionResult,
   PlanApprovalResult,
   ToolCall,
@@ -21,10 +23,15 @@ export interface PendingUserQuestionRequest {
   readonly request: UserQuestionRequest;
 }
 
+export interface PendingElicitationRequest {
+  readonly request: ElicitationRequest;
+}
+
 export interface AgentInteractionSnapshot {
   readonly pendingPermission: PendingPermissionRequest | null;
   readonly pendingPlanApproval: PendingPlanApprovalRequest | null;
   readonly pendingUserQuestions: readonly PendingUserQuestionRequest[];
+  readonly pendingElicitations: readonly PendingElicitationRequest[];
 }
 
 interface PendingPermission extends PendingPermissionRequest {
@@ -39,10 +46,15 @@ interface PendingUserQuestion extends PendingUserQuestionRequest {
   resolve: (result: UserQuestionResponse) => void;
 }
 
+interface PendingElicitation extends PendingElicitationRequest {
+  resolve: (result: ElicitationResponse) => void;
+}
+
 export interface CancelInteractionResult {
   permission: boolean;
   planApproval: boolean;
   userQuestions: number;
+  elicitations: number;
 }
 
 type InteractionListener = (snapshot: AgentInteractionSnapshot) => void;
@@ -51,12 +63,16 @@ function snapshotOf(
   permission: PendingPermission | null,
   planApproval: PendingPlanApproval | null,
   userQuestions: PendingUserQuestion[],
+  elicitations: PendingElicitation[],
 ): AgentInteractionSnapshot {
   return Object.freeze({
     pendingPermission: permission ? Object.freeze({ toolCall: permission.toolCall }) : null,
     pendingPlanApproval: planApproval ? Object.freeze({ plan: planApproval.plan }) : null,
     pendingUserQuestions: Object.freeze(
       userQuestions.map((entry) => Object.freeze({ request: entry.request })),
+    ),
+    pendingElicitations: Object.freeze(
+      elicitations.map((entry) => Object.freeze({ request: entry.request })),
     ),
   });
 }
@@ -67,7 +83,8 @@ export class AgentInteractionController {
   private pendingPermissionQueue: PendingPermission[] = [];
   private pendingPlanApproval: PendingPlanApproval | null = null;
   private pendingUserQuestions: PendingUserQuestion[] = [];
-  private snapshot = snapshotOf(null, null, []);
+  private pendingElicitations: PendingElicitation[] = [];
+  private snapshot = snapshotOf(null, null, [], []);
   private readonly listeners = new Set<InteractionListener>();
 
   getSnapshot(): AgentInteractionSnapshot {
@@ -205,11 +222,65 @@ export class AgentInteractionController {
     return pending.length;
   }
 
+  /**
+   * Queue an MCP elicitation. The server request behind it stays open until
+   * this settles, so every exit path must resolve it — see cancelAll.
+   */
+  requestElicitation(request: ElicitationRequest): Promise<ElicitationResponse> {
+    if (this.pendingElicitations.some((entry) => entry.request.id === request.id)) {
+      return Promise.resolve({ action: 'cancel' });
+    }
+    return new Promise((resolve) => {
+      this.pendingElicitations = [...this.pendingElicitations, { request, resolve }];
+      this.publish();
+      log.event('elicitation:pending', {
+        id: request.id,
+        server: request.server,
+        fields: request.fields.length,
+        queueLength: this.pendingElicitations.length,
+      });
+    });
+  }
+
+  settleElicitation(result: ElicitationResponse, via: string, requestId?: string): boolean {
+    const index = requestId
+      ? this.pendingElicitations.findIndex((entry) => entry.request.id === requestId)
+      : 0;
+    if (index < 0 || this.pendingElicitations.length === 0) {
+      log.event('elicitation:settled:noop', { reason: 'no-pending', via, requestId });
+      return false;
+    }
+
+    const next = [...this.pendingElicitations];
+    const [pending] = next.splice(index, 1);
+    this.pendingElicitations = next;
+    this.publish();
+    log.event('elicitation:settled', {
+      id: pending.request.id,
+      action: result.action,
+      via,
+      remaining: next.length,
+    });
+    pending.resolve(result);
+    return true;
+  }
+
+  cancelElicitations(via: string): number {
+    const pending = this.pendingElicitations;
+    if (pending.length === 0) return 0;
+    this.pendingElicitations = [];
+    this.publish();
+    for (const entry of pending) entry.resolve({ action: 'cancel' });
+    log.event('elicitation:cancelled-all', { via, count: pending.length });
+    return pending.length;
+  }
+
   cancelAll(via: string): CancelInteractionResult {
     return {
       permission: this.cancelPermissions(via),
       planApproval: this.settlePlanApproval('reject', via),
       userQuestions: this.cancelUserQuestions(via),
+      elicitations: this.cancelElicitations(via),
     };
   }
 
@@ -218,6 +289,7 @@ export class AgentInteractionController {
       this.pendingPermission,
       this.pendingPlanApproval,
       this.pendingUserQuestions,
+      this.pendingElicitations,
     );
     for (const listener of this.listeners) listener(this.snapshot);
   }

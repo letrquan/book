@@ -1,6 +1,8 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { Message, Usage, LocalCommandDisplay } from '../../types/messages.js';
 import type {
+  ElicitationHandler,
+  ElicitationResponse,
   NestedToolInvocation,
   ToolDefinition,
   ToolResult,
@@ -264,7 +266,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   );
   const { interactions, operations } = agentSession;
   const [interactionSnapshot, setInteractionSnapshot] = useState(() => interactions.getSnapshot());
-  const { pendingPermission, pendingPlanApproval, pendingUserQuestions } = interactionSnapshot;
+  const { pendingPermission, pendingPlanApproval, pendingUserQuestions, pendingElicitations } =
+    interactionSnapshot;
   const [turnDurationMs, setTurnDurationMs] = useState<number>(0);
   const [sessionId, setSessionId] = useState(session.sessionId);
   const [sessionName, setSessionName] = useState(session.sessionName);
@@ -1122,6 +1125,19 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [settleUserQuestion],
   );
 
+  const resolveElicitation = useCallback(
+    (result: ElicitationResponse) => {
+      interactions.settleElicitation(result, 'resolve');
+    },
+    [interactions],
+  );
+
+  /** Installed on the MCP host so servers can prompt through this session. */
+  const elicitationHandler = useCallback<ElicitationHandler>(
+    (request) => interactions.requestElicitation(request),
+    [interactions],
+  );
+
   // Abort the in-flight agent stream (Esc while thinking) or compact request.
   // The active lease stays held until its finally block; only its signal is aborted.
   const cancel = useCallback(() => {
@@ -1832,6 +1848,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     pendingPlanApproval,
     pendingUserQuestion: pendingUserQuestions[0] ?? null,
     pendingUserQuestionCount: pendingUserQuestions.length,
+    pendingElicitation: pendingElicitations[0] ?? null,
+    pendingElicitationCount: pendingElicitations.length,
     agentTodos,
     turnDurationMs,
     retryPhase,
@@ -1856,6 +1874,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     cancelPermission,
     resolvePlanApproval,
     resolveUserQuestion,
+    resolveElicitation,
+    elicitationHandler,
     cancel,
     compact,
     rewind,

@@ -41,6 +41,43 @@ export type UserQuestionHandler = (
   context: { signal?: AbortSignal },
 ) => Promise<UserQuestionResponse>;
 
+/**
+ * One field of an MCP `elicitation/create` form, flattened from the protocol's
+ * restricted JSON Schema subset (top-level primitives only). Enum options come
+ * from either `enum`/`enumNames` or the `oneOf: [{const, title}]` spelling.
+ */
+export type ElicitationField = {
+  name: string;
+  title: string;
+  description?: string;
+  required: boolean;
+} & (
+  | { kind: 'string'; format?: string; minLength?: number; maxLength?: number; default?: string }
+  | { kind: 'number'; integer: boolean; minimum?: number; maximum?: number; default?: number }
+  | { kind: 'boolean'; default?: boolean }
+  | { kind: 'enum'; options: Array<{ value: string; label: string }>; default?: string }
+);
+
+export interface ElicitationRequest {
+  id: string;
+  /** Declared name of the MCP server asking, so the user can see who is asking. */
+  server: string;
+  message: string;
+  fields: ElicitationField[];
+}
+
+export type ElicitationValue = string | number | boolean;
+
+export type ElicitationResponse =
+  | { action: 'accept'; content: Record<string, ElicitationValue> }
+  | { action: 'decline' }
+  | { action: 'cancel' };
+
+export type ElicitationHandler = (
+  request: ElicitationRequest,
+  context: { signal?: AbortSignal },
+) => Promise<ElicitationResponse>;
+
 export interface ToolCall {
   id: string;
   name: string;

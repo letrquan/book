@@ -1,7 +1,7 @@
 /** Book Agent SDK — programmatic API for embedding Book as a library. */
 
 import { join } from 'path';
-import type { UserQuestionHandler } from './types/tools.js';
+import type { ElicitationHandler, UserQuestionHandler } from './types/tools.js';
 import type { AgentConfig } from './types/runtime.js';
 import type { SessionStoreInterface } from './types/sessions.js';
 import { freezeAgentConfig, loadConfig, type LoadConfigOptions } from './config.js';
@@ -36,6 +36,12 @@ export interface QueryOptions {
   sessionStore?: SessionStoreInterface;
   signal?: AbortSignal;
   onUserQuestionRequired?: UserQuestionHandler;
+  /**
+   * Answer MCP form elicitations. Supplying it declares the elicitation
+   * capability to connected servers; without it they fail such requests
+   * themselves rather than blocking on a prompt no one can see.
+   */
+  onElicit?: ElicitationHandler;
   agents?: 'adaptive' | 'manual' | 'off';
   /** Forward high-volume managed-agent text deltas. Defaults to false. */
   forwardSubagentText?: boolean;
@@ -128,6 +134,7 @@ export async function* query(
       const mcp = await connectMcpServers(config.workspace, {
         signal: controller.signal,
         servers: mcpServersToRecord(mcpPartition.allowed),
+        onElicit: options.onElicit,
       });
       connections = mcp.connections;
       const registry = createDefaultRegistry({ agents: config.settings.agents.mode !== 'off' });
@@ -320,4 +327,9 @@ export type {
   UserQuestionResponse,
   UserQuestionSource,
   UserQuestionHandler,
+  ElicitationField,
+  ElicitationRequest,
+  ElicitationResponse,
+  ElicitationValue,
+  ElicitationHandler,
 } from './types/tools.js';

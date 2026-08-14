@@ -3,6 +3,7 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import type { Message } from '../../types/messages.js';
 import type { RetryPhase } from '../../types/runtime.js';
 import type {
+  PendingElicitationRequest,
   PendingPermissionRequest,
   PendingPlanApprovalRequest,
   PendingUserQuestionRequest,
@@ -27,6 +28,7 @@ interface WorkingIndicatorProps {
   pendingPermission?: PendingPermissionRequest | null;
   pendingPlanApproval?: PendingPlanApprovalRequest | null;
   pendingUserQuestion?: PendingUserQuestionRequest | null;
+  pendingElicitation?: PendingElicitationRequest | null;
   retryPhase?: RetryPhase;
   retryAttempt?: number;
   retryMax?: number;
@@ -87,6 +89,7 @@ export function WorkingIndicator({
   pendingPermission,
   pendingPlanApproval,
   pendingUserQuestion,
+  pendingElicitation,
   retryPhase = 'none',
   retryAttempt = 0,
   retryMax = 0,
@@ -103,7 +106,8 @@ export function WorkingIndicator({
     retryPhase === 'none' &&
     !pendingPermission &&
     !pendingPlanApproval &&
-    !pendingUserQuestion;
+    !pendingUserQuestion &&
+    !pendingElicitation;
   const elapsedSeconds = useElapsedSeconds(shouldTrackElapsed, motionDisabled);
   const activity = deriveWorkingActivity({
     isThinking,
@@ -113,7 +117,8 @@ export function WorkingIndicator({
     streamingMessageId,
     pendingPermission: Boolean(pendingPermission),
     pendingPlanApproval: Boolean(pendingPlanApproval),
-    pendingUserQuestion: Boolean(pendingUserQuestion),
+    // An MCP form asks the user for input just like a question does.
+    pendingUserQuestion: Boolean(pendingUserQuestion || pendingElicitation),
     retryPhase,
     retryAttempt,
     retryMax,
@@ -181,7 +186,7 @@ export function WorkingIndicator({
 
   const hint = pendingPlanApproval
     ? ' · choose approve, adjust, or reject above'
-    : pendingUserQuestion
+    : pendingUserQuestion || pendingElicitation
       ? ' · answer the question above'
       : pendingPermission
         ? ' · Esc to deny'
