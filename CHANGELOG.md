@@ -35,6 +35,17 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Experimental execution workflows for the observe-mode harness. `harness.workflow` (settings) and
+  `--harness-workflow <id>` (run-scoped) select one of three validated built-ins — `minimal`,
+  `safe-edit`, and `verify-heavy` — from a hashed registry. `minimal` renders no prompt text and
+  leaves provider messages byte-identical to a run with no harness. Workflows are bounded guidance
+  only: permissions, sandboxing, budgets, retries, compaction, checkpoint/resume, and tool contracts
+  remain host-owned, unsupported requests are clamped and recorded as `capability_clamped` evidence,
+  and a definition's free-form description is never rendered as an instruction. Every run records the
+  requested and effective workflow, source, reason, registry/definition digests, override scope, and
+  declared complexity. Selection fails closed — a workflow chosen while `harness.mode` is `off`, an
+  unknown ID, or a path-like ID is rejected by `book config set` and at startup rather than silently
+  ignored. Project-defined workflow files are not loaded.
 - MCP servers can now prompt the user mid-tool-call through form elicitation. The TUI renders the
   requested fields — text, number, yes/no, and filterable choice lists — labelled with the server
   that asked, and returns the answer inside the open call; declining or cancelling answers the

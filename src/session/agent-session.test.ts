@@ -1722,6 +1722,125 @@ describe('AgentSession harness observation', () => {
     expect(runLoop).not.toHaveBeenCalled();
   });
 
+  it('threads a manually selected workflow into the loop context and the ledger', async () => {
+    const fixture = observeFixture();
+    try {
+      fixture.config.harnessWorkflowOverride = 'verify-heavy';
+      let seen: Readonly<HarnessRunContext> | undefined;
+      const session = new AgentSession({
+        harnessCoordinator: fixture.coordinator,
+        runLoop: async (_config, _registry, _prompt, history, _callbacks, _mode, options) => {
+          seen = options?.harnessContext;
+          return history;
+        },
+      });
+      await session.run({
+        config: fixture.config,
+        registry: {} as ToolRegistry,
+        prompt: 'run with a selected workflow',
+        history: [],
+        sessionId: 'session-workflow-1',
+        options: { userMessageId: 'root-workflow-run-1' },
+        callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+      });
+
+      expect(seen?.workflow).toMatchObject({
+        id: 'verify-heavy',
+        version: 1,
+        source: 'manual',
+        reasonCode: 'manual_run_override',
+      });
+      expect(seen?.workflowPolicySection).toContain('Active workflow: verify-heavy v1');
+
+      const run = await fixture.store.readRun('root-workflow-run-1');
+      const started = run.records.find((record) => record.eventType === 'run_started');
+      expect((started?.data as { metadata: Record<string, unknown> }).metadata).toMatchObject({
+        workflowId: 'verify-heavy',
+        workflowSource: 'manual',
+        workflowOverrideScope: 'run',
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('adds no workflow policy to the run context when nothing is selected', async () => {
+    const fixture = observeFixture();
+    try {
+      let seen: Readonly<HarnessRunContext> | undefined;
+      const session = new AgentSession({
+        harnessCoordinator: fixture.coordinator,
+        runLoop: async (_config, _registry, _prompt, history, _callbacks, _mode, options) => {
+          seen = options?.harnessContext;
+          return history;
+        },
+      });
+      await session.run({
+        config: fixture.config,
+        registry: {} as ToolRegistry,
+        prompt: 'baseline run',
+        history: [],
+        sessionId: 'session-workflow-2',
+        options: { userMessageId: 'root-workflow-run-2' },
+        callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+      });
+
+      expect(seen?.workflow).toMatchObject({ id: 'baseline', source: 'baseline' });
+      expect(seen?.workflowPolicySection).toBeUndefined();
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('rejects a workflow selected with the harness off, even from a direct host', async () => {
+    // A direct host may not have passed through loadConfig, so the run boundary
+    // has to repeat the fail-closed check rather than trust the caller.
+    const config = defaultConfig();
+    config.settings.harness.mode = 'off';
+    config.settings.harness.workflow = 'safe-edit';
+    const runLoop = vi.fn(async (_config, _registry, _prompt, history) => history);
+    const onEvent = vi.fn();
+    const session = new AgentSession({ runLoop });
+    await expect(
+      session.run({
+        config,
+        registry: {} as ToolRegistry,
+        prompt: 'must not start',
+        history: [],
+        sessionId: 'session-workflow-off',
+        callbacks: { onEvent, onTurnStart: () => {} },
+      }),
+    ).rejects.toThrow('requires an enabled harness mode');
+    expect(runLoop).not.toHaveBeenCalled();
+    // Rejection must precede accounting, ambient, and run_started, so the host
+    // is never left waiting for a terminal event that will not arrive.
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it('fails the run rather than degrading to baseline for an unknown workflow', async () => {
+    const fixture = observeFixture();
+    try {
+      fixture.config.harnessWorkflowOverride = 'not-a-workflow';
+      const runLoop = vi.fn(async (_config, _registry, _prompt, history) => history);
+      const onEvent = vi.fn();
+      const session = new AgentSession({ harnessCoordinator: fixture.coordinator, runLoop });
+      await expect(
+        session.run({
+          config: fixture.config,
+          registry: {} as ToolRegistry,
+          prompt: 'must not start',
+          history: [],
+          sessionId: 'session-workflow-3',
+          callbacks: { onEvent, onTurnStart: () => {} },
+        }),
+      ).rejects.toThrow('Unknown harness workflow');
+      expect(runLoop).not.toHaveBeenCalled();
+      expect(onEvent).not.toHaveBeenCalled();
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('seals a complete root evidence stream without changing the run result', async () => {
     const fixture = observeFixture();
     try {

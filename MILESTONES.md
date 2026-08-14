@@ -73,8 +73,12 @@ See [plans/security-assessment.md](plans/security-assessment.md) for the current
 - [x] Phase 2: observe-only append-only run-evidence ledger — sealed per-root hash-chained JSONL
   streams, allowlist redaction, OTel-mapped telemetry, deferred headless root seals, and explicit
   managed-continuation child linkage.
-- [ ] Phases 3-3B: fixed workflows, explicit capability manifests, and reliable deterministic
-  routing.
+- [x] Phase 3: validated fixed workflow registry — three built-in definitions (`minimal`,
+  `safe-edit`, `verify-heavy`) behind recursively strict validation and a hashed registry, manually
+  selected through `harness.workflow` or `--harness-workflow`, rendered as bounded guidance in the
+  dynamic prompt zone, with kernel clamps and full provenance recorded per run. Selection fails
+  closed under `harness.mode = off` and on unknown or path-like IDs; no automatic selection exists.
+- [ ] Phases 3A-3B: explicit capability manifests and reliable deterministic routing.
 - [ ] Phases 4-8: selector, externally grounded outcomes, shadow evaluation, scoped canaries, and
   bounded workflow evolution. None of these phases currently controls live runtime behavior.
 - [ ] Phase 9 remains a future research gate for cross-context transfer.

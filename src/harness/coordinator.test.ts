@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHarnessCoordinator } from './coordinator.js';
+import {
+  builtinWorkflowRegistry,
+  createHarnessCoordinator,
+  selectWorkflow,
+} from './coordinator.js';
 import { RunEvidenceStore } from './run-store.js';
 import { workspaceIdentity } from '../tools/file-provenance.js';
 
@@ -46,6 +50,120 @@ describe('observe-mode harness coordinator', () => {
     const run = await store.readRun('root-observe-1');
     expect(run.status).toBe('complete');
     expect(run.seal?.terminalStatus).toBe('completed');
+  });
+
+  it('records the selected workflow, its digests, and its clamps with the run', async () => {
+    const { coordinator, store, workspace } = await fixture();
+    const registry = builtinWorkflowRegistry();
+    const selection = selectWorkflow(registry, { mode: 'observe', runOverride: 'verify-heavy' });
+    const resolved = selection.resolved!;
+    const prepared = await coordinator.prepareRun({
+      mode: 'observe',
+      identity: identity(workspace, 'root-workflow-1'),
+      workflow: {
+        decision: selection.decision,
+        registryVersion: selection.registryVersion,
+        registryDigest: selection.registryDigest,
+        overrideScope: selection.overrideScope,
+        definitionDigest: resolved.definitionDigest,
+        policyRenderVersion: resolved.policyRenderVersion,
+        policySection: resolved.policySection,
+        clamps: [
+          { field: 'execution.retryPosture', reason: 'retry_correctness_is_kernel_controlled' },
+        ],
+        activeFieldCount: resolved.complexity.activeFieldCount,
+        renderedChars: resolved.complexity.renderedChars,
+        requestedExtraCalls: resolved.complexity.requestedExtraCalls,
+      },
+    });
+    expect(prepared.status).toBe('prepared');
+    if (prepared.status !== 'prepared') return;
+    expect(prepared.context.workflow).toMatchObject({
+      id: 'verify-heavy',
+      version: 1,
+      source: 'manual',
+      reasonCode: 'manual_run_override',
+    });
+    expect(prepared.context.workflowPolicySection).toContain('## Execution policy');
+    expect(prepared.context.workflowPolicyRenderVersion).toBe('phase-3-v1');
+
+    await coordinator.finalizeRun('root-workflow-1', { status: 'completed' });
+    const run = await store.readRun('root-workflow-1');
+    const started = run.records.find((record) => record.eventType === 'run_started');
+    const startedData = started?.data as { workflow: string; metadata: Record<string, unknown> };
+    expect(startedData.workflow).toBe('verify-heavy');
+    expect(startedData.metadata).toMatchObject({
+      workflowId: 'verify-heavy',
+      workflowVersion: 1,
+      workflowSource: 'manual',
+      workflowReasonCode: 'manual_run_override',
+      workflowOverrideScope: 'run',
+      workflowRegistryDigest: registry.digest,
+      workflowDefinitionDigest: resolved.definitionDigest,
+      workflowPolicyRenderVersion: 'phase-3-v1',
+      workflowClampCount: 1,
+    });
+
+    const clamped = run.records.filter((record) => record.eventType === 'capability_clamped');
+    expect(clamped).toHaveLength(1);
+    expect(clamped[0].data).toMatchObject({
+      attributes: {
+        workflowId: 'verify-heavy',
+        clampedField: 'execution.retryPosture',
+        clampReason: 'retry_correctness_is_kernel_controlled',
+      },
+    });
+  });
+
+  it('keeps the baseline label and adds no prompt policy when nothing is selected', async () => {
+    const { coordinator, store, workspace } = await fixture();
+    const selection = selectWorkflow(builtinWorkflowRegistry(), { mode: 'observe' });
+    const prepared = await coordinator.prepareRun({
+      mode: 'observe',
+      identity: identity(workspace, 'root-baseline-1'),
+      workflow: {
+        decision: selection.decision,
+        registryVersion: selection.registryVersion,
+        registryDigest: selection.registryDigest,
+        overrideScope: selection.overrideScope,
+      },
+    });
+    expect(prepared.status).toBe('prepared');
+    if (prepared.status !== 'prepared') return;
+    expect(prepared.context.workflow).toMatchObject({ id: 'baseline', source: 'baseline' });
+    expect(prepared.context.workflowPolicySection).toBeUndefined();
+
+    await coordinator.finalizeRun('root-baseline-1', { status: 'completed' });
+    const run = await store.readRun('root-baseline-1');
+    const started = run.records.find((record) => record.eventType === 'run_started');
+    expect((started?.data as { workflow: string }).workflow).toBe('baseline');
+    expect(run.records.some((record) => record.eventType === 'capability_clamped')).toBe(false);
+  });
+
+  it('renders no execution policy for the minimal workflow', async () => {
+    const { coordinator, workspace } = await fixture();
+    const selection = selectWorkflow(builtinWorkflowRegistry(), {
+      mode: 'observe',
+      runOverride: 'minimal',
+    });
+    const prepared = await coordinator.prepareRun({
+      mode: 'observe',
+      identity: identity(workspace, 'root-minimal-1'),
+      workflow: {
+        decision: selection.decision,
+        registryVersion: selection.registryVersion,
+        registryDigest: selection.registryDigest,
+        overrideScope: selection.overrideScope,
+        policySection: selection.resolved!.policySection,
+        policyRenderVersion: selection.resolved!.policyRenderVersion,
+      },
+    });
+    expect(prepared.status).toBe('prepared');
+    if (prepared.status !== 'prepared') return;
+    expect(prepared.context.workflow?.id).toBe('minimal');
+    expect(prepared.context.workflowPolicySection).toBeUndefined();
+    expect(prepared.context.workflowPolicyRenderVersion).toBeUndefined();
+    await coordinator.finalizeRun('root-minimal-1', { status: 'completed' });
   });
 
   it('joins child runs to the open root stream without letting them seal it', async () => {

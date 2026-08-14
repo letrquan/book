@@ -107,4 +107,58 @@ describe('CLI --settings flag', () => {
     expect(result.stderr).toContain('Harness mode "shadow"');
     expect(existsSync(join(dir, '.book'))).toBe(false);
   }, 20000);
+
+  it('persists a workflow selection when the mode is enabled in another scope', () => {
+    // `book config set` validates one document, where `harness.mode` falls back
+    // to its schema default. It must not reject a workflow because the mode
+    // lives in a different settings layer.
+    dir = mkdtempSync(join(tmpdir(), 'book-cli-'));
+    const env = isolatedEnv();
+    // User-global scope: isolatedEnv points HOME/USERPROFILE at `dir`.
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(
+      join(dir, '.book', 'settings.json'),
+      JSON.stringify({ harness: { mode: 'observe' } }),
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        'src/index.ts',
+        'config',
+        '--workspace',
+        dir,
+        'set',
+        'harness.workflow',
+        'safe-edit',
+      ],
+      { env, encoding: 'utf8', timeout: 15_000 },
+    );
+
+    expect(result.stderr).not.toContain('requires an enabled harness mode');
+    expect(result.status).toBe(0);
+  }, 20000);
+
+  it('refuses to persist an unknown workflow id', () => {
+    dir = mkdtempSync(join(tmpdir(), 'book-cli-'));
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        'src/index.ts',
+        'config',
+        '--workspace',
+        dir,
+        'set',
+        'harness',
+        JSON.stringify({ mode: 'observe', workflow: 'not-a-workflow' }),
+      ],
+      { env: isolatedEnv(), encoding: 'utf8', timeout: 15_000 },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Unknown harness workflow "not-a-workflow"');
+  }, 20000);
 });

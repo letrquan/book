@@ -1,9 +1,5 @@
-import {
-  createHash,
-  generateKeyPairSync,
-  sign as signBytes,
-  verify as verifyBytes,
-} from 'node:crypto';
+import { generateKeyPairSync, sign as signBytes, verify as verifyBytes } from 'node:crypto';
+import { canonicalJson, sha256Hex } from './canonical-json.js';
 import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
@@ -52,6 +48,16 @@ export interface RunLedgerMetadata {
   readonly workflowId?: string;
   readonly workflowVersion?: number;
   readonly workflowSource?: string;
+  readonly workflowReasonCode?: string;
+  readonly workflowOverrideScope?: string;
+  readonly workflowRegistryVersion?: number;
+  readonly workflowRegistryDigest?: string;
+  readonly workflowDefinitionDigest?: string;
+  readonly workflowPolicyRenderVersion?: string;
+  readonly workflowClampCount?: number;
+  readonly workflowActiveFieldCount?: number;
+  readonly workflowRenderedChars?: number;
+  readonly workflowRequestedExtraCalls?: number;
   readonly model?: string;
   readonly provider?: string;
   readonly runtimeFingerprint?: string;
@@ -192,33 +198,10 @@ export interface RunFinalizeResult extends HarnessObserverFlushResult {
   readonly seal?: RunLedgerSeal;
 }
 
-function canonicalize(value: unknown): string {
-  if (value === null) return 'null';
-  if (typeof value === 'string') return JSON.stringify(value);
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new Error('Non-finite number is not canonical JSON.');
-    return JSON.stringify(Object.is(value, -0) ? 0 : value);
-  }
-  if (Array.isArray(value)) return `[${value.map((entry) => canonicalize(entry)).join(',')}]`;
-  if (typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
-    return `{${entries
-      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalize(entry)}`)
-      .join(',')}}`;
-  }
-  throw new Error(`Unsupported canonical JSON value: ${typeof value}`);
-}
+const canonicalize = canonicalJson;
+const sha256 = sha256Hex;
 
-export function canonicalJson(value: unknown): string {
-  return canonicalize(value);
-}
-
-function sha256(value: string | Uint8Array): string {
-  return createHash('sha256').update(value).digest('hex');
-}
+export { canonicalJson };
 
 export function hashLedgerRecord(record: Omit<HarnessEventEnvelope, 'recordHash'>): string {
   const body = canonicalize(record);
@@ -301,10 +284,24 @@ function safeMetadataValue(value: unknown): string | number | undefined {
 }
 
 function metadataProjection(metadata: RunLedgerMetadata): Record<string, unknown> {
-  const result: Record<string, unknown> = { mode: metadata.mode, workflowId: 'baseline' };
+  const result: Record<string, unknown> = {
+    mode: metadata.mode,
+    // A run with no selection keeps the Phase 2 `baseline` label.
+    workflowId: safeMetadataValue(metadata.workflowId) ?? 'baseline',
+  };
   for (const key of [
     'workflowVersion',
     'workflowSource',
+    'workflowReasonCode',
+    'workflowOverrideScope',
+    'workflowRegistryVersion',
+    'workflowRegistryDigest',
+    'workflowDefinitionDigest',
+    'workflowPolicyRenderVersion',
+    'workflowClampCount',
+    'workflowActiveFieldCount',
+    'workflowRenderedChars',
+    'workflowRequestedExtraCalls',
     'model',
     'provider',
     'runtimeFingerprint',
@@ -435,7 +432,7 @@ export class RunLedgerWriter {
           // Scalar identity projection only; the raw start input carries the
           // unprojected metadata object and must not enter the stream directly.
           identity: redactIdentity(options.identity),
-          workflow: 'baseline',
+          workflow: safeMetadataValue(options.identity.metadata.workflowId) ?? 'baseline',
           metadata: metadataProjection(options.identity.metadata),
           durability: DURABILITY_POLICY_VERSION,
           redactionPolicyVersion: REDACTION_POLICY_VERSION,

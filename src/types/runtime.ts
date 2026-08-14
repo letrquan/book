@@ -132,6 +132,12 @@ export interface AgentConfig {
     overridePath?: string;
     noSettings?: boolean;
   };
+  /**
+   * Run-scoped harness workflow selection (`--harness-workflow`). It outranks
+   * `settings.harness.workflow` and is never persisted; a resumed process
+   * starts again from the settings value.
+   */
+  harnessWorkflowOverride?: string;
   /** Retry configuration (from settings.json + env vars). */
   retry: RetryConfig;
   /** Thinking effort level (Anthropic adaptive thinking / output_config.effort). */

@@ -15,7 +15,11 @@ import type { ZodIssue } from 'zod';
 import { deleteNestedValue, setNestedValue } from './cli/utils.js';
 import { bookSettingsSchema, harnessModeSchema } from './settings.js';
 import { redactSettingValue } from './settings-redaction.js';
-import { assertHarnessModeAvailable } from './harness/coordinator.js';
+import {
+  HarnessWorkflowUnknownError,
+  assertHarnessModeAvailable,
+  builtinWorkflowRegistry,
+} from './harness/coordinator.js';
 
 export type SettingsDocumentReadResult =
   | { status: 'absent'; path: string }
@@ -142,6 +146,16 @@ function preflightHarnessMode(
   }
 }
 
+function assertKnownWorkflow(workflowId: string | undefined): void {
+  if (!workflowId) return;
+  const registry = builtinWorkflowRegistry();
+  if (registry.get(workflowId)) return;
+  throw new HarnessWorkflowUnknownError(
+    workflowId,
+    registry.list().map((entry) => entry.requested.id),
+  );
+}
+
 export class SettingsRepository {
   private readonly writeAtomic: (path: string, contents: string) => void;
 
@@ -266,6 +280,20 @@ export class SettingsRepository {
         diagnostics.push({
           path: this.path,
           issuePath: 'harness.mode',
+          message: safeMessage(error),
+        });
+      }
+      try {
+        // Only the layer-local fact is checkable here: `validation.data` is one
+        // document, so `harness.mode` falls back to its schema default and says
+        // nothing about the mode another scope sets. Reject an unknown workflow
+        // (always wrong, in any layer); leave the mode pairing to `loadConfig`,
+        // which sees the merged layers.
+        assertKnownWorkflow(validation.data.harness.workflow);
+      } catch (error) {
+        diagnostics.push({
+          path: this.path,
+          issuePath: 'harness.workflow',
           message: safeMessage(error),
         });
       }

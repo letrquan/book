@@ -59,7 +59,9 @@ import type {
   HarnessObserver,
   HarnessCoordinator,
   HarnessObserverFlushResult,
+  WorkflowProvenance,
 } from '../harness/contracts.js';
+import { builtinWorkflowRegistry, selectWorkflow } from '../harness/coordinator.js';
 import { createHarnessCoordinator, wrapAgentLoopCallbacks } from '../harness/coordinator.js';
 import { assertHarnessModeAvailable } from '../harness/coordinator.js';
 
@@ -813,6 +815,15 @@ export class AgentSession {
     // passed through config loading, so reject unavailable modes before run ID,
     // accounting, ambient, or runtime setup.
     assertHarnessModeAvailable(request.config.settings.harness.mode);
+    // Selection is part of that same pre-setup gate. An unknown or unavailable
+    // workflow must fail the run rather than degrade to a silent baseline, and
+    // it must fail before accounting and ambient state exist — a throw after
+    // those are recorded would leave the host without a terminal event.
+    const workflowSelection = selectWorkflow(builtinWorkflowRegistry(), {
+      mode: request.config.settings.harness.mode,
+      runOverride: request.config.harnessWorkflowOverride,
+      settingsWorkflow: request.config.settings.harness.workflow,
+    });
     const { callbacks } = request;
     const runGeneration = ++this.runGeneration;
     let usage: Usage | null = null;
@@ -853,6 +864,22 @@ export class AgentSession {
     let harnessContext = request.harnessContext;
     let harnessPreparationError: string | undefined;
     const harnessMode = request.config.settings.harness.mode;
+    const workflowProvenance: WorkflowProvenance = {
+      decision: workflowSelection.decision,
+      registryVersion: workflowSelection.registryVersion,
+      registryDigest: workflowSelection.registryDigest,
+      overrideScope: workflowSelection.overrideScope,
+      definitionDigest: workflowSelection.resolved?.definitionDigest,
+      policyRenderVersion: workflowSelection.resolved?.policyRenderVersion,
+      policySection: workflowSelection.resolved?.policySection,
+      clamps: workflowSelection.resolved?.clamps.map((entry) => ({
+        field: entry.field,
+        reason: entry.reason,
+      })),
+      activeFieldCount: workflowSelection.resolved?.complexity.activeFieldCount,
+      renderedChars: workflowSelection.resolved?.complexity.renderedChars,
+      requestedExtraCalls: workflowSelection.resolved?.complexity.requestedExtraCalls,
+    };
     if (!harnessObserver && harnessMode !== 'off') {
       try {
         const coordinator =
@@ -870,11 +897,9 @@ export class AgentSession {
             resumedFromRunId: runContext.resumedFromRunId,
             sessionId: runContext.sessionId,
           },
+          workflow: workflowProvenance,
           metadata: {
             mode: 'observe',
-            workflowId: 'baseline',
-            workflowVersion: 1,
-            workflowSource: 'baseline',
             model: ambient.model.requestedModel,
             provider: ambient.model.provider,
             runtimeFingerprint: ambient.fingerprint,
@@ -908,6 +933,14 @@ export class AgentSession {
         // callback below reports the degraded evidence state.
         harnessPreparationError =
           error instanceof Error ? error.message.slice(0, 256) : 'observer-init-failed';
+      }
+      // A failed or timed-out preparation leaves no harness context, so the
+      // selected workflow's guidance never reaches the prompt and the run
+      // proceeds as baseline. That is the intended direction — a workflow whose
+      // evidence stream does not exist must not silently change behavior — but
+      // the reversion is reported rather than hidden.
+      if (harnessPreparationError && workflowSelection.resolved?.policySection) {
+        harnessPreparationError = `${harnessPreparationError}; workflow_policy_not_applied`;
       }
     }
     const finalizeOutcome = (outcome: AgentTerminalOutcome): AgentTerminalOutcome => {

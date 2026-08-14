@@ -87,6 +87,11 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'child',
   'workflowId',
   'workflowVersion',
+  // Clamp facts are drawn from the fixed workflow field/reason enums, never
+  // from free-form text; the names stay specific so they cannot be reused as a
+  // generic key/value channel.
+  'clampedField',
+  'clampReason',
   'reasonCode',
   'verifier',
   'sourceClass',

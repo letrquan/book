@@ -9,6 +9,7 @@ import {
   buildSystemPromptZones,
 } from './context.js';
 import { getProjectMemoryDir } from '../memory-store.js';
+import { BUILTIN_WORKFLOW_DEFINITIONS, resolveWorkflow } from '../harness/workflows.js';
 import type { SlashCommand } from '../types/commands.js';
 import type { ToolDefinition } from '../types/tools.js';
 import { userMsg, assistantMsg, toolCall, toolResult, defaultConfig } from '../test/fixtures.js';
@@ -462,6 +463,65 @@ describe('buildMessages', () => {
     expect(zones.cachedPrefix).toContain(
       'Do not create commits, push branches, open pull requests',
     );
+  });
+
+  it('renders the harness execution policy in the dynamic zone only', async () => {
+    const policy = resolveWorkflow(
+      BUILTIN_WORKFLOW_DEFINITIONS.find((entry) => entry.id === 'verify-heavy')!,
+    ).policySection;
+    const zones = await buildSystemPromptZones(config, [], [], [], undefined, {
+      workflowPolicy: policy,
+    });
+
+    expect(zones.dynamicSuffix).toContain('## Execution policy');
+    expect(zones.dynamicSuffix).toContain('Active workflow: verify-heavy v1');
+    // The cached prefix must stay stable so switching workflows does not
+    // invalidate the session prompt cache.
+    expect(zones.cachedPrefix).not.toContain('## Execution policy');
+    expect(zones.cachedPrefix).toBe(
+      (await buildSystemPromptZones(config, [], [], [])).cachedPrefix,
+    );
+  });
+
+  it('keeps the execution policy separate from the cached append zone', async () => {
+    const zones = await buildSystemPromptZones(config, [], [], [], undefined, {
+      append: '## Agent identity\nYou are a managed child agent.',
+      workflowPolicy: '## Execution policy\nActive workflow: safe-edit v1.',
+    });
+
+    expect(zones.cachedPrefix).toContain('## Agent identity');
+    expect(zones.cachedPrefix).not.toContain('## Execution policy');
+    expect(zones.dynamicSuffix).toContain('## Execution policy');
+    expect(zones.dynamicSuffix).not.toContain('## Agent identity');
+  });
+
+  it('orders the execution policy before the task list', async () => {
+    const zones = await buildSystemPromptZones(
+      config,
+      [{ content: 'Ship milestone', status: 'pending' }],
+      [],
+      [],
+      undefined,
+      { workflowPolicy: '## Execution policy\nActive workflow: safe-edit v1.' },
+    );
+
+    expect(zones.dynamicSuffix.indexOf('## Execution policy')).toBeLessThan(
+      zones.dynamicSuffix.indexOf('## Current task list'),
+    );
+  });
+
+  it('leaves provider messages byte-identical for minimal and for no harness', async () => {
+    const minimal = resolveWorkflow(
+      BUILTIN_WORKFLOW_DEFINITIONS.find((entry) => entry.id === 'minimal')!,
+    );
+    expect(minimal.policySection).toBe('');
+
+    const baseline = await buildMessages(config, [userMsg('hi')], [], []);
+    const withMinimal = await buildMessages(config, [userMsg('hi')], [], [], undefined, undefined, {
+      workflowPolicy: minimal.policySection,
+    });
+
+    expect(JSON.stringify(withMinimal)).toBe(JSON.stringify(baseline));
   });
 
   it('keeps the flat system prompt compatibility helper', async () => {

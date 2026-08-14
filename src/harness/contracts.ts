@@ -20,6 +20,44 @@ export interface WorkflowDecision {
   readonly source: WorkflowDecisionSource;
 }
 
+export type WorkflowOverrideScope = 'none' | 'run' | 'settings';
+
+/**
+ * Workflow IDs are opaque registry keys, never paths. The pattern rejects
+ * separators, dots, and traversal segments, so a selection string can never
+ * address a file — including anything under the candidate store. Defined here
+ * so the registry and the settings schema cannot drift apart.
+ */
+export const WORKFLOW_ID_PATTERN = /^[a-z][a-z0-9-]{1,31}$/;
+export const WORKFLOW_ID_MESSAGE =
+  'Workflow ID must be lowercase alphanumeric with hyphens (2-32 characters).';
+
+/** A trusted-kernel restriction applied to a requested workflow field. */
+export interface WorkflowClampRecord {
+  readonly field: string;
+  readonly reason: string;
+}
+
+/**
+ * Bounded workflow provenance handed to `prepareRun`. It carries identity,
+ * digests, clamps, and declared complexity — never the workflow's free-form
+ * description or any project-authored text.
+ */
+export interface WorkflowProvenance {
+  readonly decision: WorkflowDecision;
+  readonly registryVersion: number;
+  readonly registryDigest: string;
+  readonly overrideScope: WorkflowOverrideScope;
+  readonly definitionDigest?: string;
+  readonly policyRenderVersion?: string;
+  /** Host-rendered execution-policy section; empty when nothing is added. */
+  readonly policySection?: string;
+  readonly clamps?: readonly WorkflowClampRecord[];
+  readonly activeFieldCount?: number;
+  readonly renderedChars?: number;
+  readonly requestedExtraCalls?: number;
+}
+
 /** Harness-owned metadata. It is absent when the harness mode is `off`. */
 export interface HarnessRunContext {
   readonly runId: string;
@@ -31,6 +69,13 @@ export interface HarnessRunContext {
   readonly workspaceId?: string;
   readonly mode: Exclude<HarnessMode, 'off'>;
   readonly workflow?: WorkflowDecision;
+  /**
+   * Rendered execution-policy text for the dynamic prompt zone. It exists only
+   * on a prepared context, so an `off` run can never acquire workflow guidance.
+   */
+  readonly workflowPolicySection?: string;
+  readonly workflowPolicyRenderVersion?: string;
+  readonly workflowClamps?: readonly WorkflowClampRecord[];
   readonly policyVersion?: string;
   readonly runtimeFingerprint?: string;
   readonly environmentFingerprint?: string;
@@ -128,6 +173,8 @@ export interface PrepareRunInput {
   readonly bookHome?: string;
   readonly identity?: HarnessRunIdentity;
   readonly metadata?: import('./run-store.js').RunLedgerMetadata;
+  /** Resolved workflow provenance; omitted for the `baseline` stamp. */
+  readonly workflow?: WorkflowProvenance;
 }
 
 export type PreparedRun =

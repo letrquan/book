@@ -422,6 +422,30 @@ ambiguous values are omitted and accounted for. Observation is best-effort: a st
 the ledger incomplete and is reported to the host, but never fails or alters the user's run.
 `shadow`, `active`, and `learn` are accepted by the schema but rejected before run setup.
 
+### Execution workflows (experimental)
+
+With `harness.mode = observe`, a run can use one of three built-in execution workflows. Select one
+with `harness.workflow` in settings or `--harness-workflow <id>` for a single run; the CLI flag wins
+and is never persisted, so a resumed process starts again from the settings value.
+
+| Workflow       | Effect                                                                              |
+| -------------- | ----------------------------------------------------------------------------------- |
+| `minimal`      | Preserves current behavior. Adds no prompt text; provider messages match a run with no harness. |
+| `safe-edit`    | Short plan before mutating work, narrow edits, targeted verification, extra confirmation. |
+| `verify-heavy` | Explicit plan, deeper inspection, project verifiers, and stated evidence before completion. |
+
+Workflows are **behavioral guidance, not enforcement**. Permissions, sandboxing, budgets, retries,
+compaction, checkpoint/resume, and tool contracts stay owned by the trusted runtime; a workflow can
+never broaden them. Requests the runtime does not implement are clamped and recorded rather than
+silently ignored, and a workflow's free-form description is never rendered into the prompt.
+
+The active workflow renders into the dynamic prompt zone, so switching workflows does not invalidate
+the cached prompt prefix. Each run records the requested and effective workflow, its source and
+reason, the registry and definition digests, every clamp, the override scope, and declared
+complexity. Selection fails closed: a workflow chosen while `harness.mode` is `off` has no ledger to
+record it, so both `book config set` and startup reject it, as they do an unknown or path-like ID.
+Project-defined workflow files are not loaded; only built-in IDs resolve.
+
 ### Managed agents
 
 Adaptive mode keeps targeted work inline and nudges the parent toward the read-only `explorer` profile after three successful root `Glob`/`Grep` queries. The reminder is advisory: the fourth lookup is still allowed. Broad exploration receives a purpose name such as `Trace authentication flow`; the reusable profile (`explorer`, `patcher`, or `validator`) remains separate. `--agents manual` keeps the same lifecycle tools but requires explicit user delegation; `--agents off` removes managed-agent tools and routing guidance.
