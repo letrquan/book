@@ -32,6 +32,14 @@ All notable changes to this project are documented in this file.
   explicit `BOOK_TUI_RENDERER=incremental` override.
 - Mouse-wheel scrolling now reaches conversation history when the Windows CLI runs from WSL,
   instead of being translated into Up/Down prompt-history navigation by the outer terminal.
+- Stopping a background job on Linux and macOS no longer records `killed` while the job's processes
+  keep running. Background commands run through `sh -c`, which forks the real worker, so the shell
+  wrapper dies from SIGTERM even when the worker ignores it — and both the persistent job runner
+  and the session-lifetime shell manager read that wrapper's exit as proof the tree had gone, so
+  they never escalated to SIGKILL. Termination now escalates and reports success based on whether
+  the job's process group still holds a process, so an orphaned worker can no longer keep ports,
+  file handles, and CPU behind a terminal `killed` record. Windows already terminated the tree
+  through `taskkill /T /F` and is unchanged.
 
 ### Added
 
