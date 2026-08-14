@@ -22,6 +22,7 @@ import {
   type PersistentShellSpec,
   type PersistentShellState,
 } from './persistent-store.js';
+import { isProcessAlive, signalProcessGroup, waitForProcessGroupExit } from './process-tree.js';
 
 const MAX_BACKGROUND_BUFFER = 1024 * 1024 * 5;
 const MAX_OUTPUT_RESULT = 32_000;
@@ -131,23 +132,6 @@ function waitForShellClose(shell: BackgroundShellRecord, timeoutMs: number): Pro
   return shell.process ? waitForProcessClose(shell.process, timeoutMs) : Promise.resolve(true);
 }
 
-export async function requestProcessTreeTermination(
-  proc: ChildProcess | undefined,
-  pid: number | undefined,
-  signal: NodeJS.Signals,
-): Promise<void> {
-  if (!proc || pid === undefined) return;
-  if (process.platform === 'win32') {
-    await terminateWindowsProcessTree(proc, pid, signal);
-    return;
-  }
-  try {
-    process.kill(-pid, signal);
-  } catch {
-    proc.kill(signal);
-  }
-}
-
 type WindowsTreeKill = (pid: number) => Promise<boolean>;
 
 async function runTaskkill(pid: number): Promise<boolean> {
@@ -170,29 +154,38 @@ export async function terminateWindowsProcessTree(
   }
 }
 
-function isProcessAlive(pid: number | undefined): boolean {
-  if (pid === undefined) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
+/**
+ * Escalate SIGTERM → SIGKILL across the whole tree and report whether it is really gone.
+ *
+ * On POSIX the direct child is the `sh -c` wrapper, which dies from SIGTERM even when the worker
+ * it forked ignores it, so its exit says nothing about the tree — success is judged on whether
+ * the process group still holds anything. On Windows `taskkill /T /F` already covers the tree,
+ * so the direct child closing is authoritative there.
+ */
+async function terminateProcessTree(
+  proc: ChildProcess | undefined,
+  pid: number | undefined,
+  hasClosed: (timeoutMs: number) => Promise<boolean>,
+): Promise<boolean> {
+  if (!proc || pid === undefined) return true;
+  if (process.platform !== 'win32') {
+    signalProcessGroup(proc, pid, 'SIGTERM');
+    if (await waitForProcessGroupExit(pid, TERMINATE_GRACE_MS)) return true;
+    signalProcessGroup(proc, pid, 'SIGKILL');
+    return waitForProcessGroupExit(pid, TERMINATE_GRACE_MS);
   }
+  await terminateWindowsProcessTree(proc, pid, 'SIGTERM');
+  if (await hasClosed(TERMINATE_GRACE_MS)) return true;
+  try {
+    proc.kill('SIGKILL');
+  } catch {
+    return false;
+  }
+  return hasClosed(TERMINATE_GRACE_MS);
 }
 
 export async function terminateForegroundProcess(proc: ChildProcess): Promise<void> {
-  await requestProcessTreeTermination(proc, proc.pid, 'SIGTERM');
-  if (await waitForProcessClose(proc, TERMINATE_GRACE_MS)) return;
-  if (process.platform === 'win32') {
-    try {
-      proc.kill('SIGKILL');
-    } catch {
-      return;
-    }
-  } else {
-    await requestProcessTreeTermination(proc, proc.pid, 'SIGKILL');
-  }
-  await waitForProcessClose(proc, TERMINATE_GRACE_MS);
+  await terminateProcessTree(proc, proc.pid, (timeoutMs) => waitForProcessClose(proc, timeoutMs));
 }
 
 export class ShellJobManager {
@@ -777,21 +770,10 @@ export class ShellJobManager {
     this.clearTimer(shell);
     shell.status = 'stopping';
     this.emit({ type: 'background_job_update', job: cloneRecord(shell) });
-    await requestProcessTreeTermination(shell.process, shell.pid, 'SIGTERM');
-    let closed = await waitForShellClose(shell, TERMINATE_GRACE_MS);
-    if (!closed) {
-      if (process.platform === 'win32') {
-        try {
-          shell.process?.kill('SIGKILL');
-        } catch {
-          return false;
-        }
-      } else {
-        await requestProcessTreeTermination(shell.process, shell.pid, 'SIGKILL');
-      }
-      closed = await waitForShellClose(shell, TERMINATE_GRACE_MS);
-    }
-    if (!closed && shell.finishedAt === undefined) return false;
+    const stopped = await terminateProcessTree(shell.process, shell.pid, (timeoutMs) =>
+      waitForShellClose(shell, timeoutMs),
+    );
+    if (!stopped && shell.finishedAt === undefined) return false;
     this.finish(shell, status, shell.exitCode, shell.signal);
     return true;
   }

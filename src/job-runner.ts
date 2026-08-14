@@ -15,6 +15,7 @@ import {
   type PersistentShellSpec,
   type PersistentShellState,
 } from './jobs/persistent-store.js';
+import { signalProcessGroup, waitForProcessGroupExit } from './jobs/process-tree.js';
 
 const specPath = process.argv[2];
 if (!specPath) {
@@ -121,48 +122,43 @@ function waitForChildClose(timeoutMs: number): Promise<boolean> {
 
 async function terminateTree(): Promise<boolean> {
   if (!child?.pid) return true;
-  if (process.platform === 'win32') {
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const complete = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(fallback);
-        resolve();
-      };
-      const fallback = setTimeout(complete, 1_500);
-      fallback.unref();
-      execFile('taskkill', ['/PID', String(child!.pid), '/T', '/F'], (error) => {
-        if (error) {
-          try {
-            child?.kill('SIGTERM');
-          } catch {
-            // The process may have exited between taskkill and the fallback.
-          }
-        }
-        complete();
-      });
-    });
-  } else {
-    try {
-      process.kill(-child.pid, 'SIGTERM');
-    } catch {
-      child.kill('SIGTERM');
-    }
+  const pid = child.pid;
+  if (process.platform !== 'win32') {
+    // The direct child is the `sh -c` wrapper, which dies from SIGTERM even when the worker it
+    // forked ignores it. Escalate on whether the group still holds processes, never on the
+    // wrapper's own exit, or the surviving worker is recorded as killed while it keeps running.
+    signalProcessGroup(child, pid, 'SIGTERM');
+    if (await waitForProcessGroupExit(pid, TERMINATE_GRACE_MS)) return true;
+    signalProcessGroup(child, pid, 'SIGKILL');
+    return waitForProcessGroupExit(pid, TERMINATE_GRACE_MS);
   }
+  // `taskkill /T /F` already covers the tree, so the direct child's close is authoritative here.
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const complete = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(fallback);
+      resolve();
+    };
+    const fallback = setTimeout(complete, 1_500);
+    fallback.unref();
+    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], (error) => {
+      if (error) {
+        try {
+          child?.kill('SIGTERM');
+        } catch {
+          // The process may have exited between taskkill and the fallback.
+        }
+      }
+      complete();
+    });
+  });
   if (await waitForChildClose(TERMINATE_GRACE_MS)) return true;
-  if (process.platform === 'win32') {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      return false;
-    }
-  } else {
-    try {
-      process.kill(-child.pid, 'SIGKILL');
-    } catch {
-      child.kill('SIGKILL');
-    }
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    return false;
   }
   return waitForChildClose(TERMINATE_GRACE_MS);
 }
