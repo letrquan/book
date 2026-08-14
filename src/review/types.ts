@@ -50,8 +50,16 @@ export interface ReviewReport {
 
 export interface ReviewCoverageEntry {
   id: string;
-  status: 'completed' | 'failed' | 'timed_out' | 'unstructured';
+  /**
+   * `partial` means the pass returned a valid report envelope but some of its
+   * findings failed the per-finding contract and were dropped. It is distinct
+   * from `unstructured` (the envelope itself was unusable) because the pass did
+   * produce usable findings — but not all of them.
+   */
+  status: 'completed' | 'failed' | 'timed_out' | 'unstructured' | 'partial';
   findings: number;
+  /** Findings discarded for failing the per-finding contract. */
+  droppedFindings?: number;
   error?: string;
 }
 

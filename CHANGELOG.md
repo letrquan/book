@@ -6,6 +6,20 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- `/review` no longer reports a clean review when it silently discarded findings. A reviewer pass
+  whose report envelope parses but whose individual findings fail the per-finding contract (missing
+  evidence, failure scenario, suggested fix, or a numeric confidence) is now recorded as `partial`
+  rather than `completed`: the dropped count is reported in the coverage warning, the verdict is
+  capped at `inconclusive`, and the reviewer's raw output is preserved so the lost findings are
+  recoverable. Previously the report showed zero findings and a `clean` verdict with no indication
+  anything had been dropped.
+- `/review` deduplication once again collapses the same defect reported by more than one reviewer.
+  Findings are bucketed by category/file/line, then compared by summary similarity, so two lenses
+  describing one defect in different words collapse to a single finding while two genuinely
+  different defects on the same line stay separate. Deduplication had become sensitive to exact
+  wording, which meant cross-reviewer duplicates — the case `--deep` produces most — survived into
+  the report. The wording-sensitive key remains in use for the evaluation harness, where matching a
+  specific finding is the point.
 - The CLI now defaults `NODE_ENV` to `production` before React loads, so the TUI renders with
   production React instead of the 2-3x slower development build (an explicitly set `NODE_ENV`
   still wins). `npm run bench:ui` measures production mode to match. Combined with new render-path

@@ -1,5 +1,5 @@
 import type { ReviewReport } from './types.js';
-import { findingKey, locationKey } from './findings.js';
+import { locationKey } from './findings.js';
 
 /**
  * Review evaluation harness.
@@ -116,7 +116,11 @@ export function renderReviewEvaluation(metrics: ReviewEvaluationMetrics): string
   ].join('\n');
 }
 
-/** Extract deterministic finding keys; positional model-generated ids are not stable across runs. */
+/**
+ * Extract deterministic finding keys; positional model-generated ids are not
+ * stable across runs. Uses `locationKey` — the same key expectations are hashed
+ * with — so both sides of the comparison live in one id space.
+ */
 export function findingIdsFromReport(report: ReviewReport): string[] {
-  return report.findings.map(findingKey);
+  return report.findings.map((finding) => locationKey(finding.file, finding.line, finding.summary));
 }
