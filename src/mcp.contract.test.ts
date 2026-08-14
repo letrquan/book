@@ -41,6 +41,7 @@ describe('MCP connection safety', () => {
   it('connects, discovers tools, and disconnects without pending work', async () => {
     const item = fixture({ fixture: 'success' });
     const result = await connectMcpServers(item.workspace, {
+      home: item.workspace,
       initializationTimeoutMs: 500,
       requestTimeoutMs: 500,
     });
@@ -65,6 +66,7 @@ describe('MCP connection safety', () => {
       const spawned: ChildProcess[] = [];
 
       const result = await connectMcpServers(item.workspace, {
+        home: item.workspace,
         initializationTimeoutMs: 50,
         requestTimeoutMs: 50,
         onProcessSpawn: (_name, child) => spawned.push(child),
@@ -87,6 +89,7 @@ describe('MCP connection safety', () => {
   it('accepts delayed responses that arrive within the timeout', async () => {
     const item = fixture({ fixture: { mode: 'delay', delayMs: 20 } });
     const result = await connectMcpServers(item.workspace, {
+      home: item.workspace,
       initializationTimeoutMs: 250,
       requestTimeoutMs: 250,
     });
@@ -101,6 +104,7 @@ describe('MCP connection safety', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const item = fixture({ healthy: 'success', silent: 'silence' });
     const result = await connectMcpServers(item.workspace, {
+      home: item.workspace,
       // Two child processes can take longer to start on a loaded Windows runner.
       initializationTimeoutMs: 250,
       requestTimeoutMs: 250,
@@ -115,6 +119,7 @@ describe('MCP connection safety', () => {
   it('clears pending requests on timeout', async () => {
     const item = fixture({ fixture: 'call-silence' });
     const result = await connectMcpServers(item.workspace, {
+      home: item.workspace,
       initializationTimeoutMs: 250,
       requestTimeoutMs: 30,
     });
@@ -135,6 +140,7 @@ describe('MCP connection safety', () => {
   it('bounds stderr context attached to request failures', async () => {
     const item = fixture({ fixture: 'stderr-call-silence' });
     const result = await connectMcpServers(item.workspace, {
+      home: item.workspace,
       initializationTimeoutMs: 250,
       requestTimeoutMs: 30,
       maxStderrBytes: 16,
@@ -156,6 +162,7 @@ describe('MCP connection safety', () => {
   it('clears pending requests on abort', async () => {
     const item = fixture({ fixture: 'call-silence' });
     const result = await connectMcpServers(item.workspace, {
+      home: item.workspace,
       initializationTimeoutMs: 250,
       requestTimeoutMs: 500,
     });
@@ -182,6 +189,7 @@ describe('MCP connection safety', () => {
   it('settles a pending tool request exactly once on disconnect', async () => {
     const item = fixture({ fixture: 'call-silence' });
     const result = await connectMcpServers(item.workspace, {
+      home: item.workspace,
       initializationTimeoutMs: 250,
       requestTimeoutMs: 500,
     });
