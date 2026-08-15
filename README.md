@@ -723,6 +723,9 @@ npm run format       # Prettier
 npm run format:check
 npm run bench:ui     # TUI micro-benchmarks
 npm run bench:runtime # Runtime micro-benchmarks
+npm run deadcode:check  # knip dead-code scan (non-zero exit on findings)
+npm run deadcode:report # knip scan as Markdown (used for the CI job summary)
+npm run deadcode:json   # knip scan as JSON
 npm run eval:edit    # Edit reliability evaluation (configured provider)
 npm run eval:compact # Compaction paired evaluation (configured provider)
 npm run eval:zero-mem # Zero-Mem retrieval/compaction comparison
@@ -733,6 +736,20 @@ npm run release:check # Version, audit, and package smoke checks
 
 Main-branch runtime work also follows the [stabilization gate](docs/stabilization.md): three
 consecutive green full CI runs and no open lifecycle or accounting regression issues.
+
+### Maintenance workflow
+
+`.github/workflows/maintenance.yml` runs the deterministic half of the nightly maintenance work,
+daily at 01:00 UTC and on every pull request:
+
+- **Dead-code report** — runs knip against the committed `knip.json` and writes the result to the
+  job summary. Report-only: the repository carries a backlog of unused exports, and `src/sdk.ts` is
+  published API whose exports knip flags by design, so deciding what is safe to remove is a
+  judgment call rather than a gate.
+- **Security advisories** — runs `npm audit` on a schedule (not just when someone pushes) and keeps
+  a single rolling `Dependency security advisories` issue in sync, opening it when an advisory at
+  or above `high` appears, rewriting it as the set changes, and closing it once clear. A scan that
+  fails to complete never closes the issue.
 
 ## License
 

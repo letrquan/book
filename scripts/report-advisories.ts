@@ -1,0 +1,286 @@
+import { appendFile, readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+
+export type Severity = 'info' | 'low' | 'moderate' | 'high' | 'critical';
+
+const SEVERITY_ORDER: readonly Severity[] = ['info', 'low', 'moderate', 'high', 'critical'];
+
+interface AuditVia {
+  source?: number;
+  name?: string;
+  title?: string;
+  url?: string;
+  severity?: string;
+  range?: string;
+}
+
+interface AuditVulnerability {
+  name?: string;
+  severity?: string;
+  isDirect?: boolean;
+  range?: string;
+  fixAvailable?: boolean | { name?: string; version?: string; isSemVerMajor?: boolean };
+  via?: Array<AuditVia | string>;
+}
+
+export interface AuditReport {
+  vulnerabilities?: Record<string, AuditVulnerability>;
+}
+
+export interface Advisory {
+  package: string;
+  severity: Severity;
+  direct: boolean;
+  range: string;
+  titles: string[];
+  urls: string[];
+  fix: 'none' | 'patch' | 'major';
+}
+
+export interface AdvisorySummary {
+  advisories: Advisory[];
+  bySeverity: Record<Severity, number>;
+  total: number;
+}
+
+function normalizeSeverity(raw: string | undefined): Severity {
+  const value = (raw ?? '').toLowerCase();
+  return (SEVERITY_ORDER as readonly string[]).includes(value) ? (value as Severity) : 'info';
+}
+
+function meetsThreshold(severity: Severity, threshold: Severity): boolean {
+  return SEVERITY_ORDER.indexOf(severity) >= SEVERITY_ORDER.indexOf(threshold);
+}
+
+function classifyFix(fixAvailable: AuditVulnerability['fixAvailable']): Advisory['fix'] {
+  if (fixAvailable === true) return 'patch';
+  if (!fixAvailable) return 'none';
+  return fixAvailable.isSemVerMajor === true ? 'major' : 'patch';
+}
+
+/**
+ * Reduces `npm audit --json` output to the advisories at or above `threshold`,
+ * sorted most severe first so the rendered issue leads with what matters.
+ */
+export function summarizeAudit(report: AuditReport, threshold: Severity = 'high'): AdvisorySummary {
+  const bySeverity: Record<Severity, number> = {
+    info: 0,
+    low: 0,
+    moderate: 0,
+    high: 0,
+    critical: 0,
+  };
+  const advisories: Advisory[] = [];
+
+  for (const [name, vulnerability] of Object.entries(report.vulnerabilities ?? {})) {
+    const severity = normalizeSeverity(vulnerability.severity);
+    bySeverity[severity] += 1;
+    if (!meetsThreshold(severity, threshold)) continue;
+
+    const sources = (vulnerability.via ?? []).filter(
+      (via): via is AuditVia => typeof via === 'object' && via !== null,
+    );
+
+    advisories.push({
+      package: vulnerability.name ?? name,
+      severity,
+      direct: vulnerability.isDirect === true,
+      range: vulnerability.range ?? '',
+      titles: [...new Set(sources.map((via) => via.title).filter((t): t is string => Boolean(t)))],
+      urls: [...new Set(sources.map((via) => via.url).filter((u): u is string => Boolean(u)))],
+      fix: classifyFix(vulnerability.fixAvailable),
+    });
+  }
+
+  advisories.sort((a, b) => {
+    const bySeverityRank = SEVERITY_ORDER.indexOf(b.severity) - SEVERITY_ORDER.indexOf(a.severity);
+    return bySeverityRank !== 0 ? bySeverityRank : a.package.localeCompare(b.package);
+  });
+
+  return {
+    advisories,
+    bySeverity,
+    total: advisories.length,
+  };
+}
+
+const FIX_LABEL: Record<Advisory['fix'], string> = {
+  none: 'no fix published',
+  patch: 'fix available',
+  major: 'fix requires a major bump',
+};
+
+export function renderAdvisoryReport(
+  summary: AdvisorySummary,
+  context: { threshold: Severity; runUrl?: string; scannedAt: string },
+): string {
+  const lines = [
+    '# Dependency security advisories',
+    '',
+    `Threshold: \`${context.threshold}\` and above. Scanned: ${context.scannedAt}.`,
+    '',
+  ];
+
+  if (summary.total === 0) {
+    lines.push(`No advisories at or above \`${context.threshold}\`.`, '');
+  } else {
+    lines.push(
+      `\`npm audit\` reports **${summary.total}** advisory package(s) at or above \`${context.threshold}\`.`,
+      '',
+      '| Package | Severity | Direct | Vulnerable range | Fix |',
+      '| --- | --- | --- | --- | --- |',
+      ...summary.advisories.map(
+        (advisory) =>
+          `| \`${advisory.package}\` | ${advisory.severity} | ${advisory.direct ? 'yes' : 'transitive'} | \`${advisory.range || 'n/a'}\` | ${FIX_LABEL[advisory.fix]} |`,
+      ),
+      '',
+      '## Details',
+      '',
+    );
+    for (const advisory of summary.advisories) {
+      lines.push(`### \`${advisory.package}\` (${advisory.severity})`, '');
+      for (const title of advisory.titles) lines.push(`- ${title}`);
+      for (const url of advisory.urls) lines.push(`- ${url}`);
+      if (advisory.titles.length === 0 && advisory.urls.length === 0) {
+        lines.push('- No advisory metadata reported by npm.');
+      }
+      lines.push('');
+    }
+  }
+
+  lines.push(
+    `Counts by severity: ${SEVERITY_ORDER.map((s) => `${s} ${summary.bySeverity[s]}`).join(', ')}.`,
+    '',
+  );
+  if (context.runUrl) lines.push(`Generated by [this workflow run](${context.runUrl}).`, '');
+  lines.push('<!-- book:advisory-report -->', '');
+
+  return `${lines.join('\n')}\n`;
+}
+
+async function githubRequest<T>(
+  repository: string,
+  path: string,
+  token: string,
+  init: { method?: string; body?: unknown } = {},
+): Promise<T> {
+  const response = await fetch(`https://api.github.com/repos/${repository}${path}`, {
+    method: init.method ?? 'GET',
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'User-Agent': 'book-advisory-report',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub API ${response.status} for ${path}: ${await response.text()}`);
+  }
+  return (await response.json()) as T;
+}
+
+interface Issue {
+  number: number;
+  title: string;
+  html_url: string;
+  pull_request?: unknown;
+}
+
+/**
+ * Keeps a single rolling advisory issue rather than opening a new one per run:
+ * an open issue is rewritten in place, and a resolved report closes it.
+ */
+async function syncRollingIssue(
+  repository: string,
+  token: string,
+  title: string,
+  body: string,
+  hasAdvisories: boolean,
+): Promise<string> {
+  const open = await githubRequest<Issue[]>(repository, `/issues?state=open&per_page=100`, token);
+  const existing = open.find((issue) => issue.pull_request === undefined && issue.title === title);
+
+  if (!hasAdvisories) {
+    if (!existing) return 'No advisories and no open issue; nothing to do.';
+    await githubRequest(repository, `/issues/${existing.number}`, token, {
+      method: 'PATCH',
+      body: { body, state: 'closed', state_reason: 'completed' },
+    });
+    return `Closed #${existing.number} — advisories are resolved.`;
+  }
+
+  if (existing) {
+    await githubRequest(repository, `/issues/${existing.number}`, token, {
+      method: 'PATCH',
+      body: { body },
+    });
+    return `Updated #${existing.number} with the current advisory report.`;
+  }
+
+  const created = await githubRequest<Issue>(repository, '/issues', token, {
+    method: 'POST',
+    body: { title, body },
+  });
+  return `Opened #${created.number} for the current advisory report.`;
+}
+
+async function run(): Promise<void> {
+  const inputPath = process.argv[2];
+  if (!inputPath) throw new Error('Usage: report-advisories <npm-audit-json-file>');
+
+  const raw = await readFile(resolve(inputPath), 'utf8');
+  let report: AuditReport;
+  try {
+    report = JSON.parse(raw) as AuditReport;
+  } catch {
+    throw new Error(`${inputPath} is not valid JSON; npm audit produced no usable report.`);
+  }
+
+  // A clean project still emits `"vulnerabilities": {}`. A missing key means the scan
+  // itself failed (network, registry error), and treating that as "no advisories" would
+  // silently close the rolling issue.
+  if (!report.vulnerabilities) {
+    throw new Error(
+      `${inputPath} has no "vulnerabilities" section; the audit did not complete. Refusing to sync the advisory issue.`,
+    );
+  }
+
+  const threshold = normalizeSeverity(process.env.ADVISORY_THRESHOLD ?? 'high');
+  const summary = summarizeAudit(report, threshold);
+  const runUrl =
+    process.env.GITHUB_SERVER_URL && process.env.GITHUB_REPOSITORY && process.env.GITHUB_RUN_ID
+      ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
+      : undefined;
+
+  const body = renderAdvisoryReport(summary, {
+    threshold,
+    runUrl,
+    scannedAt: new Date().toISOString(),
+  });
+  process.stdout.write(body);
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    await appendFile(process.env.GITHUB_STEP_SUMMARY, body, 'utf8');
+  }
+
+  const token = process.env.GITHUB_TOKEN?.trim();
+  const repository = process.env.GITHUB_REPOSITORY?.trim();
+  if (!token || !repository) {
+    process.stdout.write('\nNo GITHUB_TOKEN/GITHUB_REPOSITORY; skipping issue sync.\n');
+    return;
+  }
+
+  const title = process.env.ADVISORY_ISSUE_TITLE ?? 'Dependency security advisories';
+  const outcome = await syncRollingIssue(repository, token, title, body, summary.total > 0);
+  process.stdout.write(`\n${outcome}\n`);
+}
+
+const currentFile = fileURLToPath(import.meta.url);
+if (process.argv[1] && resolve(process.argv[1]) === currentFile) {
+  run().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

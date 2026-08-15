@@ -1,0 +1,71 @@
+name: Maintenance
+
+# Deterministic half of the nightly maintenance work. The scheduled agent routines
+# read these results instead of re-deriving them, so they only spend a session on the
+# judgment calls (what is safe to delete, which advisory to bump, convention drift).
+on:
+  schedule:
+    # 01:00 UTC — ahead of the agent routines so they see a fresh report.
+    - cron: '0 1 * * *'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maintenance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dead-code:
+    name: Dead-code report
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - run: npm ci
+
+      # Report-only: the repository carries a large backlog of unused exports, and
+      # deciding which are safe to remove needs the judgment the agent routine applies
+      # (src/sdk.ts is published API, so knip flags its exports by design).
+      - name: Knip report
+        run: npm run --silent deadcode:report >> "$GITHUB_STEP_SUMMARY"
+
+  security-advisories:
+    name: Security advisories
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+
+      # `npm audit` resolves from the lockfile, so the native builds in postinstall
+      # are not needed here.
+      - run: npm ci --ignore-scripts
+
+      # npm audit exits non-zero when it finds anything; the report step is what
+      # decides whether this run is actionable.
+      - name: Run npm audit
+        run: npm audit --json > audit.json || true
+
+      - name: Sync advisory issue
+        run: npx tsx scripts/report-advisories.ts audit.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ADVISORY_THRESHOLD: high

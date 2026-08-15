@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- A `Maintenance` CI workflow (`.github/workflows/maintenance.yml`) that runs the deterministic half
+  of the nightly maintenance work: a knip dead-code report on every pull request and on a daily
+  schedule, and a scheduled `npm audit` that keeps a single rolling `Dependency security advisories`
+  issue in sync. The dead-code scan now reads a committed `knip.json` and a pinned `knip`
+  devDependency instead of an ad-hoc config and an unpinned `npx knip@6`, so its results are
+  reproducible between runs. New scripts: `deadcode:check`, `deadcode:report`, `deadcode:json`.
+
 ### Changed
 
 - **Node.js 22.13.0 or newer is now required** (previously 20). Node.js 20 reached end-of-life on

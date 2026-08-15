@@ -1,0 +1,17 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/index.ts",
+    "src/sdk.ts",
+    "src/job-runner.ts",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/tui/__benchmarks__/*.ts",
+    "src/tui/__benchmarks__/*.tsx",
+    "scripts/*.ts",
+    "scripts/*.mjs",
+    "*.config.ts"
+  ],
+  "project": ["src/**/*.ts", "src/**/*.tsx", "scripts/**/*.ts"],
+  "ignoreBinaries": ["rg", "wsl.exe"]
+}
