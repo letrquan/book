@@ -342,3 +342,95 @@ migration or live rollback is needed.
 
 **Intent check:** Are we measuring better externally verified outcomes rather than more agent
 activity?
+
+## Proposed contract-v3 amendments (2026-08-14)
+
+These are **proposals**, not applied changes. The contract-v2 verification record above stands
+unmodified; each amendment below requires its own change and verification packet before it is
+binding. Evidence: [External Evidence Review](external-evidence-2026-08.md).
+
+### A4 — `pass^k` as a declared guardrail
+
+The primary estimand is a difference in mean verified-success probability. A candidate that raises
+the mean while raising variance can win on that estimand and be worse to use, because a coding agent
+is experienced as a sequence of attempts rather than as an average. Adopt `pass^k` — the probability
+that all k trials of a case succeed — as a declared guardrail alongside the primary endpoint. At 90%
+per-trial success, `pass^8` is 57%, so the two metrics can disagree sharply.
+
+The repetitions required to estimate it are already mandated (at least five complete matched
+repetitions per family), so this adds analysis, not sampling. The guardrail maximum regression must
+be preregistered like every other row in the guardrail table.
+
+### A5 — Preregistered variance reduction
+
+Permit pre-experiment covariate adjustment (CUPED-style) and multiple-answer resampling as
+variance-reduction methods, on the condition that the method, covariate, and estimator are
+preregistered before any target outcome is viewed. Given the sizing floors (at least 20 independent
+held-out case families and at least five matched repetitions per family at 80% power), variance
+reduction is likely the difference between an affordable confirmatory campaign and an unaffordable
+one. An unregistered variance-reduction choice made after seeing outcomes is a threshold relaxation
+and is already forbidden.
+
+### A6 — Harness-disclosure coverage and comparison regime
+
+Harness variance has been measured at roughly 8× model variance on long-horizon coding tasks. Two
+consequences:
+
+1. Audit the `locked-equal` compatibility-component enumeration for coverage of the seven harness
+   layers now used as a disclosure standard in the literature — execution (runtime substrate,
+   sandboxing, timeouts, step budgets), tool (list, schemas, error formats, retry), context (window
+   cap, compression, retrieval, memory), scheduling (loop, stopping rules, escalation), observability
+   (logged artifacts, traces, checkpoint retention), verification (validation, self-checking,
+   anomaly detection), and governance (permissions, allowlists, side-effect boundaries). Any layer
+   with no corresponding declared component is an undeclared difference waiting to happen.
+2. A confirmatory report that compares across models must declare its regime: **locked-harness**
+   (one harness applied to all arms) or **factorial** (model and harness both varied). A factorial
+   report must additionally publish model variance per harness, harness variance per model, the
+   aggregate ratio, and the count of ranking reversals.
+
+### A7 — Impossible-by-construction negative control
+
+`calibration-public-v1` has no case whose declared outcome cannot be satisfied honestly, so a worker
+that defeats a verifier and a worker that succeeds produce the same report shape. Add impossible
+cases whose only passing path is illegitimate. A reported success on an impossible case trips a
+**zero-tolerance** guardrail in the same class as a security, permission, credential, protected-path,
+trust, or integrity violation: it invalidates the campaign rather than lowering a score.
+
+This must be checked against the recursively strict fixture schema; if an impossible case is not
+currently expressible, the schema change is part of the amendment. See
+[experiment E6](experiments.md#e6--impossible-case-negative-control).
+
+### A8 — SWE-bench Verified descriptor downgrade
+
+The external adapter section currently frames SWE-bench Verified and Terminal-Bench 2.1 as
+descriptor-only portability checks. Retain Terminal-Bench on those terms. Downgrade SWE-bench
+Verified to **diagnosis-only, contamination-suspect**, and record beside it that solution leakage and
+test defects have been reported at material rates and that at least one major lab has publicly
+stopped using it as a frontier measure. Also record that a successor benchmark built explicitly for
+contamination resistance still leaked intended fixes through ordinary VCS history in its containers
+— which is direct external validation of this phase's rejection of `.git`, VCS metadata, symlinks,
+hard links, and executable files in materialized fixtures.
+
+Harbor's container-per-trial architecture (fresh container provisioned per task, agent injected,
+traces collected) remains the reference shape for the Tier C runner.
+
+### A9 — Reproducibility identity: no bitwise claim over a hosted endpoint
+
+Add to the reproducibility identity list an explicit statement that bitwise reproducibility is
+unavailable through a hosted provider. Greedy decoding is not deterministic in production serving:
+kernel numerics vary with the server's batch size, which varies with unrelated concurrent load, so
+identical requests can diverge mid-generation. The existing controls — clock-interleaved arms,
+matched blocks, repetition seeds — are the correct mitigation and must be described as *managing an
+irreducible provider-side variance component*, never as achieving determinism. The A/A noise bound
+required before confirmatory sizing is partly a measurement of this component.
+
+### Amendment status
+
+| ID | Amendment | Blocking? | Depends on |
+| --- | --- | --- | --- |
+| A4 | `pass^k` guardrail | No — additive analysis | [E3](experiments.md#e3--passk-recomputation-on-existing-evaluator-data) |
+| A5 | Preregistered variance reduction | No | — |
+| A6 | Harness-disclosure coverage and regime | No | — |
+| A7 | Impossible-case negative control | Yes for any Tier C confirmatory work | Fixture schema check |
+| A8 | Adapter downgrade | No | — |
+| A9 | Reproducibility statement | No | [E2](experiments.md#e2--aa-noise-floor-characterization) |

@@ -256,6 +256,37 @@ Modify src/headless.ts or stream-json input for explicit feedback events
 - Outcome recomputation from the same event ledger is deterministic.
 - Evaluator failures are visible and block learning for the affected run.
 - Subjective outcomes are attributable and become `unknown` when rubric reliability requirements are not met.
+- Perceived-benefit and satisfaction signals are recorded as `observational` and cannot reach a
+  promotion or selection decision through any path.
+
+### Additions from the 2026-08-14 evidence review
+
+Source: [External Evidence Review](external-evidence-2026-08.md).
+
+**Perceived benefit has no decision authority — this is empirical, not conservative.** In the best
+available randomized controlled trial of AI-assisted development (16 experienced developers, 246 real
+issues in their own repositories, screen-recorded), participants completed tasks **19% slower** with
+AI assistance while believing afterwards that they had been **20% faster**. The perception was wrong
+in sign, not merely in magnitude.
+
+This phase's feedback surface (5.6) and implicit-signal rules (5.7) therefore need one additional
+constraint: a signal that measures how the run *felt* is `observational` and may never contribute to
+an outcome class, a selector input, or a promotion gate, no matter how well the reviewer pool is
+calibrated. That is distinct from the blinded artifact rubric already specified, which reviews an
+evidence packet rather than an experience, and distinct from corrective signals like a reverted change
+or a repeated permission denial, which are behavioral facts rather than self-reports.
+
+**Keep operational records structurally uncountable.** One reviewed runtime keeps its operational
+signals free of sequence identity specifically so they can never be mistaken for countable ledger
+rows. Adopt the same separation between agent-authored evidence and verifier truth: make the
+distinction structural, so a query that sums outcomes cannot accidentally include a model's own
+report.
+
+**The measured arm may not execute its own measurement.** Verifier execution stays with the evaluator
+boundary, after the worker tree has stopped, over an immutable snapshot. The documented
+reward-hacking strategies in current coding-agent literature — hard-coding cases, modifying the test
+harness, special-casing visible tests — are precisely what that separation defends against, and the
+reported validation-to-holdout gap widens with task complexity.
 
 **Commands:**
 

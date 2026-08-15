@@ -406,3 +406,71 @@ Promote. Fixed workflows can now be selected, rendered, clamped, and recorded re
 any automatic selection or learning. Phase 4 remains blocked until Phase 3A verifies that the
 prompt, skill, tool, context, model, verification, hook, and delegation surfaces are independently
 versioned.
+
+---
+
+## Proposed amendments (2026-08-14)
+
+Proposals only; the verification packet above stands unmodified. Evidence:
+[External Evidence Review](external-evidence-2026-08.md).
+
+### A13 — Give the schema at least one host-enforced field
+
+The packet above records honestly that no field reports enforcement: every disposition is guidance,
+clamped, or host-owned. Comparable runtimes demonstrate that a small enforceable subset does exist
+without admitting arbitrary workflow authority — specifically **delegation depth** and a
+**child-spawn cap**, carried as host-owned overrides that the workflow can request but cannot
+observe or modify, with a required parent attribution on every child start and an accepted-spawn
+count recorded as provenance.
+
+Both are enforceable in Book today at the managed-agent and subagent boundaries, both narrow rather
+than broaden authority, and both fit the existing requested/effective clamp representation. Adding
+them would mean `execution` is no longer entirely advisory and the recorded `requestedExtraCalls`
+would describe delegated work rather than omitting it.
+
+This does not change the deferral of parallelism selection: a cap is a ceiling, never a request for
+more concurrency.
+
+### A17 — A workflow may never execute its own verification
+
+`verify-heavy`'s "run declared project verifiers" line is currently inert model guidance operating
+within existing permissions. When Tier C eventually admits verifier execution, that line becomes a
+workflow whose stated purpose is to touch the grading surface. Record now, as a trusted-kernel
+exclusion, that the arm being measured may never be the executor of its own measurement: verifier
+execution stays with the evaluator boundary, after the worker tree has stopped, over an immutable
+snapshot. The documented reward-hacking strategies — harness modification, hard-coded cases,
+visible-test special-casing — are exactly what that separation prevents.
+
+### Reframing, not a defect: what Phase 3 actually compares
+
+The field's common taxonomy separates *workflows* (LLM and tools orchestrated through predefined
+code paths) from *agents* (the model directs its own process), and enumerates prompt chaining,
+routing, parallelization, orchestrator-workers, and evaluator-optimizer as the workflow patterns.
+
+`minimal`, `safe-edit`, and `verify-heavy` are not points on that axis. They are three intensities of
+prompt guidance within a single agent pattern. That was the deliberate Phase 3 choice and it remains
+correct for this phase — but it changes how a null result must be read downstream. If Phase 6 finds
+no difference among the three, that is evidence about **guidance intensity**, not about workflow
+patterns, because all three arms share one pattern. State it that way rather than concluding that
+workflow variation does not matter.
+
+The corresponding open question — whether guidance intensity is detectable above the A/A noise floor
+at all — is the go/no-go for Phases 4-7 and is specified as
+[experiment E4](experiments.md#e4--guidance-detectability-pre-check-gono-go-for-phases-4-7). It
+should be answered before that machinery is built, not after.
+
+### Delegation gap: resolved by design, not by propagation
+
+The "Known gaps" entry above records that `subagent.ts` and `agents/manager.ts` thread
+`harnessObserver` but not `harnessContext`, so delegated work does not inherit the root's execution
+policy, and lists propagation as Phase 3A work.
+
+Three independently designed runtimes treat **non-inheritance as the correct default**: children get
+a fresh scope and inherit no parent tools, services, or authority; capability requests are validated
+at start and fail loudly rather than degrading silently; delegation depth is durable metadata that
+bounds recursion. On that reading, the gap is not "propagation is missing" but "explicit typed
+capability requests at the delegation boundary are missing," which is cheaper and safer than
+threading root policy into children.
+
+Phase 3A should adopt the explicit-request framing rather than implicit propagation, and record the
+child's effective policy as its own provenance rather than as an inherited copy of the root's.

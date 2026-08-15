@@ -500,3 +500,96 @@ contract and diagnostic records readable but ineligible for adaptive selection.
 
 **Intent check:** Are we making the agent's capability surface measurable, or merely adding more
 prompt text and metadata?
+
+---
+
+## Additions from the 2026-08-14 evidence review
+
+Source: [External Evidence Review](external-evidence-2026-08.md). These extend the deliverables
+above; they do not replace any of them.
+
+### 3A.11 Add a replay provider as a first-class provider implementation
+
+Phase 6 requires isolated replay and Phase 0 requires controlling model nondeterminism, but Book's
+only replay mechanism is a test double in `src/test/`. At least one production runtime registers a
+replay implementation as a peer of its live providers behind the same seam, with committed session
+fixtures in a canonical layout.
+
+Add a replay provider through the production provider seam:
+
+- record provider interactions from real runs into a canonical, hashable fixture format;
+- require exact request-shape matching, with **loud failure on divergence** — a replay that silently
+  tolerates a changed request would certify two different treatments as identical, which is worse
+  than having no replay at all;
+- fingerprint the recording's identity into the ambient run snapshot so a replayed arm is
+  distinguishable from a live one in evidence;
+- classify replay-derived results as `observational` for anything the model would have decided, and
+  authoritative only for deterministic host behavior.
+
+The payoff is that every host-only change in this phase — prompt zones, tool contracts, context
+policies, discovery — becomes exactly reproducible and costs no provider spend to evaluate.
+
+### 3A.12 Make the capability surface a runtime seam, not only a manifest
+
+3A.1 defines a versioned capability manifest as type-only contracts. That is the right starting
+point, and it describes rather than enforces. The comparison runtimes reviewed implement the same
+idea as a *service seam* — an interface with interchangeable implementations, where swapping the
+implementation changes behavior coherently across every consumer, and a description is generated
+from the registered implementation instead of maintained beside it.
+
+Where a manifest field already corresponds to an existing Book boundary (provider, sandbox,
+persistence, permission source), derive the descriptor from the live registration rather than
+declaring it separately. A hand-maintained descriptor drifts from the thing it describes, and this
+phase's whole purpose is preventing drift underneath a comparison.
+
+### 3A.13 Enforcement completeness and monotone ceilings
+
+The exit gate requires that "permission, sandbox, network, and credential-origin ceilings are
+monotonic and truthful on every entry surface." Two mechanisms make that checkable rather than
+asserted, both
+detailed as [research-grounding preconditions 14 and 15](research-grounding.md#preconditions-added-2026-08-14):
+
+- compose contributing permission sources so they may only **deny or abstain, never grant**, making
+  order-independence and monotonicity provable by property test; and
+- report sandbox enforcement **per backend and per axis** (filesystem, network, process tree) as
+  `full`, `partial`, `none`, or `unknown`, treating `unknown` as `none` for eligibility.
+
+Until both exist, this phase must record the ceiling claim as unverified rather than as a passed
+gate. See [experiments E7 and E8](experiments.md#e7--monotone-deny-or-abstain-guard-prototype).
+
+### 3A.14 Delegation: explicit typed requests, not inherited policy
+
+Phase 3 recorded that delegated work does not inherit the root's execution policy and assigned
+propagation to this phase. Reconsider the framing before implementing it. Three independently
+designed runtimes treat **non-inheritance as the correct default**: a child receives a fresh scope
+and inherits no parent tools, services, or authority; its capability requests are validated at start
+and **fail loudly** rather than degrading silently; and delegation depth is durable metadata that
+bounds recursion.
+
+Adopt the explicit-request framing in 3A.8: a child declares the capabilities it needs, the host
+validates that declaration against the parent's effective ceiling, and the child's effective policy
+is recorded as **its own provenance** rather than as an inherited copy of the root's. This is both
+cheaper and safer than threading root policy into children, and it makes the handoff contract the
+place where capability differences become visible.
+
+Add to the trusted-kernel exclusions now, ahead of any multi-agent axis: **a message from another
+agent is untrusted input.** A child or peer may not supply consent, approve a permission prompt on
+the user's behalf, or receive a delegated action that was denied to the requester. One production
+runtime states each of these three rules explicitly for its experimental multi-agent surface; they
+are confused-deputy defenses, and they are cheaper to establish before delegation is evaluated than
+after.
+
+### 3A.15 Context policy: the literature agrees with 3A.5, so keep it
+
+Current context-engineering guidance frames the context window as a finite attention budget subject
+to degradation as it fills, and recommends just-in-time retrieval over lightweight identifiers,
+compaction that preserves decisions and unresolved problems while discarding redundant tool output,
+structured external note-taking, and sub-agent context isolation.
+
+That maps almost exactly onto 3A.5's proposed fixed policies (`relevant`, `structure-first`,
+`task-pack`, `deep`), which is a reason to keep them as specified rather than to expand them. The
+sequencing rule in 3A.5 also stands: add contribution accounting first and change retrieval only
+under an explicitly selected fixed policy. See
+[experiment E9](experiments.md#e9--context-contribution-accounting-read-only) for the read-only
+accounting step, and [E10](experiments.md#e10--prompt-zone-digest-split-and-cache-churn-measurement)
+for measuring prompt-zone churn before implementing the 3A.2 split.

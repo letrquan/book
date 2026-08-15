@@ -1,16 +1,31 @@
 # Plan: Adaptive Harness With Verified Self-Improvement
 
-- **Date:** 2026-07-20
+- **Date:** 2026-07-20 (last revised 2026-08-14)
 - **Status:** Phase 0 contract-v2 verified; Phase 1 verified in off mode; Phase 2 verified in observe
   mode; Phase 3 verified with a built-in, manually selected workflow registry;
   provider-grade worker/broker authority and Tier C remain blocked; phases 3A-8 inactive; phase 9 is
   a future gate
+- **Open blocker:** observe-mode evidence is permanently `evidenceEligibility: ineligible` under the
+  current ledger design, because Node exposes no portable directory fsync. Phases 5-7 are
+  unreachable until [Phase 2 amendment A1](adaptive-harness/phase-2-run-evidence-ledger.md#a1--a-durability-backend-that-can-actually-claim-durability)
+  provides a backend that can truthfully claim durability.
+- **Open question:** whether the Phase 3 workflows differ measurably at all. They differ only in
+  bounded prompt guidance, so
+  [experiment E4](adaptive-harness/experiments.md#e4--guidance-detectability-pre-check-gono-go-for-phases-4-7)
+  is a go/no-go for Phases 4-7 and should run before that machinery is built.
 - **Scope:** Agent-runtime integration, prompt and capability layers, context and tool-surface contracts, skills, workflow selection, run evidence, evaluation, and safe workflow evolution
 - **Goal:** Improve Book's task outcomes over time by selecting and evolving workflows for the current model, project, user context, and task without degrading models that perform best with minimal scaffolding.
 
 **Research review:** [Adaptive Harness Research Grounding](adaptive-harness/research-grounding.md)
 is a required input to Phase 0. Its preconditions and unresolved questions must be closed in
 the relevant verification packet rather than treated as optional follow-up work.
+
+**External evidence:** [External Evidence Review (2026-08-14)](adaptive-harness/external-evidence-2026-08.md)
+compares this plan against production agent runtimes and the current evaluation-methodology and
+workflow-evolution literature. It adds preconditions 13-17 to the research grounding and proposes
+dated amendments in the Phase 0, 2, 3, 3A, 4, 5, and 8 files. The
+[Experiment Backlog](adaptive-harness/experiments.md) records what can be learned now without
+consuming the sealed corpus or weakening a gate; no experiment there is authorized by its own file.
 
 **Capability review:** [Agent Capability Research and Gap Analysis](adaptive-harness/agent-capability-research.md),
 [Phase 3A](adaptive-harness/phase-3a-agent-capability-substrate.md), and
@@ -473,6 +488,16 @@ Not started -> In progress -> Verified
                          \-> Blocked
 Verified -> Rolled back
 ```
+
+### Plan Revision Log
+
+Revisions change plan documents only. A revision never changes a phase status, and it never edits a
+recorded verification packet — amendments are appended as dated proposals beside the record they
+affect, and each still requires its own change and packet before it is binding.
+
+| Date | Revision | Documents touched |
+| --- | --- | --- |
+| 2026-08-14 | External evidence review: production agent runtimes (DeepSeek Harness, Claude Code, Codex), agent-evaluation infrastructure, and the 2024-2026 methodology and workflow-evolution literature. Adds research-grounding preconditions 13-17, proposes 17 phase amendments, and opens a 10-item experiment backlog. Confirms the program's direction; identifies the evidence-durability dead end and the guidance-detectability question as the two items that gate everything downstream. | New: `external-evidence-2026-08.md`, `experiments.md`. Amended: `research-grounding.md`, phases 0, 2, 3, 3A, 4, 5, 8, and this file. |
 
 Each verification record must include:
 

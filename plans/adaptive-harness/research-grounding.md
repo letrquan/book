@@ -14,6 +14,13 @@ single-agent evaluation; Phase 0 remains inactive until its status is changed in
 Tier C remains blocked for project-controlled or adversarial execution, especially workspace trust,
 permission ceilings, credential/network boundaries, and container-grade isolation.
 
+**2026-08-14 update:** [External Evidence Review](external-evidence-2026-08.md) compares this plan
+against production agent runtimes (DeepSeek Harness, Claude Code, Codex) and the 2024-2026
+evaluation-methodology and workflow-evolution literature. It confirms the program's direction,
+raises its bar, and adds preconditions 13-17 below. The
+[Experiment Backlog](experiments.md) records what can be learned now without consuming the sealed
+corpus or weakening a gate.
+
 The companion [Agent Capability Research and Gap Analysis](agent-capability-research.md) covers
 the previously under-specified prompt, skill, tool-contract, context, model-adapter, verification,
 delegation, hook, and user-interaction surfaces. Its fixed implementation gates are
@@ -158,6 +165,70 @@ contract and non-adversarial fixture work.
 Items 11-12 remain the Tier C gate. No project-controlled or adversarial setup, reset, cleanup,
 verifier, hook, MCP, provider, executable command, skill, subagent, network, or credential-bearing
 fixture becomes eligible because Tier A/B passed.
+
+### Preconditions added 2026-08-14
+
+These follow from the [External Evidence Review](external-evidence-2026-08.md). Items 13 and 16 are
+Tier A/B (they block promotion evidence but not calibration work); items 14, 15, and 17 are Tier C.
+
+13. **Make evidence durability achievable, not only honest.** Phase 2 correctly reports
+    `directorySync: unavailable` and therefore stamps every seal `evidenceEligibility: ineligible`.
+    Because Node exposes no portable directory fsync, this is a permanent block on Phases 5-7 rather
+    than a temporary one. A durability seam with a backend that can truthfully claim durability —
+    `node:sqlite` is the candidate, subject to the project's Node floor — is a precondition for any
+    promotion evidence. Fail-closed reporting stays; what changes is that a passing path must exist.
+14. **Make the permission ceiling a checkable property, not a documented intention.** Every phase
+    from 3 onward asserts that no lower-trust scope may broaden a higher-trust ceiling, and 3A's
+    exit gate requires ceilings to be "monotonic and truthful on every entry surface." Compose
+    contributing rule sources so they may only deny or abstain, never grant, so monotonicity is
+    order-independent by construction and provable by property test. Until then, treat the ceiling
+    claim as unverified.
+15. **Report sandbox enforcement per backend and per axis.** A single blocked/unblocked Tier C flag
+    conflates "this platform cannot enforce" with "this capability is unavailable." Report
+    filesystem, network, and process-tree enforcement as `full`, `partial`, `none`, or `unknown`
+    against the backend that produced the value, treat `unknown` as `none` for eligibility, and
+    state Book's Windows position explicitly rather than implying isolation that does not exist.
+    Comparable production runtimes either label partial enforcement as partial or decline native
+    Windows support outright.
+16. **Give replay a runtime implementation.** Phase 6 requires isolated replay and Phase 0 requires
+    controlling model nondeterminism, but Book's only replay mechanism is a test double. A replay
+    provider registered through the production provider seam, with loud failure on request-shape
+    divergence, is a precondition for replay-based counterfactual work and makes host-only changes
+    exactly reproducible.
+17. **Treat inter-agent messages as untrusted input.** Before any multi-agent axis is evaluated, a
+    child or peer agent must not be able to supply consent, approve a permission prompt on the
+    user's behalf, or relay a denied action to another agent to obtain it. This is a confused-deputy
+    defense that belongs in the trusted-kernel exclusions now, not in Phase 9.
+
+### Findings that change existing requirements rather than adding new ones
+
+- **The harness is the binding constraint.** A controlled factorial study reports harness variance
+  roughly 8× model variance on long-horizon coding tasks, with ranking reversals across scaffolds.
+  This validates the program and tightens it: any undeclared difference between arms is now more
+  likely than the treatment to explain a result. Phase 0's `locked-equal` enumeration must be
+  checked against the ETCSOVG disclosure surface (execution, tool, context, scheduling,
+  observability, verification, governance), and cross-model comparisons must declare whether they
+  used a locked-harness or a factorial regime.
+- **Perceived improvement is not evidence, and may be anti-correlated with it.** In the best
+  available controlled study, developers were 19% slower with AI assistance while believing they had
+  been 20% faster. Satisfaction and perceived-benefit signals are `observational` with no decision
+  authority, regardless of reviewer calibration quality.
+- **Temperature 0 is not determinism.** Greedy sampling is not reproducible through a hosted
+  endpoint because kernel numerics vary with the server's batch size, which varies with other users'
+  load. Clock-interleaved arms are therefore load-bearing rather than hygienic, and the A/A noise
+  floor contains an irreducible provider-side component. No run over a hosted API may be described as
+  bitwise reproducible.
+- **External adapters are worth less than assumed.** SWE-bench Verified is contamination-suspect and
+  has been publicly retired as a frontier measure by at least one major lab; a benchmark built
+  specifically to resist contamination still leaked its intended fixes through ordinary VCS history
+  in its containers. Phase 0's rejection of `.git`, VCS metadata, symlinks, and executable files in
+  materialized fixtures is thereby externally validated. Downgrade the SWE-bench Verified descriptor
+  to diagnosis-only.
+- **Verifier gaming is a named, measured failure mode.** Hard-coded test cases, harness modification,
+  and visible-test special-casing are documented strategies, and the validation-to-holdout gap widens
+  with task complexity. Phase 0's immutable post-run pure verifiers are the right structure, but the
+  corpus has no impossible-by-construction negative control, so a grader-defeating worker and an
+  honest one currently produce the same report shape.
 
 ## Research Questions That Must Have Answers
 

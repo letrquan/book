@@ -286,6 +286,85 @@ Modify src/harness/rollout-registry.ts
 - Reward-hacking fixtures catch attempts to skip tests, alter the judge, expand budget, or narrow the task improperly.
 - The previous promoted workflow remains immediately restorable.
 
+---
+
+## Additions from the 2026-08-14 evidence review
+
+Source: [External Evidence Review](external-evidence-2026-08.md).
+
+### This phase is no longer speculative
+
+Bounded workflow evolution has an active literature with reported results. Four systems are directly
+relevant:
+
+| System | Mechanism | Reported result |
+| --- | --- | --- |
+| Agent Workflow Memory | Induces reusable workflows from past trajectories, offline or on the fly, composing new workflows on previously induced ones | +24.6% and +51.1% relative success on two web-navigation benchmarks |
+| AFlow | Workflows as code graphs; Monte Carlo tree search over modifications | +5.7% over the best manual designs; +19.5% over prior automatic methods |
+| GEPA | Natural-language reflection on trajectories; maintains a **Pareto frontier** of candidates rather than hill-climbing one best | +6% average over a reinforcement-learning baseline (up to +20%) with **up to 35× fewer rollouts** |
+| Darwin Gödel Machine | Agent modifies its own code, validated empirically; keeps an **archive** of agents for open-ended exploration | 20.0% → 50.0% on one coding benchmark; 14.2% → 30.7% on another; run with sandboxing and human oversight |
+
+**None of these numbers may be cited inside Book as an expected effect size.** Every one is
+validation-selected, measured on benchmarks Book does not run, under harnesses Book does not use,
+and at least one of those benchmarks is now known to be contamination-suspect. They establish that
+the phase is feasible, not what it will yield.
+
+### Adopt: an archive with Pareto retention
+
+8.7's simplicity/Pareto gate compares a candidate against its parent and the best fixed workflow, and
+8.10 bounds candidates per cycle. Both assume a single lineage with a promote/reject decision.
+
+The two strongest systems above independently identify **candidate retention** as the load-bearing
+component: GEPA's central claim is that keeping per-instance winners on a Pareto frontier avoids the
+local optima that defeat greedy updates, and the Darwin Gödel Machine attributes its results to an
+archive enabling open-ended exploration rather than to a single-path hill climb.
+
+Add a candidate archive to this phase's design:
+
+- retain rejected-but-informative candidates with their evaluation records, not only the promoted
+  lineage;
+- select parents for the next cycle by sampling the frontier rather than always mutating the current
+  best;
+- keep the archive strictly separate from the active registry — an archived candidate is data, never
+  executable configuration, and the existing rule that candidates are never loaded from the active
+  workflow path applies unchanged;
+- count archive-sampled candidates against the same per-cycle and query budgets. An archive must not
+  become a way to spend more holdout queries.
+
+### Adopt: reflection over reinforcement, for budget reasons
+
+GEPA's reported 35× rollout reduction versus a reinforcement-learning baseline matters here because
+this phase's binding constraint is provider cost, not algorithmic sophistication. A proposer that
+reflects on typed trajectory facts and proposes a small field change is affordable within 8.10's
+budgets in a way that any rollout-hungry search is not.
+
+This does not relax 8.4's rule that proposer inputs are typed facts with provenance and
+injection-safe summaries rather than free-text failure transcripts. Reflection operates on the
+sanitized fact set, not on raw transcripts, and the sealed holdout never reaches the proposer in any
+form.
+
+### Do not adopt: self-modifying code
+
+The Darwin Gödel Machine modifies its own implementation. That is explicitly outside this phase and
+belongs to Phase 9's code-level evolution gate, which already requires an isolated plugin boundary,
+signed build provenance, reproducible tests, independent promotion authority, and a kill switch.
+Nothing in this evidence changes that boundary.
+
+### The gap this literature has, and this plan does not
+
+Every system above selects on a validation signal. The coding-agent reward-hacking literature
+(ImpossibleBench, SpecBench, and the taxonomies of hard-coded cases, harness modification, and
+visible-test special-casing) documents that the validation-to-holdout gap **widens with task
+complexity** and is larger for weaker models. That is the exact failure mode this phase's sealed
+final holdout, bounded query budget, recomputed complexity accounting, and "no promotion is a valid
+result" rule exist to prevent.
+
+Keep all four. The reported gains above were produced by systems that mostly lack them, which is a
+reason to be careful with the numbers rather than a reason to relax the gates. 8.9's reward-hacking
+fixture list should additionally include a candidate that improves held-in results by exploiting a
+verifier defect, paired with the impossible-case negative control proposed in
+[Phase 0 amendment A7](phase-0-evaluation-contract.md#a7--impossible-by-construction-negative-control).
+
 **Commands:**
 
 ```powershell

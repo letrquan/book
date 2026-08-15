@@ -274,3 +274,50 @@ npm test
 **Rollback:** Disable `shadow` mode and continue collecting observations with manual/fixed workflows.
 
 **Intent check:** Does the selector adapt to evidence, or merely encode a new universal workflow in conditionals?
+
+---
+
+## Additions from the 2026-08-14 evidence review
+
+Source: [External Evidence Review](external-evidence-2026-08.md).
+
+### Precondition: confirm there is something to select between
+
+This phase builds selection machinery over the three Phase 3 workflows, whose only difference is
+bounded prompt guidance — Phase 3's own packet records that no field is enforced outside the prompt.
+If that difference is not detectable above the A/A noise floor, the selector is choosing between
+options that do not differ, and the machinery is unjustified regardless of how well it is built.
+
+Run [experiment E4](experiments.md#e4--guidance-detectability-pre-check-gono-go-for-phases-4-7)
+before starting this phase. If guidance intensity proves undetectable at the corpus scale, this phase
+stays blocked until either an enforceable workflow surface exists (Phase 3A/3B, plus Phase 3
+amendment A13) or the corpus grows enough to resolve the effect. A null result there is a valid and
+useful outcome; it redirects effort rather than ending the program.
+
+### Abstention is a designed capability, not a fallback
+
+The phase already says missing evidence should mean abstention rather than a vague notion of "less
+permissive," and that confidence must be a typed, calibrated policy quantity. The selective-prediction
+and learning-to-defer literature — including conformal approaches that calibrate an abstention
+threshold to a target error rate, and the LLM-routing work that applies them to cascade decisions —
+supplies the vocabulary and the calibration procedure for exactly that.
+
+Two concrete requirements follow:
+
+- **Calibrate, do not assert.** A confidence value that has never been checked against realized
+  outcomes is a free-form number wearing a type. Whatever confidence definition is chosen must have a
+  procedure for verifying that, say, decisions taken at 0.8 confidence are correct about 80% of the
+  time, and abstention thresholds must be set from that procedure rather than chosen by hand.
+- **Report the abstention rate as a first-class metric.** A selector that abstains on 95% of runs is
+  behaving correctly under weak evidence and is also not doing anything; both facts must be visible.
+  Abstention rate belongs beside accuracy in the explain output and in any Phase 6 report.
+
+Token-level model confidence is documented as miscalibrated for structured outputs, so it is not an
+admissible confidence source here.
+
+### Reliability, not only mean success
+
+Whatever outcome metric the selector is tuned against must include the reliability view — the
+probability that *all* repetitions of a case succeed, not the average across them. A policy that
+raises mean success while raising variance will look like an improvement under a mean-based rule and
+will be worse to use. See Phase 0 amendment A4.

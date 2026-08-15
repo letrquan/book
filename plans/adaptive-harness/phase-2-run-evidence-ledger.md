@@ -482,3 +482,76 @@ object; it now persists only scalar identity and metadata projections).
 
 **Decision:** Phase 2 marked **Verified** — observe mode only. `shadow`/`active`/`learn` remain
 unavailable, Tier C remains blocked, and no adaptive behavior is introduced.
+
+---
+
+## Proposed amendments (2026-08-14)
+
+Proposals only. The verification packet above stands unmodified; each amendment needs its own change
+and packet. Evidence: [External Evidence Review](external-evidence-2026-08.md).
+
+### A1 — A durability backend that can actually claim durability
+
+**This is the phase's most consequential open item.** The "Known limitations" entry above records
+that directory fsync is not portably available in Node, so the seal reports
+`directorySync: unavailable` and every seal stays `evidenceEligibility: ineligible`. That was
+recorded as deliberate fail-closed behavior awaiting "a host with verified directory durability."
+
+No such host is coming for the current design: the limitation is a property of Node's API surface,
+not of any particular machine. As written, **no observe-mode evidence can ever become
+promotion-eligible**, which makes Phases 5, 6, and 7 unreachable no matter how well they are built.
+The fail-closed reporting is correct and must stay. What is missing is a path that can pass.
+
+Proposal: extract the append/seal path behind an explicit durability seam and add a `node:sqlite`
+backend storing one row per event, preserving canonical JSON bytes, the monotonic sequence, and the
+SHA-256 previous-record hash chain byte-for-byte — the chain must verify identically regardless of
+backend, so the integrity properties are unchanged and only the durability claim differs. Report
+`evidenceEligibility` from the backend's actual guarantee, so a backend that cannot prove durability
+still reports `ineligible`.
+
+Constraint, checked 2026-08-14: `node:sqlite` is available on Node 24 and **absent on Node 20**,
+while the package declares `engines: node >=20` and CI exercises both. This amendment therefore
+carries a prerequisite decision — raise the floor to Node 22+ (Node 20 left LTS maintenance in April
+2026) and make the durable backend the default, or ship it conditionally and accept that
+`evidenceEligibility` becomes host-dependent, which adds a compatibility component that every
+Phase 0 comparison must then lock. The first is simpler and keeps eligibility uniform.
+
+Verification must be empirical, not asserted: crash the writer at randomized points between append
+and seal and confirm the reader's state classification never reports a durable state that is not.
+See [experiment E1](experiments.md#e1--sqlite-durability-backend-spike).
+
+### A2 — Separate a torn tail from an unclosed run
+
+The frozen contract says a corrupt or truncated tail is never skipped or repaired in place, and an
+unsealed or incomplete stream is not promotion-eligible. That is one rule covering two different
+physical situations:
+
+- a **physically torn fragment** — an incomplete final record — which must be discarded; and
+- a **complete but unclosed run** — every record intact, no terminal event, because the process died
+  — which can be closed on recovery with a *synthetic* terminal record marked `interrupted` and
+  attributed to recovery rather than to the run.
+
+Distinguishing them preserves more evidence without weakening integrity: the synthetic terminal is
+itself a record in the chain, is visibly recovery-authored, and never claims a completed outcome.
+The stream remains promotion-ineligible; it becomes readable and countable as an interrupted run
+instead of an ambiguous one.
+
+### A3 — Propagate trace context into tool subprocesses
+
+The telemetry mapping currently stops at the tool boundary. Propagating the W3C `traceparent` into
+spawned processes through the `TRACEPARENT` environment variable — the convention already used by
+comparable runtimes for shell subprocesses and HTTP MCP requests — lets tool-spawned work be
+correlated back to the run that caused it without persisting any additional content. This is
+additive, content-free, and consistent with the pinned SemConv mapping and the bounded-attribute
+policy.
+
+### Confirmed by external comparison, no change needed
+
+- Redacting **before** queueing and hashing, so raw content never enters the ledger, is stronger than
+  the exporter-side-only redaction shipped by at least one comparable runtime, and matches the
+  redact-by-default posture of another. Keep it.
+- Content-free bounded attributes with explicit cardinality control are industry-normal, not
+  excessive.
+- One idea worth borrowing later: operational records that deliberately **omit sequence identity** so
+  they can never be mistaken for countable ledger rows. That separation is what Phase 5 needs to keep
+  agent-authored evidence distinct from verifier truth.
