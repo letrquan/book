@@ -10,21 +10,6 @@ All notable changes to this project are documented in this file.
   2026-04-30, and 22.13.0 is where `node:sqlite` stopped requiring `--experimental-sqlite`. CI
   exercises Node.js 22 and 24 on Ubuntu and Windows.
 
-### Added
-
-- The harness run evidence ledger writes through a durability backend seam, and a SQLite backend
-  (`node:sqlite`, WAL with `synchronous = FULL`) joins the existing append-only JSONL writer. The
-  JSONL writer cannot prove durability — Node exposes no portable directory fsync — so its seals
-  always reported `directorySync: unavailable` and every run stayed
-  `evidenceEligibility: ineligible`, which no host could ever satisfy. The SQLite backend commits
-  records and the seal as transactions and seals as `eligible`. Record framing, the monotonic
-  sequence, and the SHA-256 hash chain are byte-identical across backends, so a stream verifies the
-  same way regardless of which wrote it, and a backend that cannot prove a guarantee still fails
-  closed — the SQLite backend reads its `journal_mode` and `synchronous` pragmas back and reports
-  `unavailable` when the filesystem refused WAL, rather than trusting the request. The seal now also
-  records which backend made the claim. JSONL remains the default and the SQLite backend is not yet
-  selectable through settings, so this changes what the ledger *can* attest, not yet what it does.
-
 ### Fixed
 
 - `/review` no longer reports a clean review when it silently discarded findings. A reviewer pass
@@ -83,6 +68,18 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- The harness run evidence ledger writes through a durability backend seam, and a SQLite backend
+  (`node:sqlite`, WAL with `synchronous = FULL`) joins the existing append-only JSONL writer. The
+  JSONL writer cannot prove durability — Node exposes no portable directory fsync — so its seals
+  always reported `directorySync: unavailable` and every run stayed
+  `evidenceEligibility: ineligible`, which no host could ever satisfy. The SQLite backend commits
+  records and the seal as transactions and seals as `eligible`. Record framing, the monotonic
+  sequence, and the SHA-256 hash chain are byte-identical across backends, so a stream verifies the
+  same way regardless of which wrote it, and a backend that cannot prove a guarantee still fails
+  closed — the SQLite backend reads its `journal_mode` and `synchronous` pragmas back and reports
+  `unavailable` when the filesystem refused WAL, rather than trusting the request. The seal now also
+  records which backend made the claim. JSONL remains the default and the SQLite backend is not yet
+  selectable through settings, so this changes what the ledger *can* attest, not yet what it does.
 - Experimental execution workflows for the observe-mode harness. `harness.workflow` (settings) and
   `--harness-workflow <id>` (run-scoped) select one of three validated built-ins — `minimal`,
   `safe-edit`, and `verify-heavy` — from a hashed registry. `minimal` renders no prompt text and
