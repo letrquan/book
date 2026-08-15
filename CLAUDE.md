@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Book is a proprietary, provider-agnostic alternative to Claude Code. It provides an interactive terminal UI (TUI), print/headless mode, an SDK, and managed background execution for AI-assisted coding.
 
-**Tech stack**: TypeScript (ES2022/ESM, `moduleResolution: bundler`), React 19 via Ink 6.8.0 for the TUI, tsup for building, Vitest 4 for testing, Zod 3 for config validation. Node.js 20+.
+**Tech stack**: TypeScript (ES2022/ESM, `moduleResolution: bundler`), React 19 via Ink 6.8.0 for the TUI, tsup for building, Vitest 4 for testing, Zod 3 for config validation. Node.js 22.13+.
 
 **Version**: `0.1.0` plus the unreleased changes in `CHANGELOG.md`. `docs/current-state.md` is the authoritative status snapshot, `README.md` is the usage reference, and `MILESTONES.md` tracks remaining work.
 

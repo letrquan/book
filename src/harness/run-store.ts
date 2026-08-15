@@ -1,10 +1,23 @@
 import { generateKeyPairSync, sign as signBytes, verify as verifyBytes } from 'node:crypto';
 import { canonicalJson, sha256Hex } from './canonical-json.js';
-import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import type { FileHandle } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import type { KeyObject } from 'node:crypto';
 import { join, dirname, relative, resolve } from 'node:path';
+import {
+  DURABILITY_POLICY_VERSION,
+  LEDGER_FILENAMES,
+  defaultSealPath,
+  durabilityIsVerified,
+  openJsonlDurabilityBackend,
+  openLedgerSource,
+  openSqliteDurabilityBackend,
+} from './ledger-durability.js';
+import type {
+  DurabilityStatus,
+  LedgerDurabilityBackend,
+  LedgerDurabilityBackendFactory,
+} from './ledger-durability.js';
 import { resolveBookHome } from '../book-home.js';
 import { workspaceIdentity } from '../tools/file-provenance.js';
 import type {
@@ -30,8 +43,14 @@ import {
 
 export const LEDGER_SCHEMA_VERSION = 1 as const;
 export const LEDGER_WRITER_VERSION = 'phase-2-v1';
-export const DURABILITY_POLICY_VERSION = 'group-synced-v1';
 export const GENESIS_HASH = '0'.repeat(64);
+export {
+  DURABILITY_POLICY_VERSION,
+  durabilityIsVerified,
+  openJsonlDurabilityBackend,
+  openSqliteDurabilityBackend,
+};
+export type { DurabilityStatus, LedgerDurabilityBackend, LedgerDurabilityBackendFactory };
 /** Reserved headroom so an accepted redacted body cannot overflow once enveloped. */
 export const ENVELOPE_OVERHEAD_BYTES = 2_048;
 export const DEFAULT_QUEUE_SIZE = 512;
@@ -75,24 +94,6 @@ export interface RunLedgerStartInput extends HarnessRunIdentity {
   readonly metadata: RunLedgerMetadata;
 }
 
-export interface DurabilityStatus {
-  readonly policy: typeof DURABILITY_POLICY_VERSION;
-  readonly fileDataSync: 'verified' | 'unavailable' | 'failed';
-  readonly fileMetadataSync: 'verified' | 'unavailable' | 'failed';
-  readonly atomicReplace: 'verified' | 'unavailable' | 'failed';
-  readonly directorySync: 'verified' | 'unavailable' | 'failed';
-}
-
-const DURABILITY_TEMPLATE: DurabilityStatus = {
-  policy: DURABILITY_POLICY_VERSION,
-  fileDataSync: 'verified',
-  fileMetadataSync: 'verified',
-  atomicReplace: 'verified',
-  // Node does not expose a portable directory fsync API. We record that fact
-  // explicitly and fail closed for promotion evidence.
-  directorySync: 'unavailable',
-};
-
 export interface LedgerCounters {
   readonly attemptedEventCount: number;
   readonly acceptedEventCount: number;
@@ -119,6 +120,12 @@ export interface RunLedgerSeal {
   readonly terminalStatus: HarnessTerminalStatus;
   readonly terminalEventId: string;
   readonly occurredAt: number;
+  /**
+   * Identity of the backend that made the durability claim below. Two seals
+   * carrying four `verified` values are otherwise indistinguishable, so an
+   * offline verifier needs to know which implementation asserted them.
+   */
+  readonly backendId: string;
   readonly durability: DurabilityStatus;
   readonly counters: LedgerCounters;
   readonly evidenceComplete: boolean;
@@ -186,6 +193,13 @@ export interface RunStoreOptions {
   readonly syncIntervalMs?: number;
   readonly flushTimeoutMs?: number;
   readonly closeTimeoutMs?: number;
+  /**
+   * Durability backend factory. Defaults to the append-only JSONL writer, whose
+   * seals stay `ineligible` because Node exposes no portable directory fsync.
+   * A backend that verifies every guarantee makes eligible evidence reachable
+   * without changing record framing, sequencing, or the hash chain.
+   */
+  readonly durabilityBackend?: LedgerDurabilityBackendFactory;
   /** Test/host hook. Errors are latched and never thrown through user callbacks. */
   readonly onStorageError?: (error: Error) => void;
 }
@@ -341,7 +355,7 @@ export class RunLedgerWriter {
     flushTimeoutMs: number;
     closeTimeoutMs: number;
   }>;
-  private readonly fd: FileHandle;
+  private readonly backend: LedgerDurabilityBackend;
   private readonly options: RunLedgerWriterOptions;
   private readonly now: () => number;
   private readonly randomUUID: () => string;
@@ -371,15 +385,10 @@ export class RunLedgerWriter {
   private unsyncedBytes = 0;
   private lifecyclePromise: Promise<RunFinalizeResult> | null = null;
 
-  private constructor(
-    fd: FileHandle,
-    path: string,
-    sealPath: string,
-    options: RunLedgerWriterOptions,
-  ) {
-    this.fd = fd;
-    this.path = path;
-    this.sealPath = sealPath;
+  private constructor(backend: LedgerDurabilityBackend, options: RunLedgerWriterOptions) {
+    this.backend = backend;
+    this.path = backend.path;
+    this.sealPath = backend.sealPath;
     this.options = options;
     this.identity = options.identity;
     this.now = options.now ?? Date.now;
@@ -411,18 +420,12 @@ export class RunLedgerWriter {
       yearMonth,
       safeId(options.identity.rootRunId),
     );
-    await mkdir(runDir, { recursive: true, mode: 0o700 });
-    const path = join(runDir, 'events.jsonl');
-    const sealPath = join(runDir, 'seal.json');
-    let fd: FileHandle;
-    try {
-      fd = await open(path, 'wx', 0o600);
-    } catch (error) {
-      throw new Error(
-        `Harness run collision or open failure: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    const writer = new RunLedgerWriter(fd, path, sealPath, options);
+    const openBackend = options.durabilityBackend ?? openJsonlDurabilityBackend;
+    const backend = await openBackend({
+      runDir,
+      randomUUID: options.randomUUID ?? (() => crypto.randomUUID()),
+    });
+    const writer = new RunLedgerWriter(backend, options);
     try {
       await writer.appendDirect({
         eventType: 'run_started',
@@ -441,7 +444,7 @@ export class RunLedgerWriter {
       await writer.sync();
       return writer;
     } catch (error) {
-      await fd.close().catch(() => undefined);
+      await backend.close().catch(() => undefined);
       throw error;
     }
   }
@@ -579,7 +582,7 @@ export class RunLedgerWriter {
       if (waited.timedOut) {
         this.incomplete = true;
         this.state = 'failed';
-        await this.fd.close().catch(() => undefined);
+        await this.backend.close().catch(() => undefined);
         return this.flushResult('timed-out', false, 'close-timeout');
       }
       if ((this.state as string) === 'failed')
@@ -608,12 +611,12 @@ export class RunLedgerWriter {
       const seal = await this.writeSeal(input.status, terminalEventId);
       this.seal = seal;
       this.state = 'closed';
-      await this.fd.close().catch((error: unknown) => this.recordStorageError(error));
+      await this.backend.close().catch((error: unknown) => this.recordStorageError(error));
       return { ...this.flushResult('closed', !this.incomplete), seal };
     } catch (error) {
       this.recordStorageError(error);
       this.state = 'failed';
-      await this.fd.close().catch(() => undefined);
+      await this.backend.close().catch(() => undefined);
       return this.flushResult('failed', false, 'finalize-failed');
     }
   }
@@ -646,7 +649,7 @@ export class RunLedgerWriter {
       }
     }
     if (this.state !== 'closed') {
-      await this.fd.close().catch((error: unknown) => this.recordStorageError(error));
+      await this.backend.close().catch((error: unknown) => this.recordStorageError(error));
       this.state = this.storageErrors.length > 0 ? 'failed' : 'closed';
     }
     return this.flushResult(
@@ -798,7 +801,7 @@ export class RunLedgerWriter {
       this.sequence -= 1;
       throw new OversizedRecordError();
     }
-    await this.fd.write(line, undefined, 'utf8');
+    await this.backend.append(line);
     this.previousHash = recordHash;
     if (this.sequence === 1) this.firstHash = recordHash;
     if (input.eventType === 'subagent_handoff_created') this.childHandoffs += 1;
@@ -808,7 +811,7 @@ export class RunLedgerWriter {
   }
 
   private async sync(): Promise<void> {
-    await this.fd.sync();
+    await this.backend.sync();
     this.lastSyncAt = this.now();
     this.unsyncedBytes = 0;
   }
@@ -843,6 +846,12 @@ export class RunLedgerWriter {
     terminalEventId: string,
   ): Promise<RunLedgerSeal> {
     const counters = this.counterProjection();
+    const durability = this.backend.status();
+    // One derivation, used by both fields: evidence is complete and eligible
+    // only when nothing was lost, no storage error was latched, and the backend
+    // itself verifies every durability guarantee it claims.
+    const durableAndComplete =
+      !this.incomplete && this.storageErrors.length === 0 && durabilityIsVerified(durability);
     const unsigned = {
       schemaVersion: 1 as const,
       writerVersion: LEDGER_WRITER_VERSION,
@@ -857,22 +866,11 @@ export class RunLedgerWriter {
       terminalStatus: status,
       terminalEventId,
       occurredAt: this.now(),
-      durability: DURABILITY_TEMPLATE,
+      backendId: this.backend.id,
+      durability,
       counters,
-      evidenceComplete:
-        !this.incomplete &&
-        this.storageErrors.length === 0 &&
-        Object.entries(DURABILITY_TEMPLATE).every(
-          ([key, value]) => key === 'policy' || value === 'verified',
-        ),
-      evidenceEligibility:
-        !this.incomplete &&
-        this.storageErrors.length === 0 &&
-        Object.entries(DURABILITY_TEMPLATE).every(
-          ([key, value]) => key === 'policy' || value === 'verified',
-        )
-          ? ('eligible' as const)
-          : ('ineligible' as const),
+      evidenceComplete: durableAndComplete,
+      evidenceEligibility: durableAndComplete ? ('eligible' as const) : ('ineligible' as const),
     };
     const sealDigest = sha256(canonicalize(unsigned));
     const signature = signBytes(
@@ -891,15 +889,7 @@ export class RunLedgerWriter {
         keyScope: 'process' as const,
       },
     } satisfies RunLedgerSeal;
-    const temp = `${this.sealPath}.tmp-${this.randomUUID()}`;
-    const sealFd = await open(temp, 'wx', 0o600);
-    try {
-      await sealFd.write(`${canonicalize(seal)}\n`, undefined, 'utf8');
-      await sealFd.sync();
-    } finally {
-      await sealFd.close().catch(() => undefined);
-    }
-    await rename(temp, this.sealPath);
+    await this.backend.writeSeal(`${canonicalize(seal)}\n`);
     return seal;
   }
 }
@@ -968,7 +958,7 @@ export class RunEvidenceStore {
         lastRecordHash: GENESIS_HASH,
       };
     }
-    return readRunLedger(events, `${dirname(events)}${'/seal.json'}`);
+    return readRunLedger(events, defaultSealPath(events));
   }
 
   async rebuildIndex(): Promise<readonly RunIndexEntry[]> {
@@ -978,14 +968,14 @@ export class RunEvidenceStore {
       (await this.readPins()).filter((pin) => pin.expiresAt > now).map((pin) => pin.rootRunId),
     );
     for (const events of await findEventFiles(this.harnessRoot)) {
-      const result = await readRunLedger(events, join(dirname(events), 'seal.json'));
+      const result = await readRunLedger(events, defaultSealPath(events));
       const header = result.records[0];
       const terminal = result.records[result.records.length - 1];
       entries.push({
         rootRunId: String(header?.rootRunId ?? relative(this.harnessRoot, dirname(events))),
         workspaceId: this.workspaceId,
         path: events,
-        sealPath: join(dirname(events), 'seal.json'),
+        sealPath: defaultSealPath(events),
         status: result.status,
         startedAt: header?.occurredAt,
         endedAt: terminal?.occurredAt,
@@ -1147,11 +1137,12 @@ export class RunEvidenceStore {
 
 export async function readRunLedger(
   path: string,
-  sealPath = join(dirname(path), 'seal.json'),
+  sealPath = defaultSealPath(path),
 ): Promise<LedgerReadResult> {
+  const source = openLedgerSource(path, sealPath);
   let bytes: Buffer;
   try {
-    bytes = await readFile(path);
+    bytes = await source.readRecordBytes();
   } catch (error) {
     return {
       path,
@@ -1220,7 +1211,7 @@ export async function readRunLedger(
   let seal: RunLedgerSeal | undefined;
   let sealError: string | undefined;
   try {
-    const sealText = await readFile(sealPath, 'utf8');
+    const sealText = await source.readSealText();
     try {
       const parsed = JSON.parse(sealText) as RunLedgerSeal;
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -1256,6 +1247,16 @@ export async function readRunLedger(
     seal.byteLength !== validBytes ||
     seal.terminalEventId !== records.at(-1)?.eventId ||
     statusEventType(seal.terminalStatus) !== records.at(-1)?.eventType ||
+    // The eligibility fields must not contradict the durability status they
+    // were derived from. The reader cannot confirm the guarantee itself — only
+    // the writing host can — but completeness implies verified durability, and
+    // the two eligibility fields come from one expression, so a seal that
+    // disagrees with itself must not be trusted. Note this is an implication,
+    // not an equivalence: dropped events make a run incomplete even when its
+    // durability was fully verified.
+    (seal.evidenceComplete && !durabilityIsVerified(seal.durability)) ||
+    seal.evidenceComplete !== (seal.evidenceEligibility === 'eligible') ||
+    typeof seal.backendId !== 'string' ||
     !verifySeal(seal)
   )
     status = 'corrupt';
@@ -1286,7 +1287,8 @@ async function findEventFiles(root: string): Promise<string[]> {
     for (const entry of entries) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile() && entry.name === 'events.jsonl') result.push(path);
+      else if (entry.isFile() && (LEDGER_FILENAMES as readonly string[]).includes(entry.name))
+        result.push(path);
     }
   }
   await visit(join(root, 'runs'));

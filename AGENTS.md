@@ -6,7 +6,7 @@ Application code lives in `src/`. The CLI entry point is `src/index.ts`; reusabl
 
 ## Build, Test, and Development Commands
 
-- `npm install` installs dependencies; Node.js 20 or newer is required.
+- `npm install` installs dependencies; Node.js 22.13 or newer is required.
 - `npm run dev` runs the CLI directly from `src/index.ts` with `tsx`.
 - `npm run build` bundles JavaScript and declarations into `dist/` with `tsup`.
 - `npm run typecheck` checks strict TypeScript types without emitting files.

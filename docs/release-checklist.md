@@ -11,7 +11,7 @@ is deliberately renamed (for example to a scoped name) and made publishable.
    `## [x.y.z] - YYYY-MM-DD` section.
 3. Run `npm ci` with the `packageManager` version from `package.json`.
 4. Run `npm run check`, `npm test`, `npm run test:coverage`, and `npm run bench:ui`.
-5. Repeat the full test/package validation on Node.js 20 and 24, including Windows and Ubuntu.
+5. Repeat the full test/package validation on Node.js 22 and 24, including Windows and Ubuntu.
 6. Run `npm run release:check` and review `npm pack --dry-run` for secrets, local settings, and
    unexpected files.
 7. Confirm the stabilization gate and required GitHub checks are green for the exact release commit.

@@ -17,7 +17,7 @@ The gate passes only when:
 - no open issue has the `regression:lifecycle` or `regression:accounting` label.
 
 Manual reruns against the same commit are allowed. Repeatability of the complete platform matrix is
-the purpose of the window: Node.js 20 and 24 on Windows and Ubuntu, integration tests, package smoke,
+the purpose of the window: Node.js 22 and 24 on Windows and Ubuntu, integration tests, package smoke,
 audits, coverage, and UI performance budgets must all remain green.
 
 ## Regression Handling

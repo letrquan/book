@@ -26,7 +26,7 @@ See [`docs/current-state.md`](./docs/current-state.md) for the verified product 
 
 ## Installation
 
-Requires **Node.js 20+**.
+Requires **Node.js 22.13+**.
 
 ```bash
 # Clone (repo is currently private — use a machine with GitHub access)

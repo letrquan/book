@@ -10,7 +10,7 @@ reference for roadmap and design documents.
 - Distribution: source checkout, GitHub tag, or a locally built/link-installed CLI. There is no
   published npm package for this repository.
 - License: proprietary, all rights reserved; see the README.
-- Runtime: Node.js 20 or newer; CI exercises Node.js 20 and 24 on Ubuntu and Windows.
+- Runtime: Node.js 22.13 or newer; CI exercises Node.js 22 and 24 on Ubuntu and Windows.
 - Build: `tsup` emits ESM CLI, SDK, and job-runner bundles plus declarations into `dist/`.
 
 ## Shipped Surfaces

@@ -55,7 +55,7 @@ See [plans/security-assessment.md](plans/security-assessment.md) for the current
 - [ ] Complete the renderer real-PTY matrix and interactive soak on Windows and Unix terminals.
 - [ ] Maintain three eligible green main-branch CI runs with no open lifecycle/accounting
   regression issues before advancing runtime-attribution work.
-- [ ] Cut the next version only after `npm run release:check`, full Node 20/24 validation, package
+- [ ] Cut the next version only after `npm run release:check`, full Node 22/24 validation, package
   inspection, changelog promotion, and installed-artifact smoke tests.
 
 ### 3. Background Job Follow-up

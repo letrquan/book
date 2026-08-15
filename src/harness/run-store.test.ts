@@ -204,7 +204,7 @@ describe('append-only run evidence ledger', () => {
       metadata: { mode: 'observe' },
     });
     // Simulate an unrecoverable device failure under the open descriptor.
-    await (writer as unknown as { fd: { close(): Promise<void> } }).fd.close();
+    await (writer as unknown as { backend: { close(): Promise<void> } }).backend.close();
     expect(() =>
       writer.enqueue({ type: 'turn_started', occurredAt: 2, attributes: { turn: 1 } }),
     ).not.toThrow();
@@ -287,7 +287,7 @@ describe('append-only run evidence ledger', () => {
       runId: 'root-storage-callback-1',
       metadata: { mode: 'observe' },
     });
-    await (writer as unknown as { fd: { close(): Promise<void> } }).fd.close();
+    await (writer as unknown as { backend: { close(): Promise<void> } }).backend.close();
     writer.enqueue({ type: 'turn_started', occurredAt: 2, attributes: { turn: 1 } });
     await expect(writer.flush()).resolves.toMatchObject({ status: 'failed', incomplete: true });
   });
