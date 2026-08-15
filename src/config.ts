@@ -77,16 +77,6 @@ export interface LoadConfigOptions {
   allowMissingApiKey?: boolean;
 }
 
-export function runConfigMigrations(
-  workspace?: string,
-  options: Pick<LoadConfigOptions, 'settingsOverridePath' | 'noSettings'> = {},
-): boolean {
-  if (options.noSettings) return false;
-  const resolvedWorkspace = workspace || process.env.BOOK_WORKSPACE || process.cwd();
-  const settings = resolveSettings(resolvedWorkspace, options.settingsOverridePath);
-  return migrateLegacyPermissions(resolvedWorkspace, undefined, settings);
-}
-
 export function loadConfig(workspace?: string, options?: LoadConfigOptions): AgentConfig {
   const settingsOverridePath = options?.settingsOverridePath;
   const noSettings = options?.noSettings ?? false;

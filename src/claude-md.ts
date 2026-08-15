@@ -90,8 +90,5 @@ export function renderProjectInstructions(sources: ProjectInstructionSource[]): 
   return lines.join('\n');
 }
 
-// Compatibility aliases for callers that imported the original CLAUDE.md-only API.
+// Compatibility alias for callers that imported the original CLAUDE.md-only API.
 export const discoverClaudeMd = discoverProjectInstructions;
-export const renderClaudeMd = renderProjectInstructions;
-export type ClaudeMdLayer = ProjectInstructionLayer;
-export type ClaudeMdSource = ProjectInstructionSource;
