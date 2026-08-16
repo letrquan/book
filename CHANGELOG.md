@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- Raised the `postcss` override from `8.5.18` to `8.5.26`, clearing GHSA-fxqj-rqcc-2cmp (moderate):
+  an attacker-controlled `sourceMappingURL` could read arbitrary `.map` files when `from` is unset.
+  The pin itself was holding the tree on a vulnerable release — every advisory-free version was
+  above it, and `vite` already asked for `^8.5.25`. Build-time dependency only (`tsup`/`vite`), so
+  no shipped runtime code is affected.
+
 ### Changed
 
 - **Node.js 22.13.0 or newer is now required** (previously 20). Node.js 20 reached end-of-life on
