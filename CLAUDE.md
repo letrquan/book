@@ -50,9 +50,11 @@ src/
   jobs/                 Background shell manager, persistent state, and restart recovery
   agent/
     loop.ts             Core agent loop (runAgentLoop)
-    context.ts          System prompt builder (two-zone cache split), message formatter
+    context.ts          System prompt builder (cached kernel/session-context zones),
+                        message formatter
+    session-state.ts    Per-turn <session-state> block + checkpoint freshness deltas
+    prompt-determinism.ts  SYSTEM_PROMPT_VERSION, frozen date, evaluation path masking
     compact.ts          Context compaction logic
-    tool-discovery.ts   Capability-scoped tool activation / ToolSearch gating
   agents/               Managed-agent subsystem (explorer/patcher/validator profiles):
                         manager.ts, store.ts (atomic JSON state), profiles.ts,
                         profile-resolver.ts, capabilities.ts, git-isolation.ts (worktrees),
@@ -136,7 +138,19 @@ Other conventions:
 - **Tool discovery**: a practical core stays loaded; `ToolSearch` activates up to five authorized tools on the next turn, always within the current command/skill/agent-role/permission-mode/state capability intersection (`tools/capability-rules.ts`).
 - **Tool execution is serial by default**; only an explicitly reviewed parallel-safe set (`Read`, `Glob`, `Grep`, `GitStatus`, `GitDiff`, `GitLog`, `GitBranch`) runs in bounded ordered waves via `tools/execution-scheduler.ts`.
 - **Permission modes** (internal): `default` | `auto` | `plan` | `accept-edits` | `dontAsk` | `bypassPermissions`. CLI/settings accept `acceptEdits` and normalize to `accept-edits`.
-- **System prompt**: `buildSystemPromptZones()` produces a cacheable static prefix + dynamic per-turn suffix (Anthropic prompt caching).
+- **Prompt content is sorted by volatility, not by topic.** Anthropic matches cache
+  prefixes in `tools` → `system` → `messages` order, so anything that changes often must
+  render *after* everything that does not. Three transports:
+  - **Cached prefix** (`buildSystemPromptZones().cachedPrefix`) — session-stable kernel and
+    session-context sections, tagged by zone. Adding per-turn text here re-bills the whole
+    conversation every turn.
+  - **Uncached system suffix** (`dynamicSuffix`) — activation-class policy only: workflow
+    policy, active skill frames, the deferred-tool catalog.
+  - **`<session-state>` block** (`agent/session-state.ts`) — per-turn task state (date, git,
+    plan mode, checkpoint drift, todos), appended to the newest user turn. Rendered once and
+    memoized on the `Message`; every rebuild must reproduce earlier turns byte-for-byte.
+- **Cache breakpoints**: exactly three per Anthropic request — last tool, cached system
+  block, last message (moving). The limit is four; `countCacheBreakpoints` guards it.
 - **`process.exit()` goes through the `cli/exit.ts` abstraction** (allows test injection).
 
 ## Testing

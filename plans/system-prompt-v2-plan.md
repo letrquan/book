@@ -504,12 +504,51 @@ platform before landing):
 
 | Phase | Commit prefix | Status |
 | --- | --- | --- |
-| 1 — Breakpoints (last tool, moving last message, ≤4 guard) | `fix(provider)` | Planned |
-| 2 — Zone transports: task-state session-state blocks; dynamic-policy suffix; skill frames out of the cached prefix | `refactor(prompt)` | Planned |
-| 3 — Fence project instructions; trust frame first | `feat(prompt)` | Planned |
-| 4 — Harness facts; drop hostname | `feat(prompt)` | Planned |
-| 5 — Delete tool listing; gate delegation; trims; truncation markers; command-listing fix | `chore(prompt)` | Planned |
-| 6 — CLAUDE.md / CHANGELOG / README sync | `docs` | Planned |
+| 1 — Breakpoints (last tool, moving last message, ≤4 guard) | `fix(provider)` | Landed (`f05f224`) |
+| 2 — Zone transports: task-state session-state blocks; dynamic-policy suffix; skill frames out of the cached prefix | `refactor(prompt)` | Landed (`23cdacb`) |
+| 3 — Fence project instructions; trust frame first | `feat(prompt)` | Landed (`0c23bbb`) |
+| 4 — Harness facts; drop hostname | `feat(prompt)` | Landed (`2e56a75`) |
+| 5 — Delete tool listing; gate delegation; trims; truncation markers; command-listing fix | `chore(prompt)` | Landed (`174c990`) |
+| 6 — CLAUDE.md / CHANGELOG / README sync | `docs` | Landed |
+
+### Implementation notes — where the build diverged from this plan
+
+Recorded so a later reader does not mistake the plan text for what shipped.
+
+1. **Phase 4's Windows shell sentence was wrong and was rewritten.** `src/tools/shell.ts` spawns
+   with Node's `shell: true`, which is `cmd.exe` on Windows — not Git Bash. The prompt now says
+   `/bin/sh` on macOS and Linux, `cmd.exe` on Windows, and that the sandbox needs bubblewrap.
+2. **Session-state renders lazily in `buildMessages`, not at dispatch in `runAgentLoop`** (Phase
+   2.2/2.3). The host persists the user record *before* the loop runs, so a dispatch-time render
+   could not be persisted without reordering host-specific code that headless and the SDK do not
+   share. Lazy render + memoize on the `Message` satisfies the same invariant — rendered once,
+   reused by every rebuild path — in one place all hosts share.
+3. **Session-state is not persisted to the session JSONL** (open question 1). It buys no cache:
+   the default TTL is 5 minutes, so a resumed session always starts cold. On resume, historical
+   turns carry no block and the newest turn gets a fresh one; byte-stability within the resumed
+   process is unaffected. This also avoids the session-schema change the risk table flagged.
+4. **Phase 5.2 (gate delegation on registered agent tools) was already satisfied.** Every
+   `createDefaultRegistry` caller derives `capabilities.agents` from `settings.agents.mode`, which
+   is the same signal the prompt already gates on, so there was no second condition to add.
+   Gating on the *active* tool array would be wrong: `AgentSpawn` is `ROOT_ONLY`/deferred in
+   `tools/catalog.ts`, so it is absent from the active set exactly when the routing section is
+   what tells the model agents exist.
+5. **Operating principles shrank ~20%, not ≈40%** (open question 4). The three bullets this plan
+   names by name were cut, plus "match the requested mode". Reaching 40% would require cutting
+   bullets the plan's own keep-criterion protects (batching, mutation mechanics, verification).
+   The surviving set is the review pass open question 4 asks for.
+6. **Open questions 2, 3, 5 took the recommended defaults**: silence instead of a tool count;
+   deferred catalog kept, in the suffix; `append` (session-stable) split from a new `dynamicPolicy`
+   (activation-class).
+
+### Follow-up found during implementation
+
+**Breakpoints only look back 20 content blocks.** Anthropic's cache walks back at most 20 blocks
+from a breakpoint to find a prior entry; past that it silently misses. One agent turn contributes
+roughly `2K+1` blocks for `K` tool calls, so a turn with ~10 parallel calls can exceed the window
+and lose the previous turn's span. D1's three breakpoints leave one of the four spare: a second,
+lagging message breakpoint one turn back would close this. Not implemented — D1 fixes the count at
+three, and this deserves its own decision.
 
 ---
 

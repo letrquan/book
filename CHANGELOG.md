@@ -6,6 +6,44 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Anthropic sessions now cache the conversation, cutting input cost on long sessions by roughly
+  an order of magnitude.** Book placed no cache breakpoint on the message stream, so the whole
+  history — 50-150k tokens mid-session — was re-billed at full input price on every turn. A moving
+  breakpoint on the newest message means a steady-state turn re-buys roughly the newest turn
+  instead of the whole context; cache reads are about a tenth of the input price, and time to first
+  token drops with the cost. Book also marked *every* tool definition, far past Anthropic's
+  four-breakpoint limit; only the last tool is marked now, which caches identically.
+- **The system prompt is now organized by how often its content changes.** Current date, git
+  status, the plan-mode notice, and the todo list have left the system prompt: they sit ahead of
+  the message history in the cache prefix, so a dirty file or a plan-mode toggle used to
+  invalidate the entire conversation. Per-turn state is delivered as a `<session-state>` block on
+  the newest user turn, and active skill frames moved from the cached prefix to the uncached
+  dynamic suffix, so activating a skill no longer invalidates the whole prompt.
+  - *Todo state now travels through TodoWrite's own tool result*, which already echoes the full
+    list into the message stream. The list is no longer restated in the system prompt each turn.
+  - *Checkpoint freshness* is no longer re-stamped into the historical checkpoint message. The
+    same hash comparison runs once per turn and reports drift as `Stale since checkpoint: …` in
+    the newest session-state block.
+- **`SYSTEM_PROMPT_VERSION` is now `book-system-prompt-v2`.** Run-ambient records stamp this
+  version, so harness evidence recorded under v1 is not comparable with v2-era runs. Evidence
+  accumulated through a durability backend that claims `verified` is reset by this bump.
+- **Project instructions are fenced.** `CLAUDE.md` / `AGENTS.md` / rules content is wrapped in
+  `<project-instructions>` with a `<source path scope>` element per file, and fence markup inside
+  a source body is neutralized. Previously an injected file's own `#` headings broke straight out
+  of the `## Project instructions` section, so a repo file containing `## Guardrails` rendered at
+  the same level as the real one. Trust framing now precedes the fenced content instead of
+  arriving in the closing guardrails.
+- **The system prompt states harness facts it never used to**: how output is rendered, the
+  `file_path:line` convention, which shell Bash spawns per platform (`cmd.exe` on Windows, not a
+  POSIX shell), what a denied tool call means, that hook output is user-configured feedback, and
+  that time-sensitive facts need verifying. The machine hostname is no longer sent to the provider.
+- **The `## Available tools` section is gone.** It restated, with truncated descriptions, the tool
+  schemas the API already delivers verbatim. The deferred-tool catalog remains, since it describes
+  tools the model genuinely cannot see. Operating principles lost the bullets that restate a
+  frontier model's own defaults.
+- **Truncated listings now say so.** Skill, command, and subagent listings that hit their
+  character budget append `- …and N more not shown` instead of stopping silently after one bare
+  name.
 - **Node.js 22.13.0 or newer is now required** (previously 20). Node.js 20 reached end-of-life on
   2026-04-30, and 22.13.0 is where `node:sqlite` stopped requiring `--experimental-sqlite`. CI
   exercises Node.js 22 and 24 on Ubuntu and Windows.
