@@ -34,33 +34,51 @@ jobs:
       - run: npm ci
 
       # TEMPORARY diagnostic for the windows/Node 24 worker crash. Remove before merge.
-      # Discriminates: do the two fs.watch files crash alone, or only after the rest of the tier?
-      - name: 'DIAGNOSTIC: isolate the fs.watch unit files'
+      # The two fs.watch files crash even when run alone, so this narrows *why*: is it fs.watch
+      # itself on this OS image, or the interaction with vitest's forks pool?
+      - name: 'DIAGNOSTIC: narrow the fs.watch worker crash'
         if: matrix.os == 'windows-latest' && matrix.node-version == '24.x'
         continue-on-error: true
         shell: bash
         run: |
+          set +e   # GitHub runs bash with -e; without this the first failure ends the step.
+          B="src/skill-watcher.test.ts src/session/runtime.test.ts"
           V="npx vitest run --config vitest.unit.config.ts"
-          echo "--- both files together ---"
-          $V src/skill-watcher.test.ts src/session/runtime.test.ts; echo "exit=$?"
-          echo "--- skill-watcher.test.ts alone ---"
+          echo "===== 1. baseline: both files, forks pool ====="
+          $V $B; echo "exit=$?"
+          echo "===== 2. skill-watcher alone ====="
           $V src/skill-watcher.test.ts; echo "exit=$?"
-          echo "--- session/runtime.test.ts alone ---"
+          echo "===== 3. runtime alone ====="
           $V src/session/runtime.test.ts; echo "exit=$?"
-          # mergeConfig concatenates `exclude`, so the unit tier's own exclusions are preserved.
-          cat > vitest.diag.config.ts <<'CFG'
-          import { defineConfig, mergeConfig } from 'vitest/config';
-          import unitConfig from './vitest.unit.config.js';
-          export default mergeConfig(
-            unitConfig,
-            defineConfig({
-              test: { exclude: ['src/skill-watcher.test.ts', 'src/session/runtime.test.ts'] },
-            }),
-          );
-          CFG
-          echo "--- full tier EXCLUDING both files ---"
-          npx vitest run --config vitest.diag.config.ts; echo "exit=$?"
-          rm -f vitest.diag.config.ts
+          echo "===== 4. both, threads pool ====="
+          $V --pool=threads $B; echo "exit=$?"
+          echo "===== 5. both, forks + no isolation ====="
+          $V --no-isolate $B; echo "exit=$?"
+          echo "===== 6. fs.watch outside vitest entirely ====="
+          cat > diag-watch.mjs <<'JS'
+          import { mkdirSync, mkdtempSync, rmSync, writeFileSync, watch } from 'node:fs';
+          import { tmpdir } from 'node:os';
+          import { join } from 'node:path';
+          const ws = mkdtempSync(join(tmpdir(), 'diag-watch-'));
+          const dir = join(ws, '.book', 'skills', 'review');
+          mkdirSync(dir, { recursive: true });
+          const handles = [];
+          for (const d of [ws, join(ws, '.book'), join(ws, '.book', 'skills'), dir]) {
+            const w = watch(d, () => {});
+            w.on('error', (e) => console.log('watcher error', e.code ?? e.message));
+            handles.push(w);
+          }
+          writeFileSync(join(dir, 'SKILL.md'), 'body');
+          setTimeout(() => {
+            for (const w of handles) w.close();
+            rmSync(ws, { recursive: true, force: true });
+            console.log('plain-node fs.watch OK');
+          }, 300);
+          JS
+          node diag-watch.mjs; echo "exit=$?"
+          echo "===== 7. node version / os ====="
+          node -p "process.version + ' ' + process.platform + ' ' + require('os').release()"
+          rm -f diag-watch.mjs
 
       - run: npm run check
 
