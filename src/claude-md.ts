@@ -75,18 +75,48 @@ export function discoverProjectInstructions(
   return sources;
 }
 
+/**
+ * Neutralize fence markup a source file might contain. Without this a repo file
+ * could close the fence early — or forge a `<source>` header — and have the rest
+ * of its body read as prompt-level instruction rather than workspace policy.
+ */
+function neutralizeFenceTags(body: string): string {
+  return body.replace(/<(\/?)(project-instructions|source)\b/gi, '&lt;$1$2');
+}
+
+/**
+ * Only the quote can break out of the attribute. Leave the rest of the path
+ * verbatim so evaluation placeholders such as `<evaluation-workspace>` and
+ * ordinary paths containing `&` stay readable.
+ */
+function escapeAttribute(value: string): string {
+  return value.replace(/"/g, '&quot;');
+}
+
+/**
+ * Wrap every source in an explicit fence. The fence, not a markdown heading, is
+ * the trust boundary: injected files carry their own `#` headings, which break
+ * straight out of a `## Project instructions` section.
+ */
 export function renderProjectInstructions(sources: ProjectInstructionSource[]): string {
   if (sources.length === 0) return '';
 
   const lines = [
     '## Project instructions',
-    'Loaded in merge order; later sections override earlier sections.',
+    'Loaded in merge order; later sources override earlier sources.',
+    '',
+    '<project-instructions>',
   ];
 
   for (const source of sources) {
-    lines.push('', `### ${source.layer}: ${source.path}`, source.body);
+    lines.push(
+      `<source path="${escapeAttribute(source.path)}" scope="${source.layer}">`,
+      neutralizeFenceTags(source.body),
+      '</source>',
+    );
   }
 
+  lines.push('</project-instructions>');
   return lines.join('\n');
 }
 
