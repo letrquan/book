@@ -34,6 +34,7 @@
     "CHANGELOG.md",
     "patches/ink+6.8.0.patch",
     "scripts/apply-ink-patch.mjs",
+    "scripts/ink-patch.mjs",
     "scripts/verify-ink-patch.mjs"
   ],
   "bin": {
