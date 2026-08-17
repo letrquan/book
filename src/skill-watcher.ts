@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync, watch, type FSWatcher } from 'node:fs';
+import { existsSync, readdirSync, realpathSync, statSync, watch, type FSWatcher } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { skillRoots, type DiscoverSkillsOptions } from './skills.js';
 
@@ -21,6 +21,24 @@ function nearestExistingDirectory(path: string): string | undefined {
     const parent = dirname(current);
     if (parent === current) return undefined;
     current = parent;
+  }
+}
+
+/**
+ * Windows reports directory-change events using the volume's canonical path, while libuv asserts
+ * that the reported name still matches the path it was handed (`!_wcsnicmp(filename, dir, dirlen)`
+ * in `src/win/fs-event.c`). Handing it a path that Windows canonicalizes differently — an 8.3 short
+ * component such as `C:\Users\RUNNER~1\…`, or a junction — makes that assertion fail, and a failed
+ * libuv assertion calls `abort()`, killing the process with no catchable error. Canonicalize first
+ * so the two always agree. POSIX is left alone: `directoriesUnder` deliberately does not follow
+ * symlinks, and resolving them here would change which directory gets watched.
+ */
+function watchablePath(directory: string): string {
+  if (process.platform !== 'win32') return directory;
+  try {
+    return realpathSync.native(directory);
+  } catch {
+    return directory;
   }
 }
 
@@ -74,9 +92,12 @@ export class SkillWatcher {
   private rebuild(): void {
     const directories = new Set<string>();
     for (const root of skillRoots(this.workspace, this.options)) {
-      const target = nearestExistingDirectory(root.path);
-      if (!target) continue;
-      if (resolve(target) === resolve(root.path)) {
+      const nearest = nearestExistingDirectory(root.path);
+      if (!nearest) continue;
+      // Compare the lexical path against the root: the canonical form can differ on Windows, which
+      // would make an exactly-matching root look like an ancestor and stop the recursive walk.
+      const target = watchablePath(nearest);
+      if (resolve(nearest) === resolve(root.path)) {
         for (const directory of directoriesUnder(target)) directories.add(directory);
       } else {
         directories.add(target);

@@ -33,52 +33,52 @@ jobs:
 
       - run: npm ci
 
-      # TEMPORARY diagnostic for the windows/Node 24 worker crash. Remove before merge.
-      # The two fs.watch files crash even when run alone, so this narrows *why*: is it fs.watch
-      # itself on this OS image, or the interaction with vitest's forks pool?
-      - name: 'DIAGNOSTIC: narrow the fs.watch worker crash'
+      # TEMPORARY diagnostic. Remove before merge.
+      # Cause found: libuv aborts via `Assertion failed: !_wcsnicmp(filename, dir, dirlen)` in
+      # src/win/fs-event.c when the watched path is not what Windows canonicalizes it to. This
+      # records the runner's paths and proves canonicalizing fixes it.
+      - name: 'DIAGNOSTIC: confirm the libuv fs-event path mismatch'
         if: matrix.os == 'windows-latest' && matrix.node-version == '24.x'
         continue-on-error: true
         shell: bash
         run: |
-          set +e   # GitHub runs bash with -e; without this the first failure ends the step.
-          B="src/skill-watcher.test.ts src/session/runtime.test.ts"
-          V="npx vitest run --config vitest.unit.config.ts"
-          echo "===== 1. baseline: both files, forks pool ====="
-          $V $B; echo "exit=$?"
-          echo "===== 2. skill-watcher alone ====="
-          $V src/skill-watcher.test.ts; echo "exit=$?"
-          echo "===== 3. runtime alone ====="
-          $V src/session/runtime.test.ts; echo "exit=$?"
-          echo "===== 4. both, threads pool ====="
-          $V --pool=threads $B; echo "exit=$?"
-          echo "===== 5. both, forks + no isolation ====="
-          $V --no-isolate $B; echo "exit=$?"
-          echo "===== 6. fs.watch outside vitest entirely ====="
-          cat > diag-watch.mjs <<'JS'
-          import { mkdirSync, mkdtempSync, rmSync, writeFileSync, watch } from 'node:fs';
+          set +e
+          echo "===== runner paths ====="
+          node -e "
+          const {realpathSync}=require('node:fs'), os=require('node:os');
+          const t=os.tmpdir();
+          console.log('TEMP env :', process.env.TEMP);
+          console.log('tmpdir() :', t);
+          console.log('realpath :', realpathSync.native(t));
+          console.log('differs  :', t !== realpathSync.native(t));
+          "
+          echo "===== raw mkdtemp path vs canonicalized (plain node) ====="
+          cat > diag-cmp.mjs <<'JS'
+          import { mkdtempSync, realpathSync, mkdirSync, writeFileSync, watch, rmSync } from 'node:fs';
           import { tmpdir } from 'node:os';
           import { join } from 'node:path';
-          const ws = mkdtempSync(join(tmpdir(), 'diag-watch-'));
+          const mode = process.argv[2];
+          const raw = mkdtempSync(join(tmpdir(), 'diag-cmp-'));
+          const ws = mode === 'canonical' ? realpathSync.native(raw) : raw;
+          console.log(`${mode}: watching ${ws}`);
           const dir = join(ws, '.book', 'skills', 'review');
           mkdirSync(dir, { recursive: true });
-          const handles = [];
-          for (const d of [ws, join(ws, '.book'), join(ws, '.book', 'skills'), dir]) {
-            const w = watch(d, () => {});
-            w.on('error', (e) => console.log('watcher error', e.code ?? e.message));
-            handles.push(w);
-          }
+          const handles = [ws, join(ws, '.book'), join(ws, '.book', 'skills'), dir].map((d) =>
+            watch(d, () => {}),
+          );
           writeFileSync(join(dir, 'SKILL.md'), 'body');
           setTimeout(() => {
-            for (const w of handles) w.close();
-            rmSync(ws, { recursive: true, force: true });
-            console.log('plain-node fs.watch OK');
+            for (const h of handles) h.close();
+            rmSync(raw, { recursive: true, force: true });
+            console.log(`${mode}: SURVIVED`);
           }, 300);
           JS
-          node diag-watch.mjs; echo "exit=$?"
-          echo "===== 7. node version / os ====="
-          node -p "process.version + ' ' + process.platform + ' ' + require('os').release()"
-          rm -f diag-watch.mjs
+          node diag-cmp.mjs raw;       echo "exit=$?"
+          node diag-cmp.mjs canonical; echo "exit=$?"
+          rm -f diag-cmp.mjs
+          echo "===== the two real test files, with the fix in place ====="
+          npx vitest run --config vitest.unit.config.ts \
+            src/skill-watcher.test.ts src/session/runtime.test.ts; echo "exit=$?"
 
       - run: npm run check
 
