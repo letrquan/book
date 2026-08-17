@@ -11,7 +11,7 @@ All notable changes to this project are documented in this file.
   history — 50-150k tokens mid-session — was re-billed at full input price on every turn. A moving
   breakpoint on the newest message means a steady-state turn re-buys roughly the newest turn
   instead of the whole context; cache reads are about a tenth of the input price, and time to first
-  token drops with the cost. Book also marked *every* tool definition, far past Anthropic's
+  token drops with the cost. Book also marked _every_ tool definition, far past Anthropic's
   four-breakpoint limit; only the last tool is marked now, which caches identically.
 - **The system prompt is now organized by how often its content changes.** Current date, git
   status, the plan-mode notice, and the todo list have left the system prompt: they sit ahead of
@@ -19,9 +19,9 @@ All notable changes to this project are documented in this file.
   invalidate the entire conversation. Per-turn state is delivered as a `<session-state>` block on
   the newest user turn, and active skill frames moved from the cached prefix to the uncached
   dynamic suffix, so activating a skill no longer invalidates the whole prompt.
-  - *Todo state now travels through TodoWrite's own tool result*, which already echoes the full
+  - _Todo state now travels through TodoWrite's own tool result_, which already echoes the full
     list into the message stream. The list is no longer restated in the system prompt each turn.
-  - *Checkpoint freshness* is no longer re-stamped into the historical checkpoint message. The
+  - _Checkpoint freshness_ is no longer re-stamped into the historical checkpoint message. The
     same hash comparison runs once per turn and reports drift as `Stale since checkpoint: …` in
     the newest session-state block.
 - **`SYSTEM_PROMPT_VERSION` is now `book-system-prompt-v2`.** Run-ambient records stamp this
@@ -59,6 +59,25 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The skill watcher no longer aborts the process on Windows when the workspace is reached through
+  a short path or junction.** `fs.watch` was handed the path as given, but Windows reports
+  directory-change events under the volume's canonical path, and libuv asserts the two match
+  (`!_wcsnicmp(filename, dir, dirlen)` in `src/win/fs-event.c`). Watching a path with an 8.3 alias
+  such as `C:\Users\RUNNER~1\…` failed that assertion, and a failed libuv assertion calls `abort()`
+  — so the CLI died with no catchable error, and no `onError` handler could have caught it, as soon
+  as a watched skill directory changed. Watched directories are now canonicalized with
+  `realpathSync.native` first. POSIX behavior is unchanged. This was also the cause of the
+  long-standing `Check (windows-latest, Node 24.x)` CI failures, where every test passed but two
+  vitest workers exited unexpectedly: the runner's `%TEMP%` is an 8.3 alias, so the two tests that
+  open real watchers aborted their workers.
+- The skill watcher no longer reopens every directory handle each time a skill file changes. A
+  debounced rebuild now closes only the watchers whose directories left the watched set and opens
+  only newly in-scope ones, instead of closing and reopening all of them. The old churn cost one OS
+  directory handle per watched directory on every save, which is wasteful on every platform and
+  worst on Windows, where each handle is a separate `ReadDirectoryChangesW` registration.
+- `SessionRuntime` now threads one set of skill-discovery options through both the skill registry
+  and the skill watcher (`skillDiscoveryOptions`), so the two cannot disagree about which roots
+  exist and tests can pin discovery inside a temp workspace instead of the real home directory.
 - `/review` no longer reports a clean review when it silently discarded findings. A reviewer pass
   whose report envelope parses but whose individual findings fail the per-finding contract (missing
   evidence, failure scenario, suggested fix, or a numeric confidence) is now recorded as `partial`
@@ -126,7 +145,7 @@ All notable changes to this project are documented in this file.
   closed — the SQLite backend reads its `journal_mode` and `synchronous` pragmas back and reports
   `unavailable` when the filesystem refused WAL, rather than trusting the request. The seal now also
   records which backend made the claim. JSONL remains the default and the SQLite backend is not yet
-  selectable through settings, so this changes what the ledger *can* attest, not yet what it does.
+  selectable through settings, so this changes what the ledger _can_ attest, not yet what it does.
 - Experimental execution workflows for the observe-mode harness. `harness.workflow` (settings) and
   `--harness-workflow <id>` (run-scoped) select one of three validated built-ins — `minimal`,
   `safe-edit`, and `verify-heavy` — from a hashed registry. `minimal` renders no prompt text and

@@ -7,6 +7,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { SessionRuntime } from './runtime.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
 
+// Skill discovery walks up to the nearest existing directory, so a runtime left on the real
+// home directory watches the whole user profile. Pin discovery inside the temp workspace to
+// keep watcher tests off unrelated filesystem traffic.
+function hermeticRuntime(workspace: string): SessionRuntime {
+  return new SessionRuntime({
+    skillDiscoveryOptions: { homeDir: join(workspace, 'home'), projectRoot: workspace },
+  });
+}
+
 describe('SessionRuntime', () => {
   it('isolates mutable state between sessions', () => {
     const first = new SessionRuntime();
@@ -90,7 +99,7 @@ describe('SessionRuntime', () => {
         join(skillRoot, 'SKILL.md'),
         ['---', 'name: review', 'description: Review changes', '---', 'body'].join('\n'),
       );
-      const runtime = new SessionRuntime();
+      const runtime = hermeticRuntime(workspace);
       // A trailing "<sep>." must normalize to the same cache key as the bare workspace. The
       // separator has to be the platform's: on POSIX a literal "\" is an ordinary filename
       // character, so a hardcoded "\\." names a different, nonexistent directory.
@@ -121,7 +130,7 @@ describe('SessionRuntime', () => {
         entry,
         ['---', 'name: review', 'description: First description', '---', 'body'].join('\n'),
       );
-      const runtime = new SessionRuntime();
+      const runtime = hermeticRuntime(workspace);
       const registry = runtime.skills(workspace, DEFAULT_SETTINGS.skills);
       let dirty = false;
       runtime.subscribeSkillChanges(workspace, () => {
@@ -161,7 +170,7 @@ describe('SessionRuntime', () => {
   it('stops skill watching when the global skill switch is disabled', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'book-runtime-skills-disabled-'));
     try {
-      const runtime = new SessionRuntime();
+      const runtime = hermeticRuntime(workspace);
       const enabledSettings = { ...DEFAULT_SETTINGS.skills, enabled: true };
       const disabledSettings = { ...DEFAULT_SETTINGS.skills, enabled: false };
       const dirty = vi.fn();

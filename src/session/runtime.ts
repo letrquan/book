@@ -11,6 +11,7 @@ import { SkillRegistry } from '../skill-registry.js';
 import type { SkillRegistrySnapshot } from '../skill-registry.js';
 import type { SkillSettings } from '../settings.js';
 import { SkillWatcher } from '../skill-watcher.js';
+import type { DiscoverSkillsOptions } from '../skills.js';
 import { ZeroMemRuntime } from '../agent/zero-mem-runtime.js';
 
 export interface SessionRuntimeOptions {
@@ -24,6 +25,8 @@ export interface SessionRuntimeOptions {
   runAmbientSnapshots?: Map<string, AgentRunAmbientSnapshot>;
   traceId?: string;
   skillRegistry?: SkillRegistry;
+  /** Skill root discovery options, shared by the registry and the watcher so they agree. */
+  skillDiscoveryOptions?: DiscoverSkillsOptions;
   zeroMemRuntime?: ZeroMemRuntime;
 }
 
@@ -41,6 +44,7 @@ export class SessionRuntime {
   readonly shellManager: ShellJobManager;
   readonly zeroMemRuntime: ZeroMemRuntime;
   private skillRegistry?: SkillRegistry;
+  private readonly skillDiscoveryOptions: DiscoverSkillsOptions;
   private skillWatcher?: SkillWatcher;
   private skillWatcherWorkspace?: string;
   private skillCatalogDirty = false;
@@ -69,13 +73,18 @@ export class SessionRuntime {
     this.zeroMemRuntime = options.zeroMemRuntime ?? new ZeroMemRuntime();
     this.traceId = options.traceId ?? crypto.randomUUID();
     this.skillRegistry = options.skillRegistry;
+    this.skillDiscoveryOptions = options.skillDiscoveryOptions ?? {};
   }
 
   skills(workspace: string, settings: SkillSettings): SkillRegistry {
     const normalizedWorkspace = resolve(workspace);
     if (!settings.enabled) this.stopSkillWatcher(normalizedWorkspace);
     if (!this.skillRegistry || this.skillRegistry.workspace !== normalizedWorkspace) {
-      this.skillRegistry = new SkillRegistry(normalizedWorkspace, settings);
+      this.skillRegistry = new SkillRegistry(
+        normalizedWorkspace,
+        settings,
+        this.skillDiscoveryOptions,
+      );
     } else {
       this.skillRegistry.updateSettings(settings);
     }
@@ -87,7 +96,7 @@ export class SessionRuntime {
     if (!settings.enabled) this.stopSkillWatcher(normalizedWorkspace);
     let registry: SkillRegistry;
     if (!this.skillRegistry || this.skillRegistry.workspace !== normalizedWorkspace) {
-      registry = new SkillRegistry(normalizedWorkspace, settings);
+      registry = new SkillRegistry(normalizedWorkspace, settings, this.skillDiscoveryOptions);
       this.skillRegistry = registry;
     } else {
       registry = this.skillRegistry;
@@ -136,6 +145,7 @@ export class SessionRuntime {
     this.skillWatcher?.close();
     this.skillWatcherWorkspace = normalizedWorkspace;
     this.skillWatcher = new SkillWatcher(normalizedWorkspace, {
+      ...this.skillDiscoveryOptions,
       onDirty: () => {
         this.skillCatalogDirty = true;
         this.skillWatcherFailure = undefined;
