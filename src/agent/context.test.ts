@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { hostname, tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
@@ -442,6 +442,28 @@ describe('buildMessages', () => {
     expect(zones.cachedPrefix).not.toContain('- Git:');
     expect(zones.cachedPrefix).not.toContain('## Current task list');
     expect(zones.dynamicSuffix).not.toContain('## Current task list');
+  });
+
+  it('states the harness facts the model cannot infer', async () => {
+    const zones = await buildSystemPromptZones(config, [], []);
+
+    expect(zones.cachedPrefix).toContain('## Harness');
+    expect(zones.cachedPrefix).toContain('GitHub-flavored markdown in a terminal TUI');
+    expect(zones.cachedPrefix).toContain('`file_path:line`');
+    // Book spawns through Node's `shell: true`, so Windows gets cmd.exe, not a POSIX shell.
+    expect(zones.cachedPrefix).toContain('`/bin/sh` on macOS and Linux, `cmd.exe` on Windows');
+    expect(zones.cachedPrefix).toContain('requires bubblewrap and is unavailable on Windows');
+    expect(zones.cachedPrefix).toContain('A denied tool call means the user declined it');
+    expect(zones.cachedPrefix).toContain('Hook output attached to a tool result');
+    expect(zones.cachedPrefix).toContain('<session-state> block emitted by the host');
+    expect(zones.cachedPrefix).toContain('Your training data has a cutoff');
+  });
+
+  it('keeps machine-identifying data out of the workspace context', async () => {
+    const zones = await buildSystemPromptZones(config, [], []);
+
+    expect(zones.cachedPrefix).toContain('## Workspace context');
+    expect(zones.cachedPrefix).not.toContain(hostname());
   });
 
   it('renders the deferred tool catalog in the dynamic zone only', async () => {

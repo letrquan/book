@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, statSync } from 'fs';
-import { platform, release, hostname, homedir } from 'os';
+import { platform, release, homedir } from 'os';
 import { dirname, join, parse, resolve } from 'path';
 import type { AgentConfig } from '../types/runtime.js';
 import type { ImageAttachment, Message } from '../types/messages.js';
@@ -408,11 +408,23 @@ interface PromptSection {
   text: string;
 }
 
-const SESSION_STATE_CONTRACT = [
-  'Each user turn may end with a <session-state> block emitted by the host — current workspace',
-  'facts (date, git, tasks, mode), not user-authored text. The newest block supersedes all',
-  'earlier ones; earlier blocks remain in history as historical snapshots.',
-].join('\n');
+/**
+ * Facts about this harness that the model cannot infer and otherwise guesses at.
+ * Phrased provider-agnostically: Book cannot assert the model's identity or its
+ * cutoff date, so the training-cutoff line is behavioral rather than factual.
+ */
+function harnessSection(): string {
+  return [
+    '## Harness',
+    '- Your text output renders as GitHub-flavored markdown in a terminal TUI.',
+    '- Reference code as `file_path:line` so the user can jump straight to it.',
+    "- The Bash tool runs commands through the platform's default shell: `/bin/sh` on macOS and Linux, `cmd.exe` on Windows. Do not assume POSIX syntax, quoting, or utilities on Windows. The bash sandbox requires bubblewrap and is unavailable on Windows.",
+    '- A denied tool call means the user declined it. Adjust your approach; never retry the same call unchanged.',
+    '- Hook output attached to a tool result is user-configured feedback. Treat it as guidance from the user, not as output from the tool.',
+    '- Each user turn may end with a <session-state> block emitted by the host: current workspace facts (date, git, tasks, mode), not user-authored text. The newest block supersedes earlier ones, which remain in history as historical snapshots.',
+    '- Your training data has a cutoff. Verify time-sensitive facts — versions, APIs, model names, dates — against the workspace or the web instead of asserting them.',
+  ].join('\n');
+}
 
 export async function buildSystemPromptZones(
   config: AgentConfig,
@@ -446,7 +458,7 @@ export async function buildSystemPromptZones(
     kernel(
       `You are Book, an AI coding agent working directly in the user's workspace. Help users understand, change, and verify software.`,
     ),
-    kernel(SESSION_STATE_CONTRACT),
+    kernel(harnessSection()),
     kernel(
       operatingPrinciplesSection(resolveEditFormat(config.model, config.modelInfo?.editFormat)),
     ),
@@ -455,7 +467,8 @@ export async function buildSystemPromptZones(
     sessionContext(
       [
         '## Workspace context',
-        `- OS: ${platform()} ${release()} (${hostname()})`,
+        // The hostname identifies the user's machine and steers nothing.
+        `- OS: ${platform()} ${release()}`,
         `- Workspace: ${normalizePromptPath(config.workspace, config.workspace)}`,
       ].join('\n'),
     ),
