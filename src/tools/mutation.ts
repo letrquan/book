@@ -136,11 +136,3 @@ export async function withMutationLocks<T>(
     for (const release of releases.reverse()) release();
   }
 }
-
-export async function pathIsFile(filePath: string): Promise<boolean> {
-  try {
-    return (await stat(filePath)).isFile();
-  } catch {
-    return false;
-  }
-}
