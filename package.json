@@ -99,7 +99,7 @@
     "react": "^19.2.8",
     "turndown": "^7.2.4",
     "undici": "^6.28.0",
-    "zod": "3.25.76"
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
