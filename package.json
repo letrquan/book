@@ -95,7 +95,7 @@
     "ignore": "^7.0.6",
     "ink": "6.8.0",
     "ink-text-input": "^6.0.0",
-    "marked": "^18.0.7",
+    "marked": "^18.0.9",
     "react": "^19.2.8",
     "turndown": "^7.2.4",
     "undici": "^6.28.0",
