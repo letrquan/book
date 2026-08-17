@@ -59,6 +59,17 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The skill watcher no longer aborts the process on Windows when the workspace is reached through
+  a short path or junction.** `fs.watch` was handed the path as given, but Windows reports
+  directory-change events under the volume's canonical path, and libuv asserts the two match
+  (`!_wcsnicmp(filename, dir, dirlen)` in `src/win/fs-event.c`). Watching a path with an 8.3 alias
+  such as `C:\Users\RUNNER~1\…` failed that assertion, and a failed libuv assertion calls `abort()`
+  — so the CLI died with no catchable error, and no `onError` handler could have caught it, as soon
+  as a watched skill directory changed. Watched directories are now canonicalized with
+  `realpathSync.native` first. POSIX behavior is unchanged. This was also the cause of the
+  long-standing `Check (windows-latest, Node 24.x)` CI failures, where every test passed but two
+  vitest workers exited unexpectedly: the runner's `%TEMP%` is an 8.3 alias, so the two tests that
+  open real watchers aborted their workers.
 - The skill watcher no longer reopens every directory handle each time a skill file changes. A
   debounced rebuild now closes only the watchers whose directories left the watched set and opens
   only newly in-scope ones, instead of closing and reopening all of them. The old churn cost one OS
