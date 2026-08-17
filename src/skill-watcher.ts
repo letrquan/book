@@ -72,8 +72,6 @@ export class SkillWatcher {
   }
 
   private rebuild(): void {
-    for (const watcher of this.watchers.values()) watcher.close();
-    this.watchers.clear();
     const directories = new Set<string>();
     for (const root of skillRoots(this.workspace, this.options)) {
       const target = nearestExistingDirectory(root.path);
@@ -84,7 +82,17 @@ export class SkillWatcher {
         directories.add(target);
       }
     }
-    for (const directory of directories) this.watchDirectory(directory);
+    // Keep the handles for directories that are still in scope. Closing and reopening every
+    // watcher on each change churns one OS directory handle per watched directory, which is
+    // enough to abort a worker process on Windows when the tree sees sustained write activity.
+    for (const [directory, watcher] of this.watchers) {
+      if (directories.has(directory)) continue;
+      watcher.close();
+      this.watchers.delete(directory);
+    }
+    for (const directory of directories) {
+      if (!this.watchers.has(directory)) this.watchDirectory(directory);
+    }
   }
 
   private watchDirectory(directory: string): void {

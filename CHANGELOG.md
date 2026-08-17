@@ -59,6 +59,15 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- The skill watcher no longer reopens every directory handle each time a skill file changes. A
+  debounced rebuild now closes only the watchers whose directories left the watched set and opens
+  only newly in-scope ones, instead of closing and reopening all of them. The old churn cost one OS
+  directory handle per watched directory on every save, and was enough to abort a worker process on
+  Windows when the watched tree saw sustained write activity — the cause of the CI failures on the
+  Windows / Node 24 leg, where every test passed but two workers exited unexpectedly.
+- `SessionRuntime` now threads one set of skill-discovery options through both the skill registry
+  and the skill watcher (`skillDiscoveryOptions`), so the two cannot disagree about which roots
+  exist and tests can pin discovery inside a temp workspace instead of the real home directory.
 - `/review` no longer reports a clean review when it silently discarded findings. A reviewer pass
   whose report envelope parses but whose individual findings fail the per-finding contract (missing
   evidence, failure scenario, suggested fix, or a numeric confidence) is now recorded as `partial`
@@ -126,7 +135,7 @@ All notable changes to this project are documented in this file.
   closed — the SQLite backend reads its `journal_mode` and `synchronous` pragmas back and reports
   `unavailable` when the filesystem refused WAL, rather than trusting the request. The seal now also
   records which backend made the claim. JSONL remains the default and the SQLite backend is not yet
-  selectable through settings, so this changes what the ledger *can* attest, not yet what it does.
+  selectable through settings, so this changes what the ledger _can_ attest, not yet what it does.
 - Experimental execution workflows for the observe-mode harness. `harness.workflow` (settings) and
   `--harness-workflow <id>` (run-scoped) select one of three validated built-ins — `minimal`,
   `safe-edit`, and `verify-heavy` — from a hashed registry. `minimal` renders no prompt text and
