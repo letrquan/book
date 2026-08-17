@@ -87,7 +87,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "commander": "14.0.3",
+    "commander": "15.0.0",
     "cross-spawn": "^7.0.6",
     "fast-glob": "^3.3.0",
     "fuse.js": "^7.5.0",
