@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, it, expect, vi } from 'vitest';
@@ -10,7 +11,10 @@ import {
 } from './context.js';
 import { getProjectMemoryDir } from '../memory-store.js';
 import { BUILTIN_WORKFLOW_DEFINITIONS, resolveWorkflow } from '../harness/workflows.js';
+import { workspaceIdentity } from '../tools/file-provenance.js';
 import type { SlashCommand } from '../types/commands.js';
+import type { Message } from '../types/messages.js';
+import type { ProviderMessage } from '../types/providers.js';
 import type { ToolDefinition } from '../types/tools.js';
 import { userMsg, assistantMsg, toolCall, toolResult, defaultConfig } from '../test/fixtures.js';
 import { toolSuccess } from '../tools/result.js';
@@ -63,7 +67,7 @@ describe('buildMessages', () => {
       undefined,
       () => Uint8Array.from([1, 2, 3]),
     );
-    expect(out[1].content).toEqual([
+    expect((out[1].content as unknown[]).slice(0, 2)).toEqual([
       { type: 'text', text: 'describe this' },
       { type: 'image', mediaType: 'image/png', data: 'AQID' },
     ]);
@@ -72,7 +76,7 @@ describe('buildMessages', () => {
   it('keeps the --agents off control free of managed-agent routing and profiles', async () => {
     const offConfig = defaultConfig();
     offConfig.settings.agents.mode = 'off';
-    const prompt = await buildSystemPrompt(offConfig, [], undefined, []);
+    const prompt = await buildSystemPrompt(offConfig, undefined, []);
     expect(prompt).not.toContain('Managed delegation');
     expect(prompt).not.toContain('**explorer**');
   });
@@ -171,10 +175,9 @@ describe('buildMessages', () => {
 
     const out = await buildMessages(config, history, []);
 
-    expect(out[1]).toMatchObject({
-      role: 'user',
-      content: history[0].contextContent,
-    });
+    expect(out[1].role).toBe('user');
+    expect(out[1].content).toContain(history[0].contextContent);
+    expect(out[1].content).not.toContain('Explain @src/app.ts');
     expect(history[0].content).toBe('Explain @src/app.ts');
   });
 
@@ -416,35 +419,56 @@ describe('buildMessages', () => {
     try {
       const evaluationConfig = defaultConfig({ workspace });
       evaluationConfig.settings.agents.mode = 'off';
-      const prompt = await buildSystemPrompt(evaluationConfig, [], undefined, []);
+      const prompt = await buildSystemPrompt(evaluationConfig, undefined, []);
+      const out = await buildMessages(evaluationConfig, [userMsg('hi')], []);
 
       expect(prompt).toContain('- Workspace: <evaluation-workspace>');
-      expect(prompt).toContain('- Current date: 2030-02-03');
       expect(prompt).toContain('### project: <evaluation-workspace>/AGENTS.md');
       expect(prompt).not.toContain(workspace);
+      expect(prompt).not.toContain('- Current date:');
+      expect(out[1].content).toContain('- Current date: 2030-02-03');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('splits stable system context from dynamic todo context', async () => {
-    const zones = await buildSystemPromptZones(
-      config,
-      [{ content: 'Write tests', status: 'in_progress', activeForm: 'Writing tests' }],
-      [],
-      [tool('Read', 'Read files from disk')],
-    );
+  it('keeps per-turn task state out of both system zones', async () => {
+    const zones = await buildSystemPromptZones(config, [], [tool('Read', 'Read files from disk')]);
 
     expect(zones.cachedPrefix).toContain('You are Book');
     expect(zones.cachedPrefix).toContain('## Available tools');
     expect(zones.cachedPrefix).toContain('## Guardrails');
+    expect(zones.cachedPrefix).not.toContain('- Current date:');
+    expect(zones.cachedPrefix).not.toContain('- Git:');
     expect(zones.cachedPrefix).not.toContain('## Current task list');
-    expect(zones.dynamicSuffix).toContain('## Current task list');
-    expect(zones.dynamicSuffix).toContain('[>] Write tests (now: Writing tests)');
+    expect(zones.dynamicSuffix).not.toContain('## Current task list');
+  });
+
+  it('renders the deferred tool catalog in the dynamic zone only', async () => {
+    const zones = await buildSystemPromptZones(config, [], [], {
+      toolCatalogSummary: 'WebFetch, WebSearch',
+    });
+
+    expect(zones.dynamicSuffix).toContain('## Deferred tool catalog');
+    expect(zones.dynamicSuffix).toContain('WebFetch, WebSearch');
+    expect(zones.cachedPrefix).not.toContain('## Deferred tool catalog');
+    expect(zones.cachedPrefix).toBe((await buildSystemPromptZones(config, [], [])).cachedPrefix);
+  });
+
+  it('keeps activation-class skill policy out of the cached prefix', async () => {
+    const zones = await buildSystemPromptZones(config, [], [], {
+      append: '## Agent identity\nYou are a managed child agent.',
+      dynamicPolicy: '## Active skills\n- dataviz (turn 3)',
+    });
+
+    expect(zones.cachedPrefix).toContain('## Agent identity');
+    expect(zones.cachedPrefix).not.toContain('## Active skills');
+    expect(zones.dynamicSuffix).toContain('## Active skills');
+    expect(zones.dynamicSuffix).not.toContain('## Agent identity');
   });
 
   it('encodes the core agent workflow and evidence-based completion rules', async () => {
-    const zones = await buildSystemPromptZones(config, [], [], []);
+    const zones = await buildSystemPromptZones(config, [], []);
 
     expect(zones.cachedPrefix).toContain('Work as an agent, not a chatbot');
     expect(zones.cachedPrefix).toContain("Collaborate until the user's goal is genuinely handled");
@@ -470,7 +494,7 @@ describe('buildMessages', () => {
     const policy = resolveWorkflow(
       BUILTIN_WORKFLOW_DEFINITIONS.find((entry) => entry.id === 'verify-heavy')!,
     ).policySection;
-    const zones = await buildSystemPromptZones(config, [], [], [], undefined, {
+    const zones = await buildSystemPromptZones(config, [], [], {
       workflowPolicy: policy,
     });
 
@@ -479,13 +503,11 @@ describe('buildMessages', () => {
     // The cached prefix must stay stable so switching workflows does not
     // invalidate the session prompt cache.
     expect(zones.cachedPrefix).not.toContain('## Execution policy');
-    expect(zones.cachedPrefix).toBe(
-      (await buildSystemPromptZones(config, [], [], [])).cachedPrefix,
-    );
+    expect(zones.cachedPrefix).toBe((await buildSystemPromptZones(config, [], [])).cachedPrefix);
   });
 
   it('keeps the execution policy separate from the cached append zone', async () => {
-    const zones = await buildSystemPromptZones(config, [], [], [], undefined, {
+    const zones = await buildSystemPromptZones(config, [], [], {
       append: '## Agent identity\nYou are a managed child agent.',
       workflowPolicy: '## Execution policy\nActive workflow: safe-edit v1.',
     });
@@ -496,18 +518,14 @@ describe('buildMessages', () => {
     expect(zones.dynamicSuffix).not.toContain('## Agent identity');
   });
 
-  it('orders the execution policy before the task list', async () => {
-    const zones = await buildSystemPromptZones(
-      config,
-      [{ content: 'Ship milestone', status: 'pending' }],
-      [],
-      [],
-      undefined,
-      { workflowPolicy: '## Execution policy\nActive workflow: safe-edit v1.' },
-    );
+  it('orders the execution policy before activation-class policy', async () => {
+    const zones = await buildSystemPromptZones(config, [], [], {
+      workflowPolicy: '## Execution policy\nActive workflow: safe-edit v1.',
+      dynamicPolicy: '## Active skills\n- dataviz (turn 3)',
+    });
 
     expect(zones.dynamicSuffix.indexOf('## Execution policy')).toBeLessThan(
-      zones.dynamicSuffix.indexOf('## Current task list'),
+      zones.dynamicSuffix.indexOf('## Active skills'),
     );
   });
 
@@ -526,17 +544,152 @@ describe('buildMessages', () => {
   });
 
   it('keeps the flat system prompt compatibility helper', async () => {
-    const prompt = await buildSystemPrompt(
-      config,
-      [{ content: 'Ship milestone', status: 'pending' }],
-      [],
-      [tool('Read', 'Read files from disk')],
-    );
+    const prompt = await buildSystemPrompt(config, [], [tool('Read', 'Read files from disk')], {
+      workflowPolicy: '## Execution policy\nActive workflow: safe-edit v1.',
+    });
 
     expect(prompt).toContain('You are Book');
     expect(prompt).toContain('## Available tools');
-    expect(prompt).toContain('## Current task list');
-    expect(prompt).toContain('[ ] Ship milestone');
+    expect(prompt).toContain('## Execution policy');
+  });
+});
+
+describe('session-state block', () => {
+  const stateOf = (message: ProviderMessage): string => {
+    const content = message.content;
+    if (typeof content === 'string') return content.slice(content.indexOf('<session-state>'));
+    throw new Error('expected string content');
+  };
+
+  it('attaches a block to the newest user turn only', async () => {
+    const history = [userMsg('first'), assistantMsg('answer'), { ...userMsg('second'), id: 'u2' }];
+
+    const out = await buildMessages(config, history, []);
+
+    expect(out[1].content).toBe('first');
+    expect(out[3].content).toContain('second\n\n<session-state>');
+    expect(out[3].content).toContain('- Current date:');
+  });
+
+  it('reproduces every settled turn byte-for-byte after task state changes', async () => {
+    const turnOne = [userMsg('first')];
+    const first = await buildMessages(config, turnOne, [], []);
+
+    // Next turn: new user message, and the agent has since written todos.
+    const turnTwo = [...turnOne, assistantMsg('answer'), { ...userMsg('second'), id: 'u2' }];
+    const second = await buildMessages(
+      config,
+      turnTwo,
+      [],
+      [{ content: 'Ship it', status: 'in_progress', activeForm: 'Shipping' }],
+    );
+
+    // Cached prefix and every settled message must be reusable as a cache prefix.
+    expect(JSON.stringify(second[0])).toBe(JSON.stringify(first[0]));
+    expect(JSON.stringify(second[1])).toBe(JSON.stringify(first[1]));
+    expect(second.at(-1)?.content).toContain('[>] Ship it (now: Shipping)');
+  });
+
+  it('reuses the turn bytes when the turn is rebuilt after a todo change', async () => {
+    const history = [userMsg('go')];
+
+    const first = await buildMessages(config, history, [], []);
+    const rebuilt = await buildMessages(
+      config,
+      history,
+      [],
+      [{ content: 'Added mid-turn', status: 'pending' }],
+    );
+
+    expect(JSON.stringify(rebuilt)).toBe(JSON.stringify(first));
+    expect(stateOf(rebuilt[1])).not.toContain('Added mid-turn');
+  });
+
+  it('leaves message bytes untouched when dynamic policy changes', async () => {
+    const history = [userMsg('go')];
+    const baseline = await buildMessages(config, history, []);
+    const activated = await buildMessages(config, history, [], undefined, undefined, undefined, {
+      dynamicPolicy: '## Active skills\n- dataviz (turn 1)',
+    });
+
+    expect(JSON.stringify(activated.slice(1))).toBe(JSON.stringify(baseline.slice(1)));
+    expect(activated[0].content).toMatchObject({
+      dynamicSuffix: expect.stringContaining('## Active skills'),
+    });
+  });
+
+  it('places the block after image attachments as the turn final text part', async () => {
+    const attachment = {
+      id: 'image-1',
+      sha256: 'hash',
+      storageKey: 'hash.png',
+      mediaType: 'image/png' as const,
+      byteSize: 5,
+    };
+
+    const out = await buildMessages(
+      config,
+      [{ ...userMsg('describe this'), attachments: [attachment] }],
+      [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => Uint8Array.from([1, 2, 3]),
+    );
+    const content = out[1].content as Array<{ type: string; text?: string }>;
+
+    expect(content.map((part) => part.type)).toEqual(['text', 'image', 'text']);
+    expect(content[0].text).toBe('describe this');
+    expect(content[2].text).toContain('<session-state>');
+  });
+
+  it('freezes the block date for evaluation arms', async () => {
+    vi.stubEnv('BOOK_EVALUATION_DATE', '2030-02-03');
+
+    const out = await buildMessages(config, [userMsg('hi')], []);
+
+    expect(out[1].content).toContain('- Current date: 2030-02-03');
+  });
+
+  it('keeps checkpoint bytes frozen and reports drift in the newest block only', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-session-state-'));
+    try {
+      const tracked = join(dir, 'a.ts');
+      writeFileSync(tracked, 'export const a = 1;\n', 'utf-8');
+      const sha256 = createHash('sha256').update(readFileSync(tracked)).digest('hex');
+      const checkpointBody = JSON.stringify({
+        files: [
+          { path: 'a.ts', observation: { workspaceId: workspaceIdentity(dir), sha256 } },
+          { path: 'gone.ts', observation: { workspaceId: workspaceIdentity(dir), sha256 } },
+        ],
+      });
+      const checkpoint: Message = {
+        id: 'cp1',
+        role: 'user',
+        content: `[Historical conversation checkpoint]\n${checkpointBody}`,
+        includeInContext: true,
+        kind: 'checkpoint',
+        timestamp: 0,
+      };
+      const checkpointConfig = defaultConfig({ workspace: dir });
+
+      // File drifts after the checkpoint was written.
+      writeFileSync(tracked, 'export const a = 2;\n', 'utf-8');
+      const out = await buildMessages(
+        checkpointConfig,
+        [checkpoint, { ...userMsg('continue'), id: 'u2' }],
+        [],
+      );
+
+      expect(out[1].content).toBe(checkpoint.content);
+      expect(out[1].content).not.toContain('freshness');
+      expect(out[2].content).toContain('- Stale since checkpoint: a.ts, gone.ts');
+      expect(out[2].content).toContain('reread before exact reliance');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -544,7 +697,7 @@ describe('model-conditional mutation guidance', () => {
   it('prefers Edit for non-GPT-family models', async () => {
     const replaceConfig = defaultConfig();
     replaceConfig.model = 'qwen3.7-max';
-    const prompt = await buildSystemPrompt(replaceConfig, [], undefined, []);
+    const prompt = await buildSystemPrompt(replaceConfig, undefined, []);
     expect(prompt).toContain('Prefer Edit (or MultiEdit');
     expect(prompt).not.toContain('Prefer ApplyPatch');
   });
@@ -552,7 +705,7 @@ describe('model-conditional mutation guidance', () => {
   it('prefers ApplyPatch for GPT-family models', async () => {
     const patchConfig = defaultConfig();
     patchConfig.model = 'gpt-5';
-    const prompt = await buildSystemPrompt(patchConfig, [], undefined, []);
+    const prompt = await buildSystemPrompt(patchConfig, undefined, []);
     expect(prompt).toContain('Prefer ApplyPatch');
   });
 
@@ -560,18 +713,29 @@ describe('model-conditional mutation guidance', () => {
     const overrideConfig = defaultConfig();
     overrideConfig.model = 'gpt-5';
     overrideConfig.modelInfo = { editFormat: 'whole' };
-    const prompt = await buildSystemPrompt(overrideConfig, [], undefined, []);
+    const prompt = await buildSystemPrompt(overrideConfig, undefined, []);
     expect(prompt).toContain('Prefer Write with the complete file content');
     expect(prompt).not.toContain('Prefer ApplyPatch');
   });
 
-  it('replaces mutation guidance with ExitPlanMode direction in plan mode', async () => {
-    const prompt = await buildSystemPrompt(defaultConfig(), [], undefined, [], undefined, {
-      planMode: true,
-    });
-    expect(prompt).toContain('Plan mode is active');
-    expect(prompt).toContain('ExitPlanMode');
-    expect(prompt).not.toContain('Prefer ApplyPatch');
-    expect(prompt).not.toContain('Prefer Edit');
+  it('announces plan mode per turn without disturbing the cached prompt', async () => {
+    const planConfig = defaultConfig();
+    const planPrompt = await buildSystemPrompt(planConfig, undefined, [], { planMode: true });
+    const out = await buildMessages(
+      planConfig,
+      [userMsg('what should we do?')],
+      [],
+      undefined,
+      undefined,
+      undefined,
+      { planMode: true },
+    );
+
+    // Mutation guidance is model-conditional, not mode-conditional: toggling plan
+    // mode must not rewrite the cached prefix.
+    expect(planPrompt).toBe(await buildSystemPrompt(planConfig, undefined, []));
+    expect(planPrompt).not.toContain('Plan mode');
+    expect(out[1].content).toContain('- Plan mode: active');
+    expect(out[1].content).toContain('ExitPlanMode');
   });
 });

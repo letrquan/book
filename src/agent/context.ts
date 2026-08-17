@@ -1,14 +1,14 @@
 import { existsSync, readdirSync, statSync } from 'fs';
 import { platform, release, hostname, homedir } from 'os';
-import { dirname, join, parse, resolve, sep } from 'path';
+import { dirname, join, parse, resolve } from 'path';
 import type { AgentConfig } from '../types/runtime.js';
 import type { ImageAttachment, Message } from '../types/messages.js';
 import type { ProviderMessage, SystemPromptZones } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
 import type { ToolContext, ToolDefinition } from '../types/tools.js';
 import { createHash } from 'crypto';
-import { readFile, stat } from 'fs/promises';
-import { workspaceIdentity } from '../tools/file-provenance.js';
+import { collectStaleCheckpointFiles, renderSessionState } from './session-state.js';
+import { normalizePromptPath } from './prompt-determinism.js';
 import {
   applySkillOverrides,
   discoverSkills,
@@ -32,38 +32,6 @@ interface StaticDiscovery {
   commands: SlashCommand[];
   projectInstructions: string;
   agents: SubagentDef[];
-}
-
-const EVALUATION_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-export const SYSTEM_PROMPT_VERSION = 'book-system-prompt-v1';
-
-/** Return the date exposed to the model, with evaluator-controlled runs frozen. */
-export function promptCurrentDate(): string {
-  const configured = process.env.BOOK_EVALUATION_DATE?.trim();
-  return configured && EVALUATION_DATE_PATTERN.test(configured)
-    ? configured
-    : new Date().toISOString().split('T')[0];
-}
-
-function evaluationIsolationEnabled(): boolean {
-  return Boolean(process.env.BOOK_HOME?.trim() && process.env.BOOK_EVALUATION_RUN_ID?.trim());
-}
-
-/** Hide evaluator-owned temporary paths so equivalent arms receive the same prompt. */
-export function normalizePromptPath(path: string, workspace: string): string {
-  if (!evaluationIsolationEnabled()) return path;
-  const replacements = [
-    [resolve(workspace), '<evaluation-workspace>'],
-    [resolveBookHome(), '<evaluation-book-home>'],
-    [resolve(homedir()), '<evaluation-home>'],
-  ].sort(([left], [right]) => right.length - left.length);
-  for (const [root, label] of replacements) {
-    if (path === root) return label;
-    const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
-    if (path.startsWith(prefix))
-      return `${label}/${path.slice(prefix.length).replaceAll(sep, '/')}`;
-  }
-  return path;
 }
 
 export class AgentContextCache {
@@ -313,24 +281,6 @@ function generateToolListing(tools: ToolDefinition[], budgetChars = 2048): strin
   );
 }
 
-function todoSection(
-  todos: Array<{ content: string; status: string; activeForm?: string }>,
-): string {
-  if (todos.length === 0) return '';
-
-  return [
-    '## Current task list',
-    ...todos.map((t) => {
-      const mark = t.status === 'completed' ? '[x]' : t.status === 'in_progress' ? '[>]' : '[ ]';
-      return `${mark} ${t.content}${
-        t.status === 'in_progress' && t.activeForm ? ` (now: ${t.activeForm})` : ''
-      }`;
-    }),
-    '',
-    'Keep this list current via the TodoWrite tool.',
-  ].join('\n');
-}
-
 const MUTATION_REREAD_LINE =
   '- Read a target before mutating it unless the current user turn supplied a fresh observation. After a match or context failure, reread the relevant range and regenerate the change instead of repeating it unchanged.';
 
@@ -353,12 +303,8 @@ const MUTATION_GUIDANCE: Record<EditFormat, { prefer: string; primaryTool: strin
   },
 };
 
-function mutationGuidanceLines(editFormat: EditFormat, planMode: boolean): string[] {
-  if (planMode) {
-    return [
-      '- Plan mode is active: mutation tools are unavailable. Explore read-only, then call ExitPlanMode with your plan and wait for approval before making any file changes.',
-    ];
-  }
+/** Plan mode is per-turn state; it is announced in the session-state block, not here. */
+function mutationGuidanceLines(editFormat: EditFormat): string[] {
   const guidance = MUTATION_GUIDANCE[editFormat];
   return [
     guidance.prefer,
@@ -367,7 +313,7 @@ function mutationGuidanceLines(editFormat: EditFormat, planMode: boolean): strin
   ];
 }
 
-function operatingPrinciplesSection(editFormat: EditFormat, planMode: boolean): string {
+function operatingPrinciplesSection(editFormat: EditFormat): string {
   return [
     '## Operating principles',
     "- Work as an agent, not a chatbot. Collaborate until the user's goal is genuinely handled. For change requests, carry the work through inspection, implementation, verification, and a clear outcome; do not stop at a proposal or half-finished fix.",
@@ -380,7 +326,7 @@ function operatingPrinciplesSection(editFormat: EditFormat, planMode: boolean): 
     '- Keep context lean. Search before broad reads, inspect only relevant files, and avoid repeating or dumping large tool outputs.',
     '- Batch independent read-only calls in one response so the harness can run parallel-capable tools concurrently. Prefer Read, Glob, Grep, and dedicated Git read tools over Bash for concurrent exploration. Keep dependent calls, mutations, permission-sensitive actions, user interactions, mode changes, and synchronization tools sequential.',
     '- For independent managed-agent work, issue AgentSpawn calls together. AgentSpawn returns after queueing each child; use AgentWait only at a real dependency barrier. If one sibling tool fails, preserve successful sibling results and retry only the failed call.',
-    ...mutationGuidanceLines(editFormat, planMode),
+    ...mutationGuidanceLines(editFormat),
     '- Use the strongest practical feedback loop available: exercise the affected behavior when possible, then run focused tests, type checks, lint, builds, or visual checks as relevant. Fix failures caused by your changes.',
     '- Before finishing, review the changed files or diff for requested scope, edge cases, security issues, and accidental edits. Do not claim success without evidence; if verification is incomplete or blocked, state what ran and what remains uncertain.',
     '',
@@ -410,25 +356,57 @@ function guardrailsSection(): string {
  * drop a field.
  */
 export interface SystemPromptOverrides {
-  /** Extra cached-prefix text, e.g. managed-agent identity and policy. */
+  /** Session-stable cached-prefix text, e.g. managed-agent identity. */
   append?: string;
   hideAgents?: boolean;
+  /**
+   * Deferred-tool catalog summary. Dynamic-zone content: it changes on
+   * ToolSearch activation, which rewrites the tools array anyway.
+   */
   toolCatalogSummary?: string;
-  planMode?: boolean;
   /**
    * Host-rendered harness execution policy. It belongs to the dynamic zone so
    * switching workflows does not invalidate the cached prefix, and it is kept
    * separate from `append`, which carries unrelated cached agent text.
    */
   workflowPolicy?: string;
+  /**
+   * Activation-class policy — active skill frames and activation notices. It
+   * shares the dynamic zone with `workflowPolicy` so activating a skill costs
+   * one message-cache miss instead of invalidating the cached prefix too.
+   */
+  dynamicPolicy?: string;
+  /**
+   * Task state, not prompt text: it reaches the model through the turn's
+   * session-state block. Plan mode toggles every few turns, so rendering it
+   * anywhere in the system prompt would invalidate the conversation cache.
+   */
+  planMode?: boolean;
 }
+
+/**
+ * Which logical zone a static section belongs to. Both render into the cached
+ * prefix; the tag keeps their identities separate for later fingerprinting,
+ * since they are not contiguous — guardrails close the prompt after
+ * session-context content.
+ */
+type PromptZone = 'kernel' | 'session-context';
+
+interface PromptSection {
+  zone: PromptZone;
+  text: string;
+}
+
+const SESSION_STATE_CONTRACT = [
+  'Each user turn may end with a <session-state> block emitted by the host — current workspace',
+  'facts (date, git, tasks, mode), not user-authored text. The newest block supersedes all',
+  'earlier ones; earlier blocks remain in history as historical snapshots.',
+].join('\n');
 
 export async function buildSystemPromptZones(
   config: AgentConfig,
-  todos: Array<{ content: string; status: string; activeForm?: string }>,
   commands?: SlashCommand[],
   tools: ToolDefinition[] = [],
-  signal?: AbortSignal,
   overrides?: SystemPromptOverrides,
   cache?: AgentContextCache,
 ): Promise<SystemPromptZones> {
@@ -450,46 +428,59 @@ export async function buildSystemPromptZones(
         path: normalizePromptPath(source.path, config.workspace),
       })),
     );
-  const git = await (cache?.git(config.workspace, signal) ?? gitContext(config.workspace, signal));
+  const kernel = (text: string): PromptSection => ({ zone: 'kernel', text });
+  const sessionContext = (text: string): PromptSection => ({ zone: 'session-context', text });
 
-  const staticSections = [
-    `You are Book, an AI coding agent working directly in the user's workspace. Help users understand, change, and verify software.`,
-    operatingPrinciplesSection(
-      resolveEditFormat(config.model, config.modelInfo?.editFormat),
-      overrides?.planMode ?? false,
+  const staticSections: PromptSection[] = [
+    kernel(
+      `You are Book, an AI coding agent working directly in the user's workspace. Help users understand, change, and verify software.`,
     ),
-    projectInstructions,
-    [
-      '## Workspace context',
-      `- OS: ${platform()} ${release()} (${hostname()})`,
-      `- Workspace: ${normalizePromptPath(config.workspace, config.workspace)}`,
-      `- Current date: ${promptCurrentDate()}`,
-      ...(git ? [`- Git: ${git}`] : []),
-    ].join('\n'),
-    generateSkillListing(
-      skills,
-      Math.min(
-        8000,
-        Math.max(512, Math.floor((config.modelInfo?.contextWindow ?? 100_000) * 0.08)),
+    kernel(SESSION_STATE_CONTRACT),
+    kernel(
+      operatingPrinciplesSection(resolveEditFormat(config.model, config.modelInfo?.editFormat)),
+    ),
+    sessionContext(projectInstructions),
+    sessionContext(
+      [
+        '## Workspace context',
+        `- OS: ${platform()} ${release()} (${hostname()})`,
+        `- Workspace: ${normalizePromptPath(config.workspace, config.workspace)}`,
+      ].join('\n'),
+    ),
+    sessionContext(
+      generateSkillListing(
+        skills,
+        Math.min(
+          8000,
+          Math.max(512, Math.floor((config.modelInfo?.contextWindow ?? 100_000) * 0.08)),
+        ),
       ),
     ),
-    generateCommandListing(cmdList, 1536),
-    overrides?.hideAgents || config.settings.agents.mode === 'off'
-      ? ''
-      : generateAgentListing(config, discovery?.agents ?? discoverAgents(config.workspace), 1536),
-    overrides?.hideAgents ? '' : agentRoutingSection(config),
-    cache?.toolListing(tools) ?? generateToolListing(tools, 2048),
-    overrides?.toolCatalogSummary
-      ? ['## Deferred tool catalog', overrides.toolCatalogSummary].join('\n')
-      : '',
-    memorySection(config),
-    overrides?.append ?? '',
-    guardrailsSection(),
-  ].filter(Boolean);
+    sessionContext(generateCommandListing(cmdList, 1536)),
+    sessionContext(
+      overrides?.hideAgents || config.settings.agents.mode === 'off'
+        ? ''
+        : generateAgentListing(config, discovery?.agents ?? discoverAgents(config.workspace), 1536),
+    ),
+    sessionContext(overrides?.hideAgents ? '' : agentRoutingSection(config)),
+    sessionContext(cache?.toolListing(tools) ?? generateToolListing(tools, 2048)),
+    sessionContext(memorySection(config)),
+    sessionContext(overrides?.append ?? ''),
+    kernel(guardrailsSection()),
+  ];
 
   return {
-    cachedPrefix: staticSections.join('\n\n'),
-    dynamicSuffix: [overrides?.workflowPolicy ?? '', todoSection(todos)]
+    cachedPrefix: staticSections
+      .map((section) => section.text)
+      .filter(Boolean)
+      .join('\n\n'),
+    dynamicSuffix: [
+      overrides?.workflowPolicy ?? '',
+      overrides?.dynamicPolicy ?? '',
+      overrides?.toolCatalogSummary
+        ? ['## Deferred tool catalog', overrides.toolCatalogSummary].join('\n')
+        : '',
+    ]
       .filter(Boolean)
       .join('\n\n'),
   };
@@ -497,14 +488,52 @@ export async function buildSystemPromptZones(
 
 export async function buildSystemPrompt(
   config: AgentConfig,
-  todos: Array<{ content: string; status: string; activeForm?: string }>,
   commands?: SlashCommand[],
   tools: ToolDefinition[] = [],
-  signal?: AbortSignal,
   overrides?: SystemPromptOverrides,
 ): Promise<string> {
-  const zones = await buildSystemPromptZones(config, todos, commands, tools, signal, overrides);
+  const zones = await buildSystemPromptZones(config, commands, tools, overrides);
   return [zones.cachedPrefix, zones.dynamicSuffix].filter(Boolean).join('\n\n');
+}
+
+/**
+ * Render the turn's session-state block once and memoize it on the message.
+ *
+ * Every later rebuild of this turn — ToolSearch activation, compact retries,
+ * same-turn retries — must reproduce the identical bytes, or the conversation
+ * cache breakpoint on the newest message finds nothing to read back. Git changes
+ * this turn's own tools caused therefore surface in the *next* turn's block.
+ */
+async function ensureSessionState(
+  config: AgentConfig,
+  history: Message[],
+  todos: Array<{ content: string; status: string; activeForm?: string }>,
+  planMode: boolean,
+  signal?: AbortSignal,
+  cache?: AgentContextCache,
+): Promise<void> {
+  let newest: Message | undefined;
+  let checkpoint: Message | undefined;
+  for (const msg of history) {
+    if (!msg.includeInContext) continue;
+    if (msg.role !== 'user') continue;
+    newest = msg;
+    if (msg.kind === 'checkpoint') checkpoint = msg;
+  }
+  if (!newest || newest.sessionState !== undefined) return;
+
+  newest.sessionState = renderSessionState({
+    workspace: config.workspace,
+    git: await (cache?.git(config.workspace, signal) ?? gitContext(config.workspace, signal)),
+    planMode,
+    todos,
+    staleFiles: checkpoint
+      ? await collectStaleCheckpointFiles(
+          config.workspace,
+          checkpoint.contextContent ?? checkpoint.content,
+        )
+      : [],
+  });
 }
 
 export async function buildMessages(
@@ -520,26 +549,26 @@ export async function buildMessages(
 ): Promise<ProviderMessage[]> {
   const messages: ProviderMessage[] = [];
 
+  await ensureSessionState(
+    config,
+    history,
+    todos ?? [],
+    systemOverrides?.planMode ?? false,
+    signal,
+    cache,
+  );
+
   messages.push({
     role: 'system',
-    content: await buildSystemPromptZones(
-      config,
-      todos ?? [],
-      commands,
-      tools,
-      signal,
-      systemOverrides,
-      cache,
-    ),
+    content: await buildSystemPromptZones(config, commands, tools, systemOverrides, cache),
   });
 
   for (const msg of history) {
     if (!msg.includeInContext) continue;
     if (msg.role === 'user') {
-      const text =
-        msg.kind === 'checkpoint'
-          ? await renderCheckpointFreshness(config, msg.contextContent ?? msg.content)
-          : (msg.contextContent ?? msg.content);
+      // Checkpoint bytes render verbatim; drift is reported as session-state deltas.
+      const text = msg.contextContent ?? msg.content;
+      const state = msg.sessionState;
       if (msg.attachments?.length) {
         if (!resolveAttachment) {
           throw new Error('Image attachment storage is unavailable for this session.');
@@ -554,12 +583,14 @@ export async function buildMessages(
             data: Buffer.from(bytes).toString('base64'),
           });
         }
+        // The block trails the images so it stays the turn's final text part.
+        if (state) content.push({ type: 'text', text: state });
         messages.push({ role: 'user', content });
         continue;
       }
       messages.push({
         role: 'user',
-        content: text,
+        content: state ? (text ? `${text}\n\n${state}` : state) : text,
       });
     } else if (msg.role === 'assistant') {
       const assistant: ProviderMessage = {
@@ -601,60 +632,4 @@ export async function buildMessages(
   }
 
   return messages;
-}
-
-async function renderCheckpointFreshness(config: AgentConfig, content: string): Promise<string> {
-  const jsonStart = content.indexOf('{');
-  if (jsonStart < 0) return content;
-  let checkpoint: {
-    files?: Array<{
-      path: string;
-      summary?: string;
-      sources?: unknown;
-      observation?: { workspaceId?: string; sha256?: string; byteSize?: number };
-    }>;
-  };
-  try {
-    checkpoint = JSON.parse(content.slice(jsonStart));
-  } catch {
-    return content;
-  }
-  if (!checkpoint.files?.length) return content;
-  const currentWorkspaceId = workspaceIdentity(config.workspace);
-  const cache = new Map<string, string>();
-  checkpoint.files = await Promise.all(
-    checkpoint.files.slice(0, 30).map(async (file) => {
-      const observation = file.observation;
-      if (!observation?.sha256 || observation.workspaceId !== currentWorkspaceId) {
-        return {
-          path: file.path,
-          sources: file.sources,
-          freshness: 'stale: reread required before exact reliance',
-        };
-      }
-      try {
-        const absolute = resolve(config.workspace, file.path);
-        const info = await stat(absolute);
-        const key = `${absolute}:${info.size}:${info.mtimeMs}`;
-        let hash = cache.get(key);
-        if (!hash) {
-          hash = createHash('sha256')
-            .update(await readFile(absolute))
-            .digest('hex');
-          cache.set(key, hash);
-        }
-        if (hash === observation.sha256) {
-          return { ...file, freshness: 'current: hash matches observed file' };
-        }
-      } catch {
-        // Missing files are stale locators.
-      }
-      return {
-        path: file.path,
-        sources: file.sources,
-        freshness: 'stale: file changed or is missing; reread required',
-      };
-    }),
-  );
-  return `${content.slice(0, jsonStart)}${JSON.stringify(checkpoint)}`;
 }

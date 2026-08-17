@@ -194,6 +194,8 @@ export function estimateMessageTokens(message: Message): number {
   let tokens =
     estimateTextTokens(message.contextContent ?? message.content) + MESSAGE_OVERHEAD_TOKENS;
   tokens += estimateTextTokens(message.reasoningContent ?? '');
+  // The session-state block ships with the turn, so it counts against the window.
+  tokens += estimateTextTokens(message.sessionState ?? '');
   // Image tokens are provider-specific; reserve a conservative placeholder
   // without ever counting the encoded image bytes as prompt text.
   tokens += (message.attachments?.length ?? 0) * IMAGE_TOKEN_ESTIMATE;

@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { SYSTEM_PROMPT_VERSION, normalizePromptPath, promptCurrentDate } from '../agent/context.js';
+import {
+  SYSTEM_PROMPT_VERSION,
+  normalizePromptPath,
+  promptCurrentDate,
+} from '../agent/prompt-determinism.js';
 import { resolveAgentProfile } from '../agents/profile-resolver.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { discoverProjectInstructions } from '../claude-md.js';

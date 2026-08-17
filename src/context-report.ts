@@ -38,7 +38,10 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
   for (const m of messages) {
     if (!m.includeInContext) continue;
     const msgTokens =
-      estimateTokens(m.contextContent ?? m.content) + estimateTokens(m.reasoningContent ?? '') + 6;
+      estimateTokens(m.contextContent ?? m.content) +
+      estimateTokens(m.reasoningContent ?? '') +
+      estimateTokens(m.sessionState ?? '') +
+      6;
     if (m.role === 'user') {
       userMsgs++;
       userTokens += msgTokens;

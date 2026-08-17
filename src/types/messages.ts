@@ -106,6 +106,12 @@ export interface Message {
   providerMetadata?: ProviderMessageMetadata;
   /** Provider-facing text when it differs from the displayed content. */
   contextContent?: string;
+  /**
+   * Host-rendered `<session-state>` block appended to this turn for the provider.
+   * Written once when the turn is first built and never rewritten, so rebuilds
+   * reproduce the message byte-for-byte behind the conversation cache breakpoint.
+   */
+  sessionState?: string;
   /** Images attached to a user turn; bytes live in session attachment storage. */
   attachments?: ImageAttachment[];
   /** Whether this message is included in provider and compaction context. */

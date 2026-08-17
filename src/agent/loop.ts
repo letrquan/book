@@ -432,9 +432,13 @@ export async function runAgentLoop(
         : undefined,
     );
   };
-  const systemPromptAppend = (currentTurn: number): string | undefined => {
+  /**
+   * Activation-class prompt text: skill frames and their notices change on
+   * activation and expiry, so they ride the dynamic zone. Managed-agent identity
+   * (`options.systemPromptAppend`) is session-stable and stays cached.
+   */
+  const dynamicPolicy = (currentTurn: number): string | undefined => {
     const sections = [
-      options?.systemPromptAppend,
       skillRegistry.renderActivePolicy(currentTurn),
       explicitSkillFailures.length
         ? `## Skill activation notices\n${explicitSkillFailures.map((failure) => `- ${failure}`).join('\n')}`
@@ -532,7 +536,8 @@ export async function runAgentLoop(
         options?.commands,
         signal,
         {
-          append: systemPromptAppend(turn),
+          append: options?.systemPromptAppend,
+          dynamicPolicy: dynamicPolicy(turn),
           hideAgents: options?.hideAgents,
           toolCatalogSummary: toolSurface.catalogSummary(),
           planMode: effectiveMode === 'plan',
@@ -584,7 +589,8 @@ export async function runAgentLoop(
                 options?.commands,
                 signal,
                 {
-                  append: systemPromptAppend(turn),
+                  append: options?.systemPromptAppend,
+                  dynamicPolicy: dynamicPolicy(turn),
                   hideAgents: options?.hideAgents,
                   toolCatalogSummary: toolSurface.catalogSummary(),
                   planMode: effectiveMode === 'plan',
@@ -614,7 +620,8 @@ export async function runAgentLoop(
             options?.commands,
             signal,
             {
-              append: systemPromptAppend(turn),
+              append: options?.systemPromptAppend,
+              dynamicPolicy: dynamicPolicy(turn),
               hideAgents: options?.hideAgents,
               toolCatalogSummary: toolSurface.catalogSummary(),
               planMode: effectiveMode === 'plan',
