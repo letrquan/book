@@ -48,6 +48,15 @@ All notable changes to this project are documented in this file.
   2026-04-30, and 22.13.0 is where `node:sqlite` stopped requiring `--experimental-sqlite`. CI
   exercises Node.js 22 and 24 on Ubuntu and Windows.
 
+### Security
+
+- Raised the `postcss` override from `8.5.18` to `8.5.26`, clearing CVE-2026-69153
+  (GHSA-fxqj-rqcc-2cmp, moderate): an attacker-controlled `sourceMappingURL` could read arbitrary
+  `.map` files when `opts.from` was unset. `postcss` is a build-time-only transitive dependency of
+  `tsup` and `vite`, so no shipped runtime code was affected. The pin, added for CI dependency
+  stability, was holding `postcss` below the `^8.5.25` floor `vite` already declares; it stays an
+  exact pin.
+
 ### Fixed
 
 - `/review` no longer reports a clean review when it silently discarded findings. A reviewer pass

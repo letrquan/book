@@ -8,7 +8,6 @@
  */
 import type { CompactBoundary } from './types/sessions.js';
 import type { Message } from './types/messages.js';
-import { estimateMessageTokens } from './agent/compact.js';
 
 /** Rough token estimate for an arbitrary string. ~4 chars/token for English/code. */
 export function estimateTokens(text: string): number {
@@ -153,12 +152,4 @@ export function buildContextReport(
     '(Token estimates use the chars/4 heuristic. Real counts come from the provider per turn — see /usage.)',
   );
   return lines.join('\n');
-}
-
-/** Active provider-context estimate including structural and tool overhead. */
-export function estimateActiveContextTokens(messages: Message[]): number {
-  return messages.reduce(
-    (total, message) => total + (message.includeInContext ? estimateMessageTokens(message) : 0),
-    0,
-  );
 }

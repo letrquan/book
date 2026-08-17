@@ -34,6 +34,7 @@
     "CHANGELOG.md",
     "patches/ink+6.8.0.patch",
     "scripts/apply-ink-patch.mjs",
+    "scripts/ink-patch.mjs",
     "scripts/verify-ink-patch.mjs"
   ],
   "bin": {
@@ -86,7 +87,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "chalk": "^5.4.0",
     "commander": "14.0.3",
     "cross-spawn": "^7.0.6",
     "fast-glob": "^3.3.0",
@@ -134,7 +134,7 @@
     }
   },
   "overrides": {
-    "postcss": "8.5.18",
+    "postcss": "8.5.26",
     "sharp": "^0.35.3",
     "adm-zip": "^0.6.0"
   },

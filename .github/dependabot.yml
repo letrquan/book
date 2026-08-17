@@ -4,11 +4,20 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Groups cover minor and patch updates only. Majors are deliberately left ungrouped so each
+    # arrives as its own reviewable PR: grouping them welds unrelated migrations to routine bumps,
+    # and one unmergeable major then blocks every safe update riding along with it.
     groups:
       production-dependencies:
         dependency-type: production
+        update-types:
+          - minor
+          - patch
       development-dependencies:
         dependency-type: development
+        update-types:
+          - minor
+          - patch
     open-pull-requests-limit: 10
 
   - package-ecosystem: github-actions

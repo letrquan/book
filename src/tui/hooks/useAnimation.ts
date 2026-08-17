@@ -8,25 +8,6 @@ const animLog = createRenderDebugLogger('tui:animation');
 const BRAILLE_FRAMES = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
 const DOT_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-export function useSpinner(
-  active: boolean,
-  style: 'braille' | 'dots' = 'braille',
-): { frame: string; colorIndex: number } {
-  const frames = style === 'braille' ? BRAILLE_FRAMES : DOT_FRAMES;
-  const tick = useUiClock('fast', active);
-
-  useEffect(() => {
-    if (!active) return;
-    animLog.event('spinner:start', { style });
-    return () => {
-      animLog.event('spinner:stop', { style });
-    };
-  }, [active, style]);
-
-  const frame = active ? tick % frames.length : 0;
-  return { frame: frames[frame], colorIndex: frame };
-}
-
 /**
  * Gradient spinner — alternates between brand (cyan) and brandShimmer (#5cf) on each frame tick.
  * When reducedMotion is true, returns a static frame with no animation.
@@ -45,40 +26,6 @@ export function useGradientSpinner(
   const color = colors[tick % colors.length];
 
   return { frame, color };
-}
-
-export function useTypewriter(
-  text: string,
-  speed: number,
-  active: boolean,
-  reducedMotion = false,
-): string {
-  const [displayed, setDisplayed] = useState('');
-  const prevTextRef = useRef(text);
-
-  useEffect(() => {
-    if (!active || !text || reducedMotion) {
-      setDisplayed(text);
-      prevTextRef.current = text;
-      return;
-    }
-    if (text !== prevTextRef.current) {
-      setDisplayed('');
-      prevTextRef.current = text;
-    }
-    let i = 0;
-    const interval = setInterval(() => {
-      if (isTranscriptScrollActive()) return;
-      i++;
-      setDisplayed(text.slice(0, i));
-      if (i >= text.length) {
-        clearInterval(interval);
-      }
-    }, speed);
-    return () => clearInterval(interval);
-  }, [text, active, speed, reducedMotion]);
-
-  return active && !reducedMotion ? displayed : text;
 }
 
 export function useStaggeredReveal(

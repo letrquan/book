@@ -127,10 +127,6 @@ export function parseStreamLineDetailed(line: string): {
   return { event: parsed as StreamJsonEvent };
 }
 
-export function parseStreamLine(line: string): StreamJsonEvent | null {
-  return parseStreamLineDetailed(line).event ?? null;
-}
-
 export function createStreamParser(
   onEvent: (event: StreamJsonEvent) => void,
   options: StreamParserOptions = {},

@@ -96,11 +96,6 @@ export const LIGHT_THEME: ThemeTokens = {
   userBg: '#F1E2D8',
 };
 
-/**
- * All built-in theme names.
- */
-export type ThemeName = 'dark' | 'light' | 'auto';
-
 export interface ResolvedTheme {
   preference: string;
   resolvedName: string;
