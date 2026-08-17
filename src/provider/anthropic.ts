@@ -19,6 +19,10 @@ const log = createDebugLogger('provider:anthropic');
 
 // ── Message format conversion (OpenAI → Anthropic) ──────────────────────────
 
+interface CacheControl {
+  type: 'ephemeral';
+}
+
 interface AnthropicMessage {
   role: 'user' | 'assistant';
   content: string | AnthropicContentBlock[];
@@ -40,12 +44,20 @@ interface AnthropicContentBlock {
   input?: Record<string, unknown>;
   tool_use_id?: string;
   content?: string | AnthropicContentBlock[];
+  cache_control?: CacheControl;
 }
 
 interface AnthropicTool {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
+  cache_control?: CacheControl;
+}
+
+interface AnthropicSystemBlock {
+  type: 'text';
+  text: string;
+  cache_control?: CacheControl;
 }
 
 function isSystemPromptZones(content: ProviderMessage['content']): content is SystemPromptZones {
@@ -88,11 +100,7 @@ function isToolResultContent(content: AnthropicMessage['content']): boolean {
 export function buildSystemBlocks(
   system: string,
   systemZones?: SystemPromptZones,
-): Array<{
-  type: 'text';
-  text: string;
-  cache_control?: { type: 'ephemeral' };
-}> {
+): AnthropicSystemBlock[] {
   if (!systemZones) {
     return [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
   }
@@ -112,6 +120,90 @@ export function buildSystemBlocks(
         ]
       : []),
   ];
+}
+
+// ── Prompt cache breakpoints ────────────────────────────────────────────────
+//
+// Anthropic matches cache prefixes in `tools` → `system` → `messages` order, and
+// a cached span is only usable up to a `cache_control` marker. Book places three:
+// the last tool, the static system block, and the last message (moving each turn,
+// so every turn reuses the previous turn's history span).
+
+/** Anthropic rejects a request carrying more than this many `cache_control` markers. */
+const MAX_CACHE_BREAKPOINTS = 4;
+
+/** `cache_control` is rejected on replayed thinking blocks. */
+const UNCACHEABLE_BLOCK_TYPES = new Set<AnthropicContentBlock['type']>([
+  'thinking',
+  'redacted_thinking',
+]);
+
+const EPHEMERAL: CacheControl = { type: 'ephemeral' };
+
+/**
+ * Mark only the final tool. The breakpoint's prefix span already covers every
+ * tool before it, so per-tool markers buy nothing and blow the 4-marker limit.
+ */
+function withToolCacheBreakpoint(tools: AnthropicTool[]): AnthropicTool[] {
+  if (tools.length === 0) return tools;
+  return tools.map((tool, index) =>
+    index === tools.length - 1 ? { ...tool, cache_control: EPHEMERAL } : tool,
+  );
+}
+
+/**
+ * Move the conversation breakpoint to the newest message so the next request
+ * reads back the whole history instead of re-billing it at full input price.
+ */
+export function markLastMessageForCaching(messages: AnthropicMessage[]): void {
+  const last = messages[messages.length - 1];
+  if (!last) return;
+
+  // `cache_control` lives on a content block, so string content has to become one.
+  if (typeof last.content === 'string') {
+    last.content = [{ type: 'text', text: last.content, cache_control: EPHEMERAL }];
+    return;
+  }
+
+  for (let index = last.content.length - 1; index >= 0; index--) {
+    const block = last.content[index];
+    if (UNCACHEABLE_BLOCK_TYPES.has(block.type)) continue;
+    block.cache_control = EPHEMERAL;
+    return;
+  }
+}
+
+/** Count the markers Book placed, ignoring anything nested inside tool inputs. */
+export function countCacheBreakpoints(body: {
+  tools?: AnthropicTool[];
+  system?: AnthropicSystemBlock[];
+  messages?: AnthropicMessage[];
+}): number {
+  const marked = (blocks: Array<{ cache_control?: CacheControl }> = []) =>
+    blocks.filter((block) => block.cache_control).length;
+
+  return (
+    marked(body.tools) +
+    marked(body.system) +
+    (body.messages ?? []).reduce(
+      (total, message) =>
+        total + (typeof message.content === 'string' ? 0 : marked(message.content)),
+      0,
+    )
+  );
+}
+
+/**
+ * Fail loudly rather than let the API reject the whole request. Unreachable with
+ * the three breakpoints above; it exists so a future edit cannot quietly add more.
+ */
+function assertCacheBreakpointBudget(body: Parameters<typeof countCacheBreakpoints>[0]): void {
+  const count = countCacheBreakpoints(body);
+  if (count > MAX_CACHE_BREAKPOINTS) {
+    throw new Error(
+      `Anthropic request carries ${count} cache_control markers; the API allows at most ${MAX_CACHE_BREAKPOINTS}.`,
+    );
+  }
 }
 
 /** Models that support adaptive thinking. All others get no thinking field. */
@@ -325,7 +417,8 @@ export async function* chatCompletionStream(
 
   // Convert messages and tools to Anthropic format
   const { system, systemZones, messages: anthropicMessages } = convertMessages(messages);
-  const anthropicTools = convertTools(tools);
+  const anthropicTools = withToolCacheBreakpoint(convertTools(tools));
+  markLastMessageForCaching(anthropicMessages);
 
   const body: Record<string, unknown> = {
     model: config.model,
@@ -337,15 +430,18 @@ export async function* chatCompletionStream(
 
   // System prompt as top-level field. Book emits a cacheable static prefix
   // and a dynamic per-turn suffix (for example, the active todo list).
-  body.system = buildSystemBlocks(system, systemZones);
+  const systemBlocks = buildSystemBlocks(system, systemZones);
+  body.system = systemBlocks;
 
-  // Tools with cache_control markers on each
   if (anthropicTools.length > 0) {
-    body.tools = anthropicTools.map((t) => ({
-      ...t,
-      cache_control: { type: 'ephemeral' },
-    }));
+    body.tools = anthropicTools;
   }
+
+  assertCacheBreakpointBudget({
+    tools: anthropicTools,
+    system: systemBlocks,
+    messages: anthropicMessages,
+  });
 
   // Thinking / effort — only for models that support adaptive thinking.
   if (config.modelInfo?.effort !== false && supportsAdaptiveThinking(config.model)) {

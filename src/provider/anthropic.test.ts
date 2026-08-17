@@ -4,9 +4,14 @@ import {
   chatCompletionStream,
   convertMessages,
   convertTools,
+  countCacheBreakpoints,
+  markLastMessageForCaching,
 } from './anthropic.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { patchTools } from '../tools/patch.js';
+import { todoTools } from '../tools/todo.js';
+import type { ProviderMessage } from '../types/providers.js';
+import type { ToolDefinition } from '../types/tools.js';
 
 describe('Anthropic tool contracts', () => {
   it('preserves the compact ApplyPatch string schema', () => {
@@ -374,5 +379,208 @@ describe('buildSystemBlocks', () => {
         cache_control: { type: 'ephemeral' },
       },
     ]);
+  });
+});
+
+describe('markLastMessageForCaching', () => {
+  it('promotes string content to a marked text block', () => {
+    const messages = [
+      { role: 'user' as const, content: 'first' },
+      { role: 'user' as const, content: 'newest' },
+    ];
+
+    markLastMessageForCaching(messages);
+
+    expect(messages[0].content).toBe('first');
+    expect(messages[1].content).toEqual([
+      { type: 'text', text: 'newest', cache_control: { type: 'ephemeral' } },
+    ]);
+  });
+
+  it('marks the final block of array content', () => {
+    const messages = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'tool_result' as const, tool_use_id: 'a', content: 'ok' },
+          { type: 'tool_result' as const, tool_use_id: 'b', content: 'ok' },
+        ],
+      },
+    ];
+
+    markLastMessageForCaching(messages);
+
+    expect(messages[0].content).toEqual([
+      { type: 'tool_result', tool_use_id: 'a', content: 'ok' },
+      {
+        type: 'tool_result',
+        tool_use_id: 'b',
+        content: 'ok',
+        cache_control: { type: 'ephemeral' },
+      },
+    ]);
+  });
+
+  it('skips thinking blocks, which the API rejects a marker on', () => {
+    const messages = [
+      {
+        role: 'assistant' as const,
+        content: [
+          { type: 'text' as const, text: 'answer' },
+          { type: 'thinking' as const, thinking: 'inspect', signature: 'sig-1' },
+        ],
+      },
+    ];
+
+    markLastMessageForCaching(messages);
+
+    expect(messages[0].content).toEqual([
+      { type: 'text', text: 'answer', cache_control: { type: 'ephemeral' } },
+      { type: 'thinking', thinking: 'inspect', signature: 'sig-1' },
+    ]);
+  });
+
+  it('tolerates an empty message list', () => {
+    expect(() => markLastMessageForCaching([])).not.toThrow();
+  });
+});
+
+describe('Anthropic cache breakpoint placement', () => {
+  async function captureRequestBody(
+    tools: ToolDefinition[],
+    messages: ProviderMessage[],
+  ): Promise<Record<string, unknown>> {
+    let requestBody: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        requestBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return new Response('{}', { status: 400 });
+      }),
+    );
+
+    for await (const event of chatCompletionStream(
+      defaultConfig({ provider: 'anthropic', baseUrl: 'https://api.anthropic.com' }),
+      messages,
+      tools,
+    )) {
+      void event;
+    }
+
+    if (!requestBody) throw new Error('request body was never captured');
+    return requestBody;
+  }
+
+  const zones = { cachedPrefix: 'static instructions', dynamicSuffix: 'active policy' };
+
+  it('marks only the last tool, whatever the tool count', async () => {
+    const tools = [...patchTools, ...todoTools];
+    expect(tools.length).toBeGreaterThan(1);
+
+    const body = await captureRequestBody(tools, [{ role: 'user', content: 'hi' }]);
+    const sent = body.tools as Array<Record<string, unknown>>;
+
+    expect(sent).toHaveLength(tools.length);
+    expect(sent.filter((tool) => tool.cache_control)).toEqual([
+      expect.objectContaining({ name: tools[tools.length - 1].name }),
+    ]);
+  });
+
+  it('places exactly three breakpoints with tools, zones, and history active', async () => {
+    const body = await captureRequestBody(patchTools, [
+      { role: 'system', content: zones },
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'answer' },
+      { role: 'user', content: 'newest' },
+    ]);
+
+    expect(countCacheBreakpoints(body)).toBe(3);
+  });
+
+  it('marks the newest message and leaves earlier turns untouched', async () => {
+    const body = await captureRequestBody(patchTools, [
+      { role: 'system', content: zones },
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'answer' },
+      { role: 'user', content: 'newest' },
+    ]);
+    const sent = body.messages as Array<{ role: string; content: unknown }>;
+
+    expect(sent.slice(0, -1).every((message) => typeof message.content === 'string')).toBe(true);
+    expect(sent.at(-1)).toEqual({
+      role: 'user',
+      content: [{ type: 'text', text: 'newest', cache_control: { type: 'ephemeral' } }],
+    });
+  });
+
+  it('marks the last tool result when the newest turn carries them', async () => {
+    const body = await captureRequestBody(patchTools, [
+      { role: 'system', content: zones },
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call-1', type: 'function', function: { name: 'ApplyPatch', arguments: '{}' } },
+          { id: 'call-2', type: 'function', function: { name: 'ApplyPatch', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'applied' },
+      { role: 'tool', tool_call_id: 'call-2', content: 'applied' },
+    ]);
+    const sent = body.messages as Array<{ content: Array<Record<string, unknown>> }>;
+
+    expect(countCacheBreakpoints(body)).toBe(3);
+    expect(sent.at(-1)?.content.map((block) => Boolean(block.cache_control))).toEqual([
+      false,
+      true,
+    ]);
+  });
+
+  it('still sends one cached system block when the dynamic suffix is empty', async () => {
+    const body = await captureRequestBody(patchTools, [
+      { role: 'system', content: { cachedPrefix: 'static instructions', dynamicSuffix: '' } },
+      { role: 'user', content: 'hi' },
+    ]);
+
+    expect(body.system).toEqual([
+      { type: 'text', text: 'static instructions', cache_control: { type: 'ephemeral' } },
+    ]);
+    expect(countCacheBreakpoints(body)).toBe(3);
+  });
+
+  it('stays within budget when no tools are registered', async () => {
+    const body = await captureRequestBody(
+      [],
+      [
+        { role: 'system', content: zones },
+        { role: 'user', content: 'hi' },
+      ],
+    );
+
+    expect(body.tools).toBeUndefined();
+    expect(countCacheBreakpoints(body)).toBe(2);
+  });
+});
+
+describe('countCacheBreakpoints', () => {
+  it('ignores cache_control keys nested inside tool inputs', () => {
+    expect(
+      countCacheBreakpoints({
+        messages: [
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'call-1',
+                name: 'Write',
+                input: { content: { cache_control: { type: 'ephemeral' } } },
+              },
+            ],
+          },
+        ],
+      }),
+    ).toBe(0);
   });
 });
