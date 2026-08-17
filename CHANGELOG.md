@@ -41,9 +41,9 @@ All notable changes to this project are documented in this file.
   schemas the API already delivers verbatim. The deferred-tool catalog remains, since it describes
   tools the model genuinely cannot see. Operating principles lost the bullets that restate a
   frontier model's own defaults.
-- **Truncated listings now say so.** Skill, command, and subagent listings that hit their
-  character budget append `- …and N more not shown` instead of stopping silently after one bare
-  name.
+- **Truncated listings now say so.** Command and subagent listings that hit their character budget
+  append `- …and N more not shown` instead of stopping silently after one bare name. The skills
+  listing already reported its omissions.
 - **Node.js 22.13.0 or newer is now required** (previously 20). Node.js 20 reached end-of-life on
   2026-04-30, and 22.13.0 is where `node:sqlite` stopped requiring `--experimental-sqlite`. CI
   exercises Node.js 22 and 24 on Ubuntu and Windows.

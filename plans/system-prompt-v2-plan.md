@@ -504,7 +504,7 @@ platform before landing):
 
 | Phase | Commit prefix | Status |
 | --- | --- | --- |
-| 1 — Breakpoints (last tool, moving last message, ≤4 guard) | `fix(provider)` | Landed (`f05f224`) |
+| 1 — Breakpoints (last tool, moving last message, ≤4 guard) | `fix(provider)` | Landed (`f05f224`); **Phase 1.6 live observation still pending** |
 | 2 — Zone transports: task-state session-state blocks; dynamic-policy suffix; skill frames out of the cached prefix | `refactor(prompt)` | Landed (`23cdacb`) |
 | 3 — Fence project instructions; trust frame first | `feat(prompt)` | Landed (`0c23bbb`) |
 | 4 — Harness facts; drop hostname | `feat(prompt)` | Landed (`2e56a75`) |
@@ -523,10 +523,13 @@ Recorded so a later reader does not mistake the plan text for what shipped.
    could not be persisted without reordering host-specific code that headless and the SDK do not
    share. Lazy render + memoize on the `Message` satisfies the same invariant — rendered once,
    reused by every rebuild path — in one place all hosts share.
-3. **Session-state is not persisted to the session JSONL** (open question 1). It buys no cache:
-   the default TTL is 5 minutes, so a resumed session always starts cold. On resume, historical
-   turns carry no block and the newest turn gets a fresh one; byte-stability within the resumed
-   process is unaffected. This also avoids the session-schema change the risk table flagged.
+3. **The user-record write path does not persist session-state** (open question 1). It buys no
+   cache: the default TTL is 5 minutes, so a resumed session always starts cold. On resume,
+   historical turns carry no block and the newest turn gets a fresh one; byte-stability within the
+   resumed process is unaffected. This avoids the session-schema change the risk table flagged.
+   (Compact records are the exception — they persist `replacementHistory` wholesale and
+   `restoreMessage` spreads, so blocks on retained turns do round-trip that path. Harmless: those
+   are the bytes the turn already had.)
 4. **Phase 5.2 (gate delegation on registered agent tools) was already satisfied.** Every
    `createDefaultRegistry` caller derives `capabilities.agents` from `settings.agents.mode`, which
    is the same signal the prompt already gates on, so there was no second condition to add.
@@ -540,6 +543,14 @@ Recorded so a later reader does not mistake the plan text for what shipped.
 6. **Open questions 2, 3, 5 took the recommended defaults**: silence instead of a tool count;
    deferred catalog kept, in the suffix; `append` (session-stable) split from a new `dynamicPolicy`
    (activation-class).
+7. **Phase 5.4's skills-listing marker was already there.** `buildSkillListing` in `src/skills.ts`
+   reports omissions in its own wording and evicts entries to make room for the notice. Only the
+   `compactList` listings (agents) and `generateCommandListing` truncated silently; those are the
+   two that changed.
+8. **Phase 1.6 / the rollout section's live check has not been run.** No provider key is available
+   in this environment, so `cache_read_input_tokens` growing from turn 2 is still unobserved. The
+   structural tests and the verified Anthropic facts stand on their own, but the plan's acceptance
+   evidence for its highest-value diff is outstanding.
 
 ### Follow-up found during implementation
 
