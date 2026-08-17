@@ -33,6 +33,35 @@ jobs:
 
       - run: npm ci
 
+      # TEMPORARY diagnostic for the windows/Node 24 worker crash. Remove before merge.
+      # Discriminates: do the two fs.watch files crash alone, or only after the rest of the tier?
+      - name: 'DIAGNOSTIC: isolate the fs.watch unit files'
+        if: matrix.os == 'windows-latest' && matrix.node-version == '24.x'
+        continue-on-error: true
+        shell: bash
+        run: |
+          V="npx vitest run --config vitest.unit.config.ts"
+          echo "--- both files together ---"
+          $V src/skill-watcher.test.ts src/session/runtime.test.ts; echo "exit=$?"
+          echo "--- skill-watcher.test.ts alone ---"
+          $V src/skill-watcher.test.ts; echo "exit=$?"
+          echo "--- session/runtime.test.ts alone ---"
+          $V src/session/runtime.test.ts; echo "exit=$?"
+          # mergeConfig concatenates `exclude`, so the unit tier's own exclusions are preserved.
+          cat > vitest.diag.config.ts <<'CFG'
+          import { defineConfig, mergeConfig } from 'vitest/config';
+          import unitConfig from './vitest.unit.config.js';
+          export default mergeConfig(
+            unitConfig,
+            defineConfig({
+              test: { exclude: ['src/skill-watcher.test.ts', 'src/session/runtime.test.ts'] },
+            }),
+          );
+          CFG
+          echo "--- full tier EXCLUDING both files ---"
+          npx vitest run --config vitest.diag.config.ts; echo "exit=$?"
+          rm -f vitest.diag.config.ts
+
       - run: npm run check
 
       - run: npm run build

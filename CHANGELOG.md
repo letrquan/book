@@ -11,7 +11,7 @@ All notable changes to this project are documented in this file.
   history — 50-150k tokens mid-session — was re-billed at full input price on every turn. A moving
   breakpoint on the newest message means a steady-state turn re-buys roughly the newest turn
   instead of the whole context; cache reads are about a tenth of the input price, and time to first
-  token drops with the cost. Book also marked *every* tool definition, far past Anthropic's
+  token drops with the cost. Book also marked _every_ tool definition, far past Anthropic's
   four-breakpoint limit; only the last tool is marked now, which caches identically.
 - **The system prompt is now organized by how often its content changes.** Current date, git
   status, the plan-mode notice, and the todo list have left the system prompt: they sit ahead of
@@ -19,9 +19,9 @@ All notable changes to this project are documented in this file.
   invalidate the entire conversation. Per-turn state is delivered as a `<session-state>` block on
   the newest user turn, and active skill frames moved from the cached prefix to the uncached
   dynamic suffix, so activating a skill no longer invalidates the whole prompt.
-  - *Todo state now travels through TodoWrite's own tool result*, which already echoes the full
+  - _Todo state now travels through TodoWrite's own tool result_, which already echoes the full
     list into the message stream. The list is no longer restated in the system prompt each turn.
-  - *Checkpoint freshness* is no longer re-stamped into the historical checkpoint message. The
+  - _Checkpoint freshness_ is no longer re-stamped into the historical checkpoint message. The
     same hash comparison runs once per turn and reports drift as `Stale since checkpoint: …` in
     the newest session-state block.
 - **`SYSTEM_PROMPT_VERSION` is now `book-system-prompt-v2`.** Run-ambient records stamp this
@@ -62,9 +62,8 @@ All notable changes to this project are documented in this file.
 - The skill watcher no longer reopens every directory handle each time a skill file changes. A
   debounced rebuild now closes only the watchers whose directories left the watched set and opens
   only newly in-scope ones, instead of closing and reopening all of them. The old churn cost one OS
-  directory handle per watched directory on every save, and was enough to abort a worker process on
-  Windows when the watched tree saw sustained write activity — the cause of the CI failures on the
-  Windows / Node 24 leg, where every test passed but two workers exited unexpectedly.
+  directory handle per watched directory on every save, which is wasteful on every platform and
+  worst on Windows, where each handle is a separate `ReadDirectoryChangesW` registration.
 - `SessionRuntime` now threads one set of skill-discovery options through both the skill registry
   and the skill watcher (`skillDiscoveryOptions`), so the two cannot disagree about which roots
   exist and tests can pin discovery inside a temp workspace instead of the real home directory.
