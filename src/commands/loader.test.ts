@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { discoverCommands, resolveCommandBody } from './loader.js';
+import { discoverCommands, generateCommandListing, resolveCommandBody } from './loader.js';
 import { parseFrontmatter } from '../frontmatter.js';
+import type { SlashCommand } from '../types/commands.js';
 
 let dir: string;
 
@@ -198,5 +199,46 @@ describe('discoverCommands', () => {
 
     const result = discoverCommands(dir);
     expect(result.find((c) => c.name === 'same')?.description).toBe('Project version');
+  });
+});
+
+describe('generateCommandListing', () => {
+  const command = (name: string, description: string): SlashCommand => ({
+    name,
+    description,
+    body: '',
+    source: 'project',
+  });
+
+  it('describes how the host actually dispatches a command', () => {
+    const listing = generateCommandListing([command('review', 'Review the diff')]);
+
+    // No command bodies follow the listing, and neither headless nor the SDK
+    // resolves a bare `/name`, so the old "execute its instructions below" was
+    // a mechanism the model could not use.
+    expect(listing).not.toContain('execute its instructions below');
+    expect(listing).toContain('The host expands an invoked command into the conversation');
+    expect(listing).toContain('treat it as a reference');
+    expect(listing).toContain('- **/review**: Review the diff');
+  });
+
+  it('marks how many commands the budget cut', () => {
+    const commands = Array.from({ length: 40 }, (_, index) =>
+      command(`cmd${index}`, 'A reasonably long description that eats into the char budget.'),
+    );
+
+    const listing = generateCommandListing(commands, 600);
+
+    expect(listing).toContain('not shown');
+    const shown = listing.split('\n').filter((line) => line.startsWith('- **/')).length;
+    expect(shown).toBeGreaterThan(0);
+    expect(shown).toBeLessThan(commands.length);
+    expect(listing).toContain(`- …and ${commands.length - shown} more not shown`);
+  });
+
+  it('marks nothing when every command fits', () => {
+    const listing = generateCommandListing([command('review', 'Review the diff')], 4096);
+
+    expect(listing).not.toContain('not shown');
   });
 });

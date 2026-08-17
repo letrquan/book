@@ -93,11 +93,16 @@ export function generateCommandListing(
 
   const lines: string[] = [];
   lines.push('## Available slash commands');
+  // No command bodies follow, and nothing downstream resolves a bare `/name`
+  // string: the host expands an invoked command before the turn reaches the
+  // model. Promising "execute its instructions below" taught a mechanism that
+  // does not exist.
   lines.push(
-    'The user can invoke these by typing /name at the prompt. When the user invokes a slash command, execute its instructions below.',
+    'The user can invoke these by typing /name. The host expands an invoked command into the conversation before it reaches you. If a message merely mentions a command name, treat it as a reference — do not attempt to execute the command yourself.',
   );
 
   let remaining = budgetChars - lines.join('\n').length;
+  let shown = 0;
 
   for (const cmd of visible) {
     const hint = cmd.argumentHint ? ` ${cmd.argumentHint}` : '';
@@ -107,13 +112,17 @@ export function generateCommandListing(
       const bare = `- **/${cmd.name}**`;
       if (bare.length <= remaining) {
         lines.push(bare);
+        shown++;
         remaining -= bare.length + 1;
       }
       break;
     }
     lines.push(entry);
+    shown++;
     remaining -= entry.length + 1;
   }
+
+  if (shown < visible.length) lines.push(`- …and ${visible.length - shown} more not shown`);
 
   return lines.join('\n');
 }

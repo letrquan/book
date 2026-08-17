@@ -270,7 +270,6 @@ async function main(): Promise<void> {
         await buildMessages(
           config,
           [assistant('history', 'done')],
-          [],
           undefined,
           undefined,
           undefined,
@@ -286,7 +285,6 @@ async function main(): Promise<void> {
         await buildMessages(
           config,
           [assistant('history', 'done')],
-          [],
           undefined,
           undefined,
           undefined,
@@ -302,7 +300,6 @@ async function main(): Promise<void> {
       await buildMessages(
         config,
         [assistant('history', 'done')],
-        [],
         undefined,
         undefined,
         undefined,

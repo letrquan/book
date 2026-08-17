@@ -778,7 +778,6 @@ async function generatePromptSuggestions(
         timestamp: Date.now(),
       },
     ],
-    [],
     undefined,
     undefined,
     signal,

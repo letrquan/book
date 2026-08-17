@@ -15,24 +15,13 @@ import { workspaceIdentity } from '../tools/file-provenance.js';
 import type { SlashCommand } from '../types/commands.js';
 import type { Message } from '../types/messages.js';
 import type { ProviderMessage } from '../types/providers.js';
-import type { ToolDefinition } from '../types/tools.js';
 import { userMsg, assistantMsg, toolCall, toolResult, defaultConfig } from '../test/fixtures.js';
-import { toolSuccess } from '../tools/result.js';
 
 const config = defaultConfig();
 
 afterEach(() => {
   vi.unstubAllEnvs();
 });
-
-function tool(name: string, description: string): ToolDefinition {
-  return {
-    name,
-    description,
-    parameters: { type: 'object', properties: {}, required: [] },
-    execute: async () => toolSuccess(''),
-  };
-}
 
 function systemPrefix(out: Awaited<ReturnType<typeof buildMessages>>): string {
   const content = out[0].content;
@@ -59,7 +48,6 @@ describe('buildMessages', () => {
           attachments: [attachment],
         },
       ],
-      [],
       undefined,
       undefined,
       undefined,
@@ -76,7 +64,7 @@ describe('buildMessages', () => {
   it('keeps the --agents off control free of managed-agent routing and profiles', async () => {
     const offConfig = defaultConfig();
     offConfig.settings.agents.mode = 'off';
-    const prompt = await buildSystemPrompt(offConfig, undefined, []);
+    const prompt = await buildSystemPrompt(offConfig, undefined);
     expect(prompt).not.toContain('Managed delegation');
     expect(prompt).not.toContain('**explorer**');
   });
@@ -86,7 +74,7 @@ describe('buildMessages', () => {
     const tr = toolResult('call_1', '1: hi');
     const history = [userMsg('read a.ts'), assistantMsg('Reading...', [tc], [tr])];
 
-    const out = await buildMessages(config, history, []);
+    const out = await buildMessages(config, history);
 
     // [0] system, [1] user, [2] assistant (content + tool_calls), [3] tool result
     expect(out[2].role).toBe('assistant');
@@ -111,11 +99,12 @@ describe('buildMessages', () => {
       includeInContext: false,
     };
 
-    const out = await buildMessages(
-      config,
-      [userMsg('inspect a.ts'), toolMessage, localMessage, userMsg('what did you find?')],
-      [],
-    );
+    const out = await buildMessages(config, [
+      userMsg('inspect a.ts'),
+      toolMessage,
+      localMessage,
+      userMsg('what did you find?'),
+    ]);
 
     expect(out.map((message) => message.role)).toEqual([
       'system',
@@ -160,7 +149,7 @@ describe('buildMessages', () => {
     const tr = toolResult('call_full', output);
     const history = [userMsg('run it'), assistantMsg('', [tc], [tr])];
 
-    const out = await buildMessages(config, history, []);
+    const out = await buildMessages(config, history);
 
     expect(out.find((m) => m.role === 'tool')?.content).toBe(output);
   });
@@ -173,7 +162,7 @@ describe('buildMessages', () => {
       },
     ];
 
-    const out = await buildMessages(config, history, []);
+    const out = await buildMessages(config, history);
 
     expect(out[1].role).toBe('user');
     expect(out[1].content).toContain(history[0].contextContent);
@@ -188,13 +177,13 @@ describe('buildMessages', () => {
     const r2 = toolResult('c2', '/x');
     const history = [userMsg('go'), assistantMsg('', [t1, t2], [r1, r2])];
 
-    const out = await buildMessages(config, history, []);
+    const out = await buildMessages(config, history);
     expect(out.filter((m) => m.role === 'tool').map((m) => m.tool_call_id)).toEqual(['c1', 'c2']);
   });
 
   it('omits tool_calls when an assistant message has none', async () => {
     const history = [userMsg('hi'), assistantMsg('hello')];
-    const out = await buildMessages(config, history, []);
+    const out = await buildMessages(config, history);
     expect(out[2].tool_calls).toBeUndefined();
     expect(out.find((m) => m.role === 'tool')).toBeUndefined();
   });
@@ -204,7 +193,7 @@ describe('buildMessages', () => {
       userMsg('inspect it'),
       { ...assistantMsg('The answer'), reasoningContent: 'I checked the relevant file first.' },
     ];
-    const out = await buildMessages(config, history, []);
+    const out = await buildMessages(config, history);
     expect(out[2]).toMatchObject({
       role: 'assistant',
       content: 'The answer',
@@ -241,7 +230,6 @@ describe('buildMessages', () => {
       const first = await buildMessages(
         defaultConfig({ workspace: dir }),
         [userMsg('hi')],
-        [],
         undefined,
         undefined,
         undefined,
@@ -252,7 +240,6 @@ describe('buildMessages', () => {
       const sameTurn = await buildMessages(
         defaultConfig({ workspace: dir }),
         [userMsg('hi')],
-        [],
         undefined,
         undefined,
         undefined,
@@ -263,7 +250,6 @@ describe('buildMessages', () => {
       const invalidated = await buildMessages(
         defaultConfig({ workspace: dir }),
         [userMsg('hi')],
-        [],
         undefined,
         undefined,
         undefined,
@@ -274,7 +260,6 @@ describe('buildMessages', () => {
       const nextTurn = await buildMessages(
         defaultConfig({ workspace: dir }),
         [userMsg('hi')],
-        [],
         undefined,
         undefined,
         undefined,
@@ -291,17 +276,13 @@ describe('buildMessages', () => {
     }
   });
 
-  it('injects active tool descriptions into the system prompt', async () => {
+  it('does not restate the tool schemas the provider already receives', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'book-context-'));
     try {
-      const out = await buildMessages(
-        defaultConfig({ workspace: dir }),
-        [userMsg('hi')],
-        [tool('Read', 'Read files from disk')],
-      );
+      const out = await buildMessages(defaultConfig({ workspace: dir }), [userMsg('hi')]);
 
-      expect(systemPrefix(out)).toContain('## Available tools');
-      expect(systemPrefix(out)).toContain('**Read**: Read files from disk');
+      expect(systemPrefix(out)).not.toContain('## Available tools');
+      expect(systemPrefix(out)).not.toContain('Tool schemas are also sent separately');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -315,7 +296,7 @@ describe('buildMessages', () => {
       source: 'project',
     };
 
-    const out = await buildMessages(config, [userMsg('hi')], [], undefined, [customHelp]);
+    const out = await buildMessages(config, [userMsg('hi')], undefined, [customHelp]);
 
     expect(systemPrefix(out)).toContain('**/help**: Toggle help');
     expect(systemPrefix(out)).not.toContain('Shadowed custom help command');
@@ -337,6 +318,33 @@ describe('buildMessages', () => {
       expect(systemPrefix(out)).toContain('## Available subagents');
       expect(systemPrefix(out)).toContain('**reviewer**: Read-only code reviewer');
       expect(systemPrefix(out)).not.toContain('Finds likely bugs');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('marks how many entries a listing budget cut', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-context-'));
+    try {
+      const agentsDir = join(dir, '.book', 'agents');
+      mkdirSync(agentsDir, { recursive: true });
+      for (let index = 0; index < 40; index++) {
+        writeFileSync(
+          join(agentsDir, `agent${index}.md`),
+          `---\nname: agent${index}\ndescription: A deliberately wordy description that consumes the listing budget quickly.\n---\nBody.`,
+          'utf-8',
+        );
+      }
+
+      const prefix = systemPrefix(
+        await buildMessages(defaultConfig({ workspace: dir }), [userMsg('hi')]),
+      );
+      const listing = prefix.slice(prefix.indexOf('## Available subagents'));
+      const shown = listing.split('\n').filter((line) => line.startsWith('- **')).length;
+
+      // Silent truncation reads as a complete inventory; say what was dropped.
+      expect(shown).toBeLessThan(40);
+      expect(listing).toContain('more not shown');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -419,7 +427,7 @@ describe('buildMessages', () => {
     try {
       const evaluationConfig = defaultConfig({ workspace });
       evaluationConfig.settings.agents.mode = 'off';
-      const prompt = await buildSystemPrompt(evaluationConfig, undefined, []);
+      const prompt = await buildSystemPrompt(evaluationConfig, undefined);
       const out = await buildMessages(evaluationConfig, [userMsg('hi')], []);
 
       expect(prompt).toContain('- Workspace: <evaluation-workspace>');
@@ -433,10 +441,9 @@ describe('buildMessages', () => {
   });
 
   it('keeps per-turn task state out of both system zones', async () => {
-    const zones = await buildSystemPromptZones(config, [], [tool('Read', 'Read files from disk')]);
+    const zones = await buildSystemPromptZones(config, []);
 
     expect(zones.cachedPrefix).toContain('You are Book');
-    expect(zones.cachedPrefix).toContain('## Available tools');
     expect(zones.cachedPrefix).toContain('## Guardrails');
     expect(zones.cachedPrefix).not.toContain('- Current date:');
     expect(zones.cachedPrefix).not.toContain('- Git:');
@@ -445,7 +452,7 @@ describe('buildMessages', () => {
   });
 
   it('states the harness facts the model cannot infer', async () => {
-    const zones = await buildSystemPromptZones(config, [], []);
+    const zones = await buildSystemPromptZones(config, []);
 
     expect(zones.cachedPrefix).toContain('## Harness');
     expect(zones.cachedPrefix).toContain('GitHub-flavored markdown in a terminal TUI');
@@ -460,25 +467,25 @@ describe('buildMessages', () => {
   });
 
   it('keeps machine-identifying data out of the workspace context', async () => {
-    const zones = await buildSystemPromptZones(config, [], []);
+    const zones = await buildSystemPromptZones(config, []);
 
     expect(zones.cachedPrefix).toContain('## Workspace context');
     expect(zones.cachedPrefix).not.toContain(hostname());
   });
 
   it('renders the deferred tool catalog in the dynamic zone only', async () => {
-    const zones = await buildSystemPromptZones(config, [], [], {
+    const zones = await buildSystemPromptZones(config, [], {
       toolCatalogSummary: 'WebFetch, WebSearch',
     });
 
     expect(zones.dynamicSuffix).toContain('## Deferred tool catalog');
     expect(zones.dynamicSuffix).toContain('WebFetch, WebSearch');
     expect(zones.cachedPrefix).not.toContain('## Deferred tool catalog');
-    expect(zones.cachedPrefix).toBe((await buildSystemPromptZones(config, [], [])).cachedPrefix);
+    expect(zones.cachedPrefix).toBe((await buildSystemPromptZones(config, [])).cachedPrefix);
   });
 
   it('keeps activation-class skill policy out of the cached prefix', async () => {
-    const zones = await buildSystemPromptZones(config, [], [], {
+    const zones = await buildSystemPromptZones(config, [], {
       append: '## Agent identity\nYou are a managed child agent.',
       dynamicPolicy: '## Active skills\n- dataviz (turn 3)',
     });
@@ -490,14 +497,11 @@ describe('buildMessages', () => {
   });
 
   it('encodes the core agent workflow and evidence-based completion rules', async () => {
-    const zones = await buildSystemPromptZones(config, [], []);
+    const zones = await buildSystemPromptZones(config, []);
 
-    expect(zones.cachedPrefix).toContain('Work as an agent, not a chatbot');
-    expect(zones.cachedPrefix).toContain("Collaborate until the user's goal is genuinely handled");
+    expect(zones.cachedPrefix).toContain('do not silently narrow requested scope');
     expect(zones.cachedPrefix).toContain('inspect rather than guess');
-    expect(zones.cachedPrefix).toContain('do not repeat the same call unchanged');
     expect(zones.cachedPrefix).toContain('Act directly when the task is small and clear');
-    expect(zones.cachedPrefix).toContain('Solve root causes rather than suppressing symptoms');
     expect(zones.cachedPrefix).toContain('avoid unrelated cleanup, speculative abstractions');
     expect(zones.cachedPrefix).toContain('Batch independent read-only calls in one response');
     expect(zones.cachedPrefix).toContain('issue AgentSpawn calls together');
@@ -520,7 +524,7 @@ describe('buildMessages', () => {
     const policy = resolveWorkflow(
       BUILTIN_WORKFLOW_DEFINITIONS.find((entry) => entry.id === 'verify-heavy')!,
     ).policySection;
-    const zones = await buildSystemPromptZones(config, [], [], {
+    const zones = await buildSystemPromptZones(config, [], {
       workflowPolicy: policy,
     });
 
@@ -529,11 +533,11 @@ describe('buildMessages', () => {
     // The cached prefix must stay stable so switching workflows does not
     // invalidate the session prompt cache.
     expect(zones.cachedPrefix).not.toContain('## Execution policy');
-    expect(zones.cachedPrefix).toBe((await buildSystemPromptZones(config, [], [])).cachedPrefix);
+    expect(zones.cachedPrefix).toBe((await buildSystemPromptZones(config, [])).cachedPrefix);
   });
 
   it('keeps the execution policy separate from the cached append zone', async () => {
-    const zones = await buildSystemPromptZones(config, [], [], {
+    const zones = await buildSystemPromptZones(config, [], {
       append: '## Agent identity\nYou are a managed child agent.',
       workflowPolicy: '## Execution policy\nActive workflow: safe-edit v1.',
     });
@@ -545,7 +549,7 @@ describe('buildMessages', () => {
   });
 
   it('orders the execution policy before activation-class policy', async () => {
-    const zones = await buildSystemPromptZones(config, [], [], {
+    const zones = await buildSystemPromptZones(config, [], {
       workflowPolicy: '## Execution policy\nActive workflow: safe-edit v1.',
       dynamicPolicy: '## Active skills\n- dataviz (turn 3)',
     });
@@ -561,8 +565,8 @@ describe('buildMessages', () => {
     );
     expect(minimal.policySection).toBe('');
 
-    const baseline = await buildMessages(config, [userMsg('hi')], [], []);
-    const withMinimal = await buildMessages(config, [userMsg('hi')], [], [], undefined, undefined, {
+    const baseline = await buildMessages(config, [userMsg('hi')], []);
+    const withMinimal = await buildMessages(config, [userMsg('hi')], [], undefined, undefined, {
       workflowPolicy: minimal.policySection,
     });
 
@@ -570,12 +574,11 @@ describe('buildMessages', () => {
   });
 
   it('keeps the flat system prompt compatibility helper', async () => {
-    const prompt = await buildSystemPrompt(config, [], [tool('Read', 'Read files from disk')], {
+    const prompt = await buildSystemPrompt(config, [], {
       workflowPolicy: '## Execution policy\nActive workflow: safe-edit v1.',
     });
 
     expect(prompt).toContain('You are Book');
-    expect(prompt).toContain('## Available tools');
     expect(prompt).toContain('## Execution policy');
   });
 });
@@ -590,7 +593,7 @@ describe('session-state block', () => {
   it('attaches a block to the newest user turn only', async () => {
     const history = [userMsg('first'), assistantMsg('answer'), { ...userMsg('second'), id: 'u2' }];
 
-    const out = await buildMessages(config, history, []);
+    const out = await buildMessages(config, history);
 
     expect(out[1].content).toBe('first');
     expect(out[3].content).toContain('second\n\n<session-state>');
@@ -599,16 +602,13 @@ describe('session-state block', () => {
 
   it('reproduces every settled turn byte-for-byte after task state changes', async () => {
     const turnOne = [userMsg('first')];
-    const first = await buildMessages(config, turnOne, [], []);
+    const first = await buildMessages(config, turnOne, []);
 
     // Next turn: new user message, and the agent has since written todos.
     const turnTwo = [...turnOne, assistantMsg('answer'), { ...userMsg('second'), id: 'u2' }];
-    const second = await buildMessages(
-      config,
-      turnTwo,
-      [],
-      [{ content: 'Ship it', status: 'in_progress', activeForm: 'Shipping' }],
-    );
+    const second = await buildMessages(config, turnTwo, [
+      { content: 'Ship it', status: 'in_progress', activeForm: 'Shipping' },
+    ]);
 
     // Cached prefix and every settled message must be reusable as a cache prefix.
     expect(JSON.stringify(second[0])).toBe(JSON.stringify(first[0]));
@@ -619,13 +619,10 @@ describe('session-state block', () => {
   it('reuses the turn bytes when the turn is rebuilt after a todo change', async () => {
     const history = [userMsg('go')];
 
-    const first = await buildMessages(config, history, [], []);
-    const rebuilt = await buildMessages(
-      config,
-      history,
-      [],
-      [{ content: 'Added mid-turn', status: 'pending' }],
-    );
+    const first = await buildMessages(config, history, []);
+    const rebuilt = await buildMessages(config, history, [
+      { content: 'Added mid-turn', status: 'pending' },
+    ]);
 
     expect(JSON.stringify(rebuilt)).toBe(JSON.stringify(first));
     expect(stateOf(rebuilt[1])).not.toContain('Added mid-turn');
@@ -633,8 +630,8 @@ describe('session-state block', () => {
 
   it('leaves message bytes untouched when dynamic policy changes', async () => {
     const history = [userMsg('go')];
-    const baseline = await buildMessages(config, history, []);
-    const activated = await buildMessages(config, history, [], undefined, undefined, undefined, {
+    const baseline = await buildMessages(config, history);
+    const activated = await buildMessages(config, history, [], undefined, undefined, {
       dynamicPolicy: '## Active skills\n- dataviz (turn 1)',
     });
 
@@ -656,7 +653,6 @@ describe('session-state block', () => {
     const out = await buildMessages(
       config,
       [{ ...userMsg('describe this'), attachments: [attachment] }],
-      [],
       undefined,
       undefined,
       undefined,
@@ -703,11 +699,10 @@ describe('session-state block', () => {
 
       // File drifts after the checkpoint was written.
       writeFileSync(tracked, 'export const a = 2;\n', 'utf-8');
-      const out = await buildMessages(
-        checkpointConfig,
-        [checkpoint, { ...userMsg('continue'), id: 'u2' }],
-        [],
-      );
+      const out = await buildMessages(checkpointConfig, [
+        checkpoint,
+        { ...userMsg('continue'), id: 'u2' },
+      ]);
 
       expect(out[1].content).toBe(checkpoint.content);
       expect(out[1].content).not.toContain('freshness');
@@ -723,7 +718,7 @@ describe('model-conditional mutation guidance', () => {
   it('prefers Edit for non-GPT-family models', async () => {
     const replaceConfig = defaultConfig();
     replaceConfig.model = 'qwen3.7-max';
-    const prompt = await buildSystemPrompt(replaceConfig, undefined, []);
+    const prompt = await buildSystemPrompt(replaceConfig, undefined);
     expect(prompt).toContain('Prefer Edit (or MultiEdit');
     expect(prompt).not.toContain('Prefer ApplyPatch');
   });
@@ -731,7 +726,7 @@ describe('model-conditional mutation guidance', () => {
   it('prefers ApplyPatch for GPT-family models', async () => {
     const patchConfig = defaultConfig();
     patchConfig.model = 'gpt-5';
-    const prompt = await buildSystemPrompt(patchConfig, undefined, []);
+    const prompt = await buildSystemPrompt(patchConfig, undefined);
     expect(prompt).toContain('Prefer ApplyPatch');
   });
 
@@ -739,18 +734,17 @@ describe('model-conditional mutation guidance', () => {
     const overrideConfig = defaultConfig();
     overrideConfig.model = 'gpt-5';
     overrideConfig.modelInfo = { editFormat: 'whole' };
-    const prompt = await buildSystemPrompt(overrideConfig, undefined, []);
+    const prompt = await buildSystemPrompt(overrideConfig, undefined);
     expect(prompt).toContain('Prefer Write with the complete file content');
     expect(prompt).not.toContain('Prefer ApplyPatch');
   });
 
   it('announces plan mode per turn without disturbing the cached prompt', async () => {
     const planConfig = defaultConfig();
-    const planPrompt = await buildSystemPrompt(planConfig, undefined, [], { planMode: true });
+    const planPrompt = await buildSystemPrompt(planConfig, undefined, { planMode: true });
     const out = await buildMessages(
       planConfig,
       [userMsg('what should we do?')],
-      [],
       undefined,
       undefined,
       undefined,
@@ -759,7 +753,7 @@ describe('model-conditional mutation guidance', () => {
 
     // Mutation guidance is model-conditional, not mode-conditional: toggling plan
     // mode must not rewrite the cached prefix.
-    expect(planPrompt).toBe(await buildSystemPrompt(planConfig, undefined, []));
+    expect(planPrompt).toBe(await buildSystemPrompt(planConfig, undefined));
     expect(planPrompt).not.toContain('Plan mode');
     expect(out[1].content).toContain('- Plan mode: active');
     expect(out[1].content).toContain('ExitPlanMode');

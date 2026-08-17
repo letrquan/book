@@ -5,7 +5,7 @@ import type { AgentConfig } from '../types/runtime.js';
 import type { ImageAttachment, Message } from '../types/messages.js';
 import type { ProviderMessage, SystemPromptZones } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
-import type { ToolContext, ToolDefinition } from '../types/tools.js';
+import type { ToolContext } from '../types/tools.js';
 import { createHash } from 'crypto';
 import { collectStaleCheckpointFiles, renderSessionState } from './session-state.js';
 import { normalizePromptPath } from './prompt-determinism.js';
@@ -38,7 +38,6 @@ export class AgentContextCache {
   private readonly discoveries = new Map<string, StaticDiscovery>();
   private readonly turnFingerprints = new Map<string, string>();
   private readonly turnGit = new Map<string, Promise<string>>();
-  private readonly toolListings = new Map<string, string>();
 
   beginTurn(): void {
     this.turnFingerprints.clear();
@@ -86,16 +85,6 @@ export class AgentContextCache {
       this.turnGit.set(workspace, cached);
     }
     return cached;
-  }
-
-  toolListing(tools: ToolDefinition[]): string {
-    const key = JSON.stringify(tools.map((tool) => [tool.name, tool.description]));
-    let listing = this.toolListings.get(key);
-    if (listing === undefined) {
-      listing = generateToolListing(tools, 2048);
-      this.toolListings.set(key, listing);
-    }
-    return listing;
   }
 }
 
@@ -151,18 +140,27 @@ function compactList(
 
   const lines = [`## ${title}`, lead];
   let remaining = budgetChars - lines.join('\n').length;
+  let shown = 0;
 
   for (const item of items) {
     const name = `${item.prefix ?? ''}${item.name}`;
     const entry = `- **${name}**: ${item.description.replace(/\s+/g, ' ').trim() || item.name}`;
     if (entry.length > remaining) {
       const bare = `- **${name}**`;
-      if (bare.length <= remaining) lines.push(bare);
+      if (bare.length <= remaining) {
+        lines.push(bare);
+        shown++;
+      }
       break;
     }
     lines.push(entry);
+    shown++;
     remaining -= entry.length + 1;
   }
+
+  // Say when the budget cut the list short: an unmarked truncation reads as a
+  // complete inventory to the model and to anyone reviewing the rendered prompt.
+  if (shown < items.length) lines.push(`- …and ${items.length - shown} more not shown`);
 
   return lines.join('\n');
 }
@@ -272,15 +270,6 @@ function agentRoutingSection(config: AgentConfig): string {
   ].join('\n');
 }
 
-function generateToolListing(tools: ToolDefinition[], budgetChars = 2048): string {
-  return compactList(
-    'Available tools',
-    'Tool schemas are also sent separately; this is a compact index of active tools.',
-    tools.map((tool) => ({ name: tool.name, description: tool.description })),
-    budgetChars,
-  );
-}
-
 const MUTATION_REREAD_LINE =
   '- Read a target before mutating it unless the current user turn supplied a fresh observation. After a match or context failure, reread the relevant range and regenerate the change instead of repeating it unchanged.';
 
@@ -313,17 +302,19 @@ function mutationGuidanceLines(editFormat: EditFormat): string[] {
   ];
 }
 
+/**
+ * Only mechanics this harness actually has. Bullets that restate a frontier
+ * model's own defaults — work as an agent, solve root causes, keep context lean
+ * — dilute the ones that carry information the model cannot infer.
+ */
 function operatingPrinciplesSection(editFormat: EditFormat): string {
   return [
     '## Operating principles',
-    "- Work as an agent, not a chatbot. Collaborate until the user's goal is genuinely handled. For change requests, carry the work through inspection, implementation, verification, and a clear outcome; do not stop at a proposal or half-finished fix.",
-    '- Match the requested mode. Investigate and report for questions, diagnoses, and reviews; edit when the user asks for a change or the request clearly includes implementation. For exploratory or brainstorming prompts, recommend an approach and its main tradeoff without editing unless asked.',
     '- Interpret short engineering requests in workspace context. Locate and act on the relevant code instead of replying with a literal transformation. Let the user decide whether a task is too large; do not silently narrow requested scope.',
-    '- Ground decisions in observed workspace and tool state. When uncertain, inspect rather than guess. After a failed, denied, or inconclusive tool call, diagnose and adapt; do not repeat the same call unchanged or hand the task back before exhausting reasonable safe alternatives.',
+    '- Ground decisions in observed workspace and tool state. When uncertain, inspect rather than guess, and do not hand the task back before exhausting reasonable safe alternatives.',
     '- Explore relevant code and instructions before editing unfamiliar or non-trivial areas. Act directly when the task is small and clear; plan when it meaningfully reduces uncertainty or risk.',
     '- Make reasonable, reversible assumptions and keep moving. Ask only when a missing decision would materially change the result, expand scope, or create significant risk.',
-    "- Solve root causes rather than suppressing symptoms. Prefer the smallest complete change that follows the project's existing architecture, conventions, and style. Reuse existing files, utilities, and patterns; avoid unrelated cleanup, speculative abstractions, impossible-state fallbacks, and incomplete implementations.",
-    '- Keep context lean. Search before broad reads, inspect only relevant files, and avoid repeating or dumping large tool outputs.',
+    "- Prefer the smallest complete change that follows the project's existing architecture, conventions, and style. Reuse existing files, utilities, and patterns; avoid unrelated cleanup, speculative abstractions, impossible-state fallbacks, and incomplete implementations.",
     '- Batch independent read-only calls in one response so the harness can run parallel-capable tools concurrently. Prefer Read, Glob, Grep, and dedicated Git read tools over Bash for concurrent exploration. Keep dependent calls, mutations, permission-sensitive actions, user interactions, mode changes, and synchronization tools sequential.',
     '- For independent managed-agent work, issue AgentSpawn calls together. AgentSpawn returns after queueing each child; use AgentWait only at a real dependency barrier. If one sibling tool fails, preserve successful sibling results and retry only the failed call.',
     ...mutationGuidanceLines(editFormat),
@@ -429,7 +420,6 @@ function harnessSection(): string {
 export async function buildSystemPromptZones(
   config: AgentConfig,
   commands?: SlashCommand[],
-  tools: ToolDefinition[] = [],
   overrides?: SystemPromptOverrides,
   cache?: AgentContextCache,
 ): Promise<SystemPromptZones> {
@@ -488,7 +478,6 @@ export async function buildSystemPromptZones(
         : generateAgentListing(config, discovery?.agents ?? discoverAgents(config.workspace), 1536),
     ),
     sessionContext(overrides?.hideAgents ? '' : agentRoutingSection(config)),
-    sessionContext(cache?.toolListing(tools) ?? generateToolListing(tools, 2048)),
     sessionContext(memorySection(config)),
     sessionContext(overrides?.append ?? ''),
     kernel(guardrailsSection()),
@@ -514,10 +503,9 @@ export async function buildSystemPromptZones(
 export async function buildSystemPrompt(
   config: AgentConfig,
   commands?: SlashCommand[],
-  tools: ToolDefinition[] = [],
   overrides?: SystemPromptOverrides,
 ): Promise<string> {
-  const zones = await buildSystemPromptZones(config, commands, tools, overrides);
+  const zones = await buildSystemPromptZones(config, commands, overrides);
   return [zones.cachedPrefix, zones.dynamicSuffix].filter(Boolean).join('\n\n');
 }
 
@@ -564,7 +552,6 @@ async function ensureSessionState(
 export async function buildMessages(
   config: AgentConfig,
   history: Message[],
-  tools: ToolDefinition[],
   todos?: Array<{ content: string; status: string; activeForm?: string }>,
   commands?: SlashCommand[],
   signal?: AbortSignal,
@@ -585,7 +572,7 @@ export async function buildMessages(
 
   messages.push({
     role: 'system',
-    content: await buildSystemPromptZones(config, commands, tools, systemOverrides, cache),
+    content: await buildSystemPromptZones(config, commands, systemOverrides, cache),
   });
 
   for (const msg of history) {

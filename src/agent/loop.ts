@@ -531,7 +531,6 @@ export async function runAgentLoop(
       let messages = await buildMessages(
         effectiveConfig,
         newHistory,
-        activeDefinitions,
         toolContext.todos,
         options?.commands,
         signal,
@@ -584,7 +583,6 @@ export async function runAgentLoop(
               messages = await buildMessages(
                 effectiveConfig,
                 newHistory,
-                activeDefinitions,
                 toolContext.todos,
                 options?.commands,
                 signal,
@@ -615,7 +613,6 @@ export async function runAgentLoop(
           messages = await buildMessages(
             effectiveConfig,
             newHistory,
-            activeDefinitions,
             toolContext.todos,
             options?.commands,
             signal,
