@@ -1,9 +1,10 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import type { BackgroundShellNotify } from '../types/runtime.js';
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import type { BackgroundShellNotify, CommandExecution } from '../types/runtime.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { createSandbox } from '../sandbox.js';
 import { ShellJobManager, terminateForegroundProcess } from '../jobs/shell-manager.js';
 import { globToRegex } from './glob-regex.js';
+import { resolveWorkspacePath } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -69,8 +70,30 @@ interface EffectiveCommand {
   command: string;
   workdir: string;
   effectiveCommand: string;
+  /** Present only for sandboxed commands, which never go through a shell. */
+  exec?: CommandExecution;
   sandboxed: boolean;
   error?: string;
+}
+
+/**
+ * Spawn options shared by the sandboxed (direct argv) and unsandboxed (platform
+ * shell) paths. Keeping the branch in one helper stops a future call site from
+ * spawning a sandbox wrapper with `shell: true`, which would reintroduce the
+ * outer-shell parse the argv form exists to prevent.
+ */
+function spawnEffective(
+  built: EffectiveCommand,
+  options: { cwd: string; env: NodeJS.ProcessEnv },
+): ChildProcess {
+  const base: SpawnOptions = {
+    ...options,
+    detached: process.platform !== 'win32',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  };
+  return built.exec
+    ? spawn(built.exec.file, built.exec.args, { ...base, shell: false })
+    : spawn(built.effectiveCommand, { ...base, shell: true });
 }
 
 function buildEffectiveCommand(
@@ -80,35 +103,29 @@ function buildEffectiveCommand(
   const command = readString(args, 'command')?.trim();
   if (!command) return undefined;
   const workdir = readString(args, 'workdir') || ctx.workspaceRoot;
-  let effectiveCommand = command;
-  let sandboxed = false;
+  const plain: EffectiveCommand = { command, workdir, effectiveCommand: command, sandboxed: false };
+  const failed = (error: string): EffectiveCommand => ({ ...plain, error });
+
   if (ctx.sandbox?.enabled && !matchesExcluded(command, ctx.sandbox.excludedCommands ?? [])) {
-    const sandbox = createSandbox(ctx.sandbox);
-    if (sandbox) {
-      const wrapped = sandbox.wrap(command, workdir);
-      if (wrapped) {
-        effectiveCommand = wrapped;
-        sandboxed = true;
-      } else if (ctx.sandbox.failIfUnavailable) {
-        return {
-          command,
-          workdir,
-          effectiveCommand,
-          sandboxed,
-          error: 'Sandbox unavailable and failIfUnavailable is set',
-        };
-      }
-    } else if (ctx.sandbox.failIfUnavailable) {
-      return {
-        command,
-        workdir,
-        effectiveCommand,
-        sandboxed,
-        error: 'Sandbox unavailable and failIfUnavailable is set',
-      };
+    // The sandbox binds the workspace, not this workdir. A workdir outside it
+    // would leave the command with no working directory inside the namespace,
+    // and silently running it against the workspace root instead would execute
+    // somewhere the caller did not ask for.
+    if (!resolveWorkspacePath(ctx.workspaceRoot, workdir)) {
+      return failed(
+        `workdir is outside the sandboxed workspace: ${workdir}. Add it to sandbox.filesystem.allowWrite, or run without the sandbox.`,
+      );
+    }
+    // createSandbox emits one-time diagnostics, so reuse the session's instance
+    // rather than rebuilding it per command.
+    const sandbox = ctx.runtime ? ctx.runtime.sandbox(ctx.sandbox) : createSandbox(ctx.sandbox);
+    const exec = sandbox?.wrap(command, ctx.workspaceRoot);
+    if (exec) return { command, workdir, effectiveCommand: command, exec, sandboxed: true };
+    if (ctx.sandbox.failIfUnavailable) {
+      return failed('Sandbox unavailable and failIfUnavailable is set');
     }
   }
-  return { command, workdir, effectiveCommand, sandboxed };
+  return plain;
 }
 
 async function bash(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
@@ -129,12 +146,9 @@ async function bashForeground(
   return new Promise((resolve) => {
     let proc: ChildProcess;
     try {
-      proc = spawn(built.effectiveCommand, {
+      proc = spawnEffective(built, {
         cwd: built.workdir,
         env: { ...process.env, ...ctx.env },
-        shell: true,
-        detached: process.platform !== 'win32',
-        stdio: ['ignore', 'pipe', 'pipe'],
       });
       ctx.runtime?.trackChildProcess(proc);
     } catch (error) {
@@ -220,6 +234,7 @@ async function bashBackground(
     const shell = await manager(ctx).start({
       command: built.command,
       effectiveCommand: built.effectiveCommand,
+      exec: built.exec,
       workdir: built.workdir,
       env: { ...process.env, ...ctx.env },
       sandboxed: built.sandboxed,

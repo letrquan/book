@@ -1,4 +1,4 @@
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import {
   appendFileSync,
   existsSync,
@@ -30,6 +30,16 @@ if (
 ) {
   process.exitCode = 2;
   throw new Error('Invalid persistent shell specification.');
+}
+// `effectiveCommand` is the raw user command now that sandboxing rides on
+// `exec`, so a spec claiming `sandboxed` without one would run completely
+// unconfined while the job panel and the [sandboxed] marker said otherwise.
+// Refuse to start rather than silently downgrade.
+if (loadedSpec.sandboxed !== Boolean(loadedSpec.exec)) {
+  process.exitCode = 2;
+  throw new Error(
+    'Invalid persistent shell specification: sandboxed does not match the presence of a sandboxed argv.',
+  );
 }
 const spec: PersistentShellSpec = loadedSpec;
 const TERMINATE_GRACE_MS = 1_500;
@@ -191,13 +201,16 @@ function finish(
 
 writeFileSync(spec.outputPath, '', { encoding: 'utf8', mode: 0o600 });
 try {
-  child = spawn(spec.effectiveCommand, {
+  const spawnBase: SpawnOptions = {
     cwd: spec.workdir,
     env: { ...process.env, ...spec.env },
-    shell: true,
     detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  };
+  // Sandboxed specs carry an argv; only unsandboxed ones go through a shell.
+  child = spec.exec
+    ? spawn(spec.exec.file, spec.exec.args, { ...spawnBase, shell: false })
+    : spawn(spec.effectiveCommand, { ...spawnBase, shell: true });
   state = { ...state, childPid: child.pid };
   persist();
 } catch (error) {

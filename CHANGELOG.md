@@ -50,6 +50,45 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **The Bash sandbox now actually contains the command it wraps.** The bubblewrap invocation was
+  joined into a single string and spawned with `shell: true`, so the host shell re-parsed the whole
+  wrapper — including the user's unquoted command — before bubblewrap ever ran. Any metacharacter
+  (`;`, `&&`, `|`, `$(…)`, a backtick) split at the outer level and executed on the host, outside
+  the sandbox; a workspace path containing a space broke the invocation outright. Sandboxed
+  commands are now spawned as a direct argument vector with `shell: false`, and the command reaches
+  `/bin/bash -c` inside the sandbox as one argv element. Shell syntax still works — it is parsed by
+  the shell *inside* the namespace. This covers all three spawn paths: foreground `Bash`, session
+  background shells, and persistent jobs through the detached runner.
+- **Declared sandbox filesystem and network policy is now enforced instead of ignored.**
+  `sandbox.filesystem.allowWrite`, `denyWrite`, and `denyRead` were accepted by the schema and
+  never read; the builder took the settings as an unused parameter and always emitted
+  `--share-net`. They now render as `--bind`, `--ro-bind`, and masking `--tmpfs` mounts applied
+  after the workspace bind so explicit policy wins. Because bubblewrap has no per-domain
+  filtering, any `sandbox.network` domain rule now fails closed to `--unshare-net` with a warning
+  rather than silently granting the full host network.
+- **The sandbox binds the workspace root, not the caller's `workdir`.** `workdir` is a
+  model-supplied `Bash` argument, and it used to be the directory the sandbox mounted writable.
+  Combined with the mount reordering below, `workdir: "/"` would have emitted `--bind / /` after
+  every default mount, shadowing all of them and returning the entire host filesystem read-write
+  while the output was still labelled `[sandboxed]`. A sandboxed command whose `workdir` resolves
+  outside the workspace is now rejected; extra directories go through `sandbox.filesystem.allowWrite`.
+- Sandboxed commands run with `--die-with-parent` so a contained tree cannot outlive the process
+  that spawned it. `--new-session` is deliberately not used: it calls `setsid()`, which moves the
+  sandbox into its own process group, and every teardown path (`KillShell`, foreground timeout,
+  Ctrl-C) signals the group Node created and confirms death with `kill(-pgid, 0)` — the group would
+  have read as empty while the command kept running.
+- Fixed a mount-ordering bug that made the workspace read-only or invisible when it lived under a
+  system prefix or under `/tmp`: the workspace bind was emitted before the read-only system binds
+  and the `/tmp` tmpfs, which then shadowed it. The workspace is now bound after both.
+- `sandbox.filesystem.denyRead` masks a file with `/dev/null` and a directory with a tmpfs. Using
+  a tmpfs for both would have aborted every sandboxed command with `Can't mkdir …: Not a directory`
+  whenever the denied path was a file — which is the most natural thing to deny.
+- `sandbox.filesystem` entries may start with `~`, which is now expanded. Previously `~/.ssh`
+  resolved to a nonexistent `<cwd>/~/.ssh` and was skipped in silence, leaving the path unprotected
+  while the setting suggested otherwise. Unapplicable entries are now reported at startup and by
+  `book doctor`, which also prints the policy the sandbox is actually enforcing.
+- The persistent job runner refuses to start a spec whose `sandboxed` flag disagrees with the
+  presence of a sandboxed argv, instead of silently running the command unconfined.
 - Raised the `postcss` override from `8.5.18` to `8.5.26`, clearing CVE-2026-69153
   (GHSA-fxqj-rqcc-2cmp, moderate): an attacker-controlled `sourceMappingURL` could read arbitrary
   `.map` files when `opts.from` was unset. `postcss` is a build-time-only transitive dependency of

@@ -1,4 +1,4 @@
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -9,6 +9,7 @@ import type {
   BackgroundShellRecord,
   BackgroundShellStatus,
   BackgroundShellStore,
+  CommandExecution,
 } from '../types/runtime.js';
 import {
   ensurePersistentJobPaths,
@@ -41,6 +42,8 @@ export type ShellJobEvent =
 export interface ShellStartOptions {
   command: string;
   effectiveCommand: string;
+  /** Present only for sandboxed commands, which never go through a shell. */
+  exec?: CommandExecution;
   workdir: string;
   env: NodeJS.ProcessEnv;
   sandboxed: boolean;
@@ -276,13 +279,17 @@ export class ShellJobManager {
     const id = `shell_${this.store.nextId++}`;
     let proc: ChildProcess;
     try {
-      proc = spawn(options.effectiveCommand, {
+      const base: SpawnOptions = {
         cwd: options.workdir,
         env: options.env,
-        shell: true,
         detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      };
+      // Sandboxed commands spawn bwrap directly; only the unsandboxed path may
+      // hand a command string to the platform shell.
+      proc = options.exec
+        ? spawn(options.exec.file, options.exec.args, { ...base, shell: false })
+        : spawn(options.effectiveCommand, { ...base, shell: true });
     } catch (error) {
       throw error instanceof Error ? error : new Error(String(error));
     }
@@ -499,6 +506,7 @@ export class ShellJobManager {
       id,
       command: options.command,
       effectiveCommand: options.effectiveCommand,
+      exec: options.exec,
       title: options.title?.trim() || options.command,
       workdir: options.workdir,
       env: options.envOverrides ?? {},

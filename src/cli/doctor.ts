@@ -71,6 +71,7 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   console.log('Sandbox:');
   console.log('  Enabled: ' + settings.sandbox.enabled);
   console.log('  Available: ' + (sandbox !== null));
+  if (sandbox) console.log('  Enforcing: ' + sandbox.describe());
   console.log();
 
   // Managed agents.

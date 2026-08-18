@@ -1,14 +1,26 @@
 import { accessSync, constants, existsSync, statSync } from 'fs';
-import { delimiter, join } from 'path';
-import { platform } from 'os';
+import { delimiter, join, resolve } from 'path';
+import { homedir, platform } from 'os';
 import type { ResolvedSettings } from './settings.js';
+import type { CommandExecution } from './types/runtime.js';
 
 export interface Sandbox {
   /**
-   * Wrap a shell command for sandboxed execution.
-   * Returns the modified command string, or null if sandbox is unavailable.
+   * Resolve a shell command into a sandboxed argv spawn.
+   *
+   * `workspaceRoot` is the only directory bound writable by default, and it is
+   * deliberately not the command's working directory: `workdir` is a
+   * model-supplied tool argument, and binding it would let the model widen its
+   * own sandbox to any path — `workdir: "/"` would shadow every other mount and
+   * hand back the whole host filesystem, read-write. Callers must keep the
+   * working directory inside the workspace; extra paths go through
+   * `sandbox.filesystem.allowWrite`.
+   *
+   * Returns null if the sandbox is unavailable.
    */
-  wrap(command: string, cwd: string): string | null;
+  wrap(command: string, workspaceRoot: string): CommandExecution | null;
+  /** One-line description of the policy actually enforced, for diagnostics. */
+  describe(): string;
 }
 
 /**
@@ -39,53 +51,116 @@ function detectBwrap(): string | null {
 }
 
 /**
- * Build a bubblewrap command that isolates the shell.
- * Respects filesystem and network settings from the sandbox config.
+ * Resolve a configured sandbox path. `~` is expanded the same way the rest of
+ * the codebase expands it; a relative entry stays relative to the process cwd,
+ * which `unbindablePaths` reports so it does not pass silently.
  */
-function buildBwrapCmd(
+function expandPath(path: string): string {
+  if (path === '~') return homedir();
+  if (path.startsWith('~/')) return join(homedir(), path.slice(2));
+  return resolve(path);
+}
+
+/** bwrap fails the whole invocation if a bind source does not exist. */
+function bindIfPresent(args: string[], flag: string, path: string): void {
+  const target = expandPath(path);
+  if (existsSync(target)) args.push(flag, target, target);
+}
+
+/**
+ * Configured filesystem paths that cannot be applied because nothing exists at
+ * them. bwrap aborts the whole invocation on a missing bind source, so these
+ * have to be skipped — but a skipped rule is unenforced policy the user
+ * believes is active, so it is reported rather than dropped quietly.
+ */
+export function unbindablePaths(settings: ResolvedSettings['sandbox']): string[] {
+  return [
+    ...settings.filesystem.allowWrite,
+    ...settings.filesystem.denyWrite,
+    ...settings.filesystem.denyRead,
+  ].filter((path) => !existsSync(expandPath(path)));
+}
+
+/**
+ * True when the declared network policy asks for something finer than
+ * all-or-nothing. bwrap has no DNS or domain awareness, so a per-domain policy
+ * cannot be honoured as written.
+ */
+export function hasDomainPolicy(settings: ResolvedSettings['sandbox']): boolean {
+  return settings.network.allowedDomains.length > 0 || settings.network.deniedDomains.length > 0;
+}
+
+/**
+ * Build the bubblewrap argument vector for one command.
+ *
+ * Mount order is significant: bwrap applies operations in sequence and a later
+ * mount shadows an earlier one covering the same path. The workspace bind
+ * therefore comes *after* the system read-only binds and the /tmp tmpfs (a
+ * workspace under /usr/local or /tmp would otherwise be silently shadowed), and
+ * explicit filesystem policy comes after the workspace so it can override it.
+ *
+ * Exported for testing: it is pure and does not require bwrap to be installed.
+ */
+export function buildSandboxExecution(
   bwrapPath: string,
   command: string,
-  cwd: string,
-  _settings: ResolvedSettings['sandbox'],
-): string {
-  const parts: string[] = [bwrapPath];
+  workspaceRoot: string,
+  settings: ResolvedSettings['sandbox'],
+): CommandExecution {
+  const args: string[] = [];
 
-  // New namespaces: PID, IPC, UTS, network (if no domains allowed).
-  parts.push('--unshare-pid', '--unshare-ipc', '--unshare-uts');
+  // Fresh PID/IPC/UTS namespaces, and the sandbox dies if the spawning process
+  // does.
+  //
+  // Deliberately NOT --new-session: it makes bwrap call setsid(), which moves
+  // the sandboxed tree into its own process group. Every teardown path here
+  // (KillShell, foreground timeout, Ctrl-C) signals the group Node created with
+  // `detached: true` and confirms death with `kill(-pgid, 0)`, so the group
+  // would read as empty while the command kept running — a kill that reports
+  // success and does nothing. The TIOCSTI hardening --new-session buys is moot
+  // anyway: all three spawn sites pipe stdio and never hand over a tty.
+  args.push('--unshare-pid', '--unshare-ipc', '--unshare-uts', '--die-with-parent');
+  args.push('--proc', '/proc');
+  args.push('--dev', '/dev');
 
-  // Mount /proc.
-  parts.push('--proc', '/proc');
-
-  // Mount a minimal /dev.
-  parts.push('--dev', '/dev');
-
-  // Make the workspace readable (and writable if allowed).
-  parts.push('--bind', cwd, cwd);
-
-  // Make /tmp available.
-  parts.push('--tmpfs', '/tmp');
-
-  // Minimal system directories read-only.
-  const roDirs = ['/usr', '/lib', '/lib64', '/bin', '/sbin', '/etc', '/opt'];
-  for (const dir of roDirs) {
-    if (existsSync(dir)) parts.push('--ro-bind', dir, dir);
+  // Minimal system directories, read-only.
+  for (const dir of ['/usr', '/lib', '/lib64', '/bin', '/sbin', '/etc', '/opt']) {
+    bindIfPresent(args, '--ro-bind', dir);
   }
 
-  // Apply filesystem restrictions from settings.
-  // Note: bubblewrap uses --bind for rw and --ro-bind for read-only.
-  // For deny paths, we simply don't mount them (bwrap can't enforce non-existent paths).
+  args.push('--tmpfs', '/tmp');
 
-  // Network isolation: if allowedDomains is populated, we unshare network.
-  // Otherwise, share the host network.
-  parts.push('--share-net');
+  // The workspace is writable. Bound after /tmp so a workspace inside /tmp
+  // (every mkdtemp-based test run, among others) survives the tmpfs.
+  bindIfPresent(args, '--bind', workspaceRoot);
 
-  // Capabilities: drop all, but keep basic ones for shell operation.
-  parts.push('--cap-drop', 'ALL');
+  // Declared filesystem policy overrides the defaults above.
+  for (const path of settings.filesystem.allowWrite) bindIfPresent(args, '--bind', path);
+  for (const path of settings.filesystem.denyWrite) bindIfPresent(args, '--ro-bind', path);
+  // bwrap cannot unmount a subpath, so a denied path is masked instead. The
+  // mask has to match the kind: --tmpfs needs to mkdir its target, so pointing
+  // it at a file aborts the entire invocation with "Not a directory" — and a
+  // credentials *file* is the most natural thing to deny. Files are masked with
+  // /dev/null instead, which makes reads fail outright.
+  for (const path of settings.filesystem.denyRead) {
+    const target = expandPath(path);
+    if (!existsSync(target)) continue;
+    if (statSync(target).isDirectory()) args.push('--tmpfs', target);
+    else args.push('--ro-bind', '/dev/null', target);
+  }
 
-  // Run the command through bash.
-  parts.push('--', '/bin/bash', '-c', command);
+  // bwrap can only share or unshare the network wholesale. A declared
+  // per-domain policy cannot be enforced as written, so fail closed rather
+  // than hand out the unrestricted host network the caller did not ask for.
+  args.push(hasDomainPolicy(settings) ? '--unshare-net' : '--share-net');
 
-  return parts.join(' ');
+  args.push('--cap-drop', 'ALL');
+
+  // The command string is a single argv element: bash inside the sandbox
+  // parses it, and nothing outside the sandbox ever does.
+  args.push('--', '/bin/bash', '-c', command);
+
+  return { file: bwrapPath, args };
 }
 
 /**
@@ -122,9 +197,34 @@ export function createSandbox(settings: ResolvedSettings['sandbox']): Sandbox | 
     return null;
   }
 
+  // Diagnostics belong to whoever builds the sandbox, and callers are expected
+  // to build it once per session — `createSandbox` runs per Bash call would
+  // repeat these on every command.
+  if (hasDomainPolicy(settings)) {
+    console.warn(
+      '⚠  sandbox.network domain rules cannot be enforced by bubblewrap, which has no per-domain filtering. Network access is disabled entirely for sandboxed commands.',
+    );
+  }
+  const unbindable = unbindablePaths(settings);
+  if (unbindable.length > 0) {
+    console.warn(
+      `⚠  sandbox.filesystem rules skipped — nothing exists at: ${unbindable.join(', ')}. These paths are not protected.`,
+    );
+  }
+
   return {
-    wrap(command: string, cwd: string): string {
-      return buildBwrapCmd(bwrap, command, cwd, settings);
+    wrap(command: string, workspaceRoot: string): CommandExecution {
+      return buildSandboxExecution(bwrap, command, workspaceRoot, settings);
+    },
+    describe(): string {
+      return [
+        `bubblewrap (${bwrap})`,
+        hasDomainPolicy(settings) ? 'network disabled' : 'host network shared',
+        `${settings.filesystem.allowWrite.length} extra writable path(s)`,
+        `${settings.filesystem.denyWrite.length} read-only path(s)`,
+        `${settings.filesystem.denyRead.length} masked path(s)`,
+        unbindable.length > 0 ? `${unbindable.length} skipped (missing)` : 'all paths resolved',
+      ].join('; ');
     },
   };
 }
