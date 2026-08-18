@@ -134,6 +134,12 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- A `Maintenance` CI workflow (`.github/workflows/maintenance.yml`) that runs the deterministic half
+  of the nightly maintenance work: a knip dead-code report on every pull request and on a daily
+  schedule, and a scheduled `npm audit` that keeps a single rolling `Dependency security advisories`
+  issue in sync. The dead-code scan now reads a committed `knip.json` and a pinned `knip`
+  devDependency instead of an ad-hoc config and an unpinned `npx knip@6`, so its results are
+  reproducible between runs. New scripts: `deadcode:check`, `deadcode:report`, `deadcode:json`.
 - The harness run evidence ledger writes through a durability backend seam, and a SQLite backend
   (`node:sqlite`, WAL with `synchronous = FULL`) joins the existing append-only JSONL writer. The
   JSONL writer cannot prove durability — Node exposes no portable directory fsync — so its seals
