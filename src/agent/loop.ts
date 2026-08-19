@@ -1233,17 +1233,25 @@ export async function runAgentLoop(
           return undefined;
         }
 
-        if (isFileMutatingTool(canonName)) {
-          const hardDeny = evaluatePermissionDetail(canonName, call.arguments, config.settings);
-          if (hardDeny.decision === 'deny') {
-            toolResults[callIndex] = toolFailure('SKIPPED: Permission denied', {
-              toolCallId: call.id,
-              code: 'permission_denied',
-              status: 'blocked',
-              content: permissionDeniedError(canonName, hardDeny.matchedRule),
-            });
-            return undefined;
-          }
+        // A `permissions.deny` rule is the one decision no mode may relax, so it
+        // is evaluated before anything else and for every tool.
+        //
+        // This check used to be scoped to `isFileMutatingTool`, which left every
+        // other tool unprotected in the two modes that skip the permission block
+        // below (`auto` and `bypassPermissions`): `deny: ["Bash(rm *)"]` — the
+        // example in the README — matched nothing under `--permission-mode auto`,
+        // while `deny: ["Write(.env)"]` in the same list held. Modes decide
+        // whether the user is *asked*; they do not decide whether a rule the user
+        // already wrote applies.
+        const hardDeny = evaluatePermissionDetail(canonName, call.arguments, config.settings);
+        if (hardDeny.decision === 'deny') {
+          toolResults[callIndex] = toolFailure('SKIPPED: Permission denied', {
+            toolCallId: call.id,
+            code: 'permission_denied',
+            status: 'blocked',
+            content: permissionDeniedError(canonName, hardDeny.matchedRule),
+          });
+          return undefined;
         }
 
         if (
@@ -1734,17 +1742,6 @@ export async function runAgentLoop(
         void appendToolUseRecords(records, { root: options?.toolTelemetryRoot });
       }
 
-      // Stop hook — fire-and-forget after each turn.
-      runHooks(
-        config.settings.hooks.Stop,
-        'Stop',
-        {
-          workspace: config.workspace,
-          event: 'Stop',
-        },
-        { onHookEvent: callbacks.onHookEvent, signal },
-      ).catch((err) => console.warn('Stop hook failed:', err));
-
       const assistantMessage: Message = {
         id: options?.assistantMessageId?.(turn) ?? crypto.randomUUID(),
         role: 'assistant',
@@ -1808,6 +1805,28 @@ export async function runAgentLoop(
             }),
       );
     }
+
+    // Stop hook — fire-and-forget once the agent has actually stopped.
+    //
+    // It used to run inside the turn loop, so a task that took twelve tool-call
+    // turns fired it twelve times: a hook meant to observe "the agent finished"
+    // instead observed "a provider round-trip finished". Placed here it fires
+    // once per run, after the terminal outcome is settled and before SessionEnd.
+    //
+    // It shares SessionEnd's blind spot: the early `return newHistory` paths
+    // (prompt blocked by hook, context overflow, run budget, stream error) skip
+    // both. Keeping the two hooks on the same footing is deliberate — a Stop
+    // that fired on paths SessionEnd does not would be harder to reason about
+    // than one gap covering both.
+    runHooks(
+      config.settings.hooks.Stop,
+      'Stop',
+      {
+        workspace: config.workspace,
+        event: 'Stop',
+      },
+      { onHookEvent: callbacks.onHookEvent, signal },
+    ).catch((err) => console.warn('Stop hook failed:', err));
 
     // One-shot callers keep the legacy per-loop lifecycle. Multi-turn hosts
     // disable this and fire SessionEnd when the conversation is actually left.

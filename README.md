@@ -386,6 +386,45 @@ open `/config` and choose **Compact model** (shortcut `C`), or run
 
 Tool execution is serial by default. Consecutive calls explicitly reviewed as parallel-safe (`Read`, `Glob`, `Grep`, `GitStatus`, `GitDiff`, `GitLog`, and `GitBranch`) run as bounded ordered waves; every other call is a barrier. Preparation, hooks, mode checks, and permission prompts remain sequential, while wave results are published in provider order without discarding successful siblings when another fails. `toolExecution.maxConcurrent` sets the session-wide limit shared by the root and managed children (default `4`, maximum `8`).
 
+### Permission rules and modes
+
+`permissions.allow`, `permissions.ask`, and `permissions.deny` are matched against every tool call.
+`deny` beats `ask`, and `ask` beats `allow`.
+
+Permission *modes* decide whether you are prompted; they never relax a `deny` rule. A rule in
+`permissions.deny` blocks the matching call in every mode, including `auto` and
+`bypassPermissions`, and it is evaluated before the prompt, so a denied call never reaches one.
+Modes differ only in what happens to calls that no `deny` rule matched:
+
+| Mode                | Unmatched calls                                                     |
+| ------------------- | ------------------------------------------------------------------- |
+| `default`           | Checked against `allow`/`ask`, then prompted                          |
+| `acceptEdits`       | As `default`, but file mutations are approved without a prompt        |
+| `plan`              | Read-only tools only; mutations are refused until you approve a plan  |
+| `auto`              | Run without a prompt                                                  |
+| `dontAsk`           | Refused — the mode never prompts, and `allow` rules do not exempt a call |
+| `bypassPermissions` | Run without a prompt                                                  |
+
+### Hooks
+
+`hooks.<event>` takes a list of `{ command, matcher? }` entries run in declaration order over a
+JSON-over-stdio contract. Supported events:
+
+| Event                            | Fires                                                          |
+| -------------------------------- | -------------------------------------------------------------- |
+| `SessionStart` / `SessionEnd`    | Session boundaries                                               |
+| `UserPromptSubmit`               | Before a prompt is sent — may block or rewrite it                |
+| `PreToolUse` / `PostToolUse`     | Around each tool call — `PreToolUse` may block                   |
+| `Stop`                           | Once per run, after the agent finishes its final turn            |
+| `PreCompact` / `PostCompact`     | Around compaction — `PreCompact` may block                       |
+| `SubagentStart` / `SubagentStop` | Around each managed-agent run                                    |
+
+`PreToolUse`, `UserPromptSubmit`, and `PreCompact` are blocking; the rest are fire-and-forget.
+`matcher` filters `PreToolUse`/`PostToolUse` by tool call (`Bash(*)`) and `PreCompact`/`PostCompact`
+by trigger. `Stop` fires once when the agent stops, not once per provider turn — a task that takes
+twelve tool-call turns still fires it once. Like `SessionEnd`, it is skipped when a run ends early
+through a blocked prompt, context overflow, an exhausted run budget, or a provider stream error.
+
 ### Bash sandbox
 
 `sandbox.enabled` runs `Bash` commands inside [bubblewrap](https://github.com/containers/bubblewrap), which must be installed and is Linux-oriented; the sandbox is unavailable on Windows. When it cannot be created, `sandbox.failIfUnavailable` decides whether the command fails or runs unsandboxed. `sandbox.excludedCommands` skips the sandbox for matching commands, and sandboxed output is prefixed with `[sandboxed]`.

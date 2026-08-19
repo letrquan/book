@@ -50,6 +50,14 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **`permissions.deny` rules now hold in every permission mode.** The hard-deny check ran only for
+  file-mutating tools, and `auto` and `bypassPermissions` skip the permission block entirely — so
+  in those two modes a deny rule was enforced for `Write` and `Edit` and silently ignored for
+  everything else. `deny: ["Bash(rm *)", "Write(.env)"]`, the pair in the README's own settings
+  example, was half-enforced under `--permission-mode auto`: the `Write` rule blocked, the `Bash`
+  rule matched nothing. The deny check now runs for every tool ahead of the mode logic, so a rule
+  the user already wrote is applied whether or not the mode would have prompted. Modes still decide
+  only what happens to calls no deny rule matched.
 - **The Bash sandbox now actually contains the command it wraps.** The bubblewrap invocation was
   joined into a single string and spawned with `shell: true`, so the host shell re-parsed the whole
   wrapper — including the user's unquoted command — before bubblewrap ever ran. Any metacharacter
@@ -98,6 +106,11 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The `Stop` hook fires once per run instead of once per provider turn.** It ran inside the turn
+  loop, so a task that took twelve tool-call turns invoked it twelve times — a hook meant to
+  observe "the agent finished" observed "a round-trip finished". It now runs after the loop exits,
+  once the terminal outcome is settled and before `SessionEnd`. Hook events are also documented in
+  the README for the first time, including which are blocking and which run fire-and-forget.
 - **The skill watcher no longer aborts the process on Windows when the workspace is reached through
   a short path or junction.** `fs.watch` was handed the path as given, but Windows reports
   directory-change events under the volume's canonical path, and libuv asserts the two match

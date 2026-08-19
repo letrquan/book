@@ -494,10 +494,22 @@ describe('buildMessages', () => {
   });
 
   it('keeps machine-identifying data out of the workspace context', async () => {
-    const zones = await buildSystemPromptZones(config, []);
+    // The workspace path is rendered into the prefix verbatim, so a checkout under
+    // a directory named after the machine (`/home/<hostname>/…`, the default on a
+    // single-user Linux box) makes the naive substring check fail on a prompt that
+    // leaks nothing. Render from a temp workspace that cannot contain the hostname,
+    // and assert the precondition so a degenerate tmpdir fails loudly.
+    const dir = mkdtempSync(join(tmpdir(), 'book-context-host-'));
+    try {
+      expect(dir).not.toContain(hostname());
+      const zones = await buildSystemPromptZones(defaultConfig({ workspace: dir }), []);
 
-    expect(zones.cachedPrefix).toContain('## Workspace context');
-    expect(zones.cachedPrefix).not.toContain(hostname());
+      expect(zones.cachedPrefix).toContain('## Workspace context');
+      expect(zones.cachedPrefix).toContain(`- Workspace: ${dir}`);
+      expect(zones.cachedPrefix).not.toContain(hostname());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('renders the deferred tool catalog in the dynamic zone only', async () => {

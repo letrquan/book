@@ -3188,3 +3188,185 @@ describe('runAgentLoop tool-call statistics', () => {
     }
   });
 });
+
+describe('runAgentLoop permission deny rules', () => {
+  function denyingProvider(command: string): { provider: Provider; turns: () => number } {
+    let providerTurn = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerTurn++;
+        if (providerTurn === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'bash-1', name: 'Bash', arguments: { command } },
+          };
+        } else {
+          yield { type: 'text', content: 'done' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    return { provider, turns: () => providerTurn };
+  }
+
+  function bashRegistry(execute: () => Promise<ToolResult>) {
+    const registry = createRegistry();
+    registry.register({
+      name: 'Bash',
+      description: 'Run a shell command',
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string' } },
+        required: ['command'],
+      },
+      execute,
+    });
+    return registry;
+  }
+
+  // `auto` and `bypassPermissions` short-circuit the permission block entirely,
+  // so the deny rule has to be enforced ahead of it or it is silently inert.
+  for (const mode of ['default', 'auto', 'accept-edits', 'dontAsk', 'bypassPermissions']) {
+    it(`enforces a Bash deny rule in ${mode} mode`, async () => {
+      const { provider } = denyingProvider('rm -rf /tmp/should-not-run');
+      const execute = vi.fn(async () => toolSuccess('ran'));
+      const registry = bashRegistry(execute);
+      const config = defaultConfig({ maxTurns: 2 });
+      config.settings.permissions.deny = ['Bash(rm *)'];
+      const results: ToolResult[] = [];
+      const runtime = new SessionRuntime();
+
+      await runAgentLoop(
+        config,
+        registry,
+        'clean up',
+        [],
+        noopCallbacks({ onToolResult: (result) => results.push(result) }),
+        mode,
+        { provider, isNewSession: false, runtime },
+      );
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(results).toHaveLength(1);
+      expect(results[0].structuredError?.code).toBe('permission_denied');
+      expect(results[0].content).toContain('Bash(rm *)');
+      runtime.dispose();
+    });
+  }
+
+  it('leaves commands the deny rule does not match alone in auto mode', async () => {
+    const { provider } = denyingProvider('git status');
+    const execute = vi.fn(async () => toolSuccess('ran'));
+    const registry = bashRegistry(execute);
+    const config = defaultConfig({ maxTurns: 2 });
+    config.settings.permissions.deny = ['Bash(rm *)'];
+    const runtime = new SessionRuntime();
+
+    await runAgentLoop(config, registry, 'status', [], noopCallbacks(), 'auto', {
+      provider,
+      isNewSession: false,
+      runtime,
+    });
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    runtime.dispose();
+  });
+
+  it('never asks the user when a deny rule already matched', async () => {
+    const { provider } = denyingProvider('rm -rf /tmp/should-not-run');
+    const registry = bashRegistry(async () => toolSuccess('ran'));
+    const config = defaultConfig({ maxTurns: 2 });
+    config.settings.permissions.deny = ['Bash(rm *)'];
+    const onPermissionRequired = vi.fn(async () => 'allow' as const);
+    const runtime = new SessionRuntime();
+
+    await runAgentLoop(
+      config,
+      registry,
+      'clean up',
+      [],
+      noopCallbacks({ onPermissionRequired }),
+      'default',
+      { provider, isNewSession: false, runtime },
+    );
+
+    expect(onPermissionRequired).not.toHaveBeenCalled();
+    runtime.dispose();
+  });
+});
+
+describe('runAgentLoop Stop hook', () => {
+  it('fires once per run, not once per turn', async () => {
+    let providerTurn = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerTurn++;
+        if (providerTurn <= 3) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: `echo-${providerTurn}`, name: 'Echo', arguments: { value: 'v' } },
+          };
+        } else {
+          yield { type: 'text', content: 'done' };
+        }
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    registry.register({
+      name: 'Echo',
+      description: 'Echo a value',
+      parameters: { type: 'object', properties: { value: { type: 'string' } } },
+      execute: async (args) => toolSuccess(String(args.value ?? '')),
+    });
+    const config = defaultConfig({ maxTurns: 10 });
+    config.settings.hooks.Stop = [{ command: 'true', env: {} }];
+    const hookEvents: string[] = [];
+    const runtime = new SessionRuntime();
+
+    await runAgentLoop(
+      config,
+      registry,
+      'do work',
+      [],
+      noopCallbacks({ onHookEvent: (event) => hookEvents.push(event) }),
+      'bypassPermissions',
+      { provider, isNewSession: false, runtime, manageSessionHooks: false },
+    );
+
+    expect(providerTurn).toBe(4);
+    expect(hookEvents.filter((event) => event === 'Stop')).toHaveLength(1);
+    runtime.dispose();
+  });
+
+  it('fires Stop before SessionEnd', async () => {
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    const config = defaultConfig({ maxTurns: 1 });
+    config.settings.hooks.Stop = [{ command: 'true', env: {} }];
+    config.settings.hooks.SessionEnd = [{ command: 'true', env: {} }];
+    const hookEvents: string[] = [];
+    const runtime = new SessionRuntime();
+
+    await runAgentLoop(
+      config,
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onHookEvent: (event) => hookEvents.push(event) }),
+      'bypassPermissions',
+      { provider, isNewSession: false, runtime },
+    );
+
+    const lifecycle = hookEvents.filter((event) => event === 'Stop' || event === 'SessionEnd');
+    expect(lifecycle).toEqual(['Stop', 'SessionEnd']);
+    runtime.dispose();
+  });
+});
