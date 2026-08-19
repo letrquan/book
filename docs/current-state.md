@@ -68,7 +68,12 @@ reference for roadmap and design documents.
   shell substitutions, and project instructions must still be reviewed before opening an untrusted
   workspace.
 - Bubblewrap is optional and currently Linux-oriented; when unavailable, behavior follows the
-  configured `sandbox.failIfUnavailable` policy and may run unsandboxed.
+  configured `sandbox.failIfUnavailable` policy and may run unsandboxed. Where it is available the
+  boundary is real: sandboxed commands are spawned as a direct argument vector rather than a shell
+  string, so no host shell parses the command, and declared `sandbox.filesystem` mounts are
+  applied. `sandbox.network` domain rules cannot be expressed in bubblewrap and fail closed to no
+  network rather than to the full host network. macOS `sandbox-exec` and a Windows equivalent are
+  not implemented.
 - Managed-agent planning-task linkage, rerun, and task-aware cleanup from the background-job plan
   are not implemented; executable jobs and planning tasks remain separate.
 - `/review` is TUI-only: the `review` command effect is handled in `src/tui/app.tsx`, so

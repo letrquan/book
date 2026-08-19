@@ -9,7 +9,8 @@ import { ShellJobManager } from '../jobs/shell-manager.js';
 import type { AgentRunAmbientSnapshot } from '../types/runs.js';
 import { SkillRegistry } from '../skill-registry.js';
 import type { SkillRegistrySnapshot } from '../skill-registry.js';
-import type { SkillSettings } from '../settings.js';
+import type { ResolvedSettings, SkillSettings } from '../settings.js';
+import { createSandbox, type Sandbox } from '../sandbox.js';
 import { SkillWatcher } from '../skill-watcher.js';
 import type { DiscoverSkillsOptions } from '../skills.js';
 import { ZeroMemRuntime } from '../agent/zero-mem-runtime.js';
@@ -43,6 +44,7 @@ export class SessionRuntime {
   readonly runAmbientSnapshots: Map<string, AgentRunAmbientSnapshot>;
   readonly shellManager: ShellJobManager;
   readonly zeroMemRuntime: ZeroMemRuntime;
+  private sandboxInstance?: { key: string; sandbox: Sandbox | null };
   private skillRegistry?: SkillRegistry;
   private readonly skillDiscoveryOptions: DiscoverSkillsOptions;
   private skillWatcher?: SkillWatcher;
@@ -74,6 +76,21 @@ export class SessionRuntime {
     this.traceId = options.traceId ?? crypto.randomUUID();
     this.skillRegistry = options.skillRegistry;
     this.skillDiscoveryOptions = options.skillDiscoveryOptions ?? {};
+  }
+
+  /**
+   * The session's sandbox, built once per distinct settings object.
+   *
+   * Building it per Bash call would re-emit its startup diagnostics — the
+   * unenforceable-domain-policy and skipped-path warnings — on every single
+   * command, interleaved into the Ink render or the headless stderr stream.
+   */
+  sandbox(settings: ResolvedSettings['sandbox']): Sandbox | null {
+    const key = JSON.stringify(settings);
+    if (this.sandboxInstance?.key !== key) {
+      this.sandboxInstance = { key, sandbox: createSandbox(settings) };
+    }
+    return this.sandboxInstance.sandbox;
   }
 
   skills(workspace: string, settings: SkillSettings): SkillRegistry {

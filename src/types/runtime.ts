@@ -5,6 +5,20 @@ import type { LoadedMemoryContext } from '../memory-store.js';
 export type PermissionMode =
   'default' | 'auto' | 'plan' | 'accept-edits' | 'dontAsk' | 'bypassPermissions';
 
+/**
+ * A command resolved to a direct argv spawn — no intermediate shell parses it.
+ *
+ * Sandboxed commands must use this form: joining a wrapper into one string and
+ * spawning it with `shell: true` lets any metacharacter in the user's command
+ * split at the *outer* shell, outside the sandbox. Callers that receive an
+ * `exec` spawn `file` with `args` and `shell: false`; when it is absent the raw
+ * command string goes to the platform shell as before.
+ */
+export interface CommandExecution {
+  file: string;
+  args: string[];
+}
+
 /** What phase of retry is currently active (drives the TUI spinner label). */
 export type RetryPhase = 'none' | 'transport' | 'stalled' | 'tool' | 'watchdog';
 

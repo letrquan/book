@@ -386,6 +386,26 @@ open `/config` and choose **Compact model** (shortcut `C`), or run
 
 Tool execution is serial by default. Consecutive calls explicitly reviewed as parallel-safe (`Read`, `Glob`, `Grep`, `GitStatus`, `GitDiff`, `GitLog`, and `GitBranch`) run as bounded ordered waves; every other call is a barrier. Preparation, hooks, mode checks, and permission prompts remain sequential, while wave results are published in provider order without discarding successful siblings when another fails. `toolExecution.maxConcurrent` sets the session-wide limit shared by the root and managed children (default `4`, maximum `8`).
 
+### Bash sandbox
+
+`sandbox.enabled` runs `Bash` commands inside [bubblewrap](https://github.com/containers/bubblewrap), which must be installed and is Linux-oriented; the sandbox is unavailable on Windows. When it cannot be created, `sandbox.failIfUnavailable` decides whether the command fails or runs unsandboxed. `sandbox.excludedCommands` skips the sandbox for matching commands, and sandboxed output is prefixed with `[sandboxed]`.
+
+The sandbox gives the command fresh PID/IPC/UTS namespaces, a private `/tmp`, read-only system directories, all capabilities dropped, and a lifetime tied to the spawning process. Commands are spawned as a direct argument vector — never as a shell string — so the command text is parsed only by the shell running *inside* the sandbox. Ordinary shell syntax (pipes, `&&`, redirection, substitution) works normally there.
+
+**The workspace root is the only directory bound writable by default**, and it is bound regardless of the `workdir` argument. A sandboxed `Bash` call whose `workdir` falls outside the workspace is rejected rather than granted a wider mount; use `sandbox.filesystem.allowWrite` to add directories deliberately.
+
+`sandbox.filesystem` adjusts the default mounts, applied after the workspace bind so they take precedence:
+
+| Key          | Effect                                                                  |
+| ------------ | ----------------------------------------------------------------------- |
+| `allowWrite` | Bind the path writable inside the sandbox                               |
+| `denyWrite`  | Bind the path read-only                                                 |
+| `denyRead`   | Mask the path — an empty tmpfs for a directory, `/dev/null` for a file  |
+
+Entries may start with `~`. Paths that do not exist are skipped — bubblewrap rejects a bind with a missing source — and the skipped entries are reported once at startup and by `book doctor`, since a skipped rule is policy you might otherwise believe is active.
+
+`sandbox.network` **fails closed**. Bubblewrap has no DNS or per-domain filtering, so it can only share or unshare the network as a whole. If `allowedDomains` or `deniedDomains` contains anything, Book cannot honour the rule as written and disables network access entirely for sandboxed commands, with a warning. Leave both empty to share the host network.
+
 ### Tool-use telemetry
 
 When `observability.toolTelemetry` is enabled (default), Book appends one JSON line per finalized tool call to `~/.book/telemetry/tool-use.jsonl` (override the directory with `BOOK_TOOL_TELEMETRY_DIR`). Each record captures the canonical tool, the final status the model saw, a derived `isFailure` flag (`error`/`timed_out` only — permission blocks, plan-mode blocks, user declines, and cancellations are never counted as failures), the error code, duration, retries, model, and subagent attribution. The write is best-effort and off the hot path; it never blocks or fails a session, and the active log is size-rotated into a single `.1` backup.

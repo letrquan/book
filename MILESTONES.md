@@ -41,9 +41,13 @@ runtime defaults and known boundaries, see [docs/current-state.md](docs/current-
   custom-command substitutions, and privileged agent definitions in untrusted projects. Project
   MCP servers now have per-server fingerprinted approval; fold that decision into the future
   workspace-wide trust flow.
-- [ ] Rebuild shell sandbox execution around structured argv instead of a wrapped command string.
-- [ ] Enforce declared filesystem/network sandbox policies and define fail-closed behavior on
-  unsupported platforms.
+- [x] Rebuild shell sandbox execution around structured argv instead of a wrapped command string.
+- [x] Enforce declared filesystem sandbox policy, and fail closed on network domain rules that
+  bubblewrap cannot express.
+- [ ] Add a macOS (`sandbox-exec`) and Windows sandbox backend, and define fail-closed behavior on
+  platforms that still have none.
+- [ ] Require independent approval for the `excludedCommands` / `allowUnsandboxedCommands` escape
+  paths instead of letting a matching command silently skip the sandbox.
 - [ ] Bind provider credentials to approved origins and restrict lower-trust secret resolution.
 
 See [plans/security-assessment.md](plans/security-assessment.md) for the current risk register.

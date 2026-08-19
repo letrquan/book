@@ -10,7 +10,11 @@ import {
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { repositoryHash } from '../agents/git-isolation.js';
-import type { BackgroundShellNotify, BackgroundShellStatus } from '../types/runtime.js';
+import type {
+  BackgroundShellNotify,
+  BackgroundShellStatus,
+  CommandExecution,
+} from '../types/runtime.js';
 import { resolveBookHome } from '../book-home.js';
 
 export interface PersistentShellSpec {
@@ -18,6 +22,12 @@ export interface PersistentShellSpec {
   id: string;
   command: string;
   effectiveCommand: string;
+  /**
+   * Present only for sandboxed commands. Specs written before this field
+   * existed simply lack it and fall back to the shell path, which is what they
+   * were already doing.
+   */
+  exec?: CommandExecution;
   title: string;
   workdir: string;
   env: Record<string, string>;
