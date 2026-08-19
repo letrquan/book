@@ -410,20 +410,35 @@ Modes differ only in what happens to calls that no `deny` rule matched:
 `hooks.<event>` takes a list of `{ command, matcher? }` entries run in declaration order over a
 JSON-over-stdio contract. Supported events:
 
-| Event                            | Fires                                                          |
-| -------------------------------- | -------------------------------------------------------------- |
-| `SessionStart` / `SessionEnd`    | Session boundaries                                               |
-| `UserPromptSubmit`               | Before a prompt is sent — may block or rewrite it                |
-| `PreToolUse` / `PostToolUse`     | Around each tool call — `PreToolUse` may block                   |
-| `Stop`                           | Once per run, after the agent finishes its final turn            |
-| `PreCompact` / `PostCompact`     | Around compaction — `PreCompact` may block                       |
-| `SubagentStart` / `SubagentStop` | Around each managed-agent run                                    |
+| Event               | Fires                              | Awaited | Can change the outcome  |
+| ------------------- | ---------------------------------- | ------- | ----------------------- |
+| `SessionStart`      | Session opened                     | yes¹    | no                      |
+| `UserPromptSubmit`  | Before a prompt is sent            | yes     | block, or rewrite it    |
+| `PreToolUse`        | Before each tool call              | yes     | block the call          |
+| `PostToolUse`       | After each tool call               | yes     | rewrite the tool output |
+| `PreCompact`        | Before compaction                  | yes     | block compaction        |
+| `PostCompact`       | After compaction                   | yes     | no                      |
+| `SubagentStart`     | Before each managed-agent run      | yes     | no                      |
+| `SubagentStop`      | After each managed-agent run       | yes     | no                      |
+| `Stop`              | Once, after the agent stops        | no      | no                      |
+| `SessionEnd`        | Session left                       | yes¹    | no                      |
 
-`PreToolUse`, `UserPromptSubmit`, and `PreCompact` are blocking; the rest are fire-and-forget.
+¹ Awaited by the TUI and other multi-turn hosts; fire-and-forget on the one-shot SDK path.
+
+**Awaited is the property that costs you latency**, and it is not the same as being able to veto.
+A slow `PostToolUse` hook cannot block anything, but it still delays *every tool call* by up to its
+runtime — hooks are capped at 10 s each and run sequentially in declaration order. Only
+`UserPromptSubmit`, `PreToolUse`, and `PreCompact` can refuse the operation outright.
+
 `matcher` filters `PreToolUse`/`PostToolUse` by tool call (`Bash(*)`) and `PreCompact`/`PostCompact`
-by trigger. `Stop` fires once when the agent stops, not once per provider turn — a task that takes
-twelve tool-call turns still fires it once. Like `SessionEnd`, it is skipped when a run ends early
-through a blocked prompt, context overflow, an exhausted run budget, or a provider stream error.
+by trigger.
+
+`Stop` fires once when the agent stops, not once per provider turn — a task that takes twelve
+tool-call turns still fires it once. It fires on cancellation too, which is usually the point of
+having one. Subagents do not fire it: `Task` and managed agents run the same loop with your hook
+config, and managed agents already report through `SubagentStop`. Like `SessionEnd`, `Stop` is
+skipped when a run ends early through a blocked prompt, context overflow, an exhausted run budget,
+or a provider stream error.
 
 ### Bash sandbox
 

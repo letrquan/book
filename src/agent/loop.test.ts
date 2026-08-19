@@ -3273,6 +3273,47 @@ describe('runAgentLoop permission deny rules', () => {
     runtime.dispose();
   });
 
+  it('closes out skill consent when a deny rule blocks the activation', async () => {
+    // The widened deny check runs after requestConsent, so without a matching
+    // denyConsent the registry keeps an activation request that never resolves.
+    const workspace = mkdtempSync(join(tmpdir(), 'book-loop-deny-consent-'));
+    try {
+      writeLoopSkill(workspace, 'review');
+      const config = defaultConfig({ workspace, maxTurns: 1 });
+      config.settings.permissions.deny = ['InvokeSkill'];
+      const provider: Provider = {
+        id: 'scripted',
+        stream: async function* () {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'skill-denied', name: 'InvokeSkill', arguments: { skill: 'review' } },
+          };
+          yield { type: 'done' };
+        },
+      };
+      const consentEvents: string[] = [];
+
+      await runAgentLoop(
+        config,
+        createDefaultRegistry(),
+        'review this change',
+        [],
+        noopCallbacks({
+          onAgentEvent: (event) => {
+            if (event.type === 'skill_lifecycle' && event.event.type.startsWith('skill_consent_'))
+              consentEvents.push(event.event.type);
+          },
+        }),
+        'auto',
+        { provider, isNewSession: false },
+      );
+
+      expect(consentEvents).toEqual(['skill_consent_requested', 'skill_consent_denied']);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('never asks the user when a deny rule already matched', async () => {
     const { provider } = denyingProvider('rm -rf /tmp/should-not-run');
     const registry = bashRegistry(async () => toolSuccess('ran'));
@@ -3338,6 +3379,67 @@ describe('runAgentLoop Stop hook', () => {
 
     expect(providerTurn).toBe(4);
     expect(hookEvents.filter((event) => event === 'Stop')).toHaveLength(1);
+    runtime.dispose();
+  });
+
+  it('fires Stop when the run is cancelled', async () => {
+    // runHooks calls signal.throwIfAborted() ahead of its empty-list guard, so
+    // passing the run signal here skipped the hook and warned on every Ctrl-C.
+    const controller = new AbortController();
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        controller.abort();
+        yield { type: 'text', content: 'partial' };
+        yield { type: 'done' };
+      },
+    };
+    const config = defaultConfig({ maxTurns: 1 });
+    config.settings.hooks.Stop = [{ command: 'true', env: {} }];
+    const hookEvents: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const runtime = new SessionRuntime();
+
+    await runAgentLoop(
+      config,
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onHookEvent: (event) => hookEvents.push(event) }),
+      'bypassPermissions',
+      { provider, isNewSession: false, runtime, signal: controller.signal },
+    );
+
+    expect(hookEvents.filter((event) => event === 'Stop')).toHaveLength(1);
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('Stop hook failed');
+    warn.mockRestore();
+    runtime.dispose();
+  });
+
+  it('does not fire Stop for a subagent run', async () => {
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: 'done' };
+        yield { type: 'done' };
+      },
+    };
+    const config = defaultConfig({ maxTurns: 1 });
+    config.settings.hooks.Stop = [{ command: 'true', env: {} }];
+    const hookEvents: string[] = [];
+    const runtime = new SessionRuntime();
+
+    await runAgentLoop(
+      config,
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onHookEvent: (event) => hookEvents.push(event) }),
+      'bypassPermissions',
+      { provider, isNewSession: false, runtime, isSubagent: true, manageSessionHooks: false },
+    );
+
+    expect(hookEvents).not.toContain('Stop');
     runtime.dispose();
   });
 

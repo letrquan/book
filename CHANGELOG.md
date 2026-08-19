@@ -109,8 +109,24 @@ All notable changes to this project are documented in this file.
 - **The `Stop` hook fires once per run instead of once per provider turn.** It ran inside the turn
   loop, so a task that took twelve tool-call turns invoked it twelve times — a hook meant to
   observe "the agent finished" observed "a round-trip finished". It now runs after the loop exits,
-  once the terminal outcome is settled and before `SessionEnd`. Hook events are also documented in
-  the README for the first time, including which are blocking and which run fire-and-forget.
+  once the terminal outcome is settled and before `SessionEnd`. Subagents no longer fire it at all:
+  `Task` and managed agents run the same loop with the parent's hook config, and managed agents
+  already report through `SubagentStop`, so one prompt that spawned three managed agents fired
+  `Stop` four times — three of them naming a worktree as the workspace.
+- **`Stop` and `SessionEnd` now fire when a run is cancelled, and no longer warn on every Ctrl-C.**
+  Both passed the run's abort signal to `runHooks`, which calls `signal.throwIfAborted()` ahead of
+  its empty-hook-list guard. A cancelled run therefore skipped the hooks and logged
+  `Stop hook failed: AbortError` — including for the majority of users who configure no terminal
+  hooks at all. Cancellation is when a "the agent stopped" hook matters most, and neither hook has
+  anything left to cancel by the time it runs, so neither takes the signal now.
+- **A denied skill activation no longer leaves a consent request open forever.** When a
+  `permissions.deny` rule blocked an `InvokeSkill` call, the loop returned without the
+  `denyConsent` that the interactive deny path performs, so `/skills` and the skill diagnostics
+  showed a `skill_consent_requested` event with no resolution.
+- Hook events are documented in the README for the first time: which are awaited (all but `Stop`,
+  and `SessionStart`/`SessionEnd` on the one-shot SDK path), and which can actually change the
+  outcome. `PostToolUse` is awaited and rewrites tool output — it cannot veto a call, but a slow
+  one delays every tool call by up to the 10 s hook timeout.
 - **The skill watcher no longer aborts the process on Windows when the workspace is reached through
   a short path or junction.** `fs.watch` was handed the path as given, but Windows reports
   directory-change events under the volume's canonical path, and libuv asserts the two match

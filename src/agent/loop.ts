@@ -1245,6 +1245,12 @@ export async function runAgentLoop(
         // already wrote applies.
         const hardDeny = evaluatePermissionDetail(canonName, call.arguments, config.settings);
         if (hardDeny.decision === 'deny') {
+          // Consent was requested a few lines up; close it out, or the registry
+          // keeps an activation request that never resolves. The later
+          // permission-block deny does the same.
+          if (forceSkillPermission && invokedSkillName && skillActivationReason) {
+            skillRegistry.denyConsent(invokedSkillName, skillActivationReason, 'permission_denied');
+          }
           toolResults[callIndex] = toolFailure('SKIPPED: Permission denied', {
             toolCallId: call.id,
             code: 'permission_denied',
@@ -1806,27 +1812,42 @@ export async function runAgentLoop(
       );
     }
 
-    // Stop hook — fire-and-forget once the agent has actually stopped.
+    // Terminal hooks — fire-and-forget once the agent has actually stopped.
     //
-    // It used to run inside the turn loop, so a task that took twelve tool-call
-    // turns fired it twelve times: a hook meant to observe "the agent finished"
-    // instead observed "a provider round-trip finished". Placed here it fires
-    // once per run, after the terminal outcome is settled and before SessionEnd.
+    // Stop used to run inside the turn loop, so a task that took twelve
+    // tool-call turns fired it twelve times: a hook meant to observe "the agent
+    // finished" instead observed "a provider round-trip finished". Here it
+    // fires once, after the terminal outcome is settled and before SessionEnd.
     //
-    // It shares SessionEnd's blind spot: the early `return newHistory` paths
-    // (prompt blocked by hook, context overflow, run budget, stream error) skip
-    // both. Keeping the two hooks on the same footing is deliberate — a Stop
-    // that fired on paths SessionEnd does not would be harder to reason about
-    // than one gap covering both.
-    runHooks(
-      config.settings.hooks.Stop,
-      'Stop',
-      {
-        workspace: config.workspace,
-        event: 'Stop',
-      },
-      { onHookEvent: callbacks.onHookEvent, signal },
-    ).catch((err) => console.warn('Stop hook failed:', err));
+    // Neither passes `signal`. Both are pure notifications about a run that has
+    // already ended, so there is nothing left to cancel — and `runHooks` calls
+    // `signal.throwIfAborted()` ahead of its empty-list guard, so passing an
+    // aborted signal skipped the hook and logged a failure warning on every
+    // Ctrl-C, even for the majority of users with no terminal hooks configured.
+    // Cancellation is precisely when a "the agent stopped" hook matters most.
+    //
+    // They do share a blind spot: the early `return newHistory` paths (prompt
+    // blocked by hook, context overflow, run budget, stream error) skip both.
+    // Keeping the two on the same footing is deliberate — a Stop that fired on
+    // paths SessionEnd does not would be harder to reason about than one gap
+    // covering both.
+    //
+    // Subagents are excluded: `Task` and every managed agent run this same loop
+    // with the parent's hook config, and the manager already fires SubagentStop
+    // per child. Without the guard, one user prompt that spawns three managed
+    // agents would fire Stop four times, three of them reporting a worktree as
+    // the workspace.
+    if (!options?.isSubagent) {
+      runHooks(
+        config.settings.hooks.Stop,
+        'Stop',
+        {
+          workspace: config.workspace,
+          event: 'Stop',
+        },
+        { onHookEvent: callbacks.onHookEvent },
+      ).catch((err) => console.warn('Stop hook failed:', err));
+    }
 
     // One-shot callers keep the legacy per-loop lifecycle. Multi-turn hosts
     // disable this and fire SessionEnd when the conversation is actually left.
@@ -1838,7 +1859,7 @@ export async function runAgentLoop(
           workspace: config.workspace,
           event: 'SessionEnd',
         },
-        { onHookEvent: callbacks.onHookEvent, signal },
+        { onHookEvent: callbacks.onHookEvent },
       ).catch((err) => console.warn('SessionEnd hook failed:', err));
     }
 
