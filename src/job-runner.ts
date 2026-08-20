@@ -181,6 +181,11 @@ function finish(
 ): void {
   if (terminal) return;
   terminal = true;
+  // Stop capturing output at terminality: once the record reads terminal, the
+  // manager may dismiss the job and delete its files, so a straggling stream
+  // chunk must not re-create the log after that point.
+  child?.stdout?.off('data', appendBounded);
+  child?.stderr?.off('data', appendBounded);
   state = {
     ...state,
     status,
@@ -190,9 +195,21 @@ function finish(
     finishedAt: Date.now(),
     completionSequence: state.completionSequence + 1,
   };
+  // Remove the runner-owned control/spec files BEFORE persisting the terminal
+  // record. The manager treats an observable terminal record as "stop
+  // complete" and immediately expects these files to be gone, so the removals
+  // must happen-before the rename that publishes the terminal state — the old
+  // order left a window where a preempted runner had published "killed" while
+  // the spec file still existed.
+  try {
+    rmSync(spec.controlPath, { force: true });
+    rmSync(specPath, { force: true });
+  } catch {
+    // Best effort: a leaked control/spec file is cleaned up by the manager's
+    // lost-job reconciliation or dismissal, whereas skipping the terminal
+    // persist below would strand the job as "stopping" forever.
+  }
   persist();
-  rmSync(spec.controlPath, { force: true });
-  rmSync(specPath, { force: true });
   if (heartbeat) clearInterval(heartbeat);
   if (controlPoll) clearInterval(controlPoll);
   if (deadline) clearTimeout(deadline);

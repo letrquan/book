@@ -166,6 +166,29 @@ function stripAnsi(value: string | undefined): string {
   return (value ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
 }
 
+/**
+ * Wait for a frame containing `text`, then return it.
+ *
+ * Dismissing the startup fire and restoring the typed draft take two committed
+ * renders (App drops the splash and mounts InputBar; InputBar's mount effect
+ * applies `draftRestore`). A fixed sleep turns "Ink had not repainted yet" into
+ * a failure on a loaded machine, so the wait adapts while the assertion at the
+ * call site stays exactly as strict.
+ */
+async function frameContaining(
+  view: ReturnType<typeof render>,
+  text: string,
+  timeoutMs = 2000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let frame = stripAnsi(view.lastFrame());
+  while (!frame.includes(text) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    frame = stripAnsi(view.lastFrame());
+  }
+  return frame;
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -233,9 +256,8 @@ describe('App session commands', () => {
     expect(stripAnsi(view.lastFrame())).toContain('Esc skip');
 
     view.stdin.write('preserve this draft');
-    await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(stripAnsi(view.lastFrame())).toContain('preserve this draft');
+    expect(await frameContaining(view, 'preserve this draft')).toContain('preserve this draft');
     expect(agentState.send).not.toHaveBeenCalled();
   });
 
@@ -261,9 +283,9 @@ describe('App session commands', () => {
     expect(stripAnsi(view.lastFrame())).not.toContain('[<64;13;20M');
 
     view.stdin.write('draft');
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(stripAnsi(view.lastFrame())).toContain('draft');
-    expect(stripAnsi(view.lastFrame())).not.toContain('[<64;13;20M');
+    const frame = await frameContaining(view, 'draft');
+    expect(frame).toContain('draft');
+    expect(frame).not.toContain('[<64;13;20M');
   });
 
   it('accumulates paste chunks received before the startup fire rerenders', async () => {
@@ -285,9 +307,8 @@ describe('App session commands', () => {
       view.stdin.write('chunk one ');
       view.stdin.write('chunk two');
     });
-    await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(stripAnsi(view.lastFrame())).toContain('chunk one chunk two');
+    expect(await frameContaining(view, 'chunk one chunk two')).toContain('chunk one chunk two');
     expect(agentState.send).not.toHaveBeenCalled();
   });
 

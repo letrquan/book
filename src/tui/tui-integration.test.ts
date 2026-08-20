@@ -156,9 +156,27 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
       );
     },
     async submit(text: string) {
+      // The app must consume the typed text before Enter is written. When the
+      // child is descheduled (routine on loaded CI runners, any platform),
+      // both writes land in one stdin read; Ink's input parser only splits
+      // chunks at escape bytes, so it delivers "text\r" as a single
+      // paste-like keypress — `key.return` is never set and the editor drops
+      // the trailing \r as a control byte, silently losing the submission.
+      // The echoed draft ("› " + text, rendered by the input row and by a
+      // highlighted command-menu row) is proof the text was read, so the
+      // following \r arrives in its own chunk and parses as Enter.
+      const echoStart = output.length;
       pty.write(text);
-      // ConPTY can deliver input on a later turn under loaded Windows runners.
-      await sleep(IS_WINDOWS ? 150 : 50);
+      const echo = '› ' + text;
+      const start = Date.now();
+      while (!stripAnsi(output.slice(echoStart)).includes(echo)) {
+        if (Date.now() - start >= 10_000) {
+          throw new Error(
+            `Typed input was not echoed within 10000ms: ${JSON.stringify(text)}. Last output:\n${stripAnsi(output).slice(-4000)}`,
+          );
+        }
+        await sleep(50);
+      }
       pty.write('\r');
     },
     sendKey(seq: string) {
@@ -323,11 +341,21 @@ describe('TUI keyboard input', () => {
 
     const beforeResize = session.readRaw().length;
     session.resize(40, 24);
-    await sleep(500);
 
-    const resizeOutput = session.readRaw().slice(beforeResize);
+    // The redraw is asynchronous (SIGWINCH → clear + repaint), so wait for the
+    // clear-and-repaint bytes themselves instead of sampling at a fixed delay —
+    // under CPU contention the child may not have processed the resize yet.
     // PTY resize handling may insert cursor-position sequences between Ink's
-    // home and clear commands, so assert the destructive clear itself.
+    // home and clear commands, so the observable is the destructive clear itself.
+    const redrawDeadline = Date.now() + 8000;
+    let resizeOutput = session.readRaw().slice(beforeResize);
+    while (
+      !(resizeOutput.includes('\x1b[2J') && stripAnsi(resizeOutput).includes('RESIZE_MARKER')) &&
+      Date.now() < redrawDeadline
+    ) {
+      await sleep(100);
+      resizeOutput = session.readRaw().slice(beforeResize);
+    }
     expect(resizeOutput).toContain('\x1b[2J');
     expect(stripAnsi(resizeOutput)).toContain('RESIZE_MARKER');
   }, 20_000);
@@ -417,12 +445,37 @@ describe('TUI keyboard input', () => {
       for (let index = 0; index < 24; index++) session.sendKey(keys.wheelUp);
       // Wait bound only — this test asserts frame correctness below, not latency.
       await session.waitFor('browsing histor', 8000);
-      await sleep(500);
 
-      const screen = await session.readScreen();
-      const inputRows = screen
-        .map((line, index) => ({ line, index }))
-        .filter(({ line }) => line.includes('INPUT_FOOTER_SENTINEL'));
+      // 'browsing histor' proves the first wheel step landed, but the safe
+      // renderer still repaints a whole frame for each remaining queued step.
+      // A screen replayed from a byte stream captured mid-repaint is torn
+      // (sentinel row duplicated or the box half-drawn), so converge on the
+      // settled final frame instead of sampling at a fixed delay: poll the
+      // replayed screen until it satisfies the frame invariant, bounded by a
+      // deadline. A real frame regression never converges and fails the same
+      // assertions below on the last snapshot.
+      const sentinelRows = (rows: string[]) =>
+        rows
+          .map((line, index) => ({ line, index }))
+          .filter(({ line }) => line.includes('INPUT_FOOTER_SENTINEL'));
+      const isSettledFinalFrame = (rows: string[]): boolean => {
+        const hits = sentinelRows(rows);
+        if (hits.length !== 1) return false;
+        const row = hits[0]!.index;
+        return (
+          (rows[row - 1]?.includes('╭') ?? false) &&
+          hits[0]!.line.includes('│') &&
+          (rows[row + 1]?.includes('╰') ?? false)
+        );
+      };
+      const deadline = Date.now() + 4000;
+      let screen = await session.readScreen();
+      while (!isSettledFinalFrame(screen) && Date.now() < deadline) {
+        await sleep(150);
+        screen = await session.readScreen();
+      }
+
+      const inputRows = sentinelRows(screen);
       expect(inputRows).toHaveLength(1);
 
       const inputRow = inputRows[0]!.index;
