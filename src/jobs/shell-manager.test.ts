@@ -92,9 +92,14 @@ describe('ShellJobManager persistent jobs', () => {
       lifetime: 'persistent',
       workspace: directory,
     });
+    // Output flows through two cold node spawns (detached runner, then the
+    // worker) plus log-file writes; contended Windows CI runners push that
+    // chain past the helper's 5s default. The property is eventual, not
+    // latency-bound, so the window is wide on purpose.
     await waitFor(
       () => first.readTail(started.id)?.includes('persistent-ready') === true,
       'persistent shell output',
+      30_000,
     );
 
     first.dispose();
@@ -117,7 +122,7 @@ describe('ShellJobManager persistent jobs', () => {
     expect(existsSync(join(paths.records, `${started.id}.json`))).toBe(false);
     expect(existsSync(join(paths.specs, `${started.id}.json`))).toBe(false);
     expect(existsSync(join(paths.logs, `${started.id}.log`))).toBe(false);
-  }, 15_000);
+  }, 60_000);
 
   it.skipIf(process.platform === 'win32')(
     'waits for a SIGTERM-resistant process tree before recording the job as killed',
