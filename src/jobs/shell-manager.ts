@@ -66,6 +66,13 @@ export interface ShellOutputResult {
 
 export interface ShellJobManagerOptions {
   persistentRoot?: string;
+  /**
+   * Budgets for observing the detached runner's state transitions. The
+   * defaults suit an interactive host; tests on contended CI runners pass
+   * wider windows because the transitions are eventual, not latency-bound.
+   */
+  runnerStartBudgetMs?: number;
+  runnerStopBudgetMs?: number;
 }
 
 function cloneRecord(shell: BackgroundShellRecord): BackgroundShellRecord {
@@ -571,7 +578,8 @@ export class ShellJobManager {
       controlToken: token,
     };
     this.store.shells.set(id, shell);
-    const deadline = Date.now() + 3_000;
+    const startBudgetMs = this.options.runnerStartBudgetMs ?? 3_000;
+    const deadline = Date.now() + startBudgetMs;
     while (Date.now() < deadline) {
       const state = readJsonFile<PersistentShellState>(recordPath);
       if (state) {
@@ -585,7 +593,7 @@ export class ShellJobManager {
       removePersistentJobFiles(paths, id);
       const detail = runnerError.trim();
       throw new Error(
-        `Persistent background runner did not start within 3000ms${detail ? `: ${detail}` : '.'}`,
+        `Persistent background runner did not start within ${startBudgetMs}ms${detail ? `: ${detail}` : '.'}`,
       );
     }
     this.emit({ type: 'background_job_start', job: cloneRecord(shell) });
@@ -616,7 +624,7 @@ export class ShellJobManager {
       reason,
       requestedAt: Date.now(),
     });
-    const deadline = Date.now() + 5_000;
+    const deadline = Date.now() + (this.options.runnerStopBudgetMs ?? 5_000);
     while (Date.now() < deadline) {
       this.refreshPersistentRecord(shell);
       if (isTerminalShellStatus(shell.status)) return true;

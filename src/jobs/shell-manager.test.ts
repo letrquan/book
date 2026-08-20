@@ -77,8 +77,12 @@ describe('ShellJobManager persistent jobs', () => {
     const script = join(directory, 'persistent.cjs');
     writeFileSync(script, `console.log('persistent-ready');\nsetInterval(() => {}, 1000);\n`);
     const command = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+    // Contended windows-latest runners push the detached runner's start and
+    // stop transitions past the interactive-host defaults (3s/5s); the
+    // transitions are eventual, so the test observes with wide windows.
+    const ciBudgets = { runnerStartBudgetMs: 30_000, runnerStopBudgetMs: 30_000 };
     const firstStore: BackgroundShellStore = { nextId: 1, shells: new Map() };
-    const first = new ShellJobManager(firstStore, { persistentRoot });
+    const first = new ShellJobManager(firstStore, { persistentRoot, ...ciBudgets });
     managers.push(first);
     first.configureWorkspace(directory);
 
@@ -106,7 +110,7 @@ describe('ShellJobManager persistent jobs', () => {
     managers = [];
 
     const secondStore: BackgroundShellStore = { nextId: 1, shells: new Map() };
-    const second = new ShellJobManager(secondStore, { persistentRoot });
+    const second = new ShellJobManager(secondStore, { persistentRoot, ...ciBudgets });
     managers.push(second);
     second.configureWorkspace(directory);
     expect(second.get(started.id)?.status).toBe('running');
