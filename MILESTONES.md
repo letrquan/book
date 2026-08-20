@@ -1,6 +1,6 @@
 # Book Milestones
 
-Status date: 2026-08-04. This roadmap records shipped foundations and remaining work. For exact
+Status date: 2026-08-19. This roadmap records shipped foundations and remaining work. For exact
 runtime defaults and known boundaries, see [docs/current-state.md](docs/current-state.md).
 
 ## Shipped Foundation
@@ -46,8 +46,11 @@ runtime defaults and known boundaries, see [docs/current-state.md](docs/current-
   bubblewrap cannot express.
 - [ ] Add a macOS (`sandbox-exec`) and Windows sandbox backend, and define fail-closed behavior on
   platforms that still have none.
-- [ ] Require independent approval for the `excludedCommands` / `allowUnsandboxedCommands` escape
-  paths instead of letting a matching command silently skip the sandbox.
+- [ ] Require independent approval for the `excludedCommands` escape path instead of letting a
+  matching command silently skip the sandbox. `sandbox.allowUnsandboxedCommands` is now enforced
+  rather than dead, so an operator can refuse every unsandboxed command outright and `book doctor`
+  reports the effective policy — but at its `true` default a model-chosen command that happens to
+  match an operator's exclusion pattern still runs on the host with no separate approval step.
 - [ ] Bind provider credentials to approved origins and restrict lower-trust secret resolution.
 
 See [plans/security-assessment.md](plans/security-assessment.md) for the current risk register.
@@ -98,8 +101,11 @@ The authoritative phase ledger is
 
 - [ ] Run the evaluation harness end to end: execute the review pipeline over checked-in golden
   diffs instead of scoring reports captured by hand, and gate prompt changes on the result.
-- [ ] Expose `/review` outside the TUI. The `review` command effect is handled only in
-  `src/tui/app.tsx`, so print/headless hosts cannot run it.
+- [x] Expose `/review` outside the TUI. The sequencing moved from `src/tui/app.tsx` into
+  `src/review/host.ts`, which both hosts call; print/headless and SDK runs execute the full
+  read-only pipeline — `--deep`, `--base`, path scopes, `<base>...<head>` — and emit a stable JSON
+  report. `--fix` stays interactive-only by design: a non-interactive host cannot approve a
+  patcher's tool calls, so it is refused with an explanation rather than patching unattended.
 - [ ] Make the confidence threshold and the fixed 10-minute pass timeout configurable per project.
 
 ## Documentation Rule

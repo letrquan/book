@@ -60,11 +60,22 @@ src/
                         profile-resolver.ts, capabilities.ts, git-isolation.ts (worktrees),
                         check.ts, evaluation.ts, completion-notification.ts, importer.ts,
                         activity.ts, projections.ts, diagnostics.ts, naming.ts, types.ts
+  harness/              Adaptive-harness boundary (inert while `harness.mode` is `off`):
+                        contracts.ts (modes, bounded text, event/workflow types),
+                        coordinator.ts (mode gate + run wiring), observer.ts (event capture),
+                        redaction.ts (allowlist payload policy), canonical-json.ts (deterministic
+                        serialization/digests), run-store.ts + ledger-durability.ts (sealed
+                        hash-chained run evidence ledger), telemetry.ts (OTel-mapped names),
+                        workflows.ts + registry.ts (validated built-in execution workflows),
+                        evaluation/ (isolated evaluation-run boundary: runner, worker, ambient
+                        identity, eligibility, reports)
   review/               Host-orchestrated /review pipeline:
                         scope.ts (argument parsing), target.ts (immutable review target: base sha,
                         changed files, unified diff), prompts.ts (single/lens/security builders),
-                        orchestration.ts (runSingleReview, runDeepReview, coverage), runner.ts
-                        (AgentManager adapters), parse-findings.ts + json.ts (tolerant JSON),
+                        orchestration.ts (runSingleReview, runDeepReview, coverage), host.ts
+                        (host-agnostic sequencing + JSON report projection, shared by the TUI and
+                        print mode), runner.ts (AgentManager adapters),
+                        parse-findings.ts + json.ts (tolerant JSON),
                         verify-findings.ts (falsification pass), findings.ts (dedupe/rank/filter),
                         fix.ts (--fix through patcher/validator evidence), config.ts (REVIEW.md),
                         evaluation.ts (precision/recall harness), types.ts
@@ -76,6 +87,7 @@ src/
     init-prompt.ts      /init prompt template
     loader.ts           Slash command discovery from user/project .book/commands/*.md
     resolve.ts          Argument parsing, variable/shell substitution, env var resolution
+    print-dispatch.ts   Slash-command dispatch for print/headless/SDK (non-interactive effects)
     filter.ts / recent.ts  Command menu filtering, recent-command helpers
   provider/
     index.ts            Provider auto-detect (anthropic vs openai-compatible)

@@ -13,7 +13,7 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
 - **Sessions**: append-only JSONL persistence with automatic titles from the first prompt plus `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, reference-aware `/compact`, and Claude-style `/rewind` for conversation, code, or both. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, and remembered file facts are freshness-checked before reuse.
 - **Tools**: a provider-neutral capability catalog keeps a practical core loaded and uses `ToolSearch` to activate up to five authorized git, web, session, skill, agent, notebook, or MCP definitions on the next model turn. File, shell, task, clarification, and plan tools stay immediately available when permitted. Existing names such as `Read`, `Bash`, and `AgentSpawn` remain stable.
-- **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`.
+- **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`. Print mode resolves commands through the same registries: `/init`, `/security-review`, `/review`, and custom commands run headlessly, and the interactive-only ones fail loudly instead of reaching the model as text.
 - **Permissions**: allow/ask/deny rule matching with six modes — `default`, `acceptEdits` (`accept-edits`), `plan`, `auto`, `dontAsk`, `bypassPermissions` — see `/permissions` or `--permission-mode`.
 - **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events. Review project-controlled hooks and provider/MCP settings before using an untrusted workspace.
 - **Verified managed agents**: adaptive model-directed routing, purpose-named runs, compact parent-facing results, live TUI monitoring, profile model overrides, read-only non-Git exploration, resumable isolated worktrees, strict capabilities, typed evidence, independent validation, and explicit patch application. Built-in `explorer`, `patcher`, and `validator` profiles can be overridden under `.book/agents/`.
@@ -111,6 +111,49 @@ book tool-stats --since 7       # only the last 7 days
 | `--include-hook-events`               | Include hook lifecycle events in stream-JSON output                                |
 | `--include-partial-messages`          | Include partial assistant text deltas in stream-JSON output                        |
 | `--prompt-suggestions`                | Ask for follow-up prompt suggestions after completion                              |
+
+### Print mode
+
+`-p/--print` runs one or more prompts with no terminal attached, for CI and scripting. Three
+things behave differently there, because there is nobody to ask.
+
+**Slash commands.** A prompt beginning with `/name` is resolved through the same command
+registries the TUI uses instead of being sent to the model as literal text. See
+[Slash Commands](#slash-commands) for the supported subset.
+
+**Plan mode.** `--permission-mode plan` still refuses mutations until a plan is approved, and print
+mode now has a way to approve one. `bypassPermissions` approves automatically, as before. A host
+that supplied `onUserQuestionRequired` is asked through that same handler: one question with
+`Approve` and `Reject` options, where any other free-text answer is taken as revision feedback and
+the agent submits a new plan. With no handler there is nobody to ask, so the run **stops at the
+first plan** and returns the plan as its deliverable — it no longer auto-rejects and lets the model
+re-plan until `--max-turns` is exhausted. In `text` output the plan is printed followed by a line
+saying nothing was applied; in `json` and `stream-json` the result payload carries:
+
+```json
+{
+  "plan": {
+    "status": "not_applied",
+    "reason": "approval_unavailable",
+    "plan": "the plan exactly as ExitPlanMode submitted it",
+    "message": "No changes were applied: …"
+  }
+}
+```
+
+`reason` is one of `approval_unavailable` (no handler), `approval_declined`, `approval_cancelled`,
+or `invalid_approval_response`. The run's terminal outcome is `completed`/`normal_completion` and
+the process **exits 0** — "finished, and deliberately changed nothing" is expressed by
+`plan.status`, not by an exit code. Under `stream-json` the decision is also announced as
+`{"type":"plan_approval","status":"stop"}`; `status` is one of `approve`, `approve-fresh`,
+`reject`, `revise`, or `stop`. Queued `--input-format stream-json` prompts after a plan stop are
+not run. SDK `query()` callers see the stop through the forwarded `tool_use` event (the full plan)
+and its `tool_result` (`structuredError.code = "plan_approval_unavailable"`); the `plan` object is
+not yet carried on the SDK `result` event.
+
+**Exit codes.** Print mode exits 1 when the run throws — a slash command this host cannot perform,
+a command invoked with a bad argument, or a failure inside a host-performed command such as
+`/review`. Everything else exits 0.
 
 ## Configuration
 
@@ -405,6 +448,11 @@ Modes differ only in what happens to calls that no `deny` rule matched:
 | `dontAsk`           | Refused — the mode never prompts, and `allow` rules do not exempt a call |
 | `bypassPermissions` | Run without a prompt                                                  |
 
+`plan` mode needs a host that can approve the plan the agent submits through `ExitPlanMode`. The
+TUI prompts; print/headless and the SDK route the decision through `onUserQuestionRequired`, and a
+host that supplies no handler ends the run with the plan itself rather than rejecting it — see
+[Print mode](#print-mode).
+
 ### Hooks
 
 `hooks.<event>` takes a list of `{ command, matcher? }` entries run in declaration order over a
@@ -459,6 +507,43 @@ The sandbox gives the command fresh PID/IPC/UTS namespaces, a private `/tmp`, re
 Entries may start with `~`. Paths that do not exist are skipped — bubblewrap rejects a bind with a missing source — and the skipped entries are reported once at startup and by `book doctor`, since a skipped rule is policy you might otherwise believe is active.
 
 `sandbox.network` **fails closed**. Bubblewrap has no DNS or per-domain filtering, so it can only share or unshare the network as a whole. If `allowedDomains` or `deniedDomains` contains anything, Book cannot honour the rule as written and disables network access entirely for sandboxed commands, with a warning. Leave both empty to share the host network.
+
+Two further keys decide what happens *around* that boundary. Both are consulted on every `Bash`
+call, and both answer the same question — will this exact command really execute inside a
+namespace? — from one shared predicate, so they can never disagree about a command:
+
+| Key                                | Default | Effect                                                                     |
+| ---------------------------------- | ------- | --------------------------------------------------------------------------- |
+| `sandbox.allowUnsandboxedCommands` | `true`  | Set `false` to refuse any `Bash` command that would run outside the sandbox |
+| `sandbox.autoAllowBashIfSandboxed` | `true`  | Run a genuinely sandboxed `Bash` command without a permission prompt        |
+
+`allowUnsandboxedCommands: false` covers all three ways a command escapes: sandboxing is turned
+off, the command matched an `excludedCommands` pattern, or bubblewrap is missing on this platform.
+The refusal names the setting *and* the specific reason, so it is actionable rather than a bare
+denial. Note that with `sandbox.enabled` at its default `false`, nothing is sandboxed and this key
+therefore refuses **every** `Bash` command — it is meant to be paired with `sandbox.enabled: true`.
+It does not require independent approval for an `excludedCommands` match; it only makes that bypass
+refusable outright.
+
+`autoAllowBashIfSandboxed` is deliberately the weakest thing in the permission stack. It replaces
+only the *default* ask — the prompt Book raises when nothing else matched:
+
+- `permissions.deny` is evaluated first and is never softened by it.
+- An explicit `permissions.ask` rule still prompts.
+- If you wrote **any** `permissions.deny` or `permissions.ask` rule at all, the default ask stays
+  and nothing is auto-allowed. A shell line is not a file path: one command can read a file, write
+  another, reach the network, and chain three more behind `&&`, so a glob only matches the shapes
+  you thought to write down. Configuring adjudication is read as "ask me about shell commands",
+  and being sandboxed does not overrule that.
+- It applies only to `Bash`, and only to the exact command text that will be executed.
+- It grants no ability in `plan` mode: `Bash` is not a read-only plan tool, and plan mode refuses
+  it independently of the permission verdict.
+- It does nothing while `sandbox.enabled` is `false` (the default), because then no command is
+  sandboxed.
+
+`book doctor` prints the number of `excludedCommands` patterns and the **effective** state of both
+keys, reporting `autoAllowBashIfSandboxed: true` as *inert* whenever nothing can actually be
+auto-allowed, so the reported policy never overstates the enforced one.
 
 ### Tool-use telemetry
 
@@ -628,6 +713,36 @@ user-global `~/.book/settings.json` so they are shared across projects; such pro
 picker when called without an argument and saves successful selections to
 `.book/settings.local.json`.
 
+**Slash commands in print mode.** `book -p "/name args"` resolves the command through the same
+registries, the same `$1..$9` / named-argument / `${BOOK_*}` variable / shell substitution, and the
+same `allowed-tools` and `model` frontmatter enforcement as the TUI — it is never forwarded to the
+model as literal text. What differs is only what a host with no interactive surface is allowed to
+do with the result:
+
+| Command                                                    | In print mode                                           |
+| ---------------------------------------------------------- | -------------------------------------------------------- |
+| `/init`, `/security-review`, any `.book/commands/*.md`     | Run as the prompt for that turn                          |
+| `/review` (and `/review --help`)                           | Performed by the host itself; see [Code review](#code-review) |
+| Everything else — session controls, pickers, panels, `/config`, `/export`, `/memory` | Refused with an error listing what *is* supported, and exit code 1 |
+
+Refusal happens *before* the command's own code runs, so a command with a side effect (`/config`
+writes `settings.local.json`, `/export` writes a file, `/memory approve` mutates memory) can never
+half-fire in a host that cannot show its result. A `/name` that is not a command at all is still
+forwarded to the model verbatim, so an ordinary prompt like `book -p "/etc/hosts is a file"` is
+unaffected.
+
+A command the host performed itself produces no model turn. Under `text` its output is written to
+stdout; under `stream-json` it is announced as
+`{"type":"command_result","command":…,"output":…,"data":…}`; and for `json`, `stream-json`, and the
+SDK it is also carried on the result payload as `commandResults`. `output` is the human rendering
+and `data` is the command's machine contract. `--output-format json` therefore remains a single
+top-level JSON document.
+
+Expansion covers both print-mode input paths (`--print "…"` and `--input-format stream-json`
+stdin) and can be turned off with `expandSlashCommands: false` on `HeadlessOptions`, which forwards
+every prompt verbatim — appropriate for a host relaying untrusted end-user text. `query()` does not
+surface that option yet, so the SDK always expands.
+
 `/skills` opens the interactive skill manager. Select a skill with `↑`/`↓`, press `Space` to cycle its visibility (`auto`, `name-only`, `manual`, or `off`), press `E` to cycle execution consent (`inherit`, `ask`, or `deny`), and press `Enter` to prepare an explicit `$skill-name` request. `G` toggles the global emergency switch, `R` reloads the catalog, and `/reload-skills` performs the same reload from the command line. Overrides are saved in `.book/settings.local.json` under `skills.overrides`, `skills.execution`, and `skills.enabled`.
 
 ### Code review
@@ -666,6 +781,65 @@ Drop a **`REVIEW.md`** at the workspace root to calibrate reviews for your repos
 conventions, known-noisy areas, project-specific rules. It is read fresh on every run and injected
 as calibration only: it cannot change the output contract, disable verification, or broaden the
 tools a reviewer may use.
+
+**Outside the TUI.** `book -p /review`, `book -p "/review --deep"`, `book -p "/review --base main"`,
+path scopes and `<base>...<head>` all run headlessly through the identical pipeline — the host still
+resolves the review target and hands the reviewers an immutable diff. The report is written to
+stdout as text by default. `--fix` is interactive-only: a non-interactive host cannot approve a
+patcher's tool calls, so `book -p "/review --fix"` exits 1 with an explanation instead of editing
+and committing unattended. A review that could not run at all — a bad ref, `agents.mode = off`, an
+unknown option — also exits 1. An inconclusive *verdict* does not: the review ran, so gate on the
+verdict field rather than on the exit code.
+
+Under `--output-format json` and `stream-json` the review is emitted as one record, with `data`
+holding a stable projection of the pipeline's own types:
+
+```json
+{
+  "type": "command_result",
+  "command": "review",
+  "output": "the text report",
+  "data": {
+    "verdict": "blocking | recommend | clean | inconclusive",
+    "target": {
+      "kind": "working-tree | committed-range",
+      "baseSha": "…",
+      "headSha": "…",
+      "path": "src/tools",
+      "changedFiles": ["src/tools/shell.ts"]
+    },
+    "findings": [
+      {
+        "id": "…",
+        "severity": "critical | major | minor | nit",
+        "category": "correctness | security | simplification | efficiency | conventions | tests",
+        "file": "src/tools/shell.ts",
+        "line": 110,
+        "summary": "…",
+        "evidence": "…",
+        "failure": "…",
+        "suggestedFix": "…",
+        "confidence": 85,
+        "verification": "confirmed | rejected | inconclusive",
+        "verificationReason": "…"
+      }
+    ],
+    "coverage": {
+      "reviewers": [{ "id": "correctness", "status": "completed", "findings": 2 }],
+      "verifier": { "id": "verification", "status": "completed", "findings": 2 }
+    }
+  }
+}
+```
+
+`findings` are `ReviewFinding` values verbatim and `coverage` is the pipeline's own
+`ReviewCoverage`, so the report and the JSON can never describe different runs. The unified diff is
+deliberately omitted — it is the caller's own input and can be megabytes. On the `stream-json` wire
+the record is emitted as it completes; under `--output-format json` it arrives inside the single
+result document as `result.commandResults[]`, which keeps that format one top-level JSON object.
+`stream-json` consumers also see the review's managed-agent events (`agent_start`, `agent_update`,
+`agent_result`) as they happen; text mode prints nothing until the review finishes, which for
+`--deep` means two sequential phases under the fixed 10-minute per-pass timeout.
 
 To score the pipeline against a golden set, pair expectations with reports captured from real runs
 and run `npm run eval:review -- <fixtures.json>`; it prints precision, recall, F1, usefulness rate,
@@ -773,7 +947,7 @@ for await (const event of query('Explain this code', {
 }
 ```
 
-`AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK.
+`AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop` — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK.
 
 Auth and model selection come from settings / env (`BOOK_API_KEY`, `BOOK_MODEL`, provider blocks), not from `query()` options. See `src/sdk.ts` for the full `QueryEvent` / `QueryOptions` surface.
 

@@ -97,6 +97,23 @@ All notable changes to this project are documented in this file.
   `book doctor`, which also prints the policy the sandbox is actually enforcing.
 - The persistent job runner refuses to start a spec whose `sandboxed` flag disagrees with the
   presence of a sandboxed argv, instead of silently running the command unconfined.
+- **`sandbox.allowUnsandboxedCommands` and `sandbox.autoAllowBashIfSandboxed` are enforced instead
+  of merely validated.** Both keys were accepted by the settings schema and read by nothing:
+  sandboxing granted no permission auto-allow, and `allowUnsandboxedCommands: false` refused
+  nothing, which left `sandbox.excludedCommands` as the only sandbox setting that had any effect.
+  Both now decide from one shared predicate — will this exact command really execute inside a
+  bubblewrap namespace? — so they cannot disagree about a command. `allowUnsandboxedCommands: false`
+  refuses any `Bash` command that would run outside the sandbox, covering all three escapes
+  (sandboxing off, an `excludedCommands` match, a missing backend), and the refusal names the
+  setting and the specific reason rather than denying bare. `autoAllowBashIfSandboxed: true` skips
+  the prompt only for a command that genuinely runs inside the sandbox, and only in place of the
+  *default* ask: `permissions.deny` is evaluated first and is never softened, an explicit
+  `permissions.ask` rule still prompts, and any configured deny/ask rule at all keeps the default
+  ask — a shell line escapes a glob far too easily for the rules that happened to match to be the
+  whole protection. `sandbox.enabled` still defaults to `false`, so nothing changes for anyone who
+  has not opted into sandboxing. `book doctor` now prints the effective — not merely configured —
+  state of both keys alongside the `excludedCommands` count, reporting an auto-allow that cannot
+  bite as inert instead of as enabled policy.
 - Raised the `postcss` override from `8.5.18` to `8.5.26`, clearing CVE-2026-69153
   (GHSA-fxqj-rqcc-2cmp, moderate): an attacker-controlled `sourceMappingURL` could read arbitrary
   `.map` files when `opts.from` was unset. `postcss` is a build-time-only transitive dependency of
@@ -199,8 +216,45 @@ All notable changes to this project are documented in this file.
   the job's process group still holds a process, so an orphaned worker can no longer keep ports,
   file handles, and CPU behind a terminal `killed` record. Windows already terminated the tree
   through `taskkill /T /F` and is unchanged.
+- **Print/headless plan mode no longer auto-rejects the plan it asked for.**
+  `book -p --permission-mode plan …` rejected every `ExitPlanMode` call unconditionally, so the
+  model revised and resubmitted until `--max-turns` was gone and the run ended `failed`/`max_turns`
+  with nothing to show for it. A host that supplies `onUserQuestionRequired` now decides the plan
+  through that same handler — one question, `Approve` / `Reject`, with any other free-text answer
+  taken as revision feedback — and `bypassPermissions` still approves automatically. A host with no
+  handler cannot approve anything, so the run stops at the first plan and returns the plan as its
+  deliverable: `text` prints the plan followed by an explicit "no changes were applied" line,
+  `json` and `stream-json` add
+  `plan: {status: "not_applied", reason, plan, message}`, the outcome is
+  `completed`/`normal_completion`, and the process exits 0 — "finished and deliberately changed
+  nothing" is expressed by `plan.status`, not by an exit code. The `plan_approval` stream event's
+  `status` is now one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop`.
 
 ### Added
+
+- **Slash commands work in print/headless mode.** `book -p /security-review`, `book -p /init`, and
+  any `.book/commands/*.md` command now resolve through the same registries, the same
+  `$1..$9` / named-argument / `${BOOK_*}` / shell substitution, and the same `allowed-tools` and
+  `model` frontmatter enforcement as the TUI, instead of being handed to the model as literal text.
+  Commands that need an interactive surface — session controls, pickers, panels, `/config`,
+  `/export`, `/memory` — are refused *before* their own code runs, so none of their side effects can
+  half-fire in a host that could not show the result; the error lists what is supported and the run
+  exits 1. A `/name` that is not a command at all is still forwarded verbatim, so an ordinary prompt
+  beginning with a path is unaffected. A command the host performed itself is reported as a
+  `command_result` stream-json event and as `result.commandResults` in every output format,
+  including the SDK. `expandSlashCommands: false` on `HeadlessOptions` forwards every prompt
+  verbatim, for hosts relaying untrusted end-user text.
+- **`/review` runs outside the TUI.** `book -p /review`, `--deep`, `--base <ref>`, path scopes, and
+  `<base>...<head>` all execute the same host-orchestrated pipeline — the host still resolves the
+  review target and the reviewers still receive an immutable diff and no diff tool — and emit a
+  stable machine report under `--output-format json` / `stream-json`: `verdict`, `target`,
+  `findings` as `ReviewFinding` values verbatim, and the pipeline's own `coverage`, with the
+  unified diff deliberately omitted. The sequencing that used to live in `src/tui/app.tsx` moved
+  into `src/review/host.ts`, so the two hosts cannot drift apart. `--fix` stays interactive-only: a
+  non-interactive host cannot approve a patcher's tool calls, so it is refused with an explanation
+  instead of editing and committing unattended. A review that could not run — a bad ref,
+  `agents.mode = off`, an unknown option — exits 1; an inconclusive *verdict* does not, because the
+  review ran.
 
 - A `Maintenance` CI workflow (`.github/workflows/maintenance.yml`) that runs the deterministic half
   of the nightly maintenance work: a knip dead-code report on every pull request and on a daily
