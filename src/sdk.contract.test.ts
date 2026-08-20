@@ -53,6 +53,10 @@ vi.mock('./headless.js', () => ({
       usage: null,
       sessionId: options.sessionId,
       outcome: { status: 'completed', reason: 'normal_completion', partialOutput: false },
+      commandResults:
+        options.prompt === '/review'
+          ? [{ command: 'review', output: 'Verdict: clean', data: { verdict: 'clean' } }]
+          : undefined,
     };
   }),
 }));
@@ -102,6 +106,27 @@ describe('SDK runtime event bridge', () => {
       }),
     );
     expect((await iterator.next()).value).toEqual({ type: 'done' });
+  });
+
+  // `query()` hands runHeadless a discarding stdout sink, so a slash command the
+  // host performs on its behalf is invisible unless the result carries it. Without
+  // this the caller pays for a whole review and receives an empty result.
+  it('returns commands the host performed instead of discarding their output', async () => {
+    sessionFixture = createSessionFixture('book-sdk-command-');
+    state.release();
+    const events: Array<Record<string, unknown>> = [];
+    for await (const event of query('/review', {
+      workspace: sessionFixture.root,
+      noSettings: true,
+      sessionStore: sessionFixture.store,
+    })) {
+      events.push(event as unknown as Record<string, unknown>);
+    }
+
+    const result = events.find((event) => event.type === 'result');
+    expect(result?.commandResults).toEqual([
+      { command: 'review', output: 'Verdict: clean', data: { verdict: 'clean' } },
+    ]);
   });
 
   it('forwards managed status events but gates high-volume child text', async () => {

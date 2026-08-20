@@ -20,6 +20,16 @@ export interface CommandDefinition<Context, Effect> {
   aliases?: CommandAlias[];
   isHidden?: boolean;
   availability?: CommandAvailability<Context>;
+  /**
+   * A host with no interactive surface (print/headless, SDK) may execute this
+   * command. Everything else is refused *before* `execute` runs, so commands
+   * that write settings or files as a side effect never fire in a host that
+   * cannot show their result. Set it only when `execute` depends on nothing
+   * beyond the ambient facts such a host can state truthfully (workspace,
+   * session id, model, provider, permission mode, config) — see
+   * `printBuiltinContext` in `commands/print-dispatch.ts`.
+   */
+  nonInteractive?: boolean;
   execute(invocation: CommandInvocation, context: Context): Effect;
 }
 

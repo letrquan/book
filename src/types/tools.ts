@@ -7,8 +7,21 @@ import type { AgentRunContext } from './runs.js';
 
 export type PermissionResult = 'allow' | 'deny' | 'always';
 
+/** Why a submitted plan was never applied when the host could not approve it. */
+export type PlanNotAppliedReason =
+  'approval_unavailable' | 'approval_declined' | 'approval_cancelled' | 'invalid_approval_response';
+
+/**
+ * `stop` is the non-interactive terminal decision: no approver exists (or the
+ * approver refused to decide), so the run ends with the plan as its deliverable
+ * instead of asking the model to revise and resubmit forever.
+ */
 export type PlanApprovalResult =
-  'approve' | 'approve-fresh' | 'reject' | { decision: 'revise'; feedback: string };
+  | 'approve'
+  | 'approve-fresh'
+  | 'reject'
+  | { decision: 'revise'; feedback: string }
+  | { decision: 'stop'; reason: PlanNotAppliedReason; message: string };
 
 export interface UserQuestionOption {
   label: string;

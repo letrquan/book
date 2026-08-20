@@ -75,6 +75,12 @@ export type BuiltinCommandEffect =
       content: string;
       display?: LocalCommandDisplay;
       refreshMemory?: boolean;
+      /**
+       * The command rejected its own invocation (bad flag, bad argument). An
+       * interactive host just shows `content`; a non-interactive host must fail
+       * the run instead of exiting 0 on a typo that silently changed nothing.
+       */
+      isError?: boolean;
     }
   | { type: 'start-new-conversation'; previousName?: string }
   | { type: 'resume-conversation'; session?: string }
@@ -571,6 +577,8 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   {
     name: 'init',
     description: 'Initialize project with CLAUDE.md',
+    // Pure prompt body from the workspace path: runnable in print/headless.
+    nonInteractive: true,
     execute: (_invocation, context) => {
       const prompt = buildInitPrompt(context.workspace);
       return promptEffect('init', 'Initialize CLAUDE.md', prompt, [
@@ -623,11 +631,19 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   {
     name: 'review',
     description: 'Review current git diff (correctness & cleanups)',
+    // Host-orchestrated: the effect carries only the parsed scope, and the host
+    // resolves the review target itself. Nothing here needs a live conversation,
+    // so print/headless can perform it (see `commands/print-dispatch.ts`).
+    nonInteractive: true,
     execute: ({ rawArguments }) => {
       const scope = parseReviewScope(rawArguments);
       if (scope.help) return { type: 'local-message', content: REVIEW_USAGE };
       if (scope.error) {
-        return { type: 'local-message', content: `✕ ${scope.error}\n\n${REVIEW_USAGE}` };
+        return {
+          type: 'local-message',
+          content: `✕ ${scope.error}\n\n${REVIEW_USAGE}`,
+          isError: true,
+        };
       }
       return { type: 'review', scope };
     },
@@ -635,6 +651,8 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   {
     name: 'security-review',
     description: 'Security audit of current git diff',
+    // Pure prompt body from arguments + REVIEW.md: runnable in print/headless.
+    nonInteractive: true,
     execute: ({ rawArguments }, context) => {
       const prompt = buildSecurityReviewPrompt(rawArguments, context.workspace);
       return promptEffect('security-review', 'Security audit of current diff', prompt, [

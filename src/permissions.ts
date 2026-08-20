@@ -4,6 +4,7 @@ import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex } from './tools/glob-regex.js';
 import { parsePatch, type PatchOperation } from './tools/patch.js';
+import { sandboxCoverage } from './sandbox.js';
 
 /**
  * Parse a permission rule string like "Bash(git *)" or "Read(./.env)" into
@@ -20,7 +21,16 @@ export interface ParsedRule {
 export interface PermissionVerdict {
   decision: 'allow' | 'deny' | 'ask';
   matchedRule?: string;
-  source?: 'allow' | 'deny' | 'ask' | 'default';
+  source?: 'allow' | 'deny' | 'ask' | 'default' | 'sandbox';
+}
+
+/**
+ * Seams for permission evaluation. `sandboxBackendAvailable` exists so tests can
+ * exercise the missing-bwrap branch on a host that has bwrap installed; nothing
+ * in production passes it.
+ */
+export interface PermissionEvaluationOptions {
+  sandboxBackendAvailable?: () => boolean;
 }
 
 export function parseRule(rule: string): ParsedRule {
@@ -137,6 +147,57 @@ export function primaryArgForRule(_toolName: string, args: Record<string, unknow
 }
 
 /**
+ * Has the user asked to be consulted about anything at all?
+ *
+ * A shell command line is not a primary argument the way a file path is: one
+ * line can read a file, write a file, reach the network, and chain three more
+ * commands behind `&&`. A `deny` or `ask` glob therefore only ever matches the
+ * shapes the user thought to write down — `deny: ["Bash(rm *)"]` does not match
+ * `true && rm -rf .` — and it is the *default ask* underneath that catches
+ * everything the glob missed, including the same action performed through a
+ * different tool (`cat .env` against a `Read` deny, `curl` against a `WebFetch`
+ * deny).
+ *
+ * So the presence of any hand-written deny/ask rule is treated as the user
+ * saying "adjudicate my shell commands", and the default ask stays. Removing it
+ * would turn every such rule from a floor into a list of exact strings to avoid.
+ */
+export function hasAdjudicationPolicy(settings: ResolvedSettings): boolean {
+  return settings.permissions.deny.length > 0 || settings.permissions.ask.length > 0;
+}
+
+/**
+ * Would `sandbox.autoAllowBashIfSandboxed` allow this call without a prompt?
+ *
+ * True only for a Bash call whose exact command text genuinely executes inside
+ * a bubblewrap namespace. The command is read straight off `args.command` and
+ * trimmed — byte-for-byte what `buildEffectiveCommand` in tools/shell.ts
+ * matches against `excludedCommands` — rather than through `getPrimaryArg`,
+ * which truncates to the first line. Judging a different string here than the
+ * Bash tool judges is how "sandboxed, so auto-allow" and "excluded, so run it
+ * on the host" end up applying to the same call.
+ *
+ * It is also true only when the user wrote no deny/ask rules at all
+ * ({@link hasAdjudicationPolicy}). The bubblewrap namespace binds the workspace
+ * read-write and shares the host network unless a domain policy is declared, so
+ * "sandboxed" bounds the blast radius to the workspace — it does not make the
+ * command harmless, and it is not a substitute for a prompt the user asked for.
+ */
+function sandboxAutoAllows(
+  toolName: string,
+  args: Record<string, unknown>,
+  settings: ResolvedSettings,
+  options: PermissionEvaluationOptions,
+): boolean {
+  if (!settings.sandbox.autoAllowBashIfSandboxed) return false;
+  if (canonicalToolName(toolName) !== 'Bash') return false;
+  if (hasAdjudicationPolicy(settings)) return false;
+  const command = typeof args.command === 'string' ? args.command.trim() : '';
+  if (!command) return false;
+  return sandboxCoverage(command, settings.sandbox, options.sandboxBackendAvailable).sandboxed;
+}
+
+/**
  * Evaluate permission rules against a tool call. Rules are evaluated in
  * CC's order: deny → ask → allow. First match wins.
  *
@@ -146,14 +207,16 @@ export function evaluatePermission(
   toolName: string,
   args: Record<string, unknown>,
   settings: ResolvedSettings,
+  options: PermissionEvaluationOptions = {},
 ): 'allow' | 'deny' | 'ask' {
-  return evaluatePermissionDetail(toolName, args, settings).decision;
+  return evaluatePermissionDetail(toolName, args, settings, options).decision;
 }
 
 export function evaluatePermissionDetail(
   toolName: string,
   args: Record<string, unknown>,
   settings: ResolvedSettings,
+  options: PermissionEvaluationOptions = {},
 ): PermissionVerdict {
   const { deny, ask, allow } = settings.permissions;
 
@@ -220,6 +283,18 @@ export function evaluatePermissionDetail(
     if (permissionRuleMatchesCall(ruleStr, call)) {
       return { decision: 'allow', matchedRule: ruleStr, source: 'allow' };
     }
+  }
+
+  // `sandbox.autoAllowBashIfSandboxed` is evaluated last, and only in place of
+  // the *default* ask. Every user-written rule outranks it: a matching `deny`
+  // has already returned above and can never be softened into an allow (the
+  // property the hard-deny check in the agent loop depends on), a matching
+  // `ask` still prompts, and — because a shell line evades globs far too easily
+  // — a deny/ask list that exists but did not match keeps the default ask too.
+  // The setting only removes the prompt Book raises when the user configured no
+  // adjudication at all, and only for a command really confined by bubblewrap.
+  if (sandboxAutoAllows(toolName, args, settings, options)) {
+    return { decision: 'allow', source: 'sandbox' };
   }
 
   // No rule matched — default to asking.

@@ -1,9 +1,13 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import type { BackgroundShellNotify, CommandExecution } from '../types/runtime.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
-import { createSandbox } from '../sandbox.js';
+import {
+  createSandbox,
+  matchesExcludedCommand,
+  unsandboxedRefusalMessage,
+  type SandboxSkipReason,
+} from '../sandbox.js';
 import { ShellJobManager, terminateForegroundProcess } from '../jobs/shell-manager.js';
-import { globToRegex } from './glob-regex.js';
 import { resolveWorkspacePath } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
 
@@ -11,10 +15,6 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_FOREGROUND_BUFFER = 1024 * 1024 * 10;
 const SENSITIVE_ENV_NAME =
   /(^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASS(?:WORD)?|CREDENTIALS?|AUTH|COOKIE|SESSION|PRIVATE_?KEY|DATABASE_URL|CONNECTION_STRING)(_|$)/i;
-
-function matchesExcluded(command: string, patterns: string[]): boolean {
-  return patterns.some((pattern) => globToRegex(pattern).test(command));
-}
 
 function ok(output: string, data?: unknown): ToolResult {
   return toolSuccess(output, { data });
@@ -106,26 +106,35 @@ function buildEffectiveCommand(
   const plain: EffectiveCommand = { command, workdir, effectiveCommand: command, sandboxed: false };
   const failed = (error: string): EffectiveCommand => ({ ...plain, error });
 
-  if (ctx.sandbox?.enabled && !matchesExcluded(command, ctx.sandbox.excludedCommands ?? [])) {
-    // The sandbox binds the workspace, not this workdir. A workdir outside it
-    // would leave the command with no working directory inside the namespace,
-    // and silently running it against the workspace root instead would execute
-    // somewhere the caller did not ask for.
-    if (!resolveWorkspacePath(ctx.workspaceRoot, workdir)) {
-      return failed(
-        `workdir is outside the sandboxed workspace: ${workdir}. Add it to sandbox.filesystem.allowWrite, or run without the sandbox.`,
-      );
-    }
-    // createSandbox emits one-time diagnostics, so reuse the session's instance
-    // rather than rebuilding it per command.
-    const sandbox = ctx.runtime ? ctx.runtime.sandbox(ctx.sandbox) : createSandbox(ctx.sandbox);
-    const exec = sandbox?.wrap(command, ctx.workspaceRoot);
-    if (exec) return { command, workdir, effectiveCommand: command, exec, sandboxed: true };
-    if (ctx.sandbox.failIfUnavailable) {
-      return failed('Sandbox unavailable and failIfUnavailable is set');
-    }
+  // Every path that ends with the command running outside a bubblewrap
+  // namespace funnels through here, so `allowUnsandboxedCommands: false` cannot
+  // be enforced on some escapes and quietly missed on others.
+  const unsandboxed = (reason: SandboxSkipReason): EffectiveCommand =>
+    ctx.sandbox && !ctx.sandbox.allowUnsandboxedCommands
+      ? failed(unsandboxedRefusalMessage(reason))
+      : plain;
+
+  if (!ctx.sandbox?.enabled) return unsandboxed('disabled');
+  if (matchesExcludedCommand(command, ctx.sandbox.excludedCommands)) return unsandboxed('excluded');
+
+  // The sandbox binds the workspace, not this workdir. A workdir outside it
+  // would leave the command with no working directory inside the namespace,
+  // and silently running it against the workspace root instead would execute
+  // somewhere the caller did not ask for.
+  if (!resolveWorkspacePath(ctx.workspaceRoot, workdir)) {
+    return failed(
+      `workdir is outside the sandboxed workspace: ${workdir}. Add it to sandbox.filesystem.allowWrite, or run without the sandbox.`,
+    );
   }
-  return plain;
+  // createSandbox emits one-time diagnostics, so reuse the session's instance
+  // rather than rebuilding it per command.
+  const sandbox = ctx.runtime ? ctx.runtime.sandbox(ctx.sandbox) : createSandbox(ctx.sandbox);
+  const exec = sandbox?.wrap(command, ctx.workspaceRoot);
+  if (exec) return { command, workdir, effectiveCommand: command, exec, sandboxed: true };
+  if (ctx.sandbox.failIfUnavailable) {
+    return failed('Sandbox unavailable and failIfUnavailable is set');
+  }
+  return unsandboxed('unavailable');
 }
 
 async function bash(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {

@@ -26,6 +26,23 @@ export interface SlashCommand {
 }
 
 /**
+ * A slash command a host performed itself instead of running a model turn for
+ * it (`book -p "/review"`, `query({ prompt: '/review' })`).
+ *
+ * Both renderings travel together because both hosts consume it: `output` is
+ * what a human reads, `data` is the command's own machine contract (`/review`
+ * projects `ReviewJsonReport` from `review/host.ts`). Carrying it on the result
+ * rather than only writing it to stdout is what keeps an SDK caller — whose
+ * stdout is a discard sink — from paying for the work and receiving nothing.
+ */
+export interface HostCommandResult {
+  /** Command name as the user typed it (an alias, possibly). */
+  command: string;
+  output?: string;
+  data?: unknown;
+}
+
+/**
  * Runtime context for an active command invocation.
  * Carries enforcement data through the agent loop.
  */

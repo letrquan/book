@@ -1,14 +1,39 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
-import { join, resolve } from 'path';
-import { buildSandboxExecution, createSandbox, unbindablePaths } from './sandbox.js';
+import { join, posix, resolve, win32 } from 'path';
+import {
+  buildSandboxExecution,
+  createSandbox,
+  matchesExcludedCommand,
+  sandboxCoverage,
+  sandboxPolicySummary,
+  unbindablePaths,
+  unsandboxedRefusalMessage,
+  type SandboxHost,
+} from './sandbox.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from './settings.js';
 
 function sandboxSettings(
   overrides: Partial<ResolvedSettings['sandbox']> = {},
 ): ResolvedSettings['sandbox'] {
   return { ...structuredClone(DEFAULT_SETTINGS.sandbox), enabled: true, ...overrides };
+}
+
+/**
+ * A fully injected host on which every path "exists": the generated argv
+ * depends only on the code under test, never on which system directories the
+ * machine running the suite happens to have. Without this, an assertion that
+ * `/usr` is bound holds on Linux and silently asserts on an empty bind list on
+ * Windows CI, where `resolve('/usr')` lands on `C:\usr` and nothing is there.
+ */
+function allExistingHost(flavour: typeof posix | typeof win32): SandboxHost {
+  return {
+    path: flavour,
+    exists: () => true,
+    isDirectory: () => true,
+    homedir: () => (flavour === win32 ? 'C:\\Users\\book' : '/home/book'),
+  };
 }
 
 describe('buildSandboxExecution', () => {
@@ -38,11 +63,49 @@ describe('buildSandboxExecution', () => {
     }
   });
 
-  it('binds the workspace after the system read-only mounts', () => {
-    const exec = buildSandboxExecution('/usr/bin/bwrap', 'true', '/usr', sandboxSettings());
-    const roIndex = exec.args.lastIndexOf('--ro-bind');
-    const bindIndex = exec.args.lastIndexOf('--bind');
-    expect(bindIndex).toBeGreaterThan(roIndex);
+  it.each([
+    { flavourName: 'posix', flavour: posix, workspace: '/work' },
+    { flavourName: 'win32', flavour: win32, workspace: 'C:\\work' },
+  ])(
+    'binds the workspace after the system read-only mounts ($flavourName paths)',
+    ({ flavour, workspace }) => {
+      const exec = buildSandboxExecution(
+        '/usr/bin/bwrap',
+        'true',
+        workspace,
+        sandboxSettings(),
+        allExistingHost(flavour),
+      );
+      const roIndex = exec.args.lastIndexOf('--ro-bind');
+      const bindIndex = exec.args.lastIndexOf('--bind');
+      // Both mounts must actually be present before their order means anything:
+      // -1 > -1 would vacuously "order" two lookups that found nothing.
+      expect(roIndex).toBeGreaterThan(-1);
+      expect(bindIndex).toBeGreaterThan(roIndex);
+      expect(exec.args[bindIndex + 1]).toBe(flavour.resolve(workspace));
+    },
+  );
+
+  it('still binds the workspace when no POSIX system mount exists (the Windows host shape)', () => {
+    // A Windows host is exactly this: /usr, /lib, … resolve onto the current
+    // drive and none exist, so every system read-only bind is skipped. The
+    // workspace bind must survive that on its own.
+    const workspace = 'C:\\work';
+    const host: SandboxHost = {
+      ...allExistingHost(win32),
+      exists: (path) => path === workspace,
+    };
+    const exec = buildSandboxExecution(
+      '/usr/bin/bwrap',
+      'true',
+      workspace,
+      sandboxSettings(),
+      host,
+    );
+    expect(exec.args).not.toContain('--ro-bind');
+    const bindIndex = exec.args.indexOf('--bind');
+    expect(bindIndex).toBeGreaterThan(-1);
+    expect(exec.args.slice(bindIndex, bindIndex + 3)).toEqual(['--bind', workspace, workspace]);
   });
 
   it('shares the network only when no domain policy is declared', () => {
@@ -307,5 +370,133 @@ describe('Bash tool integration with sandbox', () => {
     } finally {
       rmSync(escapeTarget, { force: true });
     }
+  });
+});
+
+describe('matchesExcludedCommand', () => {
+  it('matches a glob pattern against the whole command', () => {
+    expect(matchesExcludedCommand('docker build .', ['docker *'])).toBe(true);
+    expect(matchesExcludedCommand('git status', ['docker *'])).toBe(false);
+  });
+
+  it('matches against the whole command, not the first line getPrimaryArg would keep', () => {
+    // The permission path and the execution path must judge the same text.
+    // getPrimaryArg truncates a command to its first line, so a pattern that
+    // only matches the full text would be missed by a first-line matcher and
+    // the command would be judged sandboxed while Bash ran it unsandboxed.
+    const command = 'echo hello\ndocker run --privileged evil';
+    expect(matchesExcludedCommand(command, [command])).toBe(true);
+    expect(matchesExcludedCommand(command.split('\n')[0], [command])).toBe(false);
+  });
+
+  it('treats a missing pattern list as no exclusions', () => {
+    expect(matchesExcludedCommand('anything', [])).toBe(false);
+    expect(matchesExcludedCommand('anything', undefined)).toBe(false);
+  });
+});
+
+describe('sandboxCoverage', () => {
+  const available = () => true;
+  const unavailable = () => false;
+
+  it('reports a genuinely sandboxed command', () => {
+    expect(sandboxCoverage('ls', sandboxSettings(), available)).toEqual({ sandboxed: true });
+  });
+
+  it('reports "disabled" when sandboxing is off', () => {
+    expect(sandboxCoverage('ls', sandboxSettings({ enabled: false }), available)).toEqual({
+      sandboxed: false,
+      reason: 'disabled',
+    });
+  });
+
+  it('reports "excluded" for a command matching sandbox.excludedCommands', () => {
+    const settings = sandboxSettings({ excludedCommands: ['docker *'] });
+    expect(sandboxCoverage('docker ps', settings, available)).toEqual({
+      sandboxed: false,
+      reason: 'excluded',
+    });
+    expect(sandboxCoverage('ls', settings, available)).toEqual({ sandboxed: true });
+  });
+
+  it('reports "unavailable" when the bubblewrap backend is missing', () => {
+    expect(sandboxCoverage('ls', sandboxSettings(), unavailable)).toEqual({
+      sandboxed: false,
+      reason: 'unavailable',
+    });
+  });
+
+  it('prefers "disabled" over "unavailable" so the diagnosis is the actionable one', () => {
+    expect(sandboxCoverage('ls', sandboxSettings({ enabled: false }), unavailable)).toEqual({
+      sandboxed: false,
+      reason: 'disabled',
+    });
+  });
+
+  it('does not probe the backend when sandboxing is disabled or the command is excluded', () => {
+    const probe = vi.fn(() => true);
+    sandboxCoverage('ls', sandboxSettings({ enabled: false }), probe);
+    sandboxCoverage('docker ps', sandboxSettings({ excludedCommands: ['docker *'] }), probe);
+    expect(probe).not.toHaveBeenCalled();
+  });
+});
+
+describe('unsandboxedRefusalMessage', () => {
+  it.each([
+    ['disabled' as const, 'sandbox.enabled is false'],
+    ['excluded' as const, 'sandbox.excludedCommands'],
+    ['unavailable' as const, 'bubblewrap'],
+  ])('names the setting and the reason for %s', (reason, expectedReason) => {
+    const message = unsandboxedRefusalMessage(reason);
+    expect(message).toContain('sandbox.allowUnsandboxedCommands');
+    expect(message).toContain(expectedReason);
+    // Actionable: it must say what to change, not only what failed.
+    expect(message).toMatch(/set sandbox\.allowUnsandboxedCommands to true/);
+  });
+});
+
+describe('sandboxPolicySummary', () => {
+  const active = { sandboxActive: true, adjudicationConfigured: false };
+
+  it('reports refusal when allowUnsandboxedCommands is false', () => {
+    const summary = sandboxPolicySummary(
+      sandboxSettings({ allowUnsandboxedCommands: false }),
+      active,
+    );
+    expect(summary.unsandboxedCommands).toContain('refused');
+    expect(summary.unsandboxedCommands).toContain('sandbox.allowUnsandboxedCommands=false');
+  });
+
+  it('reports auto-allow as inert when no sandbox is actually active', () => {
+    const summary = sandboxPolicySummary(sandboxSettings({ enabled: false }), {
+      ...active,
+      sandboxActive: false,
+    });
+    expect(summary.autoAllowBash).toContain('inert');
+  });
+
+  it('reports auto-allow as on only when a sandbox is actually active', () => {
+    expect(sandboxPolicySummary(sandboxSettings(), active).autoAllowBash).toContain('on for');
+  });
+
+  // The auto-allow only stands in for the *default* ask, so any configured
+  // deny/ask rule makes it inert. Reporting "on" there would tell the user the
+  // sandbox is skipping prompts that Book is in fact still raising.
+  it('reports auto-allow as inert when deny/ask rules are configured', () => {
+    const summary = sandboxPolicySummary(sandboxSettings(), {
+      ...active,
+      adjudicationConfigured: true,
+    });
+    expect(summary.autoAllowBash).toContain('inert');
+    expect(summary.autoAllowBash).toContain('permissions.deny/ask');
+  });
+
+  it('reports auto-allow as off when the key is false, even with an active sandbox', () => {
+    const summary = sandboxPolicySummary(
+      sandboxSettings({ autoAllowBashIfSandboxed: false }),
+      active,
+    );
+    expect(summary.autoAllowBash).toContain('off');
+    expect(summary.autoAllowBash).toContain('sandbox.autoAllowBashIfSandboxed=false');
   });
 });

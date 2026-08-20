@@ -1,4 +1,5 @@
 import type { AgentRecord, AgentRuntimeEvent, EvidenceItem } from '../agents/types.js';
+import type { HostCommandResult } from '../types/commands.js';
 import type { Message, Usage } from '../types/messages.js';
 import type { AgentRunAmbientSnapshot, AgentRunContext, AgentRunResult } from '../types/runs.js';
 import type { ShellJobEvent } from '../jobs/shell-manager.js';
@@ -50,6 +51,12 @@ export type AgentEvent =
       outcome?: AgentTerminalOutcome;
       runContext?: AgentRunContext;
       runs?: AgentRunResult[];
+      /**
+       * Slash commands the host performed itself rather than sending to the
+       * model. Present for SDK callers, whose stdout is a discard sink and who
+       * would otherwise have no way to read a `/review` they paid for.
+       */
+      commandResults?: HostCommandResult[];
     }
   | { type: 'terminal'; outcome: AgentTerminalOutcome; runContext?: AgentRunContext }
   | { type: 'done' };

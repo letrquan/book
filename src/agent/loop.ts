@@ -467,6 +467,12 @@ export async function runAgentLoop(
     let effectiveMode = initialMode;
     /** Set when the user approves a plan with fresh context; ends the turn so the host can reseed. */
     let handoffRequested: { plan: string; mode: PermissionMode } | null = null;
+    /**
+     * Set when the host cannot approve a plan at all (no approver in a
+     * non-interactive host). The plan is the deliverable, so the run ends here
+     * instead of burning the remaining turns on ExitPlanMode retries.
+     */
+    let planStopRequested: { plan: string; message: string } | null = null;
     const syncHostMode = (): void => {
       const hostMode = callbacks.getMode?.();
       if (hostMode !== undefined) toolContext.currentMode = hostMode;
@@ -1479,6 +1485,26 @@ export async function runAgentLoop(
                 content: `${result.content}\n\nPlan approved. Exited plan mode; mode restored to ${restoredMode}.`,
               });
             }
+          } else if (typeof approval === 'object' && approval.decision === 'stop') {
+            // No approver exists, so retrying ExitPlanMode can never succeed.
+            // Stay in plan mode (nothing may mutate) and end the run after this
+            // wave with the plan itself as the result.
+            const submittedPlan = context.pendingPlanApproval.plan;
+            context.currentMode = 'plan';
+            context.pendingPlanApproval = undefined;
+            planStopRequested = { plan: submittedPlan, message: approval.message };
+            result = replaceToolResult(result, {
+              status: 'blocked',
+              content: '',
+              error: {
+                code: 'plan_approval_unavailable',
+                message: `STOPPED: ${approval.message}`,
+                retryable: false,
+                remediation:
+                  'Do not call ExitPlanMode again: this run ends with the plan as its result.',
+                details: { reason: approval.reason },
+              },
+            });
           } else {
             context.currentMode = 'plan';
             context.pendingPlanApproval = undefined;
@@ -1776,7 +1802,7 @@ export async function runAgentLoop(
         toolResultCount: toolResults.length,
       });
 
-      if (toolCalls.length === 0 || signal?.aborted || handoffRequested) {
+      if (toolCalls.length === 0 || signal?.aborted || handoffRequested || planStopRequested) {
         break;
       }
     }
@@ -1788,7 +1814,10 @@ export async function runAgentLoop(
       turn >= config.maxTurns &&
       finalMessage?.role === 'assistant' &&
       (finalMessage.toolCalls?.length ?? 0) > 0 &&
-      !signal?.aborted
+      !signal?.aborted &&
+      // A plan stop is a deliberate stop, not an exhausted budget: the last
+      // turn ends with tool calls, but nothing was left to do.
+      !planStopRequested
     ) {
       log.warn('max turns reached', { maxTurns: config.maxTurns });
       callbacks.onError(

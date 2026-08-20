@@ -2995,6 +2995,125 @@ describe('runAgentLoop plan mode', () => {
     );
     expect(results[0].structuredError?.message).toContain('call ExitPlanMode again');
   });
+
+  it('ends the run at the first plan when the host cannot approve one', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          toolCallStream([{ id: 'exit_1', name: 'ExitPlanMode', arguments: '{"plan":"Do it."}' }]),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const registry = createRegistry();
+    registry.register({
+      name: 'ExitPlanMode',
+      description: 'Exit plan mode',
+      parameters: {
+        type: 'object',
+        properties: { plan: { type: 'string' } },
+        required: ['plan'],
+      },
+      execute: async (_args, ctx) => {
+        ctx.previousMode = 'default';
+        ctx.pendingPlanApproval = { plan: 'Do it.' };
+        return toolSuccess('submitted');
+      },
+    });
+
+    const results: ToolResult[] = [];
+    const terminalOutcomes: AgentTerminalOutcome[] = [];
+    const errors: string[] = [];
+    let approvalCalls = 0;
+    // maxTurns:5 so a reject WOULD re-invoke the model four more times.
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 5 }),
+      registry,
+      'plan',
+      [],
+      noopCallbacks({
+        onPlanApprovalRequired: async () => {
+          approvalCalls++;
+          return {
+            decision: 'stop' as const,
+            reason: 'approval_unavailable' as const,
+            message: 'No changes were applied: this host has no plan approver.',
+          };
+        },
+        onToolResult: (result: ToolResult) => results.push(result),
+        onTerminal: (outcome) => terminalOutcomes.push(outcome),
+        onError: (error: string) => errors.push(error),
+      }),
+      'plan',
+    );
+
+    expect(approvalCalls).toBe(1);
+    // No retry turn: the remaining turn budget is untouched.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(results[0].status).toBe('blocked');
+    expect(results[0].structuredError?.code).toBe('plan_approval_unavailable');
+    expect(results[0].structuredError?.message).toContain('No changes were applied');
+    expect(results[0].structuredError?.details).toEqual({ reason: 'approval_unavailable' });
+    expect(results[0].structuredError?.message).not.toContain('SKIPPED');
+    expect(terminalOutcomes).toEqual([
+      { status: 'completed', reason: 'normal_completion', partialOutput: false },
+    ]);
+    expect(errors).toEqual([]);
+  });
+
+  it('does not report max turns when a plan stop lands on the final allowed turn', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            toolCallStream([
+              { id: 'exit_1', name: 'ExitPlanMode', arguments: '{"plan":"Do it."}' },
+            ]),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const registry = createRegistry();
+    registry.register({
+      name: 'ExitPlanMode',
+      description: 'Exit plan mode',
+      parameters: {
+        type: 'object',
+        properties: { plan: { type: 'string' } },
+        required: ['plan'],
+      },
+      execute: async (_args, ctx) => {
+        ctx.previousMode = 'default';
+        ctx.pendingPlanApproval = { plan: 'Do it.' };
+        return toolSuccess('submitted');
+      },
+    });
+
+    const terminalOutcomes: AgentTerminalOutcome[] = [];
+    const errors: string[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      registry,
+      'plan',
+      [],
+      noopCallbacks({
+        onPlanApprovalRequired: async () => ({
+          decision: 'stop' as const,
+          reason: 'approval_unavailable' as const,
+          message: 'No changes were applied: this host has no plan approver.',
+        }),
+        onTerminal: (outcome) => terminalOutcomes.push(outcome),
+        onError: (error: string) => errors.push(error),
+      }),
+      'plan',
+    );
+
+    expect(errors).toEqual([]);
+    expect(terminalOutcomes.map((outcome) => outcome.reason)).toEqual(['normal_completion']);
+  });
 });
 
 describe('runAgentLoop alias-normalized permission enforcement', () => {

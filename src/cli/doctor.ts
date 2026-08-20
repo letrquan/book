@@ -66,12 +66,20 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   console.log();
 
   // Sandbox.
-  const { createSandbox } = await import('../sandbox.js');
+  const { createSandbox, sandboxPolicySummary } = await import('../sandbox.js');
+  const { hasAdjudicationPolicy } = await import('../permissions.js');
   const sandbox = createSandbox(settings.sandbox);
+  const policy = sandboxPolicySummary(settings.sandbox, {
+    sandboxActive: sandbox !== null,
+    adjudicationConfigured: hasAdjudicationPolicy(settings),
+  });
   console.log('Sandbox:');
   console.log('  Enabled: ' + settings.sandbox.enabled);
   console.log('  Available: ' + (sandbox !== null));
   if (sandbox) console.log('  Enforcing: ' + sandbox.describe());
+  console.log('  Excluded commands: ' + settings.sandbox.excludedCommands.length);
+  console.log('  Unsandboxed commands: ' + policy.unsandboxedCommands);
+  console.log('  Auto-allow Bash: ' + policy.autoAllowBash);
   console.log();
 
   // Managed agents.

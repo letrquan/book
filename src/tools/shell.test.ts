@@ -1,9 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { persistentEnvironmentOverrides, shellTools } from './shell.js';
 import { getPrimaryArg } from './primary-arg.js';
+import { SessionRuntime } from '../session/runtime.js';
+import { DEFAULT_SETTINGS, type ResolvedSettings } from '../settings.js';
 import type { BackgroundShellStore } from '../types/runtime.js';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 
@@ -281,13 +283,15 @@ describe('Bash shell tools', () => {
 
   it('times out background shells only when timeout is explicitly supplied', async () => {
     const c = ctx();
-    const command = nodeCommand(
-      'timeout.cjs',
-      `console.log('timeout-ready');\nsetInterval(() => {}, 1000);\n`,
-    );
+    // The interval keeps the process alive forever, so reaching `timed_out`
+    // proves the explicit deadline fired — a natural exit would read
+    // `exited`/`failed` and fail the wait below. Deliberately no wait for the
+    // child's own output first: the 50ms deadline may terminate the process
+    // before node finishes starting up, so any output-before-timeout gate
+    // races the very deadline under test.
+    const command = nodeCommand('timeout.cjs', `setInterval(() => {}, 1000);\n`);
     const start = await bash.execute({ command, run_in_background: true, timeout: 50 }, c);
     const shellId = shellIdFrom(start);
-    await waitForOutput(c, shellId, /timeout-ready/);
 
     const terminal = await waitForOutput(c, shellId, /Shell shell_\d+: timed_out/);
 
@@ -312,5 +316,116 @@ describe('Bash shell tools', () => {
   it('uses shell IDs as primary args', () => {
     expect(getPrimaryArg({ shell_id: 'shell_7' })).toBe('shell_7');
     expect(getPrimaryArg({ shellId: 'shell_8' })).toBe('shell_8');
+  });
+});
+
+describe('sandbox.allowUnsandboxedCommands', () => {
+  function sandboxCtx(overrides: Partial<ResolvedSettings['sandbox']>): ToolContext {
+    const c: ToolContext = {
+      workspaceRoot: dir,
+      env: {},
+      sandbox: { ...structuredClone(DEFAULT_SETTINGS.sandbox), ...overrides },
+    };
+    contexts.push(c);
+    return c;
+  }
+
+  /** A command whose only observable effect is a file, so "did it run?" is testable. */
+  function sideEffectCommand(name: string): { command: string; marker: string } {
+    const marker = join(dir, name);
+    return {
+      command: nodeCommand(
+        `${name}.cjs`,
+        `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran');\n`,
+      ),
+      marker,
+    };
+  }
+
+  it('refuses a command when sandboxing is disabled, and the command does not run', async () => {
+    const c = sandboxCtx({ enabled: false, allowUnsandboxedCommands: false });
+    const { command, marker } = sideEffectCommand('refused-disabled');
+
+    const result = await bash.execute({ command }, c);
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toContain('sandbox.allowUnsandboxedCommands');
+    expect(result.structuredError?.message).toContain('sandbox.enabled is false');
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('refuses a command excluded from the sandbox, and the command does not run', async () => {
+    const { command, marker } = sideEffectCommand('refused-excluded');
+    const c = sandboxCtx({
+      enabled: true,
+      allowUnsandboxedCommands: false,
+      excludedCommands: [command],
+    });
+
+    const result = await bash.execute({ command }, c);
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toContain('sandbox.allowUnsandboxedCommands');
+    expect(result.structuredError?.message).toContain('sandbox.excludedCommands');
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('refuses a command when the bubblewrap backend is unavailable', async () => {
+    const { command, marker } = sideEffectCommand('refused-unavailable');
+    const c = sandboxCtx({ enabled: true, allowUnsandboxedCommands: false });
+    const runtime = new SessionRuntime();
+    // The one branch that cannot be produced by settings alone: this host has
+    // bwrap installed, so the real probe would succeed.
+    vi.spyOn(runtime, 'sandbox').mockReturnValue(null);
+    c.runtime = runtime;
+
+    const result = await bash.execute({ command }, c);
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toContain('sandbox.allowUnsandboxedCommands');
+    expect(result.structuredError?.message).toContain('bubblewrap');
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('refuses background commands too, and starts no shell', async () => {
+    const c = sandboxCtx({ enabled: false, allowUnsandboxedCommands: false });
+    const { command } = sideEffectCommand('refused-background');
+
+    const result = await bash.execute({ command, run_in_background: true }, c);
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toContain('sandbox.allowUnsandboxedCommands');
+    expect(c.backgroundShells?.shells.size ?? 0).toBe(0);
+  });
+
+  it('leaves behavior unchanged under the default allowUnsandboxedCommands: true', async () => {
+    expect(DEFAULT_SETTINGS.sandbox.allowUnsandboxedCommands).toBe(true);
+    const c = sandboxCtx({ enabled: false });
+    const { command, marker } = sideEffectCommand('allowed-default');
+
+    const result = await bash.execute({ command }, c);
+
+    expect(result.status).toBe('success');
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it('leaves behavior unchanged when no sandbox settings are attached to the context', async () => {
+    const c = ctx();
+    const { command, marker } = sideEffectCommand('allowed-no-settings');
+
+    const result = await bash.execute({ command }, c);
+
+    expect(result.status).toBe('success');
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it('still runs excluded commands when unsandboxed commands are allowed', async () => {
+    const { command, marker } = sideEffectCommand('allowed-excluded');
+    const c = sandboxCtx({ enabled: true, excludedCommands: [command] });
+
+    const result = await bash.execute({ command }, c);
+
+    expect(result.status).toBe('success');
+    expect(existsSync(marker)).toBe(true);
   });
 });

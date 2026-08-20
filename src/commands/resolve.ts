@@ -1,5 +1,5 @@
 import { exec } from 'child_process';
-import type { SlashCommand } from '../types/commands.js';
+import type { CommandContext, SlashCommand } from '../types/commands.js';
 
 export interface ParsedSlashInput {
   name: string;
@@ -181,6 +181,27 @@ export async function resolveCommandBody(
   const resolved = resolveVariables(afterShell, argv, namedArgs, context);
 
   return { resolved, shellErrors: errors };
+}
+
+/**
+ * Frontmatter enforcement carried into the agent loop for an invoked custom
+ * command, or undefined when the command restricts nothing.
+ *
+ * Shared so every host (TUI, print/headless) enforces `allowed-tools` and
+ * `model` identically.
+ */
+export function commandEnforcementContext(
+  command: SlashCommand,
+  resolvedBody: string,
+): CommandContext | undefined {
+  return command.allowedTools || command.model
+    ? {
+        command,
+        resolvedBody,
+        modelOverride: command.model,
+        allowedTools: command.allowedTools,
+      }
+    : undefined;
 }
 
 async function replaceAsync(

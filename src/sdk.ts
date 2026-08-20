@@ -177,6 +177,9 @@ export async function* query(
         sessionId: bootstrap.sessionId,
         outcome: result.outcome,
         runs: result.runs,
+        // `stdout` above is a discard sink, so this is the only way an SDK
+        // caller sees a slash command the host performed on its behalf.
+        commandResults: result.commandResults,
       });
     } catch (error) {
       if (!controller.signal.aborted) {

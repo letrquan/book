@@ -3,6 +3,7 @@ import { delimiter, join, resolve } from 'path';
 import { homedir, platform } from 'os';
 import type { ResolvedSettings } from './settings.js';
 import type { CommandExecution } from './types/runtime.js';
+import { globToRegex } from './tools/glob-regex.js';
 
 export interface Sandbox {
   /**
@@ -51,20 +52,176 @@ function detectBwrap(): string | null {
 }
 
 /**
+ * Why a specific command will not run inside a real sandbox boundary.
+ *
+ * These are the only three ways a Bash command escapes the sandbox, and both
+ * settings that depend on "is this command actually sandboxed?"
+ * (`allowUnsandboxedCommands` and `autoAllowBashIfSandboxed`) are decided from
+ * this one enumeration so they can never disagree about a given command.
+ */
+export type SandboxSkipReason = 'disabled' | 'excluded' | 'unavailable';
+
+export interface SandboxCoverage {
+  /** True only when this exact command will execute inside a bubblewrap namespace. */
+  sandboxed: boolean;
+  /** Set whenever `sandboxed` is false. */
+  reason?: SandboxSkipReason;
+}
+
+/**
+ * Does a command match one of the `sandbox.excludedCommands` escape patterns?
+ *
+ * The whole command string is matched, not just its first line: the permission
+ * path and the execution path must agree about the same text, and
+ * `getPrimaryArg` truncates a multi-line command to its first line.
+ */
+export function matchesExcludedCommand(command: string, patterns: string[] = []): boolean {
+  return patterns.some((pattern) => globToRegex(pattern).test(command));
+}
+
+/**
+ * Is the bubblewrap backend usable on this machine at all? Independent of
+ * settings, so callers can distinguish "turned off" from "cannot be turned on".
+ */
+export function sandboxBackendAvailable(): boolean {
+  return platform() !== 'win32' && detectBwrap() !== null;
+}
+
+/**
+ * Decide whether one specific command genuinely executes inside the sandbox.
+ *
+ * Ordering is deliberate. `enabled` is checked first because "sandboxing is
+ * off" is the actionable diagnosis even on a host with no bwrap installed, and
+ * because it is false by default — the common path never touches the
+ * filesystem. `excludedCommands` is checked before the backend probe for the
+ * same reason: an excluded command is unsandboxed regardless of what is
+ * installed, so probing PATH for it would be wasted work.
+ *
+ * `backendAvailable` is injectable purely so tests can exercise the
+ * missing-bwrap branch on a host that has bwrap installed.
+ */
+export function sandboxCoverage(
+  command: string,
+  settings: ResolvedSettings['sandbox'],
+  backendAvailable: () => boolean = sandboxBackendAvailable,
+): SandboxCoverage {
+  if (!settings.enabled) return { sandboxed: false, reason: 'disabled' };
+  if (matchesExcludedCommand(command, settings.excludedCommands))
+    return { sandboxed: false, reason: 'excluded' };
+  if (!backendAvailable()) return { sandboxed: false, reason: 'unavailable' };
+  return { sandboxed: true };
+}
+
+const SKIP_REASON_DETAIL: Record<SandboxSkipReason, string> = {
+  disabled: 'sandboxing is turned off (sandbox.enabled is false)',
+  excluded: 'the command matches a sandbox.excludedCommands pattern, which runs it unsandboxed',
+  unavailable:
+    'the bubblewrap (bwrap) sandbox backend is unavailable on this platform or is not installed',
+};
+
+const SKIP_REASON_REMEDY: Record<SandboxSkipReason, string> = {
+  disabled: 'Set sandbox.enabled to true',
+  excluded: 'Remove the matching pattern from sandbox.excludedCommands',
+  unavailable: 'Install bubblewrap (bwrap)',
+};
+
+/**
+ * The refusal shown when `sandbox.allowUnsandboxedCommands` is false and a
+ * command would otherwise have run outside the sandbox. It names the setting
+ * that caused the refusal and the specific reason the command could not be
+ * sandboxed, because "permission denied" with neither is unactionable.
+ */
+export function unsandboxedRefusalMessage(reason: SandboxSkipReason): string {
+  return [
+    'Refused to run this command outside the sandbox:',
+    `${SKIP_REASON_DETAIL[reason]}.`,
+    'sandbox.allowUnsandboxedCommands is false, so unsandboxed commands are not permitted.',
+    `${SKIP_REASON_REMEDY[reason]}, or set sandbox.allowUnsandboxedCommands to true to allow this command to run unsandboxed.`,
+  ].join(' ');
+}
+
+/**
+ * Everything outside `sandbox.*` that decides whether the two policy switches
+ * can actually bite. Passed as one object rather than as trailing booleans so a
+ * new condition cannot be added to the permission path and forgotten here —
+ * which is how `book doctor` starts reporting a policy stronger than the
+ * enforced one.
+ */
+export interface SandboxPolicyState {
+  /** A sandbox was really created, so some command can genuinely be confined. */
+  sandboxActive: boolean;
+  /**
+   * The user configured `permissions.deny` / `permissions.ask` rules. See
+   * `sandboxAutoAllows` in permissions.ts: any such rule keeps the default ask,
+   * because a shell line evades a glob far too easily for the matched rules to
+   * be the whole protection.
+   */
+  adjudicationConfigured: boolean;
+}
+
+/**
+ * Effective (not merely configured) state of the two policy switches, for
+ * `book doctor`. A setting whose configured value cannot bite is reported as
+ * inert rather than as enabled, so the reported policy matches the enforced one.
+ */
+export function sandboxPolicySummary(
+  settings: ResolvedSettings['sandbox'],
+  state: SandboxPolicyState,
+): { unsandboxedCommands: string; autoAllowBash: string } {
+  return {
+    unsandboxedCommands: settings.allowUnsandboxedCommands
+      ? 'allowed (sandbox.allowUnsandboxedCommands=true)'
+      : 'refused (sandbox.allowUnsandboxedCommands=false)',
+    autoAllowBash: !settings.autoAllowBashIfSandboxed
+      ? 'off — every Bash call goes through the normal permission path (sandbox.autoAllowBashIfSandboxed=false)'
+      : !state.sandboxActive
+        ? 'inert — no command is sandboxed here, so nothing is auto-allowed (sandbox.autoAllowBashIfSandboxed=true)'
+        : state.adjudicationConfigured
+          ? 'inert — permissions.deny/ask rules are configured, so every Bash call still goes through the normal permission path (sandbox.autoAllowBashIfSandboxed=true)'
+          : 'on for genuinely sandboxed commands (sandbox.autoAllowBashIfSandboxed=true)',
+  };
+}
+
+/**
+ * The host facts the argv builder depends on: which paths exist, whether they
+ * are directories, and the path semantics used to resolve configured entries.
+ *
+ * Injectable so the generated argv can be pinned by tests on any platform.
+ * The unit suite runs on Windows CI, where probing the real filesystem finds
+ * none of the POSIX system mounts (`resolve('/usr')` lands on `C:\usr`), so a
+ * test against the real host would be asserting on binds that were never
+ * emitted. Production always uses the real host below.
+ */
+export interface SandboxHost {
+  /** Path semantics for configured entries; tests inject path.win32/path.posix. */
+  path: { resolve(...segments: string[]): string; join(...segments: string[]): string };
+  exists(path: string): boolean;
+  isDirectory(path: string): boolean;
+  homedir(): string;
+}
+
+const realSandboxHost: SandboxHost = {
+  path: { resolve, join },
+  exists: existsSync,
+  isDirectory: (path) => statSync(path).isDirectory(),
+  homedir,
+};
+
+/**
  * Resolve a configured sandbox path. `~` is expanded the same way the rest of
  * the codebase expands it; a relative entry stays relative to the process cwd,
  * which `unbindablePaths` reports so it does not pass silently.
  */
-function expandPath(path: string): string {
-  if (path === '~') return homedir();
-  if (path.startsWith('~/')) return join(homedir(), path.slice(2));
-  return resolve(path);
+function expandPath(path: string, host: SandboxHost): string {
+  if (path === '~') return host.homedir();
+  if (path.startsWith('~/')) return host.path.join(host.homedir(), path.slice(2));
+  return host.path.resolve(path);
 }
 
 /** bwrap fails the whole invocation if a bind source does not exist. */
-function bindIfPresent(args: string[], flag: string, path: string): void {
-  const target = expandPath(path);
-  if (existsSync(target)) args.push(flag, target, target);
+function bindIfPresent(args: string[], flag: string, path: string, host: SandboxHost): void {
+  const target = expandPath(path, host);
+  if (host.exists(target)) args.push(flag, target, target);
 }
 
 /**
@@ -73,12 +230,15 @@ function bindIfPresent(args: string[], flag: string, path: string): void {
  * have to be skipped — but a skipped rule is unenforced policy the user
  * believes is active, so it is reported rather than dropped quietly.
  */
-export function unbindablePaths(settings: ResolvedSettings['sandbox']): string[] {
+export function unbindablePaths(
+  settings: ResolvedSettings['sandbox'],
+  host: SandboxHost = realSandboxHost,
+): string[] {
   return [
     ...settings.filesystem.allowWrite,
     ...settings.filesystem.denyWrite,
     ...settings.filesystem.denyRead,
-  ].filter((path) => !existsSync(expandPath(path)));
+  ].filter((path) => !host.exists(expandPath(path, host)));
 }
 
 /**
@@ -99,13 +259,15 @@ export function hasDomainPolicy(settings: ResolvedSettings['sandbox']): boolean 
  * workspace under /usr/local or /tmp would otherwise be silently shadowed), and
  * explicit filesystem policy comes after the workspace so it can override it.
  *
- * Exported for testing: it is pure and does not require bwrap to be installed.
+ * Exported for testing: it does not require bwrap to be installed, and with an
+ * injected `host` its output is fully determined by its arguments.
  */
 export function buildSandboxExecution(
   bwrapPath: string,
   command: string,
   workspaceRoot: string,
   settings: ResolvedSettings['sandbox'],
+  host: SandboxHost = realSandboxHost,
 ): CommandExecution {
   const args: string[] = [];
 
@@ -125,27 +287,27 @@ export function buildSandboxExecution(
 
   // Minimal system directories, read-only.
   for (const dir of ['/usr', '/lib', '/lib64', '/bin', '/sbin', '/etc', '/opt']) {
-    bindIfPresent(args, '--ro-bind', dir);
+    bindIfPresent(args, '--ro-bind', dir, host);
   }
 
   args.push('--tmpfs', '/tmp');
 
   // The workspace is writable. Bound after /tmp so a workspace inside /tmp
   // (every mkdtemp-based test run, among others) survives the tmpfs.
-  bindIfPresent(args, '--bind', workspaceRoot);
+  bindIfPresent(args, '--bind', workspaceRoot, host);
 
   // Declared filesystem policy overrides the defaults above.
-  for (const path of settings.filesystem.allowWrite) bindIfPresent(args, '--bind', path);
-  for (const path of settings.filesystem.denyWrite) bindIfPresent(args, '--ro-bind', path);
+  for (const path of settings.filesystem.allowWrite) bindIfPresent(args, '--bind', path, host);
+  for (const path of settings.filesystem.denyWrite) bindIfPresent(args, '--ro-bind', path, host);
   // bwrap cannot unmount a subpath, so a denied path is masked instead. The
   // mask has to match the kind: --tmpfs needs to mkdir its target, so pointing
   // it at a file aborts the entire invocation with "Not a directory" — and a
   // credentials *file* is the most natural thing to deny. Files are masked with
   // /dev/null instead, which makes reads fail outright.
   for (const path of settings.filesystem.denyRead) {
-    const target = expandPath(path);
-    if (!existsSync(target)) continue;
-    if (statSync(target).isDirectory()) args.push('--tmpfs', target);
+    const target = expandPath(path, host);
+    if (!host.exists(target)) continue;
+    if (host.isDirectory(target)) args.push('--tmpfs', target);
     else args.push('--ro-bind', '/dev/null', target);
   }
 

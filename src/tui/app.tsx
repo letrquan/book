@@ -60,7 +60,7 @@ import type { SessionBootstrap } from '../session/resolve.js';
 import { displaySessionName } from '../session/name.js';
 import { DensityContext, resolveTuiDensity } from './density.js';
 import { discoverCommands, resolveCommandBody } from '../commands/loader.js';
-import { parseSlashInput } from '../commands/resolve.js';
+import { commandEnforcementContext, parseSlashInput } from '../commands/resolve.js';
 import {
   createBuiltinCommandRegistry,
   type BuiltinCommandContext,
@@ -79,8 +79,7 @@ import { createUiDebugLogger } from '../debug-log.js';
 import { createDefaultRegistry } from '../tools/registry.js';
 import { getOrCreateAgentManager, type AgentManager } from '../agents/manager.js';
 import { installAgentImports, previewAgentImport } from '../agents/importer.js';
-import { runDeepReview, runSingleReview } from '../review/orchestration.js';
-import { applyReviewFixes, renderFixResult } from '../review/fix.js';
+import { runHostReview } from '../review/host.js';
 import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewScope } from '../review/types.js';
 import { join } from 'path';
@@ -187,36 +186,25 @@ export function providerRemovalMessage(
   return `Removed local BYOK provider ${result.providerId} and its ${models}.`;
 }
 
+/**
+ * Sequencing lives in `review/host.ts` so print mode runs the identical steps.
+ * The TUI is the host that can apply patches, so it is the one that supplies a
+ * fix runner, and it renders each segment as it is produced rather than waiting
+ * for the (minutes-long) fix pass to finish.
+ */
 async function runReviewCommand(
   scope: ReviewScope,
   manager: AgentManager,
   workspace: string,
   report: (message: string) => void,
 ): Promise<void> {
-  try {
-    if (scope.fix) {
-      const deep = await runDeepReview(reviewRunnerFor(manager), scope, workspace);
-      report(deep.text);
-      const confirmed = deep.report.findings.filter(
-        (finding) => finding.verification === 'confirmed',
-      );
-      if (confirmed.length === 0) {
-        report('No confirmed findings are eligible for automatic fixes.');
-        return;
-      }
-      const fixResult = await applyReviewFixes(fixRunnerFor(manager), confirmed);
-      report(renderFixResult(fixResult));
-      return;
-    }
-
-    const runner = reviewRunnerFor(manager);
-    const result = scope.deep
-      ? await runDeepReview(runner, scope, workspace)
-      : await runSingleReview(runner, scope, workspace);
-    report(result.text);
-  } catch (error) {
-    report(`✕ review failed: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  await runHostReview({
+    scope,
+    workspace,
+    runner: reviewRunnerFor(manager),
+    fixRunner: fixRunnerFor(manager),
+    onSegment: report,
+  });
 }
 
 const EMPTY_MCP_SNAPSHOT: McpHostSnapshot = { servers: [], pendingApprovals: [], events: [] };
@@ -1648,16 +1636,8 @@ export function App({
           // Escape/Ctrl+C may abort after resolution succeeds; never dispatch stale input.
           if (controller.signal.aborted) return;
           // Pass command context for allowed-tools and model enforcement.
-          const ctx: CommandContext | undefined =
-            cmd.allowedTools || cmd.model
-              ? {
-                  command: cmd,
-                  resolvedBody: resolved,
-                  modelOverride: cmd.model,
-                  allowedTools: cmd.allowedTools,
-                }
-              : undefined;
-          void dispatchAgentSend(resolved, ctx);
+          // Shared with print/headless so both hosts enforce it identically.
+          void dispatchAgentSend(resolved, commandEnforcementContext(cmd, resolved));
         } else {
           // Unknown command — send as-is (the model might handle it).
           void dispatchAgentSend(value);

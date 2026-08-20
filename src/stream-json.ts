@@ -29,6 +29,12 @@ export type StreamJsonEvent =
   | { type: 'hook_event'; event?: string; [key: string]: unknown }
   | { type: 'mode_change'; mode?: string }
   | { type: 'plan_approval'; status?: string }
+  /**
+   * A slash command the host performed itself, instead of running a model turn.
+   * `output` is the human rendering; `data` is the command's machine contract
+   * (for `/review`, `ReviewJsonReport` from `review/host.ts`).
+   */
+  | { type: 'command_result'; command?: string; output?: string; data?: unknown }
   | { type: 'prompt_suggestions'; suggestions?: string[] }
   | { type: 'error'; error?: string }
   | { type: 'result'; result?: unknown }

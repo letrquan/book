@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { enterInteractiveScreen, shouldBridgeWslTerminal } from './run.js';
+import { execFileSync } from 'child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { enterInteractiveScreen, runMainAction, shouldBridgeWslTerminal } from './run.js';
+import { setExitFn } from './exit.js';
+import { createRepeatingScriptedProvider, sseResponse } from '../test/scripted-provider.js';
 
 function fakeStdout(isTTY: boolean) {
   const writes: string[] = [];
@@ -84,4 +90,181 @@ describe('enterInteractiveScreen', () => {
     );
     expect(shouldBridgeWslTerminal('win32', { WT_SESSION: 'session' })).toBe(false);
   });
+});
+
+describe('runMainAction — slash commands in print mode', () => {
+  const saved: Record<string, string | undefined> = {};
+  let tempDirs: string[] = [];
+
+  function stashEnv(name: string, value: string): void {
+    if (!(name in saved)) saved[name] = process.env[name];
+    process.env[name] = value;
+  }
+
+  function printWorkspace(): string {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-run-print-'));
+    const home = mkdtempSync(join(tmpdir(), 'book-run-home-'));
+    tempDirs.push(workspace, home);
+    stashEnv('BOOK_HOME', home);
+    stashEnv('BOOK_API_KEY', 'test-key');
+    return workspace;
+  }
+
+  /** Print-mode option shape as src/index.ts builds it, minus the prompt. */
+  function printOptions(workspace: string, print: string): Record<string, unknown> {
+    return {
+      print,
+      workspace,
+      settings: false,
+      inputFormat: 'text',
+      outputFormat: 'text',
+      sessionPersistence: false,
+      maxTurns: '1',
+    };
+  }
+
+  afterEach(() => {
+    setExitFn((code: number): never => process.exit(code));
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+      delete saved[name];
+    }
+    for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+    tempDirs = [];
+  });
+
+  it('exits non-zero through the exit abstraction for an interactive-only command', async () => {
+    const workspace = printWorkspace();
+    const provider = createRepeatingScriptedProvider(() => sseResponse([]));
+    vi.stubGlobal('fetch', provider.fetch);
+    const codes: number[] = [];
+    setExitFn(((code: number) => {
+      codes.push(code);
+      throw new Error('process.exit');
+    }) as (code: number) => never);
+    const errors: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+
+    await expect(runMainAction(printOptions(workspace, '/clear'))).rejects.toThrow('process.exit');
+
+    expect(codes).toEqual([1]);
+    expect(errors.join('\n')).toContain('/clear');
+    expect(errors.join('\n')).toContain('Commands supported in print mode:');
+    // The refusal happens before the model is ever asked.
+    expect(provider.requests.length).toBe(0);
+  });
+
+  it('runs a resolved custom command body and exits normally', async () => {
+    const workspace = printWorkspace();
+    mkdirSync(join(workspace, '.book', 'commands'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'commands', 'triage.md'),
+      'Triage $ARGUMENTS please',
+      'utf-8',
+    );
+    const provider = createRepeatingScriptedProvider(() =>
+      sseResponse([JSON.stringify({ choices: [{ delta: { content: 'ok' } }] })]),
+    );
+    vi.stubGlobal('fetch', provider.fetch);
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    setExitFn(((code: number) => {
+      throw new Error(`unexpected exit(${code})`);
+    }) as (code: number) => never);
+
+    await runMainAction(printOptions(workspace, '/triage parser'));
+
+    expect(provider.requests.length).toBe(1);
+    expect(String(provider.requests[0].init?.body)).toContain('Triage parser please');
+    expect(writes.join('')).toContain('ok');
+  });
+
+  /** Dirty git worktree so `/review` has a real target to resolve. */
+  function reviewWorkspace(): string {
+    const workspace = printWorkspace();
+    const git = (...args: string[]) =>
+      execFileSync('git', args, {
+        cwd: workspace,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    git('init', '-q');
+    git('config', 'user.email', 'book-tests@example.invalid');
+    git('config', 'user.name', 'Book Tests');
+    writeFileSync(join(workspace, 'a.ts'), 'export const value = 1;\n', 'utf-8');
+    git('add', '.');
+    git('commit', '-qm', 'initial');
+    writeFileSync(join(workspace, 'a.ts'), 'export const value = 2;\n', 'utf-8');
+    return workspace;
+  }
+
+  it('runs /review to completion and prints the report', async () => {
+    const workspace = reviewWorkspace();
+    const report = JSON.stringify({
+      verdict: 'recommend',
+      findings: [
+        {
+          severity: 'major',
+          category: 'correctness',
+          file: 'a.ts',
+          line: 1,
+          summary: 'the exported constant changed meaning',
+          evidence: 'export const value = 2;',
+          failure: 'callers branching on value === 1 stop matching',
+          suggestedFix: 'add a new constant instead',
+          confidence: 91,
+        },
+      ],
+    });
+    const provider = createRepeatingScriptedProvider(() =>
+      sseResponse([JSON.stringify({ choices: [{ delta: { content: report } }] })]),
+    );
+    vi.stubGlobal('fetch', provider.fetch);
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    setExitFn(((code: number) => {
+      throw new Error(`unexpected exit(${code})`);
+    }) as (code: number) => never);
+
+    await runMainAction(printOptions(workspace, '/review'));
+
+    expect(writes.join('')).toContain('Verdict: recommend');
+    expect(writes.join('')).toContain('the exported constant changed meaning');
+    // The reviewer agent was asked; the parent loop never was.
+    expect(provider.requests.length).toBe(1);
+  }, 30000);
+
+  it('exits non-zero for /review --fix instead of patching unattended', async () => {
+    const workspace = reviewWorkspace();
+    const provider = createRepeatingScriptedProvider(() => sseResponse([]));
+    vi.stubGlobal('fetch', provider.fetch);
+    const codes: number[] = [];
+    setExitFn(((code: number) => {
+      codes.push(code);
+      throw new Error('process.exit');
+    }) as (code: number) => never);
+    const errors: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+
+    await expect(runMainAction(printOptions(workspace, '/review --fix'))).rejects.toThrow(
+      'process.exit',
+    );
+
+    expect(codes).toEqual([1]);
+    expect(errors.join('\n')).toContain('/review --fix needs an interactive session');
+    expect(provider.requests.length).toBe(0);
+  }, 30000);
 });

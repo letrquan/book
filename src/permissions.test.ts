@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   evaluatePermission,
+  evaluatePermissionDetail,
   parseRule,
   permissionRuleForToolCall,
   permissionRuleMatchesCall,
@@ -301,5 +302,167 @@ describe('evaluatePermission', () => {
     expect(evaluatePermission('ApplyPatch', { patch }, settings({ allow: ['Edit(src/**)'] }))).toBe(
       'ask',
     );
+  });
+});
+
+describe('sandbox.autoAllowBashIfSandboxed', () => {
+  const sandboxAvailable = { sandboxBackendAvailable: () => true };
+  const sandboxMissing = { sandboxBackendAvailable: () => false };
+
+  function withSandbox(overrides: Partial<ResolvedSettings['sandbox']> = {}): ResolvedSettings {
+    const base = structuredClone(DEFAULT_SETTINGS);
+    return { ...base, sandbox: { ...base.sandbox, enabled: true, ...overrides } };
+  }
+
+  it('auto-allows a Bash command that genuinely runs inside the sandbox', () => {
+    const verdict = evaluatePermissionDetail(
+      'Bash',
+      { command: 'rm -rf build' },
+      withSandbox(),
+      sandboxAvailable,
+    );
+    expect(verdict).toEqual({ decision: 'allow', source: 'sandbox' });
+  });
+
+  // The single most important property here: a deny rule outranks the sandbox.
+  it('never overrides a permissions.deny rule', () => {
+    const settings = withSandbox();
+    settings.permissions.deny = ['Bash(rm *)'];
+    const verdict = evaluatePermissionDetail(
+      'Bash',
+      { command: 'rm -rf /' },
+      settings,
+      sandboxAvailable,
+    );
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.matchedRule).toBe('Bash(rm *)');
+    expect(verdict.source).toBe('deny');
+  });
+
+  it('never overrides a bare Bash deny rule', () => {
+    const settings = withSandbox();
+    settings.permissions.deny = ['Bash'];
+    expect(evaluatePermission('Bash', { command: 'ls' }, settings, sandboxAvailable)).toBe('deny');
+  });
+
+  it('does not override an explicit permissions.ask rule', () => {
+    const settings = withSandbox();
+    settings.permissions.ask = ['Bash(git push*)'];
+    const verdict = evaluatePermissionDetail(
+      'Bash',
+      { command: 'git push --force' },
+      settings,
+      sandboxAvailable,
+    );
+    expect(verdict.decision).toBe('ask');
+    expect(verdict.source).toBe('ask');
+  });
+
+  it('does not auto-allow when sandboxing is disabled', () => {
+    const settings = withSandbox({ enabled: false });
+    expect(evaluatePermission('Bash', { command: 'ls' }, settings, sandboxAvailable)).toBe('ask');
+  });
+
+  it('does not auto-allow when the bubblewrap backend is unavailable', () => {
+    expect(evaluatePermission('Bash', { command: 'ls' }, withSandbox(), sandboxMissing)).toBe(
+      'ask',
+    );
+  });
+
+  it('does not auto-allow a command excluded from the sandbox', () => {
+    const settings = withSandbox({ excludedCommands: ['docker *'] });
+    expect(
+      evaluatePermission('Bash', { command: 'docker run x' }, settings, sandboxAvailable),
+    ).toBe('ask');
+    // A non-excluded command in the same configuration still auto-allows.
+    expect(evaluatePermission('Bash', { command: 'ls' }, settings, sandboxAvailable)).toBe('allow');
+  });
+
+  it('judges the whole command, not the first line, against excludedCommands', () => {
+    // tools/shell.ts matches the full trimmed command string. If this path
+    // matched only the first line it could auto-allow a call that Bash then
+    // runs on the host.
+    const command = 'echo hi\ndocker run --privileged evil';
+    const settings = withSandbox({ excludedCommands: [command] });
+    expect(evaluatePermission('Bash', { command }, settings, sandboxAvailable)).toBe('ask');
+  });
+
+  it('does not auto-allow when autoAllowBashIfSandboxed is false', () => {
+    const settings = withSandbox({ autoAllowBashIfSandboxed: false });
+    expect(evaluatePermission('Bash', { command: 'ls' }, settings, sandboxAvailable)).toBe('ask');
+  });
+
+  it('applies only to Bash, not to other tools', () => {
+    const settings = withSandbox();
+    expect(evaluatePermission('Write', { file_path: 'a.txt' }, settings, sandboxAvailable)).toBe(
+      'ask',
+    );
+    expect(
+      evaluatePermission('BashOutput', { shell_id: 'shell_1' }, settings, sandboxAvailable),
+    ).toBe('ask');
+  });
+
+  it('does not auto-allow a Bash call with no command argument', () => {
+    expect(evaluatePermission('Bash', {}, withSandbox(), sandboxAvailable)).toBe('ask');
+    expect(evaluatePermission('Bash', { command: '   ' }, withSandbox(), sandboxAvailable)).toBe(
+      'ask',
+    );
+  });
+
+  it('is inert under the shipped defaults, where sandbox.enabled is false', () => {
+    expect(DEFAULT_SETTINGS.sandbox.enabled).toBe(false);
+    expect(DEFAULT_SETTINGS.sandbox.autoAllowBashIfSandboxed).toBe(true);
+    expect(evaluatePermission('Bash', { command: 'ls' }, structuredClone(DEFAULT_SETTINGS))).toBe(
+      'ask',
+    );
+  });
+
+  // A deny glob is matched against one line of shell. The default ask is what
+  // catches everything the glob does not, so a deny list that exists but did
+  // not match must not be answered with "allow, it is sandboxed".
+  it('keeps the default ask when a deny rule exists but the command evades its glob', () => {
+    const settings = withSandbox();
+    settings.permissions.deny = ['Bash(rm *)'];
+    const verdict = evaluatePermissionDetail(
+      'Bash',
+      // README's own example rule; `getPrimaryArg` yields the whole line, which
+      // the glob `rm *` does not match.
+      { command: 'true && rm -rf .' },
+      settings,
+      sandboxAvailable,
+    );
+    expect(verdict.decision).toBe('ask');
+    expect(verdict.source).toBe('default');
+  });
+
+  it('keeps the default ask when an ask rule exists but the command evades its glob', () => {
+    const settings = withSandbox();
+    settings.permissions.ask = ['Bash(git push*)'];
+    expect(
+      evaluatePermission(
+        'Bash',
+        { command: 'true && git push --force' },
+        settings,
+        sandboxAvailable,
+      ),
+    ).toBe('ask');
+  });
+
+  // A shell line can perform the action any *other* tool's rule was written to
+  // gate, so a rule naming a different tool suppresses the auto-allow as well.
+  it('keeps the default ask when a deny rule targets a different tool', () => {
+    const settings = withSandbox();
+    settings.permissions.deny = ['Read(./.env)'];
+    expect(evaluatePermission('Bash', { command: 'cat .env' }, settings, sandboxAvailable)).toBe(
+      'ask',
+    );
+  });
+
+  // `allow` is a widening list, not an adjudication request: it never stood
+  // between the model and a command, so it does not suppress the auto-allow.
+  it('still auto-allows when only allow rules are configured', () => {
+    const settings = withSandbox();
+    settings.permissions.allow = ['Read(src/**)'];
+    expect(evaluatePermission('Bash', { command: 'ls' }, settings, sandboxAvailable)).toBe('allow');
   });
 });

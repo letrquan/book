@@ -1,8 +1,19 @@
 import type { AgentConfig } from './types/runtime.js';
 import type { CompactResult, CompactBoundary } from './types/sessions.js';
 import type { ImageAttachment, Message, Usage } from './types/messages.js';
-import type { HeadlessOptions, HeadlessResult } from './types/public-sdk.js';
-import type { UserQuestionResponse } from './types/tools.js';
+import type { HeadlessOptions, HeadlessPlanOutcome, HeadlessResult } from './types/public-sdk.js';
+import type {
+  PlanApprovalResult,
+  UserQuestionRequest,
+  UserQuestionResponse,
+} from './types/tools.js';
+import {
+  buildPlanApprovalQuestion,
+  planApprovalFromUserQuestionResponse,
+  planStopDecision,
+} from './tools/plan-mode.js';
+import { resolvePrintCommand, type PrintCommandDispatch } from './commands/print-dispatch.js';
+import type { CommandContext, HostCommandResult } from './types/commands.js';
 import type { AgentCompletionNotification } from './agents/types.js';
 import { createTerminalOutcome, type AgentTerminalOutcome } from './types/terminal.js';
 import { createAgentRunContext, type AgentRunContext, type AgentRunResult } from './types/runs.js';
@@ -21,6 +32,7 @@ import {
   buildAgentCompletionMessage,
   takeAgentCompletionBatch,
 } from './agents/completion-notification.js';
+import { getOrCreateAgentManager } from './agents/manager.js';
 import { resolvePermissionMode } from './permission-mode.js';
 import { assertHarnessModeAvailable, createHarnessCoordinator } from './harness/coordinator.js';
 
@@ -98,6 +110,51 @@ export async function runHeadless(
     // it, deny the tool — headless can't interactively prompt. Callers who want
     // full autonomy should pass mode: 'bypassPermissions'.
     const permissionRequired = async (): Promise<'deny'> => 'deny';
+
+    // The one interactive escape hatch this host has. Everything that needs a
+    // human decision (AskUserQuestion, plan approval) goes through it, so
+    // `userQuestionStatus` describes both.
+    const userQuestionStatus = opts.onUserQuestionRequired ? 'pending' : 'unavailable';
+    const askUser = async (
+      request: UserQuestionRequest,
+      context: { signal?: AbortSignal },
+    ): Promise<UserQuestionResponse> => {
+      try {
+        return opts.onUserQuestionRequired
+          ? await opts.onUserQuestionRequired(request, context)
+          : {
+              action: 'decline',
+              message: 'User input is unavailable in non-interactive mode.',
+            };
+      } catch (error) {
+        return {
+          action: 'cancel',
+          message: `User question handler failed: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    };
+
+    /**
+     * Plan approval without a terminal. `bypassPermissions` still auto-approves.
+     * A host that supplied a question handler answers the plan through it. A
+     * host with no handler cannot approve anything, so the run stops at the
+     * first plan instead of retrying ExitPlanMode until --max-turns is gone.
+     */
+    const decidePlanApproval = async (plan: string): Promise<PlanApprovalResult> => {
+      if (mode === 'bypassPermissions') return 'approve';
+      if (!opts.onUserQuestionRequired) return planStopDecision('approval_unavailable');
+      const request = buildPlanApprovalQuestion(plan, crypto.randomUUID());
+      emitAgentEvent({ type: 'user_question', request, status: userQuestionStatus }, opts, emit);
+      const response = await askUser(request, { signal: opts.signal });
+      emitAgentEvent({ type: 'user_question_result', requestId: request.id, response }, opts, emit);
+      return planApprovalFromUserQuestionResponse(request, response);
+    };
+    /**
+     * Set once a plan ends the run because this host could not approve it. Held
+     * in a box: the plan-approval callback assigns it from a closure, and a
+     * plain `let` would still read as `null` at the output sites below.
+     */
+    const planNotApplied: { outcome?: HeadlessPlanOutcome } = {};
 
     let lastUsage: Usage | null = null;
     let lastOutcome: AgentTerminalOutcome | null = null;
@@ -218,29 +275,23 @@ export async function runHeadless(
           emit({ type: 'mode_change', mode: newMode });
         }
       },
-      onPlanApprovalRequired: async () => {
-        const approved = mode === 'bypassPermissions';
-        if (opts.outputFormat === 'stream-json') {
-          emit({ type: 'plan_approval', status: approved ? 'approve' : 'reject' });
-        }
-        return approved ? 'approve' : 'reject';
-      },
-      onUserQuestionRequired: async (request, context): Promise<UserQuestionResponse> => {
-        try {
-          return opts.onUserQuestionRequired
-            ? await opts.onUserQuestionRequired(request, context)
-            : {
-                action: 'decline',
-                message: 'User input is unavailable in non-interactive mode.',
-              };
-        } catch (error) {
-          return {
-            action: 'cancel',
-            message: `User question handler failed: ${error instanceof Error ? error.message : String(error)}`,
+      onPlanApprovalRequired: async (plan) => {
+        const decision = await decidePlanApproval(plan);
+        if (typeof decision === 'object' && decision.decision === 'stop') {
+          planNotApplied.outcome = {
+            status: 'not_applied',
+            reason: decision.reason,
+            plan,
+            message: decision.message,
           };
         }
+        if (opts.outputFormat === 'stream-json') {
+          emit({ type: 'plan_approval', status: planApprovalStatus(decision) });
+        }
+        return decision;
       },
-      userQuestionStatus: opts.onUserQuestionRequired ? 'pending' : 'unavailable',
+      onUserQuestionRequired: askUser,
+      userQuestionStatus,
       onHookEvent: createHookEventHandler(opts, emit),
       onUsage: (nextUsage) => {
         lastUsage = nextUsage;
@@ -280,6 +331,7 @@ export async function runHeadless(
       displayMessage: string,
       userMessage: Message,
       runContext: AgentRunContext,
+      commandContext?: CommandContext,
     ): Promise<void> => {
       let runOutcome: AgentTerminalOutcome | undefined;
       lastUsage = null;
@@ -317,6 +369,10 @@ export async function runHeadless(
             parentSessionId: runtimeSessionId,
             runContext,
             runtime,
+            // Command frontmatter enforcement, exactly as the TUI passes it.
+            allowedTools: commandContext?.allowedTools,
+            modelOverride: commandContext?.modelOverride,
+            commands: commandContext ? [commandContext.command] : undefined,
           },
         });
       } catch (error) {
@@ -354,6 +410,65 @@ export async function runHeadless(
       });
     };
 
+    /**
+     * Expand one submitted line's leading `/command` through the same
+     * registries and the same `resolveCommandBody` the TUI uses. A command
+     * whose effect this host cannot perform throws
+     * `UnsupportedPrintCommandError` instead of reaching the model as a
+     * literal "/name" string.
+     *
+     * `runContext` is the root this line is accounted under — the same one a
+     * model turn for it would use — so a command the host performs by spawning
+     * agents is billed and budget-checked exactly like a turn.
+     */
+    const dispatchSubmittedPrompt = (
+      submitted: string,
+      runContext: AgentRunContext,
+    ): Promise<PrintCommandDispatch> =>
+      opts.expandSlashCommands === false
+        ? Promise.resolve({ kind: 'passthrough', prompt: submitted })
+        : resolvePrintCommand(submitted, {
+            config,
+            mode,
+            sessionId: runtimeSessionId,
+            signal: opts.signal,
+            agents: {
+              // Built only when an agent-backed command (`/review`) asks for it,
+              // and attached to this session's runtime so it is disposed with the
+              // run. Its events join the same stream-json output as the main loop,
+              // and its finished runs land in `runs` like any other execution.
+              manager: () =>
+                getOrCreateAgentManager(config, registry.getDefinitions(), {
+                  runtime,
+                  permissionMode: mode,
+                  eventSink: (event) => {
+                    if (event.type === 'agent_result') recordManagedRunResult(event.agent);
+                    emitAgentEvent(event, opts, emit);
+                  },
+                  hookEventSink: createHookEventHandler(opts, emit),
+                }),
+              runContext,
+            },
+          });
+
+    /**
+     * Slash commands the host performed itself, in submission order. A run made
+     * only of those never produces a turn outcome, and reporting it as
+     * `interrupted` would tell a machine caller that a review which completed
+     * had been cut short.
+     */
+    const commandResults: HostCommandResult[] = [];
+    /**
+     * Inclusive spend of the most recent host-performed command — the same
+     * "latest unit of work" `lastUsage` reports for a model turn.
+     *
+     * Kept separate rather than folded into `lastUsage`, which drives the
+     * cross-turn compaction decision: a review's child-agent totals were never
+     * in the parent's context window, and adding them there would compact the
+     * parent history against tokens it does not hold.
+     */
+    let commandUsage: Usage | null = null;
+
     // Collect prompts: text input -> single prompt; stream-json -> read stdin.
     const prompts: string[] = [];
     if (opts.inputFormat === 'text') {
@@ -380,18 +495,16 @@ export async function runHeadless(
       if (opts.prompt) prompts.unshift(opts.prompt);
     }
 
-    for (const prompt of prompts) {
-      const userMessage: Message = {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: prompt,
-        includeInContext: true,
-        kind: 'conversation',
-        timestamp: Date.now(),
-      };
+    for (const submitted of prompts) {
+      // The run exists before dispatch, not after it. A host-performed command
+      // spawns managed agents of its own, and those agents are only budgeted and
+      // accounted when they are spawned under a root that already carries
+      // `maxBudgetUsd` — resolving the command first would leave `/review`
+      // spending outside every cap the caller set.
+      const runId = crypto.randomUUID();
       const runContext = createAgentRunContext({
         sessionId: runtimeSessionId,
-        runId: userMessage.id,
+        runId,
         source: opts.runSource ?? 'headless',
         resumedFromRunId:
           runResults.length === 0
@@ -402,6 +515,60 @@ export async function runHeadless(
             : undefined,
       });
       runtime.runAccounting.startRoot(runContext, opts.maxBudgetUsd);
+
+      const dispatch = await dispatchSubmittedPrompt(submitted, runContext);
+      if (dispatch.kind === 'prompt' && dispatch.shellErrors?.length) {
+        // The TUI drops these silently; a non-interactive host that swallowed
+        // them would ship "[shell error: …]" into the prompt with no trace.
+        for (const shellError of dispatch.shellErrors) {
+          process.stderr.write(`warning: ${shellError}\n`);
+        }
+      }
+      if (dispatch.kind === 'handled') {
+        // The effect handler already did the work: no model turn for this line.
+        const handled: HostCommandResult = {
+          command: dispatch.command,
+          output: dispatch.output,
+          data: dispatch.data,
+        };
+        commandResults.push(handled);
+        const accounting = runtime.runAccounting.snapshotRoot(runContext.rootRunId);
+        commandUsage = accounting.inclusiveUsage ?? commandUsage;
+        recordRunResult({
+          context: runContext,
+          outcome: createTerminalOutcome('completed', 'normal_completion', {
+            partialOutput: false,
+          }),
+          // The host itself made no provider call; everything spent here was
+          // spent by the agents this command ran, which is the inclusive figure.
+          usage: accounting.inclusiveUsage,
+          accounting,
+          ambient: runtime.snapshotRunAmbient(runContext.runId),
+        });
+        if (opts.outputFormat === 'text') {
+          if (dispatch.output) stdout.write(`${dispatch.output}\n`);
+        } else if (
+          opts.outputFormat === 'stream-json' &&
+          (dispatch.output !== undefined || dispatch.data !== undefined)
+        ) {
+          // One record carries both renderings: `output` for a human reading the
+          // stream, `data` for the machine contract (see review/host.ts).
+          // Only on the line-delimited wire: `json` is a single-document format,
+          // and a second top-level object there breaks `JSON.parse(stdout)`.
+          emit({ type: 'command_result', ...handled });
+        }
+        continue;
+      }
+      const prompt = dispatch.prompt;
+      const commandContext = dispatch.kind === 'prompt' ? dispatch.commandContext : undefined;
+      const userMessage: Message = {
+        id: runId,
+        role: 'user',
+        content: prompt,
+        includeInContext: true,
+        kind: 'conversation',
+        timestamp: Date.now(),
+      };
 
       // Cross-turn auto-compact before appending the new user message.
       const contextLimit = resolveContextLimit(config);
@@ -462,13 +629,16 @@ export async function runHeadless(
       const contextMessage = recorded.contextMessage;
       transcript.push(userMessage);
       rootContexts.set(runContext.rootRunId, runContext);
-      await runParentTurn(contextMessage, prompt, userMessage, runContext);
+      await runParentTurn(contextMessage, prompt, userMessage, runContext, commandContext);
+      // An unapprovable plan is the deliverable: queued prompts would only
+      // re-plan against a workspace nothing is allowed to change.
+      if (planNotApplied.outcome) break;
     }
 
     // Background children outlive the root tool call. Keep the runtime alive,
     // feed each completion back through the parent model, and acknowledge only
     // after that continuation turn succeeds.
-    const managedAgentManager = runtime.agentManager;
+    const managedAgentManager = planNotApplied.outcome ? undefined : runtime.agentManager;
     if (managedAgentManager) {
       const deliveredCompletionIds = new Set(
         transcript.flatMap((message) =>
@@ -546,19 +716,26 @@ export async function runHeadless(
 
     const outcome =
       lastOutcome ??
-      createTerminalOutcome('interrupted', 'missing_terminal', {
-        partialOutput: transcript.some((message) => message.role === 'assistant'),
-      });
+      (commandResults.length > 0
+        ? createTerminalOutcome('completed', 'normal_completion', { partialOutput: false })
+        : createTerminalOutcome('interrupted', 'missing_terminal', {
+            partialOutput: transcript.some((message) => message.role === 'assistant'),
+          }));
     runResults.sort((left, right) => left.context.startedAt - right.context.startedAt);
+    // A run made only of host-performed commands has no last turn, so reporting
+    // `null` would say "this cost nothing" about work that really spent tokens.
+    const reportedUsage = lastUsage ?? commandUsage;
     const result: HeadlessResult = {
       messages: contextHistory,
       transcript,
       compactBoundaries,
-      usage: lastUsage,
+      usage: reportedUsage,
       accounting: runtime.runAccounting.snapshotAll(),
       outcome,
       runs: runResults,
       sessionId,
+      plan: planNotApplied.outcome,
+      commandResults,
     };
 
     if (opts.jsonSchema) {
@@ -591,18 +768,30 @@ export async function runHeadless(
     }
 
     if (opts.outputFormat === 'text') {
-      const last = lastAssistantText(contextHistory);
-      if (last) stdout.write(last + '\n');
+      const stopped = planNotApplied.outcome;
+      if (stopped) {
+        // The plan is the deliverable when nothing could approve it; the
+        // trailing status line keeps "produced a plan" from reading as
+        // "did the work".
+        stdout.write(`${stopped.plan}\n\n${stopped.message}\n`);
+      } else {
+        const last = lastAssistantText(contextHistory);
+        if (last) stdout.write(last + '\n');
+      }
     } else if (opts.outputFormat === 'json') {
+      // Exactly one top-level document: everything the run produced, including
+      // commands the host performed itself, is carried here.
       emit({
         result: {
           messages: contextHistory,
-          usage: lastUsage,
+          usage: reportedUsage,
           accounting: result.accounting,
           outcome,
           runs: runResults,
           structured: result.structured,
           structuredError: result.structuredError,
+          plan: result.plan,
+          commandResults,
         },
       });
     } else if (opts.outputFormat === 'stream-json') {
@@ -610,12 +799,14 @@ export async function runHeadless(
         type: 'result',
         result: {
           messages: contextHistory,
-          usage: lastUsage,
+          usage: reportedUsage,
           accounting: result.accounting,
           outcome,
           runs: runResults,
           structured: result.structured,
           structuredError: result.structuredError,
+          plan: result.plan,
+          commandResults,
         },
       });
     }
@@ -652,6 +843,11 @@ function lastAssistantText(history: Message[]): string {
     if (m.role === 'assistant' && m.content) return m.content;
   }
   return '';
+}
+
+/** Wire status for the `plan_approval` stream-json event: approve | approve-fresh | reject | revise | stop. */
+function planApprovalStatus(decision: PlanApprovalResult): string {
+  return typeof decision === 'string' ? decision : decision.decision;
 }
 
 type HeadlessEmit = (event: unknown) => void;
