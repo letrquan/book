@@ -62,7 +62,20 @@ function requestBody(provider: ScriptedProvider, index = 0): ProviderRequestBody
 function lastUserText(provider: ScriptedProvider, index = 0): string {
   const messages = requestBody(provider, index).messages;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') return JSON.stringify(messages[i].content);
+    if (messages[i].role !== 'user') continue;
+    const content = messages[i].content;
+    // Return the text the model saw, not its JSON encoding: stringifying
+    // escapes backslashes, so Windows paths never match toContain().
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((block) => {
+          const text = (block as { text?: unknown }).text;
+          return typeof text === 'string' ? text : '';
+        })
+        .join('\n');
+    }
+    return JSON.stringify(content);
   }
   throw new Error('no user message in provider request');
 }
