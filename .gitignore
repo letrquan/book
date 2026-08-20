@@ -8,8 +8,12 @@ evals/harness/reports/
 .book/settings.local.json
 .book/migrations.json
 
-# Claude Code / Book local session state (worktrees, memory, scratch)
-.claude/
+# Claude Code / Book local session state (worktrees, memory, scratch).
+# Skills are project tooling and are tracked; everything else here stays local.
+# Must be `.claude/*`, not `.claude/` — git cannot re-include a path whose parent
+# directory is excluded.
+.claude/*
+!.claude/skills/
 
 # Research & scrape scratch (not part of the Book product)
 _research/
