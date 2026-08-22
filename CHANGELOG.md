@@ -123,6 +123,15 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **`book doctor` now runs without a working credential.** Doctor resolved its config through the
+  throwing `loadConfig`, so the single most common broken environment — no `BOOK_API_KEY` — killed
+  it with an unhandled stack trace before it reached the `BOOK_API_KEY: (not set)` line it was
+  about to print. The command a user reaches for when nothing works now reports a missing
+  credential as a finding (`Credentials: not resolved`) instead of dying on it. A new
+  `src/cli/subcommands.contract.test.ts` holds every non-interactive subcommand — `doctor`,
+  `config`, `mcp list`, `tool-stats` — to running with no API key configured, so the class of
+  regression cannot come back through another command.
+
 - **The `Stop` hook fires once per run instead of once per provider turn.** It ran inside the turn
   loop, so a task that took twelve tool-call turns invoked it twelve times — a hook meant to
   observe "the agent finished" observed "a round-trip finished". It now runs after the loop exits,

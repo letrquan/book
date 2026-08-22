@@ -51,11 +51,12 @@ async function doctorOutput(): Promise<string> {
 beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'book-doctor-ws-'));
   bookHome = mkdtempSync(join(tmpdir(), 'book-doctor-home-'));
-  // loadConfig throws without an API key, so doctor needs one to reach the
-  // sandbox section at all.
+  // Doctor is the command a user reaches for when nothing works, so no test here
+  // may hand it a credential: clearing the key means every case below also proves
+  // the report survives an unconfigured environment.
   for (const key of ['BOOK_HOME', 'BOOK_API_KEY']) previousEnv[key] = process.env[key];
   process.env.BOOK_HOME = bookHome;
-  process.env.BOOK_API_KEY = 'test-key';
+  delete process.env.BOOK_API_KEY;
 });
 
 afterEach(() => {
@@ -123,5 +124,28 @@ describe('runDoctorCommand sandbox policy', () => {
     const output = await doctorOutput();
 
     expect(output).toContain('Excluded commands: 2');
+  });
+});
+
+describe('runDoctorCommand credentials', () => {
+  it('reports the whole diagnostic when no credential is configured', async () => {
+    writeSettings({ enabled: false });
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('Credentials: not resolved');
+    // The environment section is the last thing doctor prints. Reaching it proves
+    // the report ran end to end rather than aborting on the missing key.
+    expect(output).toContain('BOOK_API_KEY: (not set)');
+  });
+
+  it('reports a resolved credential without echoing its value', async () => {
+    writeSettings({ enabled: false });
+    process.env.BOOK_API_KEY = 'test-key';
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('Credentials: resolved');
+    expect(output).not.toContain('test-key');
   });
 });

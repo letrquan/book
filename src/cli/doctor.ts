@@ -6,7 +6,9 @@ import { discoverAgents } from '../subagent-discovery.js';
 import { resolveBookHome } from '../book-home.js';
 
 export async function runDoctorCommand(workspace: string): Promise<void> {
-  const config = loadConfig(workspace, { runMigrations: true });
+  // Doctor must diagnose a broken environment, so it cannot require a working one:
+  // a missing credential is a finding to report, not a reason to abort.
+  const config = loadConfig(workspace, { runMigrations: true, allowMissingApiKey: true });
   const settings = config.settings;
 
   console.log('Book Doctor');
@@ -17,6 +19,12 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   console.log('Platform:', process.platform, process.arch);
   console.log('Workspace:', config.workspace);
   console.log('Model:', config.model, '(' + config.baseUrl + ')');
+  console.log(
+    'Credentials:',
+    config.apiKey
+      ? 'resolved'
+      : 'not resolved - set BOOK_API_KEY or provider.<id>.apiKey in settings',
+  );
   console.log();
 
   // Settings layers.
