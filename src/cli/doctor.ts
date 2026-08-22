@@ -47,6 +47,34 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   console.log('  Allow rules: ' + perms.allow.length);
   console.log('  Ask rules:   ' + perms.ask.length);
   console.log('  Deny rules:  ' + perms.deny.length);
+
+  // Allow rules the repository declared are withheld until the user decides on
+  // them, so doctor is where an unexplained "my project rule does nothing" is
+  // meant to be answered.
+  const { loadSettingsFile } = await import('../settings-loader.js');
+  const { partitionProjectAllowRules } = await import('../permission-approvals.js');
+  const projectSettings = loadSettingsFile(join(config.workspace, '.book', 'settings.json'));
+  const projectAllow = partitionProjectAllowRules(
+    projectSettings?.permissions?.allow ?? [],
+    perms.projectAllowRules,
+  );
+  if (
+    projectAllow.approved.length + projectAllow.pending.length + projectAllow.rejected.length >
+    0
+  ) {
+    console.log('  Project-declared allow rules (require approval):');
+    for (const rule of projectAllow.approved) console.log('    [x] ' + rule);
+    for (const rule of projectAllow.rejected) console.log('    [-] ' + rule + ' (rejected)');
+    for (const rule of projectAllow.pending) console.log('    [!] ' + rule + ' (not in effect)');
+    if (projectAllow.pending.length > 0) {
+      console.log(
+        '    Approve with: book config set permissions.projectAllowRules ' +
+          `'${JSON.stringify(
+            Object.fromEntries(projectAllow.pending.map((rule) => [rule, 'approved'])),
+          )}'`,
+      );
+    }
+  }
   console.log();
 
   // Hooks.

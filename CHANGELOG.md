@@ -50,6 +50,15 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **A repository can no longer widen your permissions by shipping a `permissions.allow` rule.**
+  Allow rules accumulate across settings layers, so a rule in a cloned repository's checked-in
+  `.book/settings.json` joined the effective allow list — reaching the outcome that project layers
+  are already forbidden from selecting via `defaultMode: bypassPermissions`. Once merged a rule
+  carried no provenance, so nothing downstream could tell a repository's grant from your own. Such
+  rules are now withheld until you record a decision, stored per workspace in the gitignored
+  `.book/settings.local.json`. `ask` and `deny` rules are unaffected: they only ever restrict.
+  `book doctor` lists what is withheld and prints the command that grants it.
+
 - **`connectMcpServers()` now fails closed when no host has adjudicated approval.** Called without
   an explicit server list it resolved every declared server — user-global *and* repository-declared
   — and connected them all, so the project-server approval gate held only because each caller
@@ -130,7 +139,6 @@ All notable changes to this project are documented in this file.
   exact pin.
 
 ### Fixed
-
 - **`book doctor` now runs without a working credential.** Doctor resolved its config through the
   throwing `loadConfig`, so the single most common broken environment — no `BOOK_API_KEY` — killed
   it with an unhandled stack trace before it reached the `BOOK_API_KEY: (not set)` line it was

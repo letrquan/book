@@ -8,6 +8,7 @@ import {
 } from './settings.js';
 import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
 import { resolveBookHome } from './book-home.js';
+import { partitionProjectAllowRules } from './permission-approvals.js';
 import { assertHarnessModeAvailable } from './harness/coordinator.js';
 
 const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
@@ -98,6 +99,7 @@ export type SettingsLayerTrust = 'trusted' | 'local' | 'repository';
  */
 const REPOSITORY_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
   ['mcp', 'projectServers'],
+  ['permissions', 'projectAllowRules'],
 ];
 
 function sanitizeLayer(
@@ -200,7 +202,17 @@ export function resolveSettings(
   // Layer 2: Project settings (<workspace>/.book/settings.json)
   const projectPath = paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json');
   const project = loadSettingsFile(projectPath);
-  if (project) resolved = mergeLayer(resolved, project, 'repository');
+  // `allow` rules from the repository layer are held back rather than merged:
+  // they only widen authority, and the decisions that release them live in the
+  // local layer, which has not been merged yet.
+  const declaredProjectAllow = project?.permissions?.allow ?? [];
+  if (project) {
+    const withheld =
+      declaredProjectAllow.length > 0
+        ? { ...project, permissions: { ...project.permissions, allow: [] } }
+        : project;
+    resolved = mergeLayer(resolved, withheld, 'repository');
+  }
 
   // Layer 3: Local settings (<workspace>/.book/settings.local.json)
   const localPath = paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json');
@@ -211,6 +223,18 @@ export function resolveSettings(
   if (overridePath) {
     const override = loadSettingsFile(overridePath);
     if (override) resolved = mergeLayer(resolved, override, 'trusted');
+  }
+
+  // Every layer that can record a decision is merged now, so the withheld
+  // repository rules can be released — approved ones only.
+  if (declaredProjectAllow.length > 0) {
+    const { approved } = partitionProjectAllowRules(
+      declaredProjectAllow,
+      resolved.permissions?.projectAllowRules,
+    );
+    if (approved.length > 0) {
+      resolved.permissions.allow = [...(resolved.permissions.allow ?? []), ...approved];
+    }
   }
 
   const settings = bookSettingsSchema.parse(resolved) as ResolvedSettings;

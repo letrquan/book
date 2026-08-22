@@ -44,7 +44,10 @@ reference for roadmap and design documents.
   exact.
 - Layered settings (`~/.book`, project `.book`, local `.book`, and `--settings`), atomic writes,
   legacy `.bookrc.json` fallback and legacy-permissions migration, permissions whose `deny` rules
-  bind in every permission mode, hooks, optional bubblewrap sandbox, themes, auto-memory, rewind
+  bind in every permission mode, project-declared `permissions.allow` rules held until the user
+  approves them (`ask`/`deny` apply immediately; `book doctor` reports what is withheld and how
+  to grant it), trust-decision keys ignored from the checked-in project layer so a repository
+  cannot approve its own MCP servers or allow rules, hooks, optional bubblewrap sandbox, themes, auto-memory, rewind
   snapshots, telemetry, and diagnostics. Every declared sandbox key is now read by an execution or
   permission path: `sandbox.allowUnsandboxedCommands` can refuse any command that would leave the
   namespace, and `sandbox.autoAllowBashIfSandboxed` can replace the default ask for a command that

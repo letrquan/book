@@ -225,6 +225,16 @@ Scalar values use the highest-priority layer. Permission rules, hook lists, and
 `additionalDirectories` accumulate in layer order; directory entries are normalized and
 deduplicated. Other arrays are replaced by the highest-priority layer that defines them.
 
+Two exceptions apply to the **project** layer (`<workspace>/.book/settings.json`), because that
+file is checked in and controlled by whoever wrote the repository:
+
+- A `permissions.allow` rule it declares is withheld until you approve it. `ask` and `deny` rules
+  apply immediately — they only ever restrict. `book doctor` lists withheld rules and prints the
+  `book config set permissions.projectAllowRules ...` command that grants them; decisions are
+  stored per workspace in the gitignored `.book/settings.local.json`.
+- Keys recording a trust decision — `mcp.projectServers` and `permissions.projectAllowRules` —
+  are ignored from that layer entirely, so a repository cannot approve itself.
+
 `book config set` and TUI preference changes validate the complete local document before writing.
 
 Set `defaultMode` in user-global `~/.book/settings.json` to choose the permission mode used by
