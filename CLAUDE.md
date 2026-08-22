@@ -140,6 +140,7 @@ The `tui/` tree (root `app.tsx`, `hooks/`, and `components/`) is broad but disco
 - **Entry points are never imported**: implementation modules must not import `index.ts` or `sdk.ts`.
 - **`tui/` is a leaf**: non-TUI code must not import from `tui/`.
 - **No blocking child-process APIs**: production code must not use `execFileSync` / `execSync` / `spawnSync`. Use async spawns.
+- **Process termination goes through `cli/exit.ts`**: a direct `process.exit()` is rejected outside the build entry points (`index.ts`, `sdk.ts`, `job-runner.ts`), which own their own process lifetime, and the `cli/exit.ts` seam itself.
 
 Other conventions:
 
@@ -163,7 +164,8 @@ Other conventions:
     memoized on the `Message`; every rebuild must reproduce earlier turns byte-for-byte.
 - **Cache breakpoints**: exactly three per Anthropic request — last tool, cached system
   block, last message (moving). The limit is four; `countCacheBreakpoints` guards it.
-- **`process.exit()` goes through the `cli/exit.ts` abstraction** (allows test injection).
+- **`process.exit()` goes through the `cli/exit.ts` abstraction** (allows test injection); this is enforced by the architecture check, not just convention.
+- **Non-interactive subcommands run without credentials**: `doctor`, `config`, `mcp`, and `tool-stats` exist to help a user whose provider is not working, so they must never require one. `src/cli/subcommands.contract.test.ts` enforces this.
 
 ## Testing
 

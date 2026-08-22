@@ -3,7 +3,14 @@ import { dirname, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 interface Violation {
-  kind: 'layer' | 'entrypoint' | 'cycle' | 'type-hub' | 'blocking-process' | 'harness-boundary';
+  kind:
+    | 'layer'
+    | 'entrypoint'
+    | 'cycle'
+    | 'type-hub'
+    | 'blocking-process'
+    | 'harness-boundary'
+    | 'process-exit';
   source: string;
   target: string;
   detail: string;
@@ -12,6 +19,13 @@ interface Violation {
 const IMPORT_PATTERN = /(?:import|export)\s+(type\s+)?(?:[^'";]+?\s+from\s+)?['"]([^'"]+)['"]/g;
 const CHILD_PROCESS_IMPORT_PATTERN = /from\s+['"](?:node:)?child_process['"]/;
 const SYNC_PROCESS_API_PATTERN = /\b(?:execFileSync|execSync|spawnSync)\b/;
+const PROCESS_EXIT_PATTERN = /\bprocess\.exit\s*\(/;
+/**
+ * Modules allowed to terminate the process directly. Build entry points own their
+ * own process lifetime, and `cli/exit.ts` is the injectable seam itself. Everything
+ * else must call `exit()` so tests can capture the code instead of dying.
+ */
+const PROCESS_LIFETIME_OWNERS = new Set(['index.ts', 'sdk.ts', 'job-runner.ts', 'cli/exit.ts']);
 const LIVE_RUNTIME_PREFIXES = [
   'agent/',
   'agents/',
@@ -36,6 +50,17 @@ const TRUSTED_KERNEL_FILES = new Set([
   'sandbox.ts',
   'secret-detect.ts',
 ]);
+
+/** True when the file really calls process.exit(), ignoring mentions in comments. */
+function callsProcessExit(text: string): boolean {
+  return text.split('\n').some((line) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) {
+      return false;
+    }
+    return PROCESS_EXIT_PATTERN.test(line);
+  });
+}
 
 function isEvaluationModule(path: string): boolean {
   return path.startsWith('harness/evaluation/');
@@ -97,6 +122,18 @@ export function checkArchitecture(srcRoot: string): Violation[] {
         source: sourceName,
         target: 'child_process',
         detail: 'Production code must not use synchronous child-process APIs.',
+      });
+    }
+    if (
+      !PROCESS_LIFETIME_OWNERS.has(sourceName) &&
+      !sourceName.startsWith('test/') &&
+      callsProcessExit(text)
+    ) {
+      violations.push({
+        kind: 'process-exit',
+        source: sourceName,
+        target: 'cli/exit.ts',
+        detail: 'Process termination must go through the injectable exit() abstraction.',
       });
     }
     for (const match of text.matchAll(IMPORT_PATTERN)) {
