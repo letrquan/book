@@ -162,3 +162,46 @@ describe('CLI --settings flag', () => {
     expect(result.stderr).toContain('Unknown harness workflow "not-a-workflow"');
   }, 20000);
 });
+
+describe('subcommand --workspace targeting', () => {
+  // The root command and every subcommand both declare -w/--workspace. Without
+  // positional option parsing, commander routes a -w that follows a subcommand
+  // to the root, silently leaving the subcommand on its process.cwd() default.
+  // These assert the flag has an *effect*, not merely that the CLI exits 0 —
+  // the earlier tests passed throughout the regression because they only
+  // checked the exit status.
+  it('reads settings from the workspace the flag names', () => {
+    dir = mkdtempSync(join(tmpdir(), 'book-cli-'));
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(
+      join(dir, '.book', 'settings.json'),
+      JSON.stringify({ model: 'flagged-workspace-model' }),
+    );
+
+    expect(runCli(['config', '--workspace', dir, 'get', 'model'])).toContain(
+      'flagged-workspace-model',
+    );
+    // The flag must work on either side of the positional arguments.
+    expect(runCli(['config', 'get', 'model', '--workspace', dir])).toContain(
+      'flagged-workspace-model',
+    );
+  }, 20000);
+
+  it('writes into the named workspace and not the current directory', () => {
+    dir = mkdtempSync(join(tmpdir(), 'book-cli-'));
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(
+      join(dir, '.book', 'settings.json'),
+      JSON.stringify({ harness: { mode: 'observe' } }),
+    );
+
+    const cwdLocalSettings = join(process.cwd(), '.book', 'settings.local.json');
+    const existedBefore = existsSync(cwdLocalSettings);
+
+    runCli(['config', '--workspace', dir, 'set', 'harness.workflow', 'safe-edit']);
+
+    expect(existsSync(join(dir, '.book', 'settings.local.json'))).toBe(true);
+    // Running the suite must never write real settings into the repository.
+    if (!existedBefore) expect(existsSync(cwdLocalSettings)).toBe(false);
+  }, 20000);
+});

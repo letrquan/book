@@ -139,6 +139,16 @@ All notable changes to this project are documented in this file.
   exact pin.
 
 ### Fixed
+
+- **`book <subcommand> --workspace <path>` acted on the current directory instead.** The root
+  command and every subcommand both declare `-w/--workspace`; under commander 15 a `-w` following a
+  subcommand is routed to the root, leaving the subcommand on its `process.cwd()` default. `book
+  doctor`, `config`, `mcp`, and `tool-stats` all reported on the wrong directory, and `book config
+  set --workspace <path>` wrote settings into the current one. Enabling positional option parsing
+  restores per-subcommand targeting. The CLI tests asserted only exit status, so the regression
+  arrived green with the commander 14 to 15 bump; they now assert the flag has an effect, including
+  that a run does not write settings into the repository it is executed from.
+
 - **`book doctor` now runs without a working credential.** Doctor resolved its config through the
   throwing `loadConfig`, so the single most common broken environment — no `BOOK_API_KEY` — killed
   it with an unhandled stack trace before it reached the `BOOK_API_KEY: (not set)` line it was

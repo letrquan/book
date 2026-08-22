@@ -21,6 +21,12 @@ function collectOption(value: string, previous: string[]): string[] {
 program
   .name('book')
   .description('AI coding agent with rich TUI')
+  // Root and subcommands both declare -w/--workspace. Without positional
+  // option parsing, commander 15 routes a -w that follows a subcommand to the
+  // root command, leaving the subcommand on its process.cwd() default: every
+  // `book <subcommand> --workspace <path>` silently acted on the wrong
+  // directory, and `book config set` wrote settings into the current one.
+  .enablePositionalOptions()
   .version(getPackageVersion())
   .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
   .option('-m, --model <model>', 'Model to use')
