@@ -36,7 +36,8 @@ reference for roadmap and design documents.
 - MCP tools connect over stdio, Streamable HTTP, or legacy SSE. The interactive host prompts before
   using project declarations, answers server form elicitation, refreshes dynamic tool lists, and
   exposes `/mcp` plus `book mcp list|get|add|remove`; print/SDK modes use only user or
-  already-approved servers and declare the elicitation capability only when the caller supplies a
+  already-approved servers, and `connectMcpServers()` itself refuses project-declared servers when
+  a caller supplies no approved list, so the gate does not depend on each caller remembering it and declare the elicitation capability only when the caller supplies a
   handler. Elicitation requests Book cannot render faithfully — URL mode, or schemas outside the
   protocol's primitive subset — are declined. Permission rules scope to a server: a bare
   `mcp__<server>` rule covers every tool that server exposes, while `mcp__<server>__<tool>` stays

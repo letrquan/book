@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -166,7 +166,12 @@ export function createMcpStdioFixture(
       ];
     }),
   );
-  writeFileSync(join(workspace, '.mcp.json'), JSON.stringify({ mcpServers }));
+  // Written to the user-scoped location, not <workspace>/.mcp.json: these fixtures
+  // exercise stdio transport lifecycle, not the project-server trust boundary.
+  // Consumers pass `home: workspace`, so this resolves as a user-owned server and
+  // does not depend on connectMcpServers' fail-closed handling of project servers.
+  mkdirSync(join(workspace, '.book'), { recursive: true });
+  writeFileSync(join(workspace, '.book', 'mcp.json'), JSON.stringify({ mcpServers }));
   return {
     workspace,
     cleanup: () => rmSync(workspace, { recursive: true, force: true }),

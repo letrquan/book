@@ -50,6 +50,14 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **`connectMcpServers()` now fails closed when no host has adjudicated approval.** Called without
+  an explicit server list it resolved every declared server — user-global *and* repository-declared
+  — and connected them all, so the project-server approval gate held only because each caller
+  remembered to pass an approved subset. It now connects user-scoped servers only and reports each
+  project-declared server it refused, by name and config path. No shipped caller changes behavior:
+  the TUI, headless, and SDK paths all supply an explicit list already. What changes is that a
+  future caller cannot reach a repository-controlled server by omitting an argument.
+
 - **`permissions.deny` rules now hold in every permission mode.** The hard-deny check ran only for
   file-mutating tools, and `auto` and `bypassPermissions` skip the permission block entirely — so
   in those two modes a deny rule was enforced for `Write` and `Edit` and silently ignored for

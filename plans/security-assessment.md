@@ -1,7 +1,7 @@
 # Security Assessment and Remediation Plan
 
 - **Original assessment:** 2026-07-21
-- **Current status:** Updated 2026-08-14; active risk register
+- **Current status:** Updated 2026-08-22; active risk register
 - **Priority:** Close the three cheap containment gaps now; add an explicit workspace trust
   boundary before treating cloned project configuration as executable policy.
 
@@ -32,7 +32,7 @@ engineering estimate for the remediation described in the linked finding.
 | --- | --- | --- | --- |
 | Shell sandbox | Resolved (Linux) | — | Sandboxed commands spawn as a direct argv with `shell: false`, so no host shell parses the command and metacharacters stay inside the namespace. Declared `filesystem` mounts are applied after the workspace bind; `network` domain rules fail closed to `--unshare-net`. Covers foreground Bash, session background shells, and persistent jobs. Remaining scope: no macOS (`sandbox-exec`) or Windows implementation. |
 | Project permission allow-rules | Open - critical | S | `defaultMode: bypassPermissions` is blocked, but project-layer `permissions.allow` concatenates into the resolved allow list and reaches the same outcome. |
-| MCP in headless/SDK flows | Open - critical | S | A fingerprinted approval gate now exists but is wired into the TUI only; headless and SDK entry points connect project servers directly. |
+| MCP in headless/SDK flows | Resolved | — | No entry point connects an unapproved project server. Headless (`src/cli/run.ts`) and the SDK (`src/sdk.ts`) partition declared servers by approval and pass only the allowed subset, naming each skipped server. `connectMcpServers()` itself now fails closed: called without an explicit list it connects user-scoped servers only and reports each project-declared server it refused. |
 | Project hooks | Open - critical | M | Project hook entries concatenate into the resolved hook list and execute during lifecycle events. |
 | Project providers/credentials | Open - critical | M | Lower-trust project provider blocks can select endpoints and credential references. |
 | Workspace trust | Open - critical | L | There is no user-owned trust database or first-open review gate. Type contracts are reserved but unimplemented. |
@@ -142,14 +142,15 @@ one-time consent persisted in `.book/settings.local.json`, keyed by a SHA-256 fi
 full connection configuration, with config changes invalidating the decision and re-prompting.
 User-global servers are trusted without prompting, which is correct.
 
-That gate is reached only through `McpSessionHost` (`src/cli/run.ts:275`), the interactive path. The
-headless runner (`src/cli/run.ts:169`) and the SDK (`src/sdk.ts:134`) call `connectMcpServers()`
-from `src/mcp.ts` directly, with no approval partition. Project-declared MCP servers therefore
-start local processes without consent in exactly the flows most likely to run unattended — CI,
-automation, and embedding.
+The interactive path reaches that gate through `McpSessionHost`. The headless runner and the SDK
+reach it through `partitionMcpServersByApproval`, connecting only the allowed subset and warning
+per skipped server by name.
 
-This is the highest value-per-effort item on the register: the control exists and correct behavior
-is already specified: it needs to move below the entry points rather than sit beside one of them.
+The remediation below proposed forbidding direct `connectMcpServers` imports. What shipped instead
+puts the control inside the function: given no explicit server list, `connectMcpServers()` connects
+user-scoped servers only and refuses every project-declared one with a named diagnostic. A caller
+that omits the list therefore fails closed rather than inheriting whatever the workspace declared,
+which removes the trap without needing a lint rule to police it.
 
 Required remediation:
 
@@ -268,11 +269,12 @@ Required remediation:
 Each assertion names where it should live. Items marked *mechanical* belong in
 `scripts/check-architecture.ts` so a violation fails `npm run check` rather than relying on review.
 
-1. *Mechanical.* `connectMcpServers` must not be imported outside the approval-gated resolver
-   module. Current direct callers to migrate: `src/cli/run.ts` (headless branch) and `src/sdk.ts`.
-   (finding 3)
+1. ~~*Mechanical.* `connectMcpServers` must not be imported outside the approval-gated resolver
+   module.~~ Superseded: the function fails closed on its own, so a direct import cannot reach an
+   unapproved project server. Covered by `src/mcp.test.ts`
+   ("spawns the user-scoped server but never the project-declared one"). (finding 3)
 2. Headless and SDK runs do not connect an unapproved project MCP server, and report each skipped
-   server by name. `src/mcp-approvals.test.ts`. (finding 3)
+   server by name. Satisfied at the entry points and again inside `connectMcpServers`. (finding 3)
 3. A project-layer `permissions.allow` entry does not grant execution without approval, and a
    user-global `permissions.deny` entry cannot be weakened by any lower layer.
    `src/settings-loader.test.ts`. (finding 2)
