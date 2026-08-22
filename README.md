@@ -20,7 +20,7 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **MCP**: interoperable MCP tool client with stdio, Streamable HTTP, and legacy SSE transports;
   interactive project-server approval, secret-safe diagnostics, dynamic tool discovery, and
   server-scoped permissions.
-- **CLI helpers**: `book doctor` (diagnose env/config), `book config` (get/set/list settings), and `book tool-stats` (measure tool use across sessions — fail counts, rates, durations).
+- **CLI helpers**: `book doctor` (diagnose env/config), `book config` (get/set/list settings), and `book tool-stats` (measure tool use across sessions — fail counts, rates, durations). None of them require a working credential — they exist to help when the provider is not yet configured, so `book doctor` reports an unresolved key as a finding rather than failing on it.
 
 See [`docs/current-state.md`](./docs/current-state.md) for the verified product snapshot, [`MILESTONES.md`](./MILESTONES.md) for the current roadmap, and [`CHANGELOG.md`](./CHANGELOG.md) for release notes.
 
@@ -62,7 +62,7 @@ book -p "Run tests" --output-format stream-json
 book --resume <id-or-name>
 book --continue  # most recent session in current directory
 
-# Diagnose setup / edit settings from the shell
+# Diagnose setup / edit settings from the shell (these run without a configured credential)
 book doctor
 book config list
 book config get permissions.deny

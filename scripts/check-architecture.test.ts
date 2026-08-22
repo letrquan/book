@@ -225,3 +225,50 @@ describe('checkArchitecture', () => {
     }
   });
 });
+
+describe('checkArchitecture process termination', () => {
+  it('rejects a direct process.exit() outside the exit abstraction', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      mkdirSync(join(dir, 'cli'));
+      writeFileSync(join(dir, 'cli', 'thing.ts'), 'export function f() {\n  process.exit(1);\n}\n');
+
+      expect(checkArchitecture(dir)).toEqual([
+        expect.objectContaining({
+          kind: 'process-exit',
+          source: 'cli/thing.ts',
+          target: 'cli/exit.ts',
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Entry points are spawned as their own process, so they own when it ends.
+  it('allows a build entry point to terminate its own process', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      writeFileSync(join(dir, 'job-runner.ts'), 'process.exit(1);\n');
+
+      expect(checkArchitecture(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Documentation that names the banned call must not read as a violation.
+  it('ignores process.exit() mentioned in a comment', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'book-architecture-'));
+    try {
+      writeFileSync(
+        join(dir, 'note.ts'),
+        '/**\n * Prefer exit() instead of calling process.exit() directly.\n */\nexport {};\n',
+      );
+
+      expect(checkArchitecture(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
