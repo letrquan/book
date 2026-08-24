@@ -123,10 +123,10 @@ describe('built-in editorial themes', () => {
       // copy, which is exactly what H1 did when it was set to `text`.
       const ramp = [theme.mdHeadingH1, theme.mdHeadingH2, theme.mdHeading];
       expect(new Set(ramp).size).toBe(3);
-      // H2 sits at `text` on purpose — bold plus the blank row above carries
-      // it. H1 and H3+ must not, or they collapse into body copy.
-      expect(theme.mdHeadingH1).not.toBe(theme.text);
-      expect(theme.mdHeading).not.toBe(theme.text);
+      // No step may sit at `text`. A heading that matches body copy is carried
+      // by bold alone, which is the weakest signal in a terminal and reads as
+      // an emphasised sentence rather than a section.
+      for (const step of ramp) expect(step).not.toBe(theme.text);
     });
   }
 

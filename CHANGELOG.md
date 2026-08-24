@@ -61,6 +61,26 @@ All notable changes to this project are documented in this file.
   in the mode's own colour, and always colours context pressure (previously grey until 80%, which
   left the whole row a flat monotone). Segments are separated by space rather than `·`, since
   colour now does that work.
+- **The transcript reads as a hierarchy instead of a flat list.** Tool rows and answer prose
+  rendered at the same weight, so in a session that is mostly machinery the conclusion had to be
+  hunted for. There is now a ramp: headings brightest, prose next, tool targets a step below, and
+  verbs and directory prefixes dimmest. A path's basename outranks its directory, since twenty rows
+  of `src/review/` are identical and the filename is what distinguishes them.
+  - _A finished thought collapses to `▸ thought · 4 lines`._ Watching reasoning arrive is the point
+    of showing it; re-reading it in scrollback is not. Expanded by default it put the least
+    important content of a turn several rows above the first sentence of the answer. Live reasoning
+    still streams in full, and detailed mode (Ctrl+O) reopens a finished one.
+  - _The `answer ────────` divider is gone._ It announced the answer only when the turn happened to
+    contain reasoning, and trailed a stub rule that went nowhere. Screen readers keep the spoken
+    boundary, which they cannot infer from spacing.
+  - _Byte counts and whole-file line ranges are gone._ `2 lines, 51 B` and `121 lines · 1-121` rode
+    along on nearly every row; the range now appears only when a read started partway into a file.
+  - _Churn counts are coloured_ — `+33` green, `-2` rust — so the figures a reader scans for are the
+    ones that carry colour.
+  - _A file edit is called `Edit` everywhere._ `deriveToolPresentation` said `Update` while the
+    aggregate heading said `Edit`, so the measured label column disagreed with the rendered one.
+  - _Label-column widths snap to 4, 6 or 10_ rather than each turn's exact widest label. Exact
+    per-turn sizing closed the gulf inside a turn but left two adjacent turns on different columns.
 - **The transcript is capped at a 120-column measure.** On a wide terminal nothing bounded the
   row width, so prose ran to 190 columns and right-aligned metadata ended up 170 columns from the
   command it described — aligned with nothing the eye could hold. The transcript, the composer and

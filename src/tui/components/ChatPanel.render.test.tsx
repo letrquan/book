@@ -1099,7 +1099,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(frame(view.lastFrame)).toContain('BASH_RESULT_MARKER');
   });
 
-  it('keeps completed reasoning readable and separates it from the answer', () => {
+  it('collapses completed reasoning and reopens it in detailed mode', () => {
     const message: Message = {
       ...msg('a1', 'assistant', 'The stream framing is compatible.'),
       reasoningContent: [
@@ -1120,14 +1120,14 @@ describe('ChatPanel Ink rendering', () => {
       ),
     );
 
+    // A finished thought collapses to one row: reasoning is the least
+    // important content in a turn and had been sitting above the answer.
     let output = frame(view.lastFrame);
-    expect(output).toContain('Thought');
+    expect(output).toContain('thought');
     expect(output).toContain('3 lines');
-    expect(output).toContain('Inspecting the provider stream');
-    expect(output).toContain('Checking its terminal framing');
-    expect(output).toContain('Comparing the final finish reason');
-    // Lower case, matching the `you` label on a turn rule.
-    expect(output).toContain('answer');
+    expect(output).not.toContain('Inspecting the provider stream');
+    expect(output).not.toContain('Comparing the final finish reason');
+    expect(output).toContain('The stream framing is compatible.');
 
     view.rerender(
       withTheme(
@@ -1140,7 +1140,9 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
+    // Detailed mode reopens it, so nothing is unreachable.
     output = frame(view.lastFrame);
+    expect(output).toContain('Inspecting the provider stream');
     expect(output).toContain('Checking its terminal framing');
     expect(output).toContain('Comparing the final finish reason');
   });

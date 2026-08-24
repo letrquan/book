@@ -63,7 +63,7 @@ describe('deriveToolPresentation', () => {
           },
         }),
       ).summary,
-    ).toBe('Update(src/a.ts) · +1 -1');
+    ).toBe('Edit(src/a.ts) · +1 -1');
   });
 
   it('derives legacy diffstats without changing persisted tool results', () => {
@@ -73,7 +73,7 @@ describe('deriveToolPresentation', () => {
         { file_path: 'src/legacy.ts' },
         result({ output: '@@ -1 +1,2 @@\n-old\n+new\n+extra' }),
       ).summary,
-    ).toBe('Update(src/legacy.ts) · +2 -1');
+    ).toBe('Edit(src/legacy.ts) · +2 -1');
   });
 
   it('summarizes read ranges, search counts, command output, and duration', () => {
@@ -93,7 +93,7 @@ describe('deriveToolPresentation', () => {
         { command: 'npm test' },
         result({ output: 'passed', durationMs: 1250 }),
       ).summary,
-    ).toBe('Bash(npm test) · 1 line, 6 B 1.3s');
+    ).toBe('Bash(npm test) · 1 line 1.3s');
     expect(deriveToolPresentation('Bash', { command: 'npm test' }).hasHiddenContent).toBe(false);
   });
 

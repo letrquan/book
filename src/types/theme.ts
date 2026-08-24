@@ -192,7 +192,7 @@ export const DEFAULT_THEME: ThemeTokens = {
   // differ from each other *and* from `text` — otherwise a heading is
   // indistinguishable from a bold run in body copy.
   mdHeadingH1: '#F7F3EA',
-  mdHeadingH2: '#E7E1D4',
+  mdHeadingH2: '#EFEADC',
   mdHeading: '#B4AE9F',
   mdBlockquoteBorder: '#5C6156',
   mdBlockquoteText: '#938E84',

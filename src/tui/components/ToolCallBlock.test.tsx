@@ -253,7 +253,7 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered).toMatch(/Update\s+src\/tui\/components\/Diff\.tsx\s+\+2 -1$/m);
+    expect(rendered).toMatch(/Edit\s+src\/tui\/components\/Diff\.tsx\s+\+2 -1$/m);
     expect(rendered.split('\n')).toHaveLength(1);
   });
 
@@ -345,7 +345,7 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered).toMatch(/Update\s+analysis\.ipynb\s+\+1 -1$/m);
+    expect(rendered).toMatch(/Edit\s+analysis\.ipynb\s+\+1 -1$/m);
     expect(rendered.split('\n')).toHaveLength(1);
   });
 
@@ -421,7 +421,7 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered).toMatch(/Update\s+src\/broken\.ts/);
+    expect(rendered).toMatch(/Edit\s+src\/broken\.ts/);
     expect(rendered).toContain('Failed to write file');
   });
 

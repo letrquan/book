@@ -2,9 +2,8 @@ import type { ToolResult } from '../types/tools.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
-import { formatByteSize } from './components/tool-output.js';
 import { displayWidth, truncateDisplay } from './components/word-wrap.js';
-import { MIN_TARGET_WIDTH, type TranscriptGrid } from './layout.js';
+import { LABEL_COLUMN_WIDTH, MIN_TARGET_WIDTH, type TranscriptGrid } from './layout.js';
 import { isRenderableFileMutationDiff } from './file-mutation-display.js';
 
 export type TranscriptMode = 'compact' | 'detailed';
@@ -160,9 +159,10 @@ function countNonEmptyOutputLines(output: string | undefined): number {
 
 function outputSizeMetadata(result: ToolResult | undefined): string | undefined {
   if (!result?.content) return undefined;
-  const bytes = Buffer.byteLength(result.content, 'utf8');
+  // Line count only. The byte size rode along on every row that produced any
+  // output and told the reader nothing they would act on.
   const lines = countOutputLines(result.content);
-  return `${lines} ${lines === 1 ? 'line' : 'lines'}, ${formatByteSize(bytes)}`;
+  return `${lines} ${lines === 1 ? 'line' : 'lines'}`;
 }
 
 function statusFor(result: ToolResult | undefined, isPending: boolean): ToolPresentationStatus {
@@ -194,7 +194,7 @@ function fileMutationPresentation(
       ? 'Create'
       : result?.artifacts?.fileMutation?.kind === 'delete'
         ? 'Delete'
-        : 'Update';
+        : 'Edit';
   const metadata: string[] = [];
   const mutation =
     result?.artifacts?.fileMutation ??
@@ -235,7 +235,10 @@ function readMetadata(args: Record<string, unknown>, result: ToolResult | undefi
   const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 1;
   const end = Math.max(start, start + Math.max(0, lineCount - 1));
   if (lineCount === 0) return ['empty'];
-  return [lineCount === 1 ? '1 line' : `${lineCount} lines`, `${start}-${end}`];
+  const size = lineCount === 1 ? '1 line' : `${lineCount} lines`;
+  // `121 lines · 1-121` says the same thing twice. The range earns its place
+  // only when the read started partway into the file.
+  return start > 1 ? [size, `${start}-${end}`] : [size];
 }
 
 function domainFor(value: string | undefined): string | undefined {
@@ -279,7 +282,7 @@ export function deriveToolPresentation(
     const mutation = result.artifacts?.fileMutation;
     if (mutation) {
       title =
-        mutation.kind === 'create' ? 'Create' : mutation.kind === 'delete' ? 'Delete' : 'Update';
+        mutation.kind === 'create' ? 'Create' : mutation.kind === 'delete' ? 'Delete' : 'Edit';
       filePath = mutation.filePath;
       target = mutation.filePath;
     }
@@ -479,7 +482,7 @@ export function shortLabel(title: string): string {
 export function toolRowLabel(name: string, result?: ToolResult): string {
   const mutation = result?.artifacts?.fileMutation;
   if (mutation) {
-    return mutation.kind === 'create' ? 'Create' : mutation.kind === 'delete' ? 'Delete' : 'Update';
+    return mutation.kind === 'create' ? 'Create' : mutation.kind === 'delete' ? 'Delete' : 'Edit';
   }
   const mcp = parseMcpToolName(name);
   if (mcp) return mcp.server;
@@ -487,9 +490,19 @@ export function toolRowLabel(name: string, result?: ToolResult): string {
   return shortLabel(LABELS[canonical] ?? canonical);
 }
 
-/** Widest label column a run of rows needs, in columns. */
+/**
+ * Standard label-column widths.
+ *
+ * Nearly every verb is four (`Read`, `Bash`, `Grep`, `Edit`) or six (`Create`,
+ * `Delete`); snapping to these means two turns in a row almost always land on
+ * the same column, which exact per-turn sizing did not.
+ */
+const LABEL_COLUMN_STEPS = [4, 6, LABEL_COLUMN_WIDTH] as const;
+
+/** Widest standard label column a run of rows needs, in columns. */
 export function toolLabelColumnWidth(labels: readonly string[]): number {
-  return labels.reduce((widest, label) => Math.max(widest, displayWidth(label)), 1);
+  const widest = labels.reduce((max, label) => Math.max(max, displayWidth(label)), 1);
+  return LABEL_COLUMN_STEPS.find((step) => step >= widest) ?? LABEL_COLUMN_WIDTH;
 }
 
 /** Labels short enough for the aligned row's fixed label column. */

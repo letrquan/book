@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   countReasoningLines,
+  countReasoningRows,
   getRetryLabel,
   managedAgentTracesEqualForMessage,
   splitThinkBlocks,
@@ -225,5 +226,28 @@ describe('splitThinkBlocks reasoning tags', () => {
     expect(splitThinkBlocks('see <div>x</div> here')).toEqual([
       { kind: 'markdown', text: 'see <div>x</div> here' },
     ]);
+  });
+});
+
+describe('countReasoningRows', () => {
+  it('counts rendered rows, not source lines', () => {
+    // The collapsed row advertises what expanding costs. Counting source lines
+    // put `2 lines` above four wrapped rows, which reads as a broken count.
+    const long = 'x'.repeat(100);
+    expect(countReasoningRows(long, 25)).toBe(4);
+    expect(countReasoningRows(long, undefined)).toBe(1);
+  });
+
+  it('ignores blank lines and sums across paragraphs', () => {
+    expect(countReasoningRows('one\n\n\ntwo', 80)).toBe(2);
+  });
+
+  it('counts a short line as one row', () => {
+    expect(countReasoningRows('short', 80)).toBe(1);
+  });
+
+  it('stays sane at a nonsense width', () => {
+    expect(countReasoningRows('x'.repeat(40), 0)).toBe(1);
+    expect(countReasoningRows('x'.repeat(40), -10)).toBe(1);
   });
 });

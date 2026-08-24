@@ -85,7 +85,7 @@ export const LIGHT_THEME: ThemeTokens = {
   mdInlineCodeBg: '#E4DED2',
   mdInlineCodeText: '#A45F48',
   mdHeadingH1: '#14130F',
-  mdHeadingH2: '#302E2A',
+  mdHeadingH2: '#23211D',
   mdHeading: '#5F5B51',
   mdBlockquoteBorder: '#A79F91',
   mdBlockquoteText: '#746F66',

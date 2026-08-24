@@ -146,6 +146,65 @@ function ScreenReaderTool({
   );
 }
 
+/**
+ * Render a target so the part that identifies it carries the weight.
+ *
+ * Two ramps at once. Across the row: a path's directory is context and its
+ * basename is the thing being acted on, and in a column of twenty rows the
+ * directories are largely identical. Against the rest of the turn: a tool row
+ * is machinery, and it sits a step below prose so the answer is the brightest
+ * thing on screen rather than one more row of the same weight.
+ */
+export function TargetText({ target, failed }: { target: string; failed: boolean }) {
+  const theme = useTheme();
+  if (failed) return <Text color={theme.error}>{target}</Text>;
+  const split = target.lastIndexOf('/');
+  if (split < 0) return <Text color={theme.subtle}>{target}</Text>;
+  return (
+    <Text>
+      <Text color={theme.inactive} dimColor>
+        {target.slice(0, split + 1)}
+      </Text>
+      <Text color={theme.subtle}>{target.slice(split + 1)}</Text>
+    </Text>
+  );
+}
+
+/** `+12` / `-3`: churn counts, which read faster in the diff colours. */
+const CHURN_TOKEN = /^([+-])(\d+)$/;
+
+/**
+ * Render right-aligned metadata, colouring churn counts.
+ *
+ * Everything else stays recessive — the figures a reader scans for are the
+ * lines added and removed, and an error.
+ */
+export function MetaText({ meta, failed }: { meta: string; failed: boolean }) {
+  const theme = useTheme();
+  if (failed) return <Text color={theme.error}>{meta}</Text>;
+  if (!CHURN_TOKEN.test(meta.split(' ')[0] ?? '')) {
+    return (
+      <Text color={theme.subtle} dimColor>
+        {meta}
+      </Text>
+    );
+  }
+  return (
+    <Text>
+      {meta.split(' ').map((token, index) => {
+        const churn = CHURN_TOKEN.exec(token);
+        const color = !churn ? theme.subtle : churn[1] === '+' ? theme.success : theme.error;
+        return (
+          <Text key={index} color={color} dimColor={!churn}>
+            {index > 0 ? ' ' : ''}
+            {token}
+          </Text>
+        );
+      })}
+    </Text>
+  );
+}
+
 function ToolCallBlockInner({
   toolId,
   name,
@@ -247,17 +306,13 @@ function ToolCallBlockInner({
           </Text>
         )}
         {row.label ? (
-          <Text color={theme.subtle} dimColor>
+          <Text color={theme.inactive} dimColor>
             {row.label}{' '}
           </Text>
         ) : null}
-        <Text color={presentation.status === 'failure' ? theme.error : theme.text}>
-          {row.target}
-        </Text>
+        <TargetText target={row.target} failed={presentation.status === 'failure'} />
         <Text>{row.gap}</Text>
-        <Text color={inlineError ? theme.error : theme.subtle} dimColor={!inlineError}>
-          {row.meta}
-        </Text>
+        <MetaText meta={row.meta} failed={Boolean(inlineError)} />
       </Box>
       {isExpanded && result && isDiffOutput(name, result) ? (
         <DiffBlock

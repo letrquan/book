@@ -1,7 +1,7 @@
 import { Text, Box } from 'ink';
 import React, { useMemo } from 'react';
 import { Spinner } from './Spinner.js';
-import { ToolCallBlock } from './ToolCallBlock.js';
+import { MetaText, TargetText, ToolCallBlock } from './ToolCallBlock.js';
 import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { MarkdownBlock, useThrottledValue } from './MarkdownBlock.js';
 import { CommandPanel } from './CommandPanel.js';
@@ -254,32 +254,64 @@ export function countReasoningLines(text: string): number {
   return reasoningLines(text).length;
 }
 
+/**
+ * Rows a completed thought would occupy if it were expanded.
+ *
+ * The collapsed row advertises what expanding costs, so it has to count
+ * *rendered* rows. Counting source lines put `Thought - 2 lines` above four
+ * wrapped rows, which read as a bug in the count rather than a wrap.
+ */
+export function countReasoningRows(text: string, width?: number): number {
+  const lines = reasoningLines(text);
+  if (!width || width <= 0) return lines.length;
+  const measure = Math.max(8, Math.floor(width));
+  return lines.reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / measure)), 0);
+}
+
 function ThinkBlock({
   text,
   terminalWidth,
   reducedMotion,
   active = true,
+  expanded = false,
   screenReader = false,
 }: {
   text: string;
   terminalWidth?: number;
   reducedMotion?: boolean;
   active?: boolean;
+  /** Detailed transcript mode keeps a finished thought open. */
+  expanded?: boolean;
   screenReader?: boolean;
 }) {
   const theme = useTheme();
-  const lineCount = countReasoningLines(text);
   // Keep the complete thought readable while avoiding a terminal redraw for every delta.
   const streamedText = useThrottledValue(text, 80);
-  const visibleText = active ? streamedText : text;
-  const lineLabel = `${lineCount} ${lineCount === 1 ? 'line' : 'lines'}`;
   // The body sits two gutters in from the block's own width: the rail plus its
-  // padding, then the indent under the `Thought` header. Handing the full width
-  // down overflowed the measure by exactly those four columns.
+  // padding, then the indent under the header.
   const bodyWidth =
     terminalWidth === undefined || screenReader
       ? terminalWidth
       : Math.max(12, Math.floor(terminalWidth) - GUTTER_WIDTH * 2);
+  const rowCount = countReasoningRows(text, bodyWidth);
+  const rowLabel = `${rowCount} ${rowCount === 1 ? 'line' : 'lines'}`;
+
+  // A finished thought collapses to one row.
+  //
+  // Watching reasoning arrive is the point of showing it; re-reading it in
+  // scrollback is not. Expanded by default it put the least important content
+  // of a turn in the most prominent position — several rows of it above the
+  // first sentence of the answer. Detailed mode (Ctrl+O) reopens it, so
+  // nothing becomes unreachable.
+  if (!active && !expanded && !screenReader) {
+    return (
+      <Box>
+        <Text color={theme.mdThinkText} dimColor>
+          {`▸ thought · ${rowLabel}`}
+        </Text>
+      </Box>
+    );
+  }
 
   return (
     <Box
@@ -299,15 +331,15 @@ function ThinkBlock({
         <Text color={theme.mdThinkText} bold={active} dimColor={!active}>
           {active ? 'Thinking' : 'Thought'}
         </Text>
-        {!active ? <Text color={theme.subtle} dimColor>{` - ${lineLabel}`}</Text> : null}
+        {!active ? <Text color={theme.subtle} dimColor>{` - ${rowLabel}`}</Text> : null}
       </Box>
       <Box marginLeft={screenReader ? 0 : CONTENT_COLUMN}>
         {active ? (
           <Text color={theme.mdThinkText} dimColor>
-            {visibleText}
+            {streamedText}
           </Text>
         ) : (
-          <MarkdownBlock content={visibleText} terminalWidth={bodyWidth} />
+          <MarkdownBlock content={text} terminalWidth={bodyWidth} />
         )}
       </Box>
     </Box>
@@ -356,27 +388,30 @@ function MutationGroupRow({
     <Box height={1}>
       <Text color={theme.success}>{'• '}</Text>
       {row.label ? (
-        <Text color={theme.subtle} dimColor>
+        <Text color={theme.inactive} dimColor>
           {row.label}{' '}
         </Text>
       ) : null}
-      <Text color={theme.text}>{row.target}</Text>
+      <TargetText target={row.target} failed={false} />
       <Text>{row.gap}</Text>
-      <Text color={theme.subtle} dimColor>
-        {row.meta}
-      </Text>
+      <MetaText meta={row.meta} failed={false} />
     </Box>
   );
 }
 
+/**
+ * Marks where reasoning ends and the answer begins.
+ *
+ * Visually this is a blank row: a finished thought already collapses to a
+ * single line, so a labelled rule on top of it was chrome announcing chrome.
+ * Screen readers still get the spoken boundary, which they cannot infer from
+ * spacing.
+ */
 function AnswerDivider({ screenReader }: { screenReader: boolean }) {
-  const theme = useTheme();
+  if (!screenReader) return <Box marginTop={1} />;
   return (
-    <Box marginTop={1} marginBottom={1}>
-      <Text color={screenReader ? theme.text : theme.assistantAccent} bold={!screenReader}>
-        {screenReader ? 'Answer:' : 'answer'}
-      </Text>
-      {!screenReader ? <Text color={theme.mdTurnSeparator}> {'─'.repeat(12)}</Text> : null}
+    <Box>
+      <Text>Answer:</Text>
     </Box>
   );
 }
@@ -539,6 +574,7 @@ export function AgentMessageInner({
             terminalWidth={mdWidth}
             reducedMotion={reducedMotion}
             active={isStreaming && !displayContent}
+            expanded={transcriptMode === 'detailed'}
             screenReader={screenReader}
           />
         </Box>
@@ -578,6 +614,7 @@ export function AgentMessageInner({
                       terminalWidth={mdWidth}
                       reducedMotion={reducedMotion}
                       active={isStreaming && !answerHasStarted}
+                      expanded={transcriptMode === 'detailed'}
                       screenReader={screenReader}
                     />
                   );
