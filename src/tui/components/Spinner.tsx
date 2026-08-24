@@ -47,7 +47,7 @@ interface SpinnerProps {
  */
 export function Spinner({
   active = true,
-  style = 'braille',
+  style = 'dots',
   color,
   reducedMotion = false,
   showTips = false,
