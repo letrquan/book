@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,7 +22,7 @@ vi.mock('node:child_process', () => ({
   ) => calls.push({ args, options, callback }),
 }));
 
-import { sameStatus, useGitStatus } from './useGitStatus.js';
+import { isInsideWorkTree, sameStatus, useGitStatus } from './useGitStatus.js';
 
 const roots: string[] = [];
 
@@ -86,17 +86,54 @@ describe('sameStatus', () => {
 });
 
 describe('useGitStatus outside the repository root', () => {
-  it('polls git from a subdirectory instead of probing for .git', async () => {
-    // Probing for a `.git` entry only succeeds at the repository root, so
-    // launching from any subdirectory reported no branch at all.
+  it('polls git from a subdirectory of the working tree', async () => {
+    // Probing only `<workspace>/.git` succeeds at the repository root alone, so
+    // launching from any subdirectory reported no branch at all. The fixture is
+    // a real nested directory: an earlier version of this case used a bare temp
+    // directory with no `.git` anywhere, which passed for the wrong reason —
+    // it pinned "always spawn" rather than "resolve from a subdirectory".
     vi.useFakeTimers();
-    const workspace = mkdtempSync(join(tmpdir(), 'book-git-subdir-'));
-    roots.push(workspace);
-    const view = render(<Harness workspace={workspace} />);
+    const root = mkdtempSync(join(tmpdir(), 'book-git-root-'));
+    roots.push(root);
+    mkdirSync(join(root, '.git'));
+    const nested = join(root, 'src', 'deep');
+    mkdirSync(nested, { recursive: true });
+
+    const view = render(<Harness workspace={nested} />);
     await vi.advanceTimersByTimeAsync(0);
 
     expect(calls).toHaveLength(1);
     expect(calls[0].args).toEqual(['rev-parse', '--abbrev-ref', 'HEAD']);
     view.unmount();
+  });
+});
+
+// Driven through an injected probe rather than the real filesystem. Whether a
+// temp directory sits inside a working tree is ambient — a home directory kept
+// under version control for dotfiles makes every path below it one, which is
+// what `git rev-parse` would conclude too — so a test that asserted "no
+// repository here" against `tmpdir()` passed or failed by machine.
+describe('isInsideWorkTree', () => {
+  // Anchored through `resolve` because the walk resolves before comparing: on
+  // Windows a rooted path still picks up the current drive, so `\repo` becomes
+  // `D:\repo` and a literal fixture would never match.
+  const root = resolve(sep, 'repo');
+  const tree = (...present: string[]) => {
+    const set = new Set(present);
+    return (path: string) => set.has(path);
+  };
+
+  it('finds the working tree from a subdirectory', () => {
+    expect(isInsideWorkTree(join(root, 'src', 'deep'), tree(join(root, '.git')))).toBe(true);
+  });
+
+  it('accepts a worktree or submodule, where .git is a file', () => {
+    expect(isInsideWorkTree(root, tree(join(root, '.git')))).toBe(true);
+  });
+
+  it('walks to the filesystem root and stops, rather than looping', () => {
+    // Deciding this by spawning `git` meant three processes every five seconds
+    // in any plain directory, forever; under CI that took the runner with it.
+    expect(isInsideWorkTree(join(root, 'plain', 'dir'), tree())).toBe(false);
   });
 });

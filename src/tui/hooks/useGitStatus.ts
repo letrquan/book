@@ -1,6 +1,32 @@
 import { useState, useEffect, useCallback } from 'react';
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { isTranscriptScrollActive } from '../scroll-activity.js';
+
+/**
+ * Whether `dir` sits anywhere inside a working tree, without spawning anything.
+ *
+ * Probing only `<workspace>/.git` succeeds at the repository root alone, so
+ * launching from a subdirectory reported no branch. Asking `git rev-parse`
+ * instead fixed that but made every poll spawn children even where there is no
+ * repository at all: three processes every five seconds, forever, in any plain
+ * directory. Walking up for the entry costs a handful of `stat` calls and gets
+ * the subdirectory case right. A worktree or submodule stores `.git` as a file
+ * rather than a directory, so the entry is what is checked, not its type.
+ */
+export function isInsideWorkTree(
+  dir: string,
+  exists: (path: string) => boolean = existsSync,
+): boolean {
+  let current = resolve(dir);
+  for (;;) {
+    if (exists(join(current, '.git'))) return true;
+    const parent = dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
 
 export interface GitStatus {
   branch: string;
@@ -34,12 +60,14 @@ export function useGitStatus(workspace: string): GitStatus {
       if (isTranscriptScrollActive()) return;
       if (running) return;
       running = true;
+      if (!isInsideWorkTree(workspace)) {
+        if (!cancelled) update({ branch: '?', status: '' });
+        running = false;
+        return;
+      }
       activeController = new AbortController();
 
       try {
-        // `rev-parse` decides whether this is a repository. Probing for a
-        // `.git` entry only succeeds at the repository root, so launching from
-        // any subdirectory reported no branch at all.
         const branch = await runGit(
           ['rev-parse', '--abbrev-ref', 'HEAD'],
           workspace,
