@@ -56,8 +56,8 @@ export function BackgroundShellRow({
 
   return (
     <Text color={selected ? theme.text : color} bold={selected}>
-      {' '}
-      {selected ? '›' : ' '} {glyph(shell, reducedMotion)} shell{' '}
+      {selected ? '› ' : '  '}
+      {glyph(shell, reducedMotion)} shell{' '}
       {truncateDisplay(title, Math.max(1, width - 11 - suffix.length))}
       <Text color={theme.subtle}>{suffix}</Text>
     </Text>

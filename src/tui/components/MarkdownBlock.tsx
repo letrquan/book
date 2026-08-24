@@ -4,7 +4,7 @@ import { marked, Tokens, Token } from 'marked';
 import { useTheme } from '../theme.js';
 import { useDensity } from '../density.js';
 import { useTranscriptLayoutChange } from '../transcript-layout.js';
-import { wordWrap } from './word-wrap.js';
+import { displayWidth, wordWrap } from './word-wrap.js';
 import { highlightCode, type StyledLine } from './syntax-highlight.js';
 import {
   layoutCodeBlock,
@@ -15,6 +15,9 @@ import {
   nestedContentWidth,
   sliceStyledLine,
 } from './markdown-layout.js';
+
+/** Columns a list is indented from the surrounding prose. */
+const LIST_INDENT = 2;
 
 interface MarkdownBlockProps {
   /** Raw markdown string to render. */
@@ -549,11 +552,17 @@ function renderBlockToken(
       const widthProp =
         terminalWidth && terminalWidth > 0 ? { width: Math.max(1, Math.floor(terminalWidth)) } : {};
 
-      const boxProps = layout.showBorder
+      // A left rail plus the code tint, never a four-sided box: the border used
+      // to be the heaviest element in an answer, wrapped around its smallest.
+      const boxProps = layout.showRail
         ? {
             ...widthProp,
-            paddingX: 1 as const,
-            borderStyle: 'round' as const,
+            paddingLeft: 1 as const,
+            borderLeft: true,
+            borderTop: false,
+            borderRight: false,
+            borderBottom: false,
+            borderStyle: 'single' as const,
             borderColor: theme.mdCodeBorder,
             backgroundColor: theme.mdCodeBackground,
           }
@@ -563,7 +572,7 @@ function renderBlockToken(
           };
 
       return (
-        <Box key={`code-${index}`} flexDirection="column" {...boxProps}>
+        <Box key={`code-${index}`} flexDirection="column">
           {layout.langLabel ? (
             <Box>
               <Text color={theme.mdCodeBorder} dimColor>
@@ -571,29 +580,31 @@ function renderBlockToken(
               </Text>
             </Box>
           ) : null}
-          {layout.lines.map((visual, vi) => {
-            const highlightedLine = highlighted?.[visual.sourceLineIndex];
-            const segments: StyledLine = highlightedLine
-              ? sliceStyledLine(highlightedLine, visual.sourceStart, visual.sourceEnd)
-              : [{ text: visual.text, color: theme.mdCodeText }];
-            const safeSegments: StyledLine =
-              segments.length > 0 ? segments : [{ text: visual.text, color: theme.mdCodeText }];
+          <Box flexDirection="column" {...boxProps}>
+            {layout.lines.map((visual, vi) => {
+              const highlightedLine = highlighted?.[visual.sourceLineIndex];
+              const segments: StyledLine = highlightedLine
+                ? sliceStyledLine(highlightedLine, visual.sourceStart, visual.sourceEnd)
+                : [{ text: visual.text, color: theme.mdCodeText }];
+              const safeSegments: StyledLine =
+                segments.length > 0 ? segments : [{ text: visual.text, color: theme.mdCodeText }];
 
-            return (
-              <Box key={`code-${index}-v${vi}`}>
-                {layout.showLineNumbers ? (
-                  <Text color={theme.mdCodeLineNumber} dimColor>
-                    {visual.gutter}
-                  </Text>
-                ) : null}
-                {highlighted ? (
-                  renderStyledLine(safeSegments, `code-${index}-${vi}`)
-                ) : (
-                  <Text color={theme.mdCodeText}>{visual.text}</Text>
-                )}
-              </Box>
-            );
-          })}
+              return (
+                <Box key={`code-${index}-v${vi}`}>
+                  {layout.showLineNumbers ? (
+                    <Text color={theme.mdCodeLineNumber} dimColor>
+                      {visual.gutter}
+                    </Text>
+                  ) : null}
+                  {highlighted ? (
+                    renderStyledLine(safeSegments, `code-${index}-${vi}`)
+                  ) : (
+                    <Text color={theme.mdCodeText}>{visual.text}</Text>
+                  )}
+                </Box>
+              );
+            })}
+          </Box>
         </Box>
       );
     }
@@ -607,7 +618,11 @@ function renderBlockToken(
         <Box
           key={`bq-${index}`}
           flexDirection="column"
+          borderStyle="single"
           borderLeft
+          borderTop={false}
+          borderRight={false}
+          borderBottom={false}
           borderLeftColor={theme.mdBlockquoteBorder}
           paddingLeft={1}
         >
@@ -624,16 +639,23 @@ function renderBlockToken(
 
     case 'list': {
       const t = token as Tokens.List;
+      const markerFor = (item: Tokens.ListItem, ii: number): string =>
+        item.task
+          ? item.checked
+            ? '[x]'
+            : '[ ]'
+          : t.ordered
+            ? `${(typeof t.start === 'number' ? t.start : 1) + ii}.`
+            : '•';
+      // One marker column for the whole list, sized to its widest marker: a
+      // per-item width shears the text column between items 9 and 10, and a
+      // fixed width leaves a dead column after every bullet.
+      const markerWidth =
+        Math.max(...t.items.map((item, ii) => displayWidth(markerFor(item, ii))), 1) + 1;
       return (
         <Box key={`list-${index}`} flexDirection="column" marginLeft={context.depth > 0 ? 2 : 0}>
           {t.items.map((item, ii) => {
-            const marker = item.task
-              ? item.checked
-                ? '[x]'
-                : '[ ]'
-              : t.ordered
-                ? `${(typeof t.start === 'number' ? t.start : 1) + ii}.`
-                : '•';
+            const marker = markerFor(item, ii);
             const markerColor = item.task
               ? item.checked
                 ? theme.mdCheckboxChecked
@@ -642,12 +664,12 @@ function renderBlockToken(
             // Incremental: marker column + margins. Nested lists receive an already-reduced width.
             const itemWidth = nestedContentWidth(terminalWidth, {
               depth: 0,
-              listGutter: 5,
+              listGutter: LIST_INDENT + markerWidth,
               blockquoteDepth: 0,
             });
             return (
-              <Box key={`li-${index}-${ii}`} flexDirection="row" marginLeft={2}>
-                <Box width={3} flexShrink={0}>
+              <Box key={`li-${index}-${ii}`} flexDirection="row" marginLeft={LIST_INDENT}>
+                <Box width={markerWidth} flexShrink={0}>
                   <Text color={markerColor}>{marker}</Text>
                 </Box>
                 <Box flexDirection="column" flexGrow={1}>

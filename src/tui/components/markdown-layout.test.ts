@@ -211,7 +211,7 @@ describe('layoutCodeBlock', () => {
       for (const line of layout.lines) {
         expect(displayWidth(line.text)).toBeLessThanOrEqual(layout.contentWidth);
         const rowWidth = displayWidth(line.gutter) + displayWidth(line.text);
-        const chrome = layout.showBorder ? 4 : 0; // border(2)+padding(2)
+        const chrome = layout.showRail ? 2 : 0; // rail(1)+padding(1)
         expect(rowWidth + chrome).toBeLessThanOrEqual(width + 1); // allow 1 for rounding edge
       }
       if (layout.langLabel) {
@@ -222,13 +222,24 @@ describe('layoutCodeBlock', () => {
 });
 
 describe('layoutHeadingChrome / hr / nested budgets', () => {
-  it('clamps heading chrome to terminal width', () => {
+  it('clamps heading text to terminal width', () => {
     const h1 = layoutHeadingChrome('A Very Long Heading Title', 1, 20);
     expect(displayWidth(h1.prefix + h1.text + h1.suffix)).toBeLessThanOrEqual(20);
     const h2 = layoutHeadingChrome('Another Long Heading', 2, 18);
     expect(displayWidth(h2.prefix + h2.text + h2.suffix)).toBeLessThanOrEqual(18);
     const h3 = layoutHeadingChrome('### stuff that is long', 3, 12);
     expect(displayWidth(h3.prefix + h3.text)).toBeLessThanOrEqual(12);
+  });
+
+  it('gives headings no side chrome at any depth', () => {
+    // Hierarchy is carried by weight and brightness. Side rules here read as
+    // turn boundaries, which is the transcript's job, not a heading's.
+    for (const depth of [1, 2, 3, 4, 5, 6]) {
+      const chrome = layoutHeadingChrome('Root cause', depth, 80);
+      expect(chrome.prefix).toBe('');
+      expect(chrome.suffix).toBe('');
+      expect(chrome.text).toBe('Root cause');
+    }
   });
 
   it('builds horizontal rules within bounds', () => {

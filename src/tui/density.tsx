@@ -11,7 +11,10 @@ export interface DensityMetrics {
   userPaddingY: 0;
   headingGapBefore: 0 | 1;
   majorBlockGap: 0 | 1;
+  /** Blank rows between consecutive tool rows. Zero: they read as one column. */
   toolRowGap: 0 | 1;
+  /** Blank rows between prose and the tool block that follows it. */
+  toolBlockGap: 0 | 1;
   paragraphGap: 1;
   showOptionalHelp: boolean;
 }
@@ -23,7 +26,8 @@ const COMPACT_METRICS: DensityMetrics = {
   userPaddingY: 0,
   headingGapBefore: 1,
   majorBlockGap: 1,
-  toolRowGap: 1,
+  toolRowGap: 0,
+  toolBlockGap: 1,
   paragraphGap: 1,
   showOptionalHelp: true,
 };
@@ -32,7 +36,8 @@ const TIGHT_METRICS: DensityMetrics = {
   ...COMPACT_METRICS,
   headingGapBefore: 0,
   majorBlockGap: 0,
-  toolRowGap: 1,
+  toolRowGap: 0,
+  toolBlockGap: 0,
   showOptionalHelp: false,
 };
 

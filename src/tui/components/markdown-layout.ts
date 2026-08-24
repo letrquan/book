@@ -84,7 +84,8 @@ export interface CodeLineLayout {
 }
 
 export interface CodeBlockLayout {
-  showBorder: boolean;
+  /** Render the left rail (a border column plus one column of padding). */
+  showRail: boolean;
   showLineNumbers: boolean;
   /** Content columns available after border/padding/gutter. */
   contentWidth: number;
@@ -338,45 +339,13 @@ export function layoutHeadingChrome(
   depth: number,
   terminalWidth: number | undefined,
 ): { prefix: string; text: string; suffix: string } {
-  const raw = text;
-  if (!terminalWidth || terminalWidth <= 0) {
-    if (depth === 1) return { prefix: '═══ ', text: raw.toUpperCase(), suffix: ' ═══' };
-    if (depth === 2) return { prefix: '── ', text: raw, suffix: ' ──' };
-    return { prefix: `${'#'.repeat(depth)} `, text: raw, suffix: '' };
-  }
-
-  const width = Math.max(1, Math.floor(terminalWidth));
-
-  if (depth === 1) {
-    const upper = raw.toUpperCase();
-    const side = '═══';
-    // "═══ " + text + " ═══"
-    const chrome = displayWidth(`${side}  ${side}`); // spaces around text: 2
-    const budget = Math.max(1, width - chrome);
-    return {
-      prefix: `${side} `,
-      text: fitsIn(upper, budget) ? upper : truncateDisplay(upper, budget),
-      suffix: ` ${side}`,
-    };
-  }
-
-  if (depth === 2) {
-    const side = '──';
-    const chrome = displayWidth(`${side}  ${side}`);
-    const budget = Math.max(1, width - chrome);
-    return {
-      prefix: `${side} `,
-      text: fitsIn(raw, budget) ? raw : truncateDisplay(raw, budget),
-      suffix: ` ${side}`,
-    };
-  }
-
-  const hashes = '#'.repeat(depth);
-  const prefix = `${hashes} `;
-  const budget = Math.max(1, width - displayWidth(prefix));
+  // Headings are bold and brightness-ranked by depth (see MarkdownBlock). They
+  // carry no `=== TEXT ===` side chrome: that competed with the turn rule for
+  // the eye and made an in-answer heading look like a transcript boundary.
+  const budget = terminalWidth && terminalWidth > 0 ? Math.max(1, Math.floor(terminalWidth)) : null;
   return {
-    prefix,
-    text: fitsIn(raw, budget) ? raw : truncateDisplay(raw, budget),
+    prefix: '',
+    text: budget === null || fitsIn(text, budget) ? text : truncateDisplay(text, budget),
     suffix: '',
   };
 }
@@ -394,10 +363,9 @@ export function layoutHorizontalRule(terminalWidth: number | undefined): string 
 /**
  * Layout a fenced code block.
  *
- * Accounts for round border (2) + paddingX (2) + optional line-number gutter.
- * Hard-wraps unbroken source lines; continuation lines use a blank gutter so
- * numbers are not repeated. Drops line numbers and/or border when the budget
- * is too tight.
+ * Accounts for the left rail (1) + its padding (1) + an optional line-number
+ * gutter. Hard-wraps unbroken source lines; continuation lines use a blank
+ * gutter so the numbering stays readable.
  */
 export function layoutCodeBlock(
   sourceLines: string[],
@@ -423,7 +391,7 @@ export function layoutCodeBlock(
       };
     });
     return {
-      showBorder: true,
+      showRail: true,
       showLineNumbers,
       contentWidth: Number.POSITIVE_INFINITY,
       outerWidth: terminalWidth ?? 0,
@@ -434,10 +402,11 @@ export function layoutCodeBlock(
 
   const outerWidth = Math.max(1, Math.floor(terminalWidth));
 
-  // Border cost: left + right border columns (round style uses 1 each).
-  // paddingX={1} adds 1 column each side inside the border.
-  const BORDER = 2;
-  const PADDING_X = 2;
+  // Rail cost: one border column on the left, plus one column of padding
+  // inside it. A code block is content, not a panel, so it never pays for a
+  // four-sided box — that chrome outweighed the code it wrapped.
+  const BORDER = 1;
+  const PADDING_X = 1;
 
   type Chrome = { border: boolean; lineNumbers: boolean };
   const candidates: Chrome[] = [
@@ -504,7 +473,7 @@ export function layoutCodeBlock(
   }
 
   return {
-    showBorder: chosen.border,
+    showRail: chosen.border,
     showLineNumbers: chosen.lineNumbers,
     contentWidth,
     outerWidth,

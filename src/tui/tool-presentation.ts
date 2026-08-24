@@ -2,7 +2,8 @@ import type { ToolResult } from '../types/tools.js';
 import { canonicalToolName } from '../tools/aliases.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
-import { formatByteSize } from './components/tool-output.js';
+import { displayWidth, truncateDisplay } from './components/word-wrap.js';
+import { LABEL_COLUMN_WIDTH, MIN_TARGET_WIDTH, type TranscriptGrid } from './layout.js';
 import { isRenderableFileMutationDiff } from './file-mutation-display.js';
 
 export type TranscriptMode = 'compact' | 'detailed';
@@ -158,9 +159,10 @@ function countNonEmptyOutputLines(output: string | undefined): number {
 
 function outputSizeMetadata(result: ToolResult | undefined): string | undefined {
   if (!result?.content) return undefined;
-  const bytes = Buffer.byteLength(result.content, 'utf8');
+  // Line count only. The byte size rode along on every row that produced any
+  // output and told the reader nothing they would act on.
   const lines = countOutputLines(result.content);
-  return `${lines} ${lines === 1 ? 'line' : 'lines'}, ${formatByteSize(bytes)}`;
+  return `${lines} ${lines === 1 ? 'line' : 'lines'}`;
 }
 
 function statusFor(result: ToolResult | undefined, isPending: boolean): ToolPresentationStatus {
@@ -192,7 +194,7 @@ function fileMutationPresentation(
       ? 'Create'
       : result?.artifacts?.fileMutation?.kind === 'delete'
         ? 'Delete'
-        : 'Update';
+        : 'Edit';
   const metadata: string[] = [];
   const mutation =
     result?.artifacts?.fileMutation ??
@@ -233,7 +235,10 @@ function readMetadata(args: Record<string, unknown>, result: ToolResult | undefi
   const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 1;
   const end = Math.max(start, start + Math.max(0, lineCount - 1));
   if (lineCount === 0) return ['empty'];
-  return [lineCount === 1 ? '1 line' : `${lineCount} lines`, `${start}-${end}`];
+  const size = lineCount === 1 ? '1 line' : `${lineCount} lines`;
+  // `121 lines · 1-121` says the same thing twice. The range earns its place
+  // only when the read started partway into the file.
+  return start > 1 ? [size, `${start}-${end}`] : [size];
 }
 
 function domainFor(value: string | undefined): string | undefined {
@@ -277,7 +282,7 @@ export function deriveToolPresentation(
     const mutation = result.artifacts?.fileMutation;
     if (mutation) {
       title =
-        mutation.kind === 'create' ? 'Create' : mutation.kind === 'delete' ? 'Delete' : 'Update';
+        mutation.kind === 'create' ? 'Create' : mutation.kind === 'delete' ? 'Delete' : 'Edit';
       filePath = mutation.filePath;
       target = mutation.filePath;
     }
@@ -423,4 +428,150 @@ export function shouldExpandTool({
   const override = expansionOverrides.get(toolId);
   if (override !== undefined) return override;
   return mode === 'detailed' || automaticToolId === toolId || defaultExpanded;
+}
+
+/**
+ * Widest a failure message may grow the metadata column.
+ *
+ * Long enough for the shell errors that actually occur — `'tail' is not
+ * recognized as an internal or external command` is 57 — without letting a
+ * pathological message crowd out the target it failed on.
+ */
+const ERROR_META_MAX = 64;
+
+/** MCP rows are titled `Called <server>` by {@link deriveToolPresentation}. */
+const MCP_TITLE_PREFIX = 'Called ';
+
+/** `+12` / `-3`: churn counts that belong together as one figure. */
+const CHURN = /^[+-]\d+$/;
+
+/**
+ * Join metadata parts with `·`, except adjacent churn counts, which join with a
+ * space so `+3 -2` reads as one number rather than two facts.
+ */
+function joinMetadata(parts: readonly string[]): string {
+  return parts.reduce((joined, part, index) => {
+    if (index === 0) return part;
+    const separator = CHURN.test(part) && CHURN.test(parts[index - 1]!) ? ' ' : ' · ';
+    return `${joined}${separator}${part}`;
+  }, '');
+}
+
+/**
+ * Shorten a presentation title for the aligned label column.
+ *
+ * An MCP row's title reads `Called <server>`; inside the column the verb is
+ * redundant and the server name is what the reader scans for.
+ */
+export function shortLabel(title: string): string {
+  const stripped = title.startsWith(MCP_TITLE_PREFIX)
+    ? title.slice(MCP_TITLE_PREFIX.length)
+    : title;
+  return SHORT_LABELS[stripped] ?? stripped;
+}
+
+/**
+ * The label a row will show, derived without scanning result content.
+ *
+ * Callers measuring a column across many rows must not pay for a full
+ * {@link deriveToolPresentation} per row: that regex-scans result bodies, which
+ * is real cost on a multi-megabyte tool result. This reads only the cheap
+ * fields and is allowed to be wrong — an under-measured column costs one row
+ * its alignment, never its content.
+ */
+export function toolRowLabel(name: string, result?: ToolResult): string {
+  const mutation = result?.artifacts?.fileMutation;
+  if (mutation) {
+    return mutation.kind === 'create' ? 'Create' : mutation.kind === 'delete' ? 'Delete' : 'Edit';
+  }
+  const mcp = parseMcpToolName(name);
+  if (mcp) return mcp.server;
+  const canonical = canonicalToolName(name);
+  return shortLabel(LABELS[canonical] ?? canonical);
+}
+
+/**
+ * Standard label-column widths.
+ *
+ * Nearly every verb is four (`Read`, `Bash`, `Grep`, `Edit`) or six (`Create`,
+ * `Delete`); snapping to these means two turns in a row almost always land on
+ * the same column, which exact per-turn sizing did not.
+ */
+const LABEL_COLUMN_STEPS = [4, 6, LABEL_COLUMN_WIDTH] as const;
+
+/** Widest standard label column a run of rows needs, in columns. */
+export function toolLabelColumnWidth(labels: readonly string[]): number {
+  const widest = labels.reduce((max, label) => Math.max(max, displayWidth(label)), 1);
+  return LABEL_COLUMN_STEPS.find((step) => step >= widest) ?? LABEL_COLUMN_WIDTH;
+}
+
+/** Labels short enough for the aligned row's fixed label column. */
+const SHORT_LABELS: Record<string, string> = {
+  'Apply patch': 'Patch',
+  'Edit notebook': 'Notebook',
+  'Shell output': 'Shell',
+  'Update todos': 'Todos',
+};
+
+/** The three aligned columns of a tool row, already padded to the grid. */
+export interface ToolRowColumns {
+  /** Verb, padded to the grid's label column. Empty when labels are inline. */
+  label: string;
+  /** What the tool acted on, truncated to fit. */
+  target: string;
+  /** Spaces that push `meta` flush against the right edge. */
+  gap: string;
+  /** Right-aligned result metadata, or the error message on a failure. */
+  meta: string;
+}
+
+/**
+ * Lay a tool row out as `[label][target] … [meta]`.
+ *
+ * The label and meta columns are fixed so the eye can scan straight down a
+ * column of rows; only the target flexes. Below the grid's label threshold the
+ * label column collapses and the verb runs inline, because a fixed column would
+ * leave nothing for the path.
+ */
+export function composeToolRow(
+  presentation: Pick<ToolPresentation, 'title' | 'target' | 'metadata'>,
+  grid: TranscriptGrid,
+  extra: { elapsed?: string; error?: string } = {},
+): ToolRowColumns {
+  const title = shortLabel(presentation.title);
+  // Never truncate the verb. A row whose label does not fit the column runs
+  // inline instead: `Read sr…` is unreadable in a way `Read src/a.ts` is not.
+  const useLabelColumn = grid.label > 0 && displayWidth(title) <= grid.label;
+  const metaSource = extra.error
+    ? [extra.error]
+    : [...presentation.metadata, ...(extra.elapsed ? [extra.elapsed] : [])];
+
+  const label = useLabelColumn ? title.padEnd(grid.label) : '';
+  const labelWidth = useLabelColumn ? grid.label + 1 : 0;
+  const inlinePrefix = useLabelColumn || !title ? '' : `${title} `;
+
+  // An error message outranks the target it failed on, so a failing row takes
+  // as much as the message needs — capped, and never so much that the target
+  // drops below a width worth reading.
+  const metaBudget = extra.error
+    ? Math.max(
+        grid.meta,
+        Math.min(
+          ERROR_META_MAX,
+          grid.content - labelWidth - displayWidth(inlinePrefix) - MIN_TARGET_WIDTH - 1,
+        ),
+      )
+    : grid.meta;
+  const meta = metaBudget > 0 ? truncateDisplay(joinMetadata(metaSource), metaBudget) : '';
+
+  const metaWidth = displayWidth(meta);
+  // The budget covers the whole truncated string, prefix included — subtracting
+  // the prefix here as well clipped an inline-label row by exactly the width of
+  // its own verb, and `gap` then padded those columns back with spaces.
+  const targetBudget = Math.max(4, grid.content - labelWidth - metaWidth - (metaWidth > 0 ? 1 : 0));
+  const target = truncateDisplay(`${inlinePrefix}${presentation.target ?? ''}`, targetBudget);
+
+  const used = labelWidth + displayWidth(target) + metaWidth;
+  const gap = ' '.repeat(Math.max(metaWidth > 0 ? 1 : 0, grid.content - used));
+  return { label, target, gap, meta };
 }

@@ -669,7 +669,7 @@ Book clears sessions and rotated debug-log backups after 30 days. Startup resolv
 
 ### Themes
 
-Use `/theme` to open the keyboard theme picker, or switch directly with `/theme dark`, `/theme light`, or `/theme auto`. The selection is applied immediately and saved to `.book/settings.local.json` for the next launch. The built-in themes use a matched quiet-editorial palette with warm text, muted sage branding, terracotta user accents, and low-contrast surfaces.
+Use `/theme` to open the keyboard theme picker, or switch directly with `/theme dark`, `/theme light`, or `/theme auto`. The selection is applied immediately and saved to `.book/settings.local.json` for the next launch. The built-in themes use a matched warm-editorial palette on low-contrast surfaces. Roles are kept visually distinct on purpose: sage is the agent, clay is product chrome and anything you wrote, teal marks references and the usage meter, and amber/rust/green carry status. A custom theme that reuses one hue across roles will render those roles identically, which is what the built-ins avoid.
 
 Project themes can override any token in `.book/themes/<name>.json`. They appear automatically in the picker and can also be activated with `/theme <name>`. Theme files are partial and inherit unspecified values from the dark default:
 

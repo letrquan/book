@@ -4,7 +4,132 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A running tool row no longer shifts a column when it finishes.** `Spinner` already emits its
+  own trailing space and the row added a second one, so a running row's gutter was three columns
+  and a finished one's was two — the verb and everything after it jumped left the instant the tool
+  completed, which is the single-column invariant the grid exists to hold.
+- **Our width model agreed with the renderer for `✓`.** The width table marked the whole Dingbats
+  block as two columns wide, but it also holds the East-Asian *ambiguous* marks — `✓`, `✗` — which
+  terminals and Ink's own layout render one column wide. The block is now narrowed to its
+  emoji-presentation members, and a test pins every status glyph's width against the renderer.
+- **The branch shows when `book` is launched from a subdirectory.** Repository detection probed for
+  a `.git` entry, which only exists at the repository root, so the footer's new branch segment was
+  silently absent anywhere below it. `git rev-parse` now decides.
+- **A malformed custom theme no longer crashes the TUI on the first spinner frame.**
+  `.book/themes/*.json` is merged into the token set without validation, so a `shimmerPair` that is
+  empty, short, or not an array reached the interpolator and threw.
+- **Context pressure survives a narrow footer.** Segment packing skips what does not fit and keeps
+  later, shorter segments, so `ctx 5%` was dropped while the branch behind it was admitted — losing
+  the one figure the row exists to show. The label drops before the number does.
+- **A reasoning tag inside a fenced code block stays in the answer.** Tag splitting ran before
+  markdown parsing with no fence awareness, so an answer quoting a prompt template had that region
+  torn out and rendered as a collapsed thought, silently emptying the code block.
+- **`Bash` rows are not painted in the dim path colour.** The directory/basename brightness ramp
+  assumed a filesystem path, but a `Bash` target is a command: `npx vitest run src/tui/` split at
+  the trailing slash, leaving an empty basename and rendering the row's only content at its
+  faintest. The ramp now applies to real paths only.
+- **The status line and working indicator share the transcript's 120-column cap.** Both still sized
+  themselves from the raw terminal width, so on a wide terminal the footer spread across the full
+  screen while everything above it stopped at the measure.
+- **The status-line git poll no longer re-renders the app every five seconds.** `useGitStatus`
+  allocates a fresh status object per tick and returned it unconditionally, so wiring it into the
+  footer made the whole tree reconcile twelve times a minute in an idle session for no visual
+  change. It now keeps the previous object when the branch, tree and error are unchanged.
+- **The virtual transcript estimates row heights against the measure it actually renders at.** The
+  estimator wrapped against the raw terminal width, so on a terminal wider than the 120-column
+  measure every off-screen message was estimated at roughly 60% of its true height, drifting scroll
+  position and the "older entries hidden" threshold. A user turn's rule row is counted too.
+- **An inline-label tool row no longer clips its target early.** The width budget subtracted the
+  verb's width from a string that already contained the verb, so a narrow-terminal row lost exactly
+  that many characters off its command and padded the columns back as spaces.
+- **Heading depth is legible again.** `mdHeadingH1` had been set to the body text colour, so with
+  the `###` markers gone `# Title`, `### Sub` and a bold run of body copy all rendered identically.
+  The three heading steps are now distinct in both built-in themes, and a test enforces it.
+
 ### Changed
+
+- **The TUI now lays every row out on one grid, and the palette gives every role its own hue.**
+  A transcript row is `[gutter][content]`: the gutter is two columns wide and carries status (a
+  glyph, a rail, a spinner), and content always begins on the same column. Before this, each
+  component picked its own `marginLeft` and its own `width - N` budget, so content landed on
+  columns 1, 2, 4 and 5 and nothing could be scanned down. `src/tui/layout.ts` is the single
+  source of truth; bordered surfaces (composer, menus, permission prompt) now sit flush at column
+  0 so their border plus one column of padding lands their text on the same content column.
+  - _Tool rows are three aligned columns_: `[verb] [target] … [meta]`, with metadata flush right
+    so `8 lines`, `+3 -2` and `exit 1` line up down the transcript instead of trailing a
+    `·`-chain. The verb is never truncated — a row whose label will not fit the column runs
+    inline instead. A failing row may spend up to half its width on the error message, which
+    previously got clipped to twenty columns while the command it failed on kept the rest.
+  - _Consecutive tool rows no longer have a blank row between them_ (`toolRowGap` is 0, and the
+    new `toolBlockGap` puts the breathing room before the block), so a run of actions reads as
+    one column.
+  - _A user turn opens with a labelled rule_ — `── you ─────── 10:55 ──` — replacing the tinted
+    card with an accent rail. A transcript with no turn boundary is a wall of same-weight rows;
+    this is the element that lets you find where an exchange began when scrolling back.
+  - _Code blocks lost their four-sided border_ in favour of a left rail plus the code tint. The
+    box was the heaviest element in an answer, wrapped around its smallest, and cost four columns
+    where the rail costs two. Full borders are now reserved for surfaces that want your input.
+  - _Headings carry hierarchy through weight and brightness_, not `═══ TEXT ═══` / `── text ──`
+    side chrome, which competed with the turn rule and made an in-answer heading look like a
+    transcript boundary. `# Heading` is no longer upper-cased.
+  - _List markers are sized per list_ rather than to a fixed three columns, so a bullet no longer
+    leaves a dead column and an ordered list does not shear its text between items 9 and 10.
+- **The palette separates roles that used to share one colour.** `#AFC19D` was simultaneously
+  `brand`, `assistantAccent`, `modeDefault`, `mdHeadingH1`, `mdLink` and `usageMeter` — six
+  semantically different things rendering identically. Sage now belongs to the agent, clay to
+  product chrome and user-authored content, teal to references and the usage meter, and the
+  amber/rust/green trio to status; `default` permission mode is desaturated so an agent turn never
+  reads as a mode signal. Both the dark and light built-ins are checked for role distinctness by
+  test rather than by pinned hex values.
+- **The status line leads with what matters and shows the branch.** `useGitStatus` existed with no
+  consumer; the footer now shows the current branch and marks a dirty tree, leads with a mode chip
+  in the mode's own colour, and always colours context pressure (previously grey until 80%, which
+  left the whole row a flat monotone). Segments are separated by space rather than `·`, since
+  colour now does that work.
+- **The transcript reads as a hierarchy instead of a flat list.** Tool rows and answer prose
+  rendered at the same weight, so in a session that is mostly machinery the conclusion had to be
+  hunted for. There is now a ramp: headings brightest, prose next, tool targets a step below, and
+  verbs and directory prefixes dimmest. A path's basename outranks its directory, since twenty rows
+  of `src/review/` are identical and the filename is what distinguishes them.
+  - _A finished thought collapses to `▸ thought · 4 lines`._ Watching reasoning arrive is the point
+    of showing it; re-reading it in scrollback is not. Expanded by default it put the least
+    important content of a turn several rows above the first sentence of the answer. Live reasoning
+    still streams in full, and detailed mode (Ctrl+O) reopens a finished one.
+  - _The `answer ────────` divider is gone._ It announced the answer only when the turn happened to
+    contain reasoning, and trailed a stub rule that went nowhere. Screen readers keep the spoken
+    boundary, which they cannot infer from spacing.
+  - _Byte counts and whole-file line ranges are gone._ `2 lines, 51 B` and `121 lines · 1-121` rode
+    along on nearly every row; the range now appears only when a read started partway into a file.
+  - _Churn counts are coloured_ — `+33` green, `-2` rust — so the figures a reader scans for are the
+    ones that carry colour.
+  - _A file edit is called `Edit` everywhere._ `deriveToolPresentation` said `Update` while the
+    aggregate heading said `Edit`, so the measured label column disagreed with the rendered one.
+  - _Label-column widths snap to 4, 6 or 10_ rather than each turn's exact widest label. Exact
+    per-turn sizing closed the gulf inside a turn but left two adjacent turns on different columns.
+- **The transcript is capped at a 120-column measure.** On a wide terminal nothing bounded the
+  row width, so prose ran to 190 columns and right-aligned metadata ended up 170 columns from the
+  command it described — aligned with nothing the eye could hold. The transcript, the composer and
+  the status line now share one maximum measure and sit left-aligned beyond it.
+  - _The label column is sized per turn_ rather than to a fixed ten columns. A turn of `Bash` /
+    `Read` / `Grep` rows left seven dead columns between every verb and its target.
+  - _A failing row now takes as much width as its message needs_, capped, and never enough to
+    push the target below a readable minimum. The previous half-the-width ratio clipped
+    `'tail' is not recognized as an internal or external command` by one character.
+  - _Reasoning tags beyond `<think>`_ (`<thinking>`, `<reasoning>`, `<reasoning_context>`) are
+    recognized. An unhandled tag reached `marked` as raw markup, so the transcript grew a code
+    block labelled `html` containing the model's private reasoning.
+  - _Thinking blocks lost their fill_, keeping only the rail. Reasoning is the least important
+    content in a turn and was rendering as the heaviest block on screen.
+- **Left rails now actually render.** Expanded tool output, blockquotes and thinking blocks each
+  set `borderLeft` and a border colour but never a `borderStyle`, which Ink treats as no border at
+  all — so `toolRail`, `mdBlockquoteBorder` and `mdThinkBorder` were configured and never drawn.
+  Those blocks were indistinguishable from indented prose.
+- **The welcome screen no longer advertises commands that do not exist.** Hints were truncated per
+  segment inside a row that also held fixed separators, so a 50-column terminal rendered
+  `/hel commands` and `·@file`. Hints are now packed whole — the last one is dropped rather than
+  clipped — and the tagline orients a first-run user instead of describing the product.
 
 - **Anthropic sessions now cache the conversation, cutting input cost on long sessions by roughly
   an order of magnitude.** Book placed no cache breakpoint on the message stream, so the whole

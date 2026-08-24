@@ -1,17 +1,55 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { execFile } from 'node:child_process';
-import { existsSync } from 'fs';
-import { join } from 'path';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { isTranscriptScrollActive } from '../scroll-activity.js';
 
-interface GitStatus {
+/**
+ * Whether `dir` sits anywhere inside a working tree, without spawning anything.
+ *
+ * Probing only `<workspace>/.git` succeeds at the repository root alone, so
+ * launching from a subdirectory reported no branch. Asking `git rev-parse`
+ * instead fixed that but made every poll spawn children even where there is no
+ * repository at all: three processes every five seconds, forever, in any plain
+ * directory. Walking up for the entry costs a handful of `stat` calls and gets
+ * the subdirectory case right. A worktree or submodule stores `.git` as a file
+ * rather than a directory, so the entry is what is checked, not its type.
+ */
+export function isInsideWorkTree(
+  dir: string,
+  exists: (path: string) => boolean = existsSync,
+): boolean {
+  let current = resolve(dir);
+  for (;;) {
+    if (exists(join(current, '.git'))) return true;
+    const parent = dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
+export interface GitStatus {
   branch: string;
   status: string; // '\u2713' clean, '+2 ~1' staged/modified
   error?: string;
 }
 
+/**
+ * Replace state only when the reported status actually changed.
+ *
+ * The poll allocates a fresh object every tick, so returning it unconditionally
+ * made React re-render the whole app twelve times a minute in an idle session
+ * for no visual change.
+ */
+export function sameStatus(left: GitStatus, right: GitStatus): boolean {
+  return left.branch === right.branch && left.status === right.status && left.error === right.error;
+}
+
 export function useGitStatus(workspace: string): GitStatus {
   const [status, setStatus] = useState<GitStatus>({ branch: '?', status: '' });
+  const update = useCallback((next: GitStatus) => {
+    setStatus((current) => (sameStatus(current, next) ? current : next));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -22,12 +60,12 @@ export function useGitStatus(workspace: string): GitStatus {
       if (isTranscriptScrollActive()) return;
       if (running) return;
       running = true;
-      activeController = new AbortController();
-      if (!existsSync(join(workspace, '.git'))) {
-        if (!cancelled) setStatus({ branch: '?', status: '' });
+      if (!isInsideWorkTree(workspace)) {
+        if (!cancelled) update({ branch: '?', status: '' });
         running = false;
         return;
       }
+      activeController = new AbortController();
 
       try {
         const branch = await runGit(
@@ -38,7 +76,7 @@ export function useGitStatus(workspace: string): GitStatus {
         const short = await runGit(['status', '--short'], workspace, activeController.signal);
 
         if (!short) {
-          if (!cancelled) setStatus({ branch, status: '\u2713' });
+          if (!cancelled) update({ branch, status: '\u2713' });
           return;
         }
 
@@ -56,9 +94,10 @@ export function useGitStatus(workspace: string): GitStatus {
         if (staged > 0) parts.push(`+${staged}`);
         if (modified > 0) parts.push(`~${modified}`);
 
-        if (!cancelled) setStatus({ branch, status: parts.join(' ') });
+        if (!cancelled) update({ branch, status: parts.join(' ') });
       } catch {
-        if (!cancelled) setStatus({ branch: '?', status: '', error: 'git error' });
+        // Not a repository, or git is unavailable — both mean "no branch".
+        if (!cancelled) update({ branch: '?', status: '', error: 'git error' });
       } finally {
         running = false;
         activeController = undefined;
@@ -72,7 +111,7 @@ export function useGitStatus(workspace: string): GitStatus {
       activeController?.abort();
       clearInterval(interval);
     };
-  }, [workspace]);
+  }, [update, workspace]);
 
   return status;
 }

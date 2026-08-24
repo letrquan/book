@@ -79,7 +79,7 @@ describe('ToolCallBlock', () => {
     );
 
     void act(() => vi.advanceTimersByTime(2500));
-    expect(frame(view.lastFrame)).toContain('· 2s');
+    expect(frame(view.lastFrame)).toMatch(/Bash\s+npm test\s+2s$/m);
   });
 
   it('does not tick elapsed time under reduced motion', () => {
@@ -180,7 +180,7 @@ describe('ToolCallBlock', () => {
     );
 
     let rendered = frame(view.lastFrame);
-    expect(rendered).toContain('Bash(npm test)');
+    expect(rendered).toMatch(/Bash\s+npm test/);
     expect(rendered).toContain('VISIBLE_OUTPUT_MARKER');
     expect(rendered).not.toContain('command:');
     expect(rendered).not.toContain('PRIVATE_WORKDIR_MARKER');
@@ -222,7 +222,7 @@ describe('ToolCallBlock', () => {
 
     const rendered = frame(view.lastFrame);
     expect(rendered).toContain('…');
-    expect(rendered).toContain('· error-');
+    expect(rendered).toContain('error-');
   });
 
   it('renders a custom Update(filePath) block with stats for file updates', () => {
@@ -253,8 +253,7 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered).toContain('Update(src/tui/components/Diff.tsx)');
-    expect(rendered).toContain('· +2 -1');
+    expect(rendered).toMatch(/Edit\s+src\/tui\/components\/Diff\.tsx\s+\+2 -1$/m);
     expect(rendered.split('\n')).toHaveLength(1);
   });
 
@@ -346,8 +345,7 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered).toContain('Update(analysis.ipynb)');
-    expect(rendered).toContain('· +1 -1');
+    expect(rendered).toMatch(/Edit\s+analysis\.ipynb\s+\+1 -1$/m);
     expect(rendered.split('\n')).toHaveLength(1);
   });
 
@@ -370,8 +368,7 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered).toContain('Create(src/new-file.txt)');
-    expect(rendered).toContain('· +2');
+    expect(rendered).toMatch(/Create\s+src\/new-file\.txt\s+\+2$/m);
     expect(rendered.split('\n')).toHaveLength(1);
   });
 
@@ -400,9 +397,13 @@ describe('ToolCallBlock', () => {
     expect(rendered).toContain('start-');
     expect(rendered).toContain('d-end');
     expect(rendered).not.toContain('…');
+    // Assert the content survives the wrap, not where the wrap lands: the
+    // break position moves with the rail's column budget, the completeness
+    // must not.
     const diffRows = rendered.split('\n').filter((line) => line.includes('│'));
-    expect(diffRows.join('')).toContain('-create');
-    expect(diffRows.join('').match(/x/g)).toHaveLength(80);
+    const diffText = diffRows.map((line) => line.slice(line.lastIndexOf('│') + 1).trim()).join('');
+    expect(diffText).toContain(content);
+    expect(diffText.match(/x/g)).toHaveLength(80);
     for (const line of rendered.split('\n')) expect(displayWidth(line)).toBeLessThanOrEqual(width);
   });
 
@@ -420,7 +421,7 @@ describe('ToolCallBlock', () => {
     );
 
     const rendered = frame(view.lastFrame);
-    expect(rendered).toContain('Update(src/broken.ts)');
+    expect(rendered).toMatch(/Edit\s+src\/broken\.ts/);
     expect(rendered).toContain('Failed to write file');
   });
 
@@ -448,8 +449,9 @@ describe('ToolCallBlock', () => {
       ),
     );
 
-    expect(frame(outputView.lastFrame)).toContain('Shell output(shell_1)');
-    expect(frame(killView.lastFrame)).toContain('Kill shell(shell_1)');
+    // `Shell output` and `Kill shell` are shortened to fit the label column.
+    expect(frame(outputView.lastFrame)).toMatch(/Shell\s+shell_1/);
+    expect(frame(killView.lastFrame)).toMatch(/Kill shell\s+shell_1/);
   });
 
   it('bounds expanded output, summaries, and errors to a narrow width', () => {

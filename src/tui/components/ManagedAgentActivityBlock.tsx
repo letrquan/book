@@ -3,6 +3,7 @@ import { useUiClock } from '../ui-clock.js';
 import type { ManagedAgentTrace, ManagedAgentToolUse } from '../managed-agent-transcript.js';
 import { formatDuration, deriveToolPresentation } from '../tool-presentation.js';
 import { useTheme } from '../theme.js';
+import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
 import { truncateDisplay } from './word-wrap.js';
 import { Spinner } from './Spinner.js';
 
@@ -62,7 +63,8 @@ export function ManagedAgentActivityBlock({
   const elapsed = durationFor(trace, now);
   const visible = trace.toolUses.slice(-MAX_VISIBLE_TOOL_USES);
   const hiddenCount = Math.max(0, trace.toolUses.length - visible.length);
-  const width = Math.max(24, terminalWidth - 4);
+  const grid = transcriptGrid(terminalWidth);
+  const width = grid.content;
 
   if (screenReader) {
     return (
@@ -98,12 +100,12 @@ export function ManagedAgentActivityBlock({
           ? theme.warning
           : theme.brand;
   return (
-    <Box flexDirection="column" marginLeft={2} width={width}>
+    <Box flexDirection="column" width={grid.width}>
       <Box>
         {terminal ? (
           <Text color={headerColor}>{statusGlyph(trace.status)} </Text>
         ) : (
-          <Spinner active style="dots" color={theme.brand} reducedMotion={reducedMotion} />
+          <Spinner active color={theme.assistantAccent} reducedMotion={reducedMotion} />
         )}
         <Text color={headerColor} bold>
           {trace.profile}
@@ -125,11 +127,11 @@ export function ManagedAgentActivityBlock({
         const color = tool.status === 'failed' ? theme.error : running ? theme.brand : theme.text;
         const duration = toolDuration(tool);
         return (
-          <Box key={tool.id} flexDirection="column" marginLeft={2}>
+          <Box key={tool.id} flexDirection="column" marginLeft={CONTENT_COLUMN}>
             <Box>
               <Text color={theme.toolRail}>{connector} </Text>
               {running ? (
-                <Spinner active style="dots" color={theme.brand} reducedMotion={reducedMotion} />
+                <Spinner active color={theme.assistantAccent} reducedMotion={reducedMotion} />
               ) : (
                 <Text color={color}>{statusGlyph(tool.status)} </Text>
               )}

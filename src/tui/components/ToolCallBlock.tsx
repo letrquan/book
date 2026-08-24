@@ -6,12 +6,17 @@ import { DiffBlock } from './Diff.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { highlightCode } from './syntax-highlight.js';
 import { prepareToolOutputDisplay } from './tool-output.js';
-import { displayWidth, truncateDisplay } from './word-wrap.js';
+import { truncateDisplay } from './word-wrap.js';
 import {
   getFileMutationDisplaySummary,
   isRenderableFileMutationDiff,
 } from '../file-mutation-display.js';
-import { deriveToolPresentation, type ToolPresentationStatus } from '../tool-presentation.js';
+import {
+  composeToolRow,
+  deriveToolPresentation,
+  type ToolPresentationStatus,
+} from '../tool-presentation.js';
+import { CONTENT_COLUMN, nestedGrid, transcriptGrid, withLabelColumn } from '../layout.js';
 import { formatElapsedDuration } from './SubagentRow.js';
 import { useToolRowInteractionRegistry } from './tool-row-interactions.js';
 import { useUiClock } from '../ui-clock.js';
@@ -35,6 +40,11 @@ interface ToolCallBlockProps {
   summaryVariant?: 'default' | 'file-child';
   /** Available terminal width, including this block's outer indentation. */
   terminalWidth?: number;
+  /**
+   * Width of the label column, measured across the sibling rows of this turn.
+   * Omitted, the row uses the grid's default column.
+   */
+  labelWidth?: number;
 }
 
 /** Compatibility export used by existing consumers and tests. */
@@ -136,6 +146,79 @@ function ScreenReaderTool({
   );
 }
 
+/**
+ * Render a target so the part that identifies it carries the weight.
+ *
+ * Two ramps at once. Across the row: a path's directory is context and its
+ * basename is the thing being acted on, and in a column of twenty rows the
+ * directories are largely identical. Against the rest of the turn: a tool row
+ * is machinery, and it sits a step below prose so the answer is the brightest
+ * thing on screen rather than one more row of the same weight.
+ */
+export function TargetText({
+  target,
+  failed,
+  path = false,
+}: {
+  target: string;
+  failed: boolean;
+  /** Split the directory prefix off. Only meaningful for filesystem paths. */
+  path?: boolean;
+}) {
+  const theme = useTheme();
+  if (failed) return <Text color={theme.error}>{target}</Text>;
+  const split = path ? target.lastIndexOf('/') : -1;
+  // A trailing slash leaves no basename, which would paint the whole target in
+  // the dim prefix colour and make the row's only content the faintest thing
+  // on screen.
+  if (split < 0 || split === target.length - 1) {
+    return <Text color={theme.subtle}>{target}</Text>;
+  }
+  return (
+    <Text>
+      <Text color={theme.inactive} dimColor>
+        {target.slice(0, split + 1)}
+      </Text>
+      <Text color={theme.subtle}>{target.slice(split + 1)}</Text>
+    </Text>
+  );
+}
+
+/** `+12` / `-3`: churn counts, which read faster in the diff colours. */
+const CHURN_TOKEN = /^([+-])(\d+)$/;
+
+/**
+ * Render right-aligned metadata, colouring churn counts.
+ *
+ * Everything else stays recessive — the figures a reader scans for are the
+ * lines added and removed, and an error.
+ */
+export function MetaText({ meta, failed }: { meta: string; failed: boolean }) {
+  const theme = useTheme();
+  if (failed) return <Text color={theme.error}>{meta}</Text>;
+  if (!CHURN_TOKEN.test(meta.split(' ')[0] ?? '')) {
+    return (
+      <Text color={theme.subtle} dimColor>
+        {meta}
+      </Text>
+    );
+  }
+  return (
+    <Text>
+      {meta.split(' ').map((token, index) => {
+        const churn = CHURN_TOKEN.exec(token);
+        const color = !churn ? theme.subtle : churn[1] === '+' ? theme.success : theme.error;
+        return (
+          <Text key={index} color={color} dimColor={!churn}>
+            {index > 0 ? ' ' : ''}
+            {token}
+          </Text>
+        );
+      })}
+    </Text>
+  );
+}
+
 function ToolCallBlockInner({
   toolId,
   name,
@@ -150,11 +233,16 @@ function ToolCallBlockInner({
   showAllToolOutput = false,
   summaryVariant = 'default',
   terminalWidth = 80,
+  labelWidth,
 }: ToolCallBlockProps) {
   const theme = useTheme();
   const registry = useToolRowInteractionRegistry();
   const summaryRef = useRef<DOMElement>(null);
-  const blockWidth = Math.max(12, Math.floor(terminalWidth) - 2);
+  const grid = useMemo(() => {
+    const base = transcriptGrid(terminalWidth);
+    return labelWidth === undefined ? base : withLabelColumn(base, labelWidth);
+  }, [labelWidth, terminalWidth]);
+  const blockWidth = grid.content;
   const presentation = useMemo(
     () => deriveToolPresentation(name, args, result, { isPending, nestedActivityCount }),
     [args, isPending, name, nestedActivityCount, result],
@@ -168,27 +256,30 @@ function ToolCallBlockInner({
       ? formatElapsedDuration(Math.floor(runningElapsedMs / 1000))
       : undefined;
   const inlineError = result?.status !== 'blocked' ? result?.structuredError?.message : undefined;
-  const elapsedSuffix = elapsed ? ` · ${elapsed}` : '';
   const mutationSummary = useMemo(
     () => getFileMutationDisplaySummary(name, args, result),
     [args, name, result],
   );
-  const iconPrefixWidth = displayWidth('○ ');
-  const summaryWidth = Math.max(4, blockWidth - iconPrefixWidth);
-  const groupedFileSummary = mutationSummary
-    ? `${mutationSummary.filePath} (+${mutationSummary.addedLines} -${mutationSummary.removedLines})`
-    : presentation.summary;
-  const baseSummary = summaryVariant === 'file-child' ? groupedFileSummary : presentation.summary;
-  const summary = inlineError
-    ? (() => {
-        const errorWidth = Math.max(
-          8,
-          Math.min(Math.floor(summaryWidth / 2), displayWidth(inlineError)),
-        );
-        const prefixWidth = Math.max(4, summaryWidth - errorWidth - 3);
-        return `${truncateDisplay(baseSummary, prefixWidth)} · ${truncateDisplay(inlineError, errorWidth)}`;
-      })()
-    : truncateDisplay(`${baseSummary}${elapsedSuffix}`, summaryWidth);
+  const isFileChild = summaryVariant === 'file-child';
+  // A child row sits under an aggregate heading that already named the verb, so
+  // it drops the label column and renders on the nested grid.
+  const row = useMemo(() => {
+    if (isFileChild && mutationSummary) {
+      return composeToolRow(
+        {
+          title: '',
+          target: mutationSummary.filePath,
+          metadata: [`+${mutationSummary.addedLines}`, `-${mutationSummary.removedLines}`],
+        },
+        nestedGrid(grid),
+        { error: inlineError },
+      );
+    }
+    return composeToolRow(presentation, isFileChild ? nestedGrid(grid) : grid, {
+      elapsed,
+      error: inlineError,
+    });
+  }, [elapsed, grid, inlineError, isFileChild, mutationSummary, presentation]);
 
   useLayoutEffect(() => {
     if (!registry || !toolId) return;
@@ -201,38 +292,46 @@ function ToolCallBlockInner({
 
   if (screenReader) {
     return (
-      <Box flexDirection="column" marginLeft={2} width={blockWidth}>
+      <Box flexDirection="column" marginLeft={CONTENT_COLUMN} width={blockWidth}>
         <ScreenReaderTool presentation={presentation} result={result} />
       </Box>
     );
   }
 
   return (
-    <Box flexDirection="column" marginLeft={2}>
+    <Box flexDirection="column" marginLeft={isFileChild ? CONTENT_COLUMN : 0}>
       <Box ref={summaryRef} height={1}>
-        {summaryVariant === 'file-child' ? (
-          <Text color={theme.subtle}>└ </Text>
+        {/* The gutter carries status; content always begins on the next column. */}
+        {isFileChild ? (
+          <Text color={theme.toolRail}>└ </Text>
         ) : isRunning ? (
           <>
+            {/* Spinner emits its own trailing space, so the gutter stays two
+                columns wide and the verb does not shift when the tool ends. */}
             <Spinner
               active
               style="dots"
-              color={agentColor ?? theme.brand}
+              color={agentColor ?? theme.assistantAccent}
               reducedMotion={reducedMotion}
             />
-            <Text> </Text>
           </>
         ) : (
           <Text color={statusColor(presentation.status, theme)}>
             {statusSymbol(presentation.status)}{' '}
           </Text>
         )}
-        <Text
-          color={presentation.status === 'failure' ? theme.error : theme.text}
-          dimColor={presentation.status !== 'failure'}
-        >
-          {summary}
-        </Text>
+        {row.label ? (
+          <Text color={theme.inactive} dimColor>
+            {row.label}{' '}
+          </Text>
+        ) : null}
+        <TargetText
+          target={row.target}
+          failed={presentation.status === 'failure'}
+          path={Boolean(presentation.filePath) || isFileChild}
+        />
+        <Text>{row.gap}</Text>
+        <MetaText meta={row.meta} failed={Boolean(inlineError)} />
       </Box>
       {isExpanded && result && isDiffOutput(name, result) ? (
         <DiffBlock
@@ -283,8 +382,8 @@ function OutputBlock({
   toolName: string;
   terminalWidth: number;
 }) {
-  // A two-column indent plus the border/padding rail live inside the budget.
-  const contentWidth = Math.max(8, Math.floor(terminalWidth) - 6);
+  // The rail's border plus its padding occupy the nested gutter.
+  const contentWidth = Math.max(8, Math.floor(terminalWidth) - CONTENT_COLUMN - 2);
   const footerWidth = contentWidth;
   const display = useMemo(
     () =>
@@ -312,13 +411,16 @@ function OutputBlock({
   if (renderAsMarkdown) {
     return (
       <Box
-        marginLeft={2}
+        marginLeft={CONTENT_COLUMN}
         flexDirection="column"
+        borderStyle="single"
         borderLeft
+        borderTop={false}
+        borderRight={false}
+        borderBottom={false}
         borderLeftColor={theme.toolRail}
         paddingLeft={1}
         paddingRight={1}
-        backgroundColor={theme.surface}
       >
         <MarkdownBlock content={display.lines.join('\n')} terminalWidth={contentWidth} />
         {display.footer ? (
@@ -332,13 +434,16 @@ function OutputBlock({
 
   return (
     <Box
-      marginLeft={2}
+      marginLeft={CONTENT_COLUMN}
       flexDirection="column"
+      borderStyle="single"
       borderLeft
+      borderTop={false}
+      borderRight={false}
+      borderBottom={false}
       borderLeftColor={theme.toolRail}
       paddingLeft={1}
       paddingRight={1}
-      backgroundColor={theme.surface}
     >
       {display.lines.map((line, index) => (
         <Box key={index}>

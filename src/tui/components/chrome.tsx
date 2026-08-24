@@ -1,6 +1,7 @@
 import { Box, Text } from 'ink';
 import type { ReactNode } from 'react';
 import { useTheme } from '../theme.js';
+import { frameGrid } from '../layout.js';
 
 export type PanelTone = 'neutral' | 'brand' | 'permission' | 'plan' | 'error';
 
@@ -81,8 +82,10 @@ export function SelectionRow({
   );
 }
 
+/**
+ * @deprecated Prefer {@link frameGrid} directly. Kept so every bordered surface
+ * keeps a single call site while they migrate to the grid.
+ */
 export function floatingFrameMetrics(terminalWidth: number): { width: number; marginX: number } {
-  const outerWidth = Math.max(20, Math.floor(terminalWidth));
-  if (outerWidth < 32) return { width: outerWidth, marginX: 0 };
-  return { width: outerWidth - 2, marginX: 1 };
+  return frameGrid(terminalWidth);
 }

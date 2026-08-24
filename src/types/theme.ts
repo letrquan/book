@@ -17,6 +17,15 @@ export interface ThemeTokens {
   remember: string;
 
   /** Shared TUI chrome */
+  /**
+   * Panel fill.
+   *
+   * Built-in components fill only *verbatim* content — a code block keeps
+   * `mdCodeBackground`. Secondary content (expanded tool output, reasoning)
+   * gets a left rail and nothing else, so no built-in currently renders this
+   * token or `mdThinkBg`. Both stay in the contract for custom themes in
+   * `.book/themes/*.json`.
+   */
   surface: string;
   surfaceActive: string;
   border: string;
@@ -96,9 +105,18 @@ export interface ThemeTokens {
   userBg: string;
 }
 
+/**
+ * Warm editorial dark palette.
+ *
+ * Roles are kept visually distinct on purpose: sage belongs to the agent, clay
+ * to product chrome, teal to references, and the amber/rust/green trio to
+ * status. A token that reuses another role's hue makes the two indistinguishable
+ * on screen, which is exactly what this palette exists to prevent.
+ */
 export const DEFAULT_THEME: ThemeTokens = {
-  brand: '#AFC19D',
-  brandShimmer: '#C4D3B5',
+  brand: '#D3A17E',
+  brandShimmer: '#E5BB9B',
+
   text: '#E7E1D4',
   inverseText: '#171815',
   inactive: '#6D6961',
@@ -113,19 +131,21 @@ export const DEFAULT_THEME: ThemeTokens = {
   selectionText: '#F3EEE4',
   userAccent: '#D3A17E',
   assistantAccent: '#AFC19D',
-  toolRail: '#6B7164',
+  toolRail: '#5C6156',
 
   success: '#91B77C',
   error: '#D68174',
   warning: '#D1AA6C',
-  merged: '#91B77C',
+  merged: '#7FA89C',
 
-  promptBorder: '#AFC19D',
+  promptBorder: '#8C9A86',
   planMode: '#C09CAD',
   autoAccept: '#91B77C',
   bashBorder: '#D1AA6C',
 
-  modeDefault: '#AFC19D',
+  // `default` is the quiet mode: desaturated so the sage of an agent turn never
+  // reads as a permission-mode signal.
+  modeDefault: '#8C9A86',
   modePlan: '#C09CAD',
   modeAcceptEdits: '#91B77C',
   modeAuto: '#7FA89C',
@@ -139,10 +159,11 @@ export const DEFAULT_THEME: ThemeTokens = {
   diffAddedDimmed: '#1D2B20',
   diffRemovedDimmed: '#302120',
 
-  usageMeter: '#AFC19D',
+  usageMeter: '#7FA89C',
   usageMeterHigh: '#D1AA6C',
   usageMeterCritical: '#D68174',
 
+  // The spinner is the agent speaking, so it keeps the sage identity.
   shimmerPair: ['#AFC19D', '#C4D3B5'],
 
   subagentColors: [
@@ -157,31 +178,34 @@ export const DEFAULT_THEME: ThemeTokens = {
   ],
 
   mdCodeBackground: '#1B1D1A',
-  mdCodeBorder: '#4B4D45',
+  mdCodeBorder: '#3A3C36',
   mdCodeText: '#E7E1D4',
   mdCodeKeyword: '#C09CAD',
   mdCodeString: '#91B77C',
-  mdCodeComment: '#938E84',
+  mdCodeComment: '#6D6961',
   mdCodeNumber: '#D1AA6C',
-  mdCodeFunction: '#AFC19D',
-  mdCodeLineNumber: '#6D6961',
+  mdCodeFunction: '#7FA89C',
+  mdCodeLineNumber: '#5C6156',
   mdInlineCodeBg: '#2B2C27',
   mdInlineCodeText: '#D3A17E',
-  mdHeading: '#E7E1D4',
-  mdHeadingH1: '#AFC19D',
-  mdHeadingH2: '#C4D3B5',
-  mdBlockquoteBorder: '#6B7164',
+  // A three-step brightness ramp, all bold. Depth is legible only if these
+  // differ from each other *and* from `text` — otherwise a heading is
+  // indistinguishable from a bold run in body copy.
+  mdHeadingH1: '#F7F3EA',
+  mdHeadingH2: '#EFEADC',
+  mdHeading: '#B4AE9F',
+  mdBlockquoteBorder: '#5C6156',
   mdBlockquoteText: '#938E84',
-  mdLink: '#AFC19D',
-  mdListMarker: '#D3A17E',
-  mdHr: '#4B4D45',
-  mdTableBorder: '#4B4D45',
-  mdThinkBg: '#20221D',
-  mdThinkBorder: '#4B4D45',
-  mdThinkText: '#938E84',
-  mdTurnSeparator: '#6B7164',
+  mdLink: '#7FA89C',
+  mdListMarker: '#8C9A86',
+  mdHr: '#3A3C36',
+  mdTableBorder: '#3A3C36',
+  mdThinkBg: '#1E201C',
+  mdThinkBorder: '#3A3C36',
+  mdThinkText: '#7E7A72',
+  mdTurnSeparator: '#4B4D45',
   mdCheckboxChecked: '#91B77C',
   mdCheckboxUnchecked: '#6D6961',
 
-  userBg: '#2A231F',
+  userBg: '#262220',
 };

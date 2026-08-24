@@ -2,30 +2,43 @@ import { useState, useEffect, useRef } from 'react';
 import { createRenderDebugLogger } from '../../debug-log.js';
 import { isTranscriptScrollActive } from '../scroll-activity.js';
 import { useUiClock } from '../ui-clock.js';
+import { shimmerColor } from '../shimmer.js';
+import { useTheme } from '../theme.js';
 
 const animLog = createRenderDebugLogger('tui:animation');
 
 const BRAILLE_FRAMES = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
+
+/**
+ * Ten frames at the 100ms clock: one revolution per second, and one shimmer
+ * breath per revolution.
+ */
 const DOT_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /**
- * Gradient spinner — alternates between brand (cyan) and brandShimmer (#5cf) on each frame tick.
- * When reducedMotion is true, returns a static frame with no animation.
+ * The spinner.
+ *
+ * Colour comes from the active theme's `shimmerPair` and eases across it over
+ * a full revolution. It used to be a hardcoded `cyan`/`#5cf` pair swapped every
+ * frame, which put an off-palette 5Hz strobe in front of the user on every turn
+ * regardless of theme.
+ *
+ * When reducedMotion is true, returns a static frame in a static colour.
  */
 export function useGradientSpinner(
   active: boolean,
-  style: 'braille' | 'dots' = 'braille',
+  style: 'braille' | 'dots' = 'dots',
   reducedMotion = false,
 ): { frame: string; color: string } {
+  const theme = useTheme();
   const frames = style === 'braille' ? BRAILLE_FRAMES : DOT_FRAMES;
   const tick = useUiClock('fast', active && !reducedMotion);
+  const animating = active && !reducedMotion;
 
-  // Shimmer gradient: alternate between cyan and a lighter cyan
-  const colors = ['cyan', '#5cf'];
-  const frame = frames[active && !reducedMotion ? tick % frames.length : 0];
-  const color = colors[tick % colors.length];
-
-  return { frame, color };
+  return {
+    frame: frames[animating ? tick % frames.length : 0],
+    color: animating ? shimmerColor(theme.shimmerPair, tick) : theme.shimmerPair[0],
+  };
 }
 
 export function useStaggeredReveal(

@@ -12,7 +12,7 @@ import { useAnimatedProgress, useGradientSpinner } from '../hooks/useAnimation.j
 import { useUiClock } from '../ui-clock.js';
 import { useTheme } from '../theme.js';
 import { deriveWorkingActivity } from '../working-activity.js';
-import { floatingFrameMetrics } from './chrome.js';
+import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 interface WorkingIndicatorProps {
@@ -126,10 +126,11 @@ export function WorkingIndicator({
     elapsedSeconds,
   });
 
-  const width = Math.max(20, Math.floor(terminalWidth));
-  const frame = floatingFrameMetrics(width);
-  const horizontalInset = frame.marginX + 1;
-  const contentWidth = Math.max(8, width - horizontalInset * 2);
+  const width = transcriptGrid(terminalWidth).width;
+  // Footer rows share the transcript's content column so the status text, the
+  // activity label and every tool row start on the same column.
+  const horizontalInset = CONTENT_COLUMN;
+  const contentWidth = Math.max(8, width - horizontalInset - 1);
   const showCompactProgress =
     (isCompacting || compactComplete) && retryPhase === 'none' && !motionDisabled;
   const compactProgress = useAnimatedProgress(isCompacting, 2_400, motionDisabled);
@@ -166,7 +167,7 @@ export function WorkingIndicator({
     const progressColor = compactComplete ? theme.success : theme.brand;
 
     return (
-      <Box paddingX={horizontalInset} width={width} flexDirection="row" flexWrap="nowrap">
+      <Box paddingLeft={horizontalInset} width={width} flexDirection="row" flexWrap="nowrap">
         <Text color={theme.subtle} dimColor>
           {compactLabel}{' '}
         </Text>
@@ -210,7 +211,7 @@ export function WorkingIndicator({
         : theme.text;
 
   return (
-    <Box paddingX={horizontalInset} width={width}>
+    <Box width={width}>
       <Text color={indicatorColor}>{indicator} </Text>
       <Text color={labelColor} dimColor={activity?.tone !== 'normal'}>
         {line.label}

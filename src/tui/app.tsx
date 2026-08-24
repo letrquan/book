@@ -37,6 +37,7 @@ import { useAgent } from './hooks/useAgent.js';
 import { useTasks } from './hooks/useTasks.js';
 import { useManagedAgents } from './hooks/useManagedAgents.js';
 import { useBackgroundShells } from './hooks/useBackgroundShells.js';
+import { useGitStatus } from './hooks/useGitStatus.js';
 import { useAgentCompletionDelivery } from './hooks/useAgentCompletionDelivery.js';
 import { SubagentPanel } from './components/SubagentPanel.js';
 import { SubagentDetail } from './components/SubagentDetail.js';
@@ -353,6 +354,9 @@ export function App({
     return resolved;
   }, [liveConfig.workspace, runtime]);
   const backgroundShells = useBackgroundShells(shellManager, sessionId);
+  // Branch and dirty state are what people glance at the footer for; the hook
+  // existed with no consumer before the status line was reworked.
+  const gitStatus = useGitStatus(config.workspace);
 
   const [showTasks, setShowTasks] = useState(false);
   const [startupFireActive, setStartupFireActive] = useState(() =>
@@ -2856,6 +2860,8 @@ export function App({
           {/* Status line — stable footer */}
           <Box flexShrink={0} width={termWidth}>
             <StatusLine
+              gitBranch={gitStatus.branch}
+              gitStatus={gitStatus.status}
               model={liveConfig.modelSelection ?? liveConfig.model}
               tokenCount={tokenCount}
               maxTokens={resolveContextLimit(liveConfig)}

@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   countReasoningLines,
+  countReasoningRows,
   getRetryLabel,
   managedAgentTracesEqualForMessage,
+  splitThinkBlocks,
   trimPartialClosingFences,
 } from './AgentMessage.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
@@ -188,5 +190,95 @@ describe('managed-agent render invalidation', () => {
     const after = new Map([['spawn-1', { ...trace('agent-1'), status: 'completed' as const }]]);
 
     expect(managedAgentTracesEqualForMessage(message, before, after)).toBe(false);
+  });
+});
+
+describe('splitThinkBlocks reasoning tags', () => {
+  it('captures the body of every reasoning tag a provider may emit', () => {
+    for (const tag of ['think', 'thinking', 'reasoning', 'reasoning_context']) {
+      const parts = splitThinkBlocks(`before<${tag}>hidden</${tag}>after`);
+      expect(parts).toEqual([
+        { kind: 'markdown', text: 'before' },
+        { kind: 'think', text: 'hidden' },
+        { kind: 'markdown', text: 'after' },
+      ]);
+    }
+  });
+
+  it('keeps an unclosed reasoning tag out of the answer while it streams', () => {
+    // Unhandled, marked sees raw markup and renders the model's private
+    // reasoning as a fenced `html` block in the transcript.
+    const parts = splitThinkBlocks('answer<reasoning_context>still thinking');
+    expect(parts).toEqual([
+      { kind: 'markdown', text: 'answer' },
+      { kind: 'think', text: 'still thinking' },
+    ]);
+  });
+
+  it('does not restart matching mid-transcript when reused', () => {
+    // The pattern is a module-level /g regex; a stale lastIndex would drop the
+    // first block of the next message.
+    const input = '<think>a</think>tail';
+    expect(splitThinkBlocks(input)).toEqual(splitThinkBlocks(input));
+  });
+
+  it('leaves an unrelated tag alone', () => {
+    expect(splitThinkBlocks('see <div>x</div> here')).toEqual([
+      { kind: 'markdown', text: 'see <div>x</div> here' },
+    ]);
+  });
+});
+
+describe('countReasoningRows', () => {
+  it('counts rendered rows, not source lines', () => {
+    // The collapsed row advertises what expanding costs. Counting source lines
+    // put `2 lines` above four wrapped rows, which reads as a broken count.
+    const long = 'x'.repeat(100);
+    expect(countReasoningRows(long, 25)).toBe(4);
+    expect(countReasoningRows(long, undefined)).toBe(1);
+  });
+
+  it('ignores blank lines and sums across paragraphs', () => {
+    expect(countReasoningRows('one\n\n\ntwo', 80)).toBe(2);
+  });
+
+  it('counts a short line as one row', () => {
+    expect(countReasoningRows('short', 80)).toBe(1);
+  });
+
+  it('stays sane at a nonsense width', () => {
+    expect(countReasoningRows('x'.repeat(40), 0)).toBe(1);
+    expect(countReasoningRows('x'.repeat(40), -10)).toBe(1);
+  });
+});
+
+describe('splitThinkBlocks and code fences', () => {
+  it('leaves a reasoning tag inside a fenced block alone', () => {
+    // An answer quoting a prompt template is ordinary content; tearing the tag
+    // out gutted the code block it lived in.
+    const content = ['Use this template:', '', '```ts', '<thinking>plan</thinking>', '```'].join(
+      '\n',
+    );
+    expect(splitThinkBlocks(content)).toEqual([{ kind: 'markdown', text: content }]);
+  });
+
+  it('still splits a tag outside the fence', () => {
+    const content = ['<think>real</think>answer', '```', '<thinking>quoted</thinking>', '```'].join(
+      '\n',
+    );
+    const parts = splitThinkBlocks(content);
+    expect(parts[0]).toEqual({ kind: 'think', text: 'real' });
+    expect(parts[1].kind).toBe('markdown');
+    expect(parts[1].text).toContain('<thinking>quoted</thinking>');
+  });
+
+  it('treats an unclosed fence as running to the end of the message', () => {
+    const content = ['answer', '```', '<thinking>mid-stream</thinking>'].join('\n');
+    expect(splitThinkBlocks(content)).toEqual([{ kind: 'markdown', text: content }]);
+  });
+
+  it('handles tilde fences too', () => {
+    const content = ['~~~', '<reasoning>x</reasoning>', '~~~'].join('\n');
+    expect(splitThinkBlocks(content)).toEqual([{ kind: 'markdown', text: content }]);
   });
 });

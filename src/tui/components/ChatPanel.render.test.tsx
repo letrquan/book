@@ -142,7 +142,7 @@ describe('ChatPanel Ink rendering', () => {
 
     const output = frame(view.lastFrame);
     expect(output).toContain('╭ BOOK');
-    expect(output).toContain('Your coding workspace, indexed.');
+    expect(output).toContain('Ask anything, or type / for a command.');
     expect(output).toContain('/help');
   });
 
@@ -334,7 +334,8 @@ describe('ChatPanel Ink rendering', () => {
     expect(output).not.toContain('╭ BOOK');
     expect(output).not.toContain('You');
     expect(output).not.toContain('Book');
-    expect(output).toContain('│ compact request');
+    // The user turn opens with a labelled rule instead of a tinted card.
+    expect(output).toContain('── you ');
     expect(output).toContain('compact request');
     expect(output).toContain('compact reply');
   });
@@ -378,8 +379,10 @@ describe('ChatPanel Ink rendering', () => {
     const answerLine = lines.findIndex((line) => line.includes('FIRST_ANSWER_MARKER'));
     const nextQuestionLine = lines.findIndex((line) => line.includes('SECOND_QUESTION_MARKER'));
 
-    // A single turn gap separates assistant prose from the next user card.
-    expect(nextQuestionLine - answerLine).toBe(2);
+    // Blank row, then the turn rule, then the prompt: the next turn is three
+    // rows below the answer, one of which is the boundary itself.
+    expect(nextQuestionLine - answerLine).toBe(3);
+    expect(lines[nextQuestionLine - 1]).toContain('── you ');
   });
 
   it('keeps wrapped content mounted exactly once when streaming completes', () => {
@@ -569,14 +572,16 @@ describe('ChatPanel Ink rendering', () => {
     );
     const lines = frame(view.lastFrame).split('\n');
     const narration = lines.findIndex((line) => line.includes('I will inspect both files.'));
-    const first = lines.findIndex((line) => line.includes('Read(src/a.ts)'));
-    const second = lines.findIndex((line) => line.includes('Read(src/b.ts)'));
+    const first = lines.findIndex((line) => /Read\s+src\/a\.ts/.test(line));
+    const second = lines.findIndex((line) => /Read\s+src\/b\.ts/.test(line));
 
+    // One blank row separates prose from the block; the rows inside it run
+    // together so they read as a single aligned column.
     expect(lines.slice(narration + 1, first)).toEqual(['']);
-    expect(lines.slice(first + 1, second)).toEqual(['']);
+    expect(lines.slice(first + 1, second)).toEqual([]);
   });
 
-  it('keeps action gaps in tight density', () => {
+  it('runs actions together in tight density', () => {
     const message: Message = {
       ...msg('a1', 'assistant', 'Inspecting.'),
       toolCalls: [
@@ -593,11 +598,11 @@ describe('ChatPanel Ink rendering', () => {
     );
     const lines = frame(view.lastFrame).split('\n');
     const narration = lines.findIndex((line) => line.includes('Inspecting.'));
-    const first = lines.findIndex((line) => line.includes('Read(src/a.ts)'));
-    const second = lines.findIndex((line) => line.includes('Read(src/b.ts)'));
+    const first = lines.findIndex((line) => /Read\s+src\/a\.ts/.test(line));
+    const second = lines.findIndex((line) => /Read\s+src\/b\.ts/.test(line));
 
-    expect(lines.slice(narration + 1, first)).toEqual(['']);
-    expect(lines.slice(first + 1, second)).toEqual(['']);
+    expect(lines.slice(narration + 1, first)).toEqual([]);
+    expect(lines.slice(first + 1, second)).toEqual([]);
   });
 
   it('applies the same sibling spacing to nested actions', () => {
@@ -633,10 +638,10 @@ describe('ChatPanel Ink rendering', () => {
       withDensity(<AgentMessage message={message} isStreaming={false} reducedMotion />, 'compact'),
     );
     const lines = frame(view.lastFrame).split('\n');
-    const first = lines.findIndex((line) => line.includes('Read(src/a.ts)'));
-    const second = lines.findIndex((line) => line.includes('Read(src/b.ts)'));
+    const first = lines.findIndex((line) => /Read\s+src\/a\.ts/.test(line));
+    const second = lines.findIndex((line) => /Read\s+src\/b\.ts/.test(line));
 
-    expect(lines.slice(first + 1, second)).toEqual(['']);
+    expect(lines.slice(first + 1, second)).toEqual([]);
   });
 
   it('rerenders a tool result when array lengths stay unchanged', () => {
@@ -780,7 +785,7 @@ describe('ChatPanel Ink rendering', () => {
       withTheme(<ChatPanel messages={messages} terminalWidth={100} reducedMotion />),
     );
     const lines = frame(view.lastFrame).split('\n');
-    const toolLine = lines.findIndex((line) => line.includes('Read(src/a.ts)'));
+    const toolLine = lines.findIndex((line) => /Read\s+src\/a\.ts/.test(line));
     const followupLine = lines.findIndex((line) => line.includes('FOLLOWUP_MESSAGE_MARKER'));
 
     expect(lines.slice(toolLine + 1, followupLine)).toEqual(['']);
@@ -1071,8 +1076,8 @@ describe('ChatPanel Ink rendering', () => {
       ),
     );
 
-    expect(frame(view.lastFrame)).toContain('Read(src/a.ts)');
-    expect(frame(view.lastFrame)).toContain('Bash(npm test)');
+    expect(frame(view.lastFrame)).toMatch(/Read\s+src\/a\.ts/);
+    expect(frame(view.lastFrame)).toMatch(/Bash\s+npm test/);
     expect(frame(view.lastFrame)).not.toContain('READ_RESULT_MARKER');
     expect(frame(view.lastFrame)).not.toContain('BASH_RESULT_MARKER');
 
@@ -1094,7 +1099,7 @@ describe('ChatPanel Ink rendering', () => {
     expect(frame(view.lastFrame)).toContain('BASH_RESULT_MARKER');
   });
 
-  it('keeps completed reasoning readable and separates it from the answer', () => {
+  it('collapses completed reasoning and reopens it in detailed mode', () => {
     const message: Message = {
       ...msg('a1', 'assistant', 'The stream framing is compatible.'),
       reasoningContent: [
@@ -1115,13 +1120,14 @@ describe('ChatPanel Ink rendering', () => {
       ),
     );
 
+    // A finished thought collapses to one row: reasoning is the least
+    // important content in a turn and had been sitting above the answer.
     let output = frame(view.lastFrame);
-    expect(output).toContain('Thought');
+    expect(output).toContain('thought');
     expect(output).toContain('3 lines');
-    expect(output).toContain('Inspecting the provider stream');
-    expect(output).toContain('Checking its terminal framing');
-    expect(output).toContain('Comparing the final finish reason');
-    expect(output).toContain('Answer');
+    expect(output).not.toContain('Inspecting the provider stream');
+    expect(output).not.toContain('Comparing the final finish reason');
+    expect(output).toContain('The stream framing is compatible.');
 
     view.rerender(
       withTheme(
@@ -1134,7 +1140,9 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
+    // Detailed mode reopens it, so nothing is unreachable.
     output = frame(view.lastFrame);
+    expect(output).toContain('Inspecting the provider stream');
     expect(output).toContain('Checking its terminal framing');
     expect(output).toContain('Comparing the final finish reason');
   });
@@ -1207,7 +1215,7 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-    expect(frame(view.lastFrame)).toContain('Bash(npm test)');
+    expect(frame(view.lastFrame)).toMatch(/Bash\s+npm test/);
     expect(frame(view.lastFrame)).not.toContain('command: npm test');
 
     const completed: Message = {
@@ -1232,7 +1240,7 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-    expect(frame(view.lastFrame)).toContain('Bash(npm test)');
+    expect(frame(view.lastFrame)).toMatch(/Bash\s+npm test/);
     expect(frame(view.lastFrame)).not.toContain('command: npm test');
     expect(frame(view.lastFrame)).not.toContain('PASSED_MARKER');
 
@@ -1271,8 +1279,9 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-    expect(frame(view.lastFrame)).toContain('Called slack(search)');
-    expect(frame(view.lastFrame)).toContain('Called slack(post)');
+    // The label column carries the server; `Called` is redundant there.
+    expect(frame(view.lastFrame)).toMatch(/slack\s+search/);
+    expect(frame(view.lastFrame)).toMatch(/slack\s+post/);
     expect(frame(view.lastFrame)).not.toContain('Called slack 2 times');
 
     view.rerender(
@@ -1285,8 +1294,9 @@ describe('ChatPanel Ink rendering', () => {
         />,
       ),
     );
-    expect(frame(view.lastFrame)).toContain('Called slack(search)');
-    expect(frame(view.lastFrame)).toContain('Called slack(post)');
+    // The label column carries the server; `Called` is redundant there.
+    expect(frame(view.lastFrame)).toMatch(/slack\s+search/);
+    expect(frame(view.lastFrame)).toMatch(/slack\s+post/);
   });
 
   it('expands completed file mutation output by default and preserves manual collapse', () => {
@@ -1314,8 +1324,8 @@ describe('ChatPanel Ink rendering', () => {
     const output = frame(view.lastFrame);
     expect(output).toContain('I will update it.');
     expect(output).toContain('Done.');
-    expect(output).toContain('Edited 1 file (+1 -1)');
-    expect(output).toContain('└ src/a.ts (+1 -1)');
+    expect(output).toMatch(/Edit\s+1 file\s+\+1 -1/);
+    expect(output).toMatch(/└ src\/a\.ts\s+\+1 -1/);
     expect(output).toContain('- old line');
     expect(output).toContain('+ new line');
 
@@ -1359,8 +1369,8 @@ describe('ChatPanel Ink rendering', () => {
     );
     const output = frame(view.lastFrame);
 
-    expect(output).toContain('Edited 1 file (+1 -1)');
-    expect(output).toContain('└ src/a.ts (+1 -1)');
+    expect(output).toMatch(/Edit\s+1 file\s+\+1 -1/);
+    expect(output).toMatch(/└ src\/a\.ts\s+\+1 -1/);
     expect(output).toContain('- old marker');
     expect(output).toContain('+ new marker');
   });
@@ -1385,8 +1395,8 @@ describe('ChatPanel Ink rendering', () => {
     );
     const output = frame(view.lastFrame);
 
-    expect(output).toContain('Edited 1 file (+100 -1)');
-    expect(output).toContain('└ src/a.ts (+100 -1)');
+    expect(output).toMatch(/Edit\s+1 file\s+\+100 -1/);
+    expect(output).toMatch(/└ src\/a\.ts\s+\+100 -1/);
     expect(output).toContain('+ new 50');
     expect(output).toContain('+ new 100');
     expect(output).not.toContain('rows omitted');
@@ -1421,12 +1431,12 @@ describe('ChatPanel Ink rendering', () => {
     );
     const output = frame(view.lastFrame);
 
-    expect(output).toContain('Edited 2 files (+3 -3)');
-    expect(output).toContain('└ src/first.ts (+2 -1)');
-    expect(output).toContain('└ src/second.ts (+1 -2)');
+    expect(output).toMatch(/Edit\s+2 files\s+\+3 -3/);
+    expect(output).toMatch(/└ src\/first\.ts\s+\+2 -1/);
+    expect(output).toMatch(/└ src\/second\.ts\s+\+1 -2/);
     expect(output).toContain('- old first');
     expect(output).toContain('+ new second');
-    expect(output.match(/Edited 2 files/g)).toHaveLength(1);
+    expect(output.match(/2 files/g)).toHaveLength(1);
   });
 
   it('merges adjacent assistant messages where later has no content (tool-call-only turn)', () => {

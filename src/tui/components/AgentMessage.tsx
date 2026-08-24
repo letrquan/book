@@ -1,12 +1,14 @@
 import { Text, Box } from 'ink';
 import React, { useMemo } from 'react';
 import { Spinner } from './Spinner.js';
-import { ToolCallBlock } from './ToolCallBlock.js';
+import { MetaText, TargetText, ToolCallBlock } from './ToolCallBlock.js';
 import { DiffBlock, isUnifiedDiffLike } from './Diff.js';
 import { MarkdownBlock, useThrottledValue } from './MarkdownBlock.js';
 import { CommandPanel } from './CommandPanel.js';
 import { useTheme } from '../theme.js';
 import { useDensityMetrics } from '../density.js';
+import { CONTENT_COLUMN, GUTTER_WIDTH, transcriptGrid, withLabelColumn } from '../layout.js';
+import { composeToolRow, toolLabelColumnWidth, toolRowLabel } from '../tool-presentation.js';
 import type { Message } from '../../types/messages.js';
 import type { RetryPhase } from '../../types/runtime.js';
 import type { PendingPermissionRequest } from '../../session/agent-interactions.js';
@@ -212,16 +214,62 @@ interface MarkdownPart {
 
 type MessagePart = ThinkBlockPart | MarkdownPart;
 
+/**
+ * Tags a provider may wrap reasoning in.
+ *
+ * An unlisted tag is not merely unstyled: `marked` sees raw markup and renders
+ * the block as fenced HTML, so the transcript grew a code block labelled `html`
+ * containing the model's private reasoning.
+ */
+const REASONING_TAG_PATTERN =
+  /<(think|thinking|reasoning|reasoning_context)>([\s\S]*?)(?:<\/\1>|$)/gi;
+
+/** Opening or closing line of a fenced code block. */
+const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})/gm;
+
+/**
+ * Byte ranges covered by fenced code blocks.
+ *
+ * An answer that quotes a prompt template is ordinary content here, and this
+ * repository's own docs contain reasoning tags. Without this, such a fence had
+ * its contents torn out and rendered as a collapsed thought, so the code block
+ * in the answer silently lost its body.
+ */
+function fencedRanges(content: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  FENCE_LINE.lastIndex = 0;
+  let openedAt: number | null = null;
+  let marker = '';
+  let match: RegExpExecArray | null;
+  while ((match = FENCE_LINE.exec(content)) !== null) {
+    if (openedAt === null) {
+      openedAt = match.index;
+      marker = match[1][0];
+    } else if (match[1][0] === marker) {
+      ranges.push([openedAt, FENCE_LINE.lastIndex]);
+      openedAt = null;
+    }
+  }
+  // An unclosed fence runs to the end of the message, which is the common case
+  // mid-stream.
+  if (openedAt !== null) ranges.push([openedAt, content.length]);
+  return ranges;
+}
+
 export function splitThinkBlocks(content: string): MessagePart[] {
   const parts: MessagePart[] = [];
-  const pattern = /<think>([\s\S]*?)(?:<\/think>|$)/gi;
+  const fenced = fencedRanges(content);
+  const pattern = REASONING_TAG_PATTERN;
+  pattern.lastIndex = 0;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
   while ((match = pattern.exec(content)) !== null) {
-    const before = content.slice(lastIndex, match.index);
+    const index = match.index;
+    if (fenced.some(([start, end]) => index >= start && index < end)) continue;
+    const before = content.slice(lastIndex, index);
     if (before) parts.push({ kind: 'markdown', text: before });
-    parts.push({ kind: 'think', text: match[1].trim() });
+    parts.push({ kind: 'think', text: match[2].trim() });
     lastIndex = pattern.lastIndex;
   }
 
@@ -241,64 +289,164 @@ export function countReasoningLines(text: string): number {
   return reasoningLines(text).length;
 }
 
+/**
+ * Rows a completed thought would occupy if it were expanded.
+ *
+ * The collapsed row advertises what expanding costs, so it has to count
+ * *rendered* rows. Counting source lines put `Thought - 2 lines` above four
+ * wrapped rows, which read as a bug in the count rather than a wrap.
+ */
+export function countReasoningRows(text: string, width?: number): number {
+  const lines = reasoningLines(text);
+  if (!width || width <= 0) return lines.length;
+  const measure = Math.max(8, Math.floor(width));
+  return lines.reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / measure)), 0);
+}
+
 function ThinkBlock({
   text,
   terminalWidth,
   reducedMotion,
   active = true,
+  expanded = false,
   screenReader = false,
 }: {
   text: string;
   terminalWidth?: number;
   reducedMotion?: boolean;
   active?: boolean;
+  /** Detailed transcript mode keeps a finished thought open. */
+  expanded?: boolean;
   screenReader?: boolean;
 }) {
   const theme = useTheme();
-  const lineCount = countReasoningLines(text);
   // Keep the complete thought readable while avoiding a terminal redraw for every delta.
   const streamedText = useThrottledValue(text, 80);
-  const visibleText = active ? streamedText : text;
-  const lineLabel = `${lineCount} ${lineCount === 1 ? 'line' : 'lines'}`;
+  // The body sits two gutters in from the block's own width: the rail plus its
+  // padding, then the indent under the header.
+  const bodyWidth =
+    terminalWidth === undefined || screenReader
+      ? terminalWidth
+      : Math.max(12, Math.floor(terminalWidth) - GUTTER_WIDTH * 2);
+  const rowCount = countReasoningRows(text, bodyWidth);
+  const rowLabel = `${rowCount} ${rowCount === 1 ? 'line' : 'lines'}`;
+
+  // A finished thought collapses to one row.
+  //
+  // Watching reasoning arrive is the point of showing it; re-reading it in
+  // scrollback is not. Expanded by default it put the least important content
+  // of a turn in the most prominent position — several rows of it above the
+  // first sentence of the answer. Detailed mode (Ctrl+O) reopens it, so
+  // nothing becomes unreachable.
+  if (!active && !expanded && !screenReader) {
+    return (
+      <Box>
+        <Text color={theme.mdThinkText} dimColor>
+          {`▸ thought · ${rowLabel}`}
+        </Text>
+      </Box>
+    );
+  }
 
   return (
     <Box
       flexDirection="column"
+      borderStyle="single"
       borderLeft={!screenReader}
+      borderTop={false}
+      borderRight={false}
+      borderBottom={false}
       borderLeftColor={theme.mdThinkBorder}
-      backgroundColor={screenReader ? undefined : theme.mdThinkBg}
       paddingLeft={screenReader ? 0 : 1}
     >
       <Box>
         {active && !screenReader ? (
-          <Spinner active style="dots" color={theme.mdThinkText} reducedMotion={reducedMotion} />
+          <Spinner active color={theme.mdThinkText} reducedMotion={reducedMotion} />
         ) : null}
         <Text color={theme.mdThinkText} bold={active} dimColor={!active}>
           {active ? 'Thinking' : 'Thought'}
         </Text>
-        {!active ? <Text color={theme.subtle} dimColor>{` - ${lineLabel}`}</Text> : null}
+        {!active ? <Text color={theme.subtle} dimColor>{` - ${rowLabel}`}</Text> : null}
       </Box>
-      <Box marginLeft={screenReader ? 0 : 2}>
+      <Box marginLeft={screenReader ? 0 : CONTENT_COLUMN}>
         {active ? (
           <Text color={theme.mdThinkText} dimColor>
-            {visibleText}
+            {streamedText}
           </Text>
         ) : (
-          <MarkdownBlock content={visibleText} terminalWidth={terminalWidth} />
+          <MarkdownBlock content={text} terminalWidth={bodyWidth} />
         )}
       </Box>
     </Box>
   );
 }
 
-function AnswerDivider({ screenReader }: { screenReader: boolean }) {
+/**
+ * Heading for a run of consecutive file mutations, laid out like a tool row so
+ * its verb, target and churn land on the same columns as everything else.
+ */
+function MutationGroupRow({
+  createdOnly,
+  fileCount,
+  addedLines,
+  removedLines,
+  grid,
+  screenReader,
+}: {
+  createdOnly: boolean;
+  fileCount: number;
+  addedLines: number;
+  removedLines: number;
+  grid: ReturnType<typeof transcriptGrid>;
+  screenReader: boolean;
+}) {
   const theme = useTheme();
+  const row = composeToolRow(
+    {
+      title: createdOnly ? 'Create' : 'Edit',
+      target: `${fileCount} ${fileCount === 1 ? 'file' : 'files'}`,
+      metadata: [`+${addedLines}`, `-${removedLines}`],
+    },
+    grid,
+  );
+  if (screenReader) {
+    return (
+      <Box>
+        <Text>
+          {createdOnly ? 'Created' : 'Edited'} {fileCount} {fileCount === 1 ? 'file' : 'files'} (+
+          {addedLines} -{removedLines})
+        </Text>
+      </Box>
+    );
+  }
   return (
-    <Box marginTop={1} marginBottom={1}>
-      <Text color={screenReader ? theme.text : theme.assistantAccent} bold={!screenReader}>
-        {screenReader ? 'Answer:' : 'Answer'}
-      </Text>
-      {!screenReader ? <Text color={theme.mdTurnSeparator}> {'-'.repeat(12)}</Text> : null}
+    <Box height={1}>
+      <Text color={theme.success}>{'• '}</Text>
+      {row.label ? (
+        <Text color={theme.inactive} dimColor>
+          {row.label}{' '}
+        </Text>
+      ) : null}
+      <TargetText target={row.target} failed={false} />
+      <Text>{row.gap}</Text>
+      <MetaText meta={row.meta} failed={false} />
+    </Box>
+  );
+}
+
+/**
+ * Marks where reasoning ends and the answer begins.
+ *
+ * Visually this is a blank row: a finished thought already collapses to a
+ * single line, so a labelled rule on top of it was chrome announcing chrome.
+ * Screen readers still get the spoken boundary, which they cannot infer from
+ * spacing.
+ */
+function AnswerDivider({ screenReader }: { screenReader: boolean }) {
+  if (!screenReader) return <Box marginTop={1} />;
+  return (
+    <Box>
+      <Text>Answer:</Text>
     </Box>
   );
 }
@@ -343,7 +491,7 @@ export function AgentMessageInner({
   trimTrailingSpacing = false,
 }: AgentMessageProps) {
   const theme = useTheme();
-  const { toolRowGap } = useDensityMetrics();
+  const { toolRowGap, toolBlockGap } = useDensityMetrics();
   const toolCalls = message.toolCalls ?? [];
   const suppressDelegationNarration = toolCalls.some((call) => {
     if (call.name !== 'AgentSpawn') return false;
@@ -380,9 +528,11 @@ export function AgentMessageInner({
 
   const isRetrying = retryPhase !== 'none';
 
-  // Message content is indented by two columns. Activity labels render on a
-  // separate row, so they never steal horizontal space from markdown/diffs.
-  const contentWidth = terminalWidth ? Math.max(12, Math.floor(terminalWidth) - 2) : undefined;
+  // Prose sits on the transcript content column, the same one tool rows and the
+  // status line use. Activity labels render on their own row so they never
+  // steal horizontal space from markdown or diffs.
+  const grid = useMemo(() => transcriptGrid(terminalWidth ?? 80), [terminalWidth]);
+  const contentWidth = terminalWidth ? grid.content : undefined;
   const mdWidth = contentWidth;
   const contentParts = useMemo(() => splitThinkBlocks(displayContent), [displayContent]);
   const renderAsUnifiedDiff = useMemo(
@@ -407,6 +557,17 @@ export function AgentMessageInner({
       }),
     [message.toolResults, toolCalls],
   );
+  // Size the label column to this turn's own rows. A turn of `Bash` / `Read`
+  // rows padded to fit a hypothetical `Git status` puts seven dead columns
+  // between every verb and its target.
+  const labelWidth = useMemo(
+    () =>
+      toolLabelColumnWidth(
+        topLevelInvocations.map((invocation) => toolRowLabel(invocation.name, invocation.result)),
+      ),
+    [topLevelInvocations],
+  );
+  const mutationGrid = useMemo(() => withLabelColumn(grid, labelWidth), [grid, labelWidth]);
   const selectedAutomaticToolId = automaticToolCallId ?? expandedToolCallId;
 
   if (message.localCommand) {
@@ -429,25 +590,26 @@ export function AgentMessageInner({
       !displayContent &&
       !(showThinking && reasoningContent) &&
       !message.toolCalls?.length ? (
-        <Box marginLeft={screenReader ? 0 : 2}>
+        <Box marginLeft={screenReader ? 0 : CONTENT_COLUMN}>
           {isRetrying && spinnerLabel ? (
             <Box>
               <Text color={theme.error}>Retrying: </Text>
               <Text color={theme.error}>{spinnerLabel}</Text>
             </Box>
           ) : (
-            <Spinner active style="braille" reducedMotion={reducedMotion} showTips={true} />
+            <Spinner active reducedMotion={reducedMotion} showTips={true} />
           )}
         </Box>
       ) : null}
 
       {showThinking && reasoningContent ? (
-        <Box marginLeft={screenReader ? 0 : 2} flexDirection="column">
+        <Box marginLeft={screenReader ? 0 : CONTENT_COLUMN} flexDirection="column">
           <ThinkBlock
             text={reasoningContent}
             terminalWidth={mdWidth}
             reducedMotion={reducedMotion}
             active={isStreaming && !displayContent}
+            expanded={transcriptMode === 'detailed'}
             screenReader={screenReader}
           />
         </Box>
@@ -455,13 +617,13 @@ export function AgentMessageInner({
 
       {/* Activity and content use separate rows so markdown keeps its full budget. */}
       {displayContent ? (
-        <Box marginLeft={screenReader ? 0 : 2} flexDirection="column">
+        <Box marginLeft={screenReader ? 0 : CONTENT_COLUMN} flexDirection="column">
           {showThinking && reasoningContent && !embeddedThinking ? (
             <AnswerDivider screenReader={screenReader} />
           ) : null}
           {isStreaming && !hideStreamingSpinner && !isRetrying ? (
             <Box>
-              <Spinner active style="braille" reducedMotion={reducedMotion} />
+              <Spinner active reducedMotion={reducedMotion} />
             </Box>
           ) : null}
           {isRetrying && !hideStreamingSpinner && spinnerLabel ? (
@@ -487,6 +649,7 @@ export function AgentMessageInner({
                       terminalWidth={mdWidth}
                       reducedMotion={reducedMotion}
                       active={isStreaming && !answerHasStarted}
+                      expanded={transcriptMode === 'detailed'}
                       screenReader={screenReader}
                     />
                   );
@@ -518,7 +681,7 @@ export function AgentMessageInner({
         const marginTop =
           index === 0
             ? displayContent || (showThinking && reasoningContent)
-              ? toolRowGap
+              ? toolBlockGap
               : 0
             : toolRowGap;
         const tc = invocation.call;
@@ -560,17 +723,14 @@ export function AgentMessageInner({
             marginTop={mutation && previousMutation ? 0 : marginTop}
           >
             {mutationGroup ? (
-              <Box marginLeft={2}>
-                <Text color={theme.success}>• </Text>
-                <Text color={theme.text} bold>
-                  {mutationGroup.createdOnly ? 'Created' : 'Edited'} {mutationGroup.fileCount}{' '}
-                  {mutationGroup.fileCount === 1 ? 'file' : 'files'}
-                </Text>
-                <Text color={theme.subtle}>
-                  {' '}
-                  (+{mutationGroup.addedLines} -{mutationGroup.removedLines})
-                </Text>
-              </Box>
+              <MutationGroupRow
+                createdOnly={mutationGroup.createdOnly}
+                fileCount={mutationGroup.fileCount}
+                addedLines={mutationGroup.addedLines}
+                removedLines={mutationGroup.removedLines}
+                grid={mutationGrid}
+                screenReader={screenReader}
+              />
             ) : null}
             {managedAgentTrace ? (
               <ManagedAgentActivityBlock
@@ -600,6 +760,7 @@ export function AgentMessageInner({
                 showAllToolOutput={showAllToolOutput || showAllToolOutputIds.has(tc.id)}
                 summaryVariant={mutation ? 'file-child' : 'default'}
                 terminalWidth={terminalWidth}
+                labelWidth={labelWidth}
               />
             )}
             {!managedAgentTrace && childrenByParent.has(tc.id) ? (
