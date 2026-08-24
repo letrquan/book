@@ -12,7 +12,7 @@ import { useAnimatedProgress, useGradientSpinner } from '../hooks/useAnimation.j
 import { useUiClock } from '../ui-clock.js';
 import { useTheme } from '../theme.js';
 import { deriveWorkingActivity } from '../working-activity.js';
-import { CONTENT_COLUMN } from '../layout.js';
+import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 interface WorkingIndicatorProps {
@@ -126,7 +126,7 @@ export function WorkingIndicator({
     elapsedSeconds,
   });
 
-  const width = Math.max(20, Math.floor(terminalWidth));
+  const width = transcriptGrid(terminalWidth).width;
   // Footer rows share the transcript's content column so the status text, the
   // activity label and every tool row start on the same column.
   const horizontalInset = CONTENT_COLUMN;

@@ -21,7 +21,17 @@ interface Rgb {
   b: number;
 }
 
-function parseHex(color: string): Rgb | null {
+/** Last-resort colour when a theme supplies no usable shimmer pair. */
+const FALLBACK_SHIMMER = '#AFC19D';
+
+/**
+ * Parse a hex colour, tolerating anything a custom theme might supply.
+ *
+ * The parameter is `unknown` on purpose: theme tokens are merged from
+ * unvalidated JSON, so the declared `string` was a claim rather than a fact.
+ */
+function parseHex(color: unknown): Rgb | null {
+  if (typeof color !== 'string') return null;
   const match = /^#?([0-9a-f]{6})$/i.exec(color.trim());
   if (!match) return null;
   const value = Number.parseInt(match[1], 16);
@@ -55,10 +65,15 @@ export function shimmerPhase(tick: number, steps = SHIMMER_STEPS): number {
  * interpolated.
  */
 export function shimmerColor(pair: readonly [string, string], tick: number): string {
-  const [from, to] = pair;
+  // `loadCustomTheme` merges arbitrary `.book/themes/*.json` into the token set
+  // without validating it, so this pair can be short, empty, or not an array at
+  // all. It reaches here on the spinner's first frame, where throwing takes the
+  // whole TUI down.
+  const [from, to] = Array.isArray(pair) ? (pair as readonly unknown[]) : [];
   const start = parseHex(from);
   const end = parseHex(to);
-  if (!start || !end) return from;
+  if (!start) return typeof from === 'string' && from ? from : FALLBACK_SHIMMER;
+  if (!end) return from as string;
   const t = shimmerPhase(tick);
   return toHex({
     r: start.r + (end.r - start.r) * t,

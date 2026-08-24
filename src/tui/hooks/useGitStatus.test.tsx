@@ -84,3 +84,19 @@ describe('sameStatus', () => {
     );
   });
 });
+
+describe('useGitStatus outside the repository root', () => {
+  it('polls git from a subdirectory instead of probing for .git', async () => {
+    // Probing for a `.git` entry only succeeds at the repository root, so
+    // launching from any subdirectory reported no branch at all.
+    vi.useFakeTimers();
+    const workspace = mkdtempSync(join(tmpdir(), 'book-git-subdir-'));
+    roots.push(workspace);
+    const view = render(<Harness workspace={workspace} />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toEqual(['rev-parse', '--abbrev-ref', 'HEAD']);
+    view.unmount();
+  });
+});

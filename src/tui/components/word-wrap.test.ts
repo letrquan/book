@@ -225,3 +225,21 @@ describe('padDisplay', () => {
     expect(displayWidth(padDisplay('hello world', 5))).toBe(5);
   });
 });
+
+describe('status glyph widths agree with the renderer', () => {
+  // The transcript grid assumes a two-column gutter: one glyph plus one space.
+  // If our width model disagrees with Ink's, every row carrying that glyph sits
+  // on a different content column from the rest, and the padding we compute is
+  // wrong by that much. Verified against Ink's own layout.
+  it('measures every status glyph as one column', () => {
+    for (const glyph of ['✓', '✗', '×', '–', '?', '◌', '•', '└', '▸', '◆', '│', '─', '⠋']) {
+      expect(displayWidth(glyph), `${glyph} (U+${glyph.codePointAt(0)!.toString(16)})`).toBe(1);
+    }
+  });
+
+  it('still measures emoji-presentation characters as two columns', () => {
+    for (const glyph of ['✅', '❌', '✨', '🙂', '🚀']) {
+      expect(displayWidth(glyph), glyph).toBe(2);
+    }
+  });
+});

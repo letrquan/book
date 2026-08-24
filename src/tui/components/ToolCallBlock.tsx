@@ -155,11 +155,25 @@ function ScreenReaderTool({
  * is machinery, and it sits a step below prose so the answer is the brightest
  * thing on screen rather than one more row of the same weight.
  */
-export function TargetText({ target, failed }: { target: string; failed: boolean }) {
+export function TargetText({
+  target,
+  failed,
+  path = false,
+}: {
+  target: string;
+  failed: boolean;
+  /** Split the directory prefix off. Only meaningful for filesystem paths. */
+  path?: boolean;
+}) {
   const theme = useTheme();
   if (failed) return <Text color={theme.error}>{target}</Text>;
-  const split = target.lastIndexOf('/');
-  if (split < 0) return <Text color={theme.subtle}>{target}</Text>;
+  const split = path ? target.lastIndexOf('/') : -1;
+  // A trailing slash leaves no basename, which would paint the whole target in
+  // the dim prefix colour and make the row's only content the faintest thing
+  // on screen.
+  if (split < 0 || split === target.length - 1) {
+    return <Text color={theme.subtle}>{target}</Text>;
+  }
   return (
     <Text>
       <Text color={theme.inactive} dimColor>
@@ -292,13 +306,14 @@ function ToolCallBlockInner({
           <Text color={theme.toolRail}>└ </Text>
         ) : isRunning ? (
           <>
+            {/* Spinner emits its own trailing space, so the gutter stays two
+                columns wide and the verb does not shift when the tool ends. */}
             <Spinner
               active
               style="dots"
               color={agentColor ?? theme.assistantAccent}
               reducedMotion={reducedMotion}
             />
-            <Text> </Text>
           </>
         ) : (
           <Text color={statusColor(presentation.status, theme)}>
@@ -310,7 +325,11 @@ function ToolCallBlockInner({
             {row.label}{' '}
           </Text>
         ) : null}
-        <TargetText target={row.target} failed={presentation.status === 'failure'} />
+        <TargetText
+          target={row.target}
+          failed={presentation.status === 'failure'}
+          path={Boolean(presentation.filePath) || isFileChild}
+        />
         <Text>{row.gap}</Text>
         <MetaText meta={row.meta} failed={Boolean(inlineError)} />
       </Box>

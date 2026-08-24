@@ -51,7 +51,10 @@ export function getCompletedTimelineWindow(terminalHeight?: number): number {
 }
 
 function estimateWrappedRows(content: string, width: number): number {
-  const contentWidth = Math.max(12, Math.floor(width) - 6);
+  // Wrap against the measure the row is actually rendered at. Estimating
+  // against the raw terminal width past MAX_MEASURE reports roughly 60% of
+  // the true height, and the virtual transcript sizes its spacers from this.
+  const contentWidth = transcriptGrid(width).content;
   if (!content) return 1;
   return content
     .split('\n')
@@ -64,7 +67,9 @@ function estimateTimelineRows(entry: Message | CompactBoundary, terminalWidth: n
   const textRows = estimateWrappedRows(entry.content, terminalWidth);
   const attachmentRows = entry.attachments?.length ? 1 : 0;
   const toolRows = (entry.toolCalls?.length ?? 0) * 2 + (entry.toolResults?.length ?? 0);
-  return Math.max(1, textRows + attachmentRows + toolRows);
+  // A user turn opens with its rule, which is a row of its own.
+  const turnRuleRows = entry.role === 'user' ? 1 : 0;
+  return Math.max(1, textRows + attachmentRows + toolRows + turnRuleRows);
 }
 
 function messageOwnsTool(message: Message, toolId: string | null | undefined): boolean {

@@ -6,7 +6,7 @@ import type { PermissionMode } from '../../types/runtime.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
 import { modeColorToken, modeLabel } from '../mode-style.js';
-import { CONTENT_COLUMN } from '../layout.js';
+import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
 import { useDebugRender } from '../debug.js';
 
 const renderLog = createRenderDebugLogger('tui:statusline');
@@ -96,7 +96,7 @@ export function StatusLine({
   screenReader = false,
 }: StatusLineProps) {
   const theme = useTheme();
-  const width = Math.max(20, Math.floor(terminalWidth));
+  const width = transcriptGrid(terminalWidth).width;
   // Footer rows share the transcript's content column so the status text, the
   // activity label and every tool row start on the same column.
   const horizontalInset = CONTENT_COLUMN;
@@ -138,11 +138,18 @@ export function StatusLine({
 
   const coloredRuns = useMemo(() => {
     const modelBudget = width < 44 ? 10 : width < 72 ? 18 : 30;
-    // Ordered by what the reader needs first: an oversized later segment is
-    // dropped before an earlier one, so priority is left to right.
+    // Ordered by what the reader needs first. Packing is first-fit, not
+    // truncating: a segment too wide for the remaining space is skipped and
+    // later, shorter ones still get their turn.
     const segments: Array<{ text: string; color?: string }> = [
       { text: `${MODE_CHIP} ${modeLabel(mode)}`, color: activeModeColor },
-      { text: `ctx ${usagePercent}%`, color: contextColor },
+      // Packing skips a segment it cannot fit and keeps later short ones, so a
+      // long label here loses the number entirely while the branch behind it
+      // survives. Drop the word before dropping the figure.
+      {
+        text: contentWidth < 40 ? `${usagePercent}%` : `ctx ${usagePercent}%`,
+        color: contextColor,
+      },
     ];
 
     if (gitBranch && gitBranch !== '?') {

@@ -6,6 +6,33 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A running tool row no longer shifts a column when it finishes.** `Spinner` already emits its
+  own trailing space and the row added a second one, so a running row's gutter was three columns
+  and a finished one's was two — the verb and everything after it jumped left the instant the tool
+  completed, which is the single-column invariant the grid exists to hold.
+- **Our width model agreed with the renderer for `✓`.** The width table marked the whole Dingbats
+  block as two columns wide, but it also holds the East-Asian *ambiguous* marks — `✓`, `✗` — which
+  terminals and Ink's own layout render one column wide. The block is now narrowed to its
+  emoji-presentation members, and a test pins every status glyph's width against the renderer.
+- **The branch shows when `book` is launched from a subdirectory.** Repository detection probed for
+  a `.git` entry, which only exists at the repository root, so the footer's new branch segment was
+  silently absent anywhere below it. `git rev-parse` now decides.
+- **A malformed custom theme no longer crashes the TUI on the first spinner frame.**
+  `.book/themes/*.json` is merged into the token set without validation, so a `shimmerPair` that is
+  empty, short, or not an array reached the interpolator and threw.
+- **Context pressure survives a narrow footer.** Segment packing skips what does not fit and keeps
+  later, shorter segments, so `ctx 5%` was dropped while the branch behind it was admitted — losing
+  the one figure the row exists to show. The label drops before the number does.
+- **A reasoning tag inside a fenced code block stays in the answer.** Tag splitting ran before
+  markdown parsing with no fence awareness, so an answer quoting a prompt template had that region
+  torn out and rendered as a collapsed thought, silently emptying the code block.
+- **`Bash` rows are not painted in the dim path colour.** The directory/basename brightness ramp
+  assumed a filesystem path, but a `Bash` target is a command: `npx vitest run src/tui/` split at
+  the trailing slash, leaving an empty basename and rendering the row's only content at its
+  faintest. The ramp now applies to real paths only.
+- **The status line and working indicator share the transcript's 120-column cap.** Both still sized
+  themselves from the raw terminal width, so on a wide terminal the footer spread across the full
+  screen while everything above it stopped at the measure.
 - **The status-line git poll no longer re-renders the app every five seconds.** `useGitStatus`
   allocates a fresh status object per tick and returned it unconditionally, so wiring it into the
   footer made the whole tree reconcile twelve times a minute in an idle session for no visual

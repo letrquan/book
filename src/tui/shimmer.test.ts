@@ -56,3 +56,29 @@ describe('shimmerColor', () => {
     expect(shimmerColor(['ansi256:120', '#C4D3B5'], 3)).toBe('ansi256:120');
   });
 });
+
+describe('shimmerColor with a malformed theme', () => {
+  // Custom themes are merged from disk without validation and reach the spinner
+  // on its first frame, so a bad `shimmerPair` used to crash the whole TUI.
+  const broken: Array<[string, unknown]> = [
+    ['empty array', []],
+    ['single entry', ['#AFC19D']],
+    ['not an array', 'AFC19D'],
+    ['null', null],
+    ['undefined', undefined],
+    ['numbers', [1, 2]],
+    ['nulls inside', [null, null]],
+  ];
+
+  for (const [name, pair] of broken) {
+    it(`returns a usable colour for ${name}`, () => {
+      const color = shimmerColor(pair as never, 3);
+      expect(typeof color).toBe('string');
+      expect(color.length).toBeGreaterThan(0);
+    });
+  }
+
+  it('still blends a well-formed pair', () => {
+    expect(shimmerColor(['#000000', '#FFFFFF'], 0)).toBe('#000000');
+  });
+});

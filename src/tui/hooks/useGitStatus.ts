@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import { execFile } from 'node:child_process';
-import { existsSync } from 'fs';
-import { join } from 'path';
 import { isTranscriptScrollActive } from '../scroll-activity.js';
 
 export interface GitStatus {
@@ -37,13 +35,11 @@ export function useGitStatus(workspace: string): GitStatus {
       if (running) return;
       running = true;
       activeController = new AbortController();
-      if (!existsSync(join(workspace, '.git'))) {
-        if (!cancelled) update({ branch: '?', status: '' });
-        running = false;
-        return;
-      }
 
       try {
+        // `rev-parse` decides whether this is a repository. Probing for a
+        // `.git` entry only succeeds at the repository root, so launching from
+        // any subdirectory reported no branch at all.
         const branch = await runGit(
           ['rev-parse', '--abbrev-ref', 'HEAD'],
           workspace,
@@ -72,6 +68,7 @@ export function useGitStatus(workspace: string): GitStatus {
 
         if (!cancelled) update({ branch, status: parts.join(' ') });
       } catch {
+        // Not a repository, or git is unavailable — both mean "no branch".
         if (!cancelled) update({ branch: '?', status: '', error: 'git error' });
       } finally {
         running = false;

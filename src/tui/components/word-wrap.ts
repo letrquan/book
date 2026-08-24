@@ -339,7 +339,21 @@ const WIDE_RANGES: [number, number][] = [
   [0x1fa00, 0x1fa6f], // Chess Symbols
   [0x1fa70, 0x1faff], // Symbols and Pictographs Extended-A
   [0x2600, 0x26ff], // Misc symbols
-  [0x2700, 0x27bf], // Dingbats
+  // Dingbats, emoji-presentation subset only. The block also holds
+  // East-Asian *ambiguous* marks — U+2713 ✓, U+2717 ✗ and friends — which
+  // terminals and Ink's own layout render one column wide. Measuring the whole
+  // block as wide put our width math one column out from the renderer for the
+  // check mark used on every successful tool row.
+  [0x2705, 0x2705], // White heavy check mark
+  [0x270a, 0x270b], // Raised fist, raised hand
+  [0x2728, 0x2728], // Sparkles
+  [0x274c, 0x274c], // Cross mark
+  [0x274e, 0x274e], // Negative squared cross mark
+  [0x2753, 0x2755], // Question and exclamation ornaments
+  [0x2757, 0x2757], // Heavy exclamation mark
+  [0x2795, 0x2797], // Heavy plus, minus, division
+  [0x27b0, 0x27b0], // Curly loop
+  [0x27bf, 0x27bf], // Double curly loop
   [0x2300, 0x23ff], // Misc Technical (many 2-wide symbols)
   [0x2b50, 0x2b55], // Star, circle
   [0x2b05, 0x2b07], // Direction arrows

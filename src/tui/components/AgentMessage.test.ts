@@ -251,3 +251,34 @@ describe('countReasoningRows', () => {
     expect(countReasoningRows('x'.repeat(40), -10)).toBe(1);
   });
 });
+
+describe('splitThinkBlocks and code fences', () => {
+  it('leaves a reasoning tag inside a fenced block alone', () => {
+    // An answer quoting a prompt template is ordinary content; tearing the tag
+    // out gutted the code block it lived in.
+    const content = ['Use this template:', '', '```ts', '<thinking>plan</thinking>', '```'].join(
+      '\n',
+    );
+    expect(splitThinkBlocks(content)).toEqual([{ kind: 'markdown', text: content }]);
+  });
+
+  it('still splits a tag outside the fence', () => {
+    const content = ['<think>real</think>answer', '```', '<thinking>quoted</thinking>', '```'].join(
+      '\n',
+    );
+    const parts = splitThinkBlocks(content);
+    expect(parts[0]).toEqual({ kind: 'think', text: 'real' });
+    expect(parts[1].kind).toBe('markdown');
+    expect(parts[1].text).toContain('<thinking>quoted</thinking>');
+  });
+
+  it('treats an unclosed fence as running to the end of the message', () => {
+    const content = ['answer', '```', '<thinking>mid-stream</thinking>'].join('\n');
+    expect(splitThinkBlocks(content)).toEqual([{ kind: 'markdown', text: content }]);
+  });
+
+  it('handles tilde fences too', () => {
+    const content = ['~~~', '<reasoning>x</reasoning>', '~~~'].join('\n');
+    expect(splitThinkBlocks(content)).toEqual([{ kind: 'markdown', text: content }]);
+  });
+});

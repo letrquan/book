@@ -238,3 +238,29 @@ describe('StatusLine git segment', () => {
     expect(statusFor({ mode: 'plan' })).toContain('◆ plan');
   });
 });
+
+describe('StatusLine narrow packing', () => {
+  it('keeps context pressure when the row is too narrow for its label', () => {
+    // Packing skips what does not fit and keeps later short segments, so a
+    // long `ctx NN%` used to be dropped while the branch behind it survived —
+    // losing the one figure the row exists to show.
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="claude-opus-5"
+          tokenCount={13_600}
+          maxTokens={272_000}
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          gitBranch="main"
+          gitStatus="✓"
+          terminalWidth={20}
+          reducedMotion
+        />,
+      ),
+    );
+
+    expect(stripAnsi(view.lastFrame())).toContain('5%');
+  });
+});
