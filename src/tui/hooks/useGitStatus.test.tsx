@@ -22,7 +22,7 @@ vi.mock('node:child_process', () => ({
   ) => calls.push({ args, options, callback }),
 }));
 
-import { useGitStatus } from './useGitStatus.js';
+import { sameStatus, useGitStatus } from './useGitStatus.js';
 
 const roots: string[] = [];
 
@@ -54,5 +54,33 @@ describe('useGitStatus', () => {
     const signal = calls[0].options.signal;
     view.unmount();
     expect(signal.aborted).toBe(true);
+  });
+});
+
+describe('sameStatus', () => {
+  // The poll allocates a fresh object every five seconds. Without this
+  // comparison the hook hands React a new reference on every tick, so the whole
+  // app reconciles twelve times a minute in an idle session for no visual
+  // change. (Reference stability itself is not asserted here: state updates do
+  // not flush through this file's Ink harness — see the poll test above, which
+  // asserts call counts for the same reason.)
+  it('treats an unchanged report as the same status', () => {
+    expect(sameStatus({ branch: 'main', status: '~1' }, { branch: 'main', status: '~1' })).toBe(
+      true,
+    );
+    expect(sameStatus({ branch: '?', status: '' }, { branch: '?', status: '' })).toBe(true);
+  });
+
+  it('separates a changed branch, a changed tree, and a changed error', () => {
+    const base = { branch: 'main', status: '~1' };
+    expect(sameStatus(base, { branch: 'feat/x', status: '~1' })).toBe(false);
+    expect(sameStatus(base, { branch: 'main', status: '~2' })).toBe(false);
+    expect(sameStatus(base, { ...base, error: 'git error' })).toBe(false);
+  });
+
+  it('separates a clean tree from a dirty one', () => {
+    expect(sameStatus({ branch: 'main', status: '✓' }, { branch: 'main', status: '+1' })).toBe(
+      false,
+    );
   });
 });

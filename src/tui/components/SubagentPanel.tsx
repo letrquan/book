@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentSummary } from '../../agents/types.js';
 import type { BackgroundShellRecord } from '../../types/runtime.js';
 import { useTheme } from '../theme.js';
+import { CONTENT_COLUMN } from '../layout.js';
 import { SubagentRow } from './SubagentRow.js';
 import { BackgroundShellRow } from './BackgroundShellRow.js';
 
@@ -123,17 +124,22 @@ export function SubagentPanel({
   if (jobs.length === 0 && !isActive) return null;
   return (
     <Box flexDirection="column" width={width} marginTop={1}>
-      <Text color={theme.brand} bold>
-        Background tasks
-      </Text>
+      <Box paddingLeft={CONTENT_COLUMN}>
+        <Text color={theme.brand} bold>
+          Background tasks
+        </Text>
+      </Box>
       <Box>
         <Text color={selectedMain ? theme.text : theme.subtle} bold={selectedMain}>
-          {' '}
-          {selectedMain ? '›' : ' '} ● main
+          {selectedMain ? '› ' : '  '}● main
         </Text>
         <Text color={theme.subtle}> current conversation</Text>
       </Box>
-      {jobs.length === 0 ? <Text color={theme.subtle}> No background tasks.</Text> : null}
+      {jobs.length === 0 ? (
+        <Box paddingLeft={CONTENT_COLUMN}>
+          <Text color={theme.subtle}>No background tasks.</Text>
+        </Box>
+      ) : null}
       {visible.map((job) =>
         job.kind === 'agent' ? (
           <SubagentRow
@@ -156,13 +162,17 @@ export function SubagentPanel({
         ),
       )}
       {jobs.length > visible.length ? (
-        <Text color={theme.subtle}> +{jobs.length - visible.length} more tasks</Text>
+        <Box paddingLeft={CONTENT_COLUMN}>
+          <Text color={theme.subtle}>+{jobs.length - visible.length} more tasks</Text>
+        </Box>
       ) : null}
-      <Text color={theme.subtle}>
-        {isActive
-          ? ' Tab/↑↓ select · Enter open · x stop/dismiss · Esc cancel'
-          : ' Tab switch job · /jobs manage'}
-      </Text>
+      <Box paddingLeft={CONTENT_COLUMN}>
+        <Text color={theme.subtle}>
+          {isActive
+            ? 'Tab/↑↓ select · Enter open · x stop/dismiss · Esc cancel'
+            : 'Tab switch job · /jobs manage'}
+        </Text>
+      </Box>
     </Box>
   );
 }

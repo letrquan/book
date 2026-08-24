@@ -3,6 +3,7 @@ import {
   countReasoningLines,
   getRetryLabel,
   managedAgentTracesEqualForMessage,
+  splitThinkBlocks,
   trimPartialClosingFences,
 } from './AgentMessage.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
@@ -188,5 +189,41 @@ describe('managed-agent render invalidation', () => {
     const after = new Map([['spawn-1', { ...trace('agent-1'), status: 'completed' as const }]]);
 
     expect(managedAgentTracesEqualForMessage(message, before, after)).toBe(false);
+  });
+});
+
+describe('splitThinkBlocks reasoning tags', () => {
+  it('captures the body of every reasoning tag a provider may emit', () => {
+    for (const tag of ['think', 'thinking', 'reasoning', 'reasoning_context']) {
+      const parts = splitThinkBlocks(`before<${tag}>hidden</${tag}>after`);
+      expect(parts).toEqual([
+        { kind: 'markdown', text: 'before' },
+        { kind: 'think', text: 'hidden' },
+        { kind: 'markdown', text: 'after' },
+      ]);
+    }
+  });
+
+  it('keeps an unclosed reasoning tag out of the answer while it streams', () => {
+    // Unhandled, marked sees raw markup and renders the model's private
+    // reasoning as a fenced `html` block in the transcript.
+    const parts = splitThinkBlocks('answer<reasoning_context>still thinking');
+    expect(parts).toEqual([
+      { kind: 'markdown', text: 'answer' },
+      { kind: 'think', text: 'still thinking' },
+    ]);
+  });
+
+  it('does not restart matching mid-transcript when reused', () => {
+    // The pattern is a module-level /g regex; a stale lastIndex would drop the
+    // first block of the next message.
+    const input = '<think>a</think>tail';
+    expect(splitThinkBlocks(input)).toEqual(splitThinkBlocks(input));
+  });
+
+  it('leaves an unrelated tag alone', () => {
+    expect(splitThinkBlocks('see <div>x</div> here')).toEqual([
+      { kind: 'markdown', text: 'see <div>x</div> here' },
+    ]);
   });
 });

@@ -82,7 +82,8 @@ function formatCommandRow(
   const category = compact
     ? COMPACT_CATEGORY_LABELS[item.category]
     : CATEGORY_LABELS[item.category];
-  const badge = compact ? ` [${category}]` : ` [${category}]`;
+  // `category` already differs by density; the badge shape does not.
+  const badge = ` [${category}]`;
   const desc = item.desc && !compact ? ` — ${item.desc}` : '';
   return truncateDisplay(`${marker}/${item.name}${hint}${badge}${desc}`, width);
 }

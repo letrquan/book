@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useTheme } from '../theme.js';
+import { CONTENT_COLUMN } from '../layout.js';
 import { useDensityMetrics } from '../density.js';
 import { getPrimaryArg } from '../../tools/primary-arg.js';
 import { canonicalToolName } from '../../tools/aliases.js';
@@ -178,7 +179,7 @@ export function PermissionButtons({
 
   if (screenReader) {
     return (
-      <Box marginLeft={2} flexDirection="column">
+      <Box marginLeft={CONTENT_COLUMN} flexDirection="column">
         <Text>Permission required for: {canonical}</Text>
         <Text>Primary argument: {primaryArg || '(none)'}</Text>
         {hint ? <Text>Warning: {hint}</Text> : null}
@@ -189,7 +190,7 @@ export function PermissionButtons({
 
   return (
     <Box
-      marginLeft={2}
+      marginLeft={0}
       flexDirection="column"
       borderStyle="round"
       borderColor={

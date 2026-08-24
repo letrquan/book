@@ -129,7 +129,7 @@ src/
   tui/__benchmarks__/   ui.bench.tsx (bench:ui), runtime.bench.ts (bench:runtime)
 ```
 
-The `tui/` tree (root `app.tsx`, `hooks/`, and `components/`) is broad but discoverable; browse it directly. Key entry points: `tui/app.tsx` (slash-command dispatch, overlays), `tui/hooks/useAgent.ts` (core agent state), `tui/components/ChatPanel.tsx` / `TranscriptView.tsx` (rendering).
+The `tui/` tree (root `app.tsx`, `hooks/`, and `components/`) is broad but discoverable; browse it directly. Key entry points: `tui/layout.ts` (**the transcript grid — every row's horizontal position resolves here; do not reintroduce per-component `marginLeft` / `width - N` math**), `tui/app.tsx` (slash-command dispatch, overlays), `tui/hooks/useAgent.ts` (core agent state), `tui/components/ChatPanel.tsx` / `TranscriptView.tsx` (rendering).
 
 ## Key conventions
 

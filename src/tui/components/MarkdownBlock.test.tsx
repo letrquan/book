@@ -177,9 +177,14 @@ describe('MarkdownBlock', () => {
       ),
     );
     const output = frame(view.lastFrame);
-    expect(output).toContain('HEADING ONE');
-    expect(output).toContain('── Heading Two ──');
-    expect(output).toContain('### Heading Three');
+    // Depth is carried by weight and brightness, so the author's text is
+    // rendered verbatim: no upper-casing, no rules, no leading hashes.
+    expect(output).toContain('Heading One');
+    expect(output).toContain('Heading Two');
+    expect(output).toContain('Heading Three');
+    expect(output).not.toContain('HEADING ONE');
+    expect(output).not.toContain('──');
+    expect(output).not.toContain('###');
   });
 
   it('renders blockquotes', () => {
@@ -347,7 +352,7 @@ describe('MarkdownBlock', () => {
     const view = render(withTheme(React.createElement(MarkdownBlock, { content })));
     const output = frame(view.lastFrame);
 
-    expect(output).toContain('GETTING STARTED');
+    expect(output).toContain('Getting Started');
     expect(output).toContain('guide');
     expect(output).toContain('npm install');
     expect(output).toContain('npm run build');
@@ -482,7 +487,7 @@ describe('MarkdownBlock', () => {
     );
 
     const output = frame(view.lastFrame);
-    expect(output).toContain('LIVE HEADING');
+    expect(output).toContain('Live heading');
     expect(output).toContain('first item');
     expect(output).not.toContain('# Live heading');
   });

@@ -8,10 +8,15 @@ import { join } from 'path';
 export const DARK_THEME: ThemeTokens = { ...DEFAULT_THEME };
 
 /** Matched editorial palette for terminals with light backgrounds. */
+/**
+ * Warm editorial light palette. Mirrors DEFAULT_THEME role for role: the same
+ * seven hues, darkened for a light background.
+ */
 export const LIGHT_THEME: ThemeTokens = {
   ...DEFAULT_THEME,
-  brand: '#607257',
-  brandShimmer: '#75886A',
+  brand: '#A45F48',
+  brandShimmer: '#B87458',
+
   text: '#302E2A',
   inverseText: '#FBF7EE',
   inactive: '#928A7E',
@@ -31,29 +36,31 @@ export const LIGHT_THEME: ThemeTokens = {
   success: '#4F7746',
   error: '#A54F44',
   warning: '#94662B',
-  merged: '#4F7746',
+  merged: '#4F7B71',
 
-  promptBorder: '#607257',
+  promptBorder: '#7C8A76',
   planMode: '#805F6E',
   autoAccept: '#4F7746',
   bashBorder: '#94662B',
 
-  modeDefault: '#607257',
+  modeDefault: '#7C8A76',
   modePlan: '#805F6E',
   modeAcceptEdits: '#4F7746',
   modeAuto: '#4F7B71',
   modeDontAsk: '#A54F44',
   modeBypass: '#94662B',
 
-  usageMeter: '#607257',
+  usageMeter: '#4F7B71',
   usageMeterHigh: '#94662B',
   usageMeterCritical: '#A54F44',
+
   diffAdded: '#DFECDC',
   diffRemoved: '#F1DDDA',
   diffAddedWord: '#BFD8BD',
   diffRemovedWord: '#E6BFBA',
   diffAddedDimmed: '#EAF3E9',
   diffRemovedDimmed: '#F7E9E7',
+
   shimmerPair: ['#607257', '#75886A'],
   subagentColors: [
     '#A54F44',
@@ -67,33 +74,33 @@ export const LIGHT_THEME: ThemeTokens = {
   ],
 
   mdCodeBackground: '#E7E2D8',
-  mdCodeBorder: '#C9C1B3',
+  mdCodeBorder: '#CFC7B9',
   mdCodeText: '#302E2A',
   mdCodeKeyword: '#805F6E',
   mdCodeString: '#4F7746',
-  mdCodeComment: '#746F66',
+  mdCodeComment: '#8A8378',
   mdCodeNumber: '#94662B',
-  mdCodeFunction: '#607257',
-  mdCodeLineNumber: '#928A7E',
+  mdCodeFunction: '#4F7B71',
+  mdCodeLineNumber: '#A79F91',
   mdInlineCodeBg: '#E4DED2',
   mdInlineCodeText: '#A45F48',
-  mdHeading: '#302E2A',
-  mdHeadingH1: '#607257',
-  mdHeadingH2: '#75886A',
+  mdHeadingH1: '#14130F',
+  mdHeadingH2: '#302E2A',
+  mdHeading: '#5F5B51',
   mdBlockquoteBorder: '#A79F91',
   mdBlockquoteText: '#746F66',
-  mdLink: '#607257',
-  mdListMarker: '#A45F48',
-  mdHr: '#C9C1B3',
-  mdTableBorder: '#C9C1B3',
+  mdLink: '#4F7B71',
+  mdListMarker: '#7C8A76',
+  mdHr: '#CFC7B9',
+  mdTableBorder: '#CFC7B9',
   mdThinkBg: '#EEE8DC',
-  mdThinkBorder: '#C9C1B3',
+  mdThinkBorder: '#CFC7B9',
   mdThinkText: '#746F66',
-  mdTurnSeparator: '#A79F91',
+  mdTurnSeparator: '#C9C1B3',
   mdCheckboxChecked: '#4F7746',
   mdCheckboxUnchecked: '#928A7E',
 
-  userBg: '#F1E2D8',
+  userBg: '#F3E7DE',
 };
 
 export interface ResolvedTheme {

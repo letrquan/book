@@ -83,8 +83,8 @@ export function SubagentRow({
   const displayNameWidth = Math.max(1, width - 8 - elapsedSuffix.length);
   return (
     <Text color={selected ? theme.text : color} bold={selected}>
-      {' '}
-      {selected ? '›' : ' '} {statusGlyph(agent.status, reducedMotion)}{' '}
+      {selected ? '› ' : '  '}
+      {statusGlyph(agent.status, reducedMotion)}{' '}
       {truncateDisplay(agent.displayName, displayNameWidth)}
       <Text color={theme.subtle}>{elapsedSuffix}</Text>
     </Text>

@@ -1,13 +1,26 @@
 import { Box, Text } from 'ink';
 import React from 'react';
 import { useTheme } from '../theme.js';
+import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
+import { TurnRule } from './TurnRule.js';
 import type { ImageAttachment } from '../../types/messages.js';
 
 interface UserMessageProps {
   content: string;
   attachments?: ImageAttachment[];
   terminalWidth?: number;
+  /** Turn start time, shown at the right edge of the turn rule. */
+  timestamp?: number;
   screenReader?: boolean;
+}
+
+function formatTurnTime(timestamp?: number): string {
+  if (!timestamp) return '';
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
 }
 
 /**
@@ -88,18 +101,22 @@ function parseMentionSegments(content: string): Array<{ text: string; isMention:
 }
 
 /**
- * User message card with an inset paper tint and a warm accent rail.
- * @mentions keep the brand color for quick scanning.
+ * A user turn: a labelled rule, then the prompt on the content column.
+ *
+ * The rule is what makes a long transcript scannable — it is the only element
+ * that marks where one exchange ended and the next began. The prompt itself
+ * needs no tint or rail; @mentions stay accented for quick scanning.
  */
 function UserMessageInner({
   content,
   attachments = [],
   terminalWidth = 80,
+  timestamp,
   screenReader = false,
 }: UserMessageProps) {
   const theme = useTheme();
-  const width = Math.max(20, Math.floor(terminalWidth));
-  const cardWidth = Math.max(18, width - 2);
+  const grid = transcriptGrid(terminalWidth);
+  const width = grid.width;
   const segments = parseMentionSegments(content);
 
   if (screenReader) {
@@ -116,40 +133,34 @@ function UserMessageInner({
   }
 
   return (
-    <Box
-      width={cardWidth}
-      marginX={1}
-      paddingX={1}
-      borderStyle="single"
-      borderColor={theme.userAccent}
-      borderTop={false}
-      borderRight={false}
-      borderBottom={false}
-      backgroundColor={theme.userBg}
-    >
-      <Box width={Math.max(1, cardWidth - 3)}>
-        <Box flexDirection="column">
-          {content ? (
-            <Text wrap="wrap">
-              {segments.map((seg, i) =>
-                seg.isMention ? (
-                  <Text key={i} color={theme.brand}>
-                    {seg.text}
-                  </Text>
-                ) : (
-                  <Text key={i} color={theme.text}>
-                    {seg.text}
-                  </Text>
-                ),
-              )}
-            </Text>
-          ) : null}
-          {attachments.length > 0 ? (
-            <Text color={theme.brand}>
-              {attachments.map((_, index) => `[image ${index + 1}]`).join(' ')}
-            </Text>
-          ) : null}
-        </Box>
+    <Box flexDirection="column" width={width}>
+      <TurnRule
+        label="you"
+        trailing={formatTurnTime(timestamp)}
+        width={width - 1}
+        accent={theme.userAccent}
+      />
+      <Box marginLeft={CONTENT_COLUMN} width={grid.content} flexDirection="column">
+        {content ? (
+          <Text wrap="wrap">
+            {segments.map((seg, i) =>
+              seg.isMention ? (
+                <Text key={i} color={theme.userAccent}>
+                  {seg.text}
+                </Text>
+              ) : (
+                <Text key={i} color={theme.text}>
+                  {seg.text}
+                </Text>
+              ),
+            )}
+          </Text>
+        ) : null}
+        {attachments.length > 0 ? (
+          <Text color={theme.userAccent}>
+            {attachments.map((_, index) => `[image ${index + 1}]`).join(' ')}
+          </Text>
+        ) : null}
       </Box>
     </Box>
   );

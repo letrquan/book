@@ -1,6 +1,7 @@
 import { Box, Text } from 'ink';
 import { useTheme } from '../theme.js';
 import { STATUS_INDICATORS } from '../status-indicators.js';
+import { CONTENT_COLUMN } from '../layout.js';
 import type { Todo } from '../../tools/todo.js';
 
 interface AgentTodoListProps {
@@ -25,10 +26,12 @@ export function AgentTodoList({ todos }: AgentTodoListProps) {
   const done = todos.filter((t) => t.status === 'completed').length;
 
   return (
-    <Box flexDirection="column" marginY={0} paddingLeft={2}>
-      <Text color={theme.brand} bold>
-        Plan <Text color={theme.toolRail}>·</Text> {done}/{todos.length}
-      </Text>
+    <Box flexDirection="column" marginY={0}>
+      <Box paddingLeft={CONTENT_COLUMN}>
+        <Text color={theme.brand} bold>
+          Plan <Text color={theme.toolRail}>·</Text> {done}/{todos.length}
+        </Text>
+      </Box>
       {visible.map((t, i) => {
         const ind = STATUS_INDICATORS[t.status];
         return (
@@ -44,7 +47,9 @@ export function AgentTodoList({ todos }: AgentTodoListProps) {
         );
       })}
       {todos.length > visible.length && (
-        <Text color={theme.subtle}>…and {todos.length - visible.length} more</Text>
+        <Box paddingLeft={CONTENT_COLUMN}>
+          <Text color={theme.subtle}>…and {todos.length - visible.length} more</Text>
+        </Box>
       )}
     </Box>
   );

@@ -1,6 +1,7 @@
 import { Box, Text } from 'ink';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '../theme.js';
+import { transcriptGrid } from '../layout.js';
 import type { CompactBoundary } from '../../types/sessions.js';
 import type { Message } from '../../types/messages.js';
 import type { PermissionResult, PlanApprovalResult } from '../../types/tools.js';
@@ -288,6 +289,7 @@ export function ChatPanelInner({
                   content={message.content}
                   attachments={message.attachments}
                   terminalWidth={terminalWidth}
+                  timestamp={message.timestamp}
                   screenReader={screenReader}
                 />
               </Box>
@@ -512,10 +514,10 @@ function buildTimeline(
 function CompactBoundaryRow({ terminalWidth = 80 }: { terminalWidth?: number }) {
   const theme = useTheme();
   return (
-    <Box marginLeft={2} width={Math.max(12, Math.floor(terminalWidth) - 2)}>
+    <Box width={transcriptGrid(terminalWidth).width}>
       <Text color={theme.success}>✓ </Text>
       <Text color={theme.text}>
-        {truncateDisplay('Compact conversation', Math.max(8, Math.floor(terminalWidth) - 6))}
+        {truncateDisplay('Compact conversation', transcriptGrid(terminalWidth).content)}
       </Text>
     </Box>
   );

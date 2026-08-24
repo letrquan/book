@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
-import { WelcomeScreen } from './WelcomeScreen.js';
+import { composeWelcomeHints, WELCOME_HINTS, WelcomeScreen } from './WelcomeScreen.js';
 import { displayWidth } from './word-wrap.js';
 
 function stripAnsi(value: string | undefined): string {
@@ -37,7 +37,7 @@ describe('WelcomeScreen', () => {
 
     const output = stripAnsi(view.lastFrame());
     expect(output).toContain('╭ BOOK');
-    expect(output).toContain('Your coding workspace, indexed.');
+    expect(output).toContain('Ask anything, or type / for a command.');
     expect(output).toContain('/help');
     expect(output).toContain('/skills');
     expect(output).toContain('Ctrl+/ shortcuts');
@@ -69,7 +69,7 @@ describe('WelcomeScreen', () => {
 
     const output = stripAnsi(view.lastFrame());
     expect(output).toContain('BOOK');
-    expect(output).toContain('Ask anything, or type /help');
+    expect(output).toContain('Ask anything.');
     expect(lines(output)).toHaveLength(2);
     for (const line of lines(output)) {
       expect(displayWidth(line)).toBeLessThanOrEqual(36);
@@ -93,5 +93,37 @@ describe('WelcomeScreen', () => {
     expect(output).toContain('BOOK');
     expect(output).toContain('Type /help for commands');
     expect(output).toContain('Mode plan');
+  });
+});
+
+describe('composeWelcomeHints', () => {
+  it('never renders a partial command', () => {
+    // The old screen truncated per segment and advertised `/hel`.
+    for (let width = 0; width <= 120; width++) {
+      for (const hint of composeWelcomeHints(WELCOME_HINTS, width)) {
+        expect(WELCOME_HINTS).toContainEqual(hint);
+      }
+    }
+  });
+
+  it('stays inside the width it is given', () => {
+    for (let width = 0; width <= 120; width++) {
+      const chosen = composeWelcomeHints(WELCOME_HINTS, width);
+      const rendered = chosen.map((hint) => `${hint.key} ${hint.label}`).join('    ');
+      expect(displayWidth(rendered)).toBeLessThanOrEqual(width);
+    }
+  });
+
+  it('drops the least important hint first', () => {
+    const wide = composeWelcomeHints(WELCOME_HINTS, 120);
+    const narrow = composeWelcomeHints(WELCOME_HINTS, 30);
+    expect(wide).toEqual([...WELCOME_HINTS]);
+    expect(narrow).toEqual(wide.slice(0, narrow.length));
+    expect(narrow[0]).toEqual(WELCOME_HINTS[0]);
+  });
+
+  it('returns nothing rather than something broken at zero width', () => {
+    expect(composeWelcomeHints(WELCOME_HINTS, 0)).toEqual([]);
+    expect(composeWelcomeHints(WELCOME_HINTS, 3)).toEqual([]);
   });
 });

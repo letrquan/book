@@ -65,7 +65,16 @@ export function CompactDiffCard({
         </Text>
       </Box>
       {state.degraded && state.warning ? (
-        <Box marginLeft={2} borderLeft borderLeftColor={theme.toolRail} paddingLeft={1}>
+        <Box
+          marginLeft={2}
+          borderStyle="single"
+          borderLeft
+          borderTop={false}
+          borderRight={false}
+          borderBottom={false}
+          borderLeftColor={theme.toolRail}
+          paddingLeft={1}
+        >
           <Text color={theme.warning}>
             {truncateDisplay(state.warning, Math.max(8, width - 6))}
           </Text>

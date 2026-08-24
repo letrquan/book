@@ -193,3 +193,48 @@ describe('StatusLine', () => {
     }
   });
 });
+
+describe('StatusLine git segment', () => {
+  function statusFor(props: Partial<React.ComponentProps<typeof StatusLine>>): string {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="claude-opus-5"
+          tokenCount={1_000}
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          terminalWidth={100}
+          reducedMotion
+          {...props}
+        />,
+      ),
+    );
+    return stripAnsi(view.lastFrame());
+  }
+
+  it('shows the branch when the workspace is a repository', () => {
+    expect(statusFor({ gitBranch: 'feat/improve-ui', gitStatus: '✓' })).toContain(
+      'feat/improve-ui',
+    );
+  });
+
+  it('marks a dirty tree so an uncommitted change is visible at a glance', () => {
+    expect(statusFor({ gitBranch: 'main', gitStatus: '+2 ~1' })).toContain('main*');
+  });
+
+  it('leaves a clean tree unmarked', () => {
+    const output = statusFor({ gitBranch: 'main', gitStatus: '✓' });
+    expect(output).toContain('main');
+    expect(output).not.toContain('main*');
+  });
+
+  it('omits the segment outside a repository', () => {
+    const output = statusFor({ gitBranch: '?', gitStatus: '' });
+    expect(output).not.toContain('?');
+  });
+
+  it('leads with the permission mode chip', () => {
+    expect(statusFor({ mode: 'plan' })).toContain('◆ plan');
+  });
+});

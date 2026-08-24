@@ -80,17 +80,60 @@ describe('theme resolution', () => {
 });
 
 describe('built-in editorial themes', () => {
-  it('uses the warm quiet-editorial dark palette', () => {
-    expect(DARK_THEME.text).toBe('#E7E1D4');
-    expect(DARK_THEME.brand).toBe('#AFC19D');
-    expect(DARK_THEME.userAccent).toBe('#D3A17E');
-    expect(DARK_THEME.surfaceActive).toBe('#30362B');
-  });
+  // Clay is deliberately shared by `brand` and `userAccent`: it is one warm
+  // accent used in two contexts (product chrome and user-authored content),
+  // which never carry competing meaning on the same row.
+  const DISTINCT_ROLES = [
+    'text',
+    'brand',
+    'assistantAccent',
+    'mdLink',
+    'success',
+    'error',
+    'warning',
+    'planMode',
+    'modeDefault',
+  ] as const;
 
-  it('uses the matched light palette', () => {
+  for (const [name, theme] of [
+    ['dark', DARK_THEME],
+    ['light', LIGHT_THEME],
+  ] as const) {
+    it(`gives every ${name} role its own hue`, () => {
+      const used = new Map<string, string>();
+      for (const role of DISTINCT_ROLES) {
+        const hex = theme[role];
+        expect(used.has(hex), `${role} reuses the hue of ${used.get(hex)} (${hex})`).toBe(false);
+        used.set(hex, role);
+      }
+    });
+
+    it(`keeps ${name} prose headings out of the chrome palette`, () => {
+      // A heading that matches brand or the agent accent makes body copy read
+      // as UI chrome, which is what the single-hue palette used to do.
+      expect(theme.mdHeadingH1).not.toBe(theme.brand);
+      expect(theme.mdHeadingH1).not.toBe(theme.assistantAccent);
+      expect(theme.usageMeter).not.toBe(theme.brand);
+    });
+
+    it(`ranks ${name} heading depth by three distinct steps`, () => {
+      // Headings carry no `###` marker or side rule any more, so depth is
+      // legible only through this ramp. If two steps collapse — or one matches
+      // `text` — a heading becomes indistinguishable from a bold run of body
+      // copy, which is exactly what H1 did when it was set to `text`.
+      const ramp = [theme.mdHeadingH1, theme.mdHeadingH2, theme.mdHeading];
+      expect(new Set(ramp).size).toBe(3);
+      // H2 sits at `text` on purpose — bold plus the blank row above carries
+      // it. H1 and H3+ must not, or they collapse into body copy.
+      expect(theme.mdHeadingH1).not.toBe(theme.text);
+      expect(theme.mdHeading).not.toBe(theme.text);
+    });
+  }
+
+  it('anchors the warm editorial identity', () => {
+    expect(DARK_THEME.text).toBe('#E7E1D4');
+    expect(DARK_THEME.assistantAccent).toBe('#AFC19D');
     expect(LIGHT_THEME.text).toBe('#302E2A');
-    expect(LIGHT_THEME.brand).toBe('#607257');
-    expect(LIGHT_THEME.userAccent).toBe('#A45F48');
-    expect(LIGHT_THEME.surfaceActive).toBe('#DDE6D6');
+    expect(LIGHT_THEME.assistantAccent).toBe('#607257');
   });
 });
