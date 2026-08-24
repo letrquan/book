@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from '../settings.js';
 import {
   buildModelOptions,
+  parseModelIds,
   providerConfigFromDraft,
   validateBaseUrl,
   validateModelId,
@@ -84,5 +85,84 @@ describe('BYOK validation and provider merge', () => {
       true,
     );
     expect(provider.models).toEqual({ 'model-a': { contextWindow: 1000 } });
+  });
+
+  it('splits a hand-typed model list and rejects an empty one', () => {
+    expect(parseModelIds(' deepseek-chat , deepseek-reasoner ')).toEqual([
+      'deepseek-chat',
+      'deepseek-reasoner',
+    ]);
+    expect(parseModelIds('a\nb\na')).toEqual(['a', 'b']);
+    expect(() => parseModelIds('  ,  ')).toThrow('Enter at least one model ID.');
+  });
+
+  it('marks hand-entered models and keeps them across a refresh', () => {
+    const added = providerConfigFromDraft(
+      {
+        providerId: 'gateway',
+        type: 'openai',
+        baseURL: '',
+        apiKey: '',
+        models: [{ id: 'hidden-model' }],
+        activeModelId: 'hidden-model',
+        manual: true,
+      },
+      {
+        type: 'openai',
+        baseURL: 'https://example.test/v1',
+        apiKey: '{env:GATEWAY_KEY}',
+        models: { 'model-a': {} },
+      },
+    );
+    // An empty draft credential leaves the configured one alone.
+    expect(added.baseURL).toBe('https://example.test/v1');
+    expect(added.apiKey).toBe('{env:GATEWAY_KEY}');
+    expect(added.models).toEqual({ 'model-a': {}, 'hidden-model': { manual: true } });
+
+    const refreshed = providerConfigFromDraft(
+      {
+        providerId: 'gateway',
+        type: 'openai',
+        baseURL: 'https://example.test/v1',
+        apiKey: 'key',
+        models: [{ id: 'model-b' }],
+        activeModelId: 'model-b',
+      },
+      { type: 'openai', models: added.models },
+      true,
+    );
+    expect(refreshed.models).toEqual({ 'hidden-model': { manual: true }, 'model-b': {} });
+  });
+
+  it('retires the legacy lowercase base URL key when writing a new one', () => {
+    const provider = providerConfigFromDraft(
+      {
+        providerId: 'gateway',
+        type: 'openai',
+        baseURL: 'https://new.test/v1',
+        apiKey: 'key',
+        models: [{ id: 'model-a' }],
+        activeModelId: 'model-a',
+      },
+      { type: 'openai', baseUrl: 'https://old.test/v1', models: {} },
+    );
+    expect(provider.baseURL).toBe('https://new.test/v1');
+    expect(provider.baseUrl).toBeUndefined();
+  });
+
+  it('drops the manual marker once discovery returns the same model', () => {
+    const provider = providerConfigFromDraft(
+      {
+        providerId: 'gateway',
+        type: 'openai',
+        baseURL: 'https://example.test/v1',
+        apiKey: 'key',
+        models: [{ id: 'hidden-model', label: 'Now Listed' }],
+        activeModelId: 'hidden-model',
+      },
+      { type: 'openai', models: { 'hidden-model': { manual: true } } },
+      true,
+    );
+    expect(provider.models).toEqual({ 'hidden-model': { label: 'Now Listed' } });
   });
 });
