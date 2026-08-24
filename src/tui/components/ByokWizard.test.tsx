@@ -60,9 +60,15 @@ async function advanceToApiKey(view: ReturnType<typeof render>) {
   await waitForText(view, 'API key');
 }
 
-async function advanceToModelChoice(view: ReturnType<typeof render>, key = 'super-secret-key') {
+async function advanceToModelSource(view: ReturnType<typeof render>, key = 'super-secret-key') {
   await advanceToApiKey(view);
   await write(view, key);
+  await write(view, '\r');
+  await waitForText(view, 'Discover models automatically');
+}
+
+async function advanceToModelChoice(view: ReturnType<typeof render>, key = 'super-secret-key') {
+  await advanceToModelSource(view, key);
   await write(view, '\r');
   await waitForText(view, 'Choose models');
 }
@@ -118,13 +124,73 @@ describe('ByokWizard', () => {
     );
   });
 
+  it('asks how to fill the model list before contacting the endpoint', async () => {
+    const { view, discover } = createWizard();
+    await advanceToModelSource(view);
+
+    const frame = stripAnsi(view.lastFrame());
+    expect(frame).toContain('❯ Discover models automatically');
+    expect(frame).toContain('Enter model IDs manually');
+    expect(discover).not.toHaveBeenCalled();
+  });
+
+  it('skips discovery entirely when the manual source is chosen', async () => {
+    const { view, onSave, discover } = createWizard();
+    await advanceToModelSource(view);
+    await write(view, '\x1b[B');
+    await write(view, '\r');
+    await waitForText(view, 'Model IDs');
+
+    expect(discover).not.toHaveBeenCalled();
+
+    await write(view, 'deepseek-chat, deepseek-reasoner');
+    await write(view, '\r');
+    await waitForText(view, 'Display label');
+    await write(view, '\r');
+    expect(stripAnsi(view.lastFrame())).toContain('2 selected (entered manually)');
+
+    await write(view, '\r');
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: 'gateway',
+        activeModelId: 'deepseek-chat',
+        manual: true,
+        models: [{ id: 'deepseek-chat' }, { id: 'deepseek-reasoner' }],
+      }),
+    );
+  });
+
+  it('returns to the source choice from manual entry', async () => {
+    const { view } = createWizard();
+    await advanceToModelSource(view);
+    await write(view, '\x1b[B');
+    await write(view, '\r');
+    await waitForText(view, 'Model IDs');
+    await write(view, '\x1b');
+    await waitForText(view, 'Discover models automatically');
+
+    expect(stripAnsi(view.lastFrame())).toContain('Step 5/9');
+  });
+
+  it('rejects a manual entry with no usable model ID', async () => {
+    const { view, onSave } = createWizard();
+    await advanceToModelSource(view);
+    await write(view, '\x1b[B');
+    await write(view, '\r');
+    await waitForText(view, 'Model IDs');
+    await write(view, ' , , ');
+    await write(view, '\r');
+
+    expect(stripAnsi(view.lastFrame())).toContain('Enter at least one model ID.');
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it('offers retry and manual fallback after discovery fails', async () => {
     const discover = vi.fn(async () => {
       throw new Error('This endpoint does not expose a supported model-list API.');
     });
     const { view } = createWizard({ discover });
-    await advanceToApiKey(view);
-    await write(view, 'super-secret-key');
+    await advanceToModelSource(view);
     await write(view, '\r');
     await waitForText(view, 'm enter model manually');
     expect(stripAnsi(view.lastFrame())).toContain('m enter model manually');

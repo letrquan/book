@@ -1,11 +1,16 @@
 import { Box, Text, useInput } from 'ink';
+import TextInput from 'ink-text-input';
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useTheme } from '../theme.js';
 import type { AgentConfig } from '../../types/runtime.js';
 import type { ProviderConfig } from '../../settings.js';
 import { resolveSecret } from '../../config.js';
 import { discoverModels, type ModelDiscoveryOptions } from '../../provider/model-discovery.js';
-import type { ModelPickerOption, ProviderSaveRequest } from '../model-options.js';
+import {
+  parseModelIds,
+  type ModelPickerOption,
+  type ProviderSaveRequest,
+} from '../model-options.js';
 import { EFFORT_LEVELS, type EffortLevel, type EffortResult } from '../../commands/effort.js';
 import { ByokWizard } from './ByokWizard.js';
 import { useDensityMetrics } from '../density.js';
@@ -51,6 +56,10 @@ interface ModelPickerProps {
 
 const EMPTY_PROVIDER_IDS: ReadonlySet<string> = new Set();
 
+function plural(count: number): string {
+  return count === 1 ? '' : 's';
+}
+
 export function ModelPicker({
   title,
   options,
@@ -82,12 +91,14 @@ export function ModelPicker({
   const [onEffort, setOnEffort] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
   const [refreshing, setRefreshing] = useState<string>();
+  const [manualEntry, setManualEntry] = useState<{ providerId: string; value: string }>();
   const [removal, setRemoval] = useState<{
     providerId: string;
     modelCount: number;
     active: boolean;
   }>();
   const [error, setError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
   const pickedRef = useRef(false);
   const removalInFlightRef = useRef(false);
   const filteredOptions = useMemo(() => {
@@ -130,6 +141,7 @@ export function ModelPicker({
         return;
       }
       setError(undefined);
+      setNotice(undefined);
       setRefreshing(providerId);
       try {
         const models = await discover({
@@ -138,6 +150,10 @@ export function ModelPicker({
           apiKey,
           retry,
         });
+        if (models.length === 0) {
+          setError(`${providerId} did not return any models.`);
+          return;
+        }
         const currentForProvider = options.find(
           (option) => option.providerId === providerId && option.id === currentModel,
         );
@@ -156,6 +172,7 @@ export function ModelPicker({
         };
         const result = onSaveProvider(request);
         if (!result.ok) setError(result.error ?? 'Could not save refreshed models.');
+        else setNotice(`${providerId}: ${models.length} model${plural(models.length)} listed.`);
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : 'Could not refresh models.');
       } finally {
@@ -165,9 +182,54 @@ export function ModelPicker({
     [currentModel, discover, onSaveProvider, options, providers, retry, workspace],
   );
 
+  // Add hand-typed model IDs to a provider without touching its credentials or
+  // the active selection — the catalog grows, nothing else moves.
+  const addManualModels = useCallback(
+    (providerId: string, raw: string) => {
+      const provider = providers[providerId];
+      if (!provider) {
+        setError(`${providerId} is no longer configured.`);
+        return;
+      }
+      let ids: string[];
+      try {
+        ids = parseModelIds(raw);
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : 'Enter at least one model ID.');
+        return;
+      }
+      const result = onSaveProvider({
+        providerId,
+        type: provider.type,
+        baseURL: provider.baseURL ?? provider.baseUrl ?? '',
+        apiKey: provider.apiKey ?? '',
+        models: ids.map((id) => ({ id })),
+        activeModelId: ids[0],
+        manual: true,
+        activate: false,
+      });
+      if (!result.ok) {
+        setError(result.error ?? 'Could not save the model.');
+        return;
+      }
+      setManualEntry(undefined);
+      setError(undefined);
+      setNotice(`Added ${ids.length} model${plural(ids.length)} to ${providerId}.`);
+    },
+    [onSaveProvider, providers],
+  );
+
   useInput(
     (input, key) => {
       if (showWizard) return;
+      // The text field owns every other key while it is open.
+      if (manualEntry) {
+        if (key.escape) {
+          setManualEntry(undefined);
+          setError(undefined);
+        }
+        return;
+      }
       if (removal) {
         if (key.escape || input.toLowerCase() === 'n') {
           removalInFlightRef.current = false;
@@ -239,10 +301,12 @@ export function ModelPicker({
       }
       if (key.upArrow) {
         setSelected((value) => (value - 1 + itemCount) % itemCount);
+        setNotice(undefined);
         return;
       }
       if (key.downArrow) {
         setSelected((value) => (value + 1) % itemCount);
+        setNotice(undefined);
         return;
       }
       if (allowProviderManagement && key.meta && input === 'a') {
@@ -268,6 +332,17 @@ export function ModelPicker({
       if (allowProviderManagement && key.meta && input === 'r' && selected !== addIndex) {
         const providerId = filteredOptions[selected]?.providerId;
         if (providerId && !refreshing) void refreshProvider(providerId);
+        return;
+      }
+      if (allowProviderManagement && key.meta && input === 'm' && selected !== addIndex) {
+        const providerId = filteredOptions[selected]?.providerId;
+        if (!providerId) {
+          setError('Only custom providers can take extra models.');
+          return;
+        }
+        setManualEntry({ providerId, value: '' });
+        setError(undefined);
+        setNotice(undefined);
         return;
       }
       if (allowProviderManagement && key.meta && input === 'd' && selected !== addIndex) {
@@ -314,6 +389,32 @@ export function ModelPicker({
     );
   }
 
+  if (manualEntry) {
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
+        <Text bold color={theme.brand}>
+          Add models to {manualEntry.providerId}
+        </Text>
+        <Text bold>Model IDs</Text>
+        <Box>
+          <Text color={theme.brand}>❯ </Text>
+          <TextInput
+            value={manualEntry.value}
+            onChange={(value) => setManualEntry({ providerId: manualEntry.providerId, value })}
+            onSubmit={(value) => addManualModels(manualEntry.providerId, value)}
+          />
+        </Box>
+        <Text color={theme.subtle} dimColor>
+          Comma-separate to add several. Kept when the list is refreshed.
+        </Text>
+        <Text color={theme.subtle} dimColor>
+          Enter add · Esc cancel
+        </Text>
+        {error && <Text color={theme.error}>✕ {error}</Text>}
+      </Box>
+    );
+  }
+
   if (removal) {
     return (
       <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
@@ -350,6 +451,12 @@ export function ModelPicker({
     ...(allowProviderManagement ? [{ type: 'add' as const }] : []),
   ].slice(windowStart, windowStart + maxVisibleModels);
   const hasRemovableProviders = removableProviderIds.size > 0;
+  // Catalog actions only mean something on a row that belongs to a provider, so
+  // they are announced there instead of crowding the always-on footer.
+  const selectedProviderId =
+    allowProviderManagement && selected !== addIndex
+      ? filteredOptions[selected]?.providerId
+      : undefined;
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
@@ -402,7 +509,15 @@ export function ModelPicker({
                 ? 'Type · ↑↓ select · Enter save · Alt+A add · Alt+D remove BYOK · Esc'
                 : 'Type filter · ↑↓ select · Enter save · Alt+A add BYOK · Alt+S session · Esc cancel'}
         </Text>
+        {selectedProviderId && !refreshing && (
+          <Text color={theme.subtle} dimColor>
+            {compact
+              ? `Alt+R refresh · Alt+M add model (${selectedProviderId})`
+              : `Alt+R refresh ${selectedProviderId} model list · Alt+M add a model manually`}
+          </Text>
+        )}
         {refreshing && <Text color={theme.brand}>Refreshing {refreshing} models…</Text>}
+        {notice && !refreshing && <Text color={theme.success}>✓ {notice}</Text>}
         {onEffort && (
           <Text color={theme.brand} bold>
             Effort [{displayedEffort}] <Text color={theme.subtle}>← → adjust</Text>

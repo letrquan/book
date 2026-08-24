@@ -107,6 +107,12 @@ export const providerModelSchema = z.object({
   maxOutputTokens: z.number().int().positive().optional(),
   /** Whether this model accepts image input. Unknown models remain optimistic. */
   vision: z.boolean().optional(),
+  /**
+   * Entered by hand rather than returned by the endpoint's model-list API.
+   * Refreshing the catalog keeps these, since they exist precisely because
+   * discovery does not list them.
+   */
+  manual: z.boolean().optional(),
   /** Mutation-tool preference for this model; defaults to a family-level prior. */
   editFormat: z.enum(['patch', 'replace', 'whole']).optional(),
   effort: z

@@ -143,6 +143,83 @@ describe('ModelPicker', () => {
         replaceModels: true,
       }),
     );
+    expect(view.lastFrame()).toContain('gateway: 2 models listed.');
+  });
+
+  it('reports an endpoint that lists nothing instead of saving an empty catalog', async () => {
+    const discover = vi.fn(async () => []);
+    const { view, onSaveProvider } = renderPicker({ discover });
+    await write(view, '\x1b[B');
+    await write(view, '\x1br');
+    await wait(10);
+
+    expect(onSaveProvider).not.toHaveBeenCalled();
+    expect(view.lastFrame()).toContain('gateway did not return any models.');
+  });
+
+  it('announces the catalog actions on a provider row', async () => {
+    const { view } = renderPicker();
+    expect(view.lastFrame()).not.toContain('Alt+R refresh');
+
+    await write(view, '\x1b[B');
+    expect(view.lastFrame()).toContain('Alt+R refresh gateway model list');
+    expect(view.lastFrame()).toContain('Alt+M add a model manually');
+  });
+
+  it('adds hand-typed models to a provider with Alt+M', async () => {
+    const { view, onSaveProvider, onPick } = renderPicker();
+    await write(view, '\x1b[B');
+    await write(view, '\x1bm');
+    expect(view.lastFrame()).toContain('Add models to gateway');
+
+    await write(view, 'hidden-a, hidden-b');
+    await write(view, '\r');
+
+    expect(onSaveProvider).toHaveBeenCalledWith({
+      providerId: 'gateway',
+      type: 'openai',
+      baseURL: 'https://gateway.test/v1',
+      apiKey: 'secret',
+      models: [{ id: 'hidden-a' }, { id: 'hidden-b' }],
+      activeModelId: 'hidden-a',
+      manual: true,
+      activate: false,
+    });
+    // Curating the catalog must not switch the model out from under the user.
+    expect(onPick).not.toHaveBeenCalled();
+    expect(view.lastFrame()).toContain('Added 2 models to gateway.');
+  });
+
+  it('keeps the manual form open with an inline error on a bad entry', async () => {
+    const { view, onSaveProvider } = renderPicker();
+    await write(view, '\x1b[B');
+    await write(view, '\x1bm');
+    await write(view, '   ');
+    await write(view, '\r');
+
+    expect(onSaveProvider).not.toHaveBeenCalled();
+    expect(view.lastFrame()).toContain('Enter at least one model ID.');
+    expect(view.lastFrame()).toContain('Add models to gateway');
+  });
+
+  it('cancels manual entry with Escape and keeps the list untouched', async () => {
+    const { view, onSaveProvider } = renderPicker();
+    await write(view, '\x1b[B');
+    await write(view, '\x1bm');
+    await write(view, 'hidden-a');
+    await write(view, '\x1b');
+
+    expect(onSaveProvider).not.toHaveBeenCalled();
+    expect(view.lastFrame()).toContain('Models & BYOK providers');
+    expect(view.lastFrame()).not.toContain('Filter: hidden-a');
+  });
+
+  it('refuses manual entry on a built-in model row', async () => {
+    const { view, onSaveProvider } = renderPicker();
+    await write(view, '\x1bm');
+
+    expect(onSaveProvider).not.toHaveBeenCalled();
+    expect(view.lastFrame()).toContain('Only custom providers can take extra models.');
   });
 
   it('keeps the effort control and respects restricted levels', async () => {

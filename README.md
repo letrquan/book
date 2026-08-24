@@ -713,6 +713,18 @@ user-global `~/.book/settings.json` so they are shared across projects; such pro
 picker when called without an argument and saves successful selections to
 `.book/settings.local.json`.
 
+After the base URL and API key, the add-provider wizard asks where the model list should come
+from: **discover automatically** (Book calls the endpoint's model-list API and you pick from the
+result) or **enter model IDs manually** (comma-separate to add several at once). Manual entry is
+the answer for an endpoint that exposes no model-list API, and it is still offered as a fallback
+if discovery fails.
+
+An already-configured provider keeps both routes. With one of its models selected in the picker,
+`Alt+R` re-reads the catalog from the endpoint and `Alt+M` adds model IDs by hand. A refresh
+replaces what discovery previously returned, but hand-entered models survive it — they exist
+precisely because the endpoint does not list them, and are recorded as `"manual": true` in
+settings. Neither action changes the active model or touches the provider's stored credentials.
+
 **Slash commands in print mode.** `book -p "/name args"` resolves the command through the same
 registries, the same `$1..$9` / named-argument / `${BOOK_*}` variable / shell substitution, and the
 same `allowed-tools` and `model` frontmatter enforcement as the TUI — it is never forwarded to the

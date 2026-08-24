@@ -241,6 +241,26 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **A BYOK provider's model list can be filled in by hand, and an existing one can be updated
+  without re-adding the provider.** The add-provider wizard used to fire model discovery the
+  instant the API key was submitted, so an endpoint with no model-list API could only be
+  configured by failing discovery first and taking the error screen's fallback. It now asks where
+  the list should come from — discover automatically, or type the model IDs (comma-separate for
+  several) — before any request is made; the post-failure fallback remains. For a provider that is
+  already configured, selecting one of its models in `/model` or `/providers` exposes `Alt+R` to
+  re-read the catalog from the endpoint and `Alt+M` to add model IDs by hand, both announced on the
+  row itself and neither changing the active model or the stored credentials.
+  - A refresh replaces what discovery previously returned, but **hand-entered models survive it**.
+    They are recorded as `"manual": true` under `provider.<id>.models.<model>` for exactly this
+    reason: they exist because the endpoint does not list them, so a refresh that dropped them
+    would undo the user's work every time. The marker is cleared once discovery starts returning
+    that id on its own.
+  - Adding models to an existing provider no longer rewrites its `baseURL` and `apiKey` with the
+    values the caller happened to carry. Previously `providerConfigFromDraft` always wrote both,
+    which also meant a provider configured with the legacy lowercase `baseUrl` key failed schema
+    validation on refresh instead of saving.
+  - A refresh whose endpoint returns an empty list now reports that, rather than throwing while
+    picking an active model out of the empty result.
 - **Slash commands work in print/headless mode.** `book -p /security-review`, `book -p /init`, and
   any `.book/commands/*.md` command now resolve through the same registries, the same
   `$1..$9` / named-argument / `${BOOK_*}` / shell substitution, and the same `allowed-tools` and
