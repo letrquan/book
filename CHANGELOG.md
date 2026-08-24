@@ -140,14 +140,34 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
-- **`book <subcommand> --workspace <path>` acted on the current directory instead.** The root
-  command and every subcommand both declare `-w/--workspace`; under commander 15 a `-w` following a
-  subcommand is routed to the root, leaving the subcommand on its `process.cwd()` default. `book
-  doctor`, `config`, `mcp`, and `tool-stats` all reported on the wrong directory, and `book config
-  set --workspace <path>` wrote settings into the current one. Enabling positional option parsing
-  restores per-subcommand targeting. The CLI tests asserted only exit status, so the regression
-  arrived green with the commander 14 to 15 bump; they now assert the flag has an effect, including
-  that a run does not write settings into the repository it is executed from.
+- **`--workspace` acted on the current directory instead, in whichever placement you used.** The
+  root command and every subcommand both declare `-w/--workspace`; under commander 15 a `-w`
+  following a subcommand is routed to the root, leaving the subcommand on its `process.cwd()`
+  default. `book doctor`, `config`, `mcp`, and `tool-stats` all reported on the wrong directory, and
+  `book config set --workspace <path>` wrote settings into the current one. Enabling positional
+  option parsing fixes the after-subcommand placement, but it splits the two placements across
+  different command objects, so `book --workspace <path> <subcommand>` was still silently ignored —
+  the same silent-wrong-directory hazard, just moved to the placement most people reach for first.
+  The subcommand option no longer defaults to `process.cwd()`, so an unset one falls through to the
+  root's value: all three placements — before the subcommand, after it, and after its positional
+  arguments — now name the same directory. The CLI tests asserted only exit status, so the original
+  regression arrived green with the commander 14 to 15 bump; they now assert the flag has an effect
+  in every placement, and pin a marker into a workspace distinct from the fake `HOME` so an ignored
+  flag cannot be rescued by the user-global layer resolving to the same file.
+
+- **Root options written after a subcommand name became errors.** Positional option parsing rejects
+  a root option that follows the subcommand, so `book config get model --settings <path>` started
+  failing with `unknown option '--settings'` — an undocumented break, and a natural invocation,
+  since the `config` action deliberately reads the root's `--settings`. `--settings` and
+  `--no-settings` are re-declared on `config`, which prefers its own value and falls back to the
+  root's; both flags work on either side of the subcommand again.
+
+- **Running the CLI test suite could write settings into the repository.** The tests spawned the CLI
+  from the checkout, so a bug that dropped `--workspace` wrote into the developer's real
+  `.book/settings.local.json`; the guard meant to catch it skipped itself whenever that file already
+  existed, which is the documented normal state for that scope — inert on exactly the machines that
+  needed it. The child now runs from a scratch directory, so a stray write structurally cannot reach
+  the repository, and the assertion fires everywhere.
 
 - **`book doctor` now runs without a working credential.** Doctor resolved its config through the
   throwing `loadConfig`, so the single most common broken environment — no `BOOK_API_KEY` — killed
@@ -156,7 +176,12 @@ All notable changes to this project are documented in this file.
   credential as a finding (`Credentials: not resolved`) instead of dying on it. A new
   `src/cli/subcommands.contract.test.ts` holds every non-interactive subcommand — `doctor`,
   `config`, `mcp list`, `tool-stats` — to running with no API key configured, so the class of
-  regression cannot come back through another command.
+  regression cannot come back through another command. That guard covered only the missing
+  credential, though: every other rejection — malformed JSON, a schema violation, an unknown
+  `harness.workflow` — still escaped as a raw stack trace, which is the least useful possible
+  response from the command whose job is diagnosing a broken setup. A configuration that will not
+  load is now reported as `Configuration: FAILED TO LOAD` with the reason and the settings layers
+  in the order they apply, so the offending file is named.
 
 - **The `Stop` hook fires once per run instead of once per provider turn.** It ran inside the turn
   loop, so a task that took twelve tool-call turns invoked it twelve times — a hook meant to
