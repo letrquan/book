@@ -50,6 +50,30 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **A checked-in slash command can no longer run shell on your machine just because you typed
+  its name.** A `.book/commands/*.md` body may substitute shell output into its prompt, and that
+  substitution ran before the model saw anything, outside the permission system and outside the
+  sandbox — no rule consulted, no sandbox applied, nothing asked. Cloning a repository and
+  invoking one of its commands was therefore arbitrary code execution, and print mode had widened
+  the exposure: `book -p "/name"` reaches the same resolver with no terminal present to notice.
+  Repository-declared commands that substitute shell now require a one-time decision, recorded in
+  `.book/settings.local.json` under `commands.projectCommands`, which the checked-in
+  `.book/settings.json` layer is forbidden from writing, so a project cannot approve itself
+  through its own settings file. (A repository that *commits* a `settings.local.json` rather
+  than ignoring it still supplies its own decisions — that gap is shared with the existing
+  `mcp.projectServers` and `permissions.projectAllowRules` stores and is not closed here.)
+  Until a
+  decision exists the command is refused, naming the shell it wanted to run and the command that
+  approves it; `book doctor` lists what is withheld. The recorded fingerprint covers the shell a
+  body runs, not the prose around it, so editing what runs asks again while rewording the
+  instructions does not. Commands in `~/.book/commands/` are yours and are never gated, and a
+  project command that substitutes no shell is unaffected.
+
+- **Slash-command shell output is no longer rescanned for further substitution.** Fenced blocks
+  were resolved first and the *result* was then scanned for inline ``!`cmd` `` spans, so a block
+  whose output contained an injection marker had it executed as a second command. Spans are now
+  taken from one scan of the original body and output is substituted back without rescanning —
+  which is also what lets an approval fingerprint mean exactly what will run.
 - **A repository can no longer widen your permissions by shipping a `permissions.allow` rule.**
   Allow rules accumulate across settings layers, so a rule in a cloned repository's checked-in
   `.book/settings.json` joined the effective allow list — reaching the outcome that project layers

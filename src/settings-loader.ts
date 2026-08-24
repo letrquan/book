@@ -100,6 +100,7 @@ export type SettingsLayerTrust = 'trusted' | 'local' | 'repository';
 const REPOSITORY_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
   ['mcp', 'projectServers'],
   ['permissions', 'projectAllowRules'],
+  ['commands', 'projectCommands'],
 ];
 
 function sanitizeLayer(
