@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { discoverCommands, generateCommandListing, resolveCommandBody } from './loader.js';
+import { projectCommandFingerprint } from '../command-approvals.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import type { SlashCommand } from '../types/commands.js';
 
@@ -122,9 +123,21 @@ describe('resolveCommandBody', () => {
 
   it('resolves shell injection from !`cmd`', async () => {
     const cmdShell = { ...cmd, body: 'Output: !`echo hello_from_shell`' };
-    const { resolved, shellErrors } = await resolveCommandBody(cmdShell, '');
+    const { resolved, shellErrors } = await resolveCommandBody(cmdShell, '', {
+      projectCommands: {
+        [cmdShell.name]: {
+          fingerprint: projectCommandFingerprint(cmdShell.body),
+          choice: 'approved',
+        },
+      },
+    });
     expect(resolved).toContain('hello_from_shell');
     expect(shellErrors).toHaveLength(0);
+  });
+
+  it('refuses shell injection the user has not approved', async () => {
+    const cmdShell = { ...cmd, body: 'Output: !`echo hello_from_shell`' };
+    await expect(resolveCommandBody(cmdShell, '')).rejects.toThrow(/has not been approved/);
   });
 
   it('respects shell-style quoting', async () => {

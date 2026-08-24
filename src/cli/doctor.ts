@@ -162,7 +162,46 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
       );
     }
   }
+
   console.log();
+
+  // A command body that substitutes shell runs it outside the permission
+  // system, so a repository-declared one is withheld until the user decides.
+  // Its own section: these are not permission rules, and printing them inside
+  // the permissions block reads as if they were a rule category.
+  const { discoverCommands } = await import('../commands/loader.js');
+  const { partitionProjectCommands, projectCommandFingerprint } =
+    await import('../command-approvals.js');
+  const gatedCommands = partitionProjectCommands(discoverCommands(config.workspace), settings);
+  if (
+    gatedCommands.approved.length + gatedCommands.pending.length + gatedCommands.rejected.length >
+    0
+  ) {
+    console.log('Project commands that run shell (require approval):');
+    for (const command of gatedCommands.approved) console.log('  [x] /' + command.name);
+    for (const command of gatedCommands.rejected)
+      console.log('  [-] /' + command.name + ' (rejected)');
+    for (const command of gatedCommands.pending)
+      console.log('  [!] /' + command.name + ' (refused until approved)');
+    if (gatedCommands.pending.length > 0) {
+      // `config set` replaces the whole record, so the printed line has to
+      // carry the decisions already on file or running it revokes them.
+      const decisions = {
+        ...settings.commands.projectCommands,
+        ...Object.fromEntries(
+          gatedCommands.pending.map((command) => [
+            command.name,
+            { fingerprint: projectCommandFingerprint(command.body), choice: 'approved' },
+          ]),
+        ),
+      };
+      console.log(
+        '  Approve with: book config set commands.projectCommands ' +
+          `'${JSON.stringify(decisions)}'`,
+      );
+    }
+    console.log();
+  }
 
   // Hooks.
   const hooks = settings.hooks;

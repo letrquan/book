@@ -115,6 +115,34 @@ const WORKSPACE_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
   ['hooks', 'projectEntries'],
 ];
 
+/**
+ * The same kind of decision, for a class the user-global trust store does not
+ * answer for yet.
+ *
+ * Project command approvals still live in `.book/settings.local.json`, so that
+ * layer has to keep being read or an approved command could never run. Only the
+ * checked-in layer is stripped, which is the guarantee this key shipped with.
+ * The weaker storage is the reason, not a judgement that the key is safer: a
+ * repository that force-adds the local file still supplies its own approvals.
+ * Porting it into the trust store is what collapses this list into the one
+ * above.
+ */
+const REPOSITORY_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
+  ['commands', 'projectCommands'],
+];
+
+function stripPaths(
+  settings: Partial<BookSettings>,
+  paths: ReadonlyArray<readonly [string, string]>,
+): void {
+  for (const [parent, key] of paths) {
+    const container = (settings as Record<string, unknown>)[parent];
+    if (container && typeof container === 'object' && !Array.isArray(container)) {
+      delete (container as Record<string, unknown>)[key];
+    }
+  }
+}
+
 function sanitizeLayer(
   settings: Partial<BookSettings>,
   trust: SettingsLayerTrust,
@@ -123,12 +151,8 @@ function sanitizeLayer(
   const sanitized = structuredClone(settings);
   // Project/local settings cannot opt a session into the most permissive mode.
   if (sanitized.defaultMode === 'bypassPermissions') delete sanitized.defaultMode;
-  for (const [parent, key] of WORKSPACE_FORBIDDEN_PATHS) {
-    const container = (sanitized as Record<string, unknown>)[parent];
-    if (container && typeof container === 'object' && !Array.isArray(container)) {
-      delete (container as Record<string, unknown>)[key];
-    }
-  }
+  stripPaths(sanitized, WORKSPACE_FORBIDDEN_PATHS);
+  if (trust === 'repository') stripPaths(sanitized, REPOSITORY_FORBIDDEN_PATHS);
   return sanitized;
 }
 

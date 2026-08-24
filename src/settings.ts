@@ -274,6 +274,27 @@ export const mcpSettingsSchema = z.object({
 
 export type McpSettings = z.infer<typeof mcpSettingsSchema>;
 
+export const projectCommandChoiceSchema = z.object({
+  /** Digest of the shell the body substitutes at decision time; a mismatch re-prompts. */
+  fingerprint: z.string().min(1),
+  choice: z.enum(['approved', 'rejected']),
+});
+
+export type ProjectCommandChoice = z.infer<typeof projectCommandChoiceSchema>;
+
+export const commandSettingsSchema = z.object({
+  /**
+   * Per-command trust decisions for `<workspace>/.book/commands/*.md` files
+   * that substitute shell into their prompt. That substitution runs outside the
+   * permission system and outside the sandbox, so a repository-controlled file
+   * needs a decision before it runs. User-global commands
+   * (<BOOK_HOME>/commands) were written by the user and never require one.
+   */
+  projectCommands: z.record(projectCommandChoiceSchema).default({}),
+});
+
+export type CommandSettings = z.infer<typeof commandSettingsSchema>;
+
 export const uiSettingsSchema = z.object({
   /** Show provider-native and embedded model reasoning in the interactive transcript. */
   showThinking: z.boolean().default(true),
@@ -344,6 +365,7 @@ export const bookSettingsSchema = z.object({
   observability: observabilitySettingsSchema.default({}),
   harness: harnessSettingsSchema.default({}),
   mcp: mcpSettingsSchema.default({}),
+  commands: commandSettingsSchema.default({}),
 });
 
 export type BookSettings = z.infer<typeof bookSettingsSchema>;
@@ -460,5 +482,8 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   },
   mcp: {
     projectServers: {},
+  },
+  commands: {
+    projectCommands: {},
   },
 };

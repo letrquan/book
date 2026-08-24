@@ -6,7 +6,16 @@ import {
   resolveShellInjection,
   resolveCommandBody,
 } from './resolve.js';
+import { ProjectCommandApprovalError, projectCommandFingerprint } from '../command-approvals.js';
 import type { SlashCommand } from '../types/commands.js';
+
+/** Decisions that approve exactly what `command` runs today. */
+const approving = (command: SlashCommand) => ({
+  [command.name]: {
+    fingerprint: projectCommandFingerprint(command.body),
+    choice: 'approved' as const,
+  },
+});
 
 describe('parseSlashInput', () => {
   it('uses exact command identity and preserves raw arguments', () => {
@@ -199,8 +208,52 @@ describe('resolveCommandBody', () => {
       ...baseCmd,
       body: shellCmd,
     };
-    const { resolved } = await resolveCommandBody(cmd, '', { workspace: process.cwd() });
+    const { resolved } = await resolveCommandBody(cmd, '', {
+      workspace: process.cwd(),
+      projectCommands: approving(cmd),
+    });
     // Shell injection should have been resolved (no `!` backtick markers left).
     expect(resolved).not.toContain('!`');
+  });
+
+  it('refuses a project command that runs unapproved shell', async () => {
+    // The gate is the whole point: a cloned repository must not get a shell
+    // by having the user type its command name.
+    const cmd: SlashCommand = { ...baseCmd, body: 'Ship: !`echo pwned`' };
+    await expect(resolveCommandBody(cmd, '', { workspace: process.cwd() })).rejects.toThrow(
+      ProjectCommandApprovalError,
+    );
+  });
+
+  it('refuses a project command the user rejected', async () => {
+    const cmd: SlashCommand = { ...baseCmd, body: 'Ship: !`echo pwned`' };
+    await expect(
+      resolveCommandBody(cmd, '', {
+        workspace: process.cwd(),
+        projectCommands: {
+          [cmd.name]: {
+            fingerprint: projectCommandFingerprint(cmd.body),
+            choice: 'rejected',
+          },
+        },
+      }),
+    ).rejects.toThrow(ProjectCommandApprovalError);
+  });
+
+  it('does not gate a user-global command', async () => {
+    const cmd: SlashCommand = {
+      ...baseCmd,
+      source: 'user',
+      body: 'Ship: !`echo mine`',
+    };
+    const { resolved } = await resolveCommandBody(cmd, '', { workspace: process.cwd() });
+    expect(resolved).not.toContain('!`');
+  });
+
+  it('does not gate a project command that runs no shell', async () => {
+    const { resolved } = await resolveCommandBody(baseCmd, 'hello', {
+      workspace: process.cwd(),
+    });
+    expect(resolved).toBe('hello');
   });
 });

@@ -113,18 +113,30 @@ reference for roadmap and design documents.
 
 ## Known Boundaries
 
-- Project MCP declarations, project-declared allow rules, and project-declared hook entries now
-  have explicit trust boundaries: each is fingerprinted and requires one-time approval, recorded
-  per workspace in `~/.book/trust.json`. That store answers only for those three. A repository
-  that force-adds `.book/settings.local.json` still reaches a clone, and that layer is otherwise
-  ungated — its own `hooks.<event>` entries, allow rules, and env run as if the user had written
-  them. Distrusting a Git-tracked local layer needs provenance the synchronous resolver cannot
-  currently obtain, so provider blocks, custom command shell substitutions, project instructions,
-  and a checked-in `settings.local.json` must still be reviewed before opening an untrusted
-  workspace.
-- No interactive surface records these decisions yet. The MCP gate has a TUI prompt; the allow-rule
-  and hook gates do not, so in the primary mode a withheld hook simply never fires until the user
-  runs `book doctor`. Print/headless and SDK runs do report what they are skipping.
+- Four classes of repository-controlled input now carry an explicit trust boundary, each
+  fingerprinted and requiring a one-time approval: project MCP declarations, project-declared
+  allow rules, project-declared hook entries, and shell substitution in a project
+  `.book/commands/*.md` body, which is keyed by command name and fingerprinted over the shell the
+  body runs rather than its prose. They do not yet share one store. The first three are recorded
+  per workspace in `~/.book/trust.json` and are stripped from both workspace settings layers, so
+  no file inside the working tree can answer for them. Command approvals still live in
+  `<workspace>/.book/settings.local.json`: only the checked-in layer is forbidden from writing
+  that key, because the local layer is where an approved command has to be read back from.
+- That split is the remaining gap, not a design. `.gitignore` does not stop a *tracked* file from
+  reaching a clone, so a repository that force-adds `.book/settings.local.json` supplies its own
+  command approvals — the exact self-approval the other three classes were moved out of the
+  workspace to prevent. Porting command approvals into the trust store is what closes it, and is
+  the precondition for the workspace trust database rather than a detail of it.
+- The local layer is otherwise ungated. Its own `hooks.<event>` entries, allow rules, and env run
+  as if the user had written them, because distrusting a Git-tracked local layer needs provenance
+  the synchronous resolver cannot currently obtain. Provider blocks, project instructions, and a
+  checked-in `settings.local.json` must still be reviewed before opening an untrusted workspace.
+- No interactive surface records these decisions yet. The MCP gate has a TUI prompt; the
+  allow-rule, hook, and command gates do not, so in the primary mode a withheld hook simply never
+  fires and a withheld command is refused until the user runs `book doctor`, which prints the
+  grant for each — `book trust …` for the three in the trust store, `book config set
+  commands.projectCommands` for command approvals. Print/headless and SDK runs do report what they
+  are skipping.
 - Bubblewrap is optional and currently Linux-oriented; when unavailable, behavior follows the
   configured `sandbox.failIfUnavailable` policy and may run unsandboxed. Where it is available the
   boundary is real: sandboxed commands are spawned as a direct argument vector rather than a shell
@@ -177,8 +189,16 @@ reference for roadmap and design documents.
   (session controls, pickers, panels, `/config`, `/export`, `/memory`) is refused before its own
   code runs, which ends the run with exit code 1; an unknown `/name` is still forwarded to the model
   verbatim.
-  Shell substitution inside a custom command body runs unsandboxed and outside the permission
-  system, exactly as in the TUI, and that exposure is now reachable from `book -p`.
+  Shell substitution inside a custom command body still runs unsandboxed and outside the
+  permission system, but a repository-declared body no longer reaches it unapproved: the
+  decision is recorded in `.book/settings.local.json` under `commands.projectCommands`, the
+  checked-in `.book/settings.json` layer is forbidden from writing that key, and an unapproved
+  command is refused in the TUI and in print mode alike. The gate is fail-closed by
+  construction — a host that passes
+  no decision store is treated as having no decision — and the fingerprint digests the shell a
+  body runs rather than its prose, so editing what runs re-asks and rewording does not. There is
+  no interactive approval prompt yet: a pending decision is granted through `book config set`,
+  which `book doctor` prints. Commands under `~/.book/commands` are user-owned and never gated.
 - Plan approval outside the TUI depends on what the host supplied: `bypassPermissions` approves, an
   `onUserQuestionRequired` handler decides, and a host with neither ends the run with
   `plan.status: not_applied` and exit code 0. The SDK `result` event does not carry that `plan`
@@ -228,7 +248,10 @@ Use `npm test` for the full build plus unit, contract, and integration tiers. Re
 `npm run release:check`; the stabilization policy is `npm run stabilization:check` with the GitHub
 Actions environment variables described in [stabilization.md](stabilization.md).
 
-Local verification for this refresh (2026-08-24): typecheck, lint, formatting, the architecture
-check, and the unit and contract tiers were re-run green alongside the project-declared-hook trust
-gate and the move of every trust decision into `~/.book/trust.json`; use the commands above to
-reproduce.
+Local verification for this refresh (2026-08-24): `npm run check` — formatting, lint, typecheck,
+the architecture check, and the unit and contract tiers — was re-run green on this branch after
+merging `main`, covering the project-declared-hook trust gate, the move of the first three trust
+decisions into `~/.book/trust.json`, and the two-scope settings-layer strip that keeps command
+approvals readable from the local layer while still forbidding the checked-in one. Use the
+commands above to reproduce. The eight `src/harness/evaluation/contract.test.ts` fixture-digest
+failures seen on some Windows working copies did not reproduce in this worktree.

@@ -1,5 +1,11 @@
 import { exec } from 'child_process';
+import { assertProjectCommandApproved, type ProjectCommandStore } from '../command-approvals.js';
 import type { CommandContext, SlashCommand } from '../types/commands.js';
+import {
+  applyShellInjections,
+  extractShellInjections,
+  type ShellInjection,
+} from './shell-injection.js';
 
 export interface ParsedSlashInput {
   name: string;
@@ -126,13 +132,13 @@ export function resolveVariables(
 /**
  * Resolve inline shell commands and fenced shell blocks in a command body.
  *
- * Supports:
- *   `cmd`         — inline shell command (backtick-wrapped)
- *   ```!           — fenced code block for multi-line commands
- *   ```
+ * Spans come from a single scan of the raw body (`shell-injection.ts`), which
+ * is also what the approval fingerprint digests, and output is substituted
+ * back without rescanning: a command that prints an injection marker cannot
+ * get it executed.
  *
- * Each shell command runs asynchronously with a 5-second timeout.
- * Output replaces the placeholder inline. Errors are collected.
+ * Each shell command runs with a 5-second timeout. Output replaces the
+ * placeholder inline. Errors are collected.
  */
 export async function resolveShellInjection(
   body: string,
@@ -140,37 +146,60 @@ export async function resolveShellInjection(
   signal?: AbortSignal,
 ): Promise<{ resolved: string; errors: string[] }> {
   const errors: string[] = [];
-  let resolved = await replaceAsync(body, /```!\s*\n([\s\S]*?)```/g, async (_match, command) =>
-    executeInjection(command.trim(), workspace, errors, 'block', signal),
-  );
+  const injections = extractShellInjections(body);
+  const outputs: string[] = [];
+  // Sequential: a body may depend on one command having run before the next.
+  for (const injection of injections) {
+    outputs.push(await executeInjection(injection, workspace, errors, signal));
+  }
+  return { resolved: applyShellInjections(body, injections, outputs), errors };
+}
 
-  resolved = await replaceAsync(resolved, /!?`([^`]+)`/g, async (match, command) => {
-    const isShell = match.startsWith('!`') || command.startsWith('!');
-    if (!isShell) return match;
-    const shellCommand = command.startsWith('!') ? command.slice(1).trim() : command.trim();
-    return executeInjection(shellCommand, workspace, errors, 'command', signal);
-  });
-
-  return { resolved, errors };
+/**
+ * Everything a command body may need substituted into it.
+ */
+export interface CommandResolutionContext {
+  sessionId?: string;
+  workspace?: string;
+  model?: string;
+  /**
+   * Recorded decisions about repository-declared shell substitution
+   * (`settings.commands.projectCommands`).
+   *
+   * Omitting it fails closed: a project command that substitutes shell is
+   * refused rather than run on an unrecorded decision, so a host that has not
+   * been wired for the gate cannot quietly reopen it.
+   */
+  projectCommands?: ProjectCommandStore;
 }
 
 /**
  * Resolve a command body by substituting arguments, named args, env vars,
  * and shell injections.
  *
- * Returns the fully resolved body and any shell errors encountered.
+ * Returns the fully resolved body and any shell errors encountered. Throws
+ * `ProjectCommandApprovalError` when a repository-declared command would run
+ * shell the user has not approved.
  */
 export async function resolveCommandBody(
   command: SlashCommand,
   args: string,
-  context?: { sessionId?: string; workspace?: string; model?: string },
+  context?: CommandResolutionContext,
   signal?: AbortSignal,
 ): Promise<{ resolved: string; shellErrors: string[] }> {
+  // Before anything runs: a checked-in body can execute shell outside the
+  // permission system, so the decision is checked ahead of the first spawn.
+  assertProjectCommandApproved(command, {
+    commands: { projectCommands: context?.projectCommands },
+  });
+
   const argv = parseArgs(args);
   const namedArgs = command.arguments ?? [];
 
   // Step 1: Resolve shell injections first (raw body, before var substitution).
-  // This allows shell commands to produce text that may contain $variables.
+  // This allows shell commands to produce text that may contain $variables,
+  // and is why the approved fingerprint digests the raw body: no argument can
+  // reach the shell.
   const { resolved: afterShell, errors } = await resolveShellInjection(
     command.body,
     context?.workspace ?? process.cwd(),
@@ -204,33 +233,15 @@ export function commandEnforcementContext(
     : undefined;
 }
 
-async function replaceAsync(
-  input: string,
-  pattern: RegExp,
-  replacer: (match: string, capture: string) => Promise<string>,
-): Promise<string> {
-  const matches = [...input.matchAll(pattern)];
-  let output = '';
-  let cursor = 0;
-  for (const match of matches) {
-    const index = match.index ?? 0;
-    output += input.slice(cursor, index);
-    output += await replacer(match[0], match[1]);
-    cursor = index + match[0].length;
-  }
-  return output + input.slice(cursor);
-}
-
 function executeInjection(
-  command: string,
+  injection: ShellInjection,
   workspace: string,
   errors: string[],
-  kind: 'block' | 'command',
   signal?: AbortSignal,
 ): Promise<string> {
   return new Promise((resolve) => {
     exec(
-      command,
+      injection.command,
       {
         cwd: workspace,
         encoding: 'utf8',
@@ -246,9 +257,9 @@ function executeInjection(
         }
         const message = error.message;
         errors.push(
-          kind === 'block'
+          injection.kind === 'block'
             ? `Shell block failed: ${message}`
-            : `Shell command '${command}' failed: ${message}`,
+            : `Shell command '${injection.command}' failed: ${message}`,
         );
         resolve(`[shell error: ${message}]`);
       },
