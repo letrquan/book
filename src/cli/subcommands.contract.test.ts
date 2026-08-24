@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { runDoctorCommand } from './doctor.js';
@@ -77,6 +77,48 @@ describe('non-interactive subcommands without credentials', () => {
     it(`${name} completes with no API key configured`, async () => {
       expect(process.env.BOOK_API_KEY).toBeUndefined();
       await expect(runQuietly(run)).resolves.toBeUndefined();
+    });
+  }
+});
+
+/**
+ * Contract: doctor reports a configuration that will not load, rather than
+ * dying on it.
+ *
+ * allowMissingApiKey covers only the missing-credential rejection. Every other
+ * one - malformed JSON, a schema violation, an unknown harness workflow - used
+ * to escape loadConfig as an unhandled stack trace, which is the least useful
+ * possible response from the command whose job is diagnosing a broken setup.
+ */
+describe('book doctor with an unloadable configuration', () => {
+  function writeProjectSettings(contents: string): void {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(join(workspace, '.book', 'settings.json'), contents);
+  }
+
+  const broken: Array<[string, string]> = [
+    ['malformed JSON', '{ "model": '],
+    ['a schema violation', JSON.stringify({ permissions: { allow: 'not-an-array' } })],
+    ['an unknown harness workflow', JSON.stringify({ harness: { workflow: 'not-a-workflow' } })],
+  ];
+
+  for (const [label, contents] of broken) {
+    it(`reports ${label} instead of throwing`, async () => {
+      writeProjectSettings(contents);
+      const lines: string[] = [];
+      const log = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+        lines.push(args.map(String).join(' '));
+      });
+      try {
+        await expect(runDoctorCommand(workspace)).resolves.toBeUndefined();
+      } finally {
+        log.mockRestore();
+      }
+      const output = lines.join('\n');
+      expect(output).toContain('Book Doctor');
+      expect(output).toContain('Configuration: FAILED TO LOAD');
+      // The offending file is named, so the report is actionable.
+      expect(output).toContain(join(workspace, '.book', 'settings.json'));
     });
   }
 });
