@@ -35,10 +35,28 @@ export const sandboxSchema = z.object({
 /**
  * Permission configuration (matches CC's permissions key).
  */
+/**
+ * Per-rule trust decisions for `permissions.allow` entries declared by the
+ * checked-in project layer.
+ *
+ * Unlike an MCP server, a permission rule *is* its own identity: change the
+ * rule and it is a different key, so no fingerprint is needed to detect drift.
+ * Decisions are stored per workspace in `.book/settings.local.json`, which the
+ * repository cannot write.
+ */
+export const projectAllowRuleChoiceSchema = z.enum(['approved', 'rejected']);
+
+export type ProjectAllowRuleChoice = z.infer<typeof projectAllowRuleChoiceSchema>;
+
 export const permissionsSchema = z.object({
   allow: z.array(permissionRuleSchema).default([]),
   ask: z.array(permissionRuleSchema).default([]),
   deny: z.array(permissionRuleSchema).default([]),
+  /**
+   * Decisions about `allow` rules the project layer declared. A project rule
+   * with no `approved` entry here never reaches the resolved allow list.
+   */
+  projectAllowRules: z.record(projectAllowRuleChoiceSchema).default({}),
 });
 
 /**
@@ -347,7 +365,7 @@ export type ResolvedSettings = Required<
  */
 export const DEFAULT_SETTINGS: ResolvedSettings = {
   compactStrategy: 'summary',
-  permissions: { allow: [], ask: [], deny: [] },
+  permissions: { allow: [], ask: [], deny: [], projectAllowRules: {} },
   sandbox: {
     enabled: false,
     failIfUnavailable: false,

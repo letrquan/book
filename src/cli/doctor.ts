@@ -5,10 +5,61 @@ import { withBuiltInAgents } from '../agents/profiles.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { resolveBookHome } from '../book-home.js';
 
+/** The settings files doctor reads, in the order they are layered. */
+async function settingsLayers(workspace: string): Promise<Array<[string, string]>> {
+  const { join, resolve } = await import('path');
+  const root = resolve(workspace);
+  return [
+    ['User', join(resolveBookHome(), 'settings.json')],
+    ['Project', join(root, '.book', 'settings.json')],
+    ['Local', join(root, '.book', 'settings.local.json')],
+  ];
+}
+
+/**
+ * Report a configuration that would not load at all.
+ *
+ * A missing credential is already handled by allowMissingApiKey, but every
+ * other rejection - malformed JSON, a schema violation, an unknown harness
+ * workflow - used to escape loadConfig as an unhandled stack trace. A broken
+ * settings file is precisely what doctor exists to diagnose, so it is a finding
+ * to render, not a reason to die.
+ */
+async function reportUnloadableConfig(workspace: string, error: unknown): Promise<void> {
+  const { existsSync } = await import('fs');
+  const { resolve } = await import('path');
+
+  console.log('Book Doctor');
+  console.log('===========');
+  console.log();
+  console.log('Version:', getPackageVersion());
+  console.log('Node:', process.version);
+  console.log('Platform:', process.platform, process.arch);
+  console.log('Workspace:', resolve(workspace));
+  console.log();
+  console.log('Configuration: FAILED TO LOAD');
+  console.log('  ' + (error instanceof Error ? error.message : String(error)));
+  console.log();
+  console.log('  No other check can run until the configuration loads.');
+  console.log('  Settings layers, in the order they are applied:');
+  for (const [label, path] of await settingsLayers(workspace)) {
+    console.log('    ' + (existsSync(path) ? '[x]' : '[ ]') + ' ' + label + ': ' + path);
+  }
+  console.log();
+  console.log('  Fix the offending file above, or point BOOK_HOME at a clean one.');
+}
+
 export async function runDoctorCommand(workspace: string): Promise<void> {
   // Doctor must diagnose a broken environment, so it cannot require a working one:
-  // a missing credential is a finding to report, not a reason to abort.
-  const config = loadConfig(workspace, { runMigrations: true, allowMissingApiKey: true });
+  // a missing credential is a finding to report, not a reason to abort, and
+  // neither is a settings file that fails to load.
+  let config: ReturnType<typeof loadConfig>;
+  try {
+    config = loadConfig(workspace, { runMigrations: true, allowMissingApiKey: true });
+  } catch (error) {
+    await reportUnloadableConfig(workspace, error);
+    return;
+  }
   const settings = config.settings;
 
   console.log('Book Doctor');
@@ -31,12 +82,7 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   console.log('Settings layers:');
   const { existsSync } = await import('fs');
   const { join } = await import('path');
-  const layers = [
-    ['User', join(resolveBookHome(), 'settings.json')],
-    ['Project', join(config.workspace, '.book', 'settings.json')],
-    ['Local', join(config.workspace, '.book', 'settings.local.json')],
-  ];
-  for (const [label, path] of layers) {
+  for (const [label, path] of await settingsLayers(config.workspace)) {
     console.log('  ' + (existsSync(path) ? '[x]' : '[ ]') + ' ' + label + ': ' + path);
   }
   console.log();
@@ -47,6 +93,34 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   console.log('  Allow rules: ' + perms.allow.length);
   console.log('  Ask rules:   ' + perms.ask.length);
   console.log('  Deny rules:  ' + perms.deny.length);
+
+  // Allow rules the repository declared are withheld until the user decides on
+  // them, so doctor is where an unexplained "my project rule does nothing" is
+  // meant to be answered.
+  const { loadSettingsFile } = await import('../settings-loader.js');
+  const { partitionProjectAllowRules } = await import('../permission-approvals.js');
+  const projectSettings = loadSettingsFile(join(config.workspace, '.book', 'settings.json'));
+  const projectAllow = partitionProjectAllowRules(
+    projectSettings?.permissions?.allow ?? [],
+    perms.projectAllowRules,
+  );
+  if (
+    projectAllow.approved.length + projectAllow.pending.length + projectAllow.rejected.length >
+    0
+  ) {
+    console.log('  Project-declared allow rules (require approval):');
+    for (const rule of projectAllow.approved) console.log('    [x] ' + rule);
+    for (const rule of projectAllow.rejected) console.log('    [-] ' + rule + ' (rejected)');
+    for (const rule of projectAllow.pending) console.log('    [!] ' + rule + ' (not in effect)');
+    if (projectAllow.pending.length > 0) {
+      console.log(
+        '    Approve with: book config set permissions.projectAllowRules ' +
+          `'${JSON.stringify(
+            Object.fromEntries(projectAllow.pending.map((rule) => [rule, 'approved'])),
+          )}'`,
+      );
+    }
+  }
   console.log();
 
   // Hooks.

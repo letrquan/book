@@ -87,9 +87,15 @@ export interface McpConnectionOptions {
   /** Lifecycle observer used by hosts/tests that account for owned child processes. */
   onProcessSpawn?: (name: string, process: ChildProcess) => void;
   /**
-   * Explicit servers to connect. When omitted, servers resolve from
-   * <BOOK_HOME>/.book/mcp.json and <workspace>/.mcp.json. Hosts that enforce
-   * project-server approval pass the approved subset here.
+   * Explicit servers to connect. A host that has evaluated project-server
+   * approval passes the approved subset here.
+   *
+   * When omitted, only user-scoped servers (<BOOK_HOME>/mcp.json) are
+   * connected: they are user-owned, so no approval gate applies. Project
+   * servers from <workspace>/.mcp.json are repository-controlled and are
+   * skipped, because approval cannot be evaluated without settings. Omitting
+   * this therefore fails closed rather than connecting whatever the workspace
+   * declared.
    */
   servers?: Record<string, McpServerConfig>;
   /** Warning sink; defaults to stderr. Ink hosts must supply a non-console sink. */
@@ -710,12 +716,27 @@ export async function connectMcpServers(
     requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     onDiagnostic: options.onDiagnostic ?? consoleMcpDiagnosticSink,
   };
-  const servers = options.servers
-    ? Object.entries(options.servers).map(([name, config]) => ({ name, config }))
-    : resolveMcpServerList(workspace, {
-        home: options.home,
-        onDiagnostic: resolved.onDiagnostic,
+  let servers: Array<{ name: string; config: McpServerConfig }>;
+  if (options.servers) {
+    servers = Object.entries(options.servers).map(([name, config]) => ({ name, config }));
+  } else {
+    // No caller-supplied subset means no host evaluated project-server
+    // approval, so repository-controlled servers cannot be trusted here.
+    // Fail closed: connect user-scoped servers only and name what was skipped.
+    const declared = resolveMcpServerList(workspace, {
+      home: options.home,
+      onDiagnostic: resolved.onDiagnostic,
+    });
+    for (const server of declared) {
+      if (server.source === 'user') continue;
+      resolved.onDiagnostic({
+        level: 'warn',
+        message: `Skipping project-declared MCP server "${server.name}" (${server.path}): it requires approval, and this caller supplied no approved server list.`,
+        server: server.name,
       });
+    }
+    servers = declared.filter((server) => server.source === 'user');
+  }
 
   const results = await Promise.allSettled(
     servers.map(({ name, config }) => connectMcpServer(name, config, resolved)),

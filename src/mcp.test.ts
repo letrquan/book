@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   buildMcpToolDefinitions,
   connectMcpServers,
@@ -283,5 +286,72 @@ describe('disconnectMcpServers', () => {
 
     await disconnectMcpServers([bad, ok]);
     expect(close).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('connectMcpServers without a caller-supplied server list', () => {
+  // A host that evaluated approval passes its approved subset. A caller that
+  // passes nothing has evaluated nothing, so repository-controlled servers must
+  // not be connected on its behalf. Both fixtures carry a valid command so they
+  // survive config resolution and the only thing separating them is their source.
+  function writeFixture(): { workspace: string; home: string } {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-mcp-ws-'));
+    const home = mkdtempSync(join(tmpdir(), 'book-mcp-home-'));
+    const stdio = { type: 'stdio', command: process.execPath, args: ['-e', ''] };
+    mkdirSync(join(home, '.book'), { recursive: true });
+    writeFileSync(join(home, '.book', 'mcp.json'), JSON.stringify({ mcpServers: { mine: stdio } }));
+    writeFileSync(join(workspace, '.mcp.json'), JSON.stringify({ mcpServers: { evil: stdio } }));
+    return { workspace, home };
+  }
+
+  it('spawns the user-scoped server but never the project-declared one', async () => {
+    const { workspace, home } = writeFixture();
+    const diagnostics: McpDiagnostic[] = [];
+    const spawned: string[] = [];
+    try {
+      const result = await connectMcpServers(workspace, {
+        home,
+        initializationTimeoutMs: 100,
+        requestTimeoutMs: 100,
+        onProcessSpawn: (name) => spawned.push(name),
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      });
+
+      // The gate is not a blanket refusal: a user-owned server still runs.
+      expect(spawned).toContain('mine');
+      expect(spawned).not.toContain('evil');
+      expect(result.connections).toEqual([]);
+      expect(diagnostics).toContainEqual(
+        expect.objectContaining({
+          level: 'warn',
+          server: 'evil',
+          message: expect.stringContaining('Skipping project-declared MCP server "evil"'),
+        }),
+      );
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('connects a project server when the caller supplies it as approved', async () => {
+    const { workspace, home } = writeFixture();
+    const spawned: string[] = [];
+    try {
+      await connectMcpServers(workspace, {
+        home,
+        initializationTimeoutMs: 100,
+        requestTimeoutMs: 100,
+        servers: { evil: { type: 'stdio', command: process.execPath, args: ['-e', ''] } },
+        onProcessSpawn: (name) => spawned.push(name),
+        onDiagnostic: () => {},
+      });
+
+      // An explicit list means a host already adjudicated it; the gate defers.
+      expect(spawned).toEqual(['evil']);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

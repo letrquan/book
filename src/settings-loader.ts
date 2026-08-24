@@ -8,6 +8,7 @@ import {
 } from './settings.js';
 import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
 import { resolveBookHome } from './book-home.js';
+import { partitionProjectAllowRules } from './permission-approvals.js';
 import { assertHarnessModeAvailable } from './harness/coordinator.js';
 
 const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
@@ -78,21 +79,53 @@ function mergeObject(
   return result;
 }
 
-/** Project/local settings cannot opt a session into the most permissive mode. */
-function sanitizeUntrustedPermissionSettings(
+/**
+ * How much authority a settings layer carries.
+ *
+ * - `trusted` — the user's own global file, or a path they passed on the CLI.
+ * - `local` — `<workspace>/.book/settings.local.json`: gitignored and written by
+ *   the user, or by Book on their behalf, so it may record trust decisions.
+ * - `repository` — `<workspace>/.book/settings.json`: checked in and controlled
+ *   by whoever wrote the repository. It may never grant itself trust.
+ */
+export type SettingsLayerTrust = 'trusted' | 'local' | 'repository';
+
+/**
+ * Settings paths that record a decision the user made *about*
+ * repository-controlled input. Honouring one of these from the repository layer
+ * would let a clone approve itself, defeating the approval it is subject to: the
+ * fingerprints they carry are digests of configuration the repository already
+ * controls, so a malicious project can compute a matching one at will.
+ */
+const REPOSITORY_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
+  ['mcp', 'projectServers'],
+  ['permissions', 'projectAllowRules'],
+];
+
+function sanitizeLayer(
   settings: Partial<BookSettings>,
+  trust: SettingsLayerTrust,
 ): Partial<BookSettings> {
+  if (trust === 'trusted') return settings;
   const sanitized = structuredClone(settings);
+  // Project/local settings cannot opt a session into the most permissive mode.
   if (sanitized.defaultMode === 'bypassPermissions') delete sanitized.defaultMode;
+  if (trust !== 'repository') return sanitized;
+  for (const [parent, key] of REPOSITORY_FORBIDDEN_PATHS) {
+    const container = (sanitized as Record<string, unknown>)[parent];
+    if (container && typeof container === 'object' && !Array.isArray(container)) {
+      delete (container as Record<string, unknown>)[key];
+    }
+  }
   return sanitized;
 }
 
 function mergeLayer(
   resolved: ResolvedSettings,
   layer: Partial<BookSettings>,
-  trusted: boolean,
+  trust: SettingsLayerTrust,
 ): ResolvedSettings {
-  const candidate = trusted ? layer : sanitizeUntrustedPermissionSettings(layer);
+  const candidate = sanitizeLayer(layer, trust);
   // A trusted global safety ceiling cannot be disabled by a lower-trust layer.
   if (
     resolved.disableBypassPermissionsMode === true &&
@@ -164,22 +197,44 @@ export function resolveSettings(
       ? join(paths.home, '.book', 'settings.json')
       : join(resolveBookHome(), 'settings.json'));
   const user = loadSettingsFile(userPath);
-  if (user) resolved = mergeLayer(resolved, user, true);
+  if (user) resolved = mergeLayer(resolved, user, 'trusted');
 
   // Layer 2: Project settings (<workspace>/.book/settings.json)
   const projectPath = paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json');
   const project = loadSettingsFile(projectPath);
-  if (project) resolved = mergeLayer(resolved, project, false);
+  // `allow` rules from the repository layer are held back rather than merged:
+  // they only widen authority, and the decisions that release them live in the
+  // local layer, which has not been merged yet.
+  const declaredProjectAllow = project?.permissions?.allow ?? [];
+  if (project) {
+    const withheld =
+      declaredProjectAllow.length > 0
+        ? { ...project, permissions: { ...project.permissions, allow: [] } }
+        : project;
+    resolved = mergeLayer(resolved, withheld, 'repository');
+  }
 
   // Layer 3: Local settings (<workspace>/.book/settings.local.json)
   const localPath = paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json');
   const local = loadSettingsFile(localPath);
-  if (local) resolved = mergeLayer(resolved, local, false);
+  if (local) resolved = mergeLayer(resolved, local, 'local');
 
   // Layer 4 (optional): Ad-hoc override (--settings flag)
   if (overridePath) {
     const override = loadSettingsFile(overridePath);
-    if (override) resolved = mergeLayer(resolved, override, true);
+    if (override) resolved = mergeLayer(resolved, override, 'trusted');
+  }
+
+  // Every layer that can record a decision is merged now, so the withheld
+  // repository rules can be released — approved ones only.
+  if (declaredProjectAllow.length > 0) {
+    const { approved } = partitionProjectAllowRules(
+      declaredProjectAllow,
+      resolved.permissions?.projectAllowRules,
+    );
+    if (approved.length > 0) {
+      resolved.permissions.allow = [...(resolved.permissions.allow ?? []), ...approved];
+    }
   }
 
   const settings = bookSettingsSchema.parse(resolved) as ResolvedSettings;

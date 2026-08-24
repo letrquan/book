@@ -50,6 +50,23 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **A repository can no longer widen your permissions by shipping a `permissions.allow` rule.**
+  Allow rules accumulate across settings layers, so a rule in a cloned repository's checked-in
+  `.book/settings.json` joined the effective allow list — reaching the outcome that project layers
+  are already forbidden from selecting via `defaultMode: bypassPermissions`. Once merged a rule
+  carried no provenance, so nothing downstream could tell a repository's grant from your own. Such
+  rules are now withheld until you record a decision, stored per workspace in the gitignored
+  `.book/settings.local.json`. `ask` and `deny` rules are unaffected: they only ever restrict.
+  `book doctor` lists what is withheld and prints the command that grants it.
+
+- **`connectMcpServers()` now fails closed when no host has adjudicated approval.** Called without
+  an explicit server list it resolved every declared server — user-global *and* repository-declared
+  — and connected them all, so the project-server approval gate held only because each caller
+  remembered to pass an approved subset. It now connects user-scoped servers only and reports each
+  project-declared server it refused, by name and config path. No shipped caller changes behavior:
+  the TUI, headless, and SDK paths all supply an explicit list already. What changes is that a
+  future caller cannot reach a repository-controlled server by omitting an argument.
+
 - **`permissions.deny` rules now hold in every permission mode.** The hard-deny check ran only for
   file-mutating tools, and `auto` and `bypassPermissions` skip the permission block entirely — so
   in those two modes a deny rule was enforced for `Write` and `Edit` and silently ignored for
@@ -123,6 +140,35 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **`--workspace` acted on the current directory instead, in whichever placement you used.** The
+  root command and every subcommand both declare `-w/--workspace`; under commander 15 a `-w`
+  following a subcommand is routed to the root, leaving the subcommand on its `process.cwd()`
+  default. `book doctor`, `config`, `mcp`, and `tool-stats` all reported on the wrong directory, and
+  `book config set --workspace <path>` wrote settings into the current one. Enabling positional
+  option parsing fixes the after-subcommand placement, but it splits the two placements across
+  different command objects, so `book --workspace <path> <subcommand>` was still silently ignored —
+  the same silent-wrong-directory hazard, just moved to the placement most people reach for first.
+  The subcommand option no longer defaults to `process.cwd()`, so an unset one falls through to the
+  root's value: all three placements — before the subcommand, after it, and after its positional
+  arguments — now name the same directory. The CLI tests asserted only exit status, so the original
+  regression arrived green with the commander 14 to 15 bump; they now assert the flag has an effect
+  in every placement, and pin a marker into a workspace distinct from the fake `HOME` so an ignored
+  flag cannot be rescued by the user-global layer resolving to the same file.
+
+- **Root options written after a subcommand name became errors.** Positional option parsing rejects
+  a root option that follows the subcommand, so `book config get model --settings <path>` started
+  failing with `unknown option '--settings'` — an undocumented break, and a natural invocation,
+  since the `config` action deliberately reads the root's `--settings`. `--settings` and
+  `--no-settings` are re-declared on `config`, which prefers its own value and falls back to the
+  root's; both flags work on either side of the subcommand again.
+
+- **Running the CLI test suite could write settings into the repository.** The tests spawned the CLI
+  from the checkout, so a bug that dropped `--workspace` wrote into the developer's real
+  `.book/settings.local.json`; the guard meant to catch it skipped itself whenever that file already
+  existed, which is the documented normal state for that scope — inert on exactly the machines that
+  needed it. The child now runs from a scratch directory, so a stray write structurally cannot reach
+  the repository, and the assertion fires everywhere.
+
 - **`book doctor` now runs without a working credential.** Doctor resolved its config through the
   throwing `loadConfig`, so the single most common broken environment — no `BOOK_API_KEY` — killed
   it with an unhandled stack trace before it reached the `BOOK_API_KEY: (not set)` line it was
@@ -130,7 +176,12 @@ All notable changes to this project are documented in this file.
   credential as a finding (`Credentials: not resolved`) instead of dying on it. A new
   `src/cli/subcommands.contract.test.ts` holds every non-interactive subcommand — `doctor`,
   `config`, `mcp list`, `tool-stats` — to running with no API key configured, so the class of
-  regression cannot come back through another command.
+  regression cannot come back through another command. That guard covered only the missing
+  credential, though: every other rejection — malformed JSON, a schema violation, an unknown
+  `harness.workflow` — still escaped as a raw stack trace, which is the least useful possible
+  response from the command whose job is diagnosing a broken setup. A configuration that will not
+  load is now reported as `Configuration: FAILED TO LOAD` with the reason and the settings layers
+  in the order they apply, so the offending file is named.
 
 - **The `Stop` hook fires once per run instead of once per provider turn.** It ran inside the turn
   loop, so a task that took twelve tool-call turns invoked it twelve times — a hook meant to

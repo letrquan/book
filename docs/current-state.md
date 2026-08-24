@@ -36,14 +36,18 @@ reference for roadmap and design documents.
 - MCP tools connect over stdio, Streamable HTTP, or legacy SSE. The interactive host prompts before
   using project declarations, answers server form elicitation, refreshes dynamic tool lists, and
   exposes `/mcp` plus `book mcp list|get|add|remove`; print/SDK modes use only user or
-  already-approved servers and declare the elicitation capability only when the caller supplies a
+  already-approved servers, and `connectMcpServers()` itself refuses project-declared servers when
+  a caller supplies no approved list, so the gate does not depend on each caller remembering it and declare the elicitation capability only when the caller supplies a
   handler. Elicitation requests Book cannot render faithfully — URL mode, or schemas outside the
   protocol's primitive subset — are declined. Permission rules scope to a server: a bare
   `mcp__<server>` rule covers every tool that server exposes, while `mcp__<server>__<tool>` stays
   exact.
 - Layered settings (`~/.book`, project `.book`, local `.book`, and `--settings`), atomic writes,
   legacy `.bookrc.json` fallback and legacy-permissions migration, permissions whose `deny` rules
-  bind in every permission mode, hooks, optional bubblewrap sandbox, themes, auto-memory, rewind
+  bind in every permission mode, project-declared `permissions.allow` rules held until the user
+  approves them (`ask`/`deny` apply immediately; `book doctor` reports what is withheld and how
+  to grant it), trust-decision keys ignored from the checked-in project layer so a repository
+  cannot approve its own MCP servers or allow rules, hooks, optional bubblewrap sandbox, themes, auto-memory, rewind
   snapshots, telemetry, and diagnostics. Every declared sandbox key is now read by an execution or
   permission path: `sandbox.allowUnsandboxedCommands` can refuse any command that would leave the
   namespace, and `sandbox.autoAllowBashIfSandboxed` can replace the default ask for a command that
