@@ -7,6 +7,7 @@ import { runHeadless } from './headless.js';
 import { UnsupportedPrintCommandError } from './commands/print-dispatch.js';
 import { createDefaultRegistry } from './tools/registry.js';
 import { defaultConfig } from './test/fixtures.js';
+import { projectCommandFingerprint } from './command-approvals.js';
 import { createRepeatingScriptedProvider, sseResponse } from './test/scripted-provider.js';
 import type { ScriptedProvider } from './test/scripted-provider.js';
 import type { AgentConfig } from './types/runtime.js';
@@ -36,6 +37,14 @@ function writeCommand(workspace: string, name: string, contents: string): void {
   const dir = join(workspace, '.book', 'commands');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${name}.md`), contents, 'utf-8');
+}
+
+/** Record the decision this workspace would otherwise be refused for. */
+function approveCommand(config: AgentConfig, name: string, body: string): void {
+  config.settings.commands.projectCommands[name] = {
+    fingerprint: projectCommandFingerprint(body),
+    choice: 'approved',
+  };
 }
 
 function textEvent(content: string): string {
@@ -199,7 +208,9 @@ describe('runHeadless — slash commands in print mode', () => {
   it('warns on stderr when a command shell substitution fails', async () => {
     stubProvider();
     const config = makeConfig();
-    writeCommand(config.workspace, 'broken', 'Context: !`exit 3`');
+    const body = 'Context: !`exit 3`';
+    writeCommand(config.workspace, 'broken', body);
+    approveCommand(config, 'broken', body);
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
     await run(config, '/broken');
@@ -207,6 +218,16 @@ describe('runHeadless — slash commands in print mode', () => {
     const written = stderr.mock.calls.map((call) => String(call[0])).join('');
     expect(written).toContain('warning: Shell command');
     expect(written).toContain('exit 3');
+  });
+
+  it('refuses a repository command whose shell was never approved', async () => {
+    // `book -p "/name"` on a fresh clone must not be a shell on the host.
+    const provider = stubProvider();
+    const config = makeConfig();
+    writeCommand(config.workspace, 'pwn', 'Context: !`echo pwned`');
+
+    await expect(run(config, '/pwn')).rejects.toThrow(/has not been approved/);
+    expect(provider.requests).toHaveLength(0);
   });
 });
 

@@ -175,14 +175,85 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **A checked-in slash command can no longer run shell on your machine just because you typed
+  its name.** A `.book/commands/*.md` body may substitute shell output into its prompt, and that
+  substitution ran before the model saw anything, outside the permission system and outside the
+  sandbox — no rule consulted, no sandbox applied, nothing asked. Cloning a repository and
+  invoking one of its commands was therefore arbitrary code execution, and print mode had widened
+  the exposure: `book -p "/name"` reaches the same resolver with no terminal present to notice.
+  Repository-declared commands that substitute shell now require a one-time decision, recorded in
+  `.book/settings.local.json` under `commands.projectCommands`, which the checked-in
+  `.book/settings.json` layer is forbidden from writing, so a project cannot approve itself
+  through its own settings file. (A repository that *commits* a `settings.local.json` rather
+  than ignoring it still supplies its own decisions — that gap is shared with the existing
+  `mcp.projectServers` and `permissions.projectAllowRules` stores and is not closed here.)
+  Until a
+  decision exists the command is refused, naming the shell it wanted to run and the command that
+  approves it; `book doctor` lists what is withheld. The recorded fingerprint covers the shell a
+  body runs, not the prose around it, so editing what runs asks again while rewording the
+  instructions does not. Commands in `~/.book/commands/` are yours and are never gated, and a
+  project command that substitutes no shell is unaffected.
+
+- **Slash-command shell output is no longer rescanned for further substitution.** Fenced blocks
+  were resolved first and the *result* was then scanned for inline ``!`cmd` `` spans, so a block
+  whose output contained an injection marker had it executed as a second command. Spans are now
+  taken from one scan of the original body and output is substituted back without rescanning —
+  which is also what lets an approval fingerprint mean exactly what will run.
 - **A repository can no longer widen your permissions by shipping a `permissions.allow` rule.**
   Allow rules accumulate across settings layers, so a rule in a cloned repository's checked-in
   `.book/settings.json` joined the effective allow list — reaching the outcome that project layers
   are already forbidden from selecting via `defaultMode: bypassPermissions`. Once merged a rule
   carried no provenance, so nothing downstream could tell a repository's grant from your own. Such
-  rules are now withheld until you record a decision, stored per workspace in the gitignored
-  `.book/settings.local.json`. `ask` and `deny` rules are unaffected: they only ever restrict.
-  `book doctor` lists what is withheld and prints the command that grants it.
+  rules are now withheld until you record a decision, stored per workspace in `~/.book/trust.json`.
+  `ask` and `deny` rules are unaffected: they only ever restrict. `book doctor` lists what is
+  withheld and prints the `book trust rule` command that grants it.
+
+- **A repository can no longer run shell commands through project-declared hooks without your
+  approval.** A `hooks.<event>` entry in a cloned repository's checked-in `.book/settings.json`
+  is a command Book executes at lifecycle events — on every prompt, around every tool call, at
+  session start. Once merged into resolved settings an entry carried no provenance, so nothing
+  downstream could tell a repository's hook from your own. Project-declared entries are now
+  withheld until you record a decision, stored per workspace in `~/.book/trust.json` and keyed by a
+  fingerprint of the event, matcher, command, and env — editing any of those reverts the hook to
+  untrusted. User-global and local-layer hooks are unaffected. Print/headless and SDK runs report
+  what they are skipping, and `book doctor` lists each withheld hook — command, matcher, and
+  environment, since approval covers all three — and prints the `book trust hook` command that
+  grants it.
+
+- **Trust decisions moved out of the workspace, into `~/.book/trust.json`.** `mcp.projectServers`,
+  `permissions.projectAllowRules`, and `hooks.projectEntries` recorded your answer about
+  repository-controlled input, and were read from `.book/settings.local.json` on the reasoning that
+  the file is gitignored. `.gitignore` does not stop a *tracked* file from reaching a clone:
+  `git add -f .book/settings.local.json` ships it with the repository, and every fingerprint the
+  store is keyed by is a digest of configuration the repository already controls. A hostile project
+  could therefore precompute approvals for the hooks, servers, and allow rules it also shipped and
+  arrive pre-trusted — releasing arbitrary shell commands on first run. All three keys are now
+  ignored from **both** workspace layers and read from a user-global store keyed by absolute
+  workspace path, which nothing a repository can write reaches. An unreadable or off-schema store
+  records no decisions, withholding the gated input rather than releasing it, and a write refuses
+  rather than overwrite a store it could not parse. Decisions recorded under the old scheme are not
+  migrated — that would import exactly the approvals this closes — so a project whose hooks or
+  servers you had already approved asks once more.
+
+- **New `book trust` subcommand records those decisions**: `book trust hook <fingerprint>` and
+  `book trust rule <rule>`, each taking `--all-pending`, `--reject`, and `--workspace <path>`.
+  `book doctor` printed a `book config set hooks.projectEntries '<json>'` one-liner to paste, which
+  was wrong three ways: `config set` *replaces* the value at a path and the printed map held only
+  the newly pending entries, so running the suggestion silently revoked every earlier approve and
+  reject; the command omitted `--workspace`, so running it anywhere but the diagnosed directory
+  wrote the decision into the wrong project; and its single-quoted JSON does not survive `cmd.exe`,
+  where quotes are literal and the argument reached validation as a string. Decisions are now
+  recorded one at a time, a fingerprint needs no quoting, and doctor names the workspace it
+  diagnosed. Repository-authored text in that report — commands, matchers, environment values — is
+  escaped before printing, so a hook cannot use newlines or ANSI escapes to forge a report line and
+  pass itself off as already approved.
+
+- **Print/headless and SDK runs no longer report withheld project declarations under
+  `--no-settings`.** Both hosts read `.book/settings.json` off disk unconditionally and compared it
+  against the resolved decision store, which under `--no-settings` is the empty default: a run in a
+  repository with project hooks announced that it was ignoring hooks pending approval, when the
+  hooks were skipped because settings layers were disabled and approving them would change nothing.
+  Already-approved hooks were reported as pending for the same reason.
 
 - **`connectMcpServers()` now fails closed when no host has adjudicated approval.** Called without
   an explicit server list it resolved every declared server — user-global *and* repository-declared
@@ -265,14 +336,34 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
-- **`book <subcommand> --workspace <path>` acted on the current directory instead.** The root
-  command and every subcommand both declare `-w/--workspace`; under commander 15 a `-w` following a
-  subcommand is routed to the root, leaving the subcommand on its `process.cwd()` default. `book
-  doctor`, `config`, `mcp`, and `tool-stats` all reported on the wrong directory, and `book config
-  set --workspace <path>` wrote settings into the current one. Enabling positional option parsing
-  restores per-subcommand targeting. The CLI tests asserted only exit status, so the regression
-  arrived green with the commander 14 to 15 bump; they now assert the flag has an effect, including
-  that a run does not write settings into the repository it is executed from.
+- **`--workspace` acted on the current directory instead, in whichever placement you used.** The
+  root command and every subcommand both declare `-w/--workspace`; under commander 15 a `-w`
+  following a subcommand is routed to the root, leaving the subcommand on its `process.cwd()`
+  default. `book doctor`, `config`, `mcp`, and `tool-stats` all reported on the wrong directory, and
+  `book config set --workspace <path>` wrote settings into the current one. Enabling positional
+  option parsing fixes the after-subcommand placement, but it splits the two placements across
+  different command objects, so `book --workspace <path> <subcommand>` was still silently ignored —
+  the same silent-wrong-directory hazard, just moved to the placement most people reach for first.
+  The subcommand option no longer defaults to `process.cwd()`, so an unset one falls through to the
+  root's value: all three placements — before the subcommand, after it, and after its positional
+  arguments — now name the same directory. The CLI tests asserted only exit status, so the original
+  regression arrived green with the commander 14 to 15 bump; they now assert the flag has an effect
+  in every placement, and pin a marker into a workspace distinct from the fake `HOME` so an ignored
+  flag cannot be rescued by the user-global layer resolving to the same file.
+
+- **Root options written after a subcommand name became errors.** Positional option parsing rejects
+  a root option that follows the subcommand, so `book config get model --settings <path>` started
+  failing with `unknown option '--settings'` — an undocumented break, and a natural invocation,
+  since the `config` action deliberately reads the root's `--settings`. `--settings` and
+  `--no-settings` are re-declared on `config`, which prefers its own value and falls back to the
+  root's; both flags work on either side of the subcommand again.
+
+- **Running the CLI test suite could write settings into the repository.** The tests spawned the CLI
+  from the checkout, so a bug that dropped `--workspace` wrote into the developer's real
+  `.book/settings.local.json`; the guard meant to catch it skipped itself whenever that file already
+  existed, which is the documented normal state for that scope — inert on exactly the machines that
+  needed it. The child now runs from a scratch directory, so a stray write structurally cannot reach
+  the repository, and the assertion fires everywhere.
 
 - **`book doctor` now runs without a working credential.** Doctor resolved its config through the
   throwing `loadConfig`, so the single most common broken environment — no `BOOK_API_KEY` — killed
@@ -281,7 +372,12 @@ All notable changes to this project are documented in this file.
   credential as a finding (`Credentials: not resolved`) instead of dying on it. A new
   `src/cli/subcommands.contract.test.ts` holds every non-interactive subcommand — `doctor`,
   `config`, `mcp list`, `tool-stats` — to running with no API key configured, so the class of
-  regression cannot come back through another command.
+  regression cannot come back through another command. That guard covered only the missing
+  credential, though: every other rejection — malformed JSON, a schema violation, an unknown
+  `harness.workflow` — still escaped as a raw stack trace, which is the least useful possible
+  response from the command whose job is diagnosing a broken setup. A configuration that will not
+  load is now reported as `Configuration: FAILED TO LOAD` with the reason and the settings layers
+  in the order they apply, so the offending file is named.
 
 - **The `Stop` hook fires once per run instead of once per provider turn.** It ran inside the turn
   loop, so a task that took twelve tool-call turns invoked it twelve times — a hook meant to
@@ -392,6 +488,36 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **A BYOK provider's model list can be filled in by hand, and an existing one can be updated
+  without re-adding the provider.** The add-provider wizard used to fire model discovery the
+  instant the API key was submitted, so an endpoint with no model-list API could only be
+  configured by failing discovery first and taking the error screen's fallback. It now asks where
+  the list should come from — discover automatically, or type the model IDs (comma-separate for
+  several) — before any request is made; the post-failure fallback remains. For a provider that is
+  already configured, selecting one of its models in `/model` or `/providers` exposes `Alt+R` to
+  re-read the catalog from the endpoint and `Alt+M` to add model IDs by hand, both announced on the
+  row itself and neither changing the active model or the stored credentials. Both follow the same
+  ownership rule as `Alt+D` — only providers you added, since a catalog edit is written to
+  `~/.book/settings.json` and applying one to a provider inherited from a project layer would copy
+  that provider's credential into a second file and make the inherited copy look removable.
+  - A refresh replaces what discovery previously returned, but **hand-entered models survive it**.
+    They are recorded as `"manual": true` under `provider.<id>.models.<model>` for exactly this
+    reason: they exist because the endpoint does not list them, so a refresh that dropped them
+    would undo the user's work every time. The marker is cleared once discovery starts returning
+    that id on its own.
+  - Adding models to an existing provider no longer rewrites its `baseURL` and `apiKey` with the
+    values the caller happened to carry. Previously `providerConfigFromDraft` always wrote both,
+    which also meant a provider configured with the legacy lowercase `baseUrl` key failed schema
+    validation on refresh instead of saving. Writing a `baseURL` now retires any legacy `baseUrl`
+    beside it, which would otherwise linger in `settings.json` as a stale value that reads as live.
+  - An endpoint that returns an empty list is reported on both paths. A refresh used to throw while
+    picking an active model out of the empty result; the wizard used to drop the user on an empty
+    "Choose models" screen that answered `Enter` with "Select at least one model." and offered no
+    way forward.
+  - The highlighted model no longer slides out from under the cursor when a catalog changes.
+    Model ids are sorted, so a refresh or a manual add re-orders the list and the highlight used to
+    stay on an index rather than a model — `Enter` could then save a neighbouring model as the
+    default. The selection is re-anchored on the id it was on.
 - **Slash commands work in print/headless mode.** `book -p /security-review`, `book -p /init`, and
   any `.book/commands/*.md` command now resolve through the same registries, the same
   `$1..$9` / named-argument / `${BOOK_*}` / shell substitution, and the same `allowed-tools` and

@@ -74,6 +74,18 @@ export const hookEntrySchema = z.object({
 
 export type HookEntry = z.infer<typeof hookEntrySchema>;
 
+/**
+ * Per-entry trust decisions for hook entries declared by the checked-in project
+ * layer, keyed by a fingerprint of `{ event, matcher, command, env }`.
+ *
+ * A hook is a shell command Book executes at lifecycle events, so a project
+ * hook with no `approved` entry here never reaches the resolved hooks. Unlike
+ * an MCP server record, a hook carries no name — the fingerprint is the key.
+ */
+export const projectHookChoiceSchema = z.enum(['approved', 'rejected']);
+
+export type ProjectHookChoice = z.infer<typeof projectHookChoiceSchema>;
+
 /** Hook events supported by book. */
 export const HOOK_EVENTS = [
   'SessionStart',
@@ -93,11 +105,17 @@ export type HookEvent = (typeof HOOK_EVENTS)[number];
 /**
  * Hooks configuration — a map from event name to an array of hook entries.
  */
-export const hooksSchema = z.object(
-  Object.fromEntries(HOOK_EVENTS.map((e) => [e, z.array(hookEntrySchema).default([])])) as {
+export const hooksSchema = z.object({
+  ...(Object.fromEntries(HOOK_EVENTS.map((e) => [e, z.array(hookEntrySchema).default([])])) as {
     [K in HookEvent]: z.ZodDefault<z.ZodArray<typeof hookEntrySchema>>;
-  },
-);
+  }),
+  /**
+   * Decisions about hook entries the checked-in project layer declared. An
+   * entry whose fingerprint has no `approved` record here never reaches the
+   * resolved hooks.
+   */
+  projectEntries: z.record(projectHookChoiceSchema).default({}),
+});
 
 export type HooksConfig = z.infer<typeof hooksSchema>;
 
@@ -125,6 +143,12 @@ export const providerModelSchema = z.object({
   maxOutputTokens: z.number().int().positive().optional(),
   /** Whether this model accepts image input. Unknown models remain optimistic. */
   vision: z.boolean().optional(),
+  /**
+   * Entered by hand rather than returned by the endpoint's model-list API.
+   * Refreshing the catalog keeps these, since they exist precisely because
+   * discovery does not list them.
+   */
+  manual: z.boolean().optional(),
   /** Mutation-tool preference for this model; defaults to a family-level prior. */
   editFormat: z.enum(['patch', 'replace', 'whole']).optional(),
   effort: z
@@ -250,6 +274,27 @@ export const mcpSettingsSchema = z.object({
 
 export type McpSettings = z.infer<typeof mcpSettingsSchema>;
 
+export const projectCommandChoiceSchema = z.object({
+  /** Digest of the shell the body substitutes at decision time; a mismatch re-prompts. */
+  fingerprint: z.string().min(1),
+  choice: z.enum(['approved', 'rejected']),
+});
+
+export type ProjectCommandChoice = z.infer<typeof projectCommandChoiceSchema>;
+
+export const commandSettingsSchema = z.object({
+  /**
+   * Per-command trust decisions for `<workspace>/.book/commands/*.md` files
+   * that substitute shell into their prompt. That substitution runs outside the
+   * permission system and outside the sandbox, so a repository-controlled file
+   * needs a decision before it runs. User-global commands
+   * (<BOOK_HOME>/commands) were written by the user and never require one.
+   */
+  projectCommands: z.record(projectCommandChoiceSchema).default({}),
+});
+
+export type CommandSettings = z.infer<typeof commandSettingsSchema>;
+
 export const uiSettingsSchema = z.object({
   /** Show provider-native and embedded model reasoning in the interactive transcript. */
   showThinking: z.boolean().default(true),
@@ -320,6 +365,7 @@ export const bookSettingsSchema = z.object({
   observability: observabilitySettingsSchema.default({}),
   harness: harnessSettingsSchema.default({}),
   mcp: mcpSettingsSchema.default({}),
+  commands: commandSettingsSchema.default({}),
 });
 
 export type BookSettings = z.infer<typeof bookSettingsSchema>;
@@ -380,6 +426,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     PostCompact: [],
     SubagentStart: [],
     SubagentStop: [],
+    projectEntries: {},
   },
   additionalDirectories: [],
   env: {},
@@ -435,5 +482,8 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   },
   mcp: {
     projectServers: {},
+  },
+  commands: {
+    projectCommands: {},
   },
 };

@@ -15,12 +15,12 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **Tools**: a provider-neutral capability catalog keeps a practical core loaded and uses `ToolSearch` to activate up to five authorized git, web, session, skill, agent, notebook, or MCP definitions on the next model turn. File, shell, task, clarification, and plan tools stay immediately available when permitted. Existing names such as `Read`, `Bash`, and `AgentSpawn` remain stable.
 - **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`. Print mode resolves commands through the same registries: `/init`, `/security-review`, `/review`, and custom commands run headlessly, and the interactive-only ones fail loudly instead of reaching the model as text.
 - **Permissions**: allow/ask/deny rule matching with six modes — `default`, `acceptEdits` (`accept-edits`), `plan`, `auto`, `dontAsk`, `bypassPermissions` — see `/permissions` or `--permission-mode`.
-- **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events. Review project-controlled hooks and provider/MCP settings before using an untrusted workspace.
+- **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events. Project-declared hooks require one-time approval per workspace; review provider/MCP settings and custom-command substitutions before opening an untrusted workspace.
 - **Verified managed agents**: adaptive model-directed routing, purpose-named runs, compact parent-facing results, live TUI monitoring, profile model overrides, read-only non-Git exploration, resumable isolated worktrees, strict capabilities, typed evidence, independent validation, and explicit patch application. Built-in `explorer`, `patcher`, and `validator` profiles can be overridden under `.book/agents/`.
 - **MCP**: interoperable MCP tool client with stdio, Streamable HTTP, and legacy SSE transports;
   interactive project-server approval, secret-safe diagnostics, dynamic tool discovery, and
   server-scoped permissions.
-- **CLI helpers**: `book doctor` (diagnose env/config), `book config` (get/set/list settings), and `book tool-stats` (measure tool use across sessions — fail counts, rates, durations). None of them require a working credential — they exist to help when the provider is not yet configured, so `book doctor` reports an unresolved key as a finding rather than failing on it.
+- **CLI helpers**: `book doctor` (diagnose env/config), `book config` (get/set/list settings), `book trust` (approve or reject configuration a repository declared), and `book tool-stats` (measure tool use across sessions — fail counts, rates, durations). None of them require a working credential — they exist to help when the provider is not yet configured, so `book doctor` reports an unresolved key as a finding rather than failing on it.
 
 See [`docs/current-state.md`](./docs/current-state.md) for the verified product snapshot, [`MILESTONES.md`](./MILESTONES.md) for the current roadmap, and [`CHANGELOG.md`](./CHANGELOG.md) for release notes.
 
@@ -230,10 +230,15 @@ file is checked in and controlled by whoever wrote the repository:
 
 - A `permissions.allow` rule it declares is withheld until you approve it. `ask` and `deny` rules
   apply immediately — they only ever restrict. `book doctor` lists withheld rules and prints the
-  `book config set permissions.projectAllowRules ...` command that grants them; decisions are
-  stored per workspace in the gitignored `.book/settings.local.json`.
-- Keys recording a trust decision — `mcp.projectServers` and `permissions.projectAllowRules` —
-  are ignored from that layer entirely, so a repository cannot approve itself.
+  `book trust rule ...` command that grants them.
+- Keys recording a trust decision — `mcp.projectServers`, `permissions.projectAllowRules`, and
+  `hooks.projectEntries` — are ignored from **both** workspace layers, so a repository cannot
+  approve itself. They are not settings you write: decisions live in `~/.book/trust.json`, keyed
+  by workspace path, and `book trust` is what records them. Putting them in the gitignored
+  `.book/settings.local.json` was not enough — `.gitignore` does not stop a force-added file from
+  reaching a clone, so a repository could ship approvals for the hooks and servers it also shipped.
+  A store outside the workspace is one nothing the repository ships can reach. An unreadable store
+  records no decisions, which withholds the gated input rather than releasing it.
 
 `book config set` and TUI preference changes validate the complete local document before writing.
 
@@ -491,6 +496,27 @@ runtime — hooks are capped at 10 s each and run sequentially in declaration or
 `matcher` filters `PreToolUse`/`PostToolUse` by tool call (`Bash(*)`) and `PreCompact`/`PostCompact`
 by trigger.
 
+Hooks from your own layers (`~/.book/settings.json`, `.book/settings.local.json`, `--settings`)
+run as written. A hook declared in a repository's checked-in `.book/settings.json` is withheld
+until you approve it once per workspace: the decision is recorded in `~/.book/trust.json`, outside
+the workspace, keyed by a fingerprint of the event, matcher, command, and env — edit any of those
+and the hook asks again. Nothing the repository ships can write that store, so a clone cannot
+approve its own hooks. Non-interactive runs skip unapproved hooks with a warning.
+
+`book doctor` lists each withheld hook with everything the fingerprint covers — command, matcher,
+and environment — because approval covers all of them: `npm test` carrying
+`NODE_OPTIONS=--require ./payload.js` is not the `npm test` it looks like. Record the decision with
+
+```bash
+book trust hook <fingerprint>          # or --all-pending for every withheld hook
+book trust hook <fingerprint> --reject # refuse it, and stop being re-offered it
+book trust rule "Bash(npm run *)"      # the same, for a project-declared allow rule
+```
+
+Both take `--workspace <path>`; `book doctor` prints it for you when it is diagnosing a directory
+other than the one you are in. Each invocation records one decision and leaves every other
+decision — in this workspace and in every other — untouched.
+
 `Stop` fires once when the agent stops, not once per provider turn — a task that takes twelve
 tool-call turns still fires it once. It fires on cancellation too, which is usually the point of
 having one. Subagents do not fire it: `Task` and managed agents run the same loop with your hook
@@ -708,6 +734,37 @@ description: Check for spelling errors
 Run a spell check on the codebase and fix any issues found.
 ```
 
+**Shell substitution needs approval when the command is checked in.** A command body can run
+shell and paste the output into the prompt — an inline ``!`git log --oneline -5` `` span, or a
+fenced ` ```! ` block. That happens before the model sees anything, and it runs outside the
+permission system and outside the sandbox: no rule is consulted, no sandbox applies, and nothing
+is asked. A `.book/commands/*.md` file is repository-controlled, so cloning a project and typing
+its command name would otherwise be enough to execute whatever that file says — including under
+`book -p`, where no terminal is present to notice.
+
+Book therefore requires a one-time decision per project command that substitutes shell. It is
+recorded in `.book/settings.local.json`. The checked-in `.book/settings.json` is forbidden from
+writing that key, so a project cannot approve itself through its own settings layer:
+
+```bash
+book config set commands.projectCommands '{"deploy":{"fingerprint":"ab12…","choice":"approved"}}'
+```
+
+`book doctor` lists which project commands are approved, rejected, or still refused, and prints
+the exact line that approves the pending ones — carrying the decisions already on file, because
+the value replaces the whole record. Until a decision exists the command is refused — in the TUI
+and in print mode alike — naming the shell it wanted to run.
+
+> **`settings.local.json` is only local by convention.** Book treats that file as yours, but it
+> lives in the working tree: a repository that commits one instead of ignoring it supplies its
+> own approvals, and this gate — like the `.mcp.json` and `permissions.allow` gates, which use
+> the same store — honours them. Check whether a cloned project ships a
+> `.book/settings.local.json` before running its commands.
+
+The fingerprint covers the shell the body runs, in order, not the prose around it: editing what
+runs asks again, rewording the instructions does not. Commands in `~/.book/commands/` are yours
+and are never gated, and a project command that substitutes no shell has nothing to approve.
+
 Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, `/exit`,
 `/help`), task and job controls (`/task`, `/jobs`, with `/tasks` as an alias), managed-agent
 controls (`/agents`, `/agent`), config (`/model`, `/providers`,
@@ -722,6 +779,22 @@ user-global `~/.book/settings.json` so they are shared across projects; such pro
 `[BYOK]`, and selecting one of their models and pressing `Alt+D` removes it. `/effort` opens a
 picker when called without an argument and saves successful selections to
 `.book/settings.local.json`.
+
+After the base URL and API key, the add-provider wizard asks where the model list should come
+from: **discover automatically** (Book calls the endpoint's model-list API and you pick from the
+result) or **enter model IDs manually** (comma-separate to add several at once). Manual entry is
+the answer for an endpoint that exposes no model-list API, and it is still offered as a fallback
+if discovery fails.
+
+An already-configured provider keeps both routes. With one of its models selected in the picker,
+`Alt+R` re-reads the catalog from the endpoint and `Alt+M` adds model IDs by hand. A refresh
+replaces what discovery previously returned, but hand-entered models survive it — they exist
+precisely because the endpoint does not list them, and are recorded as `"manual": true` in
+settings. Neither action changes the active model or touches the provider's stored credentials,
+and the highlighted model stays highlighted when the list re-sorts underneath it. Both are offered
+only for the `[BYOK]` providers you added, on the same ownership rule as `Alt+D`: catalog edits are
+written to `~/.book/settings.json`, so applying one to a provider inherited from a project layer
+would copy that provider's credential into a second file.
 
 **Slash commands in print mode.** `book -p "/name args"` resolves the command through the same
 registries, the same `$1..$9` / named-argument / `${BOOK_*}` variable / shell substitution, and the
@@ -739,7 +812,8 @@ Refusal happens *before* the command's own code runs, so a command with a side e
 writes `settings.local.json`, `/export` writes a file, `/memory approve` mutates memory) can never
 half-fire in a host that cannot show its result. A `/name` that is not a command at all is still
 forwarded to the model verbatim, so an ordinary prompt like `book -p "/etc/hosts is a file"` is
-unaffected.
+unaffected. A `.book/commands/*.md` command whose shell substitution has not been approved is
+refused the same way and for the same reason: this host cannot ask for the decision.
 
 A command the host performed itself produces no model turn. Under `text` its output is written to
 stdout; under `stream-json` it is announced as

@@ -3,13 +3,18 @@ import { join, normalize } from 'path';
 import {
   bookSettingsSchema,
   DEFAULT_SETTINGS,
+  HOOK_EVENTS,
   type BookSettings,
+  type HookEntry,
+  type HookEvent,
   type ResolvedSettings,
 } from './settings.js';
 import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
 import { resolveBookHome } from './book-home.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
+import { collectDeclaredHooks, partitionProjectHooks } from './hook-approvals.js';
 import { assertHarnessModeAvailable } from './harness/coordinator.js';
+import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
 
 const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
 
@@ -83,8 +88,8 @@ function mergeObject(
  * How much authority a settings layer carries.
  *
  * - `trusted` — the user's own global file, or a path they passed on the CLI.
- * - `local` — `<workspace>/.book/settings.local.json`: gitignored and written by
- *   the user, or by Book on their behalf, so it may record trust decisions.
+ * - `local` — `<workspace>/.book/settings.local.json`: gitignored and normally
+ *   written by the user, or by Book on their behalf.
  * - `repository` — `<workspace>/.book/settings.json`: checked in and controlled
  *   by whoever wrote the repository. It may never grant itself trust.
  */
@@ -92,15 +97,51 @@ export type SettingsLayerTrust = 'trusted' | 'local' | 'repository';
 
 /**
  * Settings paths that record a decision the user made *about*
- * repository-controlled input. Honouring one of these from the repository layer
- * would let a clone approve itself, defeating the approval it is subject to: the
- * fingerprints they carry are digests of configuration the repository already
- * controls, so a malicious project can compute a matching one at will.
+ * repository-controlled input. Honouring one of these from a file inside the
+ * workspace would let a clone approve itself, defeating the approval it is
+ * subject to: the fingerprints they carry are digests of configuration the
+ * repository already controls, so a malicious project can compute a matching
+ * one at will.
+ *
+ * The local layer is no safer than the checked-in one here. `.gitignore` does
+ * not stop a *tracked* file from reaching a clone, so a repository that
+ * force-adds `.book/settings.local.json` ships its own approvals with it. Both
+ * workspace layers are therefore stripped, and the real decisions come from the
+ * user-global trust store instead.
  */
-const REPOSITORY_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
+const WORKSPACE_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
   ['mcp', 'projectServers'],
   ['permissions', 'projectAllowRules'],
+  ['hooks', 'projectEntries'],
 ];
+
+/**
+ * The same kind of decision, for a class the user-global trust store does not
+ * answer for yet.
+ *
+ * Project command approvals still live in `.book/settings.local.json`, so that
+ * layer has to keep being read or an approved command could never run. Only the
+ * checked-in layer is stripped, which is the guarantee this key shipped with.
+ * The weaker storage is the reason, not a judgement that the key is safer: a
+ * repository that force-adds the local file still supplies its own approvals.
+ * Porting it into the trust store is what collapses this list into the one
+ * above.
+ */
+const REPOSITORY_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
+  ['commands', 'projectCommands'],
+];
+
+function stripPaths(
+  settings: Partial<BookSettings>,
+  paths: ReadonlyArray<readonly [string, string]>,
+): void {
+  for (const [parent, key] of paths) {
+    const container = (settings as Record<string, unknown>)[parent];
+    if (container && typeof container === 'object' && !Array.isArray(container)) {
+      delete (container as Record<string, unknown>)[key];
+    }
+  }
+}
 
 function sanitizeLayer(
   settings: Partial<BookSettings>,
@@ -110,13 +151,8 @@ function sanitizeLayer(
   const sanitized = structuredClone(settings);
   // Project/local settings cannot opt a session into the most permissive mode.
   if (sanitized.defaultMode === 'bypassPermissions') delete sanitized.defaultMode;
-  if (trust !== 'repository') return sanitized;
-  for (const [parent, key] of REPOSITORY_FORBIDDEN_PATHS) {
-    const container = (sanitized as Record<string, unknown>)[parent];
-    if (container && typeof container === 'object' && !Array.isArray(container)) {
-      delete (container as Record<string, unknown>)[key];
-    }
-  }
+  stripPaths(sanitized, WORKSPACE_FORBIDDEN_PATHS);
+  if (trust === 'repository') stripPaths(sanitized, REPOSITORY_FORBIDDEN_PATHS);
   return sanitized;
 }
 
@@ -181,6 +217,7 @@ export interface SettingsResolutionPaths {
   userSettingsPath?: string;
   projectSettingsPath?: string;
   localSettingsPath?: string;
+  trustStorePath?: string;
 }
 
 export function resolveSettings(
@@ -206,11 +243,22 @@ export function resolveSettings(
   // they only widen authority, and the decisions that release them live in the
   // local layer, which has not been merged yet.
   const declaredProjectAllow = project?.permissions?.allow ?? [];
+  // Project-declared hook entries are held back the same way: each one is a
+  // shell command the repository would otherwise get Book to run.
+  const declaredProjectHooks = collectDeclaredHooks(project);
+  // Released hooks belong between the user and local layers, matching the
+  // relative merge order ungated layers still produce.
+  const userHookCounts = Object.fromEntries(
+    HOOK_EVENTS.map((event) => [event, resolved.hooks[event].length]),
+  ) as Record<HookEvent, number>;
   if (project) {
-    const withheld =
-      declaredProjectAllow.length > 0
-        ? { ...project, permissions: { ...project.permissions, allow: [] } }
-        : project;
+    let withheld: BookSettings = project;
+    if (declaredProjectAllow.length > 0) {
+      withheld = { ...withheld, permissions: { ...withheld.permissions, allow: [] } };
+    }
+    if (declaredProjectHooks.length > 0) {
+      withheld = { ...withheld, hooks: structuredClone(DEFAULT_SETTINGS.hooks) };
+    }
     resolved = mergeLayer(resolved, withheld, 'repository');
   }
 
@@ -225,8 +273,23 @@ export function resolveSettings(
     if (override) resolved = mergeLayer(resolved, override, 'trusted');
   }
 
-  // Every layer that can record a decision is merged now, so the withheld
-  // repository rules can be released — approved ones only.
+  // Trust decisions come from outside the workspace, so a repository cannot
+  // ship its own. Layers the user controls may still carry them — the global
+  // file and an explicit `--settings` path are trusted for everything else —
+  // but the store has the final say on any key it records.
+  const trust = loadWorkspaceTrust(
+    workspace,
+    paths.trustStorePath ?? defaultTrustStorePath(paths.home),
+  );
+  resolved.permissions.projectAllowRules = {
+    ...resolved.permissions.projectAllowRules,
+    ...trust.permissionAllowRules,
+  };
+  resolved.mcp.projectServers = { ...resolved.mcp.projectServers, ...trust.mcpServers };
+  resolved.hooks.projectEntries = { ...resolved.hooks.projectEntries, ...trust.hookEntries };
+
+  // Every decision source is in place now, so the withheld repository rules can
+  // be released — approved ones only.
   if (declaredProjectAllow.length > 0) {
     const { approved } = partitionProjectAllowRules(
       declaredProjectAllow,
@@ -234,6 +297,22 @@ export function resolveSettings(
     );
     if (approved.length > 0) {
       resolved.permissions.allow = [...(resolved.permissions.allow ?? []), ...approved];
+    }
+  }
+
+  if (declaredProjectHooks.length > 0) {
+    const { approved } = partitionProjectHooks(
+      declaredProjectHooks,
+      resolved.hooks?.projectEntries,
+    );
+    const approvedByEvent = new Map<HookEvent, HookEntry[]>();
+    for (const { event, entry } of approved) {
+      const entries = approvedByEvent.get(event) ?? [];
+      entries.push(entry);
+      approvedByEvent.set(event, entries);
+    }
+    for (const [event, entries] of approvedByEvent) {
+      resolved.hooks[event].splice(userHookCounts[event], 0, ...entries);
     }
   }
 

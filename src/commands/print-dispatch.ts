@@ -393,8 +393,10 @@ export async function resolvePrintCommand(
   if (!custom) return { kind: 'passthrough', prompt: input };
 
   // Same resolver, same order (shell substitution, then variables), same trust
-  // model as the TUI: command bodies are workspace/user files, and this host
-  // adds no gate the TUI does not have.
+  // model as the TUI. A repository-declared body that substitutes shell is
+  // refused here exactly as it is there: this host cannot prompt for the
+  // decision, so an unapproved command ends the run instead of running its
+  // shell unattended.
   const { resolved: body, shellErrors } = await resolveCommandBody(
     custom,
     parsed.rawArguments,
@@ -402,6 +404,7 @@ export async function resolvePrintCommand(
       sessionId: env.sessionId,
       workspace: env.config.workspace,
       model: env.config.model,
+      projectCommands: env.config.settings.commands.projectCommands,
     },
     env.signal,
   );

@@ -10,10 +10,10 @@ import {
   type ProviderProtocol,
 } from '../../provider/model-discovery.js';
 import {
+  parseModelIds,
   validateApiKey,
   validateBaseUrl,
   validateDisplayLabel,
-  validateModelId,
   validateProviderId,
   type ProviderSaveRequest,
 } from '../model-options.js';
@@ -36,6 +36,7 @@ type Step =
   | 'protocol'
   | 'base-url'
   | 'api-key'
+  | 'model-source'
   | 'discovering'
   | 'discovery-error'
   | 'choose-models'
@@ -43,18 +44,37 @@ type Step =
   | 'label'
   | 'review';
 
+/** Where this provider's model list comes from. */
+type ModelSource = 'discover' | 'manual';
+
+const TOTAL_STEPS = 9;
+
 const STEP_NUMBER: Partial<Record<Step, number>> = {
   provider: 1,
   protocol: 2,
   'base-url': 3,
   'api-key': 4,
-  discovering: 5,
-  'discovery-error': 5,
-  'choose-models': 6,
-  'manual-model': 6,
-  label: 7,
-  review: 8,
+  'model-source': 5,
+  discovering: 6,
+  'discovery-error': 6,
+  'choose-models': 7,
+  'manual-model': 7,
+  label: 8,
+  review: 9,
 };
+
+const MODEL_SOURCES: readonly { value: ModelSource; title: string; hint: string }[] = [
+  {
+    value: 'discover',
+    title: 'Discover models automatically',
+    hint: 'Asks the endpoint for its model list.',
+  },
+  {
+    value: 'manual',
+    title: 'Enter model IDs manually',
+    hint: 'Use this when the endpoint has no model-list API.',
+  },
+];
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Model discovery failed.';
@@ -75,6 +95,7 @@ export function ByokWizard({
   const [type, setType] = useState<ProviderProtocol>('openai');
   const [baseURL, setBaseURL] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [modelSource, setModelSource] = useState<ModelSource>('discover');
   const [models, setModels] = useState<DiscoveredModel[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [modelCursor, setModelCursor] = useState(0);
@@ -98,39 +119,44 @@ export function ByokWizard({
 
   const activeModelId = selectedIds[0] ?? '';
 
-  const startDiscovery = useCallback(
-    async (keyOverride?: string) => {
-      setError(undefined);
-      setStep('discovering');
-      const controller = new AbortController();
-      discoveryAbortRef.current = controller;
-      try {
-        const discovered = await discover({
-          type,
-          baseUrl: validateBaseUrl(type, baseURL),
-          apiKey: validateApiKey(keyOverride ?? apiKey),
-          retry,
-          signal: controller.signal,
-        });
-        if (controller.signal.aborted) return;
-        setModels(discovered);
-        setSelectedIds(discovered.map((model) => model.id));
-        setModelCursor(0);
-        setModelFilter('');
-        setStep('choose-models');
-      } catch (caught) {
-        if (controller.signal.aborted) {
-          setStep('api-key');
-          return;
-        }
-        setError(errorMessage(caught));
+  const startDiscovery = useCallback(async () => {
+    setError(undefined);
+    setStep('discovering');
+    const controller = new AbortController();
+    discoveryAbortRef.current = controller;
+    try {
+      const discovered = await discover({
+        type,
+        baseUrl: validateBaseUrl(type, baseURL),
+        apiKey: validateApiKey(apiKey),
+        retry,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      if (discovered.length === 0) {
+        // The error screen's own fallback is the way forward, so route there
+        // rather than into an empty picker that refuses to continue.
+        setError('The endpoint did not return any models.');
         setStep('discovery-error');
-      } finally {
-        if (discoveryAbortRef.current === controller) discoveryAbortRef.current = null;
+        return;
       }
-    },
-    [apiKey, baseURL, discover, retry, type],
-  );
+      setModelSource('discover');
+      setModels(discovered);
+      setSelectedIds(discovered.map((model) => model.id));
+      setModelCursor(0);
+      setModelFilter('');
+      setStep('choose-models');
+    } catch (caught) {
+      if (controller.signal.aborted) {
+        setStep('model-source');
+        return;
+      }
+      setError(errorMessage(caught));
+      setStep('discovery-error');
+    } finally {
+      if (discoveryAbortRef.current === controller) discoveryAbortRef.current = null;
+    }
+  }, [apiKey, baseURL, discover, retry, type]);
 
   const goBack = useCallback(() => {
     setError(undefined);
@@ -147,24 +173,25 @@ export function ByokWizard({
       case 'api-key':
         setStep('base-url');
         break;
+      case 'model-source':
+        setStep('api-key');
+        break;
       case 'discovering':
         discoveryAbortRef.current?.abort();
         break;
       case 'discovery-error':
-        setStep('api-key');
-        break;
       case 'choose-models':
       case 'manual-model':
-        setStep('api-key');
+        setStep('model-source');
         break;
       case 'label':
-        setStep(models.length > 0 ? 'choose-models' : 'manual-model');
+        setStep(modelSource === 'manual' ? 'manual-model' : 'choose-models');
         break;
       case 'review':
         setStep('label');
         break;
     }
-  }, [models.length, onCancel, step]);
+  }, [modelSource, onCancel, step]);
 
   useInput(
     (input, key) => {
@@ -187,10 +214,27 @@ export function ByokWizard({
         if (key.return) setStep('base-url');
         return;
       }
+      if (step === 'model-source') {
+        if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) {
+          setModelSource((current) => (current === 'discover' ? 'manual' : 'discover'));
+          return;
+        }
+        if (key.return) {
+          if (modelSource === 'discover') void startDiscovery();
+          else {
+            setError(undefined);
+            setModels([]);
+            setSelectedIds([]);
+            setStep('manual-model');
+          }
+        }
+        return;
+      }
       if (step === 'discovery-error') {
         if (input === 'r') void startDiscovery();
         if (input === 'm') {
           setError(undefined);
+          setModelSource('manual');
           setModels([]);
           setSelectedIds([]);
           setStep('manual-model');
@@ -253,6 +297,7 @@ export function ByokWizard({
             models: chosen.length > 0 ? chosen : [{ id: activeModelId }],
             activeModelId,
             activeLabel: label || undefined,
+            manual: modelSource === 'manual',
           }),
         ).then((result) => {
           if (!result.ok) {
@@ -290,7 +335,7 @@ export function ByokWizard({
     try {
       setApiKey(validateApiKey(value));
       setError(undefined);
-      void startDiscovery(value);
+      setStep('model-source');
     } catch (caught) {
       setError(errorMessage(caught));
     }
@@ -298,10 +343,11 @@ export function ByokWizard({
 
   const submitManualModel = (value: string) => {
     try {
-      const id = validateModelId(value);
-      setManualModel(id);
-      setSelectedIds([id]);
-      setModels([]);
+      const ids = parseModelIds(value);
+      setManualModel(ids.join(', '));
+      setModelSource('manual');
+      setModels(ids.map((id) => ({ id })));
+      setSelectedIds(ids);
       setError(undefined);
       setStep('label');
     } catch (caught) {
@@ -338,7 +384,7 @@ export function ByokWizard({
         </Text>
         {stepNumber && (
           <Text color={theme.subtle} dimColor>
-            Step {stepNumber}/8
+            Step {stepNumber}/{TOTAL_STEPS}
           </Text>
         )}
       </Box>
@@ -394,6 +440,24 @@ export function ByokWizard({
             mask="•"
           />
         )}
+        {step === 'model-source' && (
+          <>
+            <Text bold>Models</Text>
+            {MODEL_SOURCES.map((source) => (
+              <Text
+                key={source.value}
+                color={modelSource === source.value ? theme.brand : theme.subtle}
+              >
+                {modelSource === source.value ? '❯' : ' '} {source.title}
+              </Text>
+            ))}
+            {showOptionalHelp && (
+              <Text color={theme.subtle} dimColor>
+                {MODEL_SOURCES.find((source) => source.value === modelSource)?.hint}
+              </Text>
+            )}
+          </>
+        )}
         {step === 'discovering' && (
           <>
             <Text bold>Discover models</Text>
@@ -439,8 +503,12 @@ export function ByokWizard({
         )}
         {step === 'manual-model' && (
           <Field
-            label="Model ID"
-            hint={showOptionalHelp ? 'Example: deepseek-chat' : undefined}
+            label="Model IDs"
+            hint={
+              showOptionalHelp
+                ? 'Example: deepseek-chat, deepseek-reasoner — comma-separate to add several.'
+                : undefined
+            }
             value={manualModel}
             onChange={setManualModel}
             onSubmit={submitManualModel}
@@ -464,7 +532,10 @@ export function ByokWizard({
             />
             <Summary label="Base URL" value={baseURL} />
             <Summary label="API key" value="•••••••• (stored in ~/.book)" />
-            <Summary label="Models" value={`${selectedIds.length} selected`} />
+            <Summary
+              label="Models"
+              value={`${selectedIds.length} selected (${modelSource === 'manual' ? 'entered manually' : 'discovered'})`}
+            />
             <Summary label="Active" value={activeModelId} />
             {label && <Summary label="Label" value={label} />}
           </>
@@ -481,9 +552,11 @@ export function ByokWizard({
               ? 'Esc cancel request'
               : step === 'choose-models' || step === 'discovery-error'
                 ? ''
-                : showOptionalHelp
-                  ? 'Enter continue · Esc back · Ctrl+C cancel'
-                  : 'Enter continue · Esc back'}
+                : step === 'protocol' || step === 'model-source'
+                  ? '↑↓ choose · Enter continue · Esc back'
+                  : showOptionalHelp
+                    ? 'Enter continue · Esc back · Ctrl+C cancel'
+                    : 'Enter continue · Esc back'}
       </Text>
     </Box>
   );

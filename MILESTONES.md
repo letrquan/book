@@ -39,8 +39,12 @@ runtime defaults and known boundaries, see [docs/current-state.md](docs/current-
 - [ ] Add a user-owned workspace trust database and a first-open review flow.
 - [ ] Disable or separately approve project hooks, provider credentials/endpoints, executable
   custom-command substitutions, and privileged agent definitions in untrusted projects. Project
-  MCP servers now have per-server fingerprinted approval; fold that decision into the future
-  workspace-wide trust flow.
+  MCP servers and project slash commands that substitute shell now each have per-item
+  fingerprinted approval; hooks, provider blocks, and agent definitions do not. All three
+  existing stores record their decisions in `<workspace>/.book/settings.local.json`, which is
+  local only by convention: a repository that commits that file supplies its own approvals.
+  Moving these records outside the working tree — user-global, keyed by workspace path — is
+  therefore a prerequisite of the trust database above, not a later refinement of it.
 - [x] Rebuild shell sandbox execution around structured argv instead of a wrapped command string.
 - [x] Enforce declared filesystem sandbox policy, and fail closed on network domain rules that
   bubblewrap cannot express.

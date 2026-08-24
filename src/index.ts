@@ -4,6 +4,7 @@ import { program } from 'commander';
 import { runDoctorCommand } from './cli/doctor.js';
 import { runToolStatsCommand } from './cli/tool-stats.js';
 import { runConfigCommand } from './cli/config-cmd.js';
+import { runTrustCommand } from './cli/trust-cmd.js';
 import { runMainAction } from './cli/run.js';
 import { getPackageVersion } from './version-info.js';
 import { formatSettingsKeyHelp } from './settings-repository.js';
@@ -18,6 +19,22 @@ function collectOption(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
+/**
+ * Resolve the workspace a subcommand should act on.
+ *
+ * The root and every subcommand declare -w/--workspace, and positional option
+ * parsing hands each placement to a different command object: `book -w X sub`
+ * is parsed by the root, `book sub -w X` by the subcommand, and neither can see
+ * the other's value. Defaulting the subcommand option to process.cwd() made an
+ * unset one indistinguishable from a deliberate `.`, so a root-side flag was
+ * silently overridden and the command acted on the current directory while
+ * reporting the flagged path. Leaving the subcommand option undefaulted lets an
+ * unset one fall through to the root, which still carries the cwd default.
+ */
+function resolveWorkspace(workspace: string | undefined): string {
+  return workspace ?? (program.opts().workspace as string);
+}
+
 program
   .name('book')
   .description('AI coding agent with rich TUI')
@@ -26,6 +43,9 @@ program
   // root command, leaving the subcommand on its process.cwd() default: every
   // `book <subcommand> --workspace <path>` silently acted on the wrong
   // directory, and `book config set` wrote settings into the current one.
+  // The other placement is handled by resolveWorkspace(); positional parsing
+  // also means a root option written after a subcommand name is an error, so
+  // any root option a subcommand's action reads must be re-declared on it.
   .enablePositionalOptions()
   .version(getPackageVersion())
   .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
@@ -72,9 +92,9 @@ program
 program
   .command('doctor')
   .description('Diagnose configuration and environment')
-  .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
-  .action(async (options: { workspace: string }) => {
-    await runDoctorCommand(options.workspace);
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
+  .action(async (options: { workspace?: string }) => {
+    await runDoctorCommand(resolveWorkspace(options.workspace));
   });
 
 // ---- book tool-stats ----
@@ -83,20 +103,20 @@ program
   .description(
     'Inspect and measure tool use recorded across sessions (fail counts, rates, durations)',
   )
-  .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
   .option('--json', 'Emit the aggregate as JSON')
   .option('--since <days>', 'Only include records from the last N days')
   .option('--all', 'Include the full history, ignoring the retention window')
   .option('--prune', 'Drop records older than the window from disk before reporting')
   .action(
     async (options: {
-      workspace: string;
+      workspace?: string;
       json?: boolean;
       since?: string;
       all?: boolean;
       prune?: boolean;
     }) => {
-      await runToolStatsCommand(options);
+      await runToolStatsCommand({ ...options, workspace: resolveWorkspace(options.workspace) });
     },
   );
 
@@ -106,18 +126,20 @@ const mcpCommand = program.command('mcp').description('Manage MCP server configu
 mcpCommand
   .command('list')
   .description('List resolved MCP servers without revealing secret values')
-  .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
   .option('--json', 'Emit JSON')
-  .action((options: { workspace: string; json?: boolean }) => runMcpListCommand(options));
+  .action((options: { workspace?: string; json?: boolean }) =>
+    runMcpListCommand({ ...options, workspace: resolveWorkspace(options.workspace) }),
+  );
 
 mcpCommand
   .command('get')
   .description('Show one resolved MCP server without revealing secret values')
   .argument('<name>', 'Server name')
-  .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
   .option('--json', 'Emit JSON')
-  .action((name: string, options: { workspace: string; json?: boolean }) =>
-    runMcpGetCommand(name, options),
+  .action((name: string, options: { workspace?: string; json?: boolean }) =>
+    runMcpGetCommand(name, { ...options, workspace: resolveWorkspace(options.workspace) }),
   );
 
 mcpCommand
@@ -126,7 +148,7 @@ mcpCommand
   .argument('<name>', 'Server name')
   .argument('<command-or-url>', 'Stdio executable or HTTP/SSE URL')
   .argument('[server-args...]', 'Arguments for a stdio server')
-  .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
   .option('--scope <scope>', 'user | project', 'user')
   .option('--transport <type>', 'stdio | http | sse')
   .option('-e, --env <KEY=VALUE>', 'Stdio environment entry (repeatable)', collectOption, [])
@@ -139,7 +161,7 @@ mcpCommand
       target: string,
       serverArgs: string[],
       options: {
-        workspace: string;
+        workspace?: string;
         scope: 'user' | 'project';
         transport?: 'stdio' | 'http' | 'sse';
         env: string[];
@@ -147,7 +169,11 @@ mcpCommand
         cwd?: string;
         force?: boolean;
       },
-    ) => runMcpAddCommand(name, target, serverArgs, options),
+    ) =>
+      runMcpAddCommand(name, target, serverArgs, {
+        ...options,
+        workspace: resolveWorkspace(options.workspace),
+      }),
   );
 
 mcpCommand
@@ -155,17 +181,67 @@ mcpCommand
   .alias('rm')
   .description('Remove an MCP server from its effective scope')
   .argument('<name>', 'Server name')
-  .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
   .option('--scope <scope>', 'user | project')
-  .action((name: string, options: { workspace: string; scope?: 'user' | 'project' }) =>
-    runMcpRemoveCommand(name, options),
+  .action((name: string, options: { workspace?: string; scope?: 'user' | 'project' }) =>
+    runMcpRemoveCommand(name, { ...options, workspace: resolveWorkspace(options.workspace) }),
+  );
+
+// ---- book trust ----
+const trustCommand = program
+  .command('trust')
+  .description('Record decisions about configuration a repository declared');
+
+trustCommand
+  .command('hook')
+  .description('Approve or reject a project-declared hook (see `book doctor`)')
+  .argument('[fingerprint]', 'Hook fingerprint reported by `book doctor`')
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
+  .option('--all-pending', 'Apply to every hook currently awaiting a decision')
+  .option('--reject', 'Record a refusal instead of an approval')
+  .action(
+    async (
+      fingerprint: string | undefined,
+      options: { workspace?: string; allPending?: boolean; reject?: boolean },
+    ) => {
+      await runTrustCommand('hook', fingerprint, {
+        ...options,
+        workspace: resolveWorkspace(options.workspace),
+      });
+    },
+  );
+
+trustCommand
+  .command('rule')
+  .description('Approve or reject a project-declared permissions.allow rule')
+  .argument('[rule]', 'Rule text exactly as the project declared it')
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
+  .option('--all-pending', 'Apply to every rule currently awaiting a decision')
+  .option('--reject', 'Record a refusal instead of an approval')
+  .action(
+    async (
+      rule: string | undefined,
+      options: { workspace?: string; allPending?: boolean; reject?: boolean },
+    ) => {
+      await runTrustCommand('rule', rule, {
+        ...options,
+        workspace: resolveWorkspace(options.workspace),
+      });
+    },
   );
 
 // ---- book config ----
 program
   .command('config')
   .description('Read and write settings')
-  .option('-w, --workspace <path>', 'Workspace root directory', process.cwd())
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
+  // Re-declared from the root because this action reads them: positional option
+  // parsing rejects a root option written after the subcommand name, so without
+  // these `book config get model --settings <path>` fails with "unknown option".
+  // Declared in this order so commander leaves `settings` undefined when neither
+  // flag is passed, letting an unset one fall through to the root's value.
+  .option('--settings <path>', 'Path to an ad-hoc settings file (overrides all scopes)')
+  .option('--no-settings', 'Skip all settings.json layers (use defaults + legacy .bookrc.json)')
   .argument('[action]', 'get <key>, set <key> <value>, or list')
   .argument('[key]', 'Dot-separated key path (e.g. permissions.deny)')
   .argument('[value]', 'Value to set (JSON-parsed)')
@@ -175,12 +251,13 @@ program
       action: string | undefined,
       key: string | undefined,
       value: string | undefined,
-      options: { workspace: string },
+      options: { workspace?: string; settings?: string | false },
     ) => {
       const rootSettings = program.opts().settings as string | false | undefined;
-      await runConfigCommand(options.workspace, action, key, value, {
-        settingsOverridePath: typeof rootSettings === 'string' ? rootSettings : undefined,
-        noSettings: rootSettings === false,
+      const settings = options.settings ?? rootSettings;
+      await runConfigCommand(resolveWorkspace(options.workspace), action, key, value, {
+        settingsOverridePath: typeof settings === 'string' ? settings : undefined,
+        noSettings: settings === false,
       });
     },
   );
