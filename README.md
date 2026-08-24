@@ -723,7 +723,11 @@ An already-configured provider keeps both routes. With one of its models selecte
 `Alt+R` re-reads the catalog from the endpoint and `Alt+M` adds model IDs by hand. A refresh
 replaces what discovery previously returned, but hand-entered models survive it — they exist
 precisely because the endpoint does not list them, and are recorded as `"manual": true` in
-settings. Neither action changes the active model or touches the provider's stored credentials.
+settings. Neither action changes the active model or touches the provider's stored credentials,
+and the highlighted model stays highlighted when the list re-sorts underneath it. Both are offered
+only for the `[BYOK]` providers you added, on the same ownership rule as `Alt+D`: catalog edits are
+written to `~/.book/settings.json`, so applying one to a provider inherited from a project layer
+would copy that provider's credential into a second file.
 
 **Slash commands in print mode.** `book -p "/name args"` resolves the command through the same
 registries, the same `$1..$9` / named-argument / `${BOOK_*}` variable / shell substitution, and the

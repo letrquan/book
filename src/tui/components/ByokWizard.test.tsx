@@ -185,6 +185,17 @@ describe('ByokWizard', () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
+  it('routes an endpoint that lists nothing to the fallback screen', async () => {
+    const discover = vi.fn(async () => []);
+    const { view } = createWizard({ discover });
+    await advanceToModelSource(view);
+    await write(view, '\r');
+    await waitForText(view, 'm enter model manually');
+
+    expect(stripAnsi(view.lastFrame())).toContain('The endpoint did not return any models.');
+    expect(stripAnsi(view.lastFrame())).not.toContain('Choose models');
+  });
+
   it('offers retry and manual fallback after discovery fails', async () => {
     const discover = vi.fn(async () => {
       throw new Error('This endpoint does not expose a supported model-list API.');

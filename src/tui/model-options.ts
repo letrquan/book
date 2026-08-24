@@ -148,7 +148,12 @@ export function providerConfigFromDraft(
   // Only overwrite credentials the draft actually carries; adding a model to an
   // existing provider leaves its base URL and key exactly as configured.
   const config: ProviderConfig = { ...existing, type: draft.type, models };
-  if (draft.baseURL) config.baseURL = draft.baseURL;
+  if (draft.baseURL) {
+    config.baseURL = draft.baseURL;
+    // Readers prefer `baseURL`, so a surviving legacy `baseUrl` would sit in
+    // settings.json as a stale value that looks live.
+    delete config.baseUrl;
+  }
   if (draft.apiKey) config.apiKey = draft.apiKey;
   return config;
 }

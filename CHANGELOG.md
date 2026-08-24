@@ -249,7 +249,10 @@ All notable changes to this project are documented in this file.
   several) — before any request is made; the post-failure fallback remains. For a provider that is
   already configured, selecting one of its models in `/model` or `/providers` exposes `Alt+R` to
   re-read the catalog from the endpoint and `Alt+M` to add model IDs by hand, both announced on the
-  row itself and neither changing the active model or the stored credentials.
+  row itself and neither changing the active model or the stored credentials. Both follow the same
+  ownership rule as `Alt+D` — only providers you added, since a catalog edit is written to
+  `~/.book/settings.json` and applying one to a provider inherited from a project layer would copy
+  that provider's credential into a second file and make the inherited copy look removable.
   - A refresh replaces what discovery previously returned, but **hand-entered models survive it**.
     They are recorded as `"manual": true` under `provider.<id>.models.<model>` for exactly this
     reason: they exist because the endpoint does not list them, so a refresh that dropped them
@@ -258,9 +261,16 @@ All notable changes to this project are documented in this file.
   - Adding models to an existing provider no longer rewrites its `baseURL` and `apiKey` with the
     values the caller happened to carry. Previously `providerConfigFromDraft` always wrote both,
     which also meant a provider configured with the legacy lowercase `baseUrl` key failed schema
-    validation on refresh instead of saving.
-  - A refresh whose endpoint returns an empty list now reports that, rather than throwing while
-    picking an active model out of the empty result.
+    validation on refresh instead of saving. Writing a `baseURL` now retires any legacy `baseUrl`
+    beside it, which would otherwise linger in `settings.json` as a stale value that reads as live.
+  - An endpoint that returns an empty list is reported on both paths. A refresh used to throw while
+    picking an active model out of the empty result; the wizard used to drop the user on an empty
+    "Choose models" screen that answered `Enter` with "Select at least one model." and offered no
+    way forward.
+  - The highlighted model no longer slides out from under the cursor when a catalog changes.
+    Model ids are sorted, so a refresh or a manual add re-orders the list and the highlight used to
+    stay on an index rather than a model — `Enter` could then save a neighbouring model as the
+    default. The selection is re-anchored on the id it was on.
 - **Slash commands work in print/headless mode.** `book -p /security-review`, `book -p /init`, and
   any `.book/commands/*.md` command now resolve through the same registries, the same
   `$1..$9` / named-argument / `${BOOK_*}` / shell substitution, and the same `allowed-tools` and

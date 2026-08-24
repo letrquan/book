@@ -101,6 +101,7 @@ export function ModelPicker({
   const [notice, setNotice] = useState<string>();
   const pickedRef = useRef(false);
   const removalInFlightRef = useRef(false);
+  const reanchorRef = useRef<string | undefined>(undefined);
   const filteredOptions = useMemo(() => {
     const query = filter.trim().toLowerCase();
     if (!query) return options;
@@ -117,6 +118,30 @@ export function ModelPicker({
   useEffect(() => {
     setSelected((value) => Math.min(value, Math.max(0, itemCount - 1)));
   }, [filteredOptions.length, itemCount]);
+
+  // Refreshing or extending a catalog re-sorts the list under the cursor, so a
+  // row can slide out from under the highlight and Enter would then save a
+  // model the user never looked at. Re-anchor on the id that was selected.
+  useEffect(() => {
+    const anchor = reanchorRef.current;
+    if (!anchor) return;
+    reanchorRef.current = undefined;
+    const index = filteredOptions.findIndex((option) => option.id === anchor);
+    if (index >= 0) setSelected(index);
+  }, [filteredOptions]);
+
+  // Catalog edits are written to the user-global settings layer. Doing that for
+  // a provider inherited from a project layer would copy its credential into a
+  // second file and make the inherited copy look removable, so the same
+  // ownership rule that guards removal guards refresh and manual entry.
+  const ownsProvider = useCallback(
+    (providerId: string) => {
+      if (removableProviderIds.has(providerId)) return true;
+      setError('Only BYOK providers you added can be changed.');
+      return false;
+    },
+    [removableProviderIds],
+  );
 
   const handlePick = useCallback(
     (model: string, saveDefault: boolean) => {
@@ -225,6 +250,7 @@ export function ModelPicker({
       // The text field owns every other key while it is open.
       if (manualEntry) {
         if (key.escape) {
+          reanchorRef.current = undefined;
           setManualEntry(undefined);
           setError(undefined);
         }
@@ -331,7 +357,10 @@ export function ModelPicker({
       }
       if (allowProviderManagement && key.meta && input === 'r' && selected !== addIndex) {
         const providerId = filteredOptions[selected]?.providerId;
-        if (providerId && !refreshing) void refreshProvider(providerId);
+        if (!providerId || refreshing) return;
+        if (!ownsProvider(providerId)) return;
+        reanchorRef.current = filteredOptions[selected]?.id;
+        void refreshProvider(providerId);
         return;
       }
       if (allowProviderManagement && key.meta && input === 'm' && selected !== addIndex) {
@@ -340,6 +369,9 @@ export function ModelPicker({
           setError('Only custom providers can take extra models.');
           return;
         }
+        if (refreshing || !ownsProvider(providerId)) return;
+        // The form swallows every key, so this row stays selected until it closes.
+        reanchorRef.current = filteredOptions[selected]?.id;
         setManualEntry({ providerId, value: '' });
         setError(undefined);
         setNotice(undefined);
@@ -457,6 +489,10 @@ export function ModelPicker({
     allowProviderManagement && selected !== addIndex
       ? filteredOptions[selected]?.providerId
       : undefined;
+  const editableProviderId =
+    selectedProviderId && removableProviderIds.has(selectedProviderId)
+      ? selectedProviderId
+      : undefined;
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
@@ -509,11 +545,11 @@ export function ModelPicker({
                 ? 'Type · ↑↓ select · Enter save · Alt+A add · Alt+D remove BYOK · Esc'
                 : 'Type filter · ↑↓ select · Enter save · Alt+A add BYOK · Alt+S session · Esc cancel'}
         </Text>
-        {selectedProviderId && !refreshing && (
+        {editableProviderId && !refreshing && (
           <Text color={theme.subtle} dimColor>
             {compact
-              ? `Alt+R refresh · Alt+M add model (${selectedProviderId})`
-              : `Alt+R refresh ${selectedProviderId} model list · Alt+M add a model manually`}
+              ? `Alt+R refresh · Alt+M add model (${editableProviderId})`
+              : `Alt+R refresh ${editableProviderId} model list · Alt+M add a model manually`}
           </Text>
         )}
         {refreshing && <Text color={theme.brand}>Refreshing {refreshing} models…</Text>}

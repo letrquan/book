@@ -134,6 +134,22 @@ describe('BYOK validation and provider merge', () => {
     expect(refreshed.models).toEqual({ 'hidden-model': { manual: true }, 'model-b': {} });
   });
 
+  it('retires the legacy lowercase base URL key when writing a new one', () => {
+    const provider = providerConfigFromDraft(
+      {
+        providerId: 'gateway',
+        type: 'openai',
+        baseURL: 'https://new.test/v1',
+        apiKey: 'key',
+        models: [{ id: 'model-a' }],
+        activeModelId: 'model-a',
+      },
+      { type: 'openai', baseUrl: 'https://old.test/v1', models: {} },
+    );
+    expect(provider.baseURL).toBe('https://new.test/v1');
+    expect(provider.baseUrl).toBeUndefined();
+  });
+
   it('drops the manual marker once discovery returns the same model', () => {
     const provider = providerConfigFromDraft(
       {

@@ -9,6 +9,43 @@ function withTheme(children: React.ReactElement): React.ReactElement {
   return <ThemeContext.Provider value={DEFAULT_THEME}>{children}</ThemeContext.Provider>;
 }
 
+function pickerProps(
+  overrides: Partial<React.ComponentProps<typeof ModelPicker>> = {},
+): React.ComponentProps<typeof ModelPicker> {
+  return {
+    options: [
+      { id: 'built-in', label: 'Built In', custom: false, effort: false },
+      {
+        id: 'gateway/custom',
+        label: 'Custom',
+        custom: true,
+        providerId: 'gateway',
+        effort: true,
+      },
+    ],
+    currentModel: 'built-in',
+    currentEffort: 'high',
+    hasPriorOutput: false,
+    providers: {
+      gateway: {
+        type: 'openai',
+        baseURL: 'https://gateway.test/v1',
+        apiKey: 'secret',
+        models: { custom: {} },
+      },
+    },
+    workspace: '.',
+    retry: defaultConfig().retry,
+    onPick: vi.fn(() => ({ ok: true })),
+    onPickEffort: vi.fn(() => ({ ok: true })),
+    onSaveProvider: vi.fn(() => ({ ok: true })),
+    removableProviderIds: new Set(['gateway']),
+    onRemoveProvider: vi.fn(),
+    onCancel: vi.fn(),
+    ...overrides,
+  };
+}
+
 function renderPicker(overrides: Partial<React.ComponentProps<typeof ModelPicker>> = {}) {
   const onPick = vi.fn(() => ({ ok: true }));
   const onSaveProvider = vi.fn(() => ({ ok: true }));
@@ -20,43 +57,9 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof ModelPicker
     switched: false,
     inheritedProviderRevealed: false,
   }));
-  const view = render(
-    withTheme(
-      <ModelPicker
-        options={[
-          { id: 'built-in', label: 'Built In', custom: false, effort: false },
-          {
-            id: 'gateway/custom',
-            label: 'Custom',
-            custom: true,
-            providerId: 'gateway',
-            effort: true,
-          },
-        ]}
-        currentModel="built-in"
-        currentEffort="high"
-        hasPriorOutput={false}
-        providers={{
-          gateway: {
-            type: 'openai',
-            baseURL: 'https://gateway.test/v1',
-            apiKey: 'secret',
-            models: { custom: {} },
-          },
-        }}
-        workspace="."
-        retry={defaultConfig().retry}
-        onPick={onPick}
-        onPickEffort={vi.fn(() => ({ ok: true }))}
-        onSaveProvider={onSaveProvider}
-        removableProviderIds={new Set(['gateway'])}
-        onRemoveProvider={onRemoveProvider}
-        onCancel={vi.fn()}
-        {...overrides}
-      />,
-    ),
-  );
-  return { view, onPick, onSaveProvider, onRemoveProvider };
+  const props = pickerProps({ onPick, onSaveProvider, onRemoveProvider, ...overrides });
+  const view = render(withTheme(<ModelPicker {...props} />));
+  return { view, onPick, onSaveProvider, onRemoveProvider, props };
 }
 
 async function write(view: ReturnType<typeof render>, value: string) {
@@ -220,6 +223,64 @@ describe('ModelPicker', () => {
 
     expect(onSaveProvider).not.toHaveBeenCalled();
     expect(view.lastFrame()).toContain('Only custom providers can take extra models.');
+  });
+
+  it('refuses to edit the catalog of an inherited provider', async () => {
+    const discover = vi.fn(async () => [{ id: 'custom' }]);
+    const { view, onSaveProvider } = renderPicker({
+      discover,
+      removableProviderIds: new Set(),
+    });
+    await write(view, '\x1b[B');
+    // The actions are not advertised on a row that cannot accept them.
+    expect(view.lastFrame()).not.toContain('Alt+R refresh');
+
+    await write(view, '\x1bm');
+    expect(view.lastFrame()).toContain('Only BYOK providers you added can be changed.');
+    expect(view.lastFrame()).not.toContain('Add models to gateway');
+
+    await write(view, '\x1br');
+    await wait(10);
+    expect(discover).not.toHaveBeenCalled();
+    expect(onSaveProvider).not.toHaveBeenCalled();
+  });
+
+  it('keeps the highlight on the same model when the catalog re-sorts', async () => {
+    const options = [
+      { id: 'built-in', label: 'Built In', custom: false, effort: false },
+      { id: 'gateway/zeta', label: 'Zeta', custom: true, providerId: 'gateway', effort: true },
+    ];
+    const { view, onPick, onSaveProvider, props } = renderPicker({ options });
+    await write(view, '\x1b[B');
+    await write(view, '\x1bm');
+    await write(view, 'aaa-model');
+    await write(view, '\r');
+    expect(onSaveProvider).toHaveBeenCalled();
+
+    // The parent rebuilds the catalog sorted, inserting a row above Zeta.
+    view.rerender(
+      withTheme(
+        <ModelPicker
+          {...props}
+          options={[
+            options[0],
+            {
+              id: 'gateway/aaa-model',
+              label: 'aaa-model',
+              custom: true,
+              providerId: 'gateway',
+              effort: true,
+            },
+            options[1],
+          ]}
+        />,
+      ),
+    );
+    await wait(20);
+
+    expect(view.lastFrame()).toContain('❯ Zeta  gateway');
+    await write(view, '\r');
+    expect(onPick).toHaveBeenCalledWith('gateway/zeta', true);
   });
 
   it('keeps the effort control and respects restricted levels', async () => {

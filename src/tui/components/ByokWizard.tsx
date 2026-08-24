@@ -133,6 +133,13 @@ export function ByokWizard({
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
+      if (discovered.length === 0) {
+        // The error screen's own fallback is the way forward, so route there
+        // rather than into an empty picker that refuses to continue.
+        setError('The endpoint did not return any models.');
+        setStep('discovery-error');
+        return;
+      }
       setModelSource('discover');
       setModels(discovered);
       setSelectedIds(discovered.map((model) => model.id));
