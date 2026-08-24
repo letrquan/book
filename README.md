@@ -708,6 +708,37 @@ description: Check for spelling errors
 Run a spell check on the codebase and fix any issues found.
 ```
 
+**Shell substitution needs approval when the command is checked in.** A command body can run
+shell and paste the output into the prompt — an inline ``!`git log --oneline -5` `` span, or a
+fenced ` ```! ` block. That happens before the model sees anything, and it runs outside the
+permission system and outside the sandbox: no rule is consulted, no sandbox applies, and nothing
+is asked. A `.book/commands/*.md` file is repository-controlled, so cloning a project and typing
+its command name would otherwise be enough to execute whatever that file says — including under
+`book -p`, where no terminal is present to notice.
+
+Book therefore requires a one-time decision per project command that substitutes shell. It is
+recorded in `.book/settings.local.json`. The checked-in `.book/settings.json` is forbidden from
+writing that key, so a project cannot approve itself through its own settings layer:
+
+```bash
+book config set commands.projectCommands '{"deploy":{"fingerprint":"ab12…","choice":"approved"}}'
+```
+
+`book doctor` lists which project commands are approved, rejected, or still refused, and prints
+the exact line that approves the pending ones — carrying the decisions already on file, because
+the value replaces the whole record. Until a decision exists the command is refused — in the TUI
+and in print mode alike — naming the shell it wanted to run.
+
+> **`settings.local.json` is only local by convention.** Book treats that file as yours, but it
+> lives in the working tree: a repository that commits one instead of ignoring it supplies its
+> own approvals, and this gate — like the `.mcp.json` and `permissions.allow` gates, which use
+> the same store — honours them. Check whether a cloned project ships a
+> `.book/settings.local.json` before running its commands.
+
+The fingerprint covers the shell the body runs, in order, not the prose around it: editing what
+runs asks again, rewording the instructions does not. Commands in `~/.book/commands/` are yours
+and are never gated, and a project command that substitutes no shell has nothing to approve.
+
 Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, `/exit`,
 `/help`), task and job controls (`/task`, `/jobs`, with `/tasks` as an alias), managed-agent
 controls (`/agents`, `/agent`), config (`/model`, `/providers`,
@@ -755,7 +786,8 @@ Refusal happens *before* the command's own code runs, so a command with a side e
 writes `settings.local.json`, `/export` writes a file, `/memory approve` mutates memory) can never
 half-fire in a host that cannot show its result. A `/name` that is not a command at all is still
 forwarded to the model verbatim, so an ordinary prompt like `book -p "/etc/hosts is a file"` is
-unaffected.
+unaffected. A `.book/commands/*.md` command whose shell substitution has not been approved is
+refused the same way and for the same reason: this host cannot ask for the decision.
 
 A command the host performed itself produces no model turn. Under `text` its output is written to
 stdout; under `stream-json` it is announced as

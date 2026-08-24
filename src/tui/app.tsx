@@ -1617,6 +1617,7 @@ export function App({
                 sessionId,
                 workspace: config.workspace,
                 model: liveConfig.model,
+                projectCommands: liveConfig.settings.commands.projectCommands,
               },
               controller.signal,
             ));

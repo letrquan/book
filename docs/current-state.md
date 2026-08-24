@@ -1,6 +1,6 @@
 # Book Current State
 
-This is the implementation-backed product snapshot for Book as of 2026-08-19. Update this file
+This is the implementation-backed product snapshot for Book as of 2026-08-24. Update this file
 when a user-facing surface changes; the README is the usage guide and this page is the status
 reference for roadmap and design documents.
 
@@ -110,9 +110,14 @@ reference for roadmap and design documents.
 
 - Project MCP declarations now have an explicit per-server trust boundary: repository-controlled
   servers are fingerprinted and require one-time approval before connection. A broader workspace
-  trust database does not exist yet, so project settings, hooks, provider blocks, custom command
-  shell substitutions, and project instructions must still be reviewed before opening an untrusted
-  workspace.
+  trust database does not exist yet, so project settings, hooks, provider blocks, and project
+  instructions must still be reviewed before opening an untrusted workspace. Shell substitution
+  in a project `.book/commands/*.md` body is no longer among them: it carries the same per-item
+  approval, keyed by command name and fingerprinted over the shell the body runs. All three
+  per-item stores share one limit: they live in `<workspace>/.book/settings.local.json`, which
+  is local only by convention, so a repository that commits that file rather than ignoring it
+  supplies its own approvals. Relocating these decisions outside the working tree is the
+  precondition for the workspace trust database, not a detail of it.
 - Bubblewrap is optional and currently Linux-oriented; when unavailable, behavior follows the
   configured `sandbox.failIfUnavailable` policy and may run unsandboxed. Where it is available the
   boundary is real: sandboxed commands are spawned as a direct argument vector rather than a shell
@@ -160,8 +165,16 @@ reference for roadmap and design documents.
   (session controls, pickers, panels, `/config`, `/export`, `/memory`) is refused before its own
   code runs, which ends the run with exit code 1; an unknown `/name` is still forwarded to the model
   verbatim.
-  Shell substitution inside a custom command body runs unsandboxed and outside the permission
-  system, exactly as in the TUI, and that exposure is now reachable from `book -p`.
+  Shell substitution inside a custom command body still runs unsandboxed and outside the
+  permission system, but a repository-declared body no longer reaches it unapproved: the
+  decision is recorded in `.book/settings.local.json` under `commands.projectCommands`, the
+  checked-in `.book/settings.json` layer is forbidden from writing that key, and an unapproved
+  command is refused in the TUI and in print mode alike. The gate is fail-closed by
+  construction — a host that passes
+  no decision store is treated as having no decision — and the fingerprint digests the shell a
+  body runs rather than its prose, so editing what runs re-asks and rewording does not. There is
+  no interactive approval prompt yet: a pending decision is granted through `book config set`,
+  which `book doctor` prints. Commands under `~/.book/commands` are user-owned and never gated.
 - Plan approval outside the TUI depends on what the host supplied: `bypassPermissions` approves, an
   `onUserQuestionRequired` handler decides, and a host with neither ends the run with
   `plan.status: not_applied` and exit code 0. The SDK `result` event does not carry that `plan`
@@ -211,5 +224,9 @@ Use `npm test` for the full build plus unit, contract, and integration tiers. Re
 `npm run release:check`; the stabilization policy is `npm run stabilization:check` with the GitHub
 Actions environment variables described in [stabilization.md](stabilization.md).
 
-Local verification for this refresh (2026-08-19): `npm run check` was re-run for these changes; see
-the gate result in the change description.
+Local verification for this refresh (2026-08-24): typecheck, lint, the architecture check, the
+contract tier, and the unit files covering settings, commands, and the CLI were re-run for these
+changes and pass. The full unit tier was not clean on this machine: eight cases in
+`src/harness/evaluation/contract.test.ts` fail on an untouched checkout with
+`fixture digest does not match its source tree`, a line-ending artefact of this Windows working
+copy rather than a code defect.

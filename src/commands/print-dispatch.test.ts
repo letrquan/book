@@ -19,6 +19,7 @@ import {
 } from './builtins.js';
 import { CommandRegistry } from './registry.js';
 import { discoverCommands } from './loader.js';
+import { projectCommandFingerprint, type ProjectCommandStore } from '../command-approvals.js';
 import { defaultConfig } from '../test/fixtures.js';
 
 let tempDirs: string[] = [];
@@ -47,9 +48,27 @@ function writeCommand(workspace: string, name: string, contents: string): void {
   writeFileSync(join(dir, `${name}.md`), contents, 'utf-8');
 }
 
-function env(workspace: string): PrintCommandEnvironment {
+/** Decisions approving exactly what each named command body runs today. */
+function approving(workspace: string, ...names: string[]): ProjectCommandStore {
+  const store: ProjectCommandStore = {};
+  for (const command of discoverCommands(workspace)) {
+    if (!names.includes(command.name)) continue;
+    store[command.name] = {
+      fingerprint: projectCommandFingerprint(command.body),
+      choice: 'approved',
+    };
+  }
+  return store;
+}
+
+function env(
+  workspace: string,
+  projectCommands: ProjectCommandStore = {},
+): PrintCommandEnvironment {
+  const config = defaultConfig({ workspace, model: 'test-model' });
+  config.settings.commands.projectCommands = projectCommands;
   return {
-    config: defaultConfig({ workspace, model: 'test-model' }),
+    config,
     mode: 'default',
     sessionId: 'session-print-1',
   };
@@ -148,21 +167,42 @@ describe('resolvePrintCommand — prompt-body commands', () => {
     });
   });
 
-  it('runs shell substitution exactly as the TUI does and reports its failures', async () => {
+  it('runs approved shell substitution as the TUI does and reports its failures', async () => {
     const workspace = tempWorkspace();
     writeCommand(workspace, 'ctx', 'Context: !`echo hello-from-shell`');
     writeCommand(workspace, 'broken', 'Context: !`exit 3`');
+    const decided = approving(workspace, 'ctx', 'broken');
 
-    const ok = await resolvePrintCommand('/ctx', env(workspace));
+    const ok = await resolvePrintCommand('/ctx', env(workspace, decided));
     if (ok.kind !== 'prompt') throw new Error('expected a prompt dispatch');
     expect(ok.prompt).toBe('Context: hello-from-shell');
     expect(ok.shellErrors).toEqual([]);
 
-    const failed = await resolvePrintCommand('/broken', env(workspace));
+    const failed = await resolvePrintCommand('/broken', env(workspace, decided));
     if (failed.kind !== 'prompt') throw new Error('expected a prompt dispatch');
     // Same non-fatal placeholder the TUI injects — neither widened nor swallowed.
     expect(failed.prompt).toContain('[shell error:');
     expect(failed.shellErrors?.length).toBe(1);
+  });
+
+  it('refuses a repository command whose shell was never approved', async () => {
+    // The exposure this gate closes: a clone plus `book -p "/name"` was a
+    // shell on the host, with no terminal present to notice.
+    const workspace = tempWorkspace();
+    writeCommand(workspace, 'ctx', 'Context: !`echo pwned`');
+
+    await expect(resolvePrintCommand('/ctx', env(workspace))).rejects.toThrow(
+      /has not been approved/,
+    );
+  });
+
+  it('still runs a repository command that substitutes no shell', async () => {
+    const workspace = tempWorkspace();
+    writeCommand(workspace, 'plain', 'Summarise $1');
+
+    const dispatch = await resolvePrintCommand('/plain src', env(workspace));
+    if (dispatch.kind !== 'prompt') throw new Error('expected a prompt dispatch');
+    expect(dispatch.prompt).toBe('Summarise src');
   });
 
   it('prefers a built-in over a same-named project command, like the TUI', async () => {
