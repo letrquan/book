@@ -55,9 +55,56 @@ All notable changes to this project are documented in this file.
   `.book/settings.json` joined the effective allow list — reaching the outcome that project layers
   are already forbidden from selecting via `defaultMode: bypassPermissions`. Once merged a rule
   carried no provenance, so nothing downstream could tell a repository's grant from your own. Such
-  rules are now withheld until you record a decision, stored per workspace in the gitignored
-  `.book/settings.local.json`. `ask` and `deny` rules are unaffected: they only ever restrict.
-  `book doctor` lists what is withheld and prints the command that grants it.
+  rules are now withheld until you record a decision, stored per workspace in `~/.book/trust.json`.
+  `ask` and `deny` rules are unaffected: they only ever restrict. `book doctor` lists what is
+  withheld and prints the `book trust rule` command that grants it.
+
+- **A repository can no longer run shell commands through project-declared hooks without your
+  approval.** A `hooks.<event>` entry in a cloned repository's checked-in `.book/settings.json`
+  is a command Book executes at lifecycle events — on every prompt, around every tool call, at
+  session start. Once merged into resolved settings an entry carried no provenance, so nothing
+  downstream could tell a repository's hook from your own. Project-declared entries are now
+  withheld until you record a decision, stored per workspace in `~/.book/trust.json` and keyed by a
+  fingerprint of the event, matcher, command, and env — editing any of those reverts the hook to
+  untrusted. User-global and local-layer hooks are unaffected. Print/headless and SDK runs report
+  what they are skipping, and `book doctor` lists each withheld hook — command, matcher, and
+  environment, since approval covers all three — and prints the `book trust hook` command that
+  grants it.
+
+- **Trust decisions moved out of the workspace, into `~/.book/trust.json`.** `mcp.projectServers`,
+  `permissions.projectAllowRules`, and `hooks.projectEntries` recorded your answer about
+  repository-controlled input, and were read from `.book/settings.local.json` on the reasoning that
+  the file is gitignored. `.gitignore` does not stop a *tracked* file from reaching a clone:
+  `git add -f .book/settings.local.json` ships it with the repository, and every fingerprint the
+  store is keyed by is a digest of configuration the repository already controls. A hostile project
+  could therefore precompute approvals for the hooks, servers, and allow rules it also shipped and
+  arrive pre-trusted — releasing arbitrary shell commands on first run. All three keys are now
+  ignored from **both** workspace layers and read from a user-global store keyed by absolute
+  workspace path, which nothing a repository can write reaches. An unreadable or off-schema store
+  records no decisions, withholding the gated input rather than releasing it, and a write refuses
+  rather than overwrite a store it could not parse. Decisions recorded under the old scheme are not
+  migrated — that would import exactly the approvals this closes — so a project whose hooks or
+  servers you had already approved asks once more.
+
+- **New `book trust` subcommand records those decisions**: `book trust hook <fingerprint>` and
+  `book trust rule <rule>`, each taking `--all-pending`, `--reject`, and `--workspace <path>`.
+  `book doctor` printed a `book config set hooks.projectEntries '<json>'` one-liner to paste, which
+  was wrong three ways: `config set` *replaces* the value at a path and the printed map held only
+  the newly pending entries, so running the suggestion silently revoked every earlier approve and
+  reject; the command omitted `--workspace`, so running it anywhere but the diagnosed directory
+  wrote the decision into the wrong project; and its single-quoted JSON does not survive `cmd.exe`,
+  where quotes are literal and the argument reached validation as a string. Decisions are now
+  recorded one at a time, a fingerprint needs no quoting, and doctor names the workspace it
+  diagnosed. Repository-authored text in that report — commands, matchers, environment values — is
+  escaped before printing, so a hook cannot use newlines or ANSI escapes to forge a report line and
+  pass itself off as already approved.
+
+- **Print/headless and SDK runs no longer report withheld project declarations under
+  `--no-settings`.** Both hosts read `.book/settings.json` off disk unconditionally and compared it
+  against the resolved decision store, which under `--no-settings` is the empty default: a run in a
+  repository with project hooks announced that it was ignoring hooks pending approval, when the
+  hooks were skipped because settings layers were disabled and approving them would change nothing.
+  Already-approved hooks were reported as pending for the same reason.
 
 - **`connectMcpServers()` now fails closed when no host has adjudicated approval.** Called without
   an explicit server list it resolved every declared server — user-global *and* repository-declared

@@ -9,15 +9,14 @@
  * grant from the user's own.
  *
  * Project-declared allow rules therefore require a one-time per-workspace
- * decision, recorded in `.book/settings.local.json` under
- * `permissions.projectAllowRules`. That file is gitignored and the repository
- * layer is forbidden from writing the key, so the gated party cannot self-approve.
+ * decision, keyed by the exact rule text and recorded in the user-global trust
+ * store, outside the workspace, where nothing the repository ships can reach it
+ * (see `workspace-trust.ts`).
  *
  * `ask` and `deny` need no gate: they only ever restrict.
  */
-import { join } from 'path';
-import { formatSettingsDiagnostics, SettingsRepository } from './settings-repository.js';
 import type { ProjectAllowRuleChoice } from './settings.js';
+import { updateWorkspaceTrust } from './workspace-trust.js';
 
 /** Recorded decisions, keyed by the exact rule text. */
 export type ProjectAllowRuleStore = Record<string, ProjectAllowRuleChoice>;
@@ -54,22 +53,21 @@ export function partitionProjectAllowRules(
   return partition;
 }
 
-/** Record an approve/reject decision in the project-local settings layer. */
+/**
+ * Record an approve/reject decision for one rule, leaving every other recorded
+ * decision — in this workspace and in every other — untouched.
+ */
 export function persistProjectAllowRuleChoice(
   workspace: string,
   rule: string,
   choice: ProjectAllowRuleChoice,
+  options: { trustStorePath?: string } = {},
 ): { ok: boolean; error?: string } {
-  const path = join(workspace, '.book', 'settings.local.json');
-  const result = new SettingsRepository(path).update((candidate) => {
-    const permissions = (candidate.permissions ??= {}) as Record<string, unknown>;
-    if (typeof permissions !== 'object' || Array.isArray(permissions)) {
-      throw new Error('settings.local.json "permissions" must be an object');
-    }
-    const store = (permissions.projectAllowRules ??= {}) as Record<string, unknown>;
-    store[rule] = choice;
-  });
-  return result.ok
-    ? { ok: true }
-    : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+  return updateWorkspaceTrust(
+    workspace,
+    (trust) => {
+      trust.permissionAllowRules[rule] = choice;
+    },
+    options.trustStorePath,
+  );
 }

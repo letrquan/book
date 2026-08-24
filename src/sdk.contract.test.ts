@@ -177,4 +177,40 @@ describe('SDK runtime event bridge', () => {
     expect(existsSync(join(sessionFixture.root, '.book', 'settings.local.json'))).toBe(false);
     expect(existsSync(join(sessionFixture.root, '.book', 'migrations.json'))).toBe(false);
   });
+
+  // The resolver withholds project-declared hooks regardless of host; an SDK
+  // run cannot ask, so it must at least say what it is skipping.
+  it('reports project-declared hooks it is skipping', async () => {
+    sessionFixture = createSessionFixture('book-sdk-hooks-');
+    const bookHome = join(sessionFixture.root, 'book-home');
+    mkdirSync(bookHome, { recursive: true });
+    process.env.BOOK_HOME = bookHome;
+    mkdirSync(join(sessionFixture.root, '.book'), { recursive: true });
+    writeFileSync(
+      join(sessionFixture.root, '.book', 'settings.json'),
+      JSON.stringify({ hooks: { PreToolUse: [{ command: 'repo-hook.sh' }] } }),
+    );
+
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    });
+    try {
+      state.release();
+      const events: Array<Record<string, unknown>> = [];
+      for await (const event of query('hello', {
+        workspace: sessionFixture.root,
+        persistSession: false,
+      })) {
+        events.push(event as unknown as Record<string, unknown>);
+      }
+      expect(events.some((event) => event.type === 'result')).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+
+    const report = warnings.join('\n');
+    expect(report).toContain('Ignoring 1 project-declared hook(s) (PreToolUse x1)');
+    expect(report).toContain('Run `book doctor` to approve them.');
+  });
 });

@@ -74,6 +74,18 @@ export const hookEntrySchema = z.object({
 
 export type HookEntry = z.infer<typeof hookEntrySchema>;
 
+/**
+ * Per-entry trust decisions for hook entries declared by the checked-in project
+ * layer, keyed by a fingerprint of `{ event, matcher, command, env }`.
+ *
+ * A hook is a shell command Book executes at lifecycle events, so a project
+ * hook with no `approved` entry here never reaches the resolved hooks. Unlike
+ * an MCP server record, a hook carries no name — the fingerprint is the key.
+ */
+export const projectHookChoiceSchema = z.enum(['approved', 'rejected']);
+
+export type ProjectHookChoice = z.infer<typeof projectHookChoiceSchema>;
+
 /** Hook events supported by book. */
 export const HOOK_EVENTS = [
   'SessionStart',
@@ -93,11 +105,17 @@ export type HookEvent = (typeof HOOK_EVENTS)[number];
 /**
  * Hooks configuration — a map from event name to an array of hook entries.
  */
-export const hooksSchema = z.object(
-  Object.fromEntries(HOOK_EVENTS.map((e) => [e, z.array(hookEntrySchema).default([])])) as {
+export const hooksSchema = z.object({
+  ...(Object.fromEntries(HOOK_EVENTS.map((e) => [e, z.array(hookEntrySchema).default([])])) as {
     [K in HookEvent]: z.ZodDefault<z.ZodArray<typeof hookEntrySchema>>;
-  },
-);
+  }),
+  /**
+   * Decisions about hook entries the checked-in project layer declared. An
+   * entry whose fingerprint has no `approved` record here never reaches the
+   * resolved hooks.
+   */
+  projectEntries: z.record(projectHookChoiceSchema).default({}),
+});
 
 export type HooksConfig = z.infer<typeof hooksSchema>;
 
@@ -386,6 +404,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     PostCompact: [],
     SubagentStart: [],
     SubagentStop: [],
+    projectEntries: {},
   },
   additionalDirectories: [],
   env: {},

@@ -18,13 +18,22 @@ src/
   sdk.ts                Programmatic SDK (`query()` async generator)
   job-runner.ts         Detached runner for persistent background shell jobs
   cli/                  run.ts (interactive/headless wiring), doctor.ts, config-cmd.ts,
-                        scrollback.ts, exit.ts (process.exit abstraction), utils.ts
+                        trust-cmd.ts (`book trust hook|rule`), scrollback.ts,
+                        exit.ts (process.exit abstraction), utils.ts
   types/                Shared domain types (no runtime imports). NOTE: a top-level
                         src/types.ts hub is FORBIDDEN by the architecture check.
   config.ts             Config loading (env vars, settings.json, legacy .bookrc.json)
   settings*.ts          schemas, layered resolution, atomic repository writes, migration,
                         redaction, and CLI-safe configuration access
   book-home.ts          BOOK_HOME resolution for user-global state
+  workspace-trust.ts    User-global trust store (<BOOK_HOME>/trust.json, keyed by workspace
+                        path) holding every decision about repository-controlled input.
+                        NOTE: these decisions must never be read from a workspace file — a
+                        repository can force-add .book/settings.local.json into a clone.
+  hook-approvals.ts     Project-declared hook gate (fingerprint, partition, disclosure)
+  permission-approvals.ts  Project-declared permissions.allow gate
+  mcp-approvals.ts      Project-declared MCP server gate
+  project-approval-notices.ts  Withheld-declaration warnings shared by print mode and the SDK
   frontmatter.ts        Shared YAML frontmatter parser
   permissions.ts        Permission rule parsing/evaluation
   hooks.ts              Lifecycle hook runner (JSON-over-stdio contract)

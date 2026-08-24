@@ -22,6 +22,7 @@ import type { Skill } from '../skills.js';
 import type { ToolDefinition } from '../types/tools.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { resolveBookHome } from '../book-home.js';
+import { HOOK_EVENTS } from '../settings.js';
 import { resolvePermissionMode } from '../permission-mode.js';
 import { getPackageVersion } from '../version-info.js';
 
@@ -453,7 +454,14 @@ export function createRunAmbientSnapshot(
   };
   const policies = {
     permissionMode: resolvePermissionMode(config.settings, resolvedOptions.permissionMode),
-    hooksFingerprint: fingerprint(sanitize(config.settings.hooks)),
+    // The event arrays only: `hooks.projectEntries` records trust decisions, not
+    // hooks. Rejecting an entry changes nothing about what executes, so it must
+    // not give two behaviourally identical runs different ambient identities.
+    hooksFingerprint: fingerprint(
+      sanitize(
+        Object.fromEntries(HOOK_EVENTS.map((event) => [event, config.settings.hooks[event]])),
+      ),
+    ),
     contextFingerprint: fingerprint({
       autoCompactEnabled: config.autoCompactEnabled,
       compactStrategy: config.compactStrategy,

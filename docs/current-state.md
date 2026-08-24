@@ -1,6 +1,6 @@
 # Book Current State
 
-This is the implementation-backed product snapshot for Book as of 2026-08-19. Update this file
+This is the implementation-backed product snapshot for Book as of 2026-08-24. Update this file
 when a user-facing surface changes; the README is the usage guide and this page is the status
 reference for roadmap and design documents.
 
@@ -44,10 +44,15 @@ reference for roadmap and design documents.
   exact.
 - Layered settings (`~/.book`, project `.book`, local `.book`, and `--settings`), atomic writes,
   legacy `.bookrc.json` fallback and legacy-permissions migration, permissions whose `deny` rules
-  bind in every permission mode, project-declared `permissions.allow` rules held until the user
-  approves them (`ask`/`deny` apply immediately; `book doctor` reports what is withheld and how
-  to grant it), trust-decision keys ignored from the checked-in project layer so a repository
-  cannot approve its own MCP servers or allow rules, hooks, optional bubblewrap sandbox, themes, auto-memory, rewind
+  bind in every permission mode, project-declared `permissions.allow` rules and hook entries held
+  until the user approves them (`ask`/`deny` apply immediately; `book doctor` reports what is
+  withheld and how to grant it, disclosing each withheld hook's command, matcher, and environment,
+  and `book trust hook|rule` records the decision), trust-decision keys ignored from both workspace
+  layers and read instead from `~/.book/trust.json`, keyed by workspace path, so nothing a
+  repository ships can approve its own MCP servers, allow rules, or hook entries — a force-added
+  `.book/settings.local.json` reaches a clone the same way a checked-in file does, hooks, optional
+  bubblewrap sandbox, themes,
+  auto-memory, rewind
   snapshots, telemetry, and diagnostics. Every declared sandbox key is now read by an execution or
   permission path: `sandbox.allowUnsandboxedCommands` can refuse any command that would leave the
   namespace, and `sandbox.autoAllowBashIfSandboxed` can replace the default ask for a command that
@@ -108,11 +113,18 @@ reference for roadmap and design documents.
 
 ## Known Boundaries
 
-- Project MCP declarations now have an explicit per-server trust boundary: repository-controlled
-  servers are fingerprinted and require one-time approval before connection. A broader workspace
-  trust database does not exist yet, so project settings, hooks, provider blocks, custom command
-  shell substitutions, and project instructions must still be reviewed before opening an untrusted
+- Project MCP declarations, project-declared allow rules, and project-declared hook entries now
+  have explicit trust boundaries: each is fingerprinted and requires one-time approval, recorded
+  per workspace in `~/.book/trust.json`. That store answers only for those three. A repository
+  that force-adds `.book/settings.local.json` still reaches a clone, and that layer is otherwise
+  ungated — its own `hooks.<event>` entries, allow rules, and env run as if the user had written
+  them. Distrusting a Git-tracked local layer needs provenance the synchronous resolver cannot
+  currently obtain, so provider blocks, custom command shell substitutions, project instructions,
+  and a checked-in `settings.local.json` must still be reviewed before opening an untrusted
   workspace.
+- No interactive surface records these decisions yet. The MCP gate has a TUI prompt; the allow-rule
+  and hook gates do not, so in the primary mode a withheld hook simply never fires until the user
+  runs `book doctor`. Print/headless and SDK runs do report what they are skipping.
 - Bubblewrap is optional and currently Linux-oriented; when unavailable, behavior follows the
   configured `sandbox.failIfUnavailable` policy and may run unsandboxed. Where it is available the
   boundary is real: sandboxed commands are spawned as a direct argument vector rather than a shell
@@ -155,6 +167,11 @@ reference for roadmap and design documents.
   captured from real runs rather than executing the pipeline over checked-in golden diffs, and the
   confidence threshold (70) and the per-pass timeout (10 minutes) are still fixed rather than
   configurable.
+- `--scrollback` is a reduced host: it calls the agent loop directly and builds no `SessionStore`,
+  MCP session host, or slash-command registry, and it handles only `/exit` and `/clear`.
+  `--scrollback -c` is silently inert rather than resuming a session, and any other leading
+  `/name` reaches the model verbatim. Hooks fire inside the loop; sessions, MCP servers, and
+  slash commands do not exist on this path.
 - Print/headless and SDK hosts run only the built-ins marked non-interactive — `/init`,
   `/security-review`, and `/review` — plus any `.book/commands/*.md` file. Every other built-in
   (session controls, pickers, panels, `/config`, `/export`, `/memory`) is refused before its own
@@ -211,5 +228,7 @@ Use `npm test` for the full build plus unit, contract, and integration tiers. Re
 `npm run release:check`; the stabilization policy is `npm run stabilization:check` with the GitHub
 Actions environment variables described in [stabilization.md](stabilization.md).
 
-Local verification for this refresh (2026-08-19): `npm run check` was re-run for these changes; see
-the gate result in the change description.
+Local verification for this refresh (2026-08-24): typecheck, lint, formatting, the architecture
+check, and the unit and contract tiers were re-run green alongside the project-declared-hook trust
+gate and the move of every trust decision into `~/.book/trust.json`; use the commands above to
+reproduce.

@@ -1,9 +1,51 @@
+import { resolve } from 'path';
 import { loadConfig } from '../config.js';
 import { getPackageVersion } from '../version-info.js';
 import { collectAgentDiagnostics } from '../agents/diagnostics.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { resolveBookHome } from '../book-home.js';
+import type { HookEntry } from '../settings.js';
+
+/** Characters every supported shell passes through without quoting. */
+const SHELL_SAFE_BARE = /^[A-Za-z0-9_@%+=:,./\\-]+$/;
+
+/**
+ * Render one argument for a command the user will paste into their own shell.
+ *
+ * It has to survive both a POSIX shell and `cmd.exe`, where single quotes are
+ * literal — the reason the old `book config set … '<json>'` suggestion reached
+ * validation as a string on Windows and failed. Double quotes are the one form
+ * both accept, so anything needing quotes gets those; a value carrying a
+ * character neither can quote verbatim gets no one-liner at all.
+ */
+function shellArgument(value: string): string | null {
+  if (SHELL_SAFE_BARE.test(value)) return value;
+  if (/["`$\n\r]/.test(value) || value.endsWith('\\')) return null;
+  return `"${value}"`;
+}
+
+/**
+ * A `book trust …` command targeting the workspace doctor actually diagnosed.
+ *
+ * `book trust` defaults to `process.cwd()`, so a suggestion printed by
+ * `book doctor --workspace <repo>` run from elsewhere would otherwise record
+ * the decision in the wrong project. Returns null when the path cannot be
+ * quoted safely; the caller then tells the user where to run it instead.
+ */
+function trustCommandLine(workspace: string, rest: string): string | null {
+  if (resolve(workspace) === resolve(process.cwd())) return `book trust ${rest}`;
+  const quoted = shellArgument(workspace);
+  return quoted === null ? null : `book trust ${rest} --workspace ${quoted}`;
+}
+
+/** One "here is how to grant it" line, or a fallback when the path defeats quoting. */
+function approvalHint(label: string, workspace: string, rest: string): string {
+  const command = trustCommandLine(workspace, rest);
+  return command === null
+    ? `${label} book trust ${rest} (run it from ${workspace})`
+    : `${label} ${command}`;
+}
 
 /** The settings files doctor reads, in the order they are layered. */
 async function settingsLayers(workspace: string): Promise<Array<[string, string]>> {
@@ -113,11 +155,10 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
     for (const rule of projectAllow.rejected) console.log('    [-] ' + rule + ' (rejected)');
     for (const rule of projectAllow.pending) console.log('    [!] ' + rule + ' (not in effect)');
     if (projectAllow.pending.length > 0) {
+      console.log(approvalHint('    Approve one:', config.workspace, 'rule <rule>'));
       console.log(
-        '    Approve with: book config set permissions.projectAllowRules ' +
-          `'${JSON.stringify(
-            Object.fromEntries(projectAllow.pending.map((rule) => [rule, 'approved'])),
-          )}'`,
+        approvalHint('    Approve all pending:', config.workspace, 'rule --all-pending') +
+          ' (add --reject to refuse)',
       );
     }
   }
@@ -125,13 +166,54 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
 
   // Hooks.
   const hooks = settings.hooks;
+  // `hooks.projectEntries` records trust decisions, not hook entries.
+  const hookLists = Object.entries(hooks).filter((pair): pair is [string, HookEntry[]] =>
+    Array.isArray(pair[1]),
+  );
   let hookTotal = 0;
-  for (const entries of Object.values(hooks)) hookTotal += entries.length;
+  for (const [, entries] of hookLists) hookTotal += entries.length;
   console.log('Hooks:');
-  for (const [event, entries] of Object.entries(hooks)) {
+  for (const [event, entries] of hookLists) {
     if (entries.length > 0) console.log('  ' + event + ': ' + entries.length);
   }
   if (hookTotal === 0) console.log('  (none)');
+
+  // Hook entries a repository declared are withheld until the user decides on
+  // them, so doctor is where an unexplained "my project hook does nothing" is
+  // meant to be answered.
+  const { collectDeclaredHooks, describeDeclaredHook, partitionProjectHooks } =
+    await import('../hook-approvals.js');
+  const declaredProjectHooks = collectDeclaredHooks(projectSettings);
+  if (declaredProjectHooks.length > 0) {
+    const hookPartition = partitionProjectHooks(
+      declaredProjectHooks,
+      settings.hooks.projectEntries,
+    );
+    console.log('  Project-declared hooks (require approval):');
+    // Approval is keyed by a fingerprint covering event, matcher, command and
+    // env, so all four are disclosed. A hook rendered as its command alone hides
+    // exactly the fields behaviour can be smuggled in: `npm test` carrying
+    // `NODE_OPTIONS=--require ./payload.js` reads as harmless and is not.
+    const groups = [
+      { mark: '[x]', suffix: '', hooks: hookPartition.approved },
+      { mark: '[-]', suffix: ' (rejected)', hooks: hookPartition.rejected },
+      { mark: '[!]', suffix: ' (not in effect)', hooks: hookPartition.pending },
+    ];
+    for (const group of groups) {
+      for (const hook of group.hooks) {
+        const described = describeDeclaredHook(hook);
+        console.log('    ' + group.mark + ' ' + described.headline + group.suffix);
+        for (const detail of described.details) console.log('          ' + detail);
+      }
+    }
+    if (hookPartition.pending.length > 0) {
+      console.log(approvalHint('    Approve one:', config.workspace, 'hook <fingerprint>'));
+      console.log(
+        approvalHint('    Approve all pending:', config.workspace, 'hook --all-pending') +
+          ' (add --reject to refuse)',
+      );
+    }
+  }
   console.log();
 
   // MCP.
