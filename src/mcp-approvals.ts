@@ -3,18 +3,18 @@
  *
  * Servers declared in a workspace `.mcp.json` are repository-controlled input:
  * connecting one executes an arbitrary command. Hosts therefore require a
- * one-time per-project approval, persisted in `.book/settings.local.json`
- * under `mcp.projectServers` together with a fingerprint of the full connection
- * configuration.
+ * one-time per-project approval, recorded against a fingerprint of the full
+ * connection configuration in the user-global trust store, outside the
+ * workspace, where nothing the repository ships can reach it (see
+ * `workspace-trust.ts`).
  * A config change after approval invalidates the decision and re-prompts.
  * User-global servers (<BOOK_HOME>/.book/mcp.json) were written by the user
  * and never require approval.
  */
 import { createHash } from 'crypto';
-import { join } from 'path';
-import { formatSettingsDiagnostics, SettingsRepository } from './settings-repository.js';
 import type { McpProjectServerChoice, McpSettings } from './settings.js';
 import type { McpServerConfig, ResolvedMcpServer } from './mcp-config.js';
+import { updateWorkspaceTrust } from './workspace-trust.js';
 
 /** Stable digest of everything the user is asked to trust about a server. */
 export function mcpServerFingerprint(config: McpServerConfig): string {
@@ -79,23 +79,22 @@ export function mcpServersToRecord(servers: ResolvedMcpServer[]): Record<string,
   return Object.fromEntries(servers.map((server) => [server.name, server.config]));
 }
 
-/** Record an approve/reject decision in the project-local settings layer. */
+/**
+ * Record an approve/reject decision for one server, leaving every other
+ * recorded decision — in this workspace and in every other — untouched.
+ */
 export function persistMcpProjectServerChoice(
   workspace: string,
   name: string,
   fingerprint: string,
   choice: McpProjectServerChoice['choice'],
+  options: { trustStorePath?: string } = {},
 ): { ok: boolean; error?: string } {
-  const path = join(workspace, '.book', 'settings.local.json');
-  const result = new SettingsRepository(path).update((candidate) => {
-    const mcp = (candidate.mcp ??= {}) as Record<string, unknown>;
-    if (typeof mcp !== 'object' || Array.isArray(mcp)) {
-      throw new Error('settings.local.json "mcp" must be an object');
-    }
-    const projectServers = (mcp.projectServers ??= {}) as Record<string, unknown>;
-    projectServers[name] = { fingerprint, choice } satisfies McpProjectServerChoice;
-  });
-  return result.ok
-    ? { ok: true }
-    : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+  return updateWorkspaceTrust(
+    workspace,
+    (trust) => {
+      trust.mcpServers[name] = { fingerprint, choice } satisfies McpProjectServerChoice;
+    },
+    options.trustStorePath,
+  );
 }

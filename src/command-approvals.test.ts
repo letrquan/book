@@ -223,6 +223,31 @@ describe('the checked-in settings layer cannot approve its own commands', () => 
     expect(settings.commands.projectCommands).toEqual({});
     expect(evaluateProjectCommandApproval(settings, cmd)).toBe('unknown');
   });
+
+  // The complement, and the reason this key is stripped from the checked-in
+  // layer alone rather than from the workspace outright: unlike the three
+  // classes held in `~/.book/trust.json`, an approved command is read back
+  // from `.book/settings.local.json`. Stripping both layers would make every
+  // approval a silent no-op — granted, written, and gone on the next load.
+  it('keeps commands.projectCommands declared in the local layer', async () => {
+    const { resolveSettings } = await import('./settings-loader.js');
+    const workspace = makeWorkspace();
+    const cmd = command();
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({
+        commands: {
+          projectCommands: {
+            deploy: { fingerprint: projectCommandFingerprint(cmd.body), choice: 'approved' },
+          },
+        },
+      }),
+    );
+    const settings = resolveSettings(workspace, undefined, {
+      userSettingsPath: join(workspace, 'absent-user-settings.json'),
+    });
+    expect(evaluateProjectCommandApproval(settings, cmd)).toBe('approved');
+  });
 });
 
 describe('describeProjectCommandApproval', () => {

@@ -44,10 +44,15 @@ reference for roadmap and design documents.
   exact.
 - Layered settings (`~/.book`, project `.book`, local `.book`, and `--settings`), atomic writes,
   legacy `.bookrc.json` fallback and legacy-permissions migration, permissions whose `deny` rules
-  bind in every permission mode, project-declared `permissions.allow` rules held until the user
-  approves them (`ask`/`deny` apply immediately; `book doctor` reports what is withheld and how
-  to grant it), trust-decision keys ignored from the checked-in project layer so a repository
-  cannot approve its own MCP servers or allow rules, hooks, optional bubblewrap sandbox, themes, auto-memory, rewind
+  bind in every permission mode, project-declared `permissions.allow` rules and hook entries held
+  until the user approves them (`ask`/`deny` apply immediately; `book doctor` reports what is
+  withheld and how to grant it, disclosing each withheld hook's command, matcher, and environment,
+  and `book trust hook|rule` records the decision), trust-decision keys ignored from both workspace
+  layers and read instead from `~/.book/trust.json`, keyed by workspace path, so nothing a
+  repository ships can approve its own MCP servers, allow rules, or hook entries — a force-added
+  `.book/settings.local.json` reaches a clone the same way a checked-in file does, hooks, optional
+  bubblewrap sandbox, themes,
+  auto-memory, rewind
   snapshots, telemetry, and diagnostics. Every declared sandbox key is now read by an execution or
   permission path: `sandbox.allowUnsandboxedCommands` can refuse any command that would leave the
   namespace, and `sandbox.autoAllowBashIfSandboxed` can replace the default ask for a command that
@@ -108,16 +113,30 @@ reference for roadmap and design documents.
 
 ## Known Boundaries
 
-- Project MCP declarations now have an explicit per-server trust boundary: repository-controlled
-  servers are fingerprinted and require one-time approval before connection. A broader workspace
-  trust database does not exist yet, so project settings, hooks, provider blocks, and project
-  instructions must still be reviewed before opening an untrusted workspace. Shell substitution
-  in a project `.book/commands/*.md` body is no longer among them: it carries the same per-item
-  approval, keyed by command name and fingerprinted over the shell the body runs. All three
-  per-item stores share one limit: they live in `<workspace>/.book/settings.local.json`, which
-  is local only by convention, so a repository that commits that file rather than ignoring it
-  supplies its own approvals. Relocating these decisions outside the working tree is the
-  precondition for the workspace trust database, not a detail of it.
+- Four classes of repository-controlled input now carry an explicit trust boundary, each
+  fingerprinted and requiring a one-time approval: project MCP declarations, project-declared
+  allow rules, project-declared hook entries, and shell substitution in a project
+  `.book/commands/*.md` body, which is keyed by command name and fingerprinted over the shell the
+  body runs rather than its prose. They do not yet share one store. The first three are recorded
+  per workspace in `~/.book/trust.json` and are stripped from both workspace settings layers, so
+  no file inside the working tree can answer for them. Command approvals still live in
+  `<workspace>/.book/settings.local.json`: only the checked-in layer is forbidden from writing
+  that key, because the local layer is where an approved command has to be read back from.
+- That split is the remaining gap, not a design. `.gitignore` does not stop a *tracked* file from
+  reaching a clone, so a repository that force-adds `.book/settings.local.json` supplies its own
+  command approvals — the exact self-approval the other three classes were moved out of the
+  workspace to prevent. Porting command approvals into the trust store is what closes it, and is
+  the precondition for the workspace trust database rather than a detail of it.
+- The local layer is otherwise ungated. Its own `hooks.<event>` entries, allow rules, and env run
+  as if the user had written them, because distrusting a Git-tracked local layer needs provenance
+  the synchronous resolver cannot currently obtain. Provider blocks, project instructions, and a
+  checked-in `settings.local.json` must still be reviewed before opening an untrusted workspace.
+- No interactive surface records these decisions yet. The MCP gate has a TUI prompt; the
+  allow-rule, hook, and command gates do not, so in the primary mode a withheld hook simply never
+  fires and a withheld command is refused until the user runs `book doctor`, which prints the
+  grant for each — `book trust …` for the three in the trust store, `book config set
+  commands.projectCommands` for command approvals. Print/headless and SDK runs do report what they
+  are skipping.
 - Bubblewrap is optional and currently Linux-oriented; when unavailable, behavior follows the
   configured `sandbox.failIfUnavailable` policy and may run unsandboxed. Where it is available the
   boundary is real: sandboxed commands are spawned as a direct argument vector rather than a shell
@@ -160,6 +179,11 @@ reference for roadmap and design documents.
   captured from real runs rather than executing the pipeline over checked-in golden diffs, and the
   confidence threshold (70) and the per-pass timeout (10 minutes) are still fixed rather than
   configurable.
+- `--scrollback` is a reduced host: it calls the agent loop directly and builds no `SessionStore`,
+  MCP session host, or slash-command registry, and it handles only `/exit` and `/clear`.
+  `--scrollback -c` is silently inert rather than resuming a session, and any other leading
+  `/name` reaches the model verbatim. Hooks fire inside the loop; sessions, MCP servers, and
+  slash commands do not exist on this path.
 - Print/headless and SDK hosts run only the built-ins marked non-interactive — `/init`,
   `/security-review`, and `/review` — plus any `.book/commands/*.md` file. Every other built-in
   (session controls, pickers, panels, `/config`, `/export`, `/memory`) is refused before its own
@@ -224,9 +248,10 @@ Use `npm test` for the full build plus unit, contract, and integration tiers. Re
 `npm run release:check`; the stabilization policy is `npm run stabilization:check` with the GitHub
 Actions environment variables described in [stabilization.md](stabilization.md).
 
-Local verification for this refresh (2026-08-24): typecheck, lint, the architecture check, the
-contract tier, and the unit files covering settings, commands, and the CLI were re-run for these
-changes and pass. The full unit tier was not clean on this machine: eight cases in
-`src/harness/evaluation/contract.test.ts` fail on an untouched checkout with
-`fixture digest does not match its source tree`, a line-ending artefact of this Windows working
-copy rather than a code defect.
+Local verification for this refresh (2026-08-24): `npm run check` — formatting, lint, typecheck,
+the architecture check, and the unit and contract tiers — was re-run green on this branch after
+merging `main`, covering the project-declared-hook trust gate, the move of the first three trust
+decisions into `~/.book/trust.json`, and the two-scope settings-layer strip that keeps command
+approvals readable from the local layer while still forbidding the checked-in one. Use the
+commands above to reproduce. The eight `src/harness/evaluation/contract.test.ts` fixture-digest
+failures seen on some Windows working copies did not reproduce in this worktree.

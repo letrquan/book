@@ -6,6 +6,7 @@ import { runDoctorCommand } from './doctor.js';
 import { runConfigCommand } from './config-cmd.js';
 import { runMcpListCommand } from './mcp.js';
 import { runToolStatsCommand } from './tool-stats.js';
+import { runTrustCommand } from './trust-cmd.js';
 import { setExitFn } from './exit.js';
 
 /**
@@ -71,6 +72,16 @@ describe('non-interactive subcommands without credentials', () => {
     ['book config get model', () => runConfigCommand(workspace, 'get', 'model', undefined)],
     ['book mcp list', () => runMcpListCommand({ workspace, home: bookHome })],
     ['book tool-stats', () => runToolStatsCommand({ workspace })],
+    // Approving a project hook is part of getting a broken workspace working,
+    // so it must not be gated behind the provider it may be needed to fix.
+    [
+      'book trust hook --all-pending',
+      () =>
+        runTrustCommand('hook', undefined, {
+          workspace,
+          allPending: true,
+        }),
+    ],
   ];
 
   for (const [name, run] of subcommands) {

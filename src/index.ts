@@ -4,6 +4,7 @@ import { program } from 'commander';
 import { runDoctorCommand } from './cli/doctor.js';
 import { runToolStatsCommand } from './cli/tool-stats.js';
 import { runConfigCommand } from './cli/config-cmd.js';
+import { runTrustCommand } from './cli/trust-cmd.js';
 import { runMainAction } from './cli/run.js';
 import { getPackageVersion } from './version-info.js';
 import { formatSettingsKeyHelp } from './settings-repository.js';
@@ -184,6 +185,49 @@ mcpCommand
   .option('--scope <scope>', 'user | project')
   .action((name: string, options: { workspace?: string; scope?: 'user' | 'project' }) =>
     runMcpRemoveCommand(name, { ...options, workspace: resolveWorkspace(options.workspace) }),
+  );
+
+// ---- book trust ----
+const trustCommand = program
+  .command('trust')
+  .description('Record decisions about configuration a repository declared');
+
+trustCommand
+  .command('hook')
+  .description('Approve or reject a project-declared hook (see `book doctor`)')
+  .argument('[fingerprint]', 'Hook fingerprint reported by `book doctor`')
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
+  .option('--all-pending', 'Apply to every hook currently awaiting a decision')
+  .option('--reject', 'Record a refusal instead of an approval')
+  .action(
+    async (
+      fingerprint: string | undefined,
+      options: { workspace?: string; allPending?: boolean; reject?: boolean },
+    ) => {
+      await runTrustCommand('hook', fingerprint, {
+        ...options,
+        workspace: resolveWorkspace(options.workspace),
+      });
+    },
+  );
+
+trustCommand
+  .command('rule')
+  .description('Approve or reject a project-declared permissions.allow rule')
+  .argument('[rule]', 'Rule text exactly as the project declared it')
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
+  .option('--all-pending', 'Apply to every rule currently awaiting a decision')
+  .option('--reject', 'Record a refusal instead of an approval')
+  .action(
+    async (
+      rule: string | undefined,
+      options: { workspace?: string; allPending?: boolean; reject?: boolean },
+    ) => {
+      await runTrustCommand('rule', rule, {
+        ...options,
+        workspace: resolveWorkspace(options.workspace),
+      });
+    },
   );
 
 // ---- book config ----

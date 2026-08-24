@@ -15,12 +15,12 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **Tools**: a provider-neutral capability catalog keeps a practical core loaded and uses `ToolSearch` to activate up to five authorized git, web, session, skill, agent, notebook, or MCP definitions on the next model turn. File, shell, task, clarification, and plan tools stay immediately available when permitted. Existing names such as `Read`, `Bash`, and `AgentSpawn` remain stable.
 - **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`. Print mode resolves commands through the same registries: `/init`, `/security-review`, `/review`, and custom commands run headlessly, and the interactive-only ones fail loudly instead of reaching the model as text.
 - **Permissions**: allow/ask/deny rule matching with six modes — `default`, `acceptEdits` (`accept-edits`), `plan`, `auto`, `dontAsk`, `bypassPermissions` — see `/permissions` or `--permission-mode`.
-- **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events. Review project-controlled hooks and provider/MCP settings before using an untrusted workspace.
+- **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events. Project-declared hooks require one-time approval per workspace; review provider/MCP settings and custom-command substitutions before opening an untrusted workspace.
 - **Verified managed agents**: adaptive model-directed routing, purpose-named runs, compact parent-facing results, live TUI monitoring, profile model overrides, read-only non-Git exploration, resumable isolated worktrees, strict capabilities, typed evidence, independent validation, and explicit patch application. Built-in `explorer`, `patcher`, and `validator` profiles can be overridden under `.book/agents/`.
 - **MCP**: interoperable MCP tool client with stdio, Streamable HTTP, and legacy SSE transports;
   interactive project-server approval, secret-safe diagnostics, dynamic tool discovery, and
   server-scoped permissions.
-- **CLI helpers**: `book doctor` (diagnose env/config), `book config` (get/set/list settings), and `book tool-stats` (measure tool use across sessions — fail counts, rates, durations). None of them require a working credential — they exist to help when the provider is not yet configured, so `book doctor` reports an unresolved key as a finding rather than failing on it.
+- **CLI helpers**: `book doctor` (diagnose env/config), `book config` (get/set/list settings), `book trust` (approve or reject configuration a repository declared), and `book tool-stats` (measure tool use across sessions — fail counts, rates, durations). None of them require a working credential — they exist to help when the provider is not yet configured, so `book doctor` reports an unresolved key as a finding rather than failing on it.
 
 See [`docs/current-state.md`](./docs/current-state.md) for the verified product snapshot, [`MILESTONES.md`](./MILESTONES.md) for the current roadmap, and [`CHANGELOG.md`](./CHANGELOG.md) for release notes.
 
@@ -230,10 +230,15 @@ file is checked in and controlled by whoever wrote the repository:
 
 - A `permissions.allow` rule it declares is withheld until you approve it. `ask` and `deny` rules
   apply immediately — they only ever restrict. `book doctor` lists withheld rules and prints the
-  `book config set permissions.projectAllowRules ...` command that grants them; decisions are
-  stored per workspace in the gitignored `.book/settings.local.json`.
-- Keys recording a trust decision — `mcp.projectServers` and `permissions.projectAllowRules` —
-  are ignored from that layer entirely, so a repository cannot approve itself.
+  `book trust rule ...` command that grants them.
+- Keys recording a trust decision — `mcp.projectServers`, `permissions.projectAllowRules`, and
+  `hooks.projectEntries` — are ignored from **both** workspace layers, so a repository cannot
+  approve itself. They are not settings you write: decisions live in `~/.book/trust.json`, keyed
+  by workspace path, and `book trust` is what records them. Putting them in the gitignored
+  `.book/settings.local.json` was not enough — `.gitignore` does not stop a force-added file from
+  reaching a clone, so a repository could ship approvals for the hooks and servers it also shipped.
+  A store outside the workspace is one nothing the repository ships can reach. An unreadable store
+  records no decisions, which withholds the gated input rather than releasing it.
 
 `book config set` and TUI preference changes validate the complete local document before writing.
 
@@ -490,6 +495,27 @@ runtime — hooks are capped at 10 s each and run sequentially in declaration or
 
 `matcher` filters `PreToolUse`/`PostToolUse` by tool call (`Bash(*)`) and `PreCompact`/`PostCompact`
 by trigger.
+
+Hooks from your own layers (`~/.book/settings.json`, `.book/settings.local.json`, `--settings`)
+run as written. A hook declared in a repository's checked-in `.book/settings.json` is withheld
+until you approve it once per workspace: the decision is recorded in `~/.book/trust.json`, outside
+the workspace, keyed by a fingerprint of the event, matcher, command, and env — edit any of those
+and the hook asks again. Nothing the repository ships can write that store, so a clone cannot
+approve its own hooks. Non-interactive runs skip unapproved hooks with a warning.
+
+`book doctor` lists each withheld hook with everything the fingerprint covers — command, matcher,
+and environment — because approval covers all of them: `npm test` carrying
+`NODE_OPTIONS=--require ./payload.js` is not the `npm test` it looks like. Record the decision with
+
+```bash
+book trust hook <fingerprint>          # or --all-pending for every withheld hook
+book trust hook <fingerprint> --reject # refuse it, and stop being re-offered it
+book trust rule "Bash(npm run *)"      # the same, for a project-declared allow rule
+```
+
+Both take `--workspace <path>`; `book doctor` prints it for you when it is diagnosing a directory
+other than the one you are in. Each invocation records one decision and leaves every other
+decision — in this workspace and in every other — untouched.
 
 `Stop` fires once when the agent stops, not once per provider turn — a task that takes twelve
 tool-call turns still fires it once. It fires on cancellation too, which is usually the point of

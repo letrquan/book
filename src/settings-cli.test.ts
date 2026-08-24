@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'child_process';
-import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
@@ -225,6 +225,42 @@ describe('subcommand --workspace targeting', () => {
     // the previous check compared against the repository's own .book/ and
     // skipped itself whenever a developer had the local settings file that
     // scope exists for - inert on exactly the machines that needed it.
+    expect(existsSync(join(scratch, '.book'))).toBe(false);
+  }, 40000);
+
+  // `book trust` is the other subcommand that writes state for a named
+  // directory, and it keys each decision by workspace path. A dropped flag files
+  // the approval against the child's own cwd rather than failing, so the hook
+  // the user meant to release stays withheld with nothing to show for it.
+  it('records a trust decision for the named workspace, in every placement', () => {
+    newTempDirs();
+    function declaresHook(name: string): string {
+      const ws = join(dir, name);
+      mkdirSync(join(ws, '.book'), { recursive: true });
+      writeFileSync(
+        join(ws, '.book', 'settings.json'),
+        JSON.stringify({ hooks: { PreToolUse: [{ command: 'lint-staged.sh' }] } }),
+      );
+      return ws;
+    }
+    const subcommandSide = declaresHook('trust-subcommand-side');
+    const rootSide = declaresHook('trust-root-side');
+
+    expect(runCli(['trust', 'hook', '--workspace', subcommandSide, '--all-pending'])).toContain(
+      'Approved PreToolUse: lint-staged.sh',
+    );
+    expect(runCli(['--workspace', rootSide, 'trust', 'hook', '--all-pending'])).toContain(
+      'Approved PreToolUse: lint-staged.sh',
+    );
+
+    // One entry per named workspace, each holding that workspace's decision.
+    const store = JSON.parse(readFileSync(join(dir, '.book', 'trust.json'), 'utf-8')) as {
+      workspaces: Record<string, { hookEntries: Record<string, string> }>;
+    };
+    expect(Object.keys(store.workspaces)).toHaveLength(2);
+    for (const entry of Object.values(store.workspaces)) {
+      expect(Object.values(entry.hookEntries)).toEqual(['approved']);
+    }
     expect(existsSync(join(scratch, '.book'))).toBe(false);
   }, 40000);
 });

@@ -10,8 +10,7 @@ import { createDefaultRegistry } from './tools/registry.js';
 import { connectMcpServers, disconnectMcpServers } from './mcp.js';
 import { mcpServersToRecord, partitionMcpServersByApproval } from './mcp-approvals.js';
 import { resolveMcpServerList } from './mcp-config.js';
-import { partitionProjectAllowRules } from './permission-approvals.js';
-import { loadSettingsFile } from './settings-loader.js';
+import { collectWithheldProjectNotices } from './project-approval-notices.js';
 import { AgentManager } from './agents/manager.js';
 import { SessionStore } from './session/store.js';
 import { resolveSessionBootstrap } from './session/resolve.js';
@@ -126,17 +125,14 @@ export async function* query(
     try {
       // Project-declared MCP servers require a prior interactive approval;
       // SDK runs cannot prompt, so unapproved servers are skipped with a warning.
-      // Repository-declared allow rules are withheld until the user decides on
-      // them; a non-interactive host cannot ask, so it reports and continues.
-      const projectAllow = partitionProjectAllowRules(
-        loadSettingsFile(join(config.workspace, '.book', 'settings.json'))?.permissions?.allow ??
-          [],
-        config.settings.permissions.projectAllowRules,
-      );
-      for (const rule of projectAllow.pending) {
-        console.warn(
-          `\u26a0  Ignoring project-declared permission rule "${rule}": it requires approval. Run \`book doctor\` to see how to grant it.`,
-        );
+      // Repository-declared allow rules and hooks are withheld until the user
+      // decides on them; an SDK run cannot ask, so it reports and continues.
+      for (const notice of collectWithheldProjectNotices({
+        workspace: config.workspace,
+        settings: config.settings,
+        settingsEnabled: !options.noSettings,
+      })) {
+        console.warn(notice);
       }
       const declaredMcpServers = resolveMcpServerList(config.workspace);
       const mcpPartition = partitionMcpServersByApproval(declaredMcpServers, config.settings);

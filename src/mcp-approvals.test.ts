@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -10,6 +10,7 @@ import {
   persistMcpProjectServerChoice,
 } from './mcp-approvals.js';
 import { resolveMcpServerList, type ResolvedMcpServer } from './mcp-config.js';
+import type { McpProjectServerChoice } from './settings.js';
 
 const tempDirs: string[] = [];
 
@@ -149,46 +150,69 @@ describe('partitionMcpServersByApproval', () => {
     expect(partition.pending.map((s) => s.name)).toEqual(['shared']);
   });
 });
-
 describe('persistMcpProjectServerChoice', () => {
-  it('writes the decision to settings.local.json and evaluate honors it', () => {
+  function readServers(storePath: string): Record<string, McpProjectServerChoice> {
+    const parsed = JSON.parse(readFileSync(storePath, 'utf-8')) as {
+      workspaces: Record<string, { mcpServers: Record<string, McpProjectServerChoice> }>;
+    };
+    const entries = Object.values(parsed.workspaces);
+    expect(entries).toHaveLength(1);
+    return entries[0].mcpServers;
+  }
+
+  it('writes the decision to the trust store and evaluate honors it', () => {
     const workspace = tempDir('book-mcp-persist-');
+    const storePath = join(tempDir('book-mcp-home-'), 'trust.json');
     const target = server();
     const fingerprint = mcpServerFingerprint(target.config);
 
-    const result = persistMcpProjectServerChoice(workspace, target.name, fingerprint, 'approved');
+    const result = persistMcpProjectServerChoice(workspace, target.name, fingerprint, 'approved', {
+      trustStorePath: storePath,
+    });
     expect(result.ok).toBe(true);
 
-    const written = JSON.parse(
-      readFileSync(join(workspace, '.book', 'settings.local.json'), 'utf-8'),
-    ) as {
-      mcp: {
-        projectServers: Record<string, { fingerprint: string; choice: 'approved' | 'rejected' }>;
-      };
-    };
-    expect(written.mcp.projectServers[target.name]).toEqual({ fingerprint, choice: 'approved' });
-    expect(evaluateMcpServerApproval(written, target)).toBe('approved');
-
-    expect(persistMcpProjectServerChoice(workspace, target.name, fingerprint, 'rejected').ok).toBe(
-      true,
+    const written = readServers(storePath);
+    expect(written[target.name]).toEqual({ fingerprint, choice: 'approved' });
+    expect(evaluateMcpServerApproval({ mcp: { projectServers: written } }, target)).toBe(
+      'approved',
     );
-    const updated = JSON.parse(
-      readFileSync(join(workspace, '.book', 'settings.local.json'), 'utf-8'),
-    ) as { mcp: { projectServers: Record<string, { fingerprint: string; choice: string }> } };
-    expect(updated.mcp.projectServers[target.name].choice).toBe('rejected');
+
+    expect(
+      persistMcpProjectServerChoice(workspace, target.name, fingerprint, 'rejected', {
+        trustStorePath: storePath,
+      }).ok,
+    ).toBe(true);
+    expect(readServers(storePath)[target.name].choice).toBe('rejected');
   });
 
-  it('preserves unrelated settings keys', () => {
+  // Decisions accumulate: recording one must not revoke the ones before it.
+  it('preserves decisions made earlier', () => {
     const workspace = tempDir('book-mcp-preserve-');
-    mkdirSync(join(workspace, '.book'), { recursive: true });
-    writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
-      JSON.stringify({ permissions: { allow: ['Read'] } }),
-    );
-    expect(persistMcpProjectServerChoice(workspace, 'github', 'abc123', 'approved').ok).toBe(true);
-    const written = JSON.parse(
-      readFileSync(join(workspace, '.book', 'settings.local.json'), 'utf-8'),
-    ) as Record<string, unknown>;
-    expect(written.permissions).toEqual({ allow: ['Read'] });
+    const storePath = join(tempDir('book-mcp-home-'), 'trust.json');
+
+    persistMcpProjectServerChoice(workspace, 'github', 'abc123', 'approved', {
+      trustStorePath: storePath,
+    });
+    persistMcpProjectServerChoice(workspace, 'linear', 'def456', 'rejected', {
+      trustStorePath: storePath,
+    });
+
+    expect(readServers(storePath)).toEqual({
+      github: { fingerprint: 'abc123', choice: 'approved' },
+      linear: { fingerprint: 'def456', choice: 'rejected' },
+    });
+  });
+
+  // Nothing lands inside the workspace, so a repository can neither read the
+  // decision back nor ship one of its own in a clone.
+  it('writes nothing inside the workspace', () => {
+    const workspace = tempDir('book-mcp-outside-');
+    const storePath = join(tempDir('book-mcp-home-'), 'trust.json');
+
+    persistMcpProjectServerChoice(workspace, 'github', 'abc123', 'approved', {
+      trustStorePath: storePath,
+    });
+
+    expect(existsSync(join(workspace, '.book', 'settings.local.json'))).toBe(false);
   });
 });
