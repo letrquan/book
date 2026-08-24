@@ -228,7 +228,16 @@ describe('runDoctorCommand project-declared hooks', () => {
     try {
       const output = await doctorOutput();
 
-      expect(output).toContain(`book trust hook <fingerprint> --workspace ${workspace}`);
+      // Whether the temp path needs quoting is not this case's business, and it
+      // is not stable across runners: a POSIX `/tmp` path is bare, while a
+      // Windows 8.3 profile name (`C:\Users\RUNNER~1\…`) carries a `~`, which
+      // SHELL_SAFE_BARE excludes, so it arrives double-quoted. Accept either
+      // rendering, but only a balanced one — the quoting rule itself is pinned
+      // by the case below.
+      const path = workspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      expect(output).toMatch(
+        new RegExp(`book trust hook <fingerprint> --workspace (?:${path}|"${path}")\\r?$`, 'm'),
+      );
     } finally {
       cwd.mockRestore();
       rmSync(elsewhere, { recursive: true, force: true });
