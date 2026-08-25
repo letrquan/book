@@ -221,6 +221,21 @@ describe('WorkingIndicator', () => {
     expect(stripAnsi(view.lastFrame())).toContain('Consulting the footnotes · 3s');
   });
 
+  it('rolls elapsed time up into minutes past a minute', () => {
+    vi.useFakeTimers();
+    const view = render(
+      withTheme(<WorkingIndicator isThinking messages={[]} terminalWidth={80} />),
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(248_000);
+    });
+
+    const frame = stripAnsi(view.lastFrame());
+    expect(frame).toContain('· 4m 8s');
+    expect(frame).not.toContain('248s');
+  });
+
   it('resets elapsed time when activity resumes after approval', async () => {
     vi.useFakeTimers();
     const view = render(

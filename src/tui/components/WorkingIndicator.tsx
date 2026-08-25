@@ -13,6 +13,7 @@ import { useUiClock } from '../ui-clock.js';
 import { useTheme } from '../theme.js';
 import { deriveWorkingActivity } from '../working-activity.js';
 import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
+import { formatElapsedDuration } from './SubagentRow.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 interface WorkingIndicatorProps {
@@ -194,7 +195,11 @@ export function WorkingIndicator({
         : isThinking || isCompacting
           ? ' · Esc to cancel'
           : '';
-  const elapsed = shouldTrackElapsed && !motionDisabled ? ` · ${elapsedSeconds}s` : '';
+  // Rolls up to `4m 8s` / `1h 2m 3s` past a minute, matching subagent rows,
+  // background shells and tool rows. A bare second count stops being readable
+  // as a duration somewhere around three digits.
+  const elapsed =
+    shouldTrackElapsed && !motionDisabled ? ` · ${formatElapsedDuration(elapsedSeconds)}` : '';
   const line = fitActivityLine(activity?.label ?? '', elapsed, hint, Math.max(1, contentWidth - 2));
   const indicator = activity?.blocked ? '◇' : spinner.frame;
   const indicatorColor =
