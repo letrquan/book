@@ -357,9 +357,9 @@ Zero-Mem evidence budget. Reader calls share a 1,024-token output cap across all
 `--retrieval-only` (or `--offline`) skips the reader but still runs the real local NER and BGE-M3
 encoder. Model weights are cached outside the repository; set
 `BOOK_ZERO_MEM_MODEL_CACHE` to choose a persistent cache directory.
-Production sessions use cached weights only by default so selecting Zero-Mem never silently starts
-a model download. Set `BOOK_ZERO_MEM_LOCAL_FILES_ONLY=false` explicitly for one run to populate the
-cache, then remove it or set it back to `true`. Zero-Mem uses the optional
+The Zero-Mem runtime capability is unavailable by default and never silently starts a model
+download when explicitly enabled. Set `BOOK_ZERO_MEM_LOCAL_FILES_ONLY=false` for one run to
+populate the cache, then remove it or set it back to `true`. Zero-Mem uses the optional
 `@huggingface/transformers` peer; source checkouts install it for evaluation, while packaged
 installations that enable Zero-Mem must install that peer explicitly.
 
@@ -426,13 +426,35 @@ BOOK_ZERO_MEM_MODEL_CACHE=/path/to/model-cache npm run eval:zero-mem -- --model 
 }
 ```
 
-`compactStrategy` accepts `summary` (default) or `zero-mem`. `summary` preserves the existing
-LLM-generated checkpoint behavior. `zero-mem` keeps the original session transcript authoritative,
-builds a session-scoped BGE-M3/NER index, incrementally indexes completed turns, and retrieves
-query-specific evidence before each main-agent run. It does not persist retrieved evidence as a
-checkpoint. Under Zero-Mem, manual `/compact` initializes or refreshes the index and reports
-readiness without replacing conversation history. Set it from `/config` (shortcut `R`) or with
-`/config compact-strategy zero-mem`; `BOOK_COMPACT_STRATEGY` overrides the setting.
+`compactStrategy` supports only `summary`, the production default. Zero-Mem is retained as an
+explicitly named experiment and is unavailable under shipped defaults. Opt in for one process with
+`BOOK_EXPERIMENTAL_ZERO_MEM=true`, or put the following in the user-global
+`<BOOK_HOME>/settings.json` (normally `~/.book/settings.json`):
+
+```json
+{
+  "experimental": {
+    "zeroMem": true
+  }
+}
+```
+
+An explicit `--settings <path>` document may also enable it. Project `.book/settings.json` and
+workspace `.book/settings.local.json` cannot activate experimental capabilities, and neither the
+`/config` menu nor `/config`/`book config set` writes offer a local opt-in. This prevents merely
+opening a clone — including one that force-added a local settings file — from enabling unstable
+runtime behavior.
+
+When enabled, Zero-Mem keeps the original session transcript authoritative, builds a session-scoped
+BGE-M3/NER index, incrementally indexes completed turns, and retrieves query-specific evidence
+before each main-agent run. It does not persist retrieved evidence as a checkpoint. Manual
+`/compact` initializes or refreshes the index and reports readiness without replacing conversation
+history; managed subagents continue to use summary compaction.
+
+Migration: remove `compactStrategy: "zero-mem"` and replace it with the trusted
+`experimental.zeroMem` opt-in above. `BOOK_COMPACT_STRATEGY=zero-mem` is also rejected; use
+`BOOK_EXPERIMENTAL_ZERO_MEM=true` instead. The old setting, environment selector, TUI shortcut, and
+`/config compact-strategy` command no longer activate Zero-Mem.
 
 `compactModel` is optional. When set, manual and automatic `/compact` calls use that configured
 provider/model only for checkpoint generation while normal agent turns continue on `model`. The
@@ -701,7 +723,7 @@ Project themes can override any token in `.book/themes/<name>.json`. They appear
 | `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                               |
 | `BOOK_WORKSPACE`                                                                                  | Default workspace                                                 |
 | `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                          |
-| `BOOK_COMPACT_STRATEGY`                                                                           | `summary` (default) or `zero-mem`                                 |
+| `BOOK_EXPERIMENTAL_ZERO_MEM`                                                                      | Explicit `true`/`false` opt-in for experimental Zero-Mem          |
 | `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                        |
 | `BOOK_ZERO_MEM_MODEL_CACHE` / `BOOK_ZERO_MEM_LOCAL_FILES_ONLY`                                    | Zero-Mem model cache and download policy                          |
 | `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                          |

@@ -262,7 +262,7 @@ export class ZeroMemRuntime {
       const hint =
         process.env.BOOK_ZERO_MEM_LOCAL_FILES_ONLY === 'false'
           ? ''
-          : ' Set BOOK_ZERO_MEM_LOCAL_FILES_ONLY=false once to permit downloading the model cache, or select compactStrategy=summary.';
+          : ' Set BOOK_ZERO_MEM_LOCAL_FILES_ONLY=false once to permit downloading the model cache, or disable experimental.zeroMem.';
       throw new Error(`Zero-Mem semantic models are unavailable.${hint} ${detail}`.trim());
     }
   }

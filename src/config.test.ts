@@ -73,20 +73,64 @@ describe('loadConfig model defaults', () => {
     expect(loadConfig(workspace).compactModel).toBe('router/env-reducer');
   });
 
-  it('loads the compact strategy with a validated environment override', () => {
+  it('keeps summary compaction and the Zero-Mem experiment disabled by default', () => {
+    const config = loadConfig(workspace, { noSettings: true });
+
+    expect(config.compactStrategy).toBe('summary');
+    expect(config.experimentalZeroMem).toBe(false);
+    expect(config.settings.experimental.zeroMem).toBe(false);
+  });
+
+  it('loads the Zero-Mem experiment from the trusted user-global settings file', () => {
+    const bookHome = join(workspace, 'book-home');
+    mkdirSync(bookHome, { recursive: true });
     writeFileSync(
-      join(workspace, '.book', 'settings.json'),
-      JSON.stringify({ compactStrategy: 'zero-mem' }),
+      join(bookHome, 'settings.json'),
+      JSON.stringify({ experimental: { zeroMem: true } }),
+    );
+    process.env.BOOK_HOME = bookHome;
+
+    const config = loadConfig(workspace);
+
+    expect(config.compactStrategy).toBe('summary');
+    expect(config.experimentalZeroMem).toBe(true);
+    expect(config.settings.experimental.zeroMem).toBe(true);
+  });
+
+  it('loads the Zero-Mem experiment from an explicit --settings document', () => {
+    const overridePath = join(workspace, 'explicit-settings.json');
+    writeFileSync(overridePath, JSON.stringify({ experimental: { zeroMem: true } }));
+
+    expect(loadConfig(workspace, { settingsOverridePath: overridePath }).experimentalZeroMem).toBe(
+      true,
+    );
+  });
+
+  it('allows a strict environment opt-in and opt-out for the Zero-Mem experiment', () => {
+    process.env.BOOK_EXPERIMENTAL_ZERO_MEM = ' TRUE ';
+    expect(loadConfig(workspace, { noSettings: true }).experimentalZeroMem).toBe(true);
+
+    process.env.BOOK_EXPERIMENTAL_ZERO_MEM = 'false';
+    expect(loadConfig(workspace, { noSettings: true }).experimentalZeroMem).toBe(false);
+
+    process.env.BOOK_EXPERIMENTAL_ZERO_MEM = '1';
+    expect(() => loadConfig(workspace, { noSettings: true })).toThrow(
+      'BOOK_EXPERIMENTAL_ZERO_MEM must be "true" or "false"',
+    );
+  });
+
+  it('rejects legacy Zero-Mem environment selection with migration guidance', () => {
+    process.env.BOOK_COMPACT_STRATEGY = 'SUMMARY';
+    expect(loadConfig(workspace, { noSettings: true }).compactStrategy).toBe('summary');
+
+    process.env.BOOK_COMPACT_STRATEGY = 'zero-mem';
+    expect(() => loadConfig(workspace, { noSettings: true })).toThrow(
+      'BOOK_EXPERIMENTAL_ZERO_MEM=true',
     );
 
-    expect(loadConfig(workspace).compactStrategy).toBe('zero-mem');
-
-    process.env.BOOK_COMPACT_STRATEGY = 'SUMMARY';
-    expect(loadConfig(workspace).compactStrategy).toBe('summary');
-
     process.env.BOOK_COMPACT_STRATEGY = 'invalid';
-    expect(() => loadConfig(workspace)).toThrow(
-      'BOOK_COMPACT_STRATEGY must be "summary" or "zero-mem"',
+    expect(() => loadConfig(workspace, { noSettings: true })).toThrow(
+      'BOOK_COMPACT_STRATEGY is deprecated',
     );
   });
 });

@@ -60,6 +60,16 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Zero-Mem is now an explicitly named experiment and is unavailable by default.** Production
+  `compactStrategy` accepts only `summary`; the normal `/config` menu, `R` shortcut, and
+  `/config compact-strategy` selector no longer expose Zero-Mem. Activation requires strict
+  `BOOK_EXPERIMENTAL_ZERO_MEM=true`, `experimental.zeroMem: true` in the user-global
+  `<BOOK_HOME>/settings.json`, or an explicit `--settings` document. Both workspace settings layers
+  are withheld from enabling experimental capabilities so a clone cannot opt the user in, and local
+  `/config`/`book config set` writes refuse the key rather than pretending it will take effect.
+  Legacy `compactStrategy: "zero-mem"` and `BOOK_COMPACT_STRATEGY=zero-mem` selectors fail with
+  migration guidance; explicitly enabled main-agent runs keep query-time retrieval while subagents
+  retain summary compaction.
 - **The TUI now lays every row out on one grid, and the palette gives every role its own hue.**
   A transcript row is `[gutter][content]`: the gutter is two columns wide and carries status (a
   glyph, a rail, a spinner), and content always begins on the same column. Before this, each

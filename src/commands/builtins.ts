@@ -31,6 +31,10 @@ import type { SkillRegistrySnapshot } from '../skill-registry.js';
 import { buildSkillReport } from '../skill-report.js';
 import { buildMcpStatusReport } from '../mcp-report.js';
 import type { McpHostSnapshot } from '../mcp-host.js';
+import {
+  isExperimentalSettingPath,
+  WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE,
+} from '../settings-scope.js';
 
 export interface BuiltinCommand {
   name: string;
@@ -140,10 +144,9 @@ function configCommandEffect(
     return {
       type: 'local-message',
       content:
-        formatSettingsKeyHelp('Settable keys (dot-separated):') +
+        formatSettingsKeyHelp('Supported keys (experimental.* is user-global/--settings only):') +
         '\n\nUsage: /config <key>=<value>\n' +
-        '       /config compact-model <provider/model>\n' +
-        '       /config compact-strategy <summary|zero-mem>',
+        '       /config compact-model <provider/model>',
     };
   }
   const compactModelMatch = rawArguments.match(/^compact-model\s+(.+)$/i);
@@ -153,12 +156,15 @@ function configCommandEffect(
       context,
     );
   }
-  const compactStrategyMatch = rawArguments.match(/^compact-strategy\s+(summary|zero-mem)$/i);
-  if (compactStrategyMatch?.[1]) {
-    return configCommandEffect(
-      `compactStrategy=${JSON.stringify(compactStrategyMatch[1].toLowerCase())}`,
-      context,
-    );
+  if (/^(?:compact-strategy|compactStrategy)(?:\s|=)/i.test(rawArguments)) {
+    return {
+      type: 'local-message',
+      content:
+        'Compact strategy selection was removed. Summary is the default; enable the ' +
+        'Zero-Mem experiment with BOOK_EXPERIMENTAL_ZERO_MEM=true or ' +
+        'experimental.zeroMem=true in <BOOK_HOME>/settings.json (normally ' +
+        '~/.book/settings.json), or pass an explicit --settings file.',
+    };
   }
   if (!rawArguments.includes('=')) {
     return { type: 'local-message', content: 'Usage: /config [key=value] or /config --help' };
@@ -167,18 +173,19 @@ function configCommandEffect(
   const separator = rawArguments.indexOf('=');
   const rawKey = rawArguments.slice(0, separator).trim();
   const normalizedKey = rawKey.toLowerCase();
-  const key =
-    normalizedKey === 'compact-model'
-      ? 'compactModel'
-      : normalizedKey === 'compact-strategy'
-        ? 'compactStrategy'
-        : rawKey;
+  const key = normalizedKey === 'compact-model' ? 'compactModel' : rawKey;
   const rawValue = rawArguments.slice(separator + 1).trim();
   let value: unknown = rawValue;
   try {
     value = JSON.parse(rawValue);
   } catch {
     // Unquoted values are stored as strings.
+  }
+  if (isExperimentalSettingPath(rawKey)) {
+    return {
+      type: 'local-message',
+      content: WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE,
+    };
   }
   const result = new SettingsRepository(
     join(context.workspace, '.book', 'settings.local.json'),

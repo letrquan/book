@@ -118,4 +118,20 @@ describe('book config set refuses trust-owned keys', () => {
     expect(result.out).toContain('Set permissions.deny');
     expect(existsSync(localSettings())).toBe(true);
   });
+
+  it('refuses to write experimental capability flags to workspace-local settings', async () => {
+    const result = await set('experimental.zeroMem', 'true');
+
+    expect(result.exitCode).toBe(1);
+    expect(result.err).toContain('cannot be written');
+    expect(existsSync(localSettings())).toBe(false);
+  });
+
+  it('rejects the legacy Zero-Mem strategy with migration guidance', async () => {
+    const result = await set('compactStrategy', '"zero-mem"');
+
+    expect(result.exitCode).toBe(1);
+    expect(result.err).toContain('BOOK_EXPERIMENTAL_ZERO_MEM=true');
+    expect(existsSync(localSettings())).toBe(false);
+  });
 });

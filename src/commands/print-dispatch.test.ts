@@ -292,9 +292,9 @@ describe('resolvePrintCommand — host effects fail loudly', () => {
   it('never executes an interactive built-in, so its side effects cannot fire', async () => {
     const workspace = tempWorkspace();
 
-    await expect(
-      resolvePrintCommand('/config compactStrategy="zero-mem"', env(workspace)),
-    ).rejects.toBeInstanceOf(UnsupportedPrintCommandError);
+    await expect(resolvePrintCommand('/config maxTurns=12', env(workspace))).rejects.toBeInstanceOf(
+      UnsupportedPrintCommandError,
+    );
 
     // /config writes .book/settings.local.json the moment it executes.
     expect(existsSync(join(workspace, '.book', 'settings.local.json'))).toBe(false);

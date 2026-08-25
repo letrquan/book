@@ -465,6 +465,7 @@ export function createRunAmbientSnapshot(
     contextFingerprint: fingerprint({
       autoCompactEnabled: config.autoCompactEnabled,
       compactStrategy: config.compactStrategy,
+      experimentalZeroMem: config.experimentalZeroMem,
       maxTokens: config.maxTokens,
       memory: memoryProjection,
       toolDiscovery: sanitize(config.settings.toolDiscovery),

@@ -48,7 +48,6 @@ import {
 import {
   DEFAULT_SETTINGS,
   providerConfigSchema,
-  type CompactStrategy,
   type ResolvedSettings,
   type SkillActivation,
   type SkillExecution,
@@ -614,7 +613,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         const contextLimit = resolveContextLimit(liveConfig);
         const hostCompactAttemptKey = `${usagePressureTokens(hostUsageRef.current)}:${contextHistoryRef.current.length}`;
         if (
-          liveConfig.compactStrategy === 'summary' &&
+          !liveConfig.experimentalZeroMem &&
           liveConfig.autoCompactEnabled !== false &&
           contextLimit != null &&
           shouldCompact(hostUsageRef.current, contextLimit) &&
@@ -1664,27 +1663,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [config.workspace],
   );
 
-  const setCompactStrategy = useCallback(
-    (strategy: CompactStrategy) => {
-      const result = persistSettingLocal(config.workspace, 'compactStrategy', strategy);
-      if (!result.ok) return result;
-      setLiveConfig((current) => ({
-        ...current,
-        compactStrategy: strategy,
-        settings: { ...current.settings, compactStrategy: strategy },
-      }));
-      if (strategy === 'summary') {
-        contextHistoryRef.current = messagesRef.current.filter(
-          (message) => message.includeInContext && message.kind !== 'local',
-        );
-        hostUsageRef.current = null;
-        setUsage(null);
-      }
-      return { ok: true };
-    },
-    [config.workspace],
-  );
-
   const setSkillActivation = useCallback(
     (skillName: string, activation: SkillActivation) => {
       const persisted = persistSkillActivationLocal(config.workspace, skillName, activation);
@@ -1888,7 +1866,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setEffort,
     setAgentProfileModel,
     setCompactModel,
-    setCompactStrategy,
     setSkillActivation,
     setSkillExecution,
     setSkillsEnabled,

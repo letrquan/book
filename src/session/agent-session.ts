@@ -713,7 +713,7 @@ export class AgentSession {
 
   async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {
     const runtime = request.runtime ?? this.runtime;
-    if (request.config.compactStrategy === 'zero-mem') {
+    if (request.config.experimentalZeroMem) {
       const warmed = await runtime.zeroMemRuntime.warm(
         request.sourceHistory ?? request.history,
         request.sessionId ?? 'session',
@@ -840,8 +840,7 @@ export class AgentSession {
       });
     const runtime = request.options?.runtime ?? this.runtime;
     let effectiveHistory = request.history;
-    const usesZeroMem =
-      request.config.compactStrategy === 'zero-mem' && !request.options?.isSubagent;
+    const usesZeroMem = request.config.experimentalZeroMem && !request.options?.isSubagent;
     const loopConfig = usesZeroMem
       ? { ...request.config, autoCompactEnabled: false }
       : request.config;
@@ -1075,7 +1074,7 @@ export class AgentSession {
         getMode: callbacks.getMode,
         onModeChange: callbacks.onModeChange,
         onPlanHandoff: callbacks.onPlanHandoff,
-        onCompact: loopConfig.compactStrategy === 'zero-mem' ? undefined : callbacks.onCompact,
+        onCompact: usesZeroMem ? undefined : callbacks.onCompact,
         onAssistantMessageComplete: (message) => {
           if (request.isCurrent?.() === false) return;
           request.timelineStore?.append(request.sessionId, {

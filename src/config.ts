@@ -4,7 +4,7 @@ import { isAbsolute, join, relative, resolve } from 'path';
 import { homedir } from 'os';
 import type { AgentConfig, RetryConfig } from './types/runtime.js';
 import { resolveSettings, migrateLegacyPermissions } from './settings-loader.js';
-import { compactStrategySchema, DEFAULT_SETTINGS, type CompactStrategy } from './settings.js';
+import { DEFAULT_SETTINGS, type CompactStrategy } from './settings.js';
 import { loadMemoryContext } from './memory-store.js';
 import { assertHarnessModeAvailable, assertSelectableWorkflow } from './harness/coordinator.js';
 
@@ -135,9 +135,16 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const rawModel =
     options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
-  const compactStrategy = process.env.BOOK_COMPACT_STRATEGY
-    ? parseCompactStrategy(process.env.BOOK_COMPACT_STRATEGY)
-    : settings.compactStrategy;
+  validateLegacyCompactStrategy(process.env.BOOK_COMPACT_STRATEGY);
+  const experimentalZeroMem =
+    process.env.BOOK_EXPERIMENTAL_ZERO_MEM === undefined
+      ? settings.experimental.zeroMem
+      : parseExperimentalZeroMem(process.env.BOOK_EXPERIMENTAL_ZERO_MEM);
+  settings = {
+    ...settings,
+    experimental: { ...settings.experimental, zeroMem: experimentalZeroMem },
+  };
+  const compactStrategy: CompactStrategy = 'summary';
   const defaultApiKey = process.env.BOOK_API_KEY || '';
   const defaultBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl || DEFAULT_OPENAI_BASE_URL;
   const defaultMaxTokens =
@@ -152,6 +159,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     modelSelection: rawModel,
     compactModel,
     compactStrategy,
+    experimentalZeroMem,
     // Undefined = unlimited. Only set when env/settings/legacy explicitly provide a value.
     maxTurns: process.env.BOOK_MAX_TURNS
       ? parseInt(process.env.BOOK_MAX_TURNS, 10)
@@ -315,12 +323,24 @@ function validateProvider(raw: string | undefined): AgentConfig['provider'] {
   return VALID_PROVIDERS.has(normalized) ? (normalized as AgentConfig['provider']) : undefined;
 }
 
-function parseCompactStrategy(raw: string): CompactStrategy {
-  const parsed = compactStrategySchema.safeParse(raw.trim().toLowerCase());
-  if (!parsed.success) {
-    throw new Error('BOOK_COMPACT_STRATEGY must be "summary" or "zero-mem"');
+function validateLegacyCompactStrategy(raw: string | undefined): void {
+  if (raw === undefined) return;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'summary') return;
+  if (normalized === 'zero-mem') {
+    throw new Error(
+      'BOOK_COMPACT_STRATEGY=zero-mem is no longer supported. Set ' +
+        'BOOK_EXPERIMENTAL_ZERO_MEM=true to enable the experimental Zero-Mem runtime.',
+    );
   }
-  return parsed.data;
+  throw new Error('BOOK_COMPACT_STRATEGY is deprecated and, when present, must be "summary"');
+}
+
+function parseExperimentalZeroMem(raw: string): boolean {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  throw new Error('BOOK_EXPERIMENTAL_ZERO_MEM must be "true" or "false"');
 }
 
 function clampInt(raw: string, min: number, max: number): number {

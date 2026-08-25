@@ -324,8 +324,16 @@ export type SkillSettings = z.infer<typeof skillSettingsSchema>;
 export type ProviderModelConfig = z.infer<typeof providerModelSchema>;
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;
 
-export const compactStrategySchema = z.enum(['summary', 'zero-mem']);
+/** The supported production strategy; Zero-Mem is gated separately as experimental. */
+export const compactStrategySchema = z.literal('summary');
 export type CompactStrategy = z.infer<typeof compactStrategySchema>;
+
+export const experimentalSettingsSchema = z.object({
+  /** Experimental query-time Zero-Mem retrieval. Disabled unless explicitly enabled. */
+  zeroMem: z.boolean().default(false),
+});
+
+export type ExperimentalSettings = z.infer<typeof experimentalSettingsSchema>;
 
 /**
  * Full settings.json schema — all keys that book supports.
@@ -335,6 +343,8 @@ export const bookSettingsSchema = z.object({
   model: z.string().optional(),
   /** Default strategy used to reduce historical conversation context. */
   compactStrategy: compactStrategySchema.optional(),
+  /** Unstable features that are unavailable under shipped defaults. */
+  experimental: experimentalSettingsSchema.default({}),
   /** Optional model used only to generate historical conversation checkpoints. */
   compactModel: z.string().min(1).optional(),
   /** Max agent turns per user message. Omit for unlimited. */
@@ -405,6 +415,7 @@ export type ResolvedSettings = Required<
  */
 export const DEFAULT_SETTINGS: ResolvedSettings = {
   compactStrategy: 'summary',
+  experimental: { zeroMem: false },
   permissions: { allow: [], ask: [], deny: [], projectAllowRules: {} },
   sandbox: {
     enabled: false,
