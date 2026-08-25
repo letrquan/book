@@ -5,6 +5,7 @@ import {
   MAX_MEASURE,
   withLabelColumn,
   frameGrid,
+  indentedGrid,
   railContentWidth,
   transcriptGrid,
 } from './layout.js';
@@ -65,6 +66,37 @@ describe('railContentWidth', () => {
 
   it('stays renderable when nesting exceeds the width', () => {
     expect(railContentWidth(transcriptGrid(20), 40)).toBe(8);
+  });
+});
+
+describe('indentedGrid', () => {
+  it('spends a gutter on the indent so the right edge does not move', () => {
+    const grid = transcriptGrid(100);
+    const indented = indentedGrid(grid);
+    // The row is drawn CONTENT_COLUMN further in, so it has to give back
+    // exactly that much measure or its metadata runs off the right edge.
+    expect(indented.content).toBe(grid.content - GUTTER_WIDTH);
+    expect(CONTENT_COLUMN + GUTTER_WIDTH + indented.content).toBe(GUTTER_WIDTH + grid.content);
+  });
+
+  it('keeps the label column, unlike a nested rail', () => {
+    const grid = transcriptGrid(100);
+    expect(grid.label).toBeGreaterThan(0);
+    expect(indentedGrid(grid).label).toBe(grid.label);
+  });
+
+  it('keeps label and meta inside the indented budget at every width', () => {
+    for (const width of [20, 32, 60, 76, 100, 240]) {
+      const indented = indentedGrid(transcriptGrid(width));
+      // The target column takes a floor, so only over-allocation is a bug.
+      expect(indented.label + indented.meta).toBeLessThanOrEqual(indented.content);
+    }
+  });
+
+  it('stays renderable when the indent exceeds the width', () => {
+    const indented = indentedGrid(transcriptGrid(20), 40);
+    expect(indented.content).toBe(8);
+    expect(indented.target).toBeGreaterThan(0);
   });
 });
 

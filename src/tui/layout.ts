@@ -12,6 +12,11 @@
  * spinner); content always begins at {@link CONTENT_COLUMN}. Bordered surfaces
  * sit flush at column 0 so their one column of padding lands their text on the
  * same content column.
+ *
+ * Tool rows are the one deliberate step off that column. They carry their own
+ * gutter one level in ({@link indentedGrid}) so the work a turn did reads as
+ * nested under the prose that ordered it, instead of hanging a column of status
+ * glyphs to the left of every sentence.
  */
 
 /** Status glyph plus its trailing space: `"✓ "`, `"│ "`, `"  "`. */
@@ -64,6 +69,32 @@ export function transcriptGrid(terminalWidth: number): TranscriptGrid {
   const meta = Math.max(0, Math.min(20, Math.floor(content * 0.3)));
   const target = Math.max(MIN_TARGET_WIDTH, content - label - meta - 1);
   return { width, content, label, target, meta };
+}
+
+/**
+ * A grid indented `depth` gutters, keeping its label column.
+ *
+ * The model says something, then shows its work; the work should sit under the
+ * sentence that ordered it. Hanging the status glyph in a column to the *left*
+ * of the prose made a turn read as a list of tool calls with text wedged
+ * between them, the sentences pushed in from the margin rather than owning it.
+ *
+ * Indenting spends two columns, so the grid narrows as it shifts and the row's
+ * right edge stays where the prose's is — right-aligned metadata still lines up
+ * all the way down the transcript. Unlike {@link nestedGrid} the label column
+ * survives: a top-level tool row is still the row that names its verb.
+ */
+export function indentedGrid(grid: TranscriptGrid, depth = 1): TranscriptGrid {
+  const content = railContentWidth(grid, depth);
+  const meta = Math.max(0, Math.min(20, Math.floor(content * 0.3)));
+  const label = Math.min(grid.label, Math.max(0, content - meta - MIN_TARGET_WIDTH - 1));
+  return {
+    ...grid,
+    content,
+    label,
+    target: Math.max(MIN_TARGET_WIDTH, content - label - meta - 1),
+    meta,
+  };
 }
 
 /** Content width inside a rail nested `depth` levels under a transcript row. */

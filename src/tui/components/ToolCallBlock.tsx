@@ -16,7 +16,14 @@ import {
   deriveToolPresentation,
   type ToolPresentationStatus,
 } from '../tool-presentation.js';
-import { CONTENT_COLUMN, nestedGrid, transcriptGrid, withLabelColumn } from '../layout.js';
+import {
+  CONTENT_COLUMN,
+  GUTTER_WIDTH,
+  indentedGrid,
+  nestedGrid,
+  transcriptGrid,
+  withLabelColumn,
+} from '../layout.js';
 import { formatElapsedDuration } from './SubagentRow.js';
 import { useToolRowInteractionRegistry } from './tool-row-interactions.js';
 import { useUiClock } from '../ui-clock.js';
@@ -242,7 +249,11 @@ function ToolCallBlockInner({
     const base = transcriptGrid(terminalWidth);
     return labelWidth === undefined ? base : withLabelColumn(base, labelWidth);
   }, [labelWidth, terminalWidth]);
-  const blockWidth = grid.content;
+  // The row nests one gutter under the prose it belongs to, so its own grid is
+  // the indented one; `grid` stays the message-level measure the label column
+  // was negotiated against.
+  const rowGrid = useMemo(() => indentedGrid(grid), [grid]);
+  const blockWidth = rowGrid.content;
   const presentation = useMemo(
     () => deriveToolPresentation(name, args, result, { isPending, nestedActivityCount }),
     [args, isPending, name, nestedActivityCount, result],
@@ -271,15 +282,15 @@ function ToolCallBlockInner({
           target: mutationSummary.filePath,
           metadata: [`+${mutationSummary.addedLines}`, `-${mutationSummary.removedLines}`],
         },
-        nestedGrid(grid),
+        nestedGrid(rowGrid),
         { error: inlineError },
       );
     }
-    return composeToolRow(presentation, isFileChild ? nestedGrid(grid) : grid, {
+    return composeToolRow(presentation, isFileChild ? nestedGrid(rowGrid) : rowGrid, {
       elapsed,
       error: inlineError,
     });
-  }, [elapsed, grid, inlineError, isFileChild, mutationSummary, presentation]);
+  }, [elapsed, rowGrid, inlineError, isFileChild, mutationSummary, presentation]);
 
   useLayoutEffect(() => {
     if (!registry || !toolId) return;
@@ -299,7 +310,10 @@ function ToolCallBlockInner({
   }
 
   return (
-    <Box flexDirection="column" marginLeft={isFileChild ? CONTENT_COLUMN : 0}>
+    <Box
+      flexDirection="column"
+      marginLeft={isFileChild ? CONTENT_COLUMN + GUTTER_WIDTH : CONTENT_COLUMN}
+    >
       <Box ref={summaryRef} height={1}>
         {/* The gutter carries status; content always begins on the next column. */}
         {isFileChild ? (

@@ -7,7 +7,13 @@ import { MarkdownBlock, useThrottledValue } from './MarkdownBlock.js';
 import { CommandPanel } from './CommandPanel.js';
 import { useTheme } from '../theme.js';
 import { useDensityMetrics } from '../density.js';
-import { CONTENT_COLUMN, GUTTER_WIDTH, transcriptGrid, withLabelColumn } from '../layout.js';
+import {
+  CONTENT_COLUMN,
+  GUTTER_WIDTH,
+  indentedGrid,
+  transcriptGrid,
+  withLabelColumn,
+} from '../layout.js';
 import { composeToolRow, toolLabelColumnWidth, toolRowLabel } from '../tool-presentation.js';
 import type { Message } from '../../types/messages.js';
 import type { RetryPhase } from '../../types/runtime.js';
@@ -420,7 +426,7 @@ function MutationGroupRow({
     );
   }
   return (
-    <Box height={1}>
+    <Box height={1} marginLeft={CONTENT_COLUMN}>
       <Text color={theme.success}>{'• '}</Text>
       {row.label ? (
         <Text color={theme.inactive} dimColor>
@@ -567,7 +573,11 @@ export function AgentMessageInner({
       ),
     [topLevelInvocations],
   );
-  const mutationGrid = useMemo(() => withLabelColumn(grid, labelWidth), [grid, labelWidth]);
+  // The heading sits on the same indented grid as the tool rows it heads.
+  const mutationGrid = useMemo(
+    () => indentedGrid(withLabelColumn(grid, labelWidth)),
+    [grid, labelWidth],
+  );
   const selectedAutomaticToolId = automaticToolCallId ?? expandedToolCallId;
 
   if (message.localCommand) {
