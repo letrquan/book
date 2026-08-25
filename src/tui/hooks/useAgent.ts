@@ -29,7 +29,11 @@ import { resolveContextLimit, shouldCompact, usagePressureTokens } from '../../a
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types/runtime.js';
-import { makeMessage, removeTrailingEmptyAssistantPlaceholder } from './streaming-state.js';
+import {
+  makeMessage,
+  removeTrailingEmptyAssistantPlaceholder,
+  resetStreamedContent,
+} from './streaming-state.js';
 import { createDebugLoggerWithCounter, createUiDebugLogger } from '../../debug-log.js';
 import { loadMemoryContext } from '../../memory-store.js';
 import {
@@ -580,6 +584,32 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [],
   );
 
+  // Unconditional append, shared by the immediate and the deferred path so a
+  // replayed message is byte-identical to one that was never blocked.
+  const appendLocalMessage = useCallback(
+    (text: string, localCommand?: LocalCommandDisplay) => {
+      const msg = {
+        ...makeMessage('assistant', text, undefined, false),
+        kind: 'local' as const,
+        localCommand,
+      };
+      if (timelineStore) {
+        timelineStore.append(sessionIdRef.current, {
+          type: 'local',
+          eventId: msg.id,
+          timestamp: msg.timestamp,
+          data: { id: msg.id, content: msg.content, kind: 'local', includeInContext: false },
+        });
+      }
+      setMessages((prev) => {
+        const next = [...prev, msg];
+        messagesRef.current = next;
+        return next;
+      });
+    },
+    [timelineStore],
+  );
+
   const sendMessage = useCallback(
     async (
       userMessage: string,
@@ -779,6 +809,21 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               case 'tool_result':
                 activeAccumulator?.addToolResult(event.toolResult);
                 break;
+              case 'attempt_discarded': {
+                // Land anything still queued before clearing, or it would flush
+                // the abandoned attempt back in on top of the reset.
+                activeAccumulator?.flush();
+                const streamingId = streamingIdRef.current;
+                if (streamingId) {
+                  setMessages((prev) => {
+                    const next = resetStreamedContent(prev, streamingId);
+                    messagesRef.current = next;
+                    return next;
+                  });
+                }
+                uiLog.event('attempt:discarded', { reason: event.reason });
+                break;
+              }
               case 'error':
                 log.warn('agent error', { error: event.error });
                 break;
@@ -977,6 +1022,36 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         streamingIdRef.current = null;
         setStreamingMessageId(null);
       }
+      // A run that ended badly used to leave no trace at all: the loop skips
+      // `onAssistantMessageComplete` on its error path, which is the only writer
+      // to the session store, and the transient banner is cleared by the next
+      // send. A run that stopped for a reason the user never saw looks exactly
+      // like a model that decided it was finished. Record it in the transcript
+      // instead, after the placeholder cleanup so it is the last row.
+      //
+      // Keyed on the settled outcome rather than on `onError`, which also fires
+      // for problems the run recovers from — a skill that fails to activate is
+      // reported to the model in the prompt and the turn carries on — so an
+      // error event would stamp a failure notice onto turns that succeeded.
+      // `cancelled` is the user's own doing, and the outcomes for a session the
+      // user left carry no message, so both stay silent.
+      // A prepare-phase failure carries no outcome; it is already reported by
+      // the banner, which `shouldDiscardOptimisticMessages` admits for it.
+      const settled = 'outcome' in sendResult ? sendResult.outcome : undefined;
+      if (
+        hostStillCurrent &&
+        settled?.message &&
+        settled.status !== 'completed' &&
+        settled.status !== 'cancelled'
+      ) {
+        uiLog.event('run-failure:surfaced', { reason: settled.reason });
+        appendLocalMessage(`✕ ${settled.message}`);
+        // The terminal snapshot already put this same text in the transient
+        // banner above the composer, synchronously, before this teardown ran.
+        // Two copies of one failure reads as two failures, so the banner gives
+        // way to the transcript row, which is the copy that survives a resume.
+        setError(null);
+      }
       uiLog.event('send:finally', { durationMs: Date.now() - turnStartRef.current });
       return sendResult;
     },
@@ -985,6 +1060,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       clearCountdown,
       compactBoundaries,
       finalizeStreamingMessages,
+      appendLocalMessage,
       timelineStore,
       projectCompactResult,
       session.snapshotStore,
@@ -1440,32 +1516,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     modeRef.current = nextMode;
     setMode(nextMode);
   }, []);
-
-  // Unconditional append, shared by the immediate and the deferred path so a
-  // replayed message is byte-identical to one that was never blocked.
-  const appendLocalMessage = useCallback(
-    (text: string, localCommand?: LocalCommandDisplay) => {
-      const msg = {
-        ...makeMessage('assistant', text, undefined, false),
-        kind: 'local' as const,
-        localCommand,
-      };
-      if (timelineStore) {
-        timelineStore.append(sessionIdRef.current, {
-          type: 'local',
-          eventId: msg.id,
-          timestamp: msg.timestamp,
-          data: { id: msg.id, content: msg.content, kind: 'local', includeInContext: false },
-        });
-      }
-      setMessages((prev) => {
-        const next = [...prev, msg];
-        messagesRef.current = next;
-        return next;
-      });
-    },
-    [timelineStore],
-  );
 
   // Surface a local-only assistant message WITHOUT an agent round-trip.
   // Precedent: compact() mutates messages directly via setMessages. Unlike

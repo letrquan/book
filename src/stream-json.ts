@@ -25,6 +25,12 @@ export type StreamJsonEvent =
   | { type: 'agent_completion'; notification?: unknown }
   | { type: 'agent_permission'; agentId?: string; request?: unknown }
   | { type: 'evidence_update'; evidence?: unknown }
+  /**
+   * The turn is being retried; discard every `assistant`/`reasoning` delta
+   * emitted for it so far. Only the replacement attempt reaches the transcript,
+   * so a consumer that concatenates blindly would keep text no history records.
+   */
+  | { type: 'attempt_discarded'; reason?: string }
   | { type: 'agent_apply'; agentId?: string; evidenceId?: string; status?: string }
   | { type: 'hook_event'; event?: string; [key: string]: unknown }
   | { type: 'mode_change'; mode?: string }

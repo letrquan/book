@@ -7,6 +7,7 @@ import { createDefaultRegistry, createRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
+import type { Message } from '../types/messages.js';
 import { askUserQuestionTools } from '../tools/ask-user-question.js';
 import { toolSuccess } from '../tools/result.js';
 import { readToolUseRecords } from '../tool-telemetry.js';
@@ -794,6 +795,249 @@ describe('runAgentLoop streaming render callbacks', () => {
 
     expect(calls).toBe(2);
     expect(errors[0]).toMatch(/empty response/i);
+    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'protocol_error' });
+  });
+
+  it('hands a half-streamed answer to the session store before failing', async () => {
+    // `onAssistantMessageComplete` is the only writer to the session file. The
+    // error path used to skip it, so text the user watched arrive was missing
+    // from the transcript after a `--resume`.
+    const persisted: string[] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield { type: 'text', content: 'half an answ' };
+        yield {
+          type: 'error',
+          error: 'Provider stream ended before its terminal event.',
+          errorCode: 'transport_interrupted',
+        };
+      },
+    };
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onAssistantMessageComplete: (message) => persisted.push(message.content),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(persisted).toEqual(['half an answ']);
+  });
+
+  it('settles a tool call the stream never got to run', async () => {
+    // `buildMessages` emits `tool_calls` but only emits results for calls that
+    // have one, so a dangling call makes every later request malformed and, once
+    // persisted, wedges the session past a `--resume`.
+    const persisted: Message[] = [];
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'call-1', name: 'Bash', arguments: { command: 'ls' } },
+        };
+        yield {
+          type: 'error',
+          error: 'Provider stream ended before its terminal event.',
+          errorCode: 'transport_interrupted',
+        };
+      },
+    };
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onAssistantMessageComplete: (message) => persisted.push(message),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    const finalMessage = history.at(-1);
+    expect(finalMessage?.toolCalls?.map((call) => call.id)).toEqual(['call-1']);
+    expect(finalMessage?.toolResults?.map((result) => result.toolCallId)).toEqual(['call-1']);
+    expect(finalMessage?.toolResults?.[0].status).toBe('cancelled');
+    // The persisted copy carries the same pairing, or a resume rebuilds a
+    // request the provider rejects.
+    expect(persisted.at(-1)?.toolResults).toHaveLength(1);
+  });
+
+  it('tells the host to drop an attempt it abandons', async () => {
+    // The deltas are already delivered and cannot be recalled, so a retry that
+    // says nothing leaves the abandoned reasoning in front of its replacement.
+    const streamed: string[] = [];
+    const discards: number[] = [];
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        if (calls === 1) {
+          yield { type: 'text', content: '<think>abandoned</think>' };
+          yield { type: 'done', finishReasons: ['stop'] };
+          return;
+        }
+        yield { type: 'text', content: 'the real answer' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onText: (text) => streamed.push(text),
+        onAttemptDiscarded: () => discards.push(streamed.length),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    // Discarded once, after the abandoned attempt and before the replacement.
+    expect(discards).toEqual([1]);
+    expect(streamed).toEqual(['<think>abandoned</think>', 'the real answer']);
+  });
+
+  it('retries a turn whose only content was an inline reasoning block', async () => {
+    // Routers that inline thinking as `<think></think>` instead of sending
+    // `reasoning_content` leave the raw content non-empty, which used to read as
+    // a finished answer and ended the run mid-task with no tool call and no text.
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        if (calls === 1) {
+          yield { type: 'text', content: '<think></think>' };
+          yield { type: 'done', finishReasons: ['stop'] };
+          return;
+        }
+        yield { type: 'text', content: 'done looking.' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(outcomes[0]).toMatchObject({ status: 'completed' });
+    expect(history.at(-1)?.content).toContain('done looking.');
+  });
+
+  it('retries a stream cut before its terminal event', async () => {
+    // `transport_interrupted` never sets `streamDone`, so gating the retry on it
+    // meant a router that closed the socket early was never retried at all.
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        if (calls === 1) {
+          yield {
+            type: 'error',
+            error: 'Provider stream ended before its terminal event.',
+            errorCode: 'transport_interrupted',
+          };
+          return;
+        }
+        yield { type: 'text', content: 'recovered.' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(outcomes[0]).toMatchObject({ status: 'completed' });
+    expect(history.at(-1)?.content).toContain('recovered.');
+  });
+
+  it('keeps the transport diagnosis when a cut stream stays empty', async () => {
+    const errors: string[] = [];
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield {
+          type: 'error',
+          error: 'Provider stream ended before its terminal event.',
+          errorCode: 'transport_interrupted',
+        };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onError: (error) => errors.push(error),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(errors[0]).toMatch(/before its terminal event/i);
+    expect(outcomes[0]).toMatchObject({ status: 'interrupted' });
+  });
+
+  it('does not retry an empty turn that hit the output cap', async () => {
+    // `length` is terminal: the same request would hit the same wall.
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'done', finishReasons: ['length'] };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(1);
     expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'protocol_error' });
   });
 

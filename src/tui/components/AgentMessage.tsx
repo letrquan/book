@@ -19,6 +19,7 @@ import type { Message } from '../../types/messages.js';
 import type { RetryPhase } from '../../types/runtime.js';
 import type { PendingPermissionRequest } from '../../session/agent-interactions.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
+import { splitReasoningParts } from '../../reasoning-tags.js';
 import {
   countNestedToolInvocations,
   indexNestedToolInvocations,
@@ -207,81 +208,13 @@ export function getRetryLabel(
   return undefined;
 }
 
-interface ThinkBlockPart {
-  kind: 'think';
-  text: string;
-}
-
-interface MarkdownPart {
-  kind: 'markdown';
-  text: string;
-}
-
-type MessagePart = ThinkBlockPart | MarkdownPart;
-
 /**
- * Tags a provider may wrap reasoning in.
- *
- * An unlisted tag is not merely unstyled: `marked` sees raw markup and renders
- * the block as fenced HTML, so the transcript grew a code block labelled `html`
- * containing the model's private reasoning.
+ * Reasoning-tag splitting lives in `src/reasoning-tags.ts` so the agent loop can
+ * apply the same rule when deciding whether a turn produced an answer. It is
+ * re-exported under the renderer's own name because that is what the transcript
+ * calls these blocks.
  */
-const REASONING_TAG_PATTERN =
-  /<(think|thinking|reasoning|reasoning_context)>([\s\S]*?)(?:<\/\1>|$)/gi;
-
-/** Opening or closing line of a fenced code block. */
-const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})/gm;
-
-/**
- * Byte ranges covered by fenced code blocks.
- *
- * An answer that quotes a prompt template is ordinary content here, and this
- * repository's own docs contain reasoning tags. Without this, such a fence had
- * its contents torn out and rendered as a collapsed thought, so the code block
- * in the answer silently lost its body.
- */
-function fencedRanges(content: string): Array<[number, number]> {
-  const ranges: Array<[number, number]> = [];
-  FENCE_LINE.lastIndex = 0;
-  let openedAt: number | null = null;
-  let marker = '';
-  let match: RegExpExecArray | null;
-  while ((match = FENCE_LINE.exec(content)) !== null) {
-    if (openedAt === null) {
-      openedAt = match.index;
-      marker = match[1][0];
-    } else if (match[1][0] === marker) {
-      ranges.push([openedAt, FENCE_LINE.lastIndex]);
-      openedAt = null;
-    }
-  }
-  // An unclosed fence runs to the end of the message, which is the common case
-  // mid-stream.
-  if (openedAt !== null) ranges.push([openedAt, content.length]);
-  return ranges;
-}
-
-export function splitThinkBlocks(content: string): MessagePart[] {
-  const parts: MessagePart[] = [];
-  const fenced = fencedRanges(content);
-  const pattern = REASONING_TAG_PATTERN;
-  pattern.lastIndex = 0;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(content)) !== null) {
-    const index = match.index;
-    if (fenced.some(([start, end]) => index >= start && index < end)) continue;
-    const before = content.slice(lastIndex, index);
-    if (before) parts.push({ kind: 'markdown', text: before });
-    parts.push({ kind: 'think', text: match[2].trim() });
-    lastIndex = pattern.lastIndex;
-  }
-
-  const after = content.slice(lastIndex);
-  if (after) parts.push({ kind: 'markdown', text: after });
-  return parts.length > 0 ? parts : [{ kind: 'markdown', text: content }];
-}
+export const splitThinkBlocks = splitReasoningParts;
 
 function reasoningLines(text: string): string[] {
   return text

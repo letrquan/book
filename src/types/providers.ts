@@ -73,6 +73,17 @@ export interface AgentLoopCallbacks {
   onToolCall: (call: ToolCall) => void;
   onToolResult: (result: ToolResult) => void;
   onError: (error: string) => void;
+  /**
+   * The current attempt was abandoned and the same turn is being retried, so
+   * everything already delivered for it should be dropped.
+   *
+   * Deltas are handed over as they arrive and cannot be recalled, so without
+   * this a retried turn leaves the abandoned attempt's text sitting in front of
+   * its replacement while persisted history keeps only the replacement. Holding
+   * the deltas back instead would render a long thinking phase as silence, which
+   * is the failure this whole path exists to stop showing people.
+   */
+  onAttemptDiscarded?: () => void;
   onTurnStart: (turn: number) => void;
   onDone: () => void;
   /** Final runtime outcome. Emitted once; onError remains diagnostic only. */

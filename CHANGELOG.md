@@ -21,6 +21,41 @@ All notable changes to this project are documented in this file.
   guard, every text field and filter strips mouse reports out of the value it accepts, re-seating
   the field's cursor so a dropped report cannot leave the next Backspace deleting the wrong
   character in a masked value.
+- **A run that stops mid-task now says why.** Three faults compounded into a session that simply
+  stopped after a tool result and handed the prompt back, with nothing in the transcript and nothing
+  in the session file to say a request had failed. Reasoning is not always delivered out of band:
+  OpenAI-compatible routers commonly inline it into `content` as `<think>…</think>`, and only the
+  TUI renderer knew to strip those tags. The loop's empty-completion guard tested the raw string, so
+  a turn whose entire output was an empty reasoning block measured fifteen characters, never
+  retried, and ended the run as a normal completion — the guard was dead code against such a
+  provider. The same guard was gated on the stream having reached its terminal event, so a router
+  that closed the socket early skipped it too. And a provider error reached the TUI through a branch
+  that only wrote to a debug logger that is off by default, while the loop's error path skips
+  `onAssistantMessageComplete` — the sole writer to the session store — so neither the failure nor
+  the half-answer that preceded it survived to explain the stop. Reasoning-tag splitting now lives
+  in `src/reasoning-tags.ts`, shared by the loop and the renderer; the loop measures a turn's answer
+  with the tags removed and retries once whether the stream ended cleanly or was cut short,
+  preserving a transport diagnosis rather than replacing it with a generic one. The emptiness test
+  reads only tags the provider actually closed, so an answer that merely opens with an unfenced
+  `<thinking>` is not mistaken for silence. Partial output is now persisted before the loop reports
+  the failure, and the failure itself is written into the transcript — keyed on the run's settled
+  outcome, not on any error event, so a problem the run recovers from (a skill that fails to
+  activate) no longer stamps a failure notice onto a turn that succeeded, and it replaces the
+  transient banner rather than doubling it. What went wrong is visible when it happens and still
+  there after `--resume`.
+- **A stream that dies mid-tool-call no longer wedges the session.** A cut stream can carry a
+  finished tool call the loop never got to run. `buildMessages` puts `tool_calls` on the assistant
+  message but emits results only for calls that have one, so that dangling call made every later
+  request malformed — Anthropic rejects a `tool_use` with no matching `tool_result` — and persisting
+  it carried the breakage past a `--resume`. Abandoned calls are now settled with a cancelled result
+  the way an interrupt settles them.
+- **A retried turn no longer shows the attempt it threw away.** Deltas reach the host as they
+  arrive and cannot be recalled, so when the loop abandoned an attempt and retried, the abandoned
+  reasoning sat in front of its replacement while only the replacement was persisted — the live view
+  and a resumed view disagreed. The loop now emits `attempt_discarded` (new optional
+  `onAttemptDiscarded` callback, and a `stream-json` event of the same name) and the TUI clears the
+  streamed text for that turn. Holding the deltas back instead was rejected deliberately: it would
+  render a long thinking phase as silence, which is the symptom this whole area exists to stop.
 - **Tool rows sit under the prose that ordered them.** A top-level tool row hung its status
   glyph at column 0 while prose began at column 2, so a turn read as a list of tool calls with
   sentences wedged between them — the prose indented from a margin the glyphs owned. Tool rows and

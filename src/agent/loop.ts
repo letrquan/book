@@ -43,6 +43,7 @@ import {
   type CapabilityRule,
 } from '../tools/capability-rules.js';
 import { createDebugLogger } from '../debug-log.js';
+import { stripReasoningTags } from '../reasoning-tags.js';
 import { maybeCaptureMemoryCandidate } from '../memory-autosave.js';
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
@@ -658,7 +659,13 @@ export async function runAgentLoop(
       let responseMetadata: ProviderResponseMetadata | undefined;
       let assistantProviderMetadata: ProviderMessageMetadata | undefined;
 
-      // Buffer text during streaming so we can discard on retry.
+      // Accumulate text so a retried turn rebuilds `assistantContent` from the
+      // attempt that actually counted. This discards the abandoned attempt from
+      // the loop's accounting only: the host was handed those deltas through
+      // `onText` as they arrived, and there is no callback to take them back, so
+      // a retry leaves the abandoned text on screen and persists only the
+      // replacement. Retries fire only when an attempt answered nothing, so what
+      // is stranded is a reasoning block the transcript collapses to one row.
       let textBuffer = '';
       let heldText = '';
       let textStreamingStarted = false;
@@ -841,25 +848,50 @@ export async function runAgentLoop(
         }
       }
 
+      // A turn that produced neither an answer nor a tool call is worth exactly
+      // one retry. Two provider behaviours land here and both are transient:
+      //
+      //   - A clean stream whose only content was a reasoning block. Routers
+      //     that inline thinking as `<think></think>` rather than sending
+      //     `reasoning_content` leave `assistantContent` non-empty in the raw,
+      //     so the emptiness test has to look past the tags or it never fires
+      //     and the loop ends the run believing the model answered.
+      //   - A stream cut before its terminal event. That never set `streamDone`
+      //     and did set `streamError`, so it used to skip the retry entirely.
+      //
+      // Every other `streamError` is either terminal (a refusal, an output cap)
+      // or has its own recovery below (context overflow), so it is left alone.
+      const answeredNothing =
+        stripReasoningTags(assistantContent).trim().length === 0 && toolCalls.length === 0;
       if (
-        !streamError &&
-        streamDone &&
-        assistantContent.trim().length === 0 &&
-        toolCalls.length === 0
+        answeredNothing &&
+        !signal?.aborted &&
+        (!streamError || streamErrorCode === 'transport_interrupted')
       ) {
         if (emptyResponseRetryTurn !== turn) {
           emptyResponseRetryTurn = turn;
           log.warn('provider returned an empty completion; retrying once', {
             turn,
             reasoningLen: reasoningContent.length,
+            contentLen: assistantContent.length,
+            streamDone,
+            streamErrorCode,
             responseId: responseMetadata?.responseId,
           });
+          // The attempt's deltas are already with the host; tell it to drop
+          // them so the retry's answer does not queue up behind an abandoned
+          // reasoning block that no history will ever record.
+          callbacks.onAttemptDiscarded?.();
           retrySameTurn = true;
           continue;
         }
-        streamError =
-          'The provider returned an empty response after one retry. Please retry the request.';
-        streamErrorCode = 'protocol_error';
+        // Keep a transport diagnosis rather than overwriting it with a generic
+        // one; `transport_interrupted` tells the user something different.
+        if (!streamError) {
+          streamError =
+            'The provider returned an empty response after one retry. Please retry the request.';
+          streamErrorCode = 'protocol_error';
+        }
       }
 
       const routerOverflowResponse =
@@ -952,16 +984,43 @@ export async function runAgentLoop(
         flushReasoning();
         if (assistantContent.length > 0 || reasoningContent.length > 0 || toolCalls.length > 0) {
           assistantOutputProduced = true;
-          newHistory.push({
-            id: crypto.randomUUID(),
+          // A stream can carry a complete tool call and then die before the loop
+          // ever runs it. Every such call needs a result: `buildMessages` emits
+          // `tool_calls` on the assistant message but only emits results for
+          // calls that have one, so a dangling call makes every later request
+          // malformed — Anthropic rejects a `tool_use` with no `tool_result`.
+          // Persisting one would carry that past a `--resume` and wedge the
+          // session for good, so it is settled here the way an abort settles it.
+          const abandonedResults = toolCalls.map<ToolResult>((call, callIndex) => {
+            const result = toolFailure(
+              'INTERRUPTED: the provider stream ended before this tool ran',
+              { toolCallId: call.id, code: 'cancelled', status: 'cancelled' },
+            );
+            callbacks.onToolResult(result);
+            const nestedTraceId = nestedTraceIds[callIndex];
+            if (nestedTraceId && options?.nestedToolObserver) {
+              options.nestedToolObserver.onToolResult(nestedTraceId, result);
+            }
+            return result;
+          });
+          const partialMessage: Message = {
+            id: options?.assistantMessageId?.(turn) ?? crypto.randomUUID(),
             role: 'assistant',
             content: assistantContent,
             reasoningContent: reasoningContent || undefined,
             providerMetadata: assistantProviderMetadata,
             includeInContext: true,
+            kind: 'conversation',
             toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+            toolResults: abandonedResults.length > 0 ? abandonedResults : undefined,
             timestamp: Date.now(),
-          });
+          };
+          newHistory.push(partialMessage);
+          // Half an answer that reached the screen has to reach the session file
+          // too. This callback is the only writer to it, and skipping it here
+          // left the live conversation holding a turn that a `--resume` could
+          // not see — the transcript read as though the model never spoke.
+          callbacks.onAssistantMessageComplete?.(partialMessage);
         }
         callbacks.onError(streamError);
         const streamOutcome =

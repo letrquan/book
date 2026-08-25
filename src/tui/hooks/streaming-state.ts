@@ -46,6 +46,24 @@ export function removeTrailingEmptyAssistantPlaceholder(messages: Message[]): Me
   return messages.slice(0, -1);
 }
 
+/**
+ * Clear the text and reasoning streamed into a message, keeping the message.
+ *
+ * Used when the loop abandons an attempt and retries the same turn: the deltas
+ * are already on screen and cannot be unsent, so the host drops them and lets the
+ * replacement stream into the same row. Tool activity is left alone — a retry
+ * only happens when the attempt produced none.
+ */
+export function resetStreamedContent(messages: Message[], id: string): Message[] {
+  const index = findMessageIndex(messages, id);
+  if (index === -1) return messages;
+  const message = messages[index];
+  if (message.content === '' && !message.reasoningContent) return messages;
+  const next = messages.slice();
+  next[index] = { ...message, content: '', reasoningContent: undefined };
+  return next;
+}
+
 export function appendContentToMessage(
   messages: Message[],
   id: string,
