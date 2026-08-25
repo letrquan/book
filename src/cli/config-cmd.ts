@@ -7,6 +7,10 @@ import {
   SETTINGS_TOP_LEVEL_KEYS,
   SettingsRepository,
 } from '../settings-repository.js';
+import {
+  isExperimentalSettingPath,
+  WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE,
+} from '../settings-scope.js';
 
 /**
  * Settings paths held in `<BOOK_HOME>/trust.json` rather than in either
@@ -68,6 +72,10 @@ export async function runConfigCommand(
       console.error('Invalid key. Use dot-separated path: e.g. permissions.deny');
       exit(1);
     }
+    if (isExperimentalSettingPath(key)) {
+      console.error(WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE);
+      exit(1);
+    }
     const topKey = parts[0];
     if (!SETTINGS_TOP_LEVEL_KEYS.includes(topKey)) {
       console.error(
@@ -106,6 +114,19 @@ export async function runConfigCommand(
       parsedValue = JSON.parse(value);
     } catch {
       parsedValue = value;
+    }
+
+    if (
+      key.trim().toLowerCase() === 'compactstrategy' &&
+      typeof parsedValue === 'string' &&
+      parsedValue.trim().toLowerCase() === 'zero-mem'
+    ) {
+      console.error(
+        'compactStrategy "zero-mem" is no longer supported. Set ' +
+          'experimental.zeroMem=true in <BOOK_HOME>/settings.json, pass an explicit ' +
+          '--settings file, or use BOOK_EXPERIMENTAL_ZERO_MEM=true.',
+      );
+      exit(1);
     }
 
     const result = new SettingsRepository(localPath).set({ [key]: parsedValue });

@@ -96,24 +96,28 @@ function mergeObject(
 export type SettingsLayerTrust = 'trusted' | 'local' | 'repository';
 
 /**
- * Settings paths that record a decision the user made *about*
- * repository-controlled input. Honouring one of these from a file inside the
- * workspace would let a clone approve itself, defeating the approval it is
- * subject to: the fingerprints they carry are digests of configuration the
- * repository already controls, so a malicious project can compute a matching
- * one at will.
+ * Settings paths that a workspace file may not supply for itself. Most record
+ * a decision the user made *about* repository-controlled input; honouring one
+ * from the workspace would let a clone approve itself. Experimental capability
+ * flags are included because merely opening a clone must not opt the user into
+ * unstable runtime behavior.
  *
  * The local layer is no safer than the checked-in one here. `.gitignore` does
  * not stop a *tracked* file from reaching a clone, so a repository that
  * force-adds `.book/settings.local.json` ships its own approvals with it. Both
- * workspace layers are therefore stripped, and the real decisions come from the
- * user-global trust store instead.
+ * workspace layers are therefore stripped. Trust decisions come from the
+ * user-global store; experimental flags come from a trusted user-global or
+ * explicit settings document (or from a process environment opt-in).
  */
 const WORKSPACE_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
   ['mcp', 'projectServers'],
   ['permissions', 'projectAllowRules'],
   ['hooks', 'projectEntries'],
   ['commands', 'projectCommands'],
+  // Experimental capabilities require an explicit user-global setting, an
+  // explicit --settings document, or a process environment opt-in. A clone
+  // and even a force-added settings.local.json must not enable them.
+  ['experimental', 'zeroMem'],
 ];
 
 function stripPaths(
@@ -179,6 +183,21 @@ function loadSettingsFile(path: string): BookSettings | null {
   } catch (e) {
     throw new Error(
       `Invalid JSON in settings file: ${path}\n${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    typeof (parsed as Record<string, unknown>).compactStrategy === 'string' &&
+    ((parsed as Record<string, unknown>).compactStrategy as string).trim().toLowerCase() ===
+      'zero-mem'
+  ) {
+    throw new Error(
+      `Invalid settings in ${path}:\n` +
+        'compactStrategy "zero-mem" is no longer supported. Enable the experiment with ' +
+        'experimental.zeroMem=true in ~/.book/settings.json or set ' +
+        'BOOK_EXPERIMENTAL_ZERO_MEM=true.',
     );
   }
   const result = bookSettingsSchema.safeParse(parsed);

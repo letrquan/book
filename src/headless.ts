@@ -574,7 +574,7 @@ export async function runHeadless(
       const contextLimit = resolveContextLimit(config);
       const hostCompactAttemptKey = `${usagePressureTokens(lastUsage)}:${contextHistory.length}`;
       if (
-        config.compactStrategy === 'summary' &&
+        !config.experimentalZeroMem &&
         config.autoCompactEnabled !== false &&
         contextLimit != null &&
         shouldCompact(lastUsage, contextLimit) &&

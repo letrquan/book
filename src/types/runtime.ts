@@ -112,8 +112,10 @@ export interface AgentConfig {
   modelSelection?: string;
   /** Optional provider/model used only for historical conversation compaction. */
   compactModel?: string;
-  /** Historical context reduction strategy selected for this runtime. */
+  /** Supported production context-reduction strategy. */
   compactStrategy: CompactStrategy;
+  /** Explicit capability gate for the experimental Zero-Mem runtime. */
+  experimentalZeroMem: boolean;
   /** Max agent turns per user message. Undefined = unlimited. */
   maxTurns?: number;
   maxTokens: number;

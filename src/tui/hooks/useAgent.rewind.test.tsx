@@ -217,22 +217,6 @@ describe('useAgent rewind integration', () => {
     );
   });
 
-  it('persists and applies the compact strategy', async () => {
-    const { config, timeline, sessionId } = fixture();
-    render(<Harness config={config} session={bootstrap(timeline, sessionId)} />);
-    await tick();
-
-    const result = latest!.setCompactStrategy('zero-mem');
-    await tick();
-
-    expect(result).toEqual({ ok: true });
-    expect(latest!.liveConfig.compactStrategy).toBe('zero-mem');
-    expect(latest!.liveConfig.settings.compactStrategy).toBe('zero-mem');
-    expect(readFileSync(join(config.workspace, '.book', 'settings.local.json'), 'utf8')).toContain(
-      'zero-mem',
-    );
-  });
-
   it('renders the submitted message while an asynchronous snapshot is still pending', async () => {
     const { config, timeline, sessionId } = fixture();
     let finishCapture!: () => void;

@@ -62,13 +62,11 @@ describe('ConfigMenu', () => {
     expect(onOpen).toHaveBeenCalledWith('compact-model');
   });
 
-  it('shows and toggles the compact strategy', () => {
-    const onToggleCompactStrategy = vi.fn();
+  it('does not expose the experimental Zero-Mem strategy in normal settings', () => {
     const view = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>
         <ConfigMenu
           model="gpt-5"
-          compactStrategy="zero-mem"
           themeName="dark"
           memoryAutoSave={false}
           showThinking
@@ -76,7 +74,6 @@ describe('ConfigMenu', () => {
           skillCount={4}
           defaultPermissionMode="default"
           onOpen={() => {}}
-          onToggleCompactStrategy={onToggleCompactStrategy}
           onToggleMemory={() => {}}
           onToggleThinking={() => {}}
           onCancel={() => {}}
@@ -84,10 +81,9 @@ describe('ConfigMenu', () => {
       </ThemeContext.Provider>,
     );
 
-    expect(view.lastFrame()).toContain('Compact strategy');
-    expect(view.lastFrame()).toContain('zero-mem');
-    view.stdin.write('r');
-    expect(onToggleCompactStrategy).toHaveBeenCalledOnce();
+    expect(view.lastFrame()).not.toContain('Compact strategy');
+    expect(view.lastFrame()).not.toContain('Zero-Mem');
+    expect(view.lastFrame()).not.toContain('R strategy');
   });
 
   it('shows and opens the global default permission setting', () => {

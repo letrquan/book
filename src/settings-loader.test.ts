@@ -41,7 +41,8 @@ describe('loadSettingsFile', () => {
       join(dir, 'good.json'),
       JSON.stringify({
         model: 'gpt-4o',
-        compactStrategy: 'zero-mem',
+        compactStrategy: 'summary',
+        experimental: { zeroMem: true },
         compactModel: 'router/flash-reducer',
         maxTurns: 10,
         theme: 'paper-ink',
@@ -49,10 +50,22 @@ describe('loadSettingsFile', () => {
     );
     const result = loadSettingsFile(join(dir, 'good.json'));
     expect(result?.model).toBe('gpt-4o');
-    expect(result?.compactStrategy).toBe('zero-mem');
+    expect(result?.compactStrategy).toBe('summary');
+    expect(result?.experimental.zeroMem).toBe(true);
     expect(result?.compactModel).toBe('router/flash-reducer');
     expect(result?.maxTurns).toBe(10);
     expect(result?.theme).toBe('paper-ink');
+  });
+
+  it('rejects the legacy Zero-Mem strategy with migration guidance', () => {
+    writeFileSync(
+      join(dir, 'legacy-zero-mem.json'),
+      JSON.stringify({ compactStrategy: ' ZERO-MEM ' }),
+    );
+
+    expect(() => loadSettingsFile(join(dir, 'legacy-zero-mem.json'))).toThrow(
+      'experimental.zeroMem=true',
+    );
   });
 
   it('rejects an invalid harness mode', () => {
@@ -170,6 +183,7 @@ describe('resolveSettings — layered merging', () => {
     const result = resolveSettings(dir);
     expect(result.permissions.allow).toEqual([]);
     expect(result.compactStrategy).toBe('summary');
+    expect(result.experimental.zeroMem).toBe(false);
     expect(result.sandbox.enabled).toBe(false);
     expect(result.memory).toEqual({ enabled: true, autoSave: true, requireApproval: true });
   });
@@ -314,6 +328,40 @@ describe('resolveSettings — layered merging', () => {
     expect(result.model).toBe('project');
     expect(result.maxTurns).toBe(12);
     expect(result.additionalDirectories).toEqual([normalize('../one')]);
+  });
+
+  it('allows a trusted user-global document to enable the Zero-Mem experiment', () => {
+    const userPath = join(userDir, 'user.json');
+    writeFileSync(userPath, JSON.stringify({ experimental: { zeroMem: true } }));
+
+    const result = resolveSettings(dir, undefined, { userSettingsPath: userPath });
+
+    expect(result.experimental.zeroMem).toBe(true);
+  });
+
+  it('withholds Zero-Mem opt-ins from both workspace settings layers', () => {
+    const projectPath = join(dir, 'project.json');
+    const localPath = join(dir, 'local.json');
+    writeFileSync(
+      projectPath,
+      JSON.stringify({ model: 'project-model', experimental: { zeroMem: true } }),
+    );
+    writeFileSync(localPath, JSON.stringify({ experimental: { zeroMem: true } }));
+
+    const result = resolveSettings(dir, undefined, {
+      projectSettingsPath: projectPath,
+      localSettingsPath: localPath,
+    });
+
+    expect(result.model).toBe('project-model');
+    expect(result.experimental.zeroMem).toBe(false);
+  });
+
+  it('allows an explicit --settings document to enable the Zero-Mem experiment', () => {
+    const overridePath = join(dir, 'explicit.json');
+    writeFileSync(overridePath, JSON.stringify({ experimental: { zeroMem: true } }));
+
+    expect(resolveSettings(dir, overridePath).experimental.zeroMem).toBe(true);
   });
 
   it('rejects malformed settings files with clear error', () => {

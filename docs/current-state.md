@@ -2,10 +2,10 @@
 
 This is the implementation-backed product snapshot for Book as of 2026-08-25. Update this file
 when a user-facing surface changes; the README is the usage guide and this page is the status
-reference for roadmap and design documents. This refresh re-verified the transcript grid and the
-project-declaration trust gates only (surfaces not re-verified this run: providers, MCP, settings
-and sandbox, managed agents, `/review`, background jobs, skills, compaction, and the adaptive
-harness).
+reference for roadmap and design documents. This refresh re-verified the transcript grid, the
+project-declaration trust gates, and the experimental Zero-Mem capability boundary only (surfaces
+not re-verified this run: providers, MCP, other settings and sandbox behavior, managed agents,
+`/review`, background jobs, skills, and the adaptive harness).
 
 ## Release Identity
 
@@ -19,9 +19,10 @@ harness).
 ## Shipped Surfaces
 
 - Interactive Ink/React TUI, print/headless mode, JSON and stream-JSON output, session resume,
-  fork, rewind, compaction with a selectable `summary` or `zero-mem` strategy, structured
-  JSON-schema output, and prompt suggestions. `zero-mem` writes no summary checkpoints: it disables
-  auto-compaction and retrieves query-specific evidence from the original transcript each turn.
+  fork, rewind, production summary compaction, structured JSON-schema output, and prompt
+  suggestions. Zero-Mem retrieval remains available only as the explicitly named, default-off
+  `experimental.zeroMem` capability; it writes no summary checkpoints, disables auto-compaction for
+  the main agent, and retrieves query-specific evidence from the original transcript each turn.
 - Every transcript row resolves its horizontal position through one grid module
   (`src/tui/layout.ts`). A row is `[gutter][content]`: a two-column gutter carries status, prose
   begins on the content column, the measure is capped at 120 columns so prose and right-aligned
@@ -69,9 +70,12 @@ harness).
   so nothing a repository ships can approve its own MCP servers, allow rules, hook entries, or
   shell-substituting slash commands — a force-added `.book/settings.local.json` reaches a clone the
   same way a checked-in file does, and `book config set` refuses those four paths rather than
-  writing a value nothing reads — hooks, optional bubblewrap sandbox, themes, auto-memory, rewind
-  snapshots, telemetry, and diagnostics. Every declared sandbox key is now read by an execution or
-  permission path: `sandbox.allowUnsandboxedCommands` can refuse any command that would leave the
+  writing a value nothing reads. Experimental capability opt-ins are likewise ignored from both
+  workspace layers and must come from the user-global file, an explicit `--settings` document, or
+  the process environment. Other settings include hooks, the optional bubblewrap sandbox, themes,
+  auto-memory, rewind snapshots, telemetry, and diagnostics. Every declared sandbox key is now read
+  by an execution or permission path: `sandbox.allowUnsandboxedCommands` can refuse any command that
+  would leave the
   namespace, and `sandbox.autoAllowBashIfSandboxed` can replace the default ask for a command that
   genuinely stays inside it. `book doctor` reports each MCP server with its resolved trust state,
   the sandbox policy actually being enforced — including the effective, not merely configured,
@@ -111,8 +115,11 @@ harness).
   leaves `sandbox.autoAllowBashIfSandboxed` (default `true`) inert under shipped defaults.
   `sandbox.allowUnsandboxedCommands` defaults to `true`, so unsandboxed execution stays permitted
   until it is explicitly refused.
-- Compaction: `compactStrategy` is `summary`; `zero-mem` is opt-in through settings,
-  `BOOK_COMPACT_STRATEGY`, `/config compact-strategy`, or the `/config` menu.
+- Compaction: `compactStrategy` is fixed to the production `summary` path. Experimental Zero-Mem is
+  unavailable by default and requires `experimental.zeroMem: true` in the user-global
+  `<BOOK_HOME>/settings.json`, an explicit `--settings` document, or strict
+  `BOOK_EXPERIMENTAL_ZERO_MEM=true`; workspace settings and normal configuration UI/commands cannot
+  enable it.
 - Adaptive harness: `harness.mode` is `off`, which has no filesystem effect; `--harness-workflow`
   fails closed while it stays off.
 - Tool discovery: `auto`; the practical core stays loaded and `ToolSearch` activates deferred
@@ -143,8 +150,9 @@ harness).
 - Approvals recorded under `commands.projectCommands` before the move are not migrated: reading
   them back out of the workspace to convert them would extend exactly the trust the move
   withdraws. Each is asked once more, on the machine that decides.
-- The local layer is otherwise ungated. Its own `hooks.<event>` entries, allow rules, and env run
-  as if the user had written them, because distrusting a Git-tracked local layer needs provenance
+- Except for experimental capability flags, the local layer is otherwise ungated. Its own
+  `hooks.<event>` entries, allow rules, and env run as if the user had written them, because
+  distrusting a Git-tracked local layer needs provenance
   the synchronous resolver cannot currently obtain. Provider blocks, project instructions, and a
   checked-in `settings.local.json` must still be reviewed before opening an untrusted workspace.
 - No interactive surface records these decisions yet, and the interactive host does not report
@@ -176,11 +184,14 @@ harness).
   inert under shipped defaults. `sandbox.excludedCommands` is still the only bypass a model-chosen
   command can trip by itself — a matching command runs on the host, and the only control over that
   is refusing unsandboxed execution wholesale, not an independent per-command approval.
-- `compactStrategy: zero-mem` needs the optional `@huggingface/transformers` peer dependency and a
-  locally cached embedding/NER pair under `BOOK_HOME/models/zero-mem`; downloads are refused unless
+- The default-off `experimental.zeroMem` capability needs the optional
+  `@huggingface/transformers` peer dependency and a locally cached embedding/NER pair under
+  `BOOK_HOME/models/zero-mem`; downloads are refused unless
   `BOOK_ZERO_MEM_LOCAL_FILES_ONLY=false` is set once, and an unavailable model fails the turn with
-  that instruction. Under `zero-mem`, auto-compaction is off, `/compact` only warms the index and
-  reports that history was not replaced, and subagents keep the summary path.
+  that instruction. When enabled, auto-compaction is off for the main agent, `/compact` only warms
+  the index and reports that history was not replaced, and subagents keep the summary path. Legacy
+  `compactStrategy: zero-mem` and `BOOK_COMPACT_STRATEGY=zero-mem` selectors fail with migration
+  guidance rather than silently enabling the experiment.
 - Managed-agent planning-task linkage, rerun, and task-aware cleanup from the background-job plan
   are not implemented; executable jobs and planning tasks remain separate.
 - Background-job termination is judged on the POSIX process group rather than the direct child, so
@@ -268,7 +279,7 @@ Use `npm test` for the full build plus unit, contract, and integration tiers. Re
 `npm run release:check`; the stabilization policy is `npm run stabilization:check` with the GitHub
 Actions environment variables described in [stabilization.md](stabilization.md).
 
-Local verification for this refresh (2026-08-25): `npm run check` (230 unit files, 2628 tests, 5
+Local verification for this refresh (2026-08-25): `npm run check` (230 unit files, 2640 tests, 5
 skipped; 7 contract files, 59 tests), `npm run build`, and `npm run test:integration` (7 files, 97
 tests, 10 skipped) all pass on Windows. The `src/harness/evaluation/contract.test.ts` fixture-digest
 failures previously reported on some Windows working copies have a diagnosed cause and are not a

@@ -48,6 +48,16 @@ describe('persistSettingLocal', () => {
     expect(readSettingsLocal(dir)).toEqual({ model: 'claude-sonnet-5', maxTurns: 50 });
   });
 
+  it('refuses to write experimental capability flags to workspace-local settings', () => {
+    const result = persistSettingLocal(dir, 'experimental.zeroMem', true);
+
+    expect(result).toEqual({
+      ok: false,
+      error: expect.stringContaining('cannot be written'),
+    });
+    expect(existsSync(join(dir, '.book', 'settings.local.json'))).toBe(false);
+  });
+
   it('writes nested provider registry keys', () => {
     persistSettingLocal(dir, 'provider.openrouter.type', 'openai');
     persistSettingLocal(dir, 'provider.openrouter.baseURL', 'https://openrouter.ai/api/v1');

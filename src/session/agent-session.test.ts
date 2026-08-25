@@ -98,7 +98,7 @@ describe('AgentSession', () => {
     const session = new AgentSession({ runLoop, runtime });
 
     await session.run({
-      config: defaultConfig({ compactStrategy: 'zero-mem', autoCompactEnabled: true }),
+      config: defaultConfig({ experimentalZeroMem: true, autoCompactEnabled: true }),
       registry: {} as ToolRegistry,
       prompt: 'What happened?',
       history: [],
@@ -120,6 +120,39 @@ describe('AgentSession', () => {
     );
   });
 
+  it('keeps summary compaction available to subagents when the root experiment is enabled', async () => {
+    const history: Message[] = [
+      { id: 'prior', role: 'user', content: 'prior context', includeInContext: true, timestamp: 1 },
+    ];
+    const zeroMemRuntime = new ZeroMemRuntime();
+    const prepare = vi.spyOn(zeroMemRuntime, 'prepare');
+    const onCompact = vi.fn(async () => compactedResult());
+    const runLoop = vi.fn<AgentLoopRunner>(
+      async (config, _registry, _prompt, receivedHistory, callbacks) => {
+        expect(config.autoCompactEnabled).toBe(true);
+        expect(receivedHistory).toEqual(history);
+        expect(callbacks.onCompact).toBe(onCompact);
+        return receivedHistory;
+      },
+    );
+    const session = new AgentSession({
+      runLoop,
+      runtime: new SessionRuntime({ zeroMemRuntime }),
+    });
+
+    await session.run({
+      config: defaultConfig({ experimentalZeroMem: true, autoCompactEnabled: true }),
+      registry: {} as ToolRegistry,
+      prompt: 'Inspect this.',
+      history,
+      sessionId: 'session-child',
+      callbacks: { onEvent: () => {}, onTurnStart: () => {}, onCompact },
+      options: { isSubagent: true },
+    });
+
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
   it('emits a terminal run failure when Zero-Mem preparation rejects', async () => {
     const zeroMemRuntime = new ZeroMemRuntime();
     vi.spyOn(zeroMemRuntime, 'prepare').mockRejectedValue(
@@ -134,7 +167,7 @@ describe('AgentSession', () => {
 
     await expect(
       session.run({
-        config: defaultConfig({ compactStrategy: 'zero-mem' }),
+        config: defaultConfig({ experimentalZeroMem: true }),
         registry: {} as ToolRegistry,
         prompt: 'What happened?',
         history: [],
@@ -183,7 +216,7 @@ describe('AgentSession', () => {
     ];
 
     const outcome = await session.compact({
-      config: defaultConfig({ compactStrategy: 'zero-mem' }),
+      config: defaultConfig({ experimentalZeroMem: true }),
       history: [],
       sourceHistory,
       sessionId: 'session-zero',
