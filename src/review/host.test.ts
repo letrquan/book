@@ -753,3 +753,26 @@ describe('runHostReview — a cancel during the spawn fan-out', () => {
     expect(result.cancelled).toBe(true);
   });
 });
+
+describe('runHostReview — a cancel during target resolution', () => {
+  it('does not announce work it is no longer going to start', async () => {
+    const controller = new AbortController();
+    const runner = scriptedRunner([findingJson()]);
+    const seen: string[] = [];
+
+    // `resolveReviewTarget` shells out to git and takes no signal, so the
+    // keystroke lands while it is still running.
+    controller.abort();
+    await runHostReview({
+      scope: scope(),
+      workspace,
+      runner,
+      signal: controller.signal,
+      onSegment: (segment) => seen.push(segment),
+    });
+
+    expect(seen.some((segment) => segment.startsWith('Reviewing '))).toBe(false);
+    expect(seen.at(-1)).toContain('Review cancelled');
+    expect(runner.agents).toEqual([]);
+  });
+});

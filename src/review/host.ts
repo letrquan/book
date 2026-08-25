@@ -131,6 +131,11 @@ export async function runHostReview(request: HostReviewRequest): Promise<HostRev
       // break, and prepending a "starting now" line there would change a
       // scripted output surface to say something already in `data.target`.
       if (!request.onSegment) return;
+      // Resolving the target shells out to git and is not itself abortable, so
+      // a cancel during it lands here. Announcing work as about to start,
+      // immediately above its own cancellation notice, reads as the run having
+      // ignored the keystroke.
+      if (request.signal?.aborted) return;
       // An empty target's own "no changes" text says everything this would, and
       // says it as the outcome rather than as a promise of work about to start.
       if (target.changedFiles.length === 0 && !target.diff.trim()) return;

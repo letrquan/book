@@ -871,8 +871,9 @@ scope, so a review cannot silently widen or drift onto unrelated changes.
 **While it runs (TUI).** A review is minutes of work in background agents, so it reports before it
 starts: the resolved target — file count, base commit, path scope — and which passes are coming are
 printed before the first agent is spawned. Every reviewer, lens, verifier and patcher then appears
-in the agent panel (`/agents`, Ctrl+T) and the status line with live activity, so you can watch a
-pass or open one to read its transcript. Those agents belong to the session for display only; they never
+in the job panel below the prompt and in the status line with live activity, so you can watch a
+pass or open one to read its transcript — Tab from an empty prompt selects a row, or `/jobs` opens
+the panel for explicit management. Those agents belong to the session for display only; they never
 deliver a completion notification, so watching a review costs no extra model turn. Press `Esc` to
 cancel — the in-flight agents are stopped, and a cancelled review reports `inconclusive` with no
 findings rather than presenting its own stopped passes as a result. `Ctrl+C` cancels the review too;
