@@ -6,6 +6,16 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Tool rows sit under the prose that ordered them.** A top-level tool row hung its status
+  glyph at column 0 while prose began at column 2, so a turn read as a list of tool calls with
+  sentences wedged between them — the prose indented from a margin the glyphs owned. Tool rows and
+  managed-agent blocks now carry their gutter one level in, and the grid narrows by exactly what it
+  shifts, so every row keeps its right edge and right-aligned metadata still lines up down the
+  transcript.
+- **The working indicator's elapsed time rolls up into minutes and hours.** The row rendered a raw
+  second count, so a long turn read `248s` — a figure the reader has to divide before it means
+  anything. It now uses the same duration formatter as subagent rows, background shells and tool
+  rows: `4m 8s`, and `1h 2m 3s` once a turn passes an hour.
 - **A running tool row no longer shifts a column when it finishes.** `Spinner` already emits its
   own trailing space and the row added a second one, so a running row's gutter was three columns
   and a finished one's was two — the verb and everything after it jumped left the instant the tool

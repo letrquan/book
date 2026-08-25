@@ -1,8 +1,11 @@
 # Book Current State
 
-This is the implementation-backed product snapshot for Book as of 2026-08-24. Update this file
+This is the implementation-backed product snapshot for Book as of 2026-08-25. Update this file
 when a user-facing surface changes; the README is the usage guide and this page is the status
-reference for roadmap and design documents.
+reference for roadmap and design documents. This refresh re-verified the transcript grid and the
+project-declaration trust gates only (surfaces not re-verified this run: providers, MCP, settings
+and sandbox, managed agents, `/review`, background jobs, skills, compaction, and the adaptive
+harness).
 
 ## Release Identity
 
@@ -19,6 +22,20 @@ reference for roadmap and design documents.
   fork, rewind, compaction with a selectable `summary` or `zero-mem` strategy, structured
   JSON-schema output, and prompt suggestions. `zero-mem` writes no summary checkpoints: it disables
   auto-compaction and retrieves query-specific evidence from the original transcript each turn.
+- Every transcript row resolves its horizontal position through one grid module
+  (`src/tui/layout.ts`). A row is `[gutter][content]`: a two-column gutter carries status, prose
+  begins on the content column, the measure is capped at 120 columns so prose and right-aligned
+  metadata stay readable on a wide terminal, the aligned label column is sized per message rather
+  than globally and renders inline instead of truncating when a label overflows, and bordered
+  surfaces sit flush at column 0 so their one column of padding lands their text on that same
+  content column. Tool rows and managed-agent blocks take the one deliberate step in from that
+  column: they carry their own gutter a level deeper, so the work a turn did reads as nested under
+  the prose that ordered it rather than hanging a column of status glyphs to its left. The grid
+  narrows by exactly what it shifts, so every row keeps the same right edge and right-aligned
+  metadata still lines up down the transcript. Sixteen non-test modules across the transcript path
+  resolve through it. A few components outside that path — diff cards, subagent and
+  background-shell rows, the command panel — still carry their own `marginLeft` and width
+  arithmetic rather than deriving it from the grid, and are not covered by that guarantee.
 - Print/headless and SDK hosts resolve a leading `/command` through the same registries,
   substitutions, and `allowed-tools`/`model` frontmatter enforcement as the TUI, perform the
   commands a non-interactive host can honestly perform, and refuse the rest before their own code
@@ -131,12 +148,17 @@ reference for roadmap and design documents.
   as if the user had written them, because distrusting a Git-tracked local layer needs provenance
   the synchronous resolver cannot currently obtain. Provider blocks, project instructions, and a
   checked-in `settings.local.json` must still be reviewed before opening an untrusted workspace.
-- No interactive surface records these decisions yet. The MCP gate has a TUI prompt; the
-  allow-rule, hook, and command gates do not, so in the primary mode a withheld hook simply never
-  fires and a withheld command is refused until the user runs `book doctor`, which prints the
-  grant for each — `book trust …` for the three in the trust store, `book config set
-  commands.projectCommands` for command approvals. Print/headless and SDK runs do report what they
-  are skipping.
+- No interactive surface records these decisions yet, and the interactive host does not report
+  them either. The MCP gate has a TUI prompt; the allow-rule, hook, and command gates do not, so
+  in the primary mode a withheld hook simply never fires and a withheld command is refused until
+  the user runs `book doctor`, which prints the grant for each — `book trust …` for the three in
+  the trust store, `book config set commands.projectCommands` for command approvals. The withheld
+  declaration notices are placed worse than the absence of a prompt implies:
+  `collectWithheldProjectNotices` is called from `src/cli/run.ts` inside the print-mode branch,
+  and neither `src/hook-approvals.ts` nor `src/permission-approvals.ts` has an importer anywhere
+  under `src/tui/`. Print/headless and SDK runs report what they are skipping; the TUI is silent,
+  so the mode most likely to open an unfamiliar repository is the one mode that discloses nothing
+  about what that repository declared.
 - Bubblewrap is optional and currently Linux-oriented; when unavailable, behavior follows the
   configured `sandbox.failIfUnavailable` policy and may run unsandboxed. Where it is available the
   boundary is real: sandboxed commands are spawned as a direct argument vector rather than a shell
@@ -248,10 +270,7 @@ Use `npm test` for the full build plus unit, contract, and integration tiers. Re
 `npm run release:check`; the stabilization policy is `npm run stabilization:check` with the GitHub
 Actions environment variables described in [stabilization.md](stabilization.md).
 
-Local verification for this refresh (2026-08-24): `npm run check` — formatting, lint, typecheck,
-the architecture check, and the unit and contract tiers — was re-run green on this branch after
-merging `main`, covering the project-declared-hook trust gate, the move of the first three trust
-decisions into `~/.book/trust.json`, and the two-scope settings-layer strip that keeps command
-approvals readable from the local layer while still forbidding the checked-in one. Use the
-commands above to reproduce. The eight `src/harness/evaluation/contract.test.ts` fixture-digest
-failures seen on some Windows working copies did not reproduce in this worktree.
+Local verification for this refresh (2026-08-25): not re-run; use the commands above. Previously
+observed and not re-checked here: eight `src/harness/evaluation/contract.test.ts` fixture-digest
+failures appear on some Windows working copies and did not reproduce in the worktree used for the
+2026-08-24 snapshot.
