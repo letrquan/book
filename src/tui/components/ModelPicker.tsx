@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from 'ink';
-import TextInput from 'ink-text-input';
+import TextInput from './TextInputField.js';
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useTheme } from '../theme.js';
 import type { AgentConfig } from '../../types/runtime.js';
@@ -14,6 +14,7 @@ import {
 import { EFFORT_LEVELS, type EffortLevel, type EffortResult } from '../../commands/effort.js';
 import { ByokWizard } from './ByokWizard.js';
 import { useDensityMetrics } from '../density.js';
+import { stripSgrMouseSequences } from '../mouse.js';
 
 export type ProviderRemovalResult =
   | {
@@ -396,8 +397,9 @@ export function ModelPicker({
         setError(undefined);
         return;
       }
-      if (input && !key.ctrl && !key.meta) {
-        setFilter((value) => value + input);
+      const typed = stripSgrMouseSequences(input);
+      if (typed && !key.ctrl && !key.meta) {
+        setFilter((value) => value + typed);
         setSelected(0);
       }
     },

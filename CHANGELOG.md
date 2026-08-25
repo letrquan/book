@@ -6,6 +6,21 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The mouse belongs to the terminal again.** Full-screen mode turned on SGR mouse reporting to
+  drive wheel scrolling and click-to-expand tool rows. That handed the mouse to Book, so selecting
+  text to copy needed a modifier key held down, and every click became a control sequence Ink
+  delivered to the focused field as ordinary text — clicking while typing a base URL or API key in
+  the BYOK wizard left `[<0;12;4M` in the value. Book now asks for no mouse reporting at all and
+  clears every tracking mode on the way in as well as on the way out, so a mode left on by a
+  crashed session or another program cannot leak reports into a prompt either. Alternate scroll
+  (`?1007`) goes off with them and is handed back on exit: it translates the wheel into cursor
+  keys while the alternate screen is up, and those arrows would have reached the prompt and
+  replaced a half-typed draft with a history entry on a stray wheel nudge. Drag-select and copy
+  work with no modifier. Transcript scrolling stays on the keyboard: PageUp/PageDown,
+  Ctrl+U/Ctrl+D, Ctrl+Home/Ctrl+End, with Ctrl+O and Ctrl+E for tool output. As a belt-and-braces
+  guard, every text field and filter strips mouse reports out of the value it accepts, re-seating
+  the field's cursor so a dropped report cannot leave the next Backspace deleting the wrong
+  character in a masked value.
 - **Tool rows sit under the prose that ordered them.** A top-level tool row hung its status
   glyph at column 0 while prose began at column 2, so a turn read as a list of tool calls with
   sentences wedged between them — the prose indented from a margin the glyphs owned. Tool rows and
@@ -50,7 +65,7 @@ All notable changes to this project are documented in this file.
   and a finished one's was two — the verb and everything after it jumped left the instant the tool
   completed, which is the single-column invariant the grid exists to hold.
 - **Our width model agreed with the renderer for `✓`.** The width table marked the whole Dingbats
-  block as two columns wide, but it also holds the East-Asian *ambiguous* marks — `✓`, `✗` — which
+  block as two columns wide, but it also holds the East-Asian _ambiguous_ marks — `✓`, `✗` — which
   terminals and Ink's own layout render one column wide. The block is now narrowed to its
   emoji-presentation members, and a test pins every status glyph's width against the renderer.
 - **The branch shows when `book` is launched from a subdirectory.** Repository detection probed for
@@ -227,7 +242,7 @@ All notable changes to this project are documented in this file.
 - **A repository can no longer approve its own slash commands by committing
   `.book/settings.local.json`.** Project command approvals were the last of four
   repository-controlled input classes still read from inside the working tree. `.gitignore` does
-  not stop a *tracked* file from reaching a clone, so `git add -f .book/settings.local.json`
+  not stop a _tracked_ file from reaching a clone, so `git add -f .book/settings.local.json`
   shipped a project's own `commands.projectCommands` decisions with it — and because the
   fingerprint they carry is a digest of a body the repository also wrote, a hostile project could
   precompute a matching one and arrive pre-approved, releasing its shell on the first `/name` or
@@ -279,7 +294,7 @@ All notable changes to this project are documented in this file.
   project command that substitutes no shell is unaffected.
 
 - **Slash-command shell output is no longer rescanned for further substitution.** Fenced blocks
-  were resolved first and the *result* was then scanned for inline ``!`cmd` `` spans, so a block
+  were resolved first and the _result_ was then scanned for inline ``!`cmd` `` spans, so a block
   whose output contained an injection marker had it executed as a second command. Spans are now
   taken from one scan of the original body and output is substituted back without rescanning —
   which is also what lets an approval fingerprint mean exactly what will run.
@@ -307,7 +322,7 @@ All notable changes to this project are documented in this file.
 - **Trust decisions moved out of the workspace, into `~/.book/trust.json`.** `mcp.projectServers`,
   `permissions.projectAllowRules`, and `hooks.projectEntries` recorded your answer about
   repository-controlled input, and were read from `.book/settings.local.json` on the reasoning that
-  the file is gitignored. `.gitignore` does not stop a *tracked* file from reaching a clone:
+  the file is gitignored. `.gitignore` does not stop a _tracked_ file from reaching a clone:
   `git add -f .book/settings.local.json` ships it with the repository, and every fingerprint the
   store is keyed by is a digest of configuration the repository already controls. A hostile project
   could therefore precompute approvals for the hooks, servers, and allow rules it also shipped and
@@ -322,7 +337,7 @@ All notable changes to this project are documented in this file.
 - **New `book trust` subcommand records those decisions**: `book trust hook <fingerprint>` and
   `book trust rule <rule>`, each taking `--all-pending`, `--reject`, and `--workspace <path>`.
   `book doctor` printed a `book config set hooks.projectEntries '<json>'` one-liner to paste, which
-  was wrong three ways: `config set` *replaces* the value at a path and the printed map held only
+  was wrong three ways: `config set` _replaces_ the value at a path and the printed map held only
   the newly pending entries, so running the suggestion silently revoked every earlier approve and
   reject; the command omitted `--workspace`, so running it anywhere but the diagnosed directory
   wrote the decision into the wrong project; and its single-quoted JSON does not survive `cmd.exe`,
@@ -340,7 +355,7 @@ All notable changes to this project are documented in this file.
   Already-approved hooks were reported as pending for the same reason.
 
 - **`connectMcpServers()` now fails closed when no host has adjudicated approval.** Called without
-  an explicit server list it resolved every declared server — user-global *and* repository-declared
+  an explicit server list it resolved every declared server — user-global _and_ repository-declared
   — and connected them all, so the project-server approval gate held only because each caller
   remembered to pass an approved subset. It now connects user-scoped servers only and reports each
   project-declared server it refused, by name and config path. No shipped caller changes behavior:
@@ -362,7 +377,7 @@ All notable changes to this project are documented in this file.
   the sandbox; a workspace path containing a space broke the invocation outright. Sandboxed
   commands are now spawned as a direct argument vector with `shell: false`, and the command reaches
   `/bin/bash -c` inside the sandbox as one argv element. Shell syntax still works — it is parsed by
-  the shell *inside* the namespace. This covers all three spawn paths: foreground `Bash`, session
+  the shell _inside_ the namespace. This covers all three spawn paths: foreground `Bash`, session
   background shells, and persistent jobs through the detached runner.
 - **Declared sandbox filesystem and network policy is now enforced instead of ignored.**
   `sandbox.filesystem.allowWrite`, `denyWrite`, and `denyRead` were accepted by the schema and
@@ -404,7 +419,7 @@ All notable changes to this project are documented in this file.
   (sandboxing off, an `excludedCommands` match, a missing backend), and the refusal names the
   setting and the specific reason rather than denying bare. `autoAllowBashIfSandboxed: true` skips
   the prompt only for a command that genuinely runs inside the sandbox, and only in place of the
-  *default* ask: `permissions.deny` is evaluated first and is never softened, an explicit
+  _default_ ask: `permissions.deny` is evaluated first and is never softened, an explicit
   `permissions.ask` rule still prompts, and any configured deny/ask rule at all keeps the default
   ask — a shell line escapes a glob far too easily for the rules that happened to match to be the
   whole protection. `sandbox.enabled` still defaults to `false`, so nothing changes for anyone who
@@ -607,7 +622,7 @@ All notable changes to this project are documented in this file.
   `$1..$9` / named-argument / `${BOOK_*}` / shell substitution, and the same `allowed-tools` and
   `model` frontmatter enforcement as the TUI, instead of being handed to the model as literal text.
   Commands that need an interactive surface — session controls, pickers, panels, `/config`,
-  `/export`, `/memory` — are refused *before* their own code runs, so none of their side effects can
+  `/export`, `/memory` — are refused _before_ their own code runs, so none of their side effects can
   half-fire in a host that could not show the result; the error lists what is supported and the run
   exits 1. A `/name` that is not a command at all is still forwarded verbatim, so an ordinary prompt
   beginning with a path is unaffected. A command the host performed itself is reported as a
@@ -623,7 +638,7 @@ All notable changes to this project are documented in this file.
   into `src/review/host.ts`, so the two hosts cannot drift apart. `--fix` stays interactive-only: a
   non-interactive host cannot approve a patcher's tool calls, so it is refused with an explanation
   instead of editing and committing unattended. A review that could not run — a bad ref,
-  `agents.mode = off`, an unknown option — exits 1; an inconclusive *verdict* does not, because the
+  `agents.mode = off`, an unknown option — exits 1; an inconclusive _verdict_ does not, because the
   review ran.
 
 - A `Maintenance` CI workflow (`.github/workflows/maintenance.yml`) that runs the deterministic half

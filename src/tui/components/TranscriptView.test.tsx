@@ -5,10 +5,8 @@ import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { TranscriptView } from './TranscriptView.js';
-import { ToolCallBlock } from './ToolCallBlock.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { ChatPanel } from './ChatPanel.js';
-import { toolSuccess } from '../../tools/result.js';
 import type { Message } from '../../types/messages.js';
 import { useTranscriptHistoryLoader, type TranscriptHistoryLoader } from '../transcript-layout.js';
 
@@ -42,7 +40,6 @@ function view(
     isActive?: boolean;
     followRequestKey?: number;
     layoutRevision?: unknown;
-    onToggleTool?: (toolId: string) => void;
   } = {},
 ) {
   return (
@@ -53,7 +50,6 @@ function view(
         isActive={props.isActive}
         followRequestKey={props.followRequestKey}
         layoutRevision={props.layoutRevision}
-        onToggleTool={props.onToggleTool}
       >
         <Rows labels={labels} />
       </TranscriptView>
@@ -63,7 +59,7 @@ function view(
 
 const frameLines = (frame: string | undefined) => (frame ?? '').split('\n').filter(Boolean);
 
-async function flushWheelFrame(): Promise<void> {
+async function flushFrame(): Promise<void> {
   await act(async () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
   });
@@ -108,57 +104,14 @@ describe('TranscriptView', () => {
     expect(onLoad).toHaveBeenCalledWith('page');
   });
 
-  it('scrolls three rows per SGR mouse wheel report', async () => {
-    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']));
-
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
-    await flushWheelFrame();
-    app.rerender(view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']));
-    const older = frameLines(app.lastFrame());
-    expect(older.some((line) => line.includes('browsing history'))).toBe(true);
-    expect(older).toContain('B');
-    expect(older).not.toContain('H');
-
-    act(() => app.stdin.write('\x1b[<65;10;5M'));
-    await flushWheelFrame();
-    app.rerender(view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']));
-    expect(frameLines(app.lastFrame())).toEqual(['E', 'F', 'G', 'H']);
-  });
-
-  it('publishes scroll hints for consecutive transcript-only scrolls', async () => {
+  it('publishes scroll hints for consecutive transcript-only scrolls', () => {
     const app = render(view(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']));
     setTranscriptScrollHintSpy.mockClear();
 
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
-    await flushWheelFrame();
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
-    await flushWheelFrame();
+    act(() => app.stdin.write('\x15'));
+    act(() => app.stdin.write('\x15'));
 
-    expect(setTranscriptScrollHintSpy).toHaveBeenCalledWith(expect.objectContaining({ delta: -1 }));
-  });
-
-  it('coalesces rapid wheel reports without dropping a terminal input chunk', async () => {
-    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
-    const app = render(view(labels));
-
-    act(() => {
-      app.stdin.write('\x1b[<64;10;5M\x1b[<64;10;5M\x1b[<64;10;5M');
-    });
-    await flushWheelFrame();
-    expect(frameLines(app.lastFrame())).toContain('A');
-  });
-
-  it('coalesces separate wheel chunks in the same event-loop turn', async () => {
-    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
-    const app = render(view(labels));
-
-    act(() => {
-      app.stdin.write('\x1b[<64;10;5M');
-      app.stdin.write('\x1b[<64;10;5M');
-    });
-    expect(frameLines(app.lastFrame())).toEqual(['G', 'H', 'I', 'J']);
-    await flushWheelFrame();
-    expect(frameLines(app.lastFrame())).toContain('A');
+    expect(setTranscriptScrollHintSpy).toHaveBeenCalledWith(expect.objectContaining({ delta: -2 }));
   });
 
   it('does not re-render transcript children for scroll-only updates', async () => {
@@ -176,8 +129,7 @@ describe('TranscriptView', () => {
     );
     expect(childRenderCount).toBe(1);
 
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
-    await flushWheelFrame();
+    act(() => app.stdin.write('\x15'));
     expect(childRenderCount).toBe(1);
   });
 
@@ -198,16 +150,14 @@ describe('TranscriptView', () => {
       </Profiler>,
     );
 
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
-    await flushWheelFrame();
+    act(() => app.stdin.write('\x15'));
     const browsingCommitCount = commitCount;
     expect(browsingCommitCount).toBeGreaterThan(1);
 
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
-    await flushWheelFrame();
+    act(() => app.stdin.write('\x15'));
     expect(commitCount).toBeGreaterThan(browsingCommitCount);
     expect(childRenderCount).toBe(1);
-    expect(frameLines(app.lastFrame())).toContain('D');
+    expect(frameLines(app.lastFrame())).toContain('E');
   });
 
   it('reconciles content height after a descendant-local markdown update', async () => {
@@ -254,86 +204,33 @@ describe('TranscriptView', () => {
     expect(frameLines(app.lastFrame())).toContain('A');
   });
 
-  it('cancels opposite wheel reports within the same render turn', async () => {
-    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
-    const app = render(view(labels));
-
-    act(() => {
-      app.stdin.write('\x1b[<64;10;5M');
-      app.stdin.write('\x1b[<65;10;5M');
-    });
-    await flushWheelFrame();
-    expect(frameLines(app.lastFrame())).toEqual(['G', 'H', 'I', 'J']);
-  });
-
-  it('keeps queued wheel scrolling stable when the tool callback changes', async () => {
-    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
-    const app = render(view(labels, { onToggleTool: vi.fn() }));
-
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
-    app.rerender(view(labels, { onToggleTool: vi.fn() }));
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
-    await flushWheelFrame();
-    expect(frameLines(app.lastFrame())).toContain('A');
-  });
-
-  it('cancels queued wheel rows when follow-bottom is requested', async () => {
+  it('returns to the tail when follow-bottom is requested', () => {
     const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
     const app = render(view(labels, { followRequestKey: 0 }));
 
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    act(() => app.stdin.write('\x15'));
     app.rerender(view(labels, { followRequestKey: 1 }));
-    await flushWheelFrame();
     expect(frameLines(app.lastFrame())).toEqual(['G', 'H', 'I', 'J']);
   });
 
-  it('cancels queued wheel rows before keyboard navigation', async () => {
-    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
-    const app = render(view(labels));
-
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
-    act(() => app.stdin.write('\x1b[6~'));
-    await flushWheelFrame();
-    expect(frameLines(app.lastFrame())).toEqual(['G', 'H', 'I', 'J']);
-  });
-
-  it('ignores mouse clicks and wheel reports while inactive', () => {
+  it('ignores mouse reports, which Book never asks the terminal to send', async () => {
     const labels = ['A', 'B', 'C', 'D', 'E', 'F'];
     const app = render(view(labels));
 
-    act(() => app.stdin.write('\x1b[<0;10;5M'));
+    // Wheel up, wheel down, left press, drag, and release, as a terminal left in
+    // a tracking mode by another program would report them.
+    for (const report of [
+      '\x1b[<64;10;5M',
+      '\x1b[<65;10;5M',
+      '\x1b[<0;4;2M',
+      '\x1b[<32;4;2M',
+      '\x1b[<0;4;2m',
+    ]) {
+      act(() => app.stdin.write(report));
+    }
+    await flushFrame();
+
     expect(frameLines(app.lastFrame())).toEqual(['C', 'D', 'E', 'F']);
-
-    app.rerender(view(labels, { isActive: false }));
-    act(() => app.stdin.write('\x1b[<64;10;5M'));
-    expect(frameLines(app.lastFrame())).toEqual(['C', 'D', 'E', 'F']);
-  });
-
-  it('toggles only expandable tool summary rows on left-button presses', () => {
-    const onToggleTool = vi.fn();
-    const app = render(
-      <ThemeContext.Provider value={DEFAULT_THEME}>
-        <TranscriptView height={6} width={60} onToggleTool={onToggleTool}>
-          <ToolCallBlock
-            toolId="tool-1"
-            name="Bash"
-            args={{ command: 'npm test' }}
-            result={toolSuccess('passed', { toolCallId: 'tool-1' })}
-            isExpanded={false}
-            terminalWidth={60}
-            reducedMotion
-          />
-        </TranscriptView>
-      </ThemeContext.Provider>,
-    );
-
-    act(() => app.stdin.write('\x1b[<0;4;2M'));
-    expect(onToggleTool).toHaveBeenCalledWith('tool-1');
-
-    act(() => app.stdin.write('\x1b[<0;4;2m'));
-    act(() => app.stdin.write('\x1b[<32;4;2M'));
-    act(() => app.stdin.write('\x1b[<0;4;5M'));
-    expect(onToggleTool).toHaveBeenCalledTimes(1);
   });
 
   it('follows appended output while pinned to the tail', () => {

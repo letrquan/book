@@ -58,11 +58,3 @@ export function getTranscriptPageRows(viewportRows: number): number {
 export function getTranscriptHalfPageRows(viewportRows: number): number {
   return Math.max(1, Math.floor(viewportRows / 2));
 }
-
-export function getTranscriptWheelDrainRows(pendingRows: number, viewportRows: number): number {
-  const pending = Math.trunc(pendingRows);
-  if (pending === 0) return 0;
-
-  const maxRows = Math.max(3, getTranscriptHalfPageRows(viewportRows));
-  return Math.sign(pending) * Math.min(Math.abs(pending), maxRows);
-}

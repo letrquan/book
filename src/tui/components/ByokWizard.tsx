@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from 'ink';
-import TextInput from 'ink-text-input';
+import TextInput from './TextInputField.js';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { RetryConfig } from '../../types/runtime.js';
 import {
@@ -18,6 +18,7 @@ import {
   type ProviderSaveRequest,
 } from '../model-options.js';
 import { useDensityMetrics } from '../density.js';
+import { stripSgrMouseSequences } from '../mouse.js';
 import { useTheme } from '../theme.js';
 
 export interface ByokWizardProps {
@@ -242,6 +243,7 @@ export function ByokWizard({
         return;
       }
       if (step === 'choose-models') {
+        const typed = stripSgrMouseSequences(input);
         if (key.return) {
           if (selectedIds.length === 0) setError('Select at least one model.');
           else {
@@ -256,8 +258,8 @@ export function ByokWizard({
           return;
         }
         if (filteredModels.length === 0) {
-          if (input && input !== ' ' && !key.ctrl && !key.meta) {
-            setModelFilter((value) => value + input);
+          if (typed && typed !== ' ' && !key.ctrl && !key.meta) {
+            setModelFilter((value) => value + typed);
           }
           return;
         }
@@ -277,8 +279,8 @@ export function ByokWizard({
           );
           return;
         }
-        if (input && !key.ctrl && !key.meta) {
-          setModelFilter((value) => value + input);
+        if (typed && !key.ctrl && !key.meta) {
+          setModelFilter((value) => value + typed);
           setModelCursor(0);
         }
         return;

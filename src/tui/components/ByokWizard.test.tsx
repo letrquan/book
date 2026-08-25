@@ -85,6 +85,40 @@ describe('ByokWizard', () => {
     expect(output).not.toContain('Ctrl+C cancel');
   });
 
+  it('never types a mouse report into the base URL or API key', async () => {
+    const { view, discover } = createWizard();
+    await write(view, 'gateway');
+    await write(view, '\r');
+    await waitForText(view, 'Protocol');
+    await write(view, '\r');
+    await waitForText(view, 'Base URL');
+
+    // Book never turns mouse reporting on, but a terminal left in a tracking
+    // mode by another program still reports clicks, and Ink hands them to the
+    // focused field as ordinary text.
+    await write(view, 'https://api.example.com/v1');
+    await write(view, '\x1b[<0;12;4M');
+    await write(view, '\x1b[<0;12;4m');
+    expect(stripAnsi(view.lastFrame())).toContain('https://api.example.com/v1');
+    expect(stripAnsi(view.lastFrame())).not.toContain('[<0;12;4');
+
+    await write(view, '\r');
+    await waitForText(view, 'API key');
+    await write(view, 'super-secret-key');
+    await write(view, '\x1b[<64;12;4M');
+    await write(view, '\r');
+    await waitForText(view, 'Discover models automatically');
+    await write(view, '\r');
+    await waitForText(view, 'Model A');
+
+    expect(discover).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'super-secret-key',
+      }),
+    );
+  });
+
   it('masks an API key and never renders its raw value', async () => {
     const { view } = createWizard();
     await advanceToApiKey(view);
