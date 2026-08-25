@@ -41,14 +41,13 @@ runtime defaults and known boundaries, see [docs/current-state.md](docs/current-
   custom-command substitutions, and privileged agent definitions in untrusted projects. Project
   MCP servers, project-declared `permissions.allow` rules, project hook entries, and project
   slash commands that substitute shell now each have per-item fingerprinted approval; provider
-  blocks and agent definitions do not. The first three record their decisions in
-  `~/.book/trust.json`, keyed by workspace path and read from outside the working tree, so
-  nothing a repository ships can approve itself; `book trust hook|rule` records the decision and
-  `book doctor` prints what is withheld. Command approvals are the exception and still live in
-  `<workspace>/.book/settings.local.json` under `commands.projectCommands`, which is local only by
-  convention: a repository that commits that file supplies its own approvals. Porting that last
-  store out of the working tree is the remaining precondition of the trust database above, not a
-  later refinement of it.
+  blocks and agent definitions do not. All four record their decisions in `~/.book/trust.json`,
+  keyed by workspace path and read from outside the working tree, so nothing a repository ships
+  can approve itself; `book trust hook|rule|command` records the decision, `book config set`
+  refuses those four paths outright, and `book doctor` prints what is withheld. What remains here
+  is provider blocks and agent definitions, and an interactive surface for any of it: the MCP gate
+  is the only one with a TUI prompt, so in the primary mode a withheld declaration is silent until
+  `book doctor` is run.
 - [x] Rebuild shell sandbox execution around structured argv instead of a wrapped command string.
 - [x] Enforce declared filesystem sandbox policy, and fail closed on network domain rules that
   bubblewrap cannot express.

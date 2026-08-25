@@ -1,10 +1,17 @@
 /**
  * `book trust` — record a decision about repository-declared configuration.
  *
- * The gated input is a hook entry or a `permissions.allow` rule the checked-in
- * project layer declared; until a decision exists, the resolver withholds it.
- * Doctor reports what is withheld and prints the command that grants it, so
- * this is the non-interactive half of that flow.
+ * The gated input is a hook entry, a `permissions.allow` rule, or a project
+ * command whose body substitutes shell; until a decision exists, the resolver
+ * withholds it. Doctor reports what is withheld and prints the command that
+ * grants it, so this is the non-interactive half of that flow.
+ *
+ * Commands are keyed by name rather than by fingerprint. A hook or a rule is
+ * anonymous — a fingerprint is the only handle it has — but a command already
+ * has one the user typed, and asking them to paste a digest to approve
+ * `/deploy` would be ceremony without a gain. The fingerprint still decides
+ * *validity*: it is recorded with the choice and re-checked on every
+ * invocation, so editing what the body runs re-asks under the same name.
  *
  * It replaces a printed `book config set hooks.projectEntries '<json>'`
  * one-liner, which was wrong in three ways: `config set` *replaces* the value
@@ -18,6 +25,14 @@
  */
 import { join } from 'path';
 import {
+  describeProjectCommandShell,
+  displayableCommandName,
+  partitionProjectCommands,
+  persistProjectCommandChoice,
+  projectCommandFingerprint,
+} from '../command-approvals.js';
+import { discoverCommands } from '../commands/loader.js';
+import {
   collectDeclaredHooks,
   describeDeclaredHook,
   hookFingerprint,
@@ -29,9 +44,10 @@ import {
   persistProjectAllowRuleChoice,
 } from '../permission-approvals.js';
 import { loadSettingsFile, resolveSettings } from '../settings-loader.js';
+import type { SlashCommand } from '../types/commands.js';
 import { exit } from './exit.js';
 
-export type TrustKind = 'hook' | 'rule';
+export type TrustKind = 'hook' | 'rule' | 'command';
 
 export interface TrustCommandOptions {
   workspace: string;
@@ -76,9 +92,54 @@ export async function runTrustCommand(
   // Only the checked-in layer is gated, so only its declarations are decidable.
   const projectSettings = loadSettingsFile(join(workspace, '.book', 'settings.json'));
 
-  const decisions: Array<{ key: string; label: string }> = [];
+  // A command decision carries the fingerprint of the shell it was made
+  // against, so the body cannot change under an approval already on file.
+  const decisions: Array<{ key: string; label: string; fingerprint?: string }> = [];
 
-  if (kind === 'hook') {
+  if (kind === 'command') {
+    // Commands are discovered from disk, not declared in settings: the gated
+    // artefact is the `.book/commands/*.md` body itself.
+    const partition = partitionProjectCommands(discoverCommands(workspace), settings);
+    const push = (command: SlashCommand) => {
+      // Approving is approving the shell, so the shell is what gets shown —
+      // never just the name. The single-command path reaches here from a
+      // refusal that already listed it; `--all-pending` has no such prior, and
+      // a bulk grant against a list of names is approval without reading.
+      if (!options.reject) {
+        console.log(`/${displayableCommandName(command.name)} runs:`);
+        for (const line of describeProjectCommandShell(command)) console.log(`  ${line}`);
+      }
+      decisions.push({
+        key: command.name,
+        label: `/${displayableCommandName(command.name)}`,
+        fingerprint: projectCommandFingerprint(command.body),
+      });
+    };
+
+    if (options.allPending) {
+      if (partition.pending.length === 0) {
+        console.log(`No project commands are awaiting a decision in ${workspace}.`);
+        return;
+      }
+      for (const command of partition.pending) push(command);
+    } else {
+      const name = target!.replace(/^\//, '');
+      const decidable = [...partition.pending, ...partition.approved, ...partition.rejected];
+      const command = decidable.find((candidate) => candidate.name === name);
+      if (!command) {
+        // Either the command does not exist, or it substitutes no shell and so
+        // has nothing to decide. Both mean this decision would change nothing.
+        const known = partition.pending
+          .map((pending) => `  /${displayableCommandName(pending.name)}`)
+          .join('\n');
+        return fail(
+          `book trust command: ${workspace} has no project command "${name}" that runs shell.` +
+            (known ? `\nAwaiting a decision:\n${known}` : '\nNothing is awaiting a decision.'),
+        );
+      }
+      push(command);
+    }
+  } else if (kind === 'hook') {
     const declared = collectDeclaredHooks(projectSettings);
     const byFingerprint = new Map(
       declared.map((hook) => [hookFingerprint(hook.event, hook.entry), hook]),
@@ -137,9 +198,11 @@ export async function runTrustCommand(
   const failures: string[] = [];
   for (const decision of decisions) {
     const result =
-      kind === 'hook'
-        ? persistProjectHookChoice(workspace, decision.key, choice)
-        : persistProjectAllowRuleChoice(workspace, decision.key, choice);
+      kind === 'command'
+        ? persistProjectCommandChoice(workspace, decision.key, decision.fingerprint!, choice)
+        : kind === 'hook'
+          ? persistProjectHookChoice(workspace, decision.key, choice)
+          : persistProjectAllowRuleChoice(workspace, decision.key, choice);
     if (result.ok) console.log(`${verb} ${decision.label}`);
     else failures.push(`${decision.label}: ${result.error ?? 'unknown error'}`);
   }

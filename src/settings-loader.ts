@@ -113,21 +113,6 @@ const WORKSPACE_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
   ['mcp', 'projectServers'],
   ['permissions', 'projectAllowRules'],
   ['hooks', 'projectEntries'],
-];
-
-/**
- * The same kind of decision, for a class the user-global trust store does not
- * answer for yet.
- *
- * Project command approvals still live in `.book/settings.local.json`, so that
- * layer has to keep being read or an approved command could never run. Only the
- * checked-in layer is stripped, which is the guarantee this key shipped with.
- * The weaker storage is the reason, not a judgement that the key is safer: a
- * repository that force-adds the local file still supplies its own approvals.
- * Porting it into the trust store is what collapses this list into the one
- * above.
- */
-const REPOSITORY_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
   ['commands', 'projectCommands'],
 ];
 
@@ -152,7 +137,6 @@ function sanitizeLayer(
   // Project/local settings cannot opt a session into the most permissive mode.
   if (sanitized.defaultMode === 'bypassPermissions') delete sanitized.defaultMode;
   stripPaths(sanitized, WORKSPACE_FORBIDDEN_PATHS);
-  if (trust === 'repository') stripPaths(sanitized, REPOSITORY_FORBIDDEN_PATHS);
   return sanitized;
 }
 
@@ -287,6 +271,10 @@ export function resolveSettings(
   };
   resolved.mcp.projectServers = { ...resolved.mcp.projectServers, ...trust.mcpServers };
   resolved.hooks.projectEntries = { ...resolved.hooks.projectEntries, ...trust.hookEntries };
+  resolved.commands.projectCommands = {
+    ...resolved.commands.projectCommands,
+    ...trust.projectCommands,
+  };
 
   // Every decision source is in place now, so the withheld repository rules can
   // be released — approved ones only.

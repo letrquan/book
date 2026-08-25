@@ -200,7 +200,7 @@ but header values are redacted from logs, prompts, reports, and diagnostics.
 
 Project servers are untrusted repository-controlled input. Book displays the exact non-secret
 target and asks for one-time approval before launching or connecting; the decision is stored in
-`.book/settings.local.json` and is invalidated when any command, argument, environment value,
+`~/.book/trust.json` and is invalidated when any command, argument, environment value,
 working directory, URL, transport, or header value changes. Headless and SDK runs skip unapproved
 project servers. `/mcp` shows live status in the TUI; `book mcp list|get|add|remove` manages
 declarations. Permission rules may target one server (`mcp__github`) or one exact tool
@@ -231,14 +231,16 @@ file is checked in and controlled by whoever wrote the repository:
 - A `permissions.allow` rule it declares is withheld until you approve it. `ask` and `deny` rules
   apply immediately — they only ever restrict. `book doctor` lists withheld rules and prints the
   `book trust rule ...` command that grants them.
-- Keys recording a trust decision — `mcp.projectServers`, `permissions.projectAllowRules`, and
-  `hooks.projectEntries` — are ignored from **both** workspace layers, so a repository cannot
-  approve itself. They are not settings you write: decisions live in `~/.book/trust.json`, keyed
-  by workspace path, and `book trust` is what records them. Putting them in the gitignored
-  `.book/settings.local.json` was not enough — `.gitignore` does not stop a force-added file from
-  reaching a clone, so a repository could ship approvals for the hooks and servers it also shipped.
-  A store outside the workspace is one nothing the repository ships can reach. An unreadable store
-  records no decisions, which withholds the gated input rather than releasing it.
+- Keys recording a trust decision — `mcp.projectServers`, `permissions.projectAllowRules`,
+  `hooks.projectEntries`, and `commands.projectCommands` — are ignored from **both** workspace
+  layers, so a repository cannot approve itself. They are not settings you write: decisions live
+  in `~/.book/trust.json`, keyed by workspace path, and `book trust` is what records them.
+  `book config set` refuses these four paths outright rather than writing a value nothing reads.
+  Putting them in the gitignored `.book/settings.local.json` was not enough — `.gitignore` does
+  not stop a force-added file from reaching a clone, so a repository could ship approvals for the
+  hooks, servers, and commands it also shipped. A store outside the workspace is one nothing the
+  repository ships can reach. An unreadable store records no decisions, which withholds the gated
+  input rather than releasing it.
 
 `book config set` and TUI preference changes validate the complete local document before writing.
 
@@ -511,11 +513,12 @@ and environment — because approval covers all of them: `npm test` carrying
 book trust hook <fingerprint>          # or --all-pending for every withheld hook
 book trust hook <fingerprint> --reject # refuse it, and stop being re-offered it
 book trust rule "Bash(npm run *)"      # the same, for a project-declared allow rule
+book trust command deploy              # and for a project command that substitutes shell
 ```
 
-Both take `--workspace <path>`; `book doctor` prints it for you when it is diagnosing a directory
-other than the one you are in. Each invocation records one decision and leaves every other
-decision — in this workspace and in every other — untouched.
+All three take `--workspace <path>`; `book doctor` prints it for you when it is diagnosing a
+directory other than the one you are in. Each invocation records one decision and leaves every
+other decision — in this workspace and in every other — untouched.
 
 `Stop` fires once when the agent stops, not once per provider turn — a task that takes twelve
 tool-call turns still fires it once. It fires on cancellation too, which is usually the point of
@@ -743,27 +746,24 @@ its command name would otherwise be enough to execute whatever that file says �
 `book -p`, where no terminal is present to notice.
 
 Book therefore requires a one-time decision per project command that substitutes shell. It is
-recorded in `.book/settings.local.json`. The checked-in `.book/settings.json` is forbidden from
-writing that key, so a project cannot approve itself through its own settings layer:
+recorded in `~/.book/trust.json`, keyed by workspace path — outside the working tree, like the
+`.mcp.json`, `permissions.allow`, and hook decisions. Nothing a repository ships can reach it:
 
 ```bash
-book config set commands.projectCommands '{"deploy":{"fingerprint":"ab12…","choice":"approved"}}'
+book trust command deploy          # or --all-pending for every command awaiting a decision
+book trust command deploy --reject # refuse it
 ```
 
 `book doctor` lists which project commands are approved, rejected, or still refused, and prints
-the exact line that approves the pending ones — carrying the decisions already on file, because
-the value replaces the whole record. Until a decision exists the command is refused — in the TUI
-and in print mode alike — naming the shell it wanted to run.
+the command that decides the pending ones. Until a decision exists the command is refused — in
+the TUI and in print mode alike — naming the shell it wanted to run.
 
-> **`settings.local.json` is only local by convention.** Book treats that file as yours, but it
-> lives in the working tree: a repository that commits one instead of ignoring it supplies its
-> own approvals, and this gate — like the `.mcp.json` and `permissions.allow` gates, which use
-> the same store — honours them. Check whether a cloned project ships a
-> `.book/settings.local.json` before running its commands.
-
-The fingerprint covers the shell the body runs, in order, not the prose around it: editing what
-runs asks again, rewording the instructions does not. Commands in `~/.book/commands/` are yours
-and are never gated, and a project command that substitutes no shell has nothing to approve.
+The decision is keyed by command name but *validated* by fingerprint: a name is the handle you
+already have for `/deploy`, and the fingerprint recorded alongside it is re-checked on every
+invocation, so editing what the body runs re-asks under the same name. That fingerprint covers
+the shell the body runs, in order, not the prose around it: rewording the instructions does not
+ask again. Commands in `~/.book/commands/` are yours and are never gated, and a project command
+that substitutes no shell has nothing to approve.
 
 Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, `/exit`,
 `/help`), task and job controls (`/task`, `/jobs`, with `/tasks` as an alias), managed-agent

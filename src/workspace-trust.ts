@@ -1,9 +1,10 @@
 /**
  * Trust decisions the user makes about repository-controlled input.
  *
- * Book gates three kinds of repository-declared configuration behind a one-time
- * per-workspace decision: `permissions.allow` rules, MCP servers, and hook
- * entries. Each gate is only as strong as the store its decisions live in.
+ * Book gates four kinds of repository-declared configuration behind a one-time
+ * per-workspace decision: `permissions.allow` rules, MCP servers, hook entries,
+ * and shell substitution in a project `.book/commands/*.md` body. Each gate is
+ * only as strong as the store its decisions live in.
  *
  * That store used to be `<workspace>/.book/settings.local.json`, on the
  * reasoning that the file is gitignored and only Book writes it. `.gitignore`
@@ -31,11 +32,22 @@ import { writeFileAtomic } from './settings-repository.js';
 import {
   mcpProjectServerChoiceSchema,
   projectAllowRuleChoiceSchema,
+  projectCommandChoiceSchema,
   projectHookChoiceSchema,
 } from './settings.js';
 
-/** Bumped only for a format change that older Book versions cannot read. */
-export const TRUST_STORE_VERSION = 1;
+/**
+ * Bumped only for a format change that older Book versions cannot read.
+ *
+ * v2 added `projectCommands`. The addition is *readable* by a v1 build, which
+ * is exactly the problem: `updateWorkspaceTrust` writes the schema-parsed
+ * value, and `z.object` strips unknown keys, so a v1 build recording any hook,
+ * rule, or MCP decision for a workspace would silently drop that workspace's
+ * command approvals on the way out. Refusing the whole store is the louder and
+ * safer failure — a v1 build reports it as unreadable, withholds every gated
+ * declaration, and declines to write, rather than quietly erasing decisions.
+ */
+export const TRUST_STORE_VERSION = 2;
 
 const workspaceTrustSchema = z.object({
   /** Keyed by the exact rule text the project layer declared. */
@@ -44,12 +56,14 @@ const workspaceTrustSchema = z.object({
   mcpServers: z.record(mcpProjectServerChoiceSchema).default({}),
   /** Keyed by a fingerprint of `{ event, matcher, command, env }`. */
   hookEntries: z.record(projectHookChoiceSchema).default({}),
+  /** Keyed by command name, carrying the fingerprint of the shell its body runs. */
+  projectCommands: z.record(projectCommandChoiceSchema).default({}),
 });
 
 export type WorkspaceTrust = z.infer<typeof workspaceTrustSchema>;
 
 export function emptyWorkspaceTrust(): WorkspaceTrust {
-  return { permissionAllowRules: {}, mcpServers: {}, hookEntries: {} };
+  return { permissionAllowRules: {}, mcpServers: {}, hookEntries: {}, projectCommands: {} };
 }
 
 /** Location of the user-global trust store. */
