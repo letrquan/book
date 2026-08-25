@@ -42,6 +42,7 @@ export type AgentEvent =
       }
     >
   | { type: 'evidence_update'; evidence: EvidenceItem }
+  | { type: 'attempt_discarded'; reason: 'empty_response' }
   | { type: 'error'; error: string }
   | {
       type: 'result';
@@ -175,6 +176,10 @@ export function reduceAgentSessionSnapshot(
       return snapshot;
     case 'evidence_update':
       return { ...snapshot, evidence: upsertById(snapshot.evidence, event.evidence) };
+    case 'attempt_discarded':
+      // The abandoned attempt's text must not be counted as output; the retry
+      // streams the version that will actually be persisted.
+      return { ...snapshot, status: 'running', assistantText: '' };
     case 'error':
       return { ...snapshot, error: event.error };
     case 'result':

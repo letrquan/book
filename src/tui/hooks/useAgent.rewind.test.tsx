@@ -277,7 +277,15 @@ describe('useAgent rewind integration', () => {
     await tick();
 
     expect(latest!.isThinking).toBe(false);
-    expect(latest!.error).toBe('provider failed');
+    // Reported as a transcript row rather than the transient banner: the banner
+    // is cleared by the next send, and a run that stopped has to stay explained
+    // after a resume. Only one of the two renders it, or one failure reads as two.
+    expect(
+      latest!.messages
+        .filter((message) => (message as { kind?: string }).kind === 'local')
+        .map((message) => message.content),
+    ).toEqual(['✕ provider failed']);
+    expect(latest!.error).toBeNull();
   });
 
   it('keeps streaming after auto compaction during an active run', async () => {

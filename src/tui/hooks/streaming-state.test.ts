@@ -8,6 +8,7 @@ import {
   isTotallyEmptyAssistant,
   makeMessage,
   removeTrailingEmptyAssistantPlaceholder,
+  resetStreamedContent,
 } from './streaming-state.js';
 import type { Message } from '../../types/messages.js';
 import { toolFailure, toolSuccess } from '../../tools/result.js';
@@ -55,6 +56,36 @@ describe('streaming TUI message state helpers', () => {
 
     expect(next.map((m) => m.content)).toEqual(['old', 'Hello']);
     expect(messages.map((m) => m.content)).toEqual(['old', '']);
+  });
+
+  it('clears an abandoned attempt from the streaming message only', () => {
+    const messages = [
+      msg('assistant-0', 'assistant', 'a finished turn'),
+      { ...msg('assistant-1', 'assistant', '<think>abandoned</think>'), reasoningContent: 'why' },
+    ];
+    const next = resetStreamedContent(messages, 'assistant-1');
+
+    expect(next.map((m) => m.content)).toEqual(['a finished turn', '']);
+    expect(next[1].reasoningContent).toBeUndefined();
+    expect(messages[1].content).toBe('<think>abandoned</think>');
+  });
+
+  it('leaves tool activity on an abandoned attempt untouched', () => {
+    const withCall = appendToolCallToMessage(
+      [msg('assistant-1', 'assistant', 'text')],
+      'assistant-1',
+      { id: 'call-1', name: 'Bash', arguments: {} },
+    );
+    const next = resetStreamedContent(withCall, 'assistant-1');
+
+    expect(next[0].content).toBe('');
+    expect(next[0].toolCalls?.map((call) => call.id)).toEqual(['call-1']);
+  });
+
+  it('returns the same array when there is nothing to clear', () => {
+    const messages = [msg('assistant-1', 'assistant', '')];
+    expect(resetStreamedContent(messages, 'assistant-1')).toBe(messages);
+    expect(resetStreamedContent(messages, 'missing')).toBe(messages);
   });
 
   it('keeps text append-only and ignores empty deltas', () => {

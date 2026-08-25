@@ -915,6 +915,7 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
     case 'agent_apply':
     case 'evidence_update':
     case 'skill_lifecycle':
+    case 'attempt_discarded':
       emit(event);
       break;
     case 'system':
