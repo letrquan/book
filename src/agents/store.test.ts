@@ -512,3 +512,75 @@ function recordFixture(id: string): AgentRecord {
     updatedAt: 1,
   };
 }
+
+describe('AgentStore recovery of host-owned agents', () => {
+  /**
+   * A `/review` killed by SIGKILL or a hard crash never runs the manager's exit
+   * handler, so its reviewers are recovered here on the next launch instead.
+   */
+  function reviewerRecord(id: string): AgentRecord {
+    return {
+      id,
+      name: 'reviewer',
+      role: 'explorer',
+      description: 'review',
+      status: 'running',
+      applicationStatus: 'not_applied',
+      prompt: 'review the diff',
+      parentSessionId: 'session-1',
+      notifyParentOnCompletion: false,
+      referencedEvidenceIds: [],
+      transcript: [],
+      pendingMessages: [],
+      createdAt: 1,
+      updatedAt: 1,
+    };
+  }
+
+  function restart(directory: string): AgentStore {
+    return new AgentStore('repo', directory, true, {
+      instanceId: '33333333-3333-4333-8333-333333333333',
+      pid: 34567,
+      hostname: 'test-host',
+      now: () => 100_000,
+      processAlive: () => false,
+    });
+  }
+
+  it('recovers a suppressed agent without leaving a completion to deliver', () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const store = new AgentStore('repo', root, true, {
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 12345,
+      hostname: 'test-host',
+      now: () => 1,
+    });
+    store.saveAgent(reviewerRecord('reviewer-1'));
+
+    const recovered = restart(root).recoverAbandonedAgents()[0]!;
+
+    expect(recovered.status).toBe('interrupted');
+    // Equal sequences mean nothing is outstanding: the next `--continue` will
+    // not spend a model turn re-narrating a review that never finished, and the
+    // agent will not stay pinned in the session's agent list.
+    expect(recovered.completionSequence).toBe(1);
+    expect(recovered.completionDeliveredSequence).toBe(1);
+  });
+
+  it('still leaves an ordinary agent’s completion outstanding', () => {
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const store = new AgentStore('repo', root, true, {
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 12345,
+      hostname: 'test-host',
+      now: () => 1,
+    });
+    const ordinary = { ...reviewerRecord('explorer-1'), notifyParentOnCompletion: undefined };
+    store.saveAgent(ordinary);
+
+    const recovered = restart(root).recoverAbandonedAgents()[0]!;
+
+    expect(recovered.completionSequence).toBe(1);
+    expect(recovered.completionDeliveredSequence ?? 0).toBe(0);
+  });
+});

@@ -276,6 +276,20 @@ describe('TUI slash commands', () => {
     expect(output).toContain('/exit');
   }, 20_000);
 
+  it('/review reports back instead of leaving the prompt silent', async () => {
+    // The workspace is not a git repository, so target resolution fails fast.
+    // That is enough to prove the wiring the TUI owns: the command is
+    // dispatched, the host's output reaches the transcript, and the session
+    // survives — a review used to be a fire-and-forget call that reported
+    // nothing at all until it finished, if it ever did.
+    session = await startAndWait();
+    await submitInteractive(session, '/review');
+    const output = await session.waitFor('review failed', 15_000);
+    expect(output).toContain('review failed');
+    // Reported in the transcript by the host, not thrown as a crash.
+    expect(output).toContain('Ask me anything');
+  }, 30_000);
+
   it('/help toggle hides the help panel', async () => {
     // Full-frame rendering makes the post-toggle terminal state directly assertable.
     session = await startAndWait({ BOOK_TUI_RENDERER: 'safe' });

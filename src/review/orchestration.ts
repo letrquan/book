@@ -12,9 +12,27 @@ import {
   buildVerificationPrompt,
   parseVerificationVerdicts,
 } from './verify-findings.js';
+import { onAbort } from '../async.js';
 import type { ReviewCoverageEntry, ReviewFinding, ReviewReport, ReviewScope } from './types.js';
 
 /** Fan-out review orchestration with explicit operational coverage. */
+
+export const REVIEW_CANCELLED = 'review cancelled';
+
+export interface ReviewRunOptions {
+  /**
+   * Fires once the immutable target is resolved and before any reviewer is
+   * spawned, so a host can tell the user what is being reviewed instead of
+   * going silent for the length of the run.
+   */
+  onTarget?: (target: ReviewTarget) => void;
+  /**
+   * Cancels the run. In-flight agents are stopped; because `stop` drives an
+   * agent to a terminal status, the passes that were already waiting settle
+   * normally and are recorded as incomplete coverage rather than hanging.
+   */
+  signal?: AbortSignal;
+}
 
 export interface ReviewAgentHandle {
   id: string;
@@ -80,15 +98,24 @@ function coverageStatus(handle: ReviewAgentHandle): ReviewCoverageEntry['status'
   return handle.status === 'completed' ? 'completed' : 'failed';
 }
 
-async function stopNonTerminal(
+/**
+ * Best-effort stop for handles that may already be terminal.
+ *
+ * Never rejects: `Promise.allSettled` swallows the cases `stop` legitimately
+ * throws on — an agent another Book process owns, or an id the manager has
+ * already forgotten — which matters because every cancellation path calls this
+ * from an abort handler nothing awaits.
+ */
+export async function stopNonTerminal(
   runner: ReviewAgentRunner,
   handles: readonly ReviewAgentHandle[],
+  reason = 'review orchestration failed',
 ): Promise<void> {
   if (!runner.stop) return;
   await Promise.allSettled(
     handles
       .filter((handle) => !TERMINAL_STATUSES.has(handle.status))
-      .map((handle) => runner.stop!(handle.id, 'review orchestration failed')),
+      .map((handle) => runner.stop!(handle.id, reason)),
   );
 }
 
@@ -121,6 +148,21 @@ function renderRawOutput(id: string, text: string | undefined): string {
   return [`Raw ${id} output (did not satisfy the JSON contract):`, truncated].join('\n');
 }
 
+/**
+ * A cancelled run is `inconclusive` with empty coverage, never `clean`.
+ *
+ * Hosts replace this text with their own cancellation notice, but the report
+ * still has to be honest for the JSON projection: nothing was reviewed, so
+ * nothing may be reported as reviewed and found fine.
+ */
+function cancelledDeepResult(target: ReviewTarget): DeepReviewResult {
+  return {
+    target,
+    report: { verdict: 'inconclusive', findings: [], coverage: { reviewers: [] } },
+    text: `Deep review cancelled: ${REVIEW_CANCELLED}.`,
+  };
+}
+
 function emptyTargetReport(target: ReviewTarget): SingleReviewResult | undefined {
   if (target.changedFiles.length !== 0 || target.diff.trim()) return undefined;
   const report: ReviewReport = { verdict: 'clean', findings: [] };
@@ -136,16 +178,31 @@ export async function runSingleReview(
   runner: ReviewAgentRunner,
   scope: ReviewScope,
   workspace: string,
+  options: ReviewRunOptions = {},
 ): Promise<SingleReviewResult> {
   if (scope.error) throw new Error(scope.error);
   const target = await resolveReviewTarget(workspace, scope);
+  options.onTarget?.(target);
   const empty = emptyTargetReport(target);
   if (empty) return empty;
+  if (options.signal?.aborted) return failureResult(target, 'single', 'failed', REVIEW_CANCELLED);
 
   const handle = await runner.spawn('reviewer', buildSingleReviewPrompt(workspace, target), {
     description: 'review: single',
   });
-  const settled = await runner.wait(handle.id, REVIEW_TIMEOUT_MS);
+  const releaseAbort = onAbort(options.signal, () => {
+    // `stop` rejects on a record another Book process owns, and on an id the
+    // manager has forgotten. Nothing awaits this handler, and there is no
+    // global unhandled-rejection guard, so an unswallowed rejection here would
+    // take the whole CLI down on the keystroke meant to cancel one review.
+    void stopNonTerminal(runner, [handle], REVIEW_CANCELLED);
+  });
+  let settled: ReviewAgentHandle;
+  try {
+    settled = await runner.wait(handle.id, REVIEW_TIMEOUT_MS);
+  } finally {
+    releaseAbort();
+  }
   if (!TERMINAL_STATUSES.has(settled.status)) {
     await runner.stop?.(settled.id, 'review timed out');
     return failureResult(target, 'single', 'timed_out', 'reviewer timed out');
@@ -230,9 +287,11 @@ export async function runDeepReview(
   runner: ReviewAgentRunner,
   scope: ReviewScope,
   workspace: string,
+  options: ReviewRunOptions = {},
 ): Promise<DeepReviewResult> {
   if (scope.error) throw new Error(scope.error);
   const target = await resolveReviewTarget(workspace, scope);
+  options.onTarget?.(target);
   if (target.changedFiles.length === 0 && !target.diff.trim()) {
     return {
       target,
@@ -248,19 +307,43 @@ export async function runDeepReview(
   const spawned: ReviewAgentHandle[] = [];
   const rawOutputs: string[] = [];
   const reviewerIds = new Map<string, string>();
+  const releaseAbort = onAbort(options.signal, () => {
+    void stopNonTerminal(runner, spawned, REVIEW_CANCELLED);
+  });
+
+  /**
+   * Spawn and register in the same step.
+   *
+   * The abort subscription fires once and reads `spawned` at fire time, so a
+   * handle that only appears after it fired would never be stopped — and a
+   * spawn is not instant (plan creation and a required record write, both with
+   * retries). Registering before the next `await`, and re-checking the signal
+   * afterwards, closes that window from both sides: whichever of the two
+   * happened first, the agent is stopped exactly once.
+   */
+  const spawnTracked = async (prompt: string, description: string): Promise<ReviewAgentHandle> => {
+    const handle = await runner.spawn('reviewer', prompt, { description });
+    spawned.push(handle);
+    if (options.signal?.aborted) await stopNonTerminal(runner, [handle], REVIEW_CANCELLED);
+    return handle;
+  };
+
   try {
+    // Checked before each fan-out as well as inside it: an abort that lands
+    // between resolving the target and spawning has nothing to stop yet, and
+    // would otherwise start the very agents the user just cancelled.
+    if (options.signal?.aborted) return cancelledDeepResult(target);
     const spawnResults = await Promise.allSettled(
       REVIEW_LENSES.map((lens) =>
-        runner.spawn('reviewer', buildReviewerPrompt(lens, workspace, target), {
-          description: `review: ${lens.id}`,
-        }),
+        spawnTracked(buildReviewerPrompt(lens, workspace, target), `review: ${lens.id}`),
       ),
     );
     const spawnFailures: ReviewCoverageEntry[] = [];
     spawnResults.forEach((result, index) => {
       const lens = REVIEW_LENSES[index]!;
       if (result.status === 'fulfilled') {
-        spawned.push(result.value);
+        // `spawned` is keyed by handle id, not by position, so the completion
+        // order `spawnTracked` pushes in is fine.
         reviewerIds.set(result.value.id, lens.id);
       } else {
         spawnFailures.push({
@@ -271,6 +354,9 @@ export async function runDeepReview(
         });
       }
     });
+    // Without this the run would await four cancelled agents for the full
+    // ten-minute pass timeout before noticing.
+    if (options.signal?.aborted) return cancelledDeepResult(target);
 
     const waitResults = await Promise.allSettled(
       spawned.map((handle) => runner.wait(handle.id, REVIEW_TIMEOUT_MS)),
@@ -347,12 +433,12 @@ export async function runDeepReview(
       };
     }
 
-    const verifier = await runner.spawn(
-      'reviewer',
+    if (options.signal?.aborted) return cancelledDeepResult(target);
+    const verifier = await spawnTracked(
       buildVerificationPrompt(candidates, loadReviewConfig(workspace), target),
-      { description: 'review: verify' },
+      'review: verify',
     );
-    spawned.push(verifier);
+    if (options.signal?.aborted) return cancelledDeepResult(target);
     const verifiedHandle = await runner.wait(verifier.id, REVIEW_TIMEOUT_MS);
     if (!TERMINAL_STATUSES.has(verifiedHandle.status)) {
       await runner.stop?.(verifiedHandle.id, 'review verification timed out');
@@ -404,5 +490,7 @@ export async function runDeepReview(
   } catch (error) {
     await stopNonTerminal(runner, spawned);
     throw error;
+  } finally {
+    releaseAbort();
   }
 }

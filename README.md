@@ -868,6 +868,18 @@ scope, so a review cannot silently widen or drift onto unrelated changes.
 /review --help                Usage
 ```
 
+**While it runs (TUI).** A review is minutes of work in background agents, so it reports before it
+starts: the resolved target — file count, base commit, path scope — and which passes are coming are
+printed before the first agent is spawned. Every reviewer, lens, verifier and patcher then appears
+in the agent panel (`/agents`, Ctrl+T) and the status line with live activity, so you can watch a
+pass or open one to read its transcript. Those agents belong to the session for display only; they never
+deliver a completion notification, so watching a review costs no extra model turn. Press `Esc` to
+cancel — the in-flight agents are stopped, and a cancelled review reports `inconclusive` with no
+findings rather than presenting its own stopped passes as a result. `Ctrl+C` cancels the review too;
+a second press exits, as it does mid-stream. A cancelled `--fix` pass reports what it had already
+committed before stopping. Progress is a streaming-host feature: a print run has no silence to
+break, so its stdout stays exactly the report (the same target is on `data.target`).
+
 A plain `/review` runs one structured pass. `--deep` fans out four specialized reviewers
 (correctness, security, simplification, efficiency), merges and deduplicates their findings, drops
 anything below 70% confidence, and then runs a **falsification pass**: an independent verifier tries

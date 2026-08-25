@@ -30,6 +30,7 @@ import { withBuiltInAgents, type ManagedAgentDef } from './profiles.js';
 import { resolveAgentProfile, usableAgentEffort } from './profile-resolver.js';
 import { deriveAgentDisplayName, uniqueAgentDisplayName } from './naming.js';
 import { projectAgentCompletion, projectAgentSummary } from './projections.js';
+import { beginTerminalGeneration } from './completion-notification.js';
 import { projectToolResultForDisplay, redactToolCallForDisplay } from './activity.js';
 import { AgentStore, type AgentStoreWriteResult } from './store.js';
 import { permissionRuleForToolCall } from '../permissions.js';
@@ -434,7 +435,7 @@ export class AgentManager {
           record.pendingPermission = undefined;
           record.updatedAt = Date.now();
           record.finishedAt = record.updatedAt;
-          record.completionSequence = (record.completionSequence ?? 0) + 1;
+          beginTerminalGeneration(record);
           this.store?.saveAgent(record);
         }
       };
@@ -469,7 +470,7 @@ export class AgentManager {
       record.pendingPermission = undefined;
       record.updatedAt = Date.now();
       record.finishedAt = record.updatedAt;
-      record.completionSequence = (record.completionSequence ?? 0) + 1;
+      beginTerminalGeneration(record);
       this.store.saveAgent(record);
     }
     for (const controller of this.controllers.values()) controller.abort('manager_disposed');
@@ -595,7 +596,7 @@ export class AgentManager {
   private persist(record: AgentRecord, event: 'update' | 'result' = 'update'): void {
     if (event === 'result') {
       record.currentActivity = undefined;
-      record.completionSequence = (record.completionSequence ?? 0) + 1;
+      beginTerminalGeneration(record);
     }
     record.updatedAt = Date.now();
     this.store?.saveAgent(record, { defer: event !== 'result' });
@@ -608,7 +609,7 @@ export class AgentManager {
       rootRunId: record.rootRunId,
       parentRunId: record.parentRunId,
     });
-    if (event === 'result') {
+    if (event === 'result' && record.notifyParentOnCompletion !== false) {
       this.emit({
         type: 'agent_completion',
         notification: this.completionNotification(record),
@@ -801,6 +802,7 @@ export class AgentManager {
       parentSessionId: request.parentSessionId ?? plan.parentSessionId,
       rootRunId: request.rootRunId ?? plan.rootRunId ?? runId,
       parentRunId: request.parentRunId ?? plan.parentRunId,
+      notifyParentOnCompletion: request.notifyParentOnCompletion,
       runId,
       planId: plan.id,
       status: 'queued',

@@ -16,7 +16,7 @@ import { createAgentRunContext } from '../types/runs.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { evidenceTools } from '../tools/agent-tools.js';
 import { applyReviewFixes } from '../review/fix.js';
-import { fixRunnerFor } from '../review/runner.js';
+import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewFinding } from '../review/types.js';
 
 const tempRoots: string[] = [];
@@ -1367,5 +1367,141 @@ describe('AgentManager lifecycle', () => {
 
     expect(modes).toEqual(['plan', 'accept-edits', 'accept-edits', 'default']);
     manager.dispose();
+  });
+});
+
+describe('host-owned agents keep their session without billing a turn for it', () => {
+  function managerWithResult(root: string): AgentManager {
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    return new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history) => [
+        ...history,
+        { id: 'm', role: 'assistant', content: 'done', timestamp: 0 } as Message,
+      ],
+    });
+  }
+
+  it('suppresses the completion notification but still reports status', async () => {
+    const manager = managerWithResult(tempRoot());
+    const types: string[] = [];
+    const statusSessions: Array<string | undefined> = [];
+    manager.subscribe((event) => {
+      types.push(event.type);
+      if (event.type === 'agent_status') statusSessions.push(event.parentSessionId);
+    });
+
+    const record = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'review something',
+      parentSessionId: 'session-1',
+      notifyParentOnCompletion: false,
+    });
+    await manager.wait(record.id, 2000);
+
+    // No notification to re-narrate the result...
+    expect(types).not.toContain('agent_completion');
+    expect(await manager.listPendingCompletions()).toEqual([]);
+    // ...but the session still owns it, which is what makes it visible.
+    expect((await manager.get(record.id))?.parentSessionId).toBe('session-1');
+    expect(statusSessions).toContain('session-1');
+    manager.dispose();
+  });
+
+  it('marks the suppressed generation delivered so it cannot resurface later', async () => {
+    const manager = managerWithResult(tempRoot());
+
+    const record = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'review something',
+      parentSessionId: 'session-1',
+      notifyParentOnCompletion: false,
+    });
+    await manager.wait(record.id, 2000);
+    const stored = await manager.get(record.id);
+
+    // An outstanding generation is what replays a completion into the next
+    // session and pins the agent in the session's list forever.
+    expect(stored?.completionDeliveredSequence).toBe(stored?.completionSequence);
+    manager.dispose();
+  });
+
+  it('still notifies for an ordinary agent in the same session', async () => {
+    const manager = managerWithResult(tempRoot());
+    const types: string[] = [];
+    manager.subscribe((event) => types.push(event.type));
+
+    const record = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'ordinary work',
+      parentSessionId: 'session-1',
+    });
+    await manager.wait(record.id, 2000);
+
+    expect(types).toContain('agent_completion');
+    expect(await manager.listPendingCompletions()).toHaveLength(1);
+    manager.dispose();
+  });
+
+  it('suppresses the notification for an agent stopped mid-run', async () => {
+    const root = tempRoot();
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = false;
+    let release = () => {};
+    const manager = new AgentManager(config, [], {
+      storeRoot: tempRoot(),
+      findGitRoot: async () => undefined,
+      runLoop: async (_config, _registry, _prompt, history) => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return history;
+      },
+    });
+    const types: string[] = [];
+    manager.subscribe((event) => types.push(event.type));
+
+    const record = await manager.spawn({
+      agent: 'explorer',
+      prompt: 'review something',
+      parentSessionId: 'session-1',
+      notifyParentOnCompletion: false,
+    });
+    for (let attempt = 0; attempt < 100 && !types.includes('agent_activity'); attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // Cancelling a review stops its agents; that is a terminal generation too.
+    await manager.stop(record.id, 'review cancelled');
+    release();
+
+    expect(types).not.toContain('agent_completion');
+    expect(await manager.listPendingCompletions()).toEqual([]);
+    manager.dispose();
+  });
+});
+
+describe('reviewRunnerFor attribution', () => {
+  it('owns its agents by session while suppressing their notifications', async () => {
+    const spawned: Array<Record<string, unknown>> = [];
+    const manager = {
+      async spawn(request: Record<string, unknown>) {
+        spawned.push(request);
+        return { id: 'agent-0', status: 'completed' };
+      },
+      async wait(id: string) {
+        return { id, status: 'completed' };
+      },
+      async stop() {},
+    } as unknown as AgentManager;
+
+    const runner = reviewRunnerFor(manager, { parentSessionId: 'session-7' });
+    await runner.spawn('reviewer', 'prompt', { description: 'review: single' });
+
+    expect(spawned[0]).toMatchObject({
+      parentSessionId: 'session-7',
+      notifyParentOnCompletion: false,
+    });
   });
 });

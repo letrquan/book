@@ -12,15 +12,22 @@ import type { ReviewAgentRunner } from './orchestration.js';
  * silently escapes `--max-budget-usd`. Optional because the interactive host has
  * no budget root to attach to.
  *
- * Deliberately no `parentSessionId`. That field is what routes a finished
- * agent's completion notification back into a parent conversation as another
- * model turn; a review is its own deliverable and has no turn to notify, so
- * setting it would bill an extra turn to re-narrate a report the host already
- * rendered.
+ * `parentSessionId` is what makes a review *visible*: a session's agent surface
+ * shows only agents owned by that session, so without it every reviewer, lens,
+ * verifier and patcher runs invisibly and a multi-minute review looks like a
+ * hung prompt. Re-narrating each completion as a model turn is suppressed
+ * separately, by `notifyParentOnCompletion: false` — the review renders its own
+ * report, so a completion notification would only bill a turn to restate it.
+ * Ownership and delivery are different questions; conflating them is what cost
+ * the review its progress display.
+ *
+ * A host with no session to attach to (print mode) simply omits it.
  */
 export interface ReviewRunAttribution {
   rootRunId?: string;
   parentRunId?: string;
+  /** Session that owns the spawned agents, for progress display only. */
+  parentSessionId?: string;
 }
 
 function evidenceProjection(item: EvidenceItem): FixEvidence {
@@ -45,6 +52,8 @@ export function reviewRunnerFor(
         evidenceIds: options?.evidenceIds,
         rootRunId: attribution.rootRunId,
         parentRunId: attribution.parentRunId,
+        parentSessionId: attribution.parentSessionId,
+        notifyParentOnCompletion: false,
       });
       return {
         id: record.id,

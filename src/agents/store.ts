@@ -16,6 +16,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { createDebugLogger } from '../debug-log.js';
 import { resolveBookHome } from '../book-home.js';
 import { deriveAgentDisplayName } from './naming.js';
+import { beginTerminalGeneration } from './completion-notification.js';
 import {
   AtomicJsonWriter,
   type AtomicJsonWriterOptions,
@@ -846,7 +847,11 @@ export class AgentStore {
       agent.pendingPermission = undefined;
       agent.updatedAt = this.now();
       agent.finishedAt = lastSeenAt;
-      agent.completionSequence = (agent.completionSequence ?? 0) + 1;
+      // A `/review` killed mid-run (SIGKILL, or a crash that skips the exit
+      // handler) is recovered here. Its reviewers must not come back as
+      // undelivered completions: the next `--continue` would spend a model turn
+      // re-narrating a review that never produced a report.
+      beginTerminalGeneration(agent);
       interrupted.push(structuredClone(agent));
       this.saveAgent(agent);
     }

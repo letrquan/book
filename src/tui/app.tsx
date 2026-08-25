@@ -192,20 +192,36 @@ export function providerRemovalMessage(
  * The TUI is the host that can apply patches, so it is the one that supplies a
  * fix runner, and it renders each segment as it is produced rather than waiting
  * for the (minutes-long) fix pass to finish.
+ *
+ * `parentSessionId` is what puts the reviewer, lens, verifier and patcher agents
+ * in this session's agent panel and status line while they work; the runner
+ * suppresses their completion notifications separately, so live progress costs
+ * no extra model turn.
  */
 async function runReviewCommand(
   scope: ReviewScope,
   manager: AgentManager,
   workspace: string,
+  sessionId: string,
   report: (message: string) => void,
+  signal: AbortSignal,
 ): Promise<void> {
+  const attribution = { parentSessionId: sessionId };
   await runHostReview({
     scope,
     workspace,
-    runner: reviewRunnerFor(manager),
-    fixRunner: fixRunnerFor(manager),
+    runner: reviewRunnerFor(manager, attribution),
+    fixRunner: fixRunnerFor(manager, attribution),
     onSegment: report,
+    signal,
   });
+}
+
+/** Status text for a review in flight. Names the passes so the wait has a shape. */
+function reviewStatusLabel(scope: ReviewScope): string {
+  if (scope.fix) return 'Reviewing, then applying verified fixes';
+  if (scope.deep) return 'Deep review: four lenses, then verification';
+  return 'Review in progress';
 }
 
 const EMPTY_MCP_SNAPSHOT: McpHostSnapshot = { servers: [], pendingApprovals: [], events: [] };
@@ -384,6 +400,11 @@ export function App({
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [showRewindPicker, setShowRewindPicker] = useState(false);
   const [isResolvingCommand, setIsResolvingCommand] = useState(false);
+  /** Set for the lifetime of a `/review`; drives its status line and Esc. */
+  const [reviewStatus, setReviewStatus] = useState<string | undefined>(undefined);
+  const reviewAbortRef = useRef<AbortController | null>(null);
+  /** The conversation currently on screen, for routing a review's late output. */
+  const reviewSessionRef = useRef(sessionId);
   const [draftRestore, setDraftRestore] = useState<{
     key: number;
     value: string;
@@ -531,6 +552,89 @@ export function App({
   useEffect(() => {
     return () => commandResolutionRef.current?.abort();
   }, []);
+
+  /**
+   * Start a review and keep a handle on it.
+   *
+   * A review outlives the keystroke that started it by minutes, so the session
+   * has to hold onto something cancellable: without it the only way out of a
+   * wrong or wedged review was Ctrl+C, which exits Book and orphans the agents
+   * it spawned.
+   */
+  const startReview = useCallback(
+    (scope: ReviewScope) => {
+      if (reviewAbortRef.current) {
+        addLocalMessage('A review is already running. Cancel it with Esc before starting another.');
+        return;
+      }
+      const controller = new AbortController();
+      reviewAbortRef.current = controller;
+      setReviewStatus(reviewStatusLabel(scope));
+      // A review's output belongs to the conversation that asked for it. Its
+      // last segments can still arrive after a `/new`, and appending them to an
+      // unrelated transcript is worse than dropping them.
+      const startedIn = sessionId;
+      const report = (message: string) => {
+        if (reviewSessionRef.current !== startedIn) return;
+        addLocalMessage(message);
+      };
+      void runReviewCommand(
+        scope,
+        managedAgentManager,
+        config.workspace,
+        sessionId,
+        report,
+        controller.signal,
+      )
+        .catch((reviewError) =>
+          report(`✕ ${reviewError instanceof Error ? reviewError.message : String(reviewError)}`),
+        )
+        .finally(() => {
+          if (reviewAbortRef.current !== controller) return;
+          reviewAbortRef.current = null;
+          setReviewStatus(undefined);
+          // An ordinary agent leaves the panel when its completion is
+          // acknowledged. These have no completion by design, so without this
+          // every finished lens and verifier would stay pinned there — and in
+          // the status-line count — for the rest of the session.
+          void managedAgents.refresh().catch(() => {});
+        });
+    },
+    [addLocalMessage, config.workspace, managedAgentManager, managedAgents.refresh, sessionId],
+  );
+
+  /** Returns whether a review was actually cancelled, so callers can fall through. */
+  const cancelReview = useCallback((): boolean => {
+    const controller = reviewAbortRef.current;
+    if (!controller || controller.signal.aborted) return false;
+    controller.abort();
+    setReviewStatus('Cancelling review — stopping its agents');
+    return true;
+  }, []);
+
+  // Abort on unmount so a review cannot keep spawning agents into a dead UI.
+  useEffect(() => {
+    return () => reviewAbortRef.current?.abort();
+  }, []);
+
+  /**
+   * End a review when the conversation it belongs to does.
+   *
+   * A review is scoped to the session that started it: its agents are owned by
+   * that `parentSessionId`, so after a `/new` or `/resume` they are invisible,
+   * and its report would be appended to a conversation that never asked for it.
+   * The run also holds the single-review slot, so leaving it alive would refuse
+   * a `/review` typed in the new session.
+   */
+  useEffect(() => {
+    if (reviewSessionRef.current === sessionId) return;
+    reviewSessionRef.current = sessionId;
+    const controller = reviewAbortRef.current;
+    if (!controller) return;
+    controller.abort();
+    reviewAbortRef.current = null;
+    setReviewStatus(undefined);
+  }, [sessionId]);
 
   useEffect(() => {
     setDetailTaskPickerOpen(false);
@@ -1103,19 +1207,31 @@ export function App({
     }
 
     // Escape aborts an in-flight stream when no prompt owns the keyboard.
+    // A streaming turn outranks a background review: cancelling the thing the
+    // user is watching is the established meaning of Esc.
     if (key.escape) {
       if (isThinking || sendInFlight || isResolvingCommand) {
         uiLog.event('input:Escape', { action: 'cancel-stream' });
         interrupt();
         return;
       }
+      if (cancelReview()) {
+        uiLog.event('input:Escape', { action: 'cancel-review' });
+        return;
+      }
       uiLog.event('input:Escape', { action: 'noop-idle' });
     }
-    // Ctrl+C — cancel an in-flight stream; otherwise preserve normal terminal exit.
+    // Ctrl+C — cancel in-flight work; otherwise preserve normal terminal exit.
     if (key.ctrl && input === 'c') {
       if (isThinking || sendInFlight || isResolvingCommand) {
         uiLog.event('input:Ctrl+C', { action: 'cancel-stream' });
         interrupt();
+        return;
+      }
+      // A review is in-flight work too, and exiting here would orphan the
+      // agents it spawned. A second Ctrl+C still exits, as it does mid-stream.
+      if (cancelReview()) {
+        uiLog.event('input:Ctrl+C', { action: 'cancel-review' });
         return;
       }
       uiLog.event('input:Ctrl+C', { action: 'exit' });
@@ -1518,12 +1634,7 @@ export function App({
           return;
         }
         if (effect?.type === 'review') {
-          void runReviewCommand(
-            effect.scope,
-            managedAgentManager,
-            config.workspace,
-            addLocalMessage,
-          );
+          startReview(effect.scope);
           return;
         }
         if (effect?.type === 'managed-agent') {
@@ -2667,6 +2778,8 @@ export function App({
           ) : null}
 
           {isResolvingCommand ? <Text dimColor>Resolving command shell expansions...</Text> : null}
+
+          {reviewStatus ? <Text dimColor>{reviewStatus}... (Esc to cancel)</Text> : null}
 
           {managedAgents.persistenceEvent ? (
             <Text
