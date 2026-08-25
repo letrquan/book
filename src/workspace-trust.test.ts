@@ -36,6 +36,7 @@ describe('loadWorkspaceTrust', () => {
       permissionAllowRules: {},
       mcpServers: {},
       hookEntries: {},
+      projectCommands: {},
     });
   });
 
@@ -60,6 +61,7 @@ describe('loadWorkspaceTrust', () => {
         trust.hookEntries.abc123 = 'approved';
         trust.permissionAllowRules['Bash(ls *)'] = 'rejected';
         trust.mcpServers.github = { fingerprint: 'def456', choice: 'approved' };
+        trust.projectCommands.deploy = { fingerprint: 'ghi789', choice: 'approved' };
       },
       storePath,
     );
@@ -68,6 +70,7 @@ describe('loadWorkspaceTrust', () => {
       hookEntries: { abc123: 'approved' },
       permissionAllowRules: { 'Bash(ls *)': 'rejected' },
       mcpServers: { github: { fingerprint: 'def456', choice: 'approved' } },
+      projectCommands: { deploy: { fingerprint: 'ghi789', choice: 'approved' } },
     });
   });
 

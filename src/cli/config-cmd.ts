@@ -8,6 +8,19 @@ import {
   SettingsRepository,
 } from '../settings-repository.js';
 
+/**
+ * Settings paths held in `<BOOK_HOME>/trust.json` rather than in either
+ * workspace layer, mapped to the `book trust` subcommand that records them.
+ * `mcp.projectServers` has no subcommand yet; it is listed so the refusal
+ * explains the silence instead of writing a key nothing reads.
+ */
+const TRUST_OWNED_KEYS: Record<string, string> = {
+  'commands.projectCommands': 'Record it with: book trust command <name>',
+  'hooks.projectEntries': 'Record it with: book trust hook <fingerprint>',
+  'permissions.projectAllowRules': 'Record it with: book trust rule <rule>',
+  'mcp.projectServers': 'Approve the server when Book prompts for it.',
+};
+
 export interface ConfigCommandSettingsOptions {
   settingsOverridePath?: string;
   noSettings?: boolean;
@@ -59,6 +72,28 @@ export async function runConfigCommand(
     if (!SETTINGS_TOP_LEVEL_KEYS.includes(topKey)) {
       console.error(
         'Unknown top-level key: ' + topKey + '. Valid keys: ' + SETTINGS_TOP_LEVEL_KEYS.join(', '),
+      );
+      exit(1);
+    }
+
+    // `config set` writes the workspace-local layer, which is stripped of every
+    // key recording a decision *about* this repository. Writing one there would
+    // report success and change nothing on the next load, so it is refused with
+    // the command that does record it.
+    //
+    // Matching has to run in both directions. A deeper path reaches the key
+    // (`commands.projectCommands.deploy`), and so does a shallower one: `config
+    // set commands '{"projectCommands":…}'` replaces the whole section, which
+    // is the same write with the same silent outcome. Comparing only the first
+    // two segments would have caught the first and missed the second.
+    const trustPath = Object.keys(TRUST_OWNED_KEYS).find(
+      (owned) => key === owned || key.startsWith(`${owned}.`) || owned.startsWith(`${key}.`),
+    );
+    if (trustPath) {
+      console.error(
+        `${trustPath} records a decision about repository-declared configuration, so it is\n` +
+          `not read from any file inside the workspace. Writing it here would change nothing.\n` +
+          `  ${TRUST_OWNED_KEYS[trustPath]}`,
       );
       exit(1);
     }

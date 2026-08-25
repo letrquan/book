@@ -64,12 +64,12 @@ harness).
   bind in every permission mode, project-declared `permissions.allow` rules and hook entries held
   until the user approves them (`ask`/`deny` apply immediately; `book doctor` reports what is
   withheld and how to grant it, disclosing each withheld hook's command, matcher, and environment,
-  and `book trust hook|rule` records the decision), trust-decision keys ignored from both workspace
-  layers and read instead from `~/.book/trust.json`, keyed by workspace path, so nothing a
-  repository ships can approve its own MCP servers, allow rules, or hook entries — a force-added
-  `.book/settings.local.json` reaches a clone the same way a checked-in file does, hooks, optional
-  bubblewrap sandbox, themes,
-  auto-memory, rewind
+  and `book trust hook|rule|command` records the decision), all four trust-decision keys ignored
+  from both workspace layers and read instead from `~/.book/trust.json`, keyed by workspace path,
+  so nothing a repository ships can approve its own MCP servers, allow rules, hook entries, or
+  shell-substituting slash commands — a force-added `.book/settings.local.json` reaches a clone the
+  same way a checked-in file does, and `book config set` refuses those four paths rather than
+  writing a value nothing reads — hooks, optional bubblewrap sandbox, themes, auto-memory, rewind
   snapshots, telemetry, and diagnostics. Every declared sandbox key is now read by an execution or
   permission path: `sandbox.allowUnsandboxedCommands` can refuse any command that would leave the
   namespace, and `sandbox.autoAllowBashIfSandboxed` can replace the default ask for a command that
@@ -130,20 +130,19 @@ harness).
 
 ## Known Boundaries
 
-- Four classes of repository-controlled input now carry an explicit trust boundary, each
+- Four classes of repository-controlled input carry an explicit trust boundary, each
   fingerprinted and requiring a one-time approval: project MCP declarations, project-declared
   allow rules, project-declared hook entries, and shell substitution in a project
-  `.book/commands/*.md` body, which is keyed by command name and fingerprinted over the shell the
-  body runs rather than its prose. They do not yet share one store. The first three are recorded
-  per workspace in `~/.book/trust.json` and are stripped from both workspace settings layers, so
-  no file inside the working tree can answer for them. Command approvals still live in
-  `<workspace>/.book/settings.local.json`: only the checked-in layer is forbidden from writing
-  that key, because the local layer is where an approved command has to be read back from.
-- That split is the remaining gap, not a design. `.gitignore` does not stop a *tracked* file from
-  reaching a clone, so a repository that force-adds `.book/settings.local.json` supplies its own
-  command approvals — the exact self-approval the other three classes were moved out of the
-  workspace to prevent. Porting command approvals into the trust store is what closes it, and is
-  the precondition for the workspace trust database rather than a detail of it.
+  `.book/commands/*.md` body. All four now share one store — recorded per workspace in
+  `~/.book/trust.json` and stripped from **both** workspace settings layers, so no file inside the
+  working tree can answer for any of them, and a repository that force-adds
+  `.book/settings.local.json` supplies nothing. `book trust hook|rule|command` records a decision
+  one at a time; `book config set` refuses all four paths rather than writing a value nothing
+  reads. Command decisions are keyed by command name and validated by a fingerprint over the shell
+  the body runs rather than its prose, so editing what runs re-asks under the same name.
+- Approvals recorded under `commands.projectCommands` before the move are not migrated: reading
+  them back out of the workspace to convert them would extend exactly the trust the move
+  withdraws. Each is asked once more, on the machine that decides.
 - The local layer is otherwise ungated. Its own `hooks.<event>` entries, allow rules, and env run
   as if the user had written them, because distrusting a Git-tracked local layer needs provenance
   the synchronous resolver cannot currently obtain. Provider blocks, project instructions, and a
@@ -151,8 +150,7 @@ harness).
 - No interactive surface records these decisions yet, and the interactive host does not report
   them either. The MCP gate has a TUI prompt; the allow-rule, hook, and command gates do not, so
   in the primary mode a withheld hook simply never fires and a withheld command is refused until
-  the user runs `book doctor`, which prints the grant for each — `book trust …` for the three in
-  the trust store, `book config set commands.projectCommands` for command approvals. The withheld
+  the user runs `book doctor`, which prints the `book trust …` grant for each. The withheld
   declaration notices are placed worse than the absence of a prompt implies:
   `collectWithheldProjectNotices` is called from `src/cli/run.ts` inside the print-mode branch,
   and neither `src/hook-approvals.ts` nor `src/permission-approvals.ts` has an importer anywhere
@@ -212,15 +210,15 @@ harness).
   code runs, which ends the run with exit code 1; an unknown `/name` is still forwarded to the model
   verbatim.
   Shell substitution inside a custom command body still runs unsandboxed and outside the
-  permission system, but a repository-declared body no longer reaches it unapproved: the
-  decision is recorded in `.book/settings.local.json` under `commands.projectCommands`, the
-  checked-in `.book/settings.json` layer is forbidden from writing that key, and an unapproved
-  command is refused in the TUI and in print mode alike. The gate is fail-closed by
-  construction — a host that passes
-  no decision store is treated as having no decision — and the fingerprint digests the shell a
-  body runs rather than its prose, so editing what runs re-asks and rewording does not. There is
-  no interactive approval prompt yet: a pending decision is granted through `book config set`,
-  which `book doctor` prints. Commands under `~/.book/commands` are user-owned and never gated.
+  permission system, but a repository-declared body no longer reaches it unapproved: the decision
+  is recorded in `~/.book/trust.json`, keyed by workspace path and stripped from both workspace
+  settings layers, and an unapproved command is refused in the TUI and in print mode alike. The
+  gate is fail-closed by construction — a host that passes no decision store is treated as having
+  no decision — and the fingerprint digests the shell a body runs rather than its prose, so
+  editing what runs re-asks and rewording does not. There is no interactive approval prompt yet:
+  a pending decision is granted with `book trust command`, which `book doctor` prints alongside
+  the shell each withheld command would run. Commands under `~/.book/commands` are user-owned and
+  never gated.
 - Plan approval outside the TUI depends on what the host supplied: `bypassPermissions` approves, an
   `onUserQuestionRequired` handler decides, and a host with neither ends the run with
   `plan.status: not_applied` and exit code 0. The SDK `result` event does not carry that `plan`
@@ -270,7 +268,11 @@ Use `npm test` for the full build plus unit, contract, and integration tiers. Re
 `npm run release:check`; the stabilization policy is `npm run stabilization:check` with the GitHub
 Actions environment variables described in [stabilization.md](stabilization.md).
 
-Local verification for this refresh (2026-08-25): not re-run; use the commands above. Previously
-observed and not re-checked here: eight `src/harness/evaluation/contract.test.ts` fixture-digest
-failures appear on some Windows working copies and did not reproduce in the worktree used for the
-2026-08-24 snapshot.
+Local verification for this refresh (2026-08-25): `npm run check` (230 unit files, 2628 tests, 5
+skipped; 7 contract files, 59 tests), `npm run build`, and `npm run test:integration` (7 files, 97
+tests, 10 skipped) all pass on Windows. The `src/harness/evaluation/contract.test.ts` fixture-digest
+failures previously reported on some Windows working copies have a diagnosed cause and are not a
+code defect: `evals/harness/fixtures/**` is hashed byte-for-byte, and a working copy checked out
+before `.gitattributes` gained its `-text` rule holds those files with CRLF endings while the
+committed blobs use LF. CI checks out fresh and is unaffected. Repair a stale copy by deleting
+`evals/harness/fixtures` and running `git checkout -- evals/harness/fixtures`.

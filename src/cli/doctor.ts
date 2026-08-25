@@ -170,7 +170,7 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   // Its own section: these are not permission rules, and printing them inside
   // the permissions block reads as if they were a rule category.
   const { discoverCommands } = await import('../commands/loader.js');
-  const { partitionProjectCommands, projectCommandFingerprint } =
+  const { partitionProjectCommands, describeProjectCommandShell, displayableCommandName } =
     await import('../command-approvals.js');
   const gatedCommands = partitionProjectCommands(discoverCommands(config.workspace), settings);
   if (
@@ -178,26 +178,22 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
     0
   ) {
     console.log('Project commands that run shell (require approval):');
-    for (const command of gatedCommands.approved) console.log('  [x] /' + command.name);
+    for (const command of gatedCommands.approved)
+      console.log('  [x] /' + displayableCommandName(command.name));
     for (const command of gatedCommands.rejected)
-      console.log('  [-] /' + command.name + ' (rejected)');
-    for (const command of gatedCommands.pending)
-      console.log('  [!] /' + command.name + ' (refused until approved)');
+      console.log('  [-] /' + displayableCommandName(command.name) + ' (rejected)');
+    // A withheld command is listed with the shell it would run, the way a
+    // withheld hook is listed with its command, matcher, and environment:
+    // the decision is about that shell, so a name alone cannot inform it.
+    for (const command of gatedCommands.pending) {
+      console.log('  [!] /' + displayableCommandName(command.name) + ' (refused until approved)');
+      for (const line of describeProjectCommandShell(command)) console.log('        ' + line);
+    }
     if (gatedCommands.pending.length > 0) {
-      // `config set` replaces the whole record, so the printed line has to
-      // carry the decisions already on file or running it revokes them.
-      const decisions = {
-        ...settings.commands.projectCommands,
-        ...Object.fromEntries(
-          gatedCommands.pending.map((command) => [
-            command.name,
-            { fingerprint: projectCommandFingerprint(command.body), choice: 'approved' },
-          ]),
-        ),
-      };
+      console.log(approvalHint('  Approve one:', config.workspace, 'command <name>'));
       console.log(
-        '  Approve with: book config set commands.projectCommands ' +
-          `'${JSON.stringify(decisions)}'`,
+        approvalHint('  Approve all pending:', config.workspace, 'command --all-pending') +
+          ' (add --reject to refuse)',
       );
     }
     console.log();
