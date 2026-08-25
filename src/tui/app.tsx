@@ -84,16 +84,8 @@ import { runHostReview } from '../review/host.js';
 import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewScope } from '../review/types.js';
 import { join } from 'path';
-import {
-  selectExpandedToolId,
-  selectLatestToolId,
-  shouldDefaultExpandToolId,
-} from './tool-traces.js';
-import {
-  getTranscriptShortcutAction,
-  shouldExpandTool,
-  type TranscriptMode,
-} from './tool-presentation.js';
+import { selectExpandedToolId, selectLatestToolId } from './tool-traces.js';
+import { getTranscriptShortcutAction, type TranscriptMode } from './tool-presentation.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
 import type { InteractiveAssets } from './interactive-assets.js';
@@ -386,7 +378,6 @@ export function App({
   const [toolExpansionOverrides, setToolExpansionOverrides] = useState<Map<string, boolean>>(
     () => new Map(),
   );
-  const [focusedToolId, setFocusedToolId] = useState<string | null>(null);
   const [showPermissions, setShowPermissions] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -1348,28 +1339,7 @@ export function App({
     setShowAllDetailedOutput(false);
     setShowAllToolOutputIds(new Set());
     setToolExpansionOverrides(new Map());
-    setFocusedToolId(null);
   }, [sessionId]);
-
-  const toggleToolExpansion = useCallback(
-    (toolId: string) => {
-      setFocusedToolId(toolId);
-      setToolExpansionOverrides((current) => {
-        const next = new Map(current);
-        const isExpanded = shouldExpandTool({
-          mode: transcriptMode,
-          toolId,
-          automaticToolId: expandedToolId,
-          defaultExpanded: shouldDefaultExpandToolId(messages, toolId),
-          expansionOverrides: current,
-          screenReader,
-        });
-        next.set(toolId, !isExpanded);
-        return next;
-      });
-    },
-    [expandedToolId, messages, screenReader, transcriptMode],
-  );
 
   const applyThemePreference = useCallback(
     (preference: string): ApplyThemeResult => {
@@ -1875,7 +1845,7 @@ export function App({
         return true;
       }
       if (transcriptAction === 'expand-output') {
-        const targetToolId = expandedToolId ?? focusedToolId ?? selectLatestToolId(messages);
+        const targetToolId = expandedToolId ?? selectLatestToolId(messages);
         uiLog.event('input:Ctrl+E', { action: 'expand-current-tool', toolId: targetToolId });
         if (targetToolId) {
           setToolExpansionOverrides((current) => new Map(current).set(targetToolId, true));
@@ -1908,7 +1878,6 @@ export function App({
       showAgentProfilePicker,
       showSkills,
       expandedToolId,
-      focusedToolId,
       messages,
     ],
   );
@@ -1956,7 +1925,6 @@ export function App({
             isActive={!pickerOwnsTranscript && managedAgents.surface !== 'tasks'}
             followRequestKey={followRequestKey}
             layoutRevision={transcriptLayoutRevision}
-            onToggleTool={toggleToolExpansion}
           >
             <Box flexDirection="column" width={termWidth}>
               {error && (

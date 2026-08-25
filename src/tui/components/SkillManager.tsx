@@ -4,6 +4,7 @@ import type { Skill } from '../../skills.js';
 import type { SkillLifecycleEvent } from '../../skill-registry.js';
 import type { SkillActivation, SkillExecution } from '../../settings.js';
 import { useTheme } from '../theme.js';
+import { stripSgrMouseSequences } from '../mouse.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
 import { truncateDisplay } from './word-wrap.js';
 
@@ -103,8 +104,9 @@ export function SkillManager({
         setQuery((current) => current.slice(0, -1));
         return;
       }
-      if (!key.ctrl && !key.meta && input && !key.upArrow && !key.downArrow) {
-        setQuery((current) => current + input);
+      const typed = stripSgrMouseSequences(input);
+      if (!key.ctrl && !key.meta && typed && !key.upArrow && !key.downArrow) {
+        setQuery((current) => current + typed);
       }
       return;
     }

@@ -21,18 +21,22 @@ function fakeStdout(isTTY: boolean) {
 }
 
 describe('enterInteractiveScreen', () => {
-  it('enters alternate screen with SGR mouse reporting for wheel scrolling', () => {
+  it('enters the alternate screen with every mouse-reporting mode off', () => {
     const { stdout, writes } = fakeStdout(true);
     const restore = enterInteractiveScreen(stdout);
 
-    expect(writes).toEqual(['\x1b[?1049h\x1b[?1000h\x1b[?1006h']);
+    // Book never claims the mouse, so the terminal keeps drag-select and copy,
+    // and a mode another program left on is cleared on the way in.
+    expect(writes).toEqual([
+      '\x1b[?1049h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1007l',
+    ]);
 
     restore();
     restore();
 
     expect(writes).toEqual([
-      '\x1b[?1049h\x1b[?1000h\x1b[?1006h',
-      '\x1b[?1006l\x1b[?1000l\x1b[?1049l',
+      '\x1b[?1049h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1007l',
+      '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1007h\x1b[?1049l',
     ]);
   });
 
@@ -54,7 +58,7 @@ describe('enterInteractiveScreen', () => {
     }
   });
 
-  it('enables mouse capture for WSL sessions whose stdout is not marked TTY', () => {
+  it('drives terminal modes for WSL sessions whose stdout is not marked TTY', () => {
     const { stdout, writes } = fakeStdout(false);
     const previousDistro = process.env.WSL_DISTRO_NAME;
     const previousWindowsTerminal = process.env.WT_SESSION;
@@ -67,7 +71,9 @@ describe('enterInteractiveScreen', () => {
       // shouldBridgeWslTerminal's platform/env logic is covered separately below.
       const restore = enterInteractiveScreen(stdout, true);
       restore();
-      expect(writes[0]).toContain('\x1b[?1000h');
+      expect(writes[0]).toContain('\x1b[?1049h');
+      expect(writes[0]).toContain('\x1b[?1000l');
+      expect(writes[0]).toContain('\x1b[?1007l');
     } finally {
       if (previousDistro === undefined) delete process.env.WSL_DISTRO_NAME;
       else process.env.WSL_DISTRO_NAME = previousDistro;

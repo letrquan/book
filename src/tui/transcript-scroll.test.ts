@@ -4,7 +4,6 @@ import {
   getMaxScrollTop,
   getTranscriptHalfPageRows,
   getTranscriptPageRows,
-  getTranscriptWheelDrainRows,
   reconcileTranscriptScroll,
   scrollTranscriptBy,
   scrollTranscriptToEnd,
@@ -85,12 +84,5 @@ describe('transcript scroll model', () => {
     expect(getTranscriptPageRows(1)).toBe(1);
     expect(getTranscriptHalfPageRows(5)).toBe(2);
     expect(getTranscriptHalfPageRows(1)).toBe(1);
-  });
-
-  it('drains wheel bursts in viewport-sized chunks without changing direction', () => {
-    expect(getTranscriptWheelDrainRows(-30, 40)).toBe(-20);
-    expect(getTranscriptWheelDrainRows(30, 10)).toBe(5);
-    expect(getTranscriptWheelDrainRows(-2, 2)).toBe(-2);
-    expect(getTranscriptWheelDrainRows(0, 40)).toBe(0);
   });
 });

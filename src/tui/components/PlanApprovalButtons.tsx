@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from 'ink';
-import TextInput from 'ink-text-input';
+import TextInput from './TextInputField.js';
 import { useCallback, useRef, useState } from 'react';
 import { useTheme } from '../theme.js';
 import type { PlanApprovalResult } from '../../types/tools.js';

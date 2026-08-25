@@ -1,5 +1,5 @@
-import { Text, Box, type DOMElement } from 'ink';
-import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { Text, Box } from 'ink';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { Spinner } from './Spinner.js';
 import { useTheme } from '../theme.js';
 import { DiffBlock } from './Diff.js';
@@ -25,12 +25,10 @@ import {
   withLabelColumn,
 } from '../layout.js';
 import { formatElapsedDuration } from './SubagentRow.js';
-import { useToolRowInteractionRegistry } from './tool-row-interactions.js';
 import { useUiClock } from '../ui-clock.js';
 import type { ToolResult } from '../../types/tools.js';
 
 interface ToolCallBlockProps {
-  toolId?: string;
   name: string;
   args: Record<string, unknown>;
   result?: ToolResult;
@@ -227,7 +225,6 @@ export function MetaText({ meta, failed }: { meta: string; failed: boolean }) {
 }
 
 function ToolCallBlockInner({
-  toolId,
   name,
   args,
   result,
@@ -243,8 +240,6 @@ function ToolCallBlockInner({
   labelWidth,
 }: ToolCallBlockProps) {
   const theme = useTheme();
-  const registry = useToolRowInteractionRegistry();
-  const summaryRef = useRef<DOMElement>(null);
   const grid = useMemo(() => {
     const base = transcriptGrid(terminalWidth);
     return labelWidth === undefined ? base : withLabelColumn(base, labelWidth);
@@ -292,15 +287,6 @@ function ToolCallBlockInner({
     });
   }, [elapsed, rowGrid, inlineError, isFileChild, mutationSummary, presentation]);
 
-  useLayoutEffect(() => {
-    if (!registry || !toolId) return;
-    return registry.register({
-      id: toolId,
-      element: summaryRef,
-      expandable: presentation.hasHiddenContent,
-    });
-  }, [presentation.hasHiddenContent, registry, toolId]);
-
   if (screenReader) {
     return (
       <Box flexDirection="column" marginLeft={CONTENT_COLUMN} width={blockWidth}>
@@ -314,7 +300,7 @@ function ToolCallBlockInner({
       flexDirection="column"
       marginLeft={isFileChild ? CONTENT_COLUMN + GUTTER_WIDTH : CONTENT_COLUMN}
     >
-      <Box ref={summaryRef} height={1}>
+      <Box height={1}>
         {/* The gutter carries status; content always begins on the next column. */}
         {isFileChild ? (
           <Text color={theme.toolRail}>└ </Text>

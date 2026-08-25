@@ -34,11 +34,26 @@ import { resolveBookHome } from '../book-home.js';
 
 const SESSION_ROOT = join(resolveBookHome(), 'sessions');
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
-const ENABLE_MOUSE_TRACKING = '\x1b[?1000h';
-const ENABLE_SGR_MOUSE = '\x1b[?1006h';
-const DISABLE_SGR_MOUSE = '\x1b[?1006l';
-const DISABLE_MOUSE_TRACKING = '\x1b[?1000l';
 const EXIT_ALT_SCREEN = '\x1b[?1049l';
+/**
+ * Every mouse-reporting mode a terminal may have on, not just the ones Book
+ * once set. Book never claims the mouse: with reporting off the terminal keeps
+ * it, so drag-select and copy work without a modifier key and no mouse report
+ * can be typed into a text field. A mode left on by a crashed session or
+ * another program is cleared on the way in as well as on the way out.
+ */
+const DISABLE_MOUSE_REPORTING =
+  '\x1b[?1000l' + '\x1b[?1002l' + '\x1b[?1003l' + '\x1b[?1006l' + '\x1b[?1015l';
+/**
+ * Alternate scroll translates the wheel into cursor keys while the alternate
+ * screen is up, and it is on by default in xterm, tmux, iTerm2, Windows
+ * Terminal and VS Code. Book scrolls the transcript from the keyboard, so
+ * those arrows would reach the prompt and replace a draft with a history
+ * entry on a stray wheel nudge. It is off for the session and handed back on
+ * the way out, since the terminal owned it first.
+ */
+const DISABLE_ALTERNATE_SCROLL = '\x1b[?1007l';
+const RESTORE_ALTERNATE_SCROLL = '\x1b[?1007h';
 const WSL_TERMINAL_BRIDGE_SCRIPT = `
 for process in /proc/[0-9]*; do
   [ -r "$process/environ" ] || continue
@@ -108,13 +123,17 @@ export function enterInteractiveScreen(
   const restore = () => {
     if (restored) return;
     restored = true;
-    writeTerminalControl(stdout, DISABLE_SGR_MOUSE + DISABLE_MOUSE_TRACKING + EXIT_ALT_SCREEN);
+    writeTerminalControl(
+      stdout,
+      DISABLE_MOUSE_REPORTING + RESTORE_ALTERNATE_SCROLL + EXIT_ALT_SCREEN,
+    );
     process.off('exit', restore);
   };
 
-  // Shift+drag remains available for terminal-native selection while mouse
-  // reporting keeps transcript wheel scrolling and tool-row clicks working.
-  writeTerminalControl(stdout, ENTER_ALT_SCREEN + ENABLE_MOUSE_TRACKING + ENABLE_SGR_MOUSE);
+  writeTerminalControl(
+    stdout,
+    ENTER_ALT_SCREEN + DISABLE_MOUSE_REPORTING + DISABLE_ALTERNATE_SCROLL,
+  );
   process.once('exit', restore);
   return restore;
 }
