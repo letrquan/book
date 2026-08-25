@@ -3,7 +3,7 @@ import { useUiClock } from '../ui-clock.js';
 import type { ManagedAgentTrace, ManagedAgentToolUse } from '../managed-agent-transcript.js';
 import { formatDuration, deriveToolPresentation } from '../tool-presentation.js';
 import { useTheme } from '../theme.js';
-import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
+import { CONTENT_COLUMN, GUTTER_WIDTH, indentedGrid, transcriptGrid } from '../layout.js';
 import { truncateDisplay } from './word-wrap.js';
 import { Spinner } from './Spinner.js';
 
@@ -64,7 +64,12 @@ export function ManagedAgentActivityBlock({
   const visible = trace.toolUses.slice(-MAX_VISIBLE_TOOL_USES);
   const hiddenCount = Math.max(0, trace.toolUses.length - visible.length);
   const grid = transcriptGrid(terminalWidth);
-  const width = grid.content;
+  // A managed-agent block fills the same transcript slot as a tool row — it is
+  // the other branch of the same ternary — so it sits on the same indented
+  // grid. Left on the bare grid it would be the only row still hanging its
+  // status glyph a gutter to the left of the prose column.
+  const rowGrid = indentedGrid(grid);
+  const width = rowGrid.content;
 
   if (screenReader) {
     return (
@@ -100,7 +105,7 @@ export function ManagedAgentActivityBlock({
           ? theme.warning
           : theme.brand;
   return (
-    <Box flexDirection="column" width={grid.width}>
+    <Box flexDirection="column" marginLeft={CONTENT_COLUMN} width={width + GUTTER_WIDTH}>
       <Box>
         {terminal ? (
           <Text color={headerColor}>{statusGlyph(trace.status)} </Text>
