@@ -19,7 +19,12 @@ import {
   type FixAgentRunner,
   type FixRunResult,
 } from './fix.js';
-import { runDeepReview, runSingleReview, type ReviewAgentRunner } from './orchestration.js';
+import {
+  runDeepReview,
+  runSingleReview,
+  type ReviewAgentRunner,
+  type ReviewRunOptions,
+} from './orchestration.js';
 import type { ReviewTarget } from './target.js';
 import type {
   ReviewCoverage,
@@ -45,10 +50,22 @@ export interface HostReviewRequest {
    * renders once (print mode) and a host that streams (the TUI) share this code.
    */
   onSegment?: (text: string) => void;
+  /**
+   * Cancels the run. A review is minutes of work in agents the user cannot see
+   * into, so every host that can take input while one is running needs a way to
+   * end it that is not "kill the process".
+   */
+  signal?: AbortSignal;
 }
 
 export interface HostReviewResult {
-  /** Human-readable output, in emission order. */
+  /**
+   * Human-readable output, in emission order.
+   *
+   * A streaming host (one that supplied `onSegment`) also gets progress
+   * segments here — the announced target — which a host that renders once
+   * deliberately does not, so its printed report stays exactly the report.
+   */
   segments: string[];
   target?: ReviewTarget;
   report?: ReviewReport;
@@ -59,11 +76,44 @@ export interface HostReviewResult {
    * review ran but its coverage was incomplete.
    */
   error?: string;
+  /** Set when the host cancelled the run before it produced a report. */
+  cancelled?: boolean;
 }
 
 /** Raised when a `--fix` scope reaches a host that cannot apply patches. */
 export const FIX_REQUIRES_APPLY_HOST =
   '--fix requires a host that can apply verified patches; no fix runner was provided.';
+
+export const REVIEW_CANCELLED_NOTICE = '■ Review cancelled. No findings were reported.';
+
+function shortSha(sha: string | undefined): string {
+  return sha ? sha.slice(0, 8) : 'unknown';
+}
+
+/**
+ * The "what is happening right now" line, emitted before the first agent starts.
+ *
+ * Everything downstream of this point runs inside agents for minutes with no
+ * output of its own, so this is the only thing standing between the user and a
+ * prompt that looks hung. It names the resolved target specifically — file
+ * count, base, and path scope — because the second question after "is it
+ * running?" is always "is it reviewing what I meant?".
+ */
+export function reviewStartSegment(target: ReviewTarget, scope: ReviewScope): string {
+  const count = target.changedFiles.length;
+  const files = `${count} file${count === 1 ? '' : 's'}`;
+  const where =
+    target.kind === 'committed-range'
+      ? `${shortSha(target.baseSha)}...${shortSha(target.headSha)}`
+      : `the working tree against ${shortSha(target.baseSha)}`;
+  const path = target.path && target.path !== '.' ? ` under ${target.path}` : '';
+  const passes = scope.fix
+    ? 'four lenses, independent verification, then a patch and validation pass per confirmed finding'
+    : scope.deep
+      ? 'four lenses plus an independent verification pass'
+      : 'one reviewer pass';
+  return `Reviewing ${files}${path} in ${where} — ${passes}.`;
+}
 
 export async function runHostReview(request: HostReviewRequest): Promise<HostReviewResult> {
   const result: HostReviewResult = { segments: [] };
@@ -72,32 +122,60 @@ export async function runHostReview(request: HostReviewRequest): Promise<HostRev
     request.onSegment?.(text);
   };
 
-  try {
-    if (request.scope.fix) {
-      // `--fix` implies `--deep`: only verified findings are ever patched.
-      if (!request.fixRunner) throw new Error(FIX_REQUIRES_APPLY_HOST);
-      const deep = await runDeepReview(request.runner, request.scope, request.workspace);
-      result.target = deep.target;
-      result.report = deep.report;
-      emit(deep.text);
-      const confirmed = deep.report.findings.filter(
-        (finding) => finding.verification === 'confirmed',
-      );
-      if (confirmed.length === 0) {
-        emit('No confirmed findings are eligible for automatic fixes.');
-        return result;
-      }
-      result.fix = await applyReviewFixes(request.fixRunner, confirmed);
-      emit(renderFixResult(result.fix));
-      return result;
-    }
+  const runOptions: ReviewRunOptions = {
+    signal: request.signal,
+    onTarget: (target) => {
+      result.target = target;
+      // Progress is only meaningful to a host that renders as segments arrive.
+      // A host that prints once at the end (print/headless) has no silence to
+      // break, and prepending a "starting now" line there would change a
+      // scripted output surface to say something already in `data.target`.
+      if (!request.onSegment) return;
+      // Resolving the target shells out to git and is not itself abortable, so
+      // a cancel during it lands here. Announcing work as about to start,
+      // immediately above its own cancellation notice, reads as the run having
+      // ignored the keystroke.
+      if (request.signal?.aborted) return;
+      // An empty target's own "no changes" text says everything this would, and
+      // says it as the outcome rather than as a promise of work about to start.
+      if (target.changedFiles.length === 0 && !target.diff.trim()) return;
+      emit(reviewStartSegment(target, request.scope));
+    },
+  };
 
-    const review = request.scope.deep
-      ? await runDeepReview(request.runner, request.scope, request.workspace)
-      : await runSingleReview(request.runner, request.scope, request.workspace);
+  try {
+    // `--fix` implies `--deep`: only verified findings are ever patched, and
+    // verification only exists on the deep path.
+    if (request.scope.fix && !request.fixRunner) throw new Error(FIX_REQUIRES_APPLY_HOST);
+    const fixRunner = request.scope.fix ? request.fixRunner : undefined;
+    const deep = request.scope.deep || request.scope.fix;
+
+    const review = deep
+      ? await runDeepReview(request.runner, request.scope, request.workspace, runOptions)
+      : await runSingleReview(request.runner, request.scope, request.workspace, runOptions);
     result.target = review.target;
     result.report = review.report;
+    if (request.signal?.aborted) {
+      result.cancelled = true;
+      emit(REVIEW_CANCELLED_NOTICE);
+      return result;
+    }
     emit(review.text);
+    if (!fixRunner) return result;
+
+    const confirmed = review.report.findings.filter(
+      (finding) => finding.verification === 'confirmed',
+    );
+    if (confirmed.length === 0) {
+      emit('No confirmed findings are eligible for automatic fixes.');
+      return result;
+    }
+    result.fix = await applyReviewFixes(fixRunner, confirmed, { signal: request.signal });
+    // No separate cancellation notice here: `renderFixResult` already reports a
+    // cancelled pass, and it has to be read anyway — this pass commits, so what
+    // landed before the cancel matters more than the cancel.
+    result.cancelled = result.fix.cancelled;
+    emit(renderFixResult(result.fix));
     return result;
   } catch (error) {
     result.error = error instanceof Error ? error.message : String(error);

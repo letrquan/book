@@ -91,7 +91,9 @@ not re-verified this run: providers, MCP, other settings and sandbox behavior, m
   falsification pass, coverage that fails closed, `REVIEW.md` calibration, evidence-gated `--fix`,
   and `npm run eval:review`. The sequencing is shared by the TUI and by print/headless/SDK hosts,
   which also emit the report as a stable machine projection (verdict, target, verbatim findings,
-  and the pipeline's own coverage) under `json` and `stream-json`.
+  and the pipeline's own coverage) under `json` and `stream-json`. A run announces its resolved
+  target before spawning anything; in the TUI its agents are owned by the session so they show live
+  in the agent panel and status line, and `Esc` cancels the run and stops them.
 - Background shell jobs with session or explicit persistent lifetime, `/jobs` management, output
   inspection, stop/dismiss, restart reattachment in the interactive TUI, and SDK/stream-JSON
   lifecycle events. Persistent jobs outlive the process, and the TUI adopts the on-disk records at
@@ -205,8 +207,10 @@ not re-verified this run: providers, MCP, other settings and sandbox behavior, m
   `src/review/host.ts`, the print host registers it through `src/commands/print-dispatch.ts`,
   `src/headless.ts` supplies the managed-agent runtime, and the review target is still resolved
   host-side. What remains TUI-only is `--fix`: a non-interactive host cannot approve a patcher's
-  tool calls, so print mode refuses it with an explanation rather than patching unattended. In text
-  output a print review emits nothing until it finishes. Its evaluation harness still scores reports
+  tool calls, so print mode refuses it with an explanation rather than patching unattended. A print
+  review still writes nothing until it finishes — it has no surface to stream to, so the progress a
+  TUI review shows (the announced target, live agents, `Esc` to cancel) has no counterpart there.
+  Its evaluation harness still scores reports
   captured from real runs rather than executing the pipeline over checked-in golden diffs, and the
   confidence threshold (70) and the per-pass timeout (10 minutes) are still fixed rather than
   configurable.

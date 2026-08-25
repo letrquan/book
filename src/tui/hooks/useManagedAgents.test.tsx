@@ -373,3 +373,63 @@ describe('useManagedAgents', () => {
     expect(firstUnsubscribe).toHaveBeenCalledOnce();
   });
 });
+
+describe('host-orchestrated agents in the session surface', () => {
+  /** A `/review` agent: owned by the session, but with no completion to deliver. */
+  function reviewAgent(id: string, status: AgentRecord['status']): AgentRecord {
+    const terminal = ['completed', 'failed', 'stopped', 'interrupted'].includes(status);
+    return {
+      ...record(id, 10),
+      status,
+      pendingQuestion: undefined,
+      pendingQuestionCreatedAt: undefined,
+      parentSessionId: 'current-session',
+      notifyParentOnCompletion: false,
+      // Suppression marks the generation delivered as it is produced.
+      completionSequence: terminal ? 1 : 0,
+      completionDeliveredSequence: terminal ? 1 : 0,
+      finishedAt: terminal ? 40 : undefined,
+    };
+  }
+
+  function harnessFor(agents: AgentRecord[]) {
+    const manager = {
+      list: vi.fn(async () => agents),
+      listPendingCompletions: vi.fn(async () => []),
+      subscribe: vi.fn(() => vi.fn()),
+      setInteractivePermissions: vi.fn(),
+    } as unknown as AgentManager;
+    return manager;
+  }
+
+  it('shows a running review agent even though it will never notify', async () => {
+    const manager = harnessFor([reviewAgent('review-correctness', 'running')]);
+    let latest: ManagedAgentState | undefined;
+    function Harness() {
+      latest = useManagedAgents(manager, 'current-session');
+      return <Text>{latest.summaries.map((summary) => summary.agentId).join(',')}</Text>;
+    }
+
+    const view = render(<Harness />);
+    await vi.waitFor(() =>
+      expect(latest?.summaries.map((item) => item.agentId)).toEqual(['review-correctness']),
+    );
+    view.unmount();
+  });
+
+  it('retires a finished review agent on refresh instead of pinning it forever', async () => {
+    const manager = harnessFor([reviewAgent('review-correctness', 'completed')]);
+    let latest: ManagedAgentState | undefined;
+    function Harness() {
+      latest = useManagedAgents(manager, 'current-session');
+      return <Text>{latest.summaries.map((summary) => summary.agentId).join(',')}</Text>;
+    }
+
+    const view = render(<Harness />);
+    // Nothing acknowledges these, so a delivered terminal generation is the
+    // only thing that can drop them out of the list.
+    await vi.waitFor(() => expect(manager.list).toHaveBeenCalled());
+    await vi.waitFor(() => expect(latest?.summaries).toEqual([]));
+    view.unmount();
+  });
+});

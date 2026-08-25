@@ -476,3 +476,303 @@ describe('runHostReview — a pass that never finishes', () => {
     expect(result.segments[0]).toContain('Coverage warning');
   });
 });
+
+describe('runHostReview — the run announces itself before it goes quiet', () => {
+  it('names the resolved target before spawning any reviewer', async () => {
+    const runner = scriptedRunner([findingJson()]);
+    const seen: string[] = [];
+    let agentsAtFirstSegment = -1;
+
+    await runHostReview({
+      scope: scope(),
+      workspace,
+      runner,
+      onSegment: (segment) => {
+        if (seen.length === 0) agentsAtFirstSegment = runner.agents.length;
+        seen.push(segment);
+      },
+    });
+
+    // The point of the segment is that it lands before the multi-minute wait,
+    // not merely that it exists somewhere in the output.
+    expect(agentsAtFirstSegment).toBe(0);
+    expect(seen[0]).toContain('Reviewing 1 file in the working tree against');
+    expect(seen[0]).toContain('one reviewer pass');
+  });
+
+  it('describes the deep and fix pass structure', async () => {
+    const runner = scriptedRunner([
+      JSON.stringify({ verdict: 'clean', findings: [] }),
+      JSON.stringify({ verdict: 'clean', findings: [] }),
+      JSON.stringify({ verdict: 'clean', findings: [] }),
+      JSON.stringify({ verdict: 'clean', findings: [] }),
+    ]);
+
+    const seen: string[] = [];
+    await runHostReview({
+      scope: scope({ deep: true }),
+      workspace,
+      runner,
+      onSegment: (segment) => seen.push(segment),
+    });
+
+    expect(seen[0]).toContain('four lenses plus an independent verification pass');
+  });
+
+  it('scopes the announcement to a path target', async () => {
+    const runner = scriptedRunner([findingJson()]);
+
+    const seen: string[] = [];
+    await runHostReview({
+      scope: scope({ target: 'a.ts' }),
+      workspace,
+      runner,
+      onSegment: (segment) => seen.push(segment),
+    });
+
+    expect(seen[0]).toContain('under a.ts');
+  });
+
+  it('stays silent about work it is not about to do', async () => {
+    git(workspace, 'checkout', '--', 'a.ts');
+    const runner = scriptedRunner([]);
+
+    const result = await runHostReview({ scope: scope(), workspace, runner });
+
+    // An empty target reports its outcome; a "starting work" line before it
+    // would promise a review that never runs.
+    expect(runner.agents).toEqual([]);
+    expect(result.segments).toEqual([
+      'Review complete: the selected review target has no changes.',
+    ]);
+  });
+});
+
+describe('runHostReview — cancellation', () => {
+  it('stops the in-flight reviewer and reports no findings', async () => {
+    const controller = new AbortController();
+    const stopped: string[] = [];
+    const runner: ReviewAgentRunner = {
+      async spawn() {
+        return { id: 'agent-0', status: 'queued' };
+      },
+      async wait(id): Promise<ReviewAgentHandle> {
+        controller.abort();
+        // The manager drives a stopped agent to a terminal status, which is
+        // what releases this wait in production.
+        return { id, status: 'stopped' };
+      },
+      async stop(id) {
+        stopped.push(id);
+      },
+    };
+
+    const result = await runHostReview({
+      scope: scope(),
+      workspace,
+      runner,
+      signal: controller.signal,
+    });
+
+    expect(stopped).toEqual(['agent-0']);
+    expect(result.cancelled).toBe(true);
+    expect(result.segments.at(-1)).toContain('Review cancelled');
+    // The failure report the pipeline produced for a stopped agent must not be
+    // shown as if it were a review result.
+    expect(result.segments.some((segment) => segment.includes('Coverage warning'))).toBe(false);
+    expect(result.report?.findings).toEqual([]);
+  });
+
+  it('never spawns a reviewer for a review cancelled before it started', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const runner = scriptedRunner([findingJson()]);
+
+    const result = await runHostReview({
+      scope: scope({ deep: true }),
+      workspace,
+      runner,
+      signal: controller.signal,
+    });
+
+    expect(runner.agents).toEqual([]);
+    expect(result.cancelled).toBe(true);
+    expect(result.report?.verdict).toBe('inconclusive');
+  });
+
+  it('reports what the fix pass committed before it was cancelled', async () => {
+    const controller = new AbortController();
+    const applied: string[] = [];
+    const results = [
+      findingJson('first defect'),
+      findingJson('second defect'),
+      JSON.stringify({ verdict: 'clean', findings: [] }),
+      JSON.stringify({ verdict: 'clean', findings: [] }),
+      JSON.stringify({
+        verdicts: [
+          { findingId: 'finding-1', state: 'confirmed', reason: 'checked' },
+          { findingId: 'finding-2', state: 'confirmed', reason: 'checked' },
+        ],
+      }),
+      'patched',
+      'validated',
+    ];
+    const agents: string[] = [];
+    const base: ReviewAgentRunner = {
+      async spawn(agent) {
+        agents.push(agent);
+        return { id: `agent-${agents.length - 1}`, status: 'queued' };
+      },
+      async wait(id) {
+        const index = Number(id.slice('agent-'.length));
+        // Cancel once the first fix has been validated and applied.
+        if (agents[index] === 'validator') controller.abort();
+        return { id, status: 'completed', result: results[index] };
+      },
+      async stop() {},
+    };
+    const runner: FixAgentRunner = {
+      ...base,
+      async findPatchCandidateEvidence() {
+        return { id: 'evidence-1', verificationState: 'verified', verdict: 'pass' };
+      },
+      async getEvidence() {
+        return { id: 'evidence-1', verificationState: 'verified', verdict: 'pass' };
+      },
+      async apply(agentId, evidenceId) {
+        applied.push(`${agentId}:${evidenceId}`);
+        return { status: 'applied', commit: 'abc1234' };
+      },
+    };
+
+    const result = await runHostReview({
+      scope: scope({ fix: true, deep: true }),
+      workspace,
+      runner: base,
+      fixRunner: runner,
+      signal: controller.signal,
+    });
+
+    expect(applied).toEqual(['agent-5:evidence-1']);
+    expect(result.fix?.applied).toBe(1);
+    expect(result.fix?.cancelled).toBe(true);
+    expect(result.cancelled).toBe(true);
+    // What landed on disk matters more than the cancel: it must be reported.
+    expect(result.segments.at(-1)).toContain('Fix pass cancelled after applying 1 of 2');
+  });
+});
+
+describe('runHostReview — progress belongs to hosts that stream', () => {
+  it('keeps a non-streaming host\u2019s output to the report itself', async () => {
+    const runner = scriptedRunner([findingJson()]);
+
+    // Print/headless joins these into stdout, a scripted surface. It has no
+    // silence to break, and the target it would announce is already on `data`.
+    const result = await runHostReview({ scope: scope(), workspace, runner });
+
+    expect(result.segments.some((segment) => segment.startsWith('Reviewing '))).toBe(false);
+    expect(result.target?.changedFiles).toEqual(['a.ts']);
+  });
+});
+
+describe('runHostReview — a cancel during the spawn fan-out', () => {
+  /**
+   * Reproduces the window between subscribing to the signal and the handles
+   * existing: `spawn` is not instant, and the abort subscription fires once.
+   */
+  function slowSpawnRunner(controller: AbortController) {
+    const spawnedIds: string[] = [];
+    const stopped: string[] = [];
+    const waited: string[] = [];
+    let aborted = false;
+    const runner: ReviewAgentRunner = {
+      async spawn() {
+        // The keystroke lands while all four spawns are still in flight.
+        if (!aborted) {
+          aborted = true;
+          controller.abort();
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        const id = `agent-${spawnedIds.length}`;
+        spawnedIds.push(id);
+        return { id, status: 'queued' };
+      },
+      async wait(id) {
+        waited.push(id);
+        return { id, status: 'completed', result: findingJson() };
+      },
+      async stop(id) {
+        stopped.push(id);
+      },
+    };
+    return { runner, spawnedIds, stopped, waited };
+  }
+
+  it('stops every agent created after the abort fired', async () => {
+    const controller = new AbortController();
+    const { runner, spawnedIds, stopped, waited } = slowSpawnRunner(controller);
+
+    const result = await runHostReview({
+      scope: scope({ deep: true }),
+      workspace,
+      runner,
+      signal: controller.signal,
+    });
+
+    expect(spawnedIds).toHaveLength(4);
+    expect([...stopped].sort()).toEqual([...spawnedIds].sort());
+    // And never awaits them: each wait is capped at the ten-minute pass timeout.
+    expect(waited).toEqual([]);
+    expect(result.cancelled).toBe(true);
+    expect(result.report?.findings).toEqual([]);
+  });
+
+  it('survives a stop that rejects instead of crashing the process', async () => {
+    const controller = new AbortController();
+    const runner: ReviewAgentRunner = {
+      async spawn() {
+        controller.abort();
+        return { id: 'agent-0', status: 'queued' };
+      },
+      async wait(id) {
+        return { id, status: 'stopped' };
+      },
+      // The manager rejects for an agent owned by another live Book process.
+      async stop() {
+        throw new Error('Agent agent-0 is owned by another live Book process.');
+      },
+    };
+
+    const result = await runHostReview({
+      scope: scope(),
+      workspace,
+      runner,
+      signal: controller.signal,
+    });
+
+    expect(result.cancelled).toBe(true);
+  });
+});
+
+describe('runHostReview — a cancel during target resolution', () => {
+  it('does not announce work it is no longer going to start', async () => {
+    const controller = new AbortController();
+    const runner = scriptedRunner([findingJson()]);
+    const seen: string[] = [];
+
+    // `resolveReviewTarget` shells out to git and takes no signal, so the
+    // keystroke lands while it is still running.
+    controller.abort();
+    await runHostReview({
+      scope: scope(),
+      workspace,
+      runner,
+      signal: controller.signal,
+      onSegment: (segment) => seen.push(segment),
+    });
+
+    expect(seen.some((segment) => segment.startsWith('Reviewing '))).toBe(false);
+    expect(seen.at(-1)).toContain('Review cancelled');
+    expect(runner.agents).toEqual([]);
+  });
+});

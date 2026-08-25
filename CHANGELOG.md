@@ -16,6 +16,35 @@ All notable changes to this project are documented in this file.
   second count, so a long turn read `248s` — a figure the reader has to divide before it means
   anything. It now uses the same duration formatter as subagent rows, background shells and tool
   rows: `4m 8s`, and `1h 2m 3s` once a turn passes an hour.
+- **`/review` shows its work instead of going silent for minutes.** The command was dispatched
+  fire-and-forget: it set no state, so no spinner ran; its agents were spawned with no
+  `parentSessionId`, so the session's agent panel and status line filtered every one of them out;
+  and the pipeline emitted its first segment only after the whole run finished. A `--deep` review
+  was up to twenty minutes of a prompt that looked idle. The run now announces its resolved target
+  — file count, base, path scope, and which passes are coming — before the first agent starts, and
+  every reviewer, lens, verifier and patcher appears live in the agent panel while it works.
+  Ownership was conflated with delivery: agents can now be owned by a session for display while
+  suppressing the completion notification separately (`notifyParentOnCompletion`), so live progress
+  costs no extra model turn to re-narrate a report the host already rendered. Progress goes only to
+  a host that renders as segments arrive, so `book -p /review` stdout is unchanged — a print run has
+  no silence to break, and the announced target is already on `data.target`.
+- **A review is scoped to the conversation that asked for it.** Nothing cancelled a running review
+  when the session was replaced, so after a `/new` its report was appended to a conversation that
+  never requested it, its agents were invisible (they belong to the old session), and it still held
+  the single-review slot, refusing a `/review` typed in the new one.
+- **A local message produced mid-turn is deferred, not discarded.** `addLocalMessage` returned early
+  whenever a send was in flight, which was correct about not clobbering a streaming turn and wrong
+  about what to do instead. Because `/review` runs for minutes and looked idle the whole time, the
+  natural thing to do — start another turn — silently threw away the entire review report. Blocked
+  messages are now queued and replayed in order once the turn ends; a message owed to a
+  conversation the user has since left is still dropped, deliberately.
+- **Esc cancels a running review; Ctrl+C no longer exits the app during one.** Neither key treated a
+  review as in-flight work, so Esc was a documented no-op and Ctrl+C fell through to session exit —
+  killing Book and orphaning the agents the review had spawned. Both now cancel the review, which
+  stops its in-flight agents; a second Ctrl+C still exits, exactly as it does mid-stream. A
+  cancelled review reports `inconclusive` with no findings rather than presenting the coverage
+  failure from its own stopped agents as a result, and a cancelled `--fix` pass reports what it had
+  already committed before stopping.
 - **A running tool row no longer shifts a column when it finishes.** `Spinner` already emits its
   own trailing space and the row added a second one, so a running row's gutter was three columns
   and a finished one's was two — the verb and everything after it jumped left the instant the tool

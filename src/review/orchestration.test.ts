@@ -348,3 +348,71 @@ describe('runDeepReview', () => {
     expect(result.text).toContain('no changes');
   });
 });
+
+describe('review cancellation', () => {
+  it('stops every lens agent a deep review had already spawned', async () => {
+    const controller = new AbortController();
+    const stopped: string[] = [];
+    const spawnedIds: string[] = [];
+    let sequence = 0;
+    const runner: ReviewAgentRunner = {
+      async spawn() {
+        const id = `lens-${sequence++}`;
+        spawnedIds.push(id);
+        return { id, status: 'queued' };
+      },
+      async wait(id) {
+        // Cancel once the whole fan-out is in flight, as a keypress would.
+        if (id === 'lens-0') controller.abort();
+        return { id, status: 'stopped' };
+      },
+      async stop(id) {
+        stopped.push(id);
+      },
+    };
+
+    await runDeepReview(runner, scope(), workspace, { signal: controller.signal });
+
+    expect(spawnedIds).toHaveLength(4);
+    expect([...stopped].sort()).toEqual(spawnedIds);
+  });
+
+  it('does not spawn the verifier for a review cancelled during discovery', async () => {
+    const controller = new AbortController();
+    const agents: string[] = [];
+    const runner: ReviewAgentRunner = {
+      async spawn(_agent, _prompt, options) {
+        agents.push(options?.description ?? '');
+        return { id: `agent-${agents.length - 1}`, status: 'queued' };
+      },
+      async wait(id) {
+        controller.abort();
+        return { id, status: 'completed', result: findingJson() };
+      },
+      async stop() {},
+    };
+
+    const result = await runDeepReview(runner, scope(), workspace, { signal: controller.signal });
+
+    expect(agents).not.toContain('review: verify');
+    // Nothing was verified, so nothing may be reported as a finding.
+    expect(result.report.findings).toEqual([]);
+    expect(result.report.verdict).toBe('inconclusive');
+  });
+
+  it('reports the target before spawning, even when the run is then cancelled', async () => {
+    const controller = new AbortController();
+    const seen: string[] = [];
+    const runner = scriptedRunner();
+
+    await runDeepReview(runner, scope(), workspace, {
+      signal: controller.signal,
+      onTarget: (target) => {
+        seen.push(...target.changedFiles);
+        controller.abort();
+      },
+    });
+
+    expect(seen).toEqual(['a.ts']);
+  });
+});

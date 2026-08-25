@@ -228,6 +228,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   );
   const [rewindTargets, setRewindTargets] = useState<RewindTarget[]>(session.rewindTargets ?? []);
   const [isThinking, setIsThinking] = useState(false);
+  /** Local messages produced mid-turn, replayed in order once the turn ends. */
+  const pendingLocalMessages = useRef<
+    Array<{ text: string; localCommand?: LocalCommandDisplay; sessionId: string }>
+  >([]);
   const [isCompacting, setIsCompacting] = useState(false);
   const [isRewinding, setIsRewinding] = useState(false);
   const [compactUi, setCompactUi] = useState<CompactUiState | null>(null);
@@ -1437,24 +1441,10 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setMode(nextMode);
   }, []);
 
-  // Surface a local-only assistant message WITHOUT an agent round-trip.
-  // Precedent: compact() mutates messages directly via setMessages. Unlike
-  // send(), this never invokes runAgentLoop — used by /diff /config /cost
-  // /init-pre /memory-noop to show output instantly.
-  const addLocalMessage = useCallback(
+  // Unconditional append, shared by the immediate and the deferred path so a
+  // replayed message is byte-identical to one that was never blocked.
+  const appendLocalMessage = useCallback(
     (text: string, localCommand?: LocalCommandDisplay) => {
-      const sendInFlight = operations.isRunning('send');
-      if (sendInFlight || isThinking) {
-        uiLog.event('local-message:blocked', {
-          reason: sendInFlight ? 'in-flight' : 'is-thinking',
-          preview: text.slice(0, 40),
-        });
-        return; // don't clobber a streaming turn
-      }
-      uiLog.event('local-message:added', {
-        preview: text.slice(0, 40),
-        presentation: localCommand?.kind ?? 'text',
-      });
       const msg = {
         ...makeMessage('assistant', text, undefined, false),
         kind: 'local' as const,
@@ -1474,8 +1464,70 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         return next;
       });
     },
-    [isThinking, operations, timelineStore],
+    [timelineStore],
   );
+
+  // Surface a local-only assistant message WITHOUT an agent round-trip.
+  // Precedent: compact() mutates messages directly via setMessages. Unlike
+  // send(), this never invokes runAgentLoop — used by /diff /config /cost
+  // /init-pre /memory-noop to show output instantly, and by /review to deliver
+  // a report its agents produced minutes after the command was typed.
+  const addLocalMessage = useCallback(
+    (text: string, localCommand?: LocalCommandDisplay) => {
+      const sendInFlight = operations.isRunning('send');
+      if (sendInFlight || isThinking) {
+        // Deferred, not dropped. Callers that finish on their own schedule —
+        // `/review` runs for minutes in background agents — cannot time their
+        // output around a turn the user starts meanwhile, and discarding it
+        // threw away the entire deliverable of that work.
+        uiLog.event('local-message:deferred', {
+          reason: sendInFlight ? 'in-flight' : 'is-thinking',
+          preview: text.slice(0, 40),
+        });
+        pendingLocalMessages.current.push({
+          text,
+          localCommand,
+          sessionId: sessionIdRef.current,
+        });
+        return; // don't clobber a streaming turn
+      }
+      uiLog.event('local-message:added', {
+        preview: text.slice(0, 40),
+        presentation: localCommand?.kind ?? 'text',
+      });
+      appendLocalMessage(text, localCommand);
+    },
+    [appendLocalMessage, isThinking, operations],
+  );
+
+  // Drain deferred local messages once the turn that blocked them is over.
+  // Deliberately unconditional: the send lease is a plain object, not reactive
+  // state, so there is no dependency that reliably changes when it is released
+  // — and a drain that misses its wake-up is the bug this replaced. The guard
+  // makes the common (empty) case two boolean reads.
+  useEffect(() => {
+    if (pendingLocalMessages.current.length === 0) return;
+    if (isThinking || operations.isRunning('send')) return;
+    const queued = pendingLocalMessages.current;
+    pendingLocalMessages.current = [];
+    for (const item of queued) {
+      // Output owed to a conversation the user has since left is dropped on
+      // purpose: replaying it into an unrelated session is worse than losing it.
+      if (item.sessionId !== sessionIdRef.current) {
+        uiLog.event('local-message:discarded', {
+          reason: 'session-changed',
+          preview: item.text.slice(0, 40),
+        });
+        continue;
+      }
+      uiLog.event('local-message:added', {
+        preview: item.text.slice(0, 40),
+        presentation: item.localCommand?.kind ?? 'text',
+        deferred: true,
+      });
+      appendLocalMessage(item.text, item.localCommand);
+    }
+  });
 
   // Switch the active model for the rest of the session, optionally persisting
   // it to the user-global settings layer (~/.book/settings.json) so the choice

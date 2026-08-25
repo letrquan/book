@@ -109,6 +109,8 @@ export interface AgentRecord {
   parentSessionId?: string;
   rootRunId?: string;
   parentRunId?: string;
+  /** See {@link AgentSpawnRequest.notifyParentOnCompletion}. Defaults to true. */
+  notifyParentOnCompletion?: boolean;
   runId?: string;
   planId?: string;
   status: AgentStatus;
@@ -264,6 +266,18 @@ export interface AgentSpawnRequest {
   parentSessionId?: string;
   rootRunId?: string;
   parentRunId?: string;
+  /**
+   * Whether this agent's terminal result is delivered to `parentSessionId` as a
+   * completion notification. Defaults to true.
+   *
+   * Set false by a host that owns the agent's output itself — `/review` renders
+   * its own report, so re-delivering each reviewer's completion would bill an
+   * extra model turn to re-narrate a report the user already has. Suppressing
+   * *delivery* is deliberately separate from clearing `parentSessionId`: the
+   * agent stays owned by the session, so it remains visible in that session's
+   * agent surface while it runs.
+   */
+  notifyParentOnCompletion?: boolean;
 }
 
 export interface AgentPermissionRequest {
