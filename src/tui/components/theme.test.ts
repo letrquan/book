@@ -124,6 +124,21 @@ describe('built-in editorial themes', () => {
       }
     });
 
+    it(`keeps the ${name} spinner on the agent's own hue`, () => {
+      // The spinner is the agent speaking, so its gradient is anchored on
+      // `assistantAccent` and eases to a lighter tint of the same hue. `brand`
+      // is product chrome — the plan header and the plan's active step — and
+      // the two sit on adjacent rows in the footer. A breath that lands on
+      // `brand` erases the difference between the run talking and the UI
+      // labelling it, which is the whole reason the activity row stopped using
+      // `text`. Nord shipped this pair transposed and Catppuccin ended it on
+      // `brand`; in both, the working line rendered in the plan's colour.
+      const [from, to] = theme.shimmerPair;
+      expect(from).toBe(theme.assistantAccent);
+      expect(from).not.toBe(theme.brand);
+      expect(to).not.toBe(theme.brand);
+    });
+
     it(`keeps ${name} prose headings out of the chrome palette`, () => {
       // A heading that matches brand or the agent accent makes body copy read
       // as UI chrome, which is what the single-hue palette used to do.

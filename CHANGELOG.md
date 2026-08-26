@@ -10,6 +10,14 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The spinner keeps its own hue in every built-in theme.** Five of the six themes anchor
+  `shimmerPair` on `assistantAccent` — the agent's own colour — and ease to a lighter tint of it.
+  Nord shipped the pair transposed, so it started on `brand`, and Catppuccin ended its breath on
+  `brand`. Since `brand` is product chrome, and the plan block and the activity row sit on adjacent
+  footer rows, the working line rendered in the plan header's colour: identically in Nord under
+  reduced motion, and once per breath in Catppuccin. Both pairs now follow the convention, and a
+  test over every built-in theme asserts `shimmerPair[0]` is `assistantAccent` and that neither end
+  lands on `brand`, so a new theme cannot reintroduce the collision silently.
 - **Mouse scrolling, clicking, and copying now work together.** Full-screen mode uses SGR
   button-event tracking for three-row wheel scrolling, click-to-expand tool summaries, and
   Claude Code-style drag selection: exact character ranges highlight during a drag, copy to the

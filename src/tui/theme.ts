@@ -156,7 +156,7 @@ export const CATPPUCCIN_THEME: ThemeTokens = {
   usageMeterHigh: '#FAB387',
   usageMeterCritical: '#F38BA8',
 
-  shimmerPair: ['#B4BEFE', '#CBA6F7'],
+  shimmerPair: ['#B4BEFE', '#C7CEFF'],
   subagentColors: [
     '#F38BA8',
     '#FAB387',
@@ -251,7 +251,7 @@ export const NORD_THEME: ThemeTokens = {
   usageMeterHigh: '#EBCB8B',
   usageMeterCritical: '#BF616A',
 
-  shimmerPair: ['#88C0D0', '#8FBCBB'],
+  shimmerPair: ['#8FBCBB', '#A3CECD'],
   subagentColors: [
     '#BF616A',
     '#D08770',
