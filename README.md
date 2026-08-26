@@ -261,6 +261,36 @@ The startup fire plays only for a new, empty launch session and is skipped autom
 screen-reader or reduced-motion mode. Press Esc to skip it. TUI preference changes are saved in
 `.book/settings.local.json`; set `ui.startupAnimation` to `false` there to disable the effect.
 
+### Mouse
+
+Book claims the mouse in the interactive TUI (`?1002` button-event tracking with `?1006` SGR
+encoding) so it can act on the wheel and on clicks itself. There is no terminal mode that reports
+the wheel without also taking clicks, so this is what buys wheel scrolling inside the transcript.
+
+| Gesture | Does |
+| --- | --- |
+| Wheel | Scrolls the transcript |
+| Click | Expands the tool row under the pointer |
+| Drag | Selects text and copies it on release |
+| Double-click | Selects the word — identifiers and paths stay whole |
+| Triple-click | Selects the line |
+| Shift+drag | Bypasses Book entirely for the terminal's own selection |
+
+Selection is character-precise and flows the way text does: the first row runs from where you
+pressed to the end of its text, whole rows in between are taken entirely, and the last row stops
+where you released. Wide glyphs (CJK, emoji) are never split down the middle, and the copied text
+carries no terminal styling.
+
+Releasing a selection copies it through OSC 52 **and** the platform clipboard command (`clip.exe`,
+`pbcopy`, `wl-copy`, `xclip`), taking whichever succeeds — a terminal that ignores OSC 52 still
+gets the copy. Book reports in the transcript whether it landed.
+
+Clicking a tool row waits out the double-click window before expanding, so a double-click aimed at
+a word does not reflow the transcript under the pointer first.
+
+Every text field strips mouse reports out of the value it accepts, so a click that lands while a
+field has focus cannot type a control sequence into it.
+
 ### File mutations
 
 Book exposes the same mutation tools to every model — `ApplyPatch`, `Edit`, `MultiEdit`, and

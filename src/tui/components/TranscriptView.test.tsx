@@ -2,20 +2,28 @@ import { Box, Text } from 'ink';
 import { act, Profiler } from 'react';
 import { useState } from 'react';
 import { render } from 'ink-testing-library';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { TranscriptView } from './TranscriptView.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { ChatPanel } from './ChatPanel.js';
+import { ToolCallBlock } from './ToolCallBlock.js';
+import { toolSuccess } from '../../tools/result.js';
 import type { Message } from '../../types/messages.js';
 import { useTranscriptHistoryLoader, type TranscriptHistoryLoader } from '../transcript-layout.js';
+import { setFrameSnapshotForTesting } from '../frame-buffer.js';
 
-const { setTranscriptScrollHintSpy } = vi.hoisted(() => ({
+const { setTranscriptScrollHintSpy, writeClipboardMock } = vi.hoisted(() => ({
   setTranscriptScrollHintSpy: vi.fn(),
+  writeClipboardMock: vi.fn<(text: string) => Promise<boolean>>(),
 }));
 
 vi.mock('../ink-scroll-renderer.js', () => ({
   setTranscriptScrollHint: setTranscriptScrollHintSpy,
+}));
+
+vi.mock('../clipboard.js', () => ({
+  writeClipboard: writeClipboardMock,
 }));
 
 function Rows({ labels }: { labels: string[] }) {
@@ -40,6 +48,8 @@ function view(
     isActive?: boolean;
     followRequestKey?: number;
     layoutRevision?: unknown;
+    onToggleTool?: (toolId: string) => void;
+    onNotify?: (message: string) => void;
   } = {},
 ) {
   return (
@@ -50,6 +60,8 @@ function view(
         isActive={props.isActive}
         followRequestKey={props.followRequestKey}
         layoutRevision={props.layoutRevision}
+        onToggleTool={props.onToggleTool}
+        onNotify={props.onNotify}
       >
         <Rows labels={labels} />
       </TranscriptView>
@@ -59,6 +71,13 @@ function view(
 
 const frameLines = (frame: string | undefined) => (frame ?? '').split('\n').filter(Boolean);
 
+/** Wait past the multi-click window so a deferred tool toggle can fire. */
+async function settleMultiClick(): Promise<void> {
+  await act(async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 450));
+  });
+}
+
 async function flushFrame(): Promise<void> {
   await act(async () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -66,6 +85,11 @@ async function flushFrame(): Promise<void> {
 }
 
 describe('TranscriptView', () => {
+  afterEach(() => {
+    setFrameSnapshotForTesting(null);
+    writeClipboardMock.mockReset();
+  });
+
   it('clips to the latest rendered rows initially', () => {
     const app = render(view(['A', 'B', 'C', 'D', 'E', 'F']));
     expect(frameLines(app.lastFrame())).toEqual(['C', 'D', 'E', 'F']);
@@ -213,24 +237,135 @@ describe('TranscriptView', () => {
     expect(frameLines(app.lastFrame())).toEqual(['G', 'H', 'I', 'J']);
   });
 
-  it('ignores mouse reports, which Book never asks the terminal to send', async () => {
-    const labels = ['A', 'B', 'C', 'D', 'E', 'F'];
+  it('scrolls three rows per mouse wheel report', async () => {
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
     const app = render(view(labels));
 
-    // Wheel up, wheel down, left press, drag, and release, as a terminal left in
-    // a tracking mode by another program would report them.
-    for (const report of [
-      '\x1b[<64;10;5M',
-      '\x1b[<65;10;5M',
-      '\x1b[<0;4;2M',
-      '\x1b[<32;4;2M',
-      '\x1b[<0;4;2m',
-    ]) {
-      act(() => app.stdin.write(report));
-    }
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    await flushFrame();
+    const older = frameLines(app.lastFrame());
+    expect(older).toContain('B');
+    expect(older).not.toContain('H');
+
+    act(() => app.stdin.write('\x1b[<65;10;5M'));
+    await flushFrame();
+    expect(frameLines(app.lastFrame())).toEqual(['E', 'F', 'G', 'H']);
+  });
+
+  it('toggles expandable tool summaries on a left click release', async () => {
+    const onToggleTool = vi.fn();
+    const app = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={6} width={60} onToggleTool={onToggleTool}>
+          <ToolCallBlock
+            toolId="tool-1"
+            name="Bash"
+            args={{ command: 'npm test' }}
+            result={toolSuccess('long output '.repeat(100), {
+              toolCallId: 'tool-1',
+            })}
+            isExpanded={false}
+            terminalWidth={60}
+            reducedMotion
+          />
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+
+    act(() => app.stdin.write('\x1b[<0;4;2M'));
+    expect(onToggleTool).not.toHaveBeenCalled();
+    act(() => app.stdin.write('\x1b[<0;4;2m'));
+    // The toggle waits out the multi-click window: expanding a row on the way
+    // to a double-click would reflow the transcript under the cursor.
+    expect(onToggleTool).not.toHaveBeenCalled();
+    await settleMultiClick();
+    expect(onToggleTool).toHaveBeenCalledWith('tool-1');
+  });
+
+  it('does not toggle a tool row when the click becomes a double-click', async () => {
+    const onToggleTool = vi.fn();
+    const app = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={6} width={60} onToggleTool={onToggleTool}>
+          <ToolCallBlock
+            toolId="tool-1"
+            name="Bash"
+            args={{ command: 'npm test' }}
+            result={toolSuccess('long output '.repeat(100), {
+              toolCallId: 'tool-1',
+            })}
+            isExpanded={false}
+            terminalWidth={60}
+            reducedMotion
+          />
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+
+    act(() => app.stdin.write('\x1b[<0;4;2M'));
+    act(() => app.stdin.write('\x1b[<0;4;2m'));
+    act(() => app.stdin.write('\x1b[<0;4;2M'));
+    act(() => app.stdin.write('\x1b[<0;4;2m'));
+    await settleMultiClick();
+
+    expect(onToggleTool).not.toHaveBeenCalled();
+  });
+
+  it('copies the selected rows when a drag spans them', async () => {
+    const onNotify = vi.fn();
+    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F'], { onNotify }));
+    setFrameSnapshotForTesting('\nC\nD\nE\nF');
+    writeClipboardMock.mockResolvedValueOnce(true);
+
+    // Press at the first column of "D", drag to the first column of "E".
+    act(() => app.stdin.write('\x1b[<0;1;3M'));
+    act(() => app.stdin.write('\x1b[<32;1;4M'));
+    act(() => app.stdin.write('\x1b[<0;1;4m'));
+    await flushFrame();
+
+    expect(writeClipboardMock).toHaveBeenCalledWith('D\nE');
+    expect(onNotify).toHaveBeenCalledWith('Copied selection to clipboard.');
+  });
+
+  it('copies only the dragged columns, not the whole row', async () => {
+    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F']));
+    setFrameSnapshotForTesting('\nalpha beta gamma\nD\nE\nF');
+    writeClipboardMock.mockResolvedValueOnce(true);
+
+    // Columns 7..10 of row 2 — "beta" and nothing around it.
+    act(() => app.stdin.write('\x1b[<0;7;2M'));
+    act(() => app.stdin.write('\x1b[<32;10;2M'));
+    act(() => app.stdin.write('\x1b[<0;10;2m'));
+    await flushFrame();
+
+    expect(writeClipboardMock).toHaveBeenCalledWith('beta');
+  });
+
+  it('selects the word under a double-click', async () => {
+    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F']));
+    setFrameSnapshotForTesting('\nedited src/tui/app.tsx now\nD\nE\nF');
+    writeClipboardMock.mockResolvedValueOnce(true);
+
+    // Two presses on the same cell inside the multi-click window, mid-path.
+    act(() => app.stdin.write('\x1b[<0;10;2M'));
+    act(() => app.stdin.write('\x1b[<0;10;2m'));
+    act(() => app.stdin.write('\x1b[<0;10;2M'));
+    act(() => app.stdin.write('\x1b[<0;10;2m'));
+    await flushFrame();
+
+    expect(writeClipboardMock).toHaveBeenCalledWith('src/tui/app.tsx');
+  });
+
+  it('ignores mouse interaction while inactive', async () => {
+    const onToggleTool = vi.fn();
+    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F'], { isActive: false, onToggleTool }));
+
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    act(() => app.stdin.write('\x1b[<0;4;2M\x1b[<0;4;2m'));
     await flushFrame();
 
     expect(frameLines(app.lastFrame())).toEqual(['C', 'D', 'E', 'F']);
+    expect(onToggleTool).not.toHaveBeenCalled();
   });
 
   it('follows appended output while pinned to the tail', () => {

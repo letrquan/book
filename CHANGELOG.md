@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Mouse selection that behaves like the terminal's own.** Book takes the mouse again in the
+  interactive TUI (`?1002` + `?1006`), which is what makes wheel scrolling and click-to-expand tool
+  rows possible — no terminal mode reports the wheel without also taking clicks. What it gives back
+  in exchange is a selection that is character-precise rather than line-at-a-time: drag selects from
+  the exact cell you pressed to the exact cell you released, flowing across rows the way text does,
+  and never splitting a wide glyph. Double-click selects the word under the pointer — deliberately
+  including `/`, `.`, `-`, `_`, and `:` so a path or an identifier comes out whole — and
+  triple-click selects the line; dragging after either keeps extending at that granularity.
+
+  Releasing a selection copies through OSC 52 *and* the platform clipboard command (`clip.exe`,
+  `pbcopy`, `wl-copy`, `xclip`), taking whichever succeeds, so a terminal that ignores OSC 52 still
+  gets the copy. The highlight repaints only the selected columns, leaving the transcript's colours
+  intact underneath it. Clicking a tool row waits out the double-click window before expanding, so a
+  double-click aimed at a word cannot reflow the transcript under the pointer first. Shift+drag
+  still bypasses Book for the terminal's own selection, and every text field keeps stripping mouse
+  reports out of the value it accepts.
+
 ### Fixed
 
 - **The mouse belongs to the terminal again.** Full-screen mode turned on SGR mouse reporting to

@@ -7,6 +7,7 @@ import {
   selectActiveToolId,
   selectExpandedToolId,
   selectLatestToolId,
+  shouldDefaultExpandToolId,
 } from './tool-traces.js';
 import { isRenderableFileMutationDiff } from './file-mutation-display.js';
 
@@ -127,6 +128,18 @@ describe('tool traces', () => {
         }),
       ]),
     ).toBe('latest');
+  });
+
+  it('resolves the default expansion state for clickable tool ids', () => {
+    const edit = assistant({
+      toolCalls: [{ id: 'edit', name: 'Edit', arguments: {} }],
+      toolResults: [result('edit', { output: DIFF })],
+      nestedToolInvocations: [nested('read', 'edit', true, 'Read', 'contents')],
+    });
+
+    expect(shouldDefaultExpandToolId([edit], 'edit')).toBe(true);
+    expect(shouldDefaultExpandToolId([edit], 'read')).toBe(false);
+    expect(shouldDefaultExpandToolId([edit], 'missing')).toBe(false);
   });
 });
 

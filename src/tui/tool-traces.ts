@@ -1,5 +1,6 @@
 import type { Message } from '../types/messages.js';
 import type { NestedToolInvocation } from '../types/tools.js';
+import { shouldDefaultExpandTool } from './tool-presentation.js';
 
 export type NestedToolChildren = ReadonlyMap<string, readonly NestedToolInvocation[]>;
 
@@ -60,6 +61,27 @@ export function selectLatestToolId(messages: readonly Message[]): string | null 
     if (calls.length > 0) return calls[calls.length - 1].id;
   }
   return null;
+}
+
+/** Resolve the default expansion state used when a tool row is clicked. */
+export function shouldDefaultExpandToolId(messages: readonly Message[], toolId: string): boolean {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role !== 'assistant') continue;
+
+    const nested = message.nestedToolInvocations?.find(
+      (invocation) => invocation.traceId === toolId,
+    );
+    if (nested) return shouldDefaultExpandTool(nested.call.name, nested.result);
+
+    const call = message.toolCalls?.find((candidate) => candidate.id === toolId);
+    if (call) {
+      const result = message.toolResults?.find((candidate) => candidate.toolCallId === toolId);
+      return shouldDefaultExpandTool(call.name, result);
+    }
+  }
+
+  return false;
 }
 
 /**

@@ -93,9 +93,8 @@ describe('ByokWizard', () => {
     await write(view, '\r');
     await waitForText(view, 'Base URL');
 
-    // Book never turns mouse reporting on, but a terminal left in a tracking
-    // mode by another program still reports clicks, and Ink hands them to the
-    // focused field as ordinary text.
+    // Transcript mouse reports also reach Ink's input listeners; the focused
+    // credential field must never accept them as ordinary text.
     await write(view, 'https://api.example.com/v1');
     await write(view, '\x1b[<0;12;4M');
     await write(view, '\x1b[<0;12;4m');

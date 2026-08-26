@@ -6,10 +6,9 @@ export type TextInputFieldProps = InkTextInputProps;
 
 /**
  * `ink-text-input` splices whatever Ink reports as input straight into the value,
- * so a mouse report from a tracking mode Book did not set (a multiplexer, or a
- * program that exited without restoring the terminal) would be typed into the
- * field. Every Book text field goes through this wrapper so a value can never
- * carry one.
+ * so a mouse report can otherwise be typed into the focused field. Every Book
+ * text field goes through this wrapper so reports used by the transcript never
+ * become form data.
  *
  * Dropping the report is only half the job. `ink-text-input` advances its own
  * cursor by the length of the raw input and re-clamps it only when the `value`

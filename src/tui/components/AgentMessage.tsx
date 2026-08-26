@@ -109,6 +109,7 @@ function NestedToolRows({
         marginTop={toolRowGap}
       >
         <ToolCallBlock
+          toolId={invocation.traceId}
           name={invocation.call.name}
           args={invocation.call.arguments}
           result={invocation.result}
@@ -683,6 +684,7 @@ export function AgentMessageInner({
               />
             ) : (
               <ToolCallBlock
+                toolId={tc.id}
                 name={tc.name}
                 args={tc.arguments}
                 result={result}
