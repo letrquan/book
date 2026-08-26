@@ -456,7 +456,17 @@ describe('TUI keyboard input', () => {
 
       session.sendKey('INPUT_FOOTER_SENTINEL');
       await session.waitFor('INPUT_FOOTER_SENTINEL');
-      for (let index = 0; index < 24; index++) session.sendKey(keys.ctrlU);
+      // Pace the scroll steps instead of writing them in one tick. Ctrl+U is a
+      // bare \x15 with no escape byte, and Ink's parser splits a chunk only at
+      // escape bytes: when the child is descheduled (routine on loaded CI
+      // runners) the whole burst lands in a single stdin read and parses as one
+      // unknown 24-character keypress, so *no* scroll step happens and the
+      // wait below expires with nothing to find. This is the same coalescing
+      // the submit() helper above guards against.
+      for (let index = 0; index < 24; index++) {
+        session.sendKey(keys.ctrlU);
+        await sleep(20);
+      }
       // Wait bound only — this test asserts frame correctness below, not latency.
       await session.waitFor('browsing histor', 8000);
 
