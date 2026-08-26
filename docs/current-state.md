@@ -1,10 +1,11 @@
 # Book Current State
 
-This is the implementation-backed product snapshot for Book as of 2026-08-25. Update this file
+This is the implementation-backed product snapshot for Book as of 2026-08-26. Update this file
 when a user-facing surface changes; the README is the usage guide and this page is the status
-reference for roadmap and design documents. This refresh re-verified the transcript grid, the
-project-declaration trust gates, and the experimental Zero-Mem capability boundary only (surfaces
-not re-verified this run: providers, MCP, other settings and sandbox behavior, managed agents,
+reference for roadmap and design documents. This refresh re-verified the interactive transcript and
+terminal interaction path, reasoning/retry propagation, and headless/stream-JSON framing only
+(surfaces not re-verified this run: project-declaration trust gates, the experimental Zero-Mem
+capability boundary, providers, MCP, other settings and sandbox behavior, managed agents,
 `/review`, background jobs, skills, and the adaptive harness).
 
 ## Release Identity
@@ -37,12 +38,30 @@ not re-verified this run: providers, MCP, other settings and sandbox behavior, m
   resolve through it. A few components outside that path — diff cards, subagent and
   background-shell rows, the command panel — still carry their own `marginLeft` and width
   arithmetic rather than deriving it from the grid, and are not covered by that guarantee.
+- The interactive transcript enables SGR button-event mouse reports and handles wheel scrolling,
+  single-click tool-summary expansion, and drag selection without feeding reports into the
+  composer. Selection is extracted from the captured visible frame by terminal columns (including
+  wide graphemes), painted as a temporary inverse overlay, and copied through OSC 52 plus a
+  best-effort platform clipboard command; Shift+drag remains available for terminal-native
+  selection. Frame updates repaint an active selection after Ink redraws.
 - Print/headless and SDK hosts resolve a leading `/command` through the same registries,
   substitutions, and `allowed-tools`/`model` frontmatter enforcement as the TUI, perform the
   commands a non-interactive host can honestly perform, and refuse the rest before their own code
   runs. Plan mode works there too: `bypassPermissions` approves, a supplied `onUserQuestionRequired`
   handler decides, and a host with neither ends the run with the plan as its deliverable instead of
   rejecting and re-planning until the turn budget is gone.
+- Provider-native reasoning and inline `<think>`, `<thinking>`, `<reasoning>`, and
+  `<reasoning_context>` blocks are kept separate from answer prose: the TUI streams active
+  thinking, collapses completed thoughts to a counted row in compact mode, and reopens them in
+  detailed mode, while fenced-code examples remain ordinary answer content. Shared reasoning-tag
+  helpers let the agent loop recognize closed reasoning-only completions, retry an empty turn once,
+  and emit `reasoning`/`attempt_discarded` events so session and headless hosts preserve the
+  boundary.
+- Headless stream-JSON hosts forward shared reasoning, tool, question, managed-agent, evidence,
+  retry-discard, and error events; host-performed slash commands produce a `command_result` record
+  with human and machine projections. The input parser accepts fragmented chunks and CRLF line
+  endings, bounds each record, and reports invalid JSON, invalid shapes, and oversized lines before
+  a run proceeds.
 - Anthropic Messages and OpenAI-compatible providers, provider auto-detection, model discovery,
   BYOK providers, configurable effort, retries, timeouts, and token/cost accounting.
 - System prompt v2 (`book-system-prompt-v2`): content split by volatility across a cached static
@@ -147,8 +166,8 @@ not re-verified this run: providers, MCP, other settings and sandbox behavior, m
   working tree can answer for any of them, and a repository that force-adds
   `.book/settings.local.json` supplies nothing. `book trust hook|rule|command` records a decision
   one at a time; `book config set` refuses all four paths rather than writing a value nothing
-  reads. Command decisions are keyed by command name and validated by a fingerprint over the shell
-  the body runs rather than its prose, so editing what runs re-asks under the same name.
+  reads. Command decisions are keyed by command name and validated by a fingerprint over the
+  shell the body runs rather than its prose, so editing what runs re-asks under the same name.
 - Approvals recorded under `commands.projectCommands` before the move are not migrated: reading
   them back out of the workspace to convert them would extend exactly the trust the move
   withdraws. Each is asked once more, on the machine that decides.
@@ -181,11 +200,12 @@ not re-verified this run: providers, MCP, other settings and sandbox behavior, m
   reason; because `sandbox.enabled` defaults to `false`, that setting alone refuses every command
   until sandboxing is also turned on. `autoAllowBashIfSandboxed: true` removes only the default
   ask, and only for a genuinely sandboxed command: `permissions.deny` is evaluated first and is
-  never softened, an explicit `permissions.ask` rule still prompts, any configured deny/ask rule at
-  all keeps the default ask, and plan mode still refuses `Bash` independently of the verdict. It is
-  inert under shipped defaults. `sandbox.excludedCommands` is still the only bypass a model-chosen
-  command can trip by itself — a matching command runs on the host, and the only control over that
-  is refusing unsandboxed execution wholesale, not an independent per-command approval.
+  never softened, an explicit `permissions.ask` rule still prompts, any configured deny/ask rule
+  at all keeps the default ask, and plan mode still refuses `Bash` independently of the verdict. It
+  is inert under shipped defaults. `sandbox.excludedCommands` is still the only bypass a
+  model-chosen command can trip by itself — a matching command runs on the host, and the only
+  control over that is refusing unsandboxed execution wholesale, not an independent per-command
+  approval.
 - The default-off `experimental.zeroMem` capability needs the optional
   `@huggingface/transformers` peer dependency and a locally cached embedding/NER pair under
   `BOOK_HOME/models/zero-mem`; downloads are refused unless
@@ -219,11 +239,22 @@ not re-verified this run: providers, MCP, other settings and sandbox behavior, m
   `--scrollback -c` is silently inert rather than resuming a session, and any other leading
   `/name` reaches the model verbatim. Hooks fire inside the loop; sessions, MCP servers, and
   slash commands do not exist on this path.
+- Mouse selection is a viewport feature: it copies cells from Ink's latest captured frame only, so
+  history outside the visible frame is not selectable through Book's drag path. Shift+drag
+  intentionally bypasses Book's handler for terminal-native selection. An OSC 52 write is not
+  confirmation that a terminal clipboard accepted the text; the UI distinguishes the `terminal`
+  fallback from a confirmed local clipboard command and reports failure when neither path succeeds.
+- Reasoning-tag handling has two deliberately different readings. Rendering treats an unclosed
+  recognized tag as thinking through the end of a streaming message, while empty-turn detection
+  strips only closed tags and leaves an unclosed tag in answer text; this favors preserving a real
+  answer over triggering a retry on ambiguous markup. A reasoning-only/empty response receives at
+  most one same-turn retry, and already-emitted attempt text is marked `attempt_discarded` rather
+  than persisted as the replacement turn.
 - Print/headless and SDK hosts run only the built-ins marked non-interactive — `/init`,
   `/security-review`, and `/review` — plus any `.book/commands/*.md` file. Every other built-in
   (session controls, pickers, panels, `/config`, `/export`, `/memory`) is refused before its own
-  code runs, which ends the run with exit code 1; an unknown `/name` is still forwarded to the model
-  verbatim.
+  code runs, which ends the run with exit code 1; an unknown `/name` is still forwarded to the
+  model verbatim.
   Shell substitution inside a custom command body still runs unsandboxed and outside the
   permission system, but a repository-declared body no longer reaches it unapproved: the decision
   is recorded in `~/.book/trust.json`, keyed by workspace path and stripped from both workspace
@@ -283,11 +314,13 @@ Use `npm test` for the full build plus unit, contract, and integration tiers. Re
 `npm run release:check`; the stabilization policy is `npm run stabilization:check` with the GitHub
 Actions environment variables described in [stabilization.md](stabilization.md).
 
-Local verification for this refresh (2026-08-25): `npm run check` (230 unit files, 2640 tests, 5
-skipped; 7 contract files, 59 tests), `npm run build`, and `npm run test:integration` (7 files, 97
-tests, 10 skipped) all pass on Windows. The `src/harness/evaluation/contract.test.ts` fixture-digest
-failures previously reported on some Windows working copies have a diagnosed cause and are not a
-code defect: `evals/harness/fixtures/**` is hashed byte-for-byte, and a working copy checked out
-before `.gitattributes` gained its `-text` rule holds those files with CRLF endings while the
-committed blobs use LF. CI checks out fresh and is unaffected. Repair a stale copy by deleting
-`evals/harness/fixtures` and running `git checkout -- evals/harness/fixtures`.
+Local verification for the previous snapshot (2026-08-25; tests were not re-run during this
+refresh): `npm run check` (230 unit files, 2640 tests, 5 skipped; 7 contract files, 59 tests),
+`npm run build`, and `npm run test:integration` (7 files, 97 tests, 10 skipped) all pass on Windows.
+The counts above are carried forward from that run, not advanced here. The
+`src/harness/evaluation/contract.test.ts` fixture-digest failures previously reported on some
+Windows working copies have a diagnosed cause and are not a code defect: `evals/harness/fixtures/**`
+is hashed byte-for-byte, and a working copy checked out before `.gitattributes` gained its `-text`
+rule holds those files with CRLF endings while the committed blobs use LF. CI checks out fresh and
+is unaffected. Repair a stale copy by deleting `evals/harness/fixtures` and running `git checkout --
+evals/harness/fixtures`.
