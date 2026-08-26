@@ -1431,7 +1431,7 @@ export function App({
       if (!resolved) {
         return {
           ok: false,
-          error: `Theme "${preference}" was not found. Choose dark, light, auto, or a theme from .book/themes.`,
+          error: `Theme "${preference}" was not found. Choose dark, light, auto, catppuccin, nord, gruvbox, solarized-dark, or a theme from .book/themes.`,
         };
       }
       const persisted = persistSettingLocal(config.workspace, 'theme', resolved.preference);

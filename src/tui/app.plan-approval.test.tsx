@@ -1215,7 +1215,7 @@ describe('App theme command', () => {
 
     expect(persistSettingLocalMock).not.toHaveBeenCalled();
     expect(agentState.addLocalMessage).toHaveBeenCalledWith(
-      '✕ Theme "missing-theme" was not found. Choose dark, light, auto, or a theme from .book/themes.',
+      '✕ Theme "missing-theme" was not found. Choose dark, light, auto, catppuccin, nord, gruvbox, solarized-dark, or a theme from .book/themes.',
     );
   });
 

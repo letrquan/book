@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Eye-friendly built-in themes.** Added `catppuccin` (Catppuccin Mocha pastel palette for minimal eye fatigue), `nord` (Arctic glacial slate for reduced blue-light glare), `gruvbox` (warm retro-earthy dark palette with amber and olive tones), and `solarized-dark` (scientifically tuned Lab color space contrast). All four themes are selectable via `/theme` picker and direct slash commands (`/theme <name>`).
+
 ### Fixed
 
 - **Mouse scrolling, clicking, and copying now work together.** Full-screen mode uses SGR

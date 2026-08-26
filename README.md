@@ -694,7 +694,15 @@ Book clears sessions and rotated debug-log backups after 30 days. Startup resolv
 
 ### Themes
 
-Use `/theme` to open the keyboard theme picker, or switch directly with `/theme dark`, `/theme light`, or `/theme auto`. The selection is applied immediately and saved to `.book/settings.local.json` for the next launch. The built-in themes use a matched warm-editorial palette on low-contrast surfaces. Roles are kept visually distinct on purpose: sage is the agent, clay is product chrome and anything you wrote, teal marks references and the usage meter, and amber/rust/green carry status. A custom theme that reuses one hue across roles will render those roles identically, which is what the built-ins avoid.
+Use `/theme` to open the keyboard theme picker, or switch directly with `/theme dark`, `/theme light`, `/theme auto`, `/theme catppuccin`, `/theme nord`, `/theme gruvbox`, or `/theme solarized-dark`. The selection is applied immediately and saved to `.book/settings.local.json` for the next launch. The built-in themes provide thoughtfully tuned palettes:
+
+- **dark / light**: Editorial warm charcoal / soft parchment with grounded sage and clay accents.
+- **catppuccin**: Soothing medium-contrast pastel palette based on Catppuccin Mocha for minimal eye fatigue.
+- **nord**: Arctic and glacial slate palette designed to reduce blue-light glare and harsh transitions.
+- **gruvbox**: Warm retro-earthy dark palette with amber and olive tones for evening and low-strain coding.
+- **solarized-dark**: Scientifically engineered Lab color-space palette with tuned luminance contrast.
+
+Roles are kept visually distinct on purpose: sage/lavender/frost belongs to the agent, clay/blue/orange to product chrome and user input, teal/cyan to references and usage meters, and distinct status hues carry results. A custom theme that reuses one hue across roles will render those roles identically, which is what the built-ins avoid.
 
 Project themes can override any token in `.book/themes/<name>.json`. They appear automatically in the picker and can also be activated with `/theme <name>`. Theme files are partial and inherit unspecified values from the dark default:
 
