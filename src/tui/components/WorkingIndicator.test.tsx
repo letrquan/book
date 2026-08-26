@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { toolActivityText } from '../working-activity.js';
-import { WorkingIndicator } from './WorkingIndicator.js';
+import { activityPalette, WorkingIndicator } from './WorkingIndicator.js';
 import type { Message } from '../../types/messages.js';
 
 function stripAnsi(value: string | undefined): string {
@@ -46,6 +46,53 @@ describe('WorkingIndicator', () => {
     const output = stripAnsi(view.lastFrame());
     expect(output).toContain('Pondering the plot twist');
     expect(output).toContain('Esc to cancel');
+  });
+
+  it('paints the spinner and its wording in the agent colour, not body text', () => {
+    const spinnerColor = DEFAULT_THEME.shimmerPair[0];
+    const live = activityPalette('normal', DEFAULT_THEME, spinnerColor);
+
+    // Glyph and wording are one live element, and neither is body-text coloured.
+    expect(live.indicator).toBe(spinnerColor);
+    expect(live.label).toBe(spinnerColor);
+    expect(live.label).not.toBe(DEFAULT_THEME.text);
+    // Duration and hint recede into metadata behind it.
+    expect(live.meta).toBe(DEFAULT_THEME.subtle);
+  });
+
+  it('keeps the blocked and retrying rows on their own status colours', () => {
+    const spinnerColor = DEFAULT_THEME.shimmerPair[0];
+
+    const waiting = activityPalette('waiting', DEFAULT_THEME, spinnerColor);
+    expect(waiting.indicator).toBe(DEFAULT_THEME.permission);
+    expect(waiting.label).toBe(DEFAULT_THEME.permission);
+
+    const warning = activityPalette('warning', DEFAULT_THEME, spinnerColor);
+    expect(warning.indicator).toBe(DEFAULT_THEME.warning);
+    expect(warning.label).toBe(DEFAULT_THEME.warning);
+    expect(warning.meta).toBe(DEFAULT_THEME.warning);
+  });
+
+  it('drops the duration before the hint when the row runs out of room', () => {
+    const wide = render(
+      withTheme(<WorkingIndicator isThinking messages={[]} terminalWidth={80} />),
+    );
+    expect(stripAnsi(wide.lastFrame())).toContain('· 0s · Esc to cancel');
+
+    const narrow = render(
+      withTheme(<WorkingIndicator isThinking messages={[]} terminalWidth={32} />),
+    );
+    const output = stripAnsi(narrow.lastFrame());
+    expect(output).toContain('Esc to cancel');
+    expect(output).not.toContain('· 0s');
+
+    const tiny = render(
+      withTheme(<WorkingIndicator isThinking messages={[]} terminalWidth={24} />),
+    );
+    const tinyOutput = stripAnsi(tiny.lastFrame());
+    expect(tinyOutput).toContain('Pondering');
+    expect(tinyOutput).not.toContain('Esc to cancel');
+    expect(tinyOutput.trim().split('\n')).toHaveLength(1);
   });
 
   it('shows composing once streamed content exists', () => {
@@ -124,7 +171,7 @@ describe('WorkingIndicator', () => {
 
   it('formats built-in, shell, and MCP activity labels', () => {
     expect(toolActivityText({ id: '1', name: 'GitDiff', arguments: {} })).toMatch(
-      /red ink|editorial marks|before and after/,
+      /red ink|the markup|drafts/,
     );
     const shellActivity = toolActivityText({
       id: '2',
@@ -293,7 +340,7 @@ describe('WorkingIndicator', () => {
     );
 
     const output = stripAnsi(view.lastFrame()).trim();
-    expect(output).toMatch(/Hunting|Following|Interrogating/);
+    expect(output).toMatch(/Hunting|Combing|Tracking|Grilling/);
     expect(output.split('\n')).toHaveLength(1);
   });
 

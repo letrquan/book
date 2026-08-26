@@ -2085,7 +2085,7 @@ export function App({
                   retryCountdownMs={retryCountdownMs}
                 />
               )}
-              {showAgentPlan && <AgentTodoList todos={agentTodos} />}
+              {showAgentPlan && <AgentTodoList todos={agentTodos} terminalWidth={termWidth} />}
               {showTasks && (
                 <TaskList tasks={tasks} onUpdateStatus={updateTaskStatus} onRemove={removeTask} />
               )}
