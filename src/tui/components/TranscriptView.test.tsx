@@ -399,6 +399,28 @@ describe('TranscriptView', () => {
     expect(afterRelease).toContain('\x1b[7mbeta\x1b[27m');
   });
 
+  it('undoes the wider drag paint when the release shrinks the selection', async () => {
+    // The release carries its own coordinates, so dragging back toward the
+    // anchor resolves to fewer cells than the last move painted. Without
+    // restoring first, the extra cells stay inverted until some later frame
+    // happens to overwrite those rows.
+    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F']));
+    setFrameSnapshotForTesting('\nalpha beta gamma\nD\nE\nF');
+    writeClipboardMock.mockResolvedValueOnce('clipboard');
+
+    act(() => app.stdin.write('\x1b[<0;1;2M'));
+    act(() => app.stdin.write('\x1b[<32;16;2M'));
+    const duringDrag = app.stdout.frames.length;
+    // Release back at column 5 — a narrower selection than was painted.
+    act(() => app.stdin.write('\x1b[<0;5;2m'));
+    await flushFrame();
+
+    const afterRelease = app.stdout.frames.slice(duringDrag).join('');
+    // The row is repainted from the frame before the narrower span goes down.
+    expect(afterRelease).toContain('\x1b[2;1Halpha beta gamma\x1b[K');
+    expect(writeClipboardMock).toHaveBeenCalledWith('alpha');
+  });
+
   it('drops a persisted selection when the transcript is scrolled', async () => {
     const app = render(view(['A', 'B', 'C', 'D', 'E', 'F']));
     setFrameSnapshotForTesting('\nalpha beta gamma\nD\nE\nF');

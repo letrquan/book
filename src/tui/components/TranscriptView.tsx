@@ -467,16 +467,23 @@ export function TranscriptView({
     const finishDragSelection = (drag: DragState) => {
       const frameLines = getFrameLines();
       const spans = resolveSelectionSpans(frameLines, drag.anchor, drag.focus, drag.granularity);
+      // What is on screen is what the last move painted, which is not what the
+      // release resolves to: the release carries its own coordinates, and its
+      // row is clamped into the viewport. Dragging back toward the anchor
+      // shrinks the selection, so the cells the drag painted have to be undone
+      // before the final one goes down or they stay inverted until some later
+      // frame happens to overwrite those rows.
+      const painted = drag.painted;
       drag.painted = null;
+      if (painted) {
+        restoreSelectionSpans(writeStdout, frameLines, painted, getLastCursorPosition());
+      }
       if (frameLines.length === 0) {
         onRedrawViewportRef.current?.();
         return;
       }
       const text = extractSelectedText(frameLines, spans);
-      if (!text) {
-        restoreSelectionSpans(writeStdout, frameLines, spans, getLastCursorPosition());
-        return;
-      }
+      if (!text) return;
       // The highlight stays up after the button is released, the way it does in
       // any other text surface — releasing is what copies, not what deselects.
       paintSelectionSpans(writeStdout, frameLines, spans);
