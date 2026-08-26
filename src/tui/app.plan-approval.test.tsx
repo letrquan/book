@@ -3,9 +3,11 @@ import { cleanup, render } from 'ink-testing-library';
 import { act } from 'react';
 import { App, ownsModalInput, providerRemovalMessage, shouldPlayStartupFire } from './app.js';
 import type { AgentConfig } from '../types/runtime.js';
+import type { AgentRecord } from '../agents/types.js';
 import type { SlashCommand } from '../types/commands.js';
 import { DEFAULT_THEME } from '../types/theme.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
+import { toolSuccess } from '../tools/result.js';
 
 const useAgentMock = vi.fn();
 const useTasksMock = vi.fn();
@@ -17,7 +19,7 @@ const persistSettingLocalMock = vi.fn((_workspace: string, _key: string, _value:
 }));
 const readClipboardImageMock = vi.fn();
 const managedAgentManagerMock = {
-  list: vi.fn(async () => []),
+  list: vi.fn<() => Promise<AgentRecord[]>>(async () => []),
   listPendingCompletions: vi.fn(async () => []),
   subscribe: vi.fn(() => () => {}),
   setInteractivePermissions: vi.fn(),
@@ -259,6 +261,76 @@ describe('App session commands', () => {
 
     expect(await frameContaining(view, 'preserve this draft')).toContain('preserve this draft');
     expect(agentState.send).not.toHaveBeenCalled();
+  });
+
+  it('expands a clicked tool row in the active managed-agent transcript', async () => {
+    const child: AgentRecord = {
+      id: 'agent-mouse',
+      parentSessionId: testSession.sessionId,
+      profile: 'validator',
+      displayName: 'Run child checks',
+      profileDescription: 'Validate changes',
+      purpose: 'Run tests',
+      resolvedModel: 'gateway/review',
+      isolation: 'worktree',
+      name: 'validator',
+      role: 'validator',
+      description: 'Validate changes',
+      status: 'running',
+      applicationStatus: 'not_applied',
+      prompt: 'Run tests',
+      referencedEvidenceIds: [],
+      transcript: [
+        {
+          id: 'child-message',
+          role: 'assistant',
+          content: '',
+          includeInContext: true,
+          timestamp: 1,
+          toolCalls: [{ id: 'child-tool', name: 'Bash', arguments: { command: 'npm test' } }],
+          toolResults: [
+            toolSuccess('CHILD_MOUSE_OUTPUT', {
+              toolCallId: 'child-tool',
+            }),
+          ],
+        },
+      ],
+      pendingMessages: [],
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    managedAgentManagerMock.list.mockResolvedValueOnce([child]);
+    const liveConfig = config();
+    liveConfig.accessibility = { screenReader: false, reducedMotion: true };
+    const agentState = {
+      ...pendingAgentState(),
+      isThinking: false,
+      pendingPlanApproval: null,
+      liveConfig,
+    };
+    useAgentMock.mockReturnValue(agentState);
+    useTasksMock.mockReturnValue({
+      tasks: [],
+      addTask: vi.fn(),
+      updateTaskStatus: vi.fn(),
+      removeTask: vi.fn(),
+      clearTasks: vi.fn(),
+    });
+    const view = render(<App config={liveConfig} session={testSession} />);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    view.stdin.write('\t');
+    const childFrame = await frameContaining(view, 'main > Run child checks');
+    expect(childFrame).not.toContain('CHILD_MOUSE_OUTPUT');
+    const lines = childFrame.split('\n');
+    const toolRow = lines.findIndex((line) => line.includes('npm test'));
+    expect(toolRow).toBeGreaterThanOrEqual(0);
+    const toolColumn = lines[toolRow].indexOf('npm test');
+
+    view.stdin.write(`\x1b[<0;${toolColumn + 1};${toolRow + 1}M`);
+    view.stdin.write(`\x1b[<0;${toolColumn + 1};${toolRow + 1}m`);
+
+    expect(await frameContaining(view, 'CHILD_MOUSE_OUTPUT')).toContain('CHILD_MOUSE_OUTPUT');
   });
 
   it('ignores mouse reports while the startup fire is active', async () => {

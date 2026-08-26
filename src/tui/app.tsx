@@ -104,6 +104,9 @@ import { readClipboardImage } from '../input/clipboard-image.js';
 import { stripSgrMouseSequences } from './mouse.js';
 
 const uiLog = createUiDebugLogger('tui:app');
+const MAIN_TRANSCRIPT_SCOPE = 'main';
+const EMPTY_TOOL_EXPANSION_OVERRIDES = new Map<string, boolean>();
+const EMPTY_SHOW_ALL_TOOL_OUTPUT_IDS = new Set<string>();
 
 export function ownsModalInput(
   pendingPermission: unknown,
@@ -254,7 +257,9 @@ interface AppProps {
  *   Ctrl+J   — insert newline
  *   PgUp/PgDn, Ctrl+U/Ctrl+D — scroll transcript
  *   Ctrl+Home/Ctrl+End — jump to transcript start/latest
- *   Shift+drag — select terminal text for copying
+ *   Mouse wheel — scroll transcript
+ *   Drag — select and copy visible text
+ *   Shift+drag — terminal-native selection fallback
  *   Alt+M    — cycle permission mode
  *   Alt+P    — open model picker
  *   Alt+V    — attach clipboard image
@@ -373,9 +378,14 @@ export function App({
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showStatus, setShowStatus] = useState(false);
   const [showAllDetailedOutput, setShowAllDetailedOutput] = useState(false);
-  const [showAllToolOutputIds, setShowAllToolOutputIds] = useState<Set<string>>(() => new Set());
+  const [showAllToolOutputIdsByTranscript, setShowAllToolOutputIdsByTranscript] = useState<
+    Map<string, Set<string>>
+  >(() => new Map());
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>('compact');
-  const [toolExpansionOverrides, setToolExpansionOverrides] = useState<Map<string, boolean>>(
+  const [toolExpansionOverridesByTranscript, setToolExpansionOverridesByTranscript] = useState<
+    Map<string, Map<string, boolean>>
+  >(() => new Map());
+  const [focusedToolIdsByTranscript, setFocusedToolIdsByTranscript] = useState<Map<string, string>>(
     () => new Map(),
   );
   const [showPermissions, setShowPermissions] = useState(false);
@@ -404,6 +414,16 @@ export function App({
   const [queuedInputs, setQueuedInputs] = useState<QueuedInput[]>([]);
   const [editingQueuedInput, setEditingQueuedInput] = useState<QueuedInput | undefined>(undefined);
   const [queueNotice, setQueueNotice] = useState<string | undefined>(undefined);
+  const [copyNotice, setCopyNotice] = useState<string | undefined>(undefined);
+  const copyNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleCopiedNotice = useCallback((message: string) => {
+    setCopyNotice(message);
+    if (copyNoticeTimerRef.current) clearTimeout(copyNoticeTimerRef.current);
+    copyNoticeTimerRef.current = setTimeout(() => {
+      copyNoticeTimerRef.current = null;
+      setCopyNotice(undefined);
+    }, 2_000);
+  }, []);
   const [sendInFlight, setSendInFlight] = useState(false);
   const [, setQueueDrainTick] = useState(0);
   const [shellCompletionRetryTick, setShellCompletionRetryTick] = useState(0);
@@ -1273,6 +1293,54 @@ export function App({
   const selectedManagedAgentLiveText = managedAgents.selectedAgentId
     ? managedAgents.liveText.get(managedAgents.selectedAgentId)
     : undefined;
+  const activeTranscriptMessages =
+    managedAgents.surface === 'detail' && !selectedShellId && selectedManagedAgentRecord
+      ? selectedManagedAgentRecord.transcript
+      : messages;
+  const activeTranscriptScope =
+    activeTranscriptMessages === messages
+      ? MAIN_TRANSCRIPT_SCOPE
+      : `managed:${selectedManagedAgentRecord!.id}`;
+  const activeExpandedToolId = useMemo(
+    () =>
+      activeTranscriptMessages === messages
+        ? expandedToolId
+        : selectExpandedToolId(activeTranscriptMessages),
+    [activeTranscriptMessages, expandedToolId, messages],
+  );
+  const toolExpansionOverrides =
+    toolExpansionOverridesByTranscript.get(activeTranscriptScope) ?? EMPTY_TOOL_EXPANSION_OVERRIDES;
+  const focusedToolId = focusedToolIdsByTranscript.get(activeTranscriptScope) ?? null;
+  const showAllToolOutputIds =
+    showAllToolOutputIdsByTranscript.get(activeTranscriptScope) ?? EMPTY_SHOW_ALL_TOOL_OUTPUT_IDS;
+  const updateToolExpansionOverrides = useCallback(
+    (update: (current: Map<string, boolean>) => Map<string, boolean>) => {
+      setToolExpansionOverridesByTranscript((current) => {
+        const currentOverrides = current.get(activeTranscriptScope) ?? new Map<string, boolean>();
+        const nextOverrides = update(currentOverrides);
+        if (nextOverrides === currentOverrides) return current;
+        return new Map(current).set(activeTranscriptScope, nextOverrides);
+      });
+    },
+    [activeTranscriptScope],
+  );
+  const focusTool = useCallback(
+    (toolId: string) => {
+      setFocusedToolIdsByTranscript((current) =>
+        new Map(current).set(activeTranscriptScope, toolId),
+      );
+    },
+    [activeTranscriptScope],
+  );
+  const showAllToolOutput = useCallback(
+    (toolId: string) => {
+      setShowAllToolOutputIdsByTranscript((current) => {
+        const nextIds = new Set(current.get(activeTranscriptScope) ?? []).add(toolId);
+        return new Map(current).set(activeTranscriptScope, nextIds);
+      });
+    },
+    [activeTranscriptScope],
+  );
   const selectedManagedAgentLiveRows = selectedManagedAgentLiveText
     ? wordWrap(selectedManagedAgentLiveText.slice(-1000), Math.max(1, termWidth - 2)).split('\n')
         .length
@@ -1283,7 +1351,7 @@ export function App({
         error ?? '',
         streamingMessageId ?? '',
         transcriptMode,
-        expandedToolId ?? '',
+        activeExpandedToolId ?? '',
         [...toolExpansionOverrides.entries()].sort(([left], [right]) =>
           left < right ? -1 : left > right ? 1 : 0,
         ),
@@ -1311,7 +1379,7 @@ export function App({
       error,
       streamingMessageId,
       transcriptMode,
-      expandedToolId,
+      activeExpandedToolId,
       toolExpansionOverrides,
       showAllDetailedOutput,
       showAllToolOutputIds,
@@ -1337,9 +1405,25 @@ export function App({
   useEffect(() => {
     setTranscriptMode('compact');
     setShowAllDetailedOutput(false);
-    setShowAllToolOutputIds(new Set());
-    setToolExpansionOverrides(new Map());
+    setShowAllToolOutputIdsByTranscript(new Map());
+    setToolExpansionOverridesByTranscript(new Map());
+    setFocusedToolIdsByTranscript(new Map());
   }, [sessionId]);
+
+  useEffect(
+    () => () => {
+      if (copyNoticeTimerRef.current) clearTimeout(copyNoticeTimerRef.current);
+    },
+    [],
+  );
+
+  const toggleToolExpansion = useCallback(
+    (toolId: string, expanded: boolean) => {
+      focusTool(toolId);
+      updateToolExpansionOverrides((current) => new Map(current).set(toolId, !expanded));
+    },
+    [focusTool, updateToolExpansionOverrides],
+  );
 
   const applyThemePreference = useCallback(
     (preference: string): ApplyThemeResult => {
@@ -1845,13 +1929,12 @@ export function App({
         return true;
       }
       if (transcriptAction === 'expand-output') {
-        const targetToolId = expandedToolId ?? selectLatestToolId(messages);
+        const targetToolId =
+          activeExpandedToolId ?? focusedToolId ?? selectLatestToolId(activeTranscriptMessages);
         uiLog.event('input:Ctrl+E', { action: 'expand-current-tool', toolId: targetToolId });
         if (targetToolId) {
-          setToolExpansionOverrides((current) => new Map(current).set(targetToolId, true));
-        }
-        if (targetToolId) {
-          setShowAllToolOutputIds((current) => new Set(current).add(targetToolId));
+          updateToolExpansionOverrides((current) => new Map(current).set(targetToolId, true));
+          showAllToolOutput(targetToolId);
         }
         return true; // consumed
       }
@@ -1877,8 +1960,11 @@ export function App({
       showConfigPicker,
       showAgentProfilePicker,
       showSkills,
-      expandedToolId,
-      messages,
+      activeExpandedToolId,
+      activeTranscriptMessages,
+      focusedToolId,
+      showAllToolOutput,
+      updateToolExpansionOverrides,
     ],
   );
 
@@ -1925,6 +2011,9 @@ export function App({
             isActive={!pickerOwnsTranscript && managedAgents.surface !== 'tasks'}
             followRequestKey={followRequestKey}
             layoutRevision={transcriptLayoutRevision}
+            onToggleTool={toggleToolExpansion}
+            onNotify={handleCopiedNotice}
+            onRedrawViewport={redrawViewport}
           >
             <Box flexDirection="column" width={termWidth}>
               {error && (
@@ -1957,6 +2046,11 @@ export function App({
                     height={termHeight}
                     reducedMotion={motionDisabled}
                     screenReader={screenReader}
+                    transcriptMode={transcriptMode}
+                    automaticToolCallId={activeExpandedToolId}
+                    toolExpansionOverrides={toolExpansionOverrides}
+                    showAllToolOutput={showAllDetailedOutput}
+                    showAllToolOutputIds={showAllToolOutputIds}
                   />
                 ) : (
                   <Box paddingX={1}>
@@ -2303,12 +2397,18 @@ export function App({
                     <HelpRow label="Alt+P" description="Open model picker" theme={theme} />
                     <HelpRow label="Alt+V" description="Attach clipboard image" theme={theme} />
                     <HelpRow label="Up/Down" description="Navigate input history" theme={theme} />
-                    <HelpRow label="PgUp/PgDn" description="Scroll transcript" theme={theme} />
+                    <HelpRow label="Wheel" description="Scroll transcript" theme={theme} />
                     <HelpRow
-                      label="Shift+drag"
-                      description="Select terminal text for copying"
+                      label="Drag"
+                      description="Select visible text and copy on release"
                       theme={theme}
                     />
+                    <HelpRow
+                      label="Shift+drag"
+                      description="Use terminal-native text selection"
+                      theme={theme}
+                    />
+                    <HelpRow label="PgUp/PgDn" description="Scroll transcript" theme={theme} />
                     <HelpRow
                       label="Ctrl+U/Ctrl+D"
                       description="Scroll transcript half a page"
@@ -2789,7 +2889,7 @@ export function App({
             <QueuedInputPreview
               items={queuedInputs}
               terminalWidth={termWidth}
-              notice={queueNotice}
+              notice={queueNotice ?? copyNotice}
             />
             <InputBar
               key={sessionId}

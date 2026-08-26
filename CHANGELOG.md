@@ -6,21 +6,15 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
-- **The mouse belongs to the terminal again.** Full-screen mode turned on SGR mouse reporting to
-  drive wheel scrolling and click-to-expand tool rows. That handed the mouse to Book, so selecting
-  text to copy needed a modifier key held down, and every click became a control sequence Ink
-  delivered to the focused field as ordinary text — clicking while typing a base URL or API key in
-  the BYOK wizard left `[<0;12;4M` in the value. Book now asks for no mouse reporting at all and
-  clears every tracking mode on the way in as well as on the way out, so a mode left on by a
-  crashed session or another program cannot leak reports into a prompt either. Alternate scroll
-  (`?1007`) goes off with them and is handed back on exit: it translates the wheel into cursor
-  keys while the alternate screen is up, and those arrows would have reached the prompt and
-  replaced a half-typed draft with a history entry on a stray wheel nudge. Drag-select and copy
-  work with no modifier. Transcript scrolling stays on the keyboard: PageUp/PageDown,
-  Ctrl+U/Ctrl+D, Ctrl+Home/Ctrl+End, with Ctrl+O and Ctrl+E for tool output. As a belt-and-braces
-  guard, every text field and filter strips mouse reports out of the value it accepts, re-seating
-  the field's cursor so a dropped report cannot leave the next Backspace deleting the wrong
-  character in a masked value.
+- **Mouse scrolling, clicking, and copying now work together.** Full-screen mode uses SGR
+  button-event tracking for three-row wheel scrolling, click-to-expand tool summaries, and
+  Claude Code-style drag selection: exact character ranges highlight during a drag, copy to the
+  system clipboard on release, and remain visibly selected until the next interaction. Shift+drag
+  remains available for terminal-native selection. Book clears stale mouse modes before enabling
+  its narrow tracking mode and clears them all on exit; alternate scroll (`?1007`) stays disabled
+  during the session so a wheel nudge cannot become an input-history arrow. Every text field still
+  strips mouse reports and re-seats its cursor, so clicks and drags can never become prompt, URL, or
+  API-key text.
 - **A run that stops mid-task now says why.** Three faults compounded into a session that simply
   stopped after a tool result and handed the prompt back, with nothing in the transcript and nothing
   in the session file to say a request had failed. Reasoning is not always delivered out of band:

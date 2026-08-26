@@ -2,20 +2,28 @@ import { Box, Text } from 'ink';
 import { act, Profiler } from 'react';
 import { useState } from 'react';
 import { render } from 'ink-testing-library';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ThemeContext, DEFAULT_THEME } from '../theme.js';
 import { TranscriptView } from './TranscriptView.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { ChatPanel } from './ChatPanel.js';
+import { ToolCallBlock } from './ToolCallBlock.js';
+import { toolSuccess } from '../../tools/result.js';
 import type { Message } from '../../types/messages.js';
 import { useTranscriptHistoryLoader, type TranscriptHistoryLoader } from '../transcript-layout.js';
+import { setFrameSnapshotForTesting } from '../frame-buffer.js';
 
-const { setTranscriptScrollHintSpy } = vi.hoisted(() => ({
+const { setTranscriptScrollHintSpy, writeClipboardMock } = vi.hoisted(() => ({
   setTranscriptScrollHintSpy: vi.fn(),
+  writeClipboardMock: vi.fn<(text: string) => Promise<'clipboard' | 'terminal' | 'failed'>>(),
 }));
 
 vi.mock('../ink-scroll-renderer.js', () => ({
   setTranscriptScrollHint: setTranscriptScrollHintSpy,
+}));
+
+vi.mock('../clipboard.js', () => ({
+  writeClipboard: writeClipboardMock,
 }));
 
 function Rows({ labels }: { labels: string[] }) {
@@ -40,6 +48,8 @@ function view(
     isActive?: boolean;
     followRequestKey?: number;
     layoutRevision?: unknown;
+    onToggleTool?: (toolId: string) => void;
+    onNotify?: (message: string) => void;
   } = {},
 ) {
   return (
@@ -50,6 +60,8 @@ function view(
         isActive={props.isActive}
         followRequestKey={props.followRequestKey}
         layoutRevision={props.layoutRevision}
+        onToggleTool={props.onToggleTool}
+        onNotify={props.onNotify}
       >
         <Rows labels={labels} />
       </TranscriptView>
@@ -66,6 +78,11 @@ async function flushFrame(): Promise<void> {
 }
 
 describe('TranscriptView', () => {
+  afterEach(() => {
+    setFrameSnapshotForTesting(null);
+    writeClipboardMock.mockReset();
+  });
+
   it('clips to the latest rendered rows initially', () => {
     const app = render(view(['A', 'B', 'C', 'D', 'E', 'F']));
     expect(frameLines(app.lastFrame())).toEqual(['C', 'D', 'E', 'F']);
@@ -213,24 +230,109 @@ describe('TranscriptView', () => {
     expect(frameLines(app.lastFrame())).toEqual(['G', 'H', 'I', 'J']);
   });
 
-  it('ignores mouse reports, which Book never asks the terminal to send', async () => {
-    const labels = ['A', 'B', 'C', 'D', 'E', 'F'];
+  it('scrolls three rows per mouse wheel report', async () => {
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
     const app = render(view(labels));
 
-    // Wheel up, wheel down, left press, drag, and release, as a terminal left in
-    // a tracking mode by another program would report them.
-    for (const report of [
-      '\x1b[<64;10;5M',
-      '\x1b[<65;10;5M',
-      '\x1b[<0;4;2M',
-      '\x1b[<32;4;2M',
-      '\x1b[<0;4;2m',
-    ]) {
-      act(() => app.stdin.write(report));
-    }
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    await flushFrame();
+    const older = frameLines(app.lastFrame());
+    expect(older).toContain('B');
+    expect(older).not.toContain('H');
+
+    act(() => app.stdin.write('\x1b[<65;10;5M'));
+    await flushFrame();
+    expect(frameLines(app.lastFrame())).toEqual(['E', 'F', 'G', 'H']);
+  });
+
+  it('toggles expandable tool summaries on a left click release', () => {
+    const onToggleTool = vi.fn();
+    const toolView = (isExpanded: boolean) => (
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={6} width={60} onToggleTool={onToggleTool}>
+          <ToolCallBlock
+            toolId="tool-1"
+            name="Bash"
+            args={{ command: 'npm test' }}
+            result={toolSuccess('long output '.repeat(100), {
+              toolCallId: 'tool-1',
+            })}
+            isExpanded={isExpanded}
+            terminalWidth={60}
+            reducedMotion
+          />
+        </TranscriptView>
+      </ThemeContext.Provider>
+    );
+    const app = render(toolView(false));
+
+    act(() => app.stdin.write('\x1b[<0;4;2M'));
+    expect(onToggleTool).not.toHaveBeenCalled();
+    act(() => app.stdin.write('\x1b[<0;4;2m'));
+    expect(onToggleTool).toHaveBeenCalledWith('tool-1', false);
+
+    onToggleTool.mockClear();
+    app.rerender(toolView(true));
+    act(() => app.stdin.write('\x1b[<0;4;2M\x1b[<0;4;2m'));
+    expect(onToggleTool).toHaveBeenCalledWith('tool-1', true);
+  });
+
+  it('copies exact character ranges and keeps the released selection highlighted', async () => {
+    const onNotify = vi.fn();
+    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F'], { onNotify }));
+    setFrameSnapshotForTesting('\nalpha\nbravo\ncharlie\ndelta');
+    writeClipboardMock.mockResolvedValueOnce('clipboard');
+
+    act(() => app.stdin.write('\x1b[<0;2;3M'));
+    act(() => app.stdin.write('\x1b[<32;4;4M'));
+    act(() => app.stdin.write('\x1b[<0;4;4m'));
+    await flushFrame();
+
+    expect(writeClipboardMock).toHaveBeenCalledWith('ravo\nchar');
+    expect(onNotify).toHaveBeenCalledWith('Copied selection to clipboard.');
+    expect(app.stdout.lastFrame()).toContain('\x1b[7m');
+
+    act(() => app.stdin.write('x'));
+    expect(app.stdout.lastFrame()).not.toContain('\x1b[7m');
+  });
+
+  it('does not claim an unconfirmed terminal clipboard request succeeded', async () => {
+    const onNotify = vi.fn();
+    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F'], { onNotify }));
+    setFrameSnapshotForTesting('\nalpha\nbravo\ncharlie\ndelta');
+    writeClipboardMock.mockResolvedValueOnce('terminal');
+
+    act(() => app.stdin.write('\x1b[<0;2;3M'));
+    act(() => app.stdin.write('\x1b[<32;4;4M'));
+    act(() => app.stdin.write('\x1b[<0;4;4m'));
+    await flushFrame();
+
+    expect(onNotify).toHaveBeenCalledWith('Sent selection to the terminal clipboard.');
+  });
+
+  it('leaves Shift+drag available for terminal-native selection', async () => {
+    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F']));
+    setFrameSnapshotForTesting('\nalpha\nbravo\ncharlie\ndelta');
+
+    act(() => app.stdin.write('\x1b[<4;2;3M'));
+    act(() => app.stdin.write('\x1b[<36;4;4M'));
+    act(() => app.stdin.write('\x1b[<4;4;4m'));
+    await flushFrame();
+
+    expect(writeClipboardMock).not.toHaveBeenCalled();
+    expect(app.stdout.lastFrame()).not.toContain('\x1b[7m');
+  });
+
+  it('ignores mouse interaction while inactive', async () => {
+    const onToggleTool = vi.fn();
+    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F'], { isActive: false, onToggleTool }));
+
+    act(() => app.stdin.write('\x1b[<64;10;5M'));
+    act(() => app.stdin.write('\x1b[<0;4;2M\x1b[<0;4;2m'));
     await flushFrame();
 
     expect(frameLines(app.lastFrame())).toEqual(['C', 'D', 'E', 'F']);
+    expect(onToggleTool).not.toHaveBeenCalled();
   });
 
   it('follows appended output while pinned to the tail', () => {

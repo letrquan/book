@@ -1,6 +1,7 @@
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentRecord } from '../../agents/types.js';
+import { toolSuccess } from '../../tools/result.js';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { SubagentDetail } from './SubagentDetail.js';
 
@@ -149,5 +150,58 @@ describe('SubagentDetail', () => {
     const output = view.lastFrame() ?? '';
     expect(output).toContain('Reading src/auth');
     expect(output).not.toContain('Waiting for the subagent to produce output');
+  });
+
+  it('applies expansion overrides to tool rows in the child transcript', () => {
+    const record: AgentRecord = {
+      id: 'agent-tools',
+      profile: 'validator',
+      displayName: 'Run child checks',
+      profileDescription: 'Validate changes',
+      purpose: 'Run tests',
+      resolvedModel: 'gateway/review',
+      isolation: 'worktree',
+      name: 'validator',
+      role: 'validator',
+      description: 'Validate changes',
+      status: 'completed',
+      applicationStatus: 'not_applied',
+      prompt: 'Run tests',
+      referencedEvidenceIds: [],
+      transcript: [
+        {
+          id: 'message-tools',
+          role: 'assistant',
+          content: '',
+          includeInContext: true,
+          timestamp: 1,
+          toolCalls: [{ id: 'child-tool', name: 'Bash', arguments: { command: 'npm test' } }],
+          toolResults: [
+            toolSuccess('CHILD_TOOL_OUTPUT', {
+              toolCallId: 'child-tool',
+            }),
+          ],
+        },
+      ],
+      pendingMessages: [],
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const detail = (expanded: boolean) => (
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <SubagentDetail
+          record={record}
+          width={100}
+          height={30}
+          reducedMotion
+          toolExpansionOverrides={new Map([['child-tool', expanded]])}
+        />
+      </ThemeContext.Provider>
+    );
+    const view = render(detail(false));
+
+    expect(view.lastFrame()).not.toContain('CHILD_TOOL_OUTPUT');
+    view.rerender(detail(true));
+    expect(view.lastFrame()).toContain('CHILD_TOOL_OUTPUT');
   });
 });

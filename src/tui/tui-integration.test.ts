@@ -241,8 +241,7 @@ const keys = {
   ctrlSlash: '\x1f',
   altM: '\x1bm',
   ctrlU: '\x15',
-  // Book never enables mouse reporting, but a terminal left in a tracking mode
-  // by another program still sends these.
+  // SGR reports emitted by Book's button-event tracking mode.
   wheelUp: '\x1b[<64;60;20M',
   wheelDown: '\x1b[<65;60;20M',
 };
@@ -407,12 +406,15 @@ describe('TUI keyboard input', () => {
 
   it('mouse reports do not enter the prompt', async () => {
     session = await startAndWait();
-    // Full-screen mode never claims the mouse: the terminal keeps drag-select
-    // and copy, and any tracking mode left on by another program is cleared.
+    // Full-screen mode enables SGR button-event tracking for scrolling,
+    // clicking, and drag-copy after clearing any stale terminal modes.
     expect(session.readRaw()).toContain('\x1b[?1049h');
-    expect(session.readRaw()).not.toContain('\x1b[?1000h');
     // Windows ConPTY consumes mouse-mode control sequences before onData.
-    if (!IS_WINDOWS) expect(session.readRaw()).toContain('\x1b[?1000l');
+    if (!IS_WINDOWS) {
+      expect(session.readRaw()).toContain('\x1b[?1000l');
+      expect(session.readRaw()).toContain('\x1b[?1002h');
+      expect(session.readRaw()).toContain('\x1b[?1006h');
+    }
 
     session.sendKey('MOUSE_DRAFT');
     await session.waitFor('MOUSE_DRAFT');

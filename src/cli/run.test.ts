@@ -21,21 +21,20 @@ function fakeStdout(isTTY: boolean) {
 }
 
 describe('enterInteractiveScreen', () => {
-  it('enters the alternate screen with every mouse-reporting mode off', () => {
+  it('enters the alternate screen with button-event mouse reporting', () => {
     const { stdout, writes } = fakeStdout(true);
     const restore = enterInteractiveScreen(stdout);
 
-    // Book never claims the mouse, so the terminal keeps drag-select and copy,
-    // and a mode another program left on is cleared on the way in.
+    // Clear stale modes before enabling only the SGR button-event mode Book uses.
     expect(writes).toEqual([
-      '\x1b[?1049h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1007l',
+      '\x1b[?1049h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1007l\x1b[?1002h\x1b[?1006h',
     ]);
 
     restore();
     restore();
 
     expect(writes).toEqual([
-      '\x1b[?1049h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1007l',
+      '\x1b[?1049h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1007l\x1b[?1002h\x1b[?1006h',
       '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1007h\x1b[?1049l',
     ]);
   });
@@ -74,6 +73,8 @@ describe('enterInteractiveScreen', () => {
       expect(writes[0]).toContain('\x1b[?1049h');
       expect(writes[0]).toContain('\x1b[?1000l');
       expect(writes[0]).toContain('\x1b[?1007l');
+      expect(writes[0]).toContain('\x1b[?1002h');
+      expect(writes[0]).toContain('\x1b[?1006h');
     } finally {
       if (previousDistro === undefined) delete process.env.WSL_DISTRO_NAME;
       else process.env.WSL_DISTRO_NAME = previousDistro;

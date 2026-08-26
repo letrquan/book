@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink';
 import type { AgentRecord } from '../../agents/types.js';
+import type { TranscriptMode } from '../tool-presentation.js';
 import { useTheme } from '../theme.js';
 import { ChatPanel } from './ChatPanel.js';
 
@@ -10,6 +11,11 @@ export function SubagentDetail({
   height,
   reducedMotion = false,
   screenReader = false,
+  transcriptMode = 'compact',
+  automaticToolCallId,
+  toolExpansionOverrides,
+  showAllToolOutput = false,
+  showAllToolOutputIds,
 }: {
   record: AgentRecord;
   liveText?: string;
@@ -17,6 +23,11 @@ export function SubagentDetail({
   height: number;
   reducedMotion?: boolean;
   screenReader?: boolean;
+  transcriptMode?: TranscriptMode;
+  automaticToolCallId?: string | null;
+  toolExpansionOverrides?: ReadonlyMap<string, boolean>;
+  showAllToolOutput?: boolean;
+  showAllToolOutputIds?: ReadonlySet<string>;
 }) {
   const theme = useTheme();
   const terminal = ['completed', 'failed', 'stopped', 'interrupted'].includes(record.status);
@@ -53,6 +64,11 @@ export function SubagentDetail({
         screenReader={screenReader}
         model={record.resolvedModel}
         mode="managed"
+        transcriptMode={transcriptMode}
+        automaticToolCallId={automaticToolCallId}
+        toolExpansionOverrides={toolExpansionOverrides}
+        showAllToolOutput={showAllToolOutput}
+        showAllToolOutputIds={showAllToolOutputIds}
       />
       {streaming ? (
         <Box paddingX={1}>
