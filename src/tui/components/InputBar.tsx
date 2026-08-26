@@ -364,9 +364,8 @@ export function InputBar({
   );
 
   useInput((_input, key) => {
-    // Book asks for no mouse reporting, but a terminal left in a tracking mode
-    // by another program still sends reports, and Ink delivers them here as
-    // text. Drop them before menu/history routing so they cannot reach a draft.
+    // TranscriptView owns mouse reports. Drop them before menu/history routing
+    // so wheel movement, clicks, and drags cannot reach the prompt draft.
     if (_input.startsWith('[<') || _input.startsWith('\x1b[<')) return;
 
     // While a modal (permission prompt) owns the keyboard, ignore all keys —

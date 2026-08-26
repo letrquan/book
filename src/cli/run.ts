@@ -25,6 +25,7 @@ import {
   getDebugLogPath,
 } from '../debug-log.js';
 import { installInkScrollRenderer } from './ink-scroll-renderer.js';
+import { installFrameCapture } from './frame-buffer.js';
 import { isInkIncrementalRendererPatched } from './ink-patch.js';
 import { resolveTuiRendererMode } from './tui-renderer-mode.js';
 import { resolvePermissionMode } from '../permission-mode.js';
@@ -37,20 +38,18 @@ const ENTER_ALT_SCREEN = '\x1b[?1049h';
 const EXIT_ALT_SCREEN = '\x1b[?1049l';
 /**
  * Every mouse-reporting mode a terminal may have on, not just the ones Book
- * once set. Book never claims the mouse: with reporting off the terminal keeps
- * it, so drag-select and copy work without a modifier key and no mouse report
- * can be typed into a text field. A mode left on by a crashed session or
- * another program is cleared on the way in as well as on the way out.
+ * sets. Clear stale modes before enabling the narrow mode Book needs, and
+ * clear them all again on exit so a crashed session cannot leak reports into
+ * the next shell prompt.
  */
 const DISABLE_MOUSE_REPORTING =
   '\x1b[?1000l' + '\x1b[?1002l' + '\x1b[?1003l' + '\x1b[?1006l' + '\x1b[?1015l';
+const ENABLE_BUTTON_EVENT_TRACKING = '\x1b[?1002h';
+const ENABLE_SGR_MOUSE = '\x1b[?1006h';
 /**
  * Alternate scroll translates the wheel into cursor keys while the alternate
- * screen is up, and it is on by default in xterm, tmux, iTerm2, Windows
- * Terminal and VS Code. Book scrolls the transcript from the keyboard, so
- * those arrows would reach the prompt and replace a draft with a history
- * entry on a stray wheel nudge. It is off for the session and handed back on
- * the way out, since the terminal owned it first.
+ * screen is up. Book handles SGR wheel reports itself, so cursor-key emulation
+ * must stay off for the session and is handed back on exit.
  */
 const DISABLE_ALTERNATE_SCROLL = '\x1b[?1007l';
 const RESTORE_ALTERNATE_SCROLL = '\x1b[?1007h';
@@ -132,7 +131,11 @@ export function enterInteractiveScreen(
 
   writeTerminalControl(
     stdout,
-    ENTER_ALT_SCREEN + DISABLE_MOUSE_REPORTING + DISABLE_ALTERNATE_SCROLL,
+    ENTER_ALT_SCREEN +
+      DISABLE_MOUSE_REPORTING +
+      DISABLE_ALTERNATE_SCROLL +
+      ENABLE_BUTTON_EVENT_TRACKING +
+      ENABLE_SGR_MOUSE,
   );
   process.once('exit', restore);
   return restore;
@@ -320,6 +323,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         platform: process.platform,
       });
       await installInkScrollRenderer(rendererMode === 'experimental-scroll');
+      await installFrameCapture();
       app = render(
         createElement(App, {
           config,

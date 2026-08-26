@@ -1,4 +1,4 @@
-import { Box, Text, measureElement, useInput, type DOMElement } from 'ink';
+import { Box, Text, measureElement, useInput, useStdin, useStdout, type DOMElement } from 'ink';
 import {
   useCallback,
   useEffect,
@@ -13,6 +13,7 @@ import {
   createTranscriptScrollState,
   getTranscriptHalfPageRows,
   getTranscriptPageRows,
+  getTranscriptWheelDrainRows,
   reconcileTranscriptScroll,
   scrollTranscriptBy,
   scrollTranscriptToEnd,
@@ -20,6 +21,16 @@ import {
   type TranscriptMetrics,
   type TranscriptScrollState,
 } from '../transcript-scroll.js';
+import { parseSgrMouseEvents, stripSgrMouseSequences } from '../mouse.js';
+import { writeClipboard } from '../clipboard.js';
+import { getFrameLines, getLastCursorPosition, subscribeToFrameUpdates } from '../frame-buffer.js';
+import { paintSelection, restoreSelection } from '../selection-highlight.js';
+import {
+  extractSelectedText,
+  normalizeSelectionRange,
+  type SelectionCell,
+  type SelectionRange,
+} from '../text-selection.js';
 import {
   TranscriptHistoryContext,
   TranscriptLayoutContext,
@@ -31,6 +42,10 @@ import {
 import { useTheme } from '../theme.js';
 import { setTranscriptScrollHint } from '../ink-scroll-renderer.js';
 import { markTranscriptScrollActivity } from '../scroll-activity.js';
+import {
+  ToolRowInteractionContext,
+  type ToolSummaryRowRegistration,
+} from './tool-row-interactions.js';
 
 interface TranscriptViewProps {
   children: ReactNode;
@@ -40,9 +55,25 @@ interface TranscriptViewProps {
   followRequestKey?: number;
   /** Structural layout changes outside transcript components that self-report height updates. */
   layoutRevision?: unknown;
+  onToggleTool?: (toolId: string, expanded: boolean) => void;
+  onNotify?: (message: string) => void;
+  onRedrawViewport?: () => void;
 }
 
 const INITIAL_METRICS: TranscriptMetrics = { contentRows: 0, viewportRows: 1 };
+const MOUSE_WHEEL_ROWS = 3;
+
+interface DragState {
+  anchor: SelectionCell;
+  focus: SelectionCell;
+  dragged: boolean;
+}
+
+const selectionRangesEqual = (left: SelectionRange, right: SelectionRange): boolean =>
+  left.start.x === right.start.x &&
+  left.start.y === right.start.y &&
+  left.end.x === right.end.x &&
+  left.end.y === right.end.y;
 
 function getAbsolutePosition(node: DOMElement): { x: number; y: number } | undefined {
   let current: DOMElement | undefined = node;
@@ -59,6 +90,9 @@ function getAbsolutePosition(node: DOMElement): { x: number; y: number } | undef
 
 interface TranscriptContentProps {
   children: ReactNode;
+  interactionRegistry: {
+    register: (registration: ToolSummaryRowRegistration) => () => void;
+  };
   historyRegistry: {
     register: (loader: TranscriptHistoryLoader) => () => void;
   };
@@ -68,6 +102,7 @@ interface TranscriptContentProps {
 
 const TranscriptContent = memo(function TranscriptContent({
   children,
+  interactionRegistry,
   historyRegistry,
   viewportStore,
   onLayoutChange,
@@ -76,7 +111,9 @@ const TranscriptContent = memo(function TranscriptContent({
     <TranscriptLayoutContext.Provider value={onLayoutChange}>
       <TranscriptHistoryContext.Provider value={historyRegistry}>
         <TranscriptViewportContext.Provider value={viewportStore}>
-          {children}
+          <ToolRowInteractionContext.Provider value={interactionRegistry}>
+            {children}
+          </ToolRowInteractionContext.Provider>
         </TranscriptViewportContext.Provider>
       </TranscriptHistoryContext.Provider>
     </TranscriptLayoutContext.Provider>
@@ -90,15 +127,28 @@ export function TranscriptView({
   isActive = true,
   followRequestKey = 0,
   layoutRevision,
+  onToggleTool,
+  onNotify,
+  onRedrawViewport,
 }: TranscriptViewProps) {
   const theme = useTheme();
+  const { internal_eventEmitter } = useStdin();
+  const { stdout } = useStdout();
   const viewportRef = useRef<DOMElement>(null);
   const contentRef = useRef<DOMElement>(null);
   const metricsRef = useRef(INITIAL_METRICS);
   const stateRef = useRef<TranscriptScrollState>(createTranscriptScrollState());
   const previousContentRowsRef = useRef(0);
   const previousFollowRequestRef = useRef(followRequestKey);
+  const pendingWheelRowsRef = useRef(0);
+  const wheelImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
   const layoutMeasureImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
+  const onToggleToolRef = useRef(onToggleTool);
+  const onNotifyRef = useRef(onNotify);
+  const onRedrawViewportRef = useRef(onRedrawViewport);
+  const dragRef = useRef<DragState | null>(null);
+  const selectionRef = useRef<SelectionRange | null>(null);
+  const repaintImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
   const [renderedScrollTop, setRenderedScrollTop] = useState(0);
   const [followBottom, setFollowBottom] = useState(true);
   const [hasNewOutput, setHasNewOutput] = useState(false);
@@ -106,6 +156,20 @@ export function TranscriptView({
   const viewportListenersRef = useRef(new Set<() => void>());
   const viewportRevisionRef = useRef(0);
   const viewportBucketRef = useRef('');
+  const toolRowsRef = useRef(new Map<string, ToolSummaryRowRegistration>());
+  const interactionRegistry = useMemo(
+    () => ({
+      register: (registration: ToolSummaryRowRegistration) => {
+        toolRowsRef.current.set(registration.id, registration);
+        return () => {
+          if (toolRowsRef.current.get(registration.id) === registration) {
+            toolRowsRef.current.delete(registration.id);
+          }
+        };
+      },
+    }),
+    [],
+  );
   const historyRegistry = useMemo(
     () => ({
       register: (loader: TranscriptHistoryLoader) => {
@@ -187,6 +251,109 @@ export function TranscriptView({
     [publishViewport],
   );
 
+  onToggleToolRef.current = onToggleTool;
+  onNotifyRef.current = onNotify;
+  onRedrawViewportRef.current = onRedrawViewport;
+
+  const repaintSelection = useCallback(() => {
+    const selection = selectionRef.current;
+    if (!selection) return;
+    paintSelection(
+      (data) => stdout.write(data),
+      getFrameLines(),
+      selection,
+      stdout.columns ?? width ?? 80,
+      getLastCursorPosition(),
+    );
+  }, [stdout, width]);
+
+  const cancelScheduledSelectionRepaint = useCallback(() => {
+    if (repaintImmediateRef.current === null) return;
+    clearImmediate(repaintImmediateRef.current);
+    repaintImmediateRef.current = null;
+  }, []);
+
+  const scheduleSelectionRepaint = useCallback(() => {
+    if (!selectionRef.current || repaintImmediateRef.current !== null) return;
+    repaintImmediateRef.current = setImmediate(() => {
+      repaintImmediateRef.current = null;
+      repaintSelection();
+    });
+  }, [repaintSelection]);
+
+  const clearSelection = useCallback(() => {
+    cancelScheduledSelectionRepaint();
+    const selection = selectionRef.current;
+    if (!selection) return;
+    selectionRef.current = null;
+    restoreSelection(
+      (data) => stdout.write(data),
+      getFrameLines(),
+      selection,
+      getLastCursorPosition(),
+    );
+  }, [cancelScheduledSelectionRepaint, stdout]);
+
+  const replaceSelection = useCallback(
+    (selection: SelectionRange) => {
+      const current = selectionRef.current;
+      if (current && selectionRangesEqual(current, selection)) return;
+      clearSelection();
+      selectionRef.current = selection;
+      repaintSelection();
+    },
+    [clearSelection, repaintSelection],
+  );
+
+  const cancelWheelScroll = useCallback(() => {
+    pendingWheelRowsRef.current = 0;
+    if (wheelImmediateRef.current !== null) {
+      clearImmediate(wheelImmediateRef.current);
+      wheelImmediateRef.current = null;
+    }
+  }, []);
+
+  const flushWheelScroll = useCallback(() => {
+    wheelImmediateRef.current = null;
+    const rows = getTranscriptWheelDrainRows(
+      pendingWheelRowsRef.current,
+      metricsRef.current.viewportRows,
+    );
+    if (rows === 0) return;
+
+    pendingWheelRowsRef.current -= rows;
+    const previous = stateRef.current;
+    const next = scrollTranscriptBy(previous, metricsRef.current, rows);
+    applyScrollState(next);
+
+    if (next.scrollTop === previous.scrollTop) {
+      pendingWheelRowsRef.current = 0;
+      return;
+    }
+    if (
+      rows < 0 &&
+      next.scrollTop === 0 &&
+      pendingWheelRowsRef.current < 0 &&
+      historyLoaderRef.current?.('page')
+    ) {
+      pendingWheelRowsRef.current = 0;
+      return;
+    }
+    if (pendingWheelRowsRef.current !== 0) {
+      wheelImmediateRef.current = setImmediate(flushWheelScroll);
+    }
+  }, [applyScrollState]);
+
+  const scheduleWheelScroll = useCallback(
+    (rows: number) => {
+      pendingWheelRowsRef.current += rows;
+      if (wheelImmediateRef.current !== null) return;
+      // Coalesce a burst of terminal reports without a fixed frame delay.
+      wheelImmediateRef.current = setImmediate(flushWheelScroll);
+    },
+    [flushWheelScroll],
+  );
+
   const measureTranscript = useCallback(() => {
     const viewportRows = viewportRef.current
       ? Math.max(1, Math.floor(measureElement(viewportRef.current).height))
@@ -246,12 +413,171 @@ export function TranscriptView({
   useLayoutEffect(() => {
     if (previousFollowRequestRef.current === followRequestKey) return;
     previousFollowRequestRef.current = followRequestKey;
+    cancelWheelScroll();
+    clearSelection();
+    dragRef.current = null;
     applyScrollState(scrollTranscriptToEnd(metricsRef.current));
-  }, [applyScrollState, followRequestKey]);
+  }, [applyScrollState, cancelWheelScroll, clearSelection, followRequestKey]);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    const viewportRowSpan = (): { top: number; bottom: number } | null => {
+      if (!viewportRef.current) return null;
+      const position = getAbsolutePosition(viewportRef.current);
+      if (!position) return null;
+      const rows = Math.max(1, Math.floor(measureElement(viewportRef.current).height));
+      return { top: position.y + 1, bottom: position.y + rows };
+    };
+
+    const cancelDrag = () => {
+      clearSelection();
+      dragRef.current = null;
+    };
+
+    const toggleToolAt = (x: number, y: number) => {
+      const toggleTool = onToggleToolRef.current;
+      if (!toggleTool) return;
+
+      const cellX = x - 1;
+      const cellY = y - 1;
+      for (const registration of toolRowsRef.current.values()) {
+        if (!registration.expandable || !registration.element.current) continue;
+        const rect = measureElement(registration.element.current);
+        const position = getAbsolutePosition(registration.element.current);
+        if (
+          position &&
+          cellX >= position.x &&
+          cellX < position.x + rect.width &&
+          cellY >= position.y &&
+          cellY < position.y + rect.height
+        ) {
+          toggleTool(registration.id, registration.expanded);
+          break;
+        }
+      }
+    };
+
+    const finishDragSelection = (range: SelectionRange) => {
+      const frameLines = getFrameLines();
+      if (frameLines.length === 0) {
+        clearSelection();
+        onRedrawViewportRef.current?.();
+        return;
+      }
+      const text = extractSelectedText(frameLines, range);
+      if (!text) return;
+      void writeClipboard(text).then((outcome) => {
+        onNotifyRef.current?.(
+          outcome === 'clipboard'
+            ? 'Copied selection to clipboard.'
+            : outcome === 'terminal'
+              ? 'Sent selection to the terminal clipboard.'
+              : 'Selection copy was unavailable.',
+        );
+      });
+    };
+
+    const handleMouseInput = (input: string) => {
+      const events = parseSgrMouseEvents(input);
+      if (events.length === 0) return;
+
+      for (const event of events) {
+        if (event.type === 'wheel') {
+          if (dragRef.current || selectionRef.current) cancelDrag();
+          const rows = event.button === 'wheel-up' ? -MOUSE_WHEEL_ROWS : MOUSE_WHEEL_ROWS;
+          if (rows < 0 && stateRef.current.scrollTop === 0 && historyLoaderRef.current?.('page')) {
+            continue;
+          }
+          scheduleWheelScroll(rows);
+          continue;
+        }
+
+        if (event.shift) {
+          if (event.type === 'press') cancelDrag();
+          continue;
+        }
+        if (event.button !== 'left') continue;
+
+        if (event.type === 'press') {
+          clearSelection();
+          dragRef.current = null;
+          const span = viewportRowSpan();
+          if (!span || event.y < span.top || event.y > span.bottom) continue;
+          dragRef.current = {
+            anchor: { x: event.x, y: event.y },
+            focus: { x: event.x, y: event.y },
+            dragged: false,
+          };
+          continue;
+        }
+
+        const drag = dragRef.current;
+        if (!drag) continue;
+
+        if (event.type === 'move') {
+          if (event.x !== drag.anchor.x || event.y !== drag.anchor.y) drag.dragged = true;
+          if (!drag.dragged) continue;
+          const span = viewportRowSpan();
+          const focusY = span ? Math.min(Math.max(event.y, span.top), span.bottom) : event.y;
+          drag.focus = { x: event.x, y: focusY };
+          const range = normalizeSelectionRange(drag.anchor, drag.focus);
+          replaceSelection(range);
+          continue;
+        }
+
+        if (event.type !== 'release') continue;
+        dragRef.current = null;
+        const moved = drag.dragged || event.x !== drag.anchor.x || event.y !== drag.anchor.y;
+        const span = viewportRowSpan();
+        const focusY = span ? Math.min(Math.max(event.y, span.top), span.bottom) : event.y;
+        drag.focus = { x: event.x, y: focusY };
+        if (!moved) {
+          toggleToolAt(event.x, event.y);
+          continue;
+        }
+        const range = normalizeSelectionRange(drag.anchor, drag.focus);
+        replaceSelection(range);
+        finishDragSelection(range);
+      }
+    };
+
+    const unsubscribeFrameUpdates = subscribeToFrameUpdates(scheduleSelectionRepaint);
+    internal_eventEmitter.on('input', handleMouseInput);
+    return () => {
+      unsubscribeFrameUpdates();
+      internal_eventEmitter.removeListener('input', handleMouseInput);
+      cancelWheelScroll();
+      if (dragRef.current || selectionRef.current) cancelDrag();
+    };
+  }, [
+    cancelWheelScroll,
+    clearSelection,
+    internal_eventEmitter,
+    isActive,
+    replaceSelection,
+    scheduleSelectionRepaint,
+    scheduleWheelScroll,
+  ]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      clearSelection();
+      dragRef.current = null;
+    };
+    stdout.on('resize', handleResize);
+    return () => {
+      stdout.off('resize', handleResize);
+    };
+  }, [clearSelection, stdout]);
 
   useInput(
     (input, key) => {
+      const inputWithoutMouse = stripSgrMouseSequences(input);
+      if (inputWithoutMouse !== input && inputWithoutMouse.length === 0) return;
       if (key.eventType === 'release') return;
+      clearSelection();
+      dragRef.current = null;
       const metrics = metricsRef.current;
       let next: TranscriptScrollState | undefined;
 
@@ -289,6 +615,7 @@ export function TranscriptView({
       }
 
       if (next) {
+        cancelWheelScroll();
         applyScrollState(next);
       }
     },
@@ -321,6 +648,7 @@ export function TranscriptView({
           marginTop={-renderedScrollTop}
         >
           <TranscriptContent
+            interactionRegistry={interactionRegistry}
             historyRegistry={historyRegistry}
             viewportStore={viewportStore}
             onLayoutChange={scheduleLayoutMeasure}
