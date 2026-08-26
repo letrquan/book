@@ -25,16 +25,34 @@ export type SelectionGranularity = 'character' | 'word' | 'line';
 /** Characters a terminal treats as part of a word when you double-click one. */
 const WORD_CHARACTER = /[\p{L}\p{N}_\-./\\:@~+]/u;
 
-/** Cells of a rendered line, one entry per display column. */
+/**
+ * Cells of a rendered line, one entry per display column.
+ *
+ * Zero-width code points — combining marks, variation selectors, ZWJ — occupy
+ * no column of their own, so they are folded into the cell they modify rather
+ * than skipped. Dropping them would copy text that differs from what was
+ * highlighted: `café` would come back as `cafe`, and a ZWJ emoji sequence
+ * would come back as its separate parts.
+ */
 function toColumns(line: string): string[] {
   const columns: string[] = [];
+  let owner = -1;
+  let pending = '';
   for (const character of stripAnsi(line)) {
     const width = displayWidth(character);
-    if (width <= 0) continue;
-    columns.push(character);
+    if (width <= 0) {
+      // Attach to the glyph that owns the cell, not to its continuation.
+      if (owner >= 0) columns[owner] += character;
+      else pending += character;
+      continue;
+    }
+    columns.push(pending + character);
+    pending = '';
+    owner = columns.length - 1;
     // A wide glyph owns a trailing cell that belongs to no separate character.
     for (let extra = 1; extra < width; extra++) columns.push('');
   }
+  if (pending && columns.length === 0) columns.push(pending);
   return columns;
 }
 
@@ -79,17 +97,19 @@ export function expandToWord(line: string | undefined, column: number): Selectio
   let anchor = index;
   while (anchor > 0 && columns[anchor] === '') anchor--;
 
-  const target = columns[anchor];
-  const isWord = WORD_CHARACTER.test(target);
-  const matches = (cell: string) => {
-    if (cell === '') return true; // continuation of the glyph before it
-    return isWord ? WORD_CHARACTER.test(cell) : !WORD_CHARACTER.test(cell);
+  const isWord = WORD_CHARACTER.test(columns[anchor]);
+  // A continuation cell is part of its owner, so it belongs to whichever run
+  // the owning glyph belongs to — never to both.
+  const matchesAt = (cell: number) => {
+    let owner = cell;
+    while (owner > 0 && columns[owner] === '') owner--;
+    return WORD_CHARACTER.test(columns[owner]) === isWord;
   };
 
   let start = anchor;
-  while (start > 0 && matches(columns[start - 1])) start--;
+  while (start > 0 && matchesAt(start - 1)) start--;
   let end = anchor + 1;
-  while (end < columns.length && matches(columns[end])) end++;
+  while (end < columns.length && matchesAt(end)) end++;
 
   return { row: 0, startColumn: start + 1, endColumn: end + 1 };
 }
@@ -142,7 +162,10 @@ export function resolveSelectionSpans(
     const startColumn = row === start.y ? Math.min(start.x, width + 1) : 1;
     // The focused cell is part of the selection, so the exclusive end is one past it.
     const endColumn = row === end.y ? Math.min(end.x + 1, width + 1) : width + 1;
-    if (endColumn > startColumn) spans.push({ row, startColumn, endColumn });
+    // Empty rows are kept, not dropped: a blank line between two paragraphs is
+    // part of what was selected, and discarding its span would paste the
+    // paragraphs glued together.
+    spans.push({ row, startColumn, endColumn: Math.max(startColumn, endColumn) });
   }
   return spans;
 }

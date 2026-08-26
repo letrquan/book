@@ -16,9 +16,14 @@ All notable changes to this project are documented in this file.
   triple-click selects the line; dragging after either keeps extending at that granularity.
 
   Releasing a selection copies through OSC 52 *and* the platform clipboard command (`clip.exe`,
-  `pbcopy`, `wl-copy`, `xclip`), taking whichever succeeds, so a terminal that ignores OSC 52 still
-  gets the copy. The highlight repaints only the selected columns, leaving the transcript's colours
-  intact underneath it. Clicking a tool row waits out the double-click window before expanding, so a
+  `pbcopy`, `wl-copy`, `xclip`). Only a command exiting zero is confirmable — OSC 52 has no reply,
+  and tmux without `set-clipboard on` drops it silently — so the two are reported apart rather than
+  claiming a copy that may not have happened. Zero-width code points travel with the cell they
+  modify, so a combining accent or a ZWJ emoji copies as what was highlighted; a blank line inside a
+  selection survives instead of gluing the paragraphs around it together. The highlight repaints
+  only the selected columns, leaving the transcript's colours intact underneath it, and parks the
+  cursor back at the frame's end so a render landing mid-drag cannot erase rows Ink still believes
+  are unchanged. Clicking a tool row waits out the double-click window before expanding, so a
   double-click aimed at a word cannot reflow the transcript under the pointer first. Shift+drag
   still bypasses Book for the terminal's own selection, and every text field keeps stripping mouse
   reports out of the value it accepts.

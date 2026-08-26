@@ -418,10 +418,7 @@ export function TranscriptView({
       pendingToggleRef.current = null;
     };
 
-    const toggleToolAt = (x: number, y: number) => {
-      const toggleTool = onToggleToolRef.current;
-      if (!toggleTool) return;
-
+    const resolveToolAt = (x: number, y: number): string | null => {
       const cellX = x - 1;
       const cellY = y - 1;
       for (const registration of toolRowsRef.current.values()) {
@@ -435,10 +432,10 @@ export function TranscriptView({
           cellY >= position.y &&
           cellY < position.y + rect.height
         ) {
-          toggleTool(registration.id);
-          break;
+          return registration.id;
         }
       }
+      return null;
     };
 
     const finishDragSelection = (drag: DragState) => {
@@ -454,9 +451,13 @@ export function TranscriptView({
       }
       const text = extractSelectedText(frameLines, spans);
       if (!text) return;
-      void writeClipboard(text).then((copied) => {
+      void writeClipboard(text).then((outcome) => {
         onNotifyRef.current?.(
-          copied ? 'Copied selection to clipboard.' : 'Selection copy was unavailable.',
+          outcome === 'clipboard'
+            ? 'Copied selection to clipboard.'
+            : outcome === 'terminal'
+              ? 'Sent selection to the terminal clipboard.'
+              : 'Selection copy was unavailable.',
         );
       });
     };
@@ -538,11 +539,15 @@ export function TranscriptView({
           // Wait out the multi-click window first — expanding a row on the way
           // to a double-click would reflow the transcript under the cursor, and
           // the word selection would then read a cell that had moved.
-          const { x, y } = event;
+          // Resolve the row now, apply it later: a streaming transcript grows
+          // within the window, and hit-testing the stored coordinates when the
+          // timer fires would expand whichever row had moved into that cell.
+          const toolId = resolveToolAt(event.x, event.y);
           cancelPendingToggle();
+          if (!toolId) continue;
           pendingToggleRef.current = setTimeout(() => {
             pendingToggleRef.current = null;
-            toggleToolAt(x, y);
+            onToggleToolRef.current?.(toolId);
           }, MULTI_CLICK_WINDOW_MS);
           continue;
         }

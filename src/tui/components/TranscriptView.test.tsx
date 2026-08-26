@@ -15,7 +15,7 @@ import { setFrameSnapshotForTesting } from '../frame-buffer.js';
 
 const { setTranscriptScrollHintSpy, writeClipboardMock } = vi.hoisted(() => ({
   setTranscriptScrollHintSpy: vi.fn(),
-  writeClipboardMock: vi.fn<(text: string) => Promise<boolean>>(),
+  writeClipboardMock: vi.fn<(text: string) => Promise<'clipboard' | 'terminal' | 'failed'>>(),
 }));
 
 vi.mock('../ink-scroll-renderer.js', () => ({
@@ -282,6 +282,46 @@ describe('TranscriptView', () => {
     expect(onToggleTool).toHaveBeenCalledWith('tool-1');
   });
 
+  it('toggles the row that was clicked, not whatever moved under the cursor', async () => {
+    // The toggle is deferred past the multi-click window; a streaming transcript
+    // grows inside it, so re-hit-testing the stored coordinates when the timer
+    // fires would expand a different row than the one that was clicked.
+    const onToggleTool = vi.fn();
+    const block = (toolId: string) => (
+      <ToolCallBlock
+        toolId={toolId}
+        name="Bash"
+        args={{ command: 'npm test' }}
+        result={toolSuccess('long output '.repeat(100), { toolCallId: toolId })}
+        isExpanded={false}
+        terminalWidth={60}
+        reducedMotion
+      />
+    );
+    const app = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={6} width={60} onToggleTool={onToggleTool}>
+          {block('tool-1')}
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+
+    act(() => app.stdin.write('[<0;4;2M'));
+    act(() => app.stdin.write('[<0;4;2m'));
+    // The transcript grows before the deferred toggle fires.
+    app.rerender(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <TranscriptView height={6} width={60} onToggleTool={onToggleTool}>
+          {block('tool-0')}
+          {block('tool-1')}
+        </TranscriptView>
+      </ThemeContext.Provider>,
+    );
+    await settleMultiClick();
+
+    expect(onToggleTool).toHaveBeenCalledWith('tool-1');
+  });
+
   it('does not toggle a tool row when the click becomes a double-click', async () => {
     const onToggleTool = vi.fn();
     const app = render(
@@ -315,7 +355,7 @@ describe('TranscriptView', () => {
     const onNotify = vi.fn();
     const app = render(view(['A', 'B', 'C', 'D', 'E', 'F'], { onNotify }));
     setFrameSnapshotForTesting('\nC\nD\nE\nF');
-    writeClipboardMock.mockResolvedValueOnce(true);
+    writeClipboardMock.mockResolvedValueOnce('clipboard');
 
     // Press at the first column of "D", drag to the first column of "E".
     act(() => app.stdin.write('\x1b[<0;1;3M'));
@@ -330,7 +370,7 @@ describe('TranscriptView', () => {
   it('copies only the dragged columns, not the whole row', async () => {
     const app = render(view(['A', 'B', 'C', 'D', 'E', 'F']));
     setFrameSnapshotForTesting('\nalpha beta gamma\nD\nE\nF');
-    writeClipboardMock.mockResolvedValueOnce(true);
+    writeClipboardMock.mockResolvedValueOnce('clipboard');
 
     // Columns 7..10 of row 2 — "beta" and nothing around it.
     act(() => app.stdin.write('\x1b[<0;7;2M'));
@@ -344,7 +384,7 @@ describe('TranscriptView', () => {
   it('selects the word under a double-click', async () => {
     const app = render(view(['A', 'B', 'C', 'D', 'E', 'F']));
     setFrameSnapshotForTesting('\nedited src/tui/app.tsx now\nD\nE\nF');
-    writeClipboardMock.mockResolvedValueOnce(true);
+    writeClipboardMock.mockResolvedValueOnce('clipboard');
 
     // Two presses on the same cell inside the multi-click window, mid-path.
     act(() => app.stdin.write('\x1b[<0;10;2M'));

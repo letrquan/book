@@ -496,24 +496,6 @@ export function truncateDisplay(text: string, maxWidth: number, suffix = '…'):
   return out + suffix;
 }
 
-/** Clip ANSI-stripped text to a display-column budget without adding an ellipsis. */
-export function sliceDisplayWidth(text: string, maxWidth: number): string {
-  const limit = Math.max(0, Math.floor(maxWidth));
-  const plain = stripAnsi(text);
-  if (limit === 0) return '';
-  if (displayWidth(plain) <= limit) return plain;
-
-  let width = 0;
-  let out = '';
-  for (const ch of plain) {
-    const chWidth = displayWidth(ch);
-    if (width + chWidth > limit) break;
-    out += ch;
-    width += chWidth;
-  }
-  return out;
-}
-
 /**
  * Split text into chunks that each fit within `maxWidth` display columns.
  *

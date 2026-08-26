@@ -47,7 +47,7 @@ describe('clipboard', () => {
         stdout: { write: (data) => writes.push(data) },
         spawn: createSpawn(calls),
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe('clipboard');
     expect(writes).toEqual([buildOsc52Sequence('hello')]);
     expect(calls).toEqual([{ command: 'clip.exe', args: [], text: 'hello' }]);
   });
@@ -66,15 +66,18 @@ describe('clipboard', () => {
         stdout: { write: () => true },
         spawn: spawnFn,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe('clipboard');
     expect(calls.map((call) => call.command)).toEqual(['wl-copy', 'xclip']);
   });
 
-  it('returns false for empty text without spawning', async () => {
-    await expect(writeClipboard('')).resolves.toBe(false);
+  it('fails for empty text without spawning', async () => {
+    await expect(writeClipboard('')).resolves.toBe('failed');
   });
 
-  it('treats a successful OSC 52 write as a clipboard fallback', async () => {
+  it('reports OSC 52 alone as unconfirmed rather than as a copy', async () => {
+    // OSC 52 has no reply, so emitting it proves nothing: tmux without
+    // set-clipboard on, and terminals where it is opt-in, drop it silently.
+    // Claiming a copy there told the user something untrue.
     const spawnFn = (() => {
       throw new Error('ENOENT');
     }) as unknown as ClipboardWriterDeps['spawn'];
@@ -84,6 +87,23 @@ describe('clipboard', () => {
         stdout: { write: () => true },
         spawn: spawnFn,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe('terminal');
+  });
+
+  it('fails when neither OSC 52 nor a platform command lands', async () => {
+    const spawnFn = (() => {
+      throw new Error('ENOENT');
+    }) as unknown as ClipboardWriterDeps['spawn'];
+    await expect(
+      writeClipboard('hello', {
+        platform: 'linux',
+        stdout: {
+          write: () => {
+            throw new Error('EPIPE');
+          },
+        },
+        spawn: spawnFn,
+      }),
+    ).resolves.toBe('failed');
   });
 });

@@ -282,8 +282,10 @@ where you released. Wide glyphs (CJK, emoji) are never split down the middle, an
 carries no terminal styling.
 
 Releasing a selection copies it through OSC 52 **and** the platform clipboard command (`clip.exe`,
-`pbcopy`, `wl-copy`, `xclip`), taking whichever succeeds — a terminal that ignores OSC 52 still
-gets the copy. Book reports in the transcript whether it landed.
+`pbcopy`, `wl-copy`, `xclip`). Only the command can be confirmed — OSC 52 has no reply, and tmux
+without `set-clipboard on` drops it silently — so Book distinguishes the two in the transcript:
+"Copied selection to clipboard." when a command succeeded, "Sent selection to the terminal
+clipboard." when only OSC 52 went out.
 
 Clicking a tool row waits out the double-click window before expanding, so a double-click aimed at
 a word does not reflow the transcript under the pointer first.

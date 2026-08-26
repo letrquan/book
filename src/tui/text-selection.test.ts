@@ -26,6 +26,15 @@ describe('sliceDisplayRange', () => {
     expect(sliceDisplayRange('日本語', 3, 5)).toBe('本');
   });
 
+  it('keeps zero-width marks with the cell they modify', () => {
+    // Combining marks, variation selectors and ZWJ occupy no column of their
+    // own. Skipping them would copy text that differs from what was on screen.
+    const combining = 'café au lait';
+    expect(sliceDisplayRange(combining, 1, 5)).toBe('café');
+    const warning = '⚠️ done';
+    expect(sliceDisplayRange(warning, 1, 2)).toBe('⚠️');
+  });
+
   it('clamps to the line and returns empty for an inverted range', () => {
     expect(sliceDisplayRange('abc', 1, 99)).toBe('abc');
     expect(sliceDisplayRange('abc', 3, 2)).toBe('');
@@ -79,6 +88,16 @@ describe('resolveSelectionSpans', () => {
     expect(spans[spans.length - 1].row).toBe(3);
   });
 
+  it('keeps a blank row inside a multi-row selection', () => {
+    // Two paragraphs separated by a blank line must not paste glued together.
+    const paragraphs = ['first para', '', 'second para'];
+    const spans = resolveSelectionSpans(paragraphs, { x: 1, y: 1 }, { x: 40, y: 3 });
+    expect(spans).toHaveLength(3);
+    expect(extractSelectedText(paragraphs, spans)).toBe(
+      ['first para', '', 'second para'].join(String.fromCharCode(10)),
+    );
+  });
+
   it('returns nothing for an empty frame', () => {
     expect(resolveSelectionSpans([], { x: 1, y: 1 }, { x: 5, y: 1 })).toEqual([]);
   });
@@ -130,6 +149,13 @@ describe('expandToWord', () => {
     const fromFirst = expandToWord(line, 1);
     const fromSecond = expandToWord(line, 2);
     expect(fromSecond).toEqual(fromFirst);
+  });
+
+  it('does not let a whitespace run swallow half of a wide glyph', () => {
+    // The continuation cell belongs to its owner, never to the run beside it.
+    const line = '漢 next';
+    const span = expandToWord(line, 3);
+    expect(sliceDisplayRange(line, span!.startColumn, span!.endColumn)).toBe(' ');
   });
 
   it('returns null for an empty line', () => {

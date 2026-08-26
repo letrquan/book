@@ -49,12 +49,23 @@ function pipeTextToCommand(
   });
 }
 
+/**
+ * How far a copy actually got.
+ *
+ * `clipboard` is the only confirmed outcome: a platform command exited zero.
+ * OSC 52 has no reply, so emitting it proves nothing — tmux without
+ * `set-clipboard on`, and terminals where the sequence is opt-in, silently
+ * ignore it. Reporting that as success told the user their selection was copied
+ * when it was not, so the two are kept apart.
+ */
+export type ClipboardOutcome = 'clipboard' | 'terminal' | 'failed';
+
 /** Copy through OSC 52 and a best-effort local platform clipboard command. */
 export async function writeClipboard(
   text: string,
   deps: ClipboardWriterDeps = {},
-): Promise<boolean> {
-  if (!text) return false;
+): Promise<ClipboardOutcome> {
+  if (!text) return 'failed';
   const platform = deps.platform ?? process.platform;
   const stdout = deps.stdout ?? process.stdout;
   const spawnFn = deps.spawn ?? spawn;
@@ -67,18 +78,19 @@ export async function writeClipboard(
     // OSC 52 is optional; keep trying the local clipboard command.
   }
 
+  const unconfirmed: ClipboardOutcome = oscWritten ? 'terminal' : 'failed';
   try {
     if (platform === 'win32') {
-      return (await pipeTextToCommand(spawnFn, 'clip.exe', [], text)) || oscWritten;
+      return (await pipeTextToCommand(spawnFn, 'clip.exe', [], text)) ? 'clipboard' : unconfirmed;
     }
     if (platform === 'darwin') {
-      return (await pipeTextToCommand(spawnFn, 'pbcopy', [], text)) || oscWritten;
+      return (await pipeTextToCommand(spawnFn, 'pbcopy', [], text)) ? 'clipboard' : unconfirmed;
     }
-    if (await pipeTextToCommand(spawnFn, 'wl-copy', [], text)) return true;
-    return (
-      (await pipeTextToCommand(spawnFn, 'xclip', ['-selection', 'clipboard'], text)) || oscWritten
-    );
+    if (await pipeTextToCommand(spawnFn, 'wl-copy', [], text)) return 'clipboard';
+    return (await pipeTextToCommand(spawnFn, 'xclip', ['-selection', 'clipboard'], text))
+      ? 'clipboard'
+      : unconfirmed;
   } catch {
-    return oscWritten;
+    return unconfirmed;
   }
 }
