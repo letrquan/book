@@ -381,6 +381,42 @@ describe('TranscriptView', () => {
     expect(writeClipboardMock).toHaveBeenCalledWith('beta');
   });
 
+  it('leaves the selection highlighted after the button is released', async () => {
+    // Releasing copies; it does not deselect. The highlight has to survive the
+    // release the way it does in any other text surface.
+    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F']));
+    setFrameSnapshotForTesting('\nalpha beta gamma\nD\nE\nF');
+    writeClipboardMock.mockResolvedValueOnce('clipboard');
+
+    act(() => app.stdin.write('\x1b[<0;7;2M'));
+    act(() => app.stdin.write('\x1b[<32;10;2M'));
+    const duringDrag = app.stdout.frames.length;
+    act(() => app.stdin.write('\x1b[<0;10;2m'));
+    await flushFrame();
+
+    // The release repaints the inverse-video span rather than clearing it.
+    const afterRelease = app.stdout.frames.slice(duringDrag).join('');
+    expect(afterRelease).toContain('\x1b[7mbeta\x1b[27m');
+  });
+
+  it('drops a persisted selection when the transcript is scrolled', async () => {
+    const app = render(view(['A', 'B', 'C', 'D', 'E', 'F']));
+    setFrameSnapshotForTesting('\nalpha beta gamma\nD\nE\nF');
+    writeClipboardMock.mockResolvedValueOnce('clipboard');
+
+    act(() => app.stdin.write('\x1b[<0;7;2M'));
+    act(() => app.stdin.write('\x1b[<32;10;2M'));
+    act(() => app.stdin.write('\x1b[<0;10;2m'));
+    await flushFrame();
+
+    // Scrolling moves the rows out from under the highlight.
+    const beforeScroll = app.stdout.frames.length;
+    act(() => app.stdin.write('\x15'));
+    await flushFrame();
+
+    expect(app.stdout.frames.slice(beforeScroll).join('')).not.toContain('\x1b[7m');
+  });
+
   it('selects the word under a double-click', async () => {
     const app = render(view(['A', 'B', 'C', 'D', 'E', 'F']));
     setFrameSnapshotForTesting('\nedited src/tui/app.tsx now\nD\nE\nF');

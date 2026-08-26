@@ -287,6 +287,11 @@ without `set-clipboard on` drops it silently — so Book distinguishes the two i
 "Copied selection to clipboard." when a command succeeded, "Sent selection to the terminal
 clipboard." when only OSC 52 went out.
 
+The highlight stays up after you release the button — releasing is what copies, not what
+deselects — and is redrawn after each frame Ink paints, since Ink has no idea it is there. It
+clears when you press again, scroll, or hit Escape, and it drops itself if the lines under it
+change, rather than sitting over text you did not pick.
+
 Clicking a tool row waits out the double-click window before expanding, so a double-click aimed at
 a word does not reflow the transcript under the pointer first.
 

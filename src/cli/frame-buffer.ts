@@ -30,6 +30,31 @@ interface LogUpdateModule {
 let latestFrame = '';
 let lastCursorPosition: FrameCursorPosition | null = null;
 let captureInstalled = false;
+const frameListeners = new Set<() => void>();
+
+function notifyFrameListeners(): void {
+  for (const listener of [...frameListeners]) {
+    try {
+      listener();
+    } catch {
+      // A listener must never take the renderer down with it.
+    }
+  }
+}
+
+/**
+ * Run a listener immediately after Ink paints a frame.
+ *
+ * Anything drawn outside Ink's render loop — a selection highlight — is erased
+ * by the next frame, because Ink has no idea it is there. Listening for the
+ * repaint is what lets such an overlay put itself back.
+ */
+export function subscribeToFrames(listener: () => void): () => void {
+  frameListeners.add(listener);
+  return () => {
+    frameListeners.delete(listener);
+  };
+}
 
 function splitFrame(frame: string): string[] {
   return frame.endsWith('\n') ? frame.slice(0, -1).split('\n') : frame.split('\n');
@@ -70,7 +95,9 @@ export function createFrameCapturingRenderer(
 
   const render = ((output: string) => {
     latestFrame = output;
-    return base(output);
+    const result = base(output);
+    notifyFrameListeners();
+    return result;
   }) as LogUpdateRenderer;
 
   render.clear = () => {
@@ -85,6 +112,7 @@ export function createFrameCapturingRenderer(
   render.sync = (output: string) => {
     latestFrame = output;
     base.sync(output);
+    notifyFrameListeners();
   };
   render.setCursorPosition = (position: unknown) => {
     lastCursorPosition = toCursorPosition(position);

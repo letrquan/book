@@ -23,7 +23,10 @@ All notable changes to this project are documented in this file.
   selection survives instead of gluing the paragraphs around it together. The highlight repaints
   only the selected columns, leaving the transcript's colours intact underneath it, and parks the
   cursor back at the frame's end so a render landing mid-drag cannot erase rows Ink still believes
-  are unchanged. Clicking a tool row waits out the double-click window before expanding, so a
+  are unchanged. The selection stays up after the button is released — releasing copies, it does not
+  deselect — and is redrawn after every frame Ink paints, because Ink does not know it is there. It
+  clears on the next press, on a scroll, and on Escape, and retires itself when the lines beneath it
+  change rather than holding a stale highlight over new text. Clicking a tool row waits out the double-click window before expanding, so a
   double-click aimed at a word cannot reflow the transcript under the pointer first. Shift+drag
   still bypasses Book for the terminal's own selection, and every text field keeps stripping mouse
   reports out of the value it accepts.

@@ -23,7 +23,7 @@ import {
 } from '../transcript-scroll.js';
 import { parseSgrMouseEvents } from '../mouse.js';
 import { writeClipboard } from '../clipboard.js';
-import { getFrameLines, getLastCursorPosition } from '../frame-buffer.js';
+import { getFrameLines, getLastCursorPosition, subscribeToFrames } from '../frame-buffer.js';
 import { paintSelectionSpans, restoreSelectionSpans } from '../selection-highlight.js';
 import {
   extractSelectedText,
@@ -145,6 +145,18 @@ export function TranscriptView({
   const theme = useTheme();
   const { internal_eventEmitter } = useStdin();
   const { stdout } = useStdout();
+  /** Drop a persisted selection and repaint the rows it covered. */
+  const clearSelection = useCallback(() => {
+    const selection = selectionRef.current;
+    if (!selection) return;
+    selectionRef.current = null;
+    restoreSelectionSpans(
+      (data: string) => stdout.write(data),
+      getFrameLines(),
+      selection.spans,
+      getLastCursorPosition(),
+    );
+  }, [stdout]);
   const viewportRef = useRef<DOMElement>(null);
   const contentRef = useRef<DOMElement>(null);
   const metricsRef = useRef(INITIAL_METRICS);
@@ -155,6 +167,17 @@ export function TranscriptView({
   const wheelImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
   const clickRef = useRef<{ x: number; y: number; at: number; count: number } | null>(null);
   const pendingToggleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * A selection that outlived its drag.
+   *
+   * `rows` is what the covered lines looked like when the selection was made.
+   * Ink erases the highlight on every repaint, so it is redrawn after each
+   * frame — but only while those lines still read the same. Once the content
+   * under a selection moves, the selection no longer refers to anything the
+   * user picked, and holding a stale highlight over new text is worse than
+   * dropping it.
+   */
+  const selectionRef = useRef<{ spans: SelectionSpan[]; rows: string[] } | null>(null);
   const layoutMeasureImmediateRef = useRef<ReturnType<typeof setImmediate> | null>(null);
   const onToggleToolRef = useRef(onToggleTool);
   const onNotifyRef = useRef(onNotify);
@@ -398,6 +421,9 @@ export function TranscriptView({
       drag.painted = null;
     };
 
+    const snapshotRows = (spans: readonly SelectionSpan[], frameLines: readonly string[]) =>
+      spans.map((span) => frameLines[span.row - 1] ?? '');
+
     const repaintSelection = (drag: DragState) => {
       const frameLines = getFrameLines();
       const spans = resolveSelectionSpans(frameLines, drag.anchor, drag.focus, drag.granularity);
@@ -441,16 +467,20 @@ export function TranscriptView({
     const finishDragSelection = (drag: DragState) => {
       const frameLines = getFrameLines();
       const spans = resolveSelectionSpans(frameLines, drag.anchor, drag.focus, drag.granularity);
-      if (drag.painted) {
-        restoreSelectionSpans(writeStdout, frameLines, drag.painted, getLastCursorPosition());
-        drag.painted = null;
-      }
+      drag.painted = null;
       if (frameLines.length === 0) {
         onRedrawViewportRef.current?.();
         return;
       }
       const text = extractSelectedText(frameLines, spans);
-      if (!text) return;
+      if (!text) {
+        restoreSelectionSpans(writeStdout, frameLines, spans, getLastCursorPosition());
+        return;
+      }
+      // The highlight stays up after the button is released, the way it does in
+      // any other text surface — releasing is what copies, not what deselects.
+      paintSelectionSpans(writeStdout, frameLines, spans);
+      selectionRef.current = { spans, rows: snapshotRows(spans, frameLines) };
       void writeClipboard(text).then((outcome) => {
         onNotifyRef.current?.(
           outcome === 'clipboard'
@@ -469,6 +499,7 @@ export function TranscriptView({
       for (const event of events) {
         if (event.type === 'wheel') {
           if (dragRef.current) cancelDrag();
+          clearSelection();
           const rows = event.button === 'wheel-up' ? -MOUSE_WHEEL_ROWS : MOUSE_WHEEL_ROWS;
           if (rows < 0 && stateRef.current.scrollTop === 0 && historyLoaderRef.current?.('page')) {
             continue;
@@ -483,6 +514,7 @@ export function TranscriptView({
           const span = viewportRowSpan();
           if (!span || event.y < span.top || event.y > span.bottom) {
             clickRef.current = null;
+            clearSelection();
             continue;
           }
 
@@ -490,6 +522,7 @@ export function TranscriptView({
           // gesture: click, double-click for the word, triple-click for the line.
           // A second press means the first click was not a lone click after all.
           cancelPendingToggle();
+          clearSelection();
           const previous = clickRef.current;
           const now = Date.now();
           const continues =
@@ -555,14 +588,40 @@ export function TranscriptView({
       }
     };
 
+    const restoreSelectionAfterFrame = () => {
+      const selection = selectionRef.current;
+      if (!selection || dragRef.current) return;
+      const frameLines = getFrameLines();
+      const unchanged = selection.spans.every(
+        (span, index) => (frameLines[span.row - 1] ?? '') === selection.rows[index],
+      );
+      if (!unchanged) {
+        // The lines moved out from under it; the selection no longer names
+        // anything the user picked. Drop it rather than highlight new text.
+        selectionRef.current = null;
+        return;
+      }
+      paintSelectionSpans(writeStdout, frameLines, selection.spans);
+    };
+
     internal_eventEmitter.on('input', handleMouseInput);
+    const unsubscribeFromFrames = subscribeToFrames(restoreSelectionAfterFrame);
     return () => {
       internal_eventEmitter.removeListener('input', handleMouseInput);
+      unsubscribeFromFrames();
       cancelWheelScroll();
       cancelPendingToggle();
       if (dragRef.current) cancelDrag();
+      selectionRef.current = null;
     };
-  }, [cancelWheelScroll, internal_eventEmitter, isActive, scheduleWheelScroll, stdout]);
+  }, [
+    cancelWheelScroll,
+    clearSelection,
+    internal_eventEmitter,
+    isActive,
+    scheduleWheelScroll,
+    stdout,
+  ]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -577,6 +636,9 @@ export function TranscriptView({
   useInput(
     (input, key) => {
       if (key.eventType === 'release') return;
+      // Escape clears a selection without consuming the key: it still has to
+      // reach the handlers that cancel a stream or close an overlay.
+      if (key.escape) clearSelection();
       const metrics = metricsRef.current;
       let next: TranscriptScrollState | undefined;
 
@@ -614,6 +676,8 @@ export function TranscriptView({
       }
 
       if (next) {
+        // Scrolling moves the rows out from under the highlight.
+        clearSelection();
         cancelWheelScroll();
         applyScrollState(next);
       }
