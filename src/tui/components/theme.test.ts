@@ -5,6 +5,10 @@ import { join } from 'path';
 import {
   DARK_THEME,
   LIGHT_THEME,
+  CATPPUCCIN_THEME,
+  NORD_THEME,
+  GRUVBOX_THEME,
+  SOLARIZED_DARK_THEME,
   hasLightTerminalBackground,
   listCustomThemes,
   loadCustomTheme,
@@ -65,6 +69,14 @@ describe('theme resolution', () => {
     expect(resolveTheme(dir, 'LIGHT')?.tokens).toBe(LIGHT_THEME);
     expect(resolveTheme(dir, 'auto', '0;15')?.resolvedName).toBe('light');
     expect(resolveTheme(dir, 'auto', '15;0')?.resolvedName).toBe('dark');
+    expect(resolveTheme(dir, 'catppuccin')?.tokens).toBe(CATPPUCCIN_THEME);
+    expect(resolveTheme(dir, 'catppuccin-mocha')?.tokens).toBe(CATPPUCCIN_THEME);
+    expect(resolveTheme(dir, 'mocha')?.tokens).toBe(CATPPUCCIN_THEME);
+    expect(resolveTheme(dir, 'nord')?.tokens).toBe(NORD_THEME);
+    expect(resolveTheme(dir, 'gruvbox')?.tokens).toBe(GRUVBOX_THEME);
+    expect(resolveTheme(dir, 'gruvbox-dark')?.tokens).toBe(GRUVBOX_THEME);
+    expect(resolveTheme(dir, 'solarized-dark')?.tokens).toBe(SOLARIZED_DARK_THEME);
+    expect(resolveTheme(dir, 'solarized')?.tokens).toBe(SOLARIZED_DARK_THEME);
   });
 
   it('lists and resolves project themes', () => {
@@ -98,6 +110,10 @@ describe('built-in editorial themes', () => {
   for (const [name, theme] of [
     ['dark', DARK_THEME],
     ['light', LIGHT_THEME],
+    ['catppuccin', CATPPUCCIN_THEME],
+    ['nord', NORD_THEME],
+    ['gruvbox', GRUVBOX_THEME],
+    ['solarized-dark', SOLARIZED_DARK_THEME],
   ] as const) {
     it(`gives every ${name} role its own hue`, () => {
       const used = new Map<string, string>();

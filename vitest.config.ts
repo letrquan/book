@@ -2,6 +2,9 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    env: {
+      NODE_ENV: 'development',
+    },
     setupFiles: ['./src/test/vitest-setup.ts'],
     exclude: ['**/node_modules/**', '**/dist/**', '**/.claude/**'],
     // Vitest's 5s default is calibrated for a quiet local machine; contended

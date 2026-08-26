@@ -33,6 +33,10 @@ describe('ThemePicker', () => {
 
     expect(frame).toContain('Choose theme');
     expect(frame).toContain('dark');
+    expect(frame).toContain('catppuccin');
+    expect(frame).toContain('nord');
+    expect(frame).toContain('gruvbox');
+    expect(frame).toContain('solarized-dark');
     expect(frame).toContain('(current)');
     expect(frame).toContain('paper-ink');
     expect(frame).toContain('Project theme');

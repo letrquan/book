@@ -19,6 +19,10 @@ const BUILTIN_THEMES = [
   { name: 'dark', description: 'Warm charcoal and muted sage' },
   { name: 'light', description: 'Soft parchment with grounded contrast' },
   { name: 'auto', description: 'Follow the terminal background' },
+  { name: 'catppuccin', description: 'Soothing pastel mocha' },
+  { name: 'nord', description: 'Arctic and glacial slate' },
+  { name: 'gruvbox', description: 'Warm retro earthy dark' },
+  { name: 'solarized-dark', description: 'Engineered low-fatigue teal' },
 ] as const;
 
 const NO_CUSTOM_THEMES: readonly string[] = [];
@@ -83,7 +87,7 @@ export function ThemePicker({
           const isCurrent = option.name === current;
           return (
             <SelectionRow key={option.name} selected={isSelected}>
-              {isSelected ? '›' : ' '} {option.name.padEnd(10)} {option.description}
+              {isSelected ? '›' : ' '} {option.name.padEnd(16)} {option.description}
               {isCurrent ? '  (current)' : ''}
             </SelectionRow>
           );
