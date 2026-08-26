@@ -29,20 +29,137 @@ interface WorkingActivityInput {
   elapsedSeconds: number;
 }
 
-const REASONING_PHASES = [
+/**
+ * Widest a phrase may be, in columns.
+ *
+ * The activity row is one line and the label shares it with an elapsed time and
+ * a keyboard hint — about 50 columns on an 80-column terminal. A phrase is only
+ * the frame; the target inside it (a path, a pattern, a shell command) is the
+ * part the reader is actually waiting to see. `Peeking between the covers of`
+ * spent 29 of those columns on a joke and then truncated the filename it was
+ * introducing. Short phrases are funnier anyway: the gag lands before the eye
+ * has finished the line, and what the run is *doing* survives.
+ */
+export const MAX_PHRASE_WIDTH = 28;
+
+/**
+ * The reasoning phases.
+ *
+ * Shown while the model is thinking and nothing more specific is known, one
+ * every three seconds, in this order — so the openers are the ones a short turn
+ * will actually show. Each line is a small joke about *thinking*, never a claim
+ * about progress the run has not made: `Almost there` would be a lie the
+ * indicator has no way to check.
+ */
+export const REASONING_PHASES = [
   'Pondering the plot twist',
   'Consulting the footnotes',
-  'Untangling a suspicious subplot',
-  'Sharpening a very small pencil',
-  'Rearranging the mental bookshelves',
-  'Following a trail of semicolons',
+  'Untangling a subplot',
+  'Sharpening a tiny pencil',
+  'Rearranging the bookshelves',
+  'Following the semicolons',
   'Asking the rubber duck',
-  'Turning the problem sideways',
-  'Connecting dots in invisible ink',
-  'Negotiating with the edge cases',
+  'Turning it sideways',
+  'Reading between the lines',
+  'Negotiating with edge cases',
   'Chasing a runaway thought',
-  'Preparing a tasteful plot twist',
+  'Auditioning better verbs',
+  'Squinting at the margins',
+  'Arguing with a footnote',
+  'Letting the ink dry',
+  'Rereading that paragraph',
+  'Hunting a missing comma',
+  'Blaming the typesetter',
+  'Checking the index twice',
+  'Dog-earing the good bit',
+  'Filing off a rough edge',
+  'Weighing two adjectives',
+  'Drafting in the margins',
+  'Counting the loose ends',
+  'Consulting the errata',
+  'Retracing the outline',
+  'Second-guessing chapter two',
+  'Plotting the next twist',
 ] as const;
+
+/**
+ * One phrase list per tool.
+ *
+ * Kept in a single catalog rather than inline in the switch so the set can be
+ * read — and width-checked — in one place. Phrases that take a target end where
+ * the target begins, so they read as one clause: `Redlining src/tui/app.tsx`,
+ * `Chewing on npm test`.
+ */
+const TOOL_PHRASES = {
+  read: ['Cracking open', 'Leafing through', 'Skimming', 'Peeking inside'],
+  write: ['Putting ink to', 'Drafting', 'Inking'],
+  applyPatch: ['Patching', 'Stitching an edit into', 'Reworking'],
+  edit: ['Redlining', 'Polishing', 'Rewording', 'Marking up'],
+  notebookEdit: ['Scribbling in', 'Annotating', 'Adding marginalia to'],
+  glob: ['Scanning shelves for', 'Checking spines for', 'Combing the stacks for'],
+  grep: ['Hunting for', 'Combing the lines for', 'Tracking down', 'Grilling the code for'],
+  bash: ['Running', 'Poking the shell with', 'Chewing on'],
+  bashOutput: ['Listening to shell', 'Eavesdropping on shell', 'Checking in on shell'],
+  killShell: ['Quieting shell', 'Hushing shell', 'Pulling the plug on shell'],
+  dismissShell: ['Clearing shell', 'Filing away shell', 'Tidying up shell'],
+  webFetch: ['Fetching', 'Pulling a page from', 'Borrowing ink from'],
+  webSearch: ['Roaming the web for', 'Chasing links for', 'Asking the internet about'],
+  gitStatus: [
+    "Taking the repo's pulse",
+    'Asking Git what changed',
+    'Seeing if Git looks nervous',
+    "Reading the repo's mood",
+  ],
+  gitDiff: ['Reading the red ink', 'Studying the markup', 'Comparing drafts'],
+  gitLog: ['Flipping through history', "Reading the repo's diary", 'Checking old plot twists'],
+  gitCommit: ['Binding the chapter', 'Stamping a bookmark', 'Filing this chapter away'],
+  gitBranch: ["Following Git's branches", 'Climbing the branches', 'Checking other timelines'],
+  todoWrite: ['Redrawing the plan', 'Shuffling the plot points', 'Updating the quest log'],
+  task: ['Handing off a subplot:', 'Sending a side quest:', 'Recruiting help for:'],
+  taskCreate: ['Adding a plot point:', 'Pinning a new quest:', 'Writing a task card:'],
+  taskList: ['Checking the plot points', 'Reviewing the quest log', 'Counting loose ends'],
+  taskGet: ['Opening plot point', 'Checking quest', 'Reading the card for'],
+  taskUpdate: ['Revising plot point', 'Moving quest along', 'Updating the card for'],
+  taskStop: ['Dropping plot point', 'Calling off quest', 'Closing the card for'],
+  invokeSkill: ['Opening the playbook:', 'Equipping', 'Dusting off'],
+  readSkillResource: ['Turning to', 'Opening', 'Consulting'],
+  toolSearch: ['Rummaging the toolbox for', 'Sizing up tools for', 'Hunting a tool for'],
+  askUserQuestion: ['Composing a question', 'Preparing a tiny pop quiz', 'Wording it carefully'],
+  enterPlanMode: [
+    'Outlining the next chapter',
+    'Unrolling the parchment',
+    'Sketching the treasure map',
+  ],
+  exitPlanMode: ['Closing the outline', 'Folding the treasure map', 'Setting the plan in motion'],
+  sessionHistorySearch: [
+    'Flipping back for',
+    'Searching old chapters for',
+    'Checking the recap for',
+  ],
+  sessionHistoryRead: [
+    'Rereading an old chapter',
+    'Catching up on the lore',
+    'Checking last episode',
+  ],
+  agentPlan: ['Planning the handoff', 'Drawing up the roster', 'Casting the chapter'],
+  agentSpawn: ['Commissioning:', 'Handing off:', 'Hiring a ghostwriter:'],
+  agentList: ['Counting the ghostwriters', 'Taking attendance', 'Checking the writers room'],
+  agentGet: ['Checking on agent', 'Asking after agent', 'Looking in on agent'],
+  agentRead: ['Reading back agent', 'Collecting notes from', 'Opening the report from'],
+  agentSend: ['Passing a note:', 'Nudging the agent:', 'Sending word:'],
+  agentWait: ['Waiting on agent', 'Holding for agent', 'Letting agent finish'],
+  agentStop: ['Calling back agent', 'Stopping agent', 'Pulling agent off the job'],
+  agentApply: ['Accepting the patch', 'Taking the draft', 'Folding in the patch'],
+  evidencePublish: ['Filing evidence:', 'Pinning up:', 'Logging the receipt:'],
+  evidenceList: ['Checking the evidence', 'Counting the receipts', 'Reviewing the exhibits'],
+  evidenceReview: ['Weighing the evidence', 'Reading the exhibits', 'Second-opinioning'],
+} as const;
+
+/** Every static phrase list in this module, for the width budget check. */
+export const ACTIVITY_PHRASE_LISTS: readonly (readonly string[])[] = [
+  REASONING_PHASES,
+  ...Object.values(TOOL_PHRASES),
+];
 
 function stringArg(args: Record<string, unknown>, ...names: string[]): string | undefined {
   for (const name of names) {
@@ -63,7 +180,8 @@ function cleanTarget(value: string | undefined): string | undefined {
 
 function withTarget(action: string, target: string | undefined): string {
   const clean = cleanTarget(target);
-  return clean ? `${action} ${clean}` : action;
+  if (!clean) return action.endsWith(':') ? action.slice(0, -1) : action;
+  return `${action} ${clean}`;
 }
 
 function humanizeToolName(name: string): string {
@@ -91,14 +209,15 @@ export function toolActivityText(call: ToolCall): string {
   const canonicalName = canonicalToolName(call.name);
   const args = call.arguments;
   const primary = getPrimaryArg(args);
+  const filePath = stringArg(args, 'filePath', 'file_path', 'path') ?? primary;
   const mcp = parseMcpToolName(call.name);
 
   if (mcp) {
     return withTarget(
       pickPhrase(call, [
-        `Calling on ${mcp.server} to`,
         `Asking ${mcp.server} to`,
-        `Waking ${mcp.server} up to`,
+        `Nudging ${mcp.server} to`,
+        `Calling on ${mcp.server} to`,
       ]),
       mcp.tool,
     );
@@ -106,208 +225,137 @@ export function toolActivityText(call: ToolCall): string {
 
   switch (canonicalName) {
     case 'Read':
-      return playfulTarget(
-        call,
-        ['Cracking open', 'Leafing through', 'Peeking between the covers of'],
-        stringArg(args, 'filePath', 'file_path', 'path') ?? primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.read, filePath);
     case 'Write':
-      return playfulTarget(
-        call,
-        ['Putting ink to', 'Drafting a fresh page in', 'Filling the blank page in'],
-        stringArg(args, 'filePath', 'file_path', 'path') ?? primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.write, filePath);
     case 'ApplyPatch':
-      return playfulTarget(
-        call,
-        ['Applying a patch to', 'Reworking', 'Updating'],
-        'workspace files',
-      );
+      // `getPrimaryArg` digs the touched file out of the `*** Update File:`
+      // envelope, so the row can name it instead of saying `workspace files`.
+      return playfulTarget(call, TOOL_PHRASES.applyPatch, primary);
     case 'Edit':
     case 'MultiEdit':
-      return playfulTarget(
-        call,
-        ['Redlining', 'Polishing the prose in', 'Rewriting a stubborn paragraph in'],
-        stringArg(args, 'filePath', 'file_path', 'path') ?? primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.edit, filePath);
     case 'NotebookEdit':
       return playfulTarget(
         call,
-        ['Scribbling in notebook', 'Adding marginalia to', 'Annotating the notebook'],
+        TOOL_PHRASES.notebookEdit,
         stringArg(args, 'notebook_path', 'path') ?? primary,
       );
     case 'Glob':
-      return playfulTarget(
-        call,
-        ['Scanning the shelves for', 'Checking every book spine for', 'Roaming the stacks for'],
-        stringArg(args, 'pattern') ?? primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.glob, stringArg(args, 'pattern') ?? primary);
     case 'Grep':
-      return playfulTarget(
-        call,
-        ['Hunting between the lines for', 'Following a trail of', 'Interrogating the code for'],
-        stringArg(args, 'pattern') ?? primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.grep, stringArg(args, 'pattern') ?? primary);
     case 'Bash':
-      return playfulTarget(
-        call,
-        ['Rattling the terminal with', 'Whispering to the shell:', 'Letting the terminal chew on'],
-        primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.bash, primary);
     case 'BashOutput':
-      return playfulTarget(
-        call,
-        ['Listening to shell', 'Eavesdropping on shell', 'Checking what came back from shell'],
-        primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.bashOutput, primary);
     case 'KillShell':
-      return playfulTarget(
-        call,
-        ['Quieting shell', 'Pulling the plug on shell', 'Showing the exit to shell'],
-        primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.killShell, primary);
+    case 'DismissShell':
+      return playfulTarget(call, TOOL_PHRASES.dismissShell, primary);
     case 'WebFetch':
-      return playfulTarget(
-        call,
-        ['Pulling a page from', 'Borrowing a page from', 'Fetching fresh ink from'],
-        stringArg(args, 'url') ?? primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.webFetch, stringArg(args, 'url') ?? primary);
     case 'WebSearch':
-      return playfulTarget(
-        call,
-        [
-          'Roaming the web for',
-          'Consulting the internet oracle about',
-          'Following links in search of',
-        ],
-        stringArg(args, 'query') ?? primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.webSearch, stringArg(args, 'query') ?? primary);
     case 'GitStatus':
-      return pickPhrase(call, [
-        "Taking the repo's pulse",
-        'Checking whether Git looks nervous',
-        'Asking Git what changed',
-      ]);
+      return pickPhrase(call, TOOL_PHRASES.gitStatus);
     case 'GitDiff':
-      return pickPhrase(call, [
-        "Reading the diff's red ink",
-        'Inspecting the editorial marks',
-        'Comparing before and after',
-      ]);
+      return pickPhrase(call, TOOL_PHRASES.gitDiff);
     case 'GitLog':
-      return pickPhrase(call, [
-        'Flipping through Git history',
-        "Reading the repository's diary",
-        'Checking old plot twists',
-      ]);
+      return pickPhrase(call, TOOL_PHRASES.gitLog);
     case 'GitCommit':
-      return pickPhrase(call, [
-        'Binding the changes into a commit',
-        'Stamping a bookmark into Git',
-        'Saving this chapter to history',
-      ]);
+      return pickPhrase(call, TOOL_PHRASES.gitCommit);
     case 'GitBranch':
-      return pickPhrase(call, [
-        "Following Git's branches",
-        'Climbing the branch tree',
-        'Checking alternate timelines',
-      ]);
+      return pickPhrase(call, TOOL_PHRASES.gitBranch);
     case 'TodoWrite':
-      return pickPhrase(call, [
-        'Rewriting the checklist',
-        'Shuffling the plot points',
-        'Updating the quest log',
-      ]);
+      return pickPhrase(call, TOOL_PHRASES.todoWrite);
     case 'Task':
       return playfulTarget(
         call,
-        ['Handing off a subplot:', 'Sending out a side quest:', 'Recruiting help for:'],
+        TOOL_PHRASES.task,
         stringArg(args, 'subject', 'description', 'prompt', 'agent') ?? primary,
       );
     case 'TaskCreate':
-      return playfulTarget(
-        call,
-        ['Adding a plot point:', 'Pinning a new quest:', 'Writing a fresh task card:'],
-        stringArg(args, 'subject') ?? primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.taskCreate, stringArg(args, 'subject') ?? primary);
     case 'TaskList':
-      return pickPhrase(call, [
-        'Checking the plot points',
-        'Reviewing the quest log',
-        'Counting unfinished chapters',
-      ]);
+      return pickPhrase(call, TOOL_PHRASES.taskList);
     case 'TaskGet':
-      return playfulTarget(
-        call,
-        ['Opening plot point', 'Checking quest', 'Reading the task card for'],
-        primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.taskGet, primary);
     case 'TaskUpdate':
-      return playfulTarget(
-        call,
-        ['Revising plot point', 'Moving quest along', 'Updating the task card for'],
-        primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.taskUpdate, primary);
     case 'TaskStop':
-      return playfulTarget(
-        call,
-        ['Dropping plot point', 'Calling off quest', 'Closing the task card for'],
-        primary,
-      );
+      return playfulTarget(call, TOOL_PHRASES.taskStop, primary);
     case 'InvokeSkill':
+      return playfulTarget(call, TOOL_PHRASES.invokeSkill, stringArg(args, 'skill') ?? primary);
+    case 'ReadSkillResource':
       return playfulTarget(
         call,
-        ['Opening the playbook for', 'Equipping the skill', 'Dusting off the manual for'],
-        stringArg(args, 'skill') ?? primary,
+        TOOL_PHRASES.readSkillResource,
+        stringArg(args, 'path') ?? primary,
       );
+    case 'ToolSearch':
+      return playfulTarget(call, TOOL_PHRASES.toolSearch, stringArg(args, 'query') ?? primary);
     case 'AskUserQuestion':
-      return pickPhrase(call, [
-        'Composing a thoughtful question',
-        'Preparing a tiny pop quiz',
-        'Choosing the least annoying question',
-      ]);
+      return pickPhrase(call, TOOL_PHRASES.askUserQuestion);
     case 'EnterPlanMode':
-      return pickPhrase(call, [
-        'Outlining the next chapter',
-        'Unrolling the planning parchment',
-        'Sketching the treasure map',
-      ]);
+      return pickPhrase(call, TOOL_PHRASES.enterPlanMode);
     case 'ExitPlanMode':
-      return pickPhrase(call, [
-        'Closing the outline',
-        'Folding up the treasure map',
-        'Putting the plan into motion',
-      ]);
+      return pickPhrase(call, TOOL_PHRASES.exitPlanMode);
     case 'SessionHistorySearch':
       return playfulTarget(
         call,
-        [
-          'Flipping back through the story for',
-          'Searching earlier chapters for',
-          'Checking the recap for',
-        ],
+        TOOL_PHRASES.sessionHistorySearch,
         stringArg(args, 'query') ?? primary,
       );
     case 'SessionHistoryRead':
-      return pickPhrase(call, [
-        'Re-reading an earlier chapter',
-        'Catching up on the lore',
-        'Consulting the previous episode',
-      ]);
+      return pickPhrase(call, TOOL_PHRASES.sessionHistoryRead);
+    case 'AgentPlan':
+      return pickPhrase(call, TOOL_PHRASES.agentPlan);
+    case 'AgentSpawn':
+      return playfulTarget(
+        call,
+        TOOL_PHRASES.agentSpawn,
+        stringArg(args, 'description', 'agent') ?? primary,
+      );
+    case 'AgentList':
+      return pickPhrase(call, TOOL_PHRASES.agentList);
+    case 'AgentGet':
+      return playfulTarget(call, TOOL_PHRASES.agentGet, stringArg(args, 'agentId') ?? primary);
+    case 'AgentRead':
+      return playfulTarget(call, TOOL_PHRASES.agentRead, stringArg(args, 'agentId') ?? primary);
+    case 'AgentSend':
+      return playfulTarget(call, TOOL_PHRASES.agentSend, stringArg(args, 'message') ?? primary);
+    case 'AgentWait':
+      return playfulTarget(call, TOOL_PHRASES.agentWait, stringArg(args, 'agentId') ?? primary);
+    case 'AgentStop':
+      return playfulTarget(call, TOOL_PHRASES.agentStop, stringArg(args, 'agentId') ?? primary);
+    case 'AgentApply':
+      return pickPhrase(call, TOOL_PHRASES.agentApply);
+    case 'EvidencePublish':
+      // Deliberately no `?? primary` fallback, unlike its siblings: this call's
+      // arguments carry no path or query, so `getPrimaryArg` falls through to
+      // the first string key and hands back the `kind` enum. A row reading
+      // `Filing evidence: blocker` names a category, not the finding; better to
+      // drop the target and let the phrase stand alone.
+      return playfulTarget(call, TOOL_PHRASES.evidencePublish, stringArg(args, 'summary'));
+    case 'EvidenceList':
+      return pickPhrase(call, TOOL_PHRASES.evidenceList);
+    case 'EvidenceReview':
+      return pickPhrase(call, TOOL_PHRASES.evidenceReview);
     default: {
       const toolName = humanizeToolName(canonicalName) || 'a tool';
       if (!primary) {
         return pickPhrase(call, [
           `Trying ${toolName}`,
+          `Running ${toolName}`,
           `Giving ${toolName} a whirl`,
-          `Letting ${toolName} have a go`,
         ]);
       }
       return withTarget(
         pickPhrase(call, [
           `Trying ${toolName} on`,
-          `Giving ${toolName} a whirl on`,
-          `Letting ${toolName} have a go at`,
+          `Running ${toolName} on`,
+          `Pointing ${toolName} at`,
         ]),
         primary,
       );
@@ -379,6 +427,8 @@ export function deriveWorkingActivity({
     };
   }
   if (!isThinking) return null;
+  // The blocked labels stay plain on purpose: the run has stopped and is asking
+  // the reader for something, which is the one moment a joke is in the way.
   if (pendingPlanApproval) {
     return { label: 'Waiting for plan approval', tone: 'waiting', blocked: true };
   }

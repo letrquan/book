@@ -10,6 +10,14 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The spinner keeps its own hue in every built-in theme.** Five of the six themes anchor
+  `shimmerPair` on `assistantAccent` — the agent's own colour — and ease to a lighter tint of it.
+  Nord shipped the pair transposed, so it started on `brand`, and Catppuccin ended its breath on
+  `brand`. Since `brand` is product chrome, and the plan block and the activity row sit on adjacent
+  footer rows, the working line rendered in the plan header's colour: identically in Nord under
+  reduced motion, and once per breath in Catppuccin. Both pairs now follow the convention, and a
+  test over every built-in theme asserts `shimmerPair[0]` is `assistantAccent` and that neither end
+  lands on `brand`, so a new theme cannot reintroduce the collision silently.
 - **Mouse scrolling, clicking, and copying now work together.** Full-screen mode uses SGR
   button-event tracking for three-row wheel scrolling, click-to-expand tool summaries, and
   Claude Code-style drag selection: exact character ranges highlight during a drag, copy to the
@@ -137,6 +145,35 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **The activity wording is shorter, funnier, and covers the whole tool set.** The row is one line
+  and the label shares it with an elapsed time and a keyboard hint, so a phrase is only the frame —
+  the target inside it, a path or a pattern or a shell command, is the part worth reading.
+  `Peeking between the covers of` spent 29 of about 50 columns on the joke and then truncated the
+  filename it was introducing; every phrase now fits a 28-column budget a test enforces, and the
+  short ones land the gag sooner. The reasoning rotation grew from twelve lines to twenty-eight, so
+  a minute of thinking no longer loops, and each line is a joke about thinking rather than a claim
+  of progress the indicator cannot check. Phrases moved out of the switch into one catalog that can
+  be read in a single sitting, and the tools that used to fall through to `Trying agent spawn on…`
+  — the managed-agent and evidence families, `ToolSearch`, `ReadSkillResource`, `DismissShell` —
+  now have their own. `ApplyPatch` names the file its envelope touches instead of saying
+  `workspace files`, and a phrase that ends in a colon drops it when the call carries no target.
+  The blocked labels stay plain: when the run has stopped to ask the reader for something, a joke
+  is in the way.
+- **The plan block and the working line are now told apart at a glance.** The activity row used to
+  set its wording in `text`, the same colour as body prose, plan steps and tool targets, so the one
+  row that is actually changing was the hardest row to pick out: a moving glyph welded to a sentence
+  that looked like every other sentence. The spinner glyph and its wording now share the spinner's
+  own sage — the agent's voice — and read as a single live element, with the elapsed duration and
+  the keyboard hint receding behind it in two quieter weights. Blocked and retrying rows keep their
+  status colours, because those are not the agent talking. The plan takes clay, product chrome's
+  hue, so the two blocks never compete. Its header carries a meter of one cell per step, a scale
+  model of the rows beneath it, and the rows themselves run in three weights: finished steps struck
+  through and receded, queued steps quiet, the step in flight the only one set in full text colour
+  and bold. Plan markers moved off `○`/`◉`, which are East Asian _Ambiguous_ — terminals that draw
+  them two cells wide swallowed the space behind them, so plan rows landed a column left of every
+  other row and butted against their own marker — onto the `✓`/`›`/`·` vocabulary the rest of the
+  TUI already renders one cell wide. A long step now truncates to the content measure instead of
+  wrapping back under the marker column, where the overflow read as a new item.
 - **Zero-Mem is now an explicitly named experiment and is unavailable by default.** Production
   `compactStrategy` accepts only `summary`; the normal `/config` menu, `R` shortcut, and
   `/config compact-strategy` selector no longer expose Zero-Mem. Activation requires strict

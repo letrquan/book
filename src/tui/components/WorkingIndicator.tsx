@@ -11,7 +11,9 @@ import type {
 import { useAnimatedProgress, useGradientSpinner } from '../hooks/useAnimation.js';
 import { useUiClock } from '../ui-clock.js';
 import { useTheme } from '../theme.js';
+import type { ThemeTokens } from '../../types/theme.js';
 import { deriveWorkingActivity } from '../working-activity.js';
+import type { ActivityTone } from '../working-activity.js';
 import { CONTENT_COLUMN, transcriptGrid } from '../layout.js';
 import { formatElapsedDuration } from './SubagentRow.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
@@ -64,20 +66,67 @@ function useElapsedSeconds(active: boolean, disabled: boolean): number {
   return Math.floor(Math.max(0, Date.now() - startedAtRef.current) / 1000);
 }
 
+/**
+ * Fit `[label][elapsed][hint]` into one row.
+ *
+ * The three runs come back separately so each can carry its own colour: the
+ * label is the live agent voice, the elapsed time is quiet metadata, the hint
+ * is quieter still. Elapsed is dropped first when the row is tight — a duration
+ * is the piece a reader can most afford to lose — then the hint, and only then
+ * does the label truncate.
+ */
 function fitActivityLine(
   label: string,
   elapsed: string,
   hint: string,
   maxWidth: number,
-): { label: string; suffix: string } {
-  let suffix = `${elapsed}${hint}`;
+): { label: string; elapsed: string; hint: string } {
   const minimumLabelWidth = Math.min(8, maxWidth);
+  let suffix = { elapsed, hint };
+  const suffixWidth = () => displayWidth(suffix.elapsed) + displayWidth(suffix.hint);
 
-  if (displayWidth(suffix) > maxWidth - minimumLabelWidth) suffix = hint;
-  if (displayWidth(suffix) > maxWidth - minimumLabelWidth) suffix = '';
+  if (suffixWidth() > maxWidth - minimumLabelWidth) suffix = { elapsed: '', hint };
+  if (suffixWidth() > maxWidth - minimumLabelWidth) suffix = { elapsed: '', hint: '' };
 
-  const labelWidth = Math.max(1, maxWidth - displayWidth(suffix));
-  return { label: truncateDisplay(label, labelWidth), suffix };
+  const labelWidth = Math.max(1, maxWidth - suffixWidth());
+  return { label: truncateDisplay(label, labelWidth), ...suffix };
+}
+
+export interface ActivityPalette {
+  /** The spinner glyph, or `◇` when the turn is blocked on the user. */
+  indicator: string;
+  /** The activity wording. */
+  label: string;
+  /** Elapsed time and the keyboard hint behind it. */
+  meta: string;
+}
+
+/**
+ * Colours for the activity row.
+ *
+ * The wording rides the spinner's own colour instead of sitting in `text`. Body
+ * prose, plan steps and tool targets are all `text`, so leaving the activity
+ * there made the one row that is actually *changing* the hardest row to pick
+ * out — a moving glyph welded to a sentence that looked like every other
+ * sentence. Sage is the agent's own voice, the same hue as the glyph in front
+ * of it, so glyph and wording read as one live element: distinct from the plan
+ * (clay) above it and from the transcript around it.
+ *
+ * A blocked or retrying row is not the agent talking, so it keeps its status
+ * colour and the row stops looking live.
+ */
+export function activityPalette(
+  tone: ActivityTone,
+  theme: ThemeTokens,
+  spinnerColor: string,
+): ActivityPalette {
+  if (tone === 'warning') {
+    return { indicator: theme.warning, label: theme.warning, meta: theme.warning };
+  }
+  if (tone === 'waiting') {
+    return { indicator: theme.permission, label: theme.permission, meta: theme.subtle };
+  }
+  return { indicator: spinnerColor, label: spinnerColor, meta: theme.subtle };
 }
 
 export function WorkingIndicator({
@@ -202,28 +251,19 @@ export function WorkingIndicator({
     shouldTrackElapsed && !motionDisabled ? ` · ${formatElapsedDuration(elapsedSeconds)}` : '';
   const line = fitActivityLine(activity?.label ?? '', elapsed, hint, Math.max(1, contentWidth - 2));
   const indicator = activity?.blocked ? '◇' : spinner.frame;
-  const indicatorColor =
-    activity?.tone === 'warning'
-      ? theme.warning
-      : activity?.tone === 'waiting'
-        ? theme.permission
-        : spinner.color;
-  const labelColor =
-    activity?.tone === 'warning'
-      ? theme.warning
-      : activity?.tone === 'waiting'
-        ? theme.permission
-        : theme.text;
+  const tone = activity?.tone ?? 'normal';
+  const palette = activityPalette(tone, theme, spinner.color);
 
   return (
-    <Box width={width}>
-      <Text color={indicatorColor}>{indicator} </Text>
-      <Text color={labelColor} dimColor={activity?.tone !== 'normal'}>
+    <Box width={width} flexWrap="nowrap">
+      <Text color={palette.indicator}>{indicator} </Text>
+      <Text color={palette.label} bold={tone === 'normal'} dimColor={tone !== 'normal'}>
         {line.label}
       </Text>
-      {line.suffix ? (
-        <Text color={activity?.tone === 'warning' ? theme.warning : theme.subtle} dimColor>
-          {line.suffix}
+      {line.elapsed ? <Text color={palette.meta}>{line.elapsed}</Text> : null}
+      {line.hint ? (
+        <Text color={palette.meta} dimColor>
+          {line.hint}
         </Text>
       ) : null}
     </Box>
