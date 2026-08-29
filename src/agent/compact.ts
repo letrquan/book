@@ -1161,6 +1161,21 @@ function validateCheckpoint(
   inherited?: ConversationCheckpointV2,
 ): string | undefined {
   const events = new Map(history.map((message) => [message.id, message]));
+  // A quote must be checked against the same bytes the reducer was shown, which is
+  // `serializeReferencedMessageBody` -- the body that carries reasoning, tool
+  // arguments, tool-result content, and file observations. Checking `content`
+  // alone rejected a faithful quote of a build error as a hallucination, which
+  // costs the one repair attempt and degrades the whole checkpoint. Memoized
+  // because a message with many sources would otherwise re-serialize per source.
+  const referencedBodies = new Map<string, string>();
+  const referencedBody = (message: Message): string => {
+    let body = referencedBodies.get(message.id);
+    if (body === undefined) {
+      body = serializeReferencedMessageBody(message);
+      referencedBodies.set(message.id, body);
+    }
+    return body;
+  };
   const inheritedSources = collectSourceKeys(inherited);
   const inheritedPaths = new Set(
     (inherited?.files ?? []).map((file) => normalizeObservedPath(file.path)),
@@ -1182,7 +1197,7 @@ function validateCheckpoint(
       const eventId = source.eventRef.replace(/^session:\/\/current\/event\//, '');
       const event = events.get(eventId);
       if (!event) return `Checkpoint cites unknown event reference: ${source.eventRef}`;
-      if (source.quote && !(event.contextContent ?? event.content).includes(source.quote)) {
+      if (source.quote && !referencedBody(event).includes(source.quote)) {
         return `Checkpoint quote does not occur in cited event: ${source.eventRef}`;
       }
       if (source.toolResultRef) {

@@ -13,6 +13,13 @@ All notable changes to this project are documented in this file.
   a hook with a side effect (a commit, a notification, a snapshot) was being fired each time for a
   compaction that never happened. The emptiness check now runs first.
 
+- **A checkpoint quoting a build error is no longer rejected as a hallucination.** The reducer is
+  shown each message serialized with its reasoning, tool arguments, tool-result bodies, and file
+  observations, but its quotes were validated against the message's `content` alone. So a faithful
+  quote of the exact thing worth remembering -- a compiler error, a failing assertion, a command's
+  output -- failed validation, burned the single repair attempt, and dropped the whole generation
+  to the degraded fallback. Quotes are now checked against the same bytes the reducer was given.
+
 ### Added
 
 - **A run says what it is doing while it does it (`<BOOK_HOME>/runs/<session>.json`).** Rewritten at

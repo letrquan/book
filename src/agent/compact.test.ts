@@ -632,6 +632,66 @@ describe('runCompact', () => {
     expect(mockedStream).not.toHaveBeenCalled();
   });
 
+  it('accepts a checkpoint quoting tool-result text the reducer was actually shown', async () => {
+    // The reducer prompt serializes tool arguments and tool-result bodies, so a
+    // faithful quote of a build error lives there and not in `content`.
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'fix the build', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'Running the build. '.repeat(3_000),
+        includeInContext: true,
+        timestamp: 0,
+        toolCalls: [{ id: 't1', name: 'Bash', arguments: { command: 'npm run build' } }],
+        toolResults: [toolResult('t1', 'TS2345: Argument of type string is not assignable')],
+      },
+      { id: '3', role: 'user', content: 'and then?', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'done', includeInContext: true, timestamp: 0 },
+    ];
+    mockedStream.mockImplementation(async function* () {
+      yield {
+        type: 'text',
+        content: JSON.stringify({
+          version: 2,
+          generation: 1,
+          state: { summary: 'Build is broken.', status: 'blocked' },
+          constraints: [],
+          files: [],
+          episodes: [
+            {
+              task: 'fix the build',
+              outcome: 'compiler rejected the call',
+              status: 'partial',
+              sources: [
+                {
+                  eventRef: 'session://current/event/2',
+                  quote: 'TS2345: Argument of type string is not assignable',
+                },
+              ],
+            },
+          ],
+          openThreads: [],
+          statistics: {
+            summarizedMessages: 2,
+            retainedMessages: 2,
+            preTokens: 1,
+            postTokens: 1,
+          },
+        }),
+      };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result.status).toBe('compacted');
+    if (result.status === 'compacted') {
+      expect(result.degraded).toBeFalsy();
+      expect(result.checkpoint.episodes[0].sources[0].quote).toContain('TS2345');
+    }
+  });
+
   it('uses a degraded retrieval checkpoint after repeated empty output', async () => {
     mockedStream.mockImplementation(async function* () {
       yield { type: 'text', content: '   ' };
