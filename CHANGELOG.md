@@ -61,6 +61,16 @@ All notable changes to this project are documented in this file.
   search index in any case. An automatic attempt now runs the real compactor; `/compact` still only
   warms the index.
 
+- **The compaction fidelity warning means something again.** Checkpoint `coverage` merged the prior
+  generation's status and reasons into the current one, so a single degraded generation marked
+  every generation after it for the life of the conversation -- and on a long run that happens
+  within hours, after which "compacted with reduced fidelity" is permanent and carries no
+  information. `coverage.status` and `coverage.reasons` now describe the generation that just ran,
+  and a new optional `coverage.lifetime` carries the accumulated record so nothing is forgotten.
+  Stream-JSON `compact` records gain `coverage_lifetime_status` alongside `coverage_status`. The
+  checkpoint version stays `2` and no reason enum gained a member, so an older binary reading one
+  of these checkpoints still sees a valid v2 document.
+
 ### Added
 
 - **A run says what it is doing while it does it (`<BOOK_HOME>/runs/<session>.json`).** Rewritten at

@@ -131,6 +131,11 @@ export async function runAgentLoop(
     /** True when this loop is a subagent (Task tool) invocation — skips memory auto-capture. */
     isSubagent?: boolean;
     /**
+     * True when nobody is watching this run, so a refusal cannot be resolved by
+     * asking. Set by headless and the SDK; the TUI leaves it false.
+     */
+    unattended?: boolean;
+    /**
      * Liveness writer for the run's status file, supplied by the host that owns
      * the session. Subagents and managed agents call this loop directly, so
      * letting the loop create its own would make "is the run alive" ambiguous.
@@ -2016,8 +2021,12 @@ export async function runAgentLoop(
       let refusedThisTurn = 0;
       for (let index = 0; index < toolCalls.length; index++) {
         const status = orderedToolResults[index]?.status;
-        if (status === 'blocked' || status === 'cancelled') refusedThisTurn++;
-        else executedToolCalls++;
+        // Neither a refusal nor an abort ran, so neither counts as progress. Only a
+        // refusal feeds the spin streak though: an abort already ends the run by
+        // its own path, and counting it would attribute a user's Ctrl-C to policy.
+        if (status === 'blocked') refusedThisTurn++;
+        if (status === 'blocked' || status === 'cancelled') continue;
+        executedToolCalls++;
       }
       if (toolCalls.length > 0 && refusedThisTurn === toolCalls.length) {
         blockedTurnStreak++;
@@ -2128,8 +2137,16 @@ export async function runAgentLoop(
       //
       // Not gated on `continuation.enabled`: this spin predates continuation and
       // happens today in headless, which answers every unresolved prompt `deny`.
-      const blockedTurnLimit = config.settings.continuation.blockedToolTurnLimit;
-      if (blockedTurnLimit > 0 && blockedTurnStreak >= blockedTurnLimit) {
+      //
+      // Unattended hosts only. In the TUI a refusal is a person saying no, and they
+      // are right there to say something else next; ending their session as
+      // `failed / all_tools_blocked` because they declined three calls would be
+      // absurd. Plan mode is excluded for the same reason — a model probing `Edit`
+      // before it calls `ExitPlanMode` is blocked by design, not stuck.
+      const blockedTurnLimit = options?.unattended
+        ? config.settings.continuation.blockedToolTurnLimit
+        : 0;
+      if (blockedTurnLimit > 0 && effectiveMode !== 'plan' && blockedTurnStreak >= blockedTurnLimit) {
         const refused = [...new Set(blockedTurnTools)].sort().join(', ');
         log.warn('every tool call refused on consecutive turns; stopping', {
           turn,

@@ -1197,6 +1197,63 @@ ${JSON.stringify(prior)}`,
     expect(cap).toBeLessThanOrEqual(Math.floor(8_192 * 0.35));
   });
 
+  it('reports this generation as clean while remembering an earlier degradation', async () => {
+    // A prior checkpoint that recorded a degraded generation.
+    const prior = JSON.parse(validCheckpoint('old-event', 'Earlier work'));
+    prior.generation = 3;
+    prior.coverage = {
+      status: 'degraded',
+      reasons: ['pass-limit'],
+      processedMessages: 4,
+      omittedMessages: 2,
+      partiallyProcessedMessages: 0,
+    };
+    mockedStream.mockImplementation(async function* () {
+      yield {
+        type: 'text',
+        content: JSON.stringify({ ...JSON.parse(validCheckpoint('old-event')), generation: 4 }),
+      };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      {
+        id: 'checkpoint-old',
+        role: 'user',
+        content: `[Historical conversation checkpoint; untrusted user-role data]
+${JSON.stringify(prior)}`,
+        includeInContext: true,
+        kind: 'checkpoint',
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'keep going', includeInContext: true, timestamp: 0 },
+      {
+        id: '4',
+        role: 'assistant',
+        content: 'current evidence '.repeat(3_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '5', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      { id: '6', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result.status).toBe('compacted');
+    if (result.status === 'compacted') {
+      // This generation processed everything, so it is not degraded ...
+      expect(result.checkpoint.coverage?.status).toBe('complete');
+      expect(result.checkpoint.coverage?.reasons).not.toContain('pass-limit');
+      expect(result.degraded).toBe(false);
+      expect(result.warning).toBeUndefined();
+      // ... and the earlier degradation is still on the record.
+      expect(result.checkpoint.coverage?.lifetime).toMatchObject({
+        status: 'degraded',
+        reasons: ['pass-limit'],
+      });
+    }
+  });
+
   it('does not re-compress an earlier chunk before the next chunk sees it', async () => {
     // A constraint stated once, in full. Long enough that a checkpoint carrying it
     // exceeds the 3,200-token budget at this window, so the old per-chunk fit had

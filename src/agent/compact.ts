@@ -88,15 +88,14 @@ export const conversationCheckpointV2Schema = z.object({
       sources: z.array(sourceRefSchema).min(1),
     }),
   ),
-  files: z
-    .array(
-      z.object({
-        path: z.string().min(1),
-        summary: z.string().min(1),
-        sources: z.array(sourceRefSchema).min(1),
-        observation: z.any().optional(),
-      }),
-    ),
+  files: z.array(
+    z.object({
+      path: z.string().min(1),
+      summary: z.string().min(1),
+      sources: z.array(sourceRefSchema).min(1),
+      observation: z.any().optional(),
+    }),
+  ),
   episodes: z.array(
     z.object({
       task: z.string().min(1),
@@ -118,6 +117,12 @@ export const conversationCheckpointV2Schema = z.object({
     .object({
       status: z.enum(['complete', 'degraded']),
       reasons: z.array(coverageReasonSchema),
+      lifetime: z
+        .object({
+          status: z.enum(['complete', 'degraded']),
+          reasons: z.array(coverageReasonSchema),
+        })
+        .optional(),
       processedMessages: z.number().int().nonnegative(),
       omittedMessages: z.number().int().nonnegative(),
       partiallyProcessedMessages: z.number().int().nonnegative(),
@@ -407,9 +412,9 @@ export async function runCompact(
     postTokens: estimateHistoryTokens(initialRetained),
   };
   const rawValidationHistory = contextHistory.filter((message) => message.kind !== 'checkpoint');
-  const baseReasons = new Set<CompactCoverageReason>(
-    selection.priorCheckpoint?.coverage?.reasons ?? [],
-  );
+  // Seeded empty on purpose. These are the reasons *this* compaction ran into;
+  // the accumulated record is carried forward separately by `mergeCoverage`.
+  const baseReasons = new Set<CompactCoverageReason>();
   const seedCheckpoint = selection.priorCheckpoint
     ? cloneCheckpoint(selection.priorCheckpoint)
     : undefined;
@@ -1130,7 +1135,7 @@ function parseAndValidateCheckpoint(
 ): { ok: true; checkpoint: ConversationCheckpointV2 } | { ok: false; error: string } {
   const parsed = conversationCheckpointV2Schema.safeParse(parseJsonObject(text));
   if (!parsed.success) return { ok: false, error: parsed.error.message };
-  let checkpoint = parsed.data as ConversationCheckpointV2;
+  const checkpoint = parsed.data as ConversationCheckpointV2;
   checkpoint.version = 2;
   checkpoint.generation = generation;
   checkpoint.statistics = { ...statistics };
@@ -1543,15 +1548,21 @@ function mergeCoverage(
 ): ConversationCheckpointCoverage {
   const prior = priorCoverage(priorCheckpoint);
   const currentOmitted = new Set([...current.omittedIds, ...postBudgetOmitted]);
-  const mergedReasons = [...new Set([...prior.reasons, ...reasons])];
+  const generationReasons = [...reasons];
+  // `context-overflow` alone is a retry the run recovered from, not lost coverage.
   const degraded =
-    prior.status === 'degraded' ||
     currentOmitted.size > 0 ||
     current.partialIds.size > 0 ||
-    mergedReasons.some((reason) => reason !== 'context-overflow');
+    generationReasons.some((reason) => reason !== 'context-overflow');
+  const priorLifetime = prior.lifetime ?? { status: prior.status, reasons: prior.reasons };
+  const lifetimeReasons = [...new Set([...priorLifetime.reasons, ...generationReasons])];
   return {
     status: degraded ? 'degraded' : 'complete',
-    reasons: mergedReasons,
+    reasons: generationReasons,
+    lifetime: {
+      status: priorLifetime.status === 'degraded' || degraded ? 'degraded' : 'complete',
+      reasons: lifetimeReasons,
+    },
     processedMessages: prior.processedMessages + current.processedIds.size,
     omittedMessages: prior.omittedMessages + currentOmitted.size,
     partiallyProcessedMessages: prior.partiallyProcessedMessages + current.partialIds.size,

@@ -225,18 +225,19 @@ export class RunStatusWriter {
   installCrashHandlers(): () => void {
     if (this.crashHandlerInstalled) return () => {};
     this.crashHandlerInstalled = true;
-    const onException = (error: unknown): void => {
-      this.recordCrash(error instanceof Error ? error.message : String(error));
-    };
+    // ONLY `exit`. Registering an `uncaughtException` or `unhandledRejection`
+    // listener REPLACES Node's default print-and-exit(1) with whatever the listener
+    // does — and a listener that merely records would swallow the fault, leave the
+    // awaited chain unsettled so this writer's own disposer never runs, and let the
+    // process drain and exit 0. A supervisor polling for a terminal outcome would
+    // read a hard crash as success. Node fires `exit` during its default death
+    // anyway, so this handler alone already captures the record, at no cost to the
+    // exit code.
     const onExit = (): void => {
       this.recordCrash('The process exited before the run reached a terminal outcome.');
     };
-    process.on('uncaughtException', onException);
-    process.on('unhandledRejection', onException);
     process.on('exit', onExit);
     return () => {
-      process.off('uncaughtException', onException);
-      process.off('unhandledRejection', onException);
       process.off('exit', onExit);
       this.crashHandlerInstalled = false;
     };

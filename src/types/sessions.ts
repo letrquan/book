@@ -217,8 +217,20 @@ export type CompactCoverageReason =
   'pass-limit' | 'context-overflow' | 'invalid-checkpoint' | 'post-budget';
 
 export interface ConversationCheckpointCoverage {
+  /** This generation's coverage. Answers "is the checkpoint I just made sound?" */
   status: 'complete' | 'degraded';
   reasons: CompactCoverageReason[];
+  /**
+   * The accumulated record across every generation of this conversation. Kept
+   * separate because merging it into `status` made the signal saturate: one
+   * degraded generation marked every later one, so within a few hours of a long
+   * run everything read `degraded` and the flag stopped carrying information.
+   * Optional: absent on checkpoints written before the split.
+   */
+  lifetime?: {
+    status: 'complete' | 'degraded';
+    reasons: CompactCoverageReason[];
+  };
   processedMessages: number;
   omittedMessages: number;
   partiallyProcessedMessages: number;

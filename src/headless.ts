@@ -429,6 +429,9 @@ export async function runHeadless(
             modelOverride: commandContext?.modelOverride,
             commands: commandContext ? [commandContext.command] : undefined,
             statusWriter,
+            // No human can resolve a permission prompt here: `permissionRequired`
+            // answers `deny` unconditionally.
+            unattended: true,
           },
         });
       } catch (error) {
@@ -1037,6 +1040,8 @@ function emitCompactBoundary(
     model_calls: result.modelCalls,
     degraded: result.degraded,
     coverage_status: result.checkpoint.coverage?.status ?? 'complete',
+    // This generation's status above; the conversation's accumulated one here.
+    coverage_lifetime_status: result.checkpoint.coverage?.lifetime?.status ?? 'complete',
     coverage: result.checkpoint.coverage,
     warning: result.warning,
   });

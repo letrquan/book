@@ -57,6 +57,9 @@ export const PRICING: Record<string, ModelPricing> = {
  * Characters that may follow a table key inside a longer model id. Requiring one
  * keeps `gpt-5` from claiming `gpt-51`.
  */
+/** `-20260115`, `-2026-01-15`, `.20260115` — a version stamp, not a variant name. */
+const DATED_MODEL_SUFFIX = /^[-.@]\d[\d-]*$/;
+
 const PRICING_KEY_BOUNDARY = new Set(['-', '.', ':', '@', '/', '_']);
 
 export interface ResolvedModelPricing {
@@ -89,6 +92,12 @@ export function resolveModelPricing(
     for (const [key, rate] of Object.entries(table)) {
       if (key.length >= model.length || !model.startsWith(key)) continue;
       if (!PRICING_KEY_BOUNDARY.has(model.charAt(key.length))) continue;
+      // Only a DATE stamp, never a sibling name. `gpt-4o-mini` starts with `gpt-4o`
+      // at a separator boundary, but it is a different, far cheaper model: pricing
+      // it from its prefix replaces an honest `unknown` with an enforced figure
+      // wrong by more than an order of magnitude, which the budget rail then acts
+      // on. A dated re-resolution always continues with digits.
+      if (!DATED_MODEL_SUFFIX.test(model.slice(key.length))) continue;
       if (!best || key.length > best.key.length) best = { key, rate };
     }
     if (best) return best;
