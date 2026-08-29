@@ -1336,15 +1336,21 @@ function makeDeterministicFallback(
         statistics: { ...statistics },
       };
   const sanitized = sanitizeModelText(modelText);
-  checkpoint.version = 2;
-  checkpoint.generation = generation;
+  const limit = Math.max(256, checkpointBudget * 3);
+  const note = sanitized
+    ? `${sanitized} ${RETRIEVAL_WARNING}`
+    : `The summarizer returned no usable structured checkpoint. ${RETRIEVAL_WARNING}`;
+  // A rejected generation is a failure to ADD, not a reason to forget. The
+  // inherited summary is the accumulated narrative of every generation before
+  // this one, and overwriting it with this notice discarded all of it because a
+  // single reducer reply came back unusable -- on a long run the most likely
+  // moment to lose the objective. The note is appended instead, and the inherited
+  // text absorbs the truncation so the retrieval instruction always survives.
+  const inheritedSummary = lastValid?.state.summary.trim();
   checkpoint.state = {
-    summary: truncateText(
-      sanitized
-        ? `${sanitized} ${RETRIEVAL_WARNING}`
-        : `The summarizer returned no usable structured checkpoint. ${RETRIEVAL_WARNING}`,
-      Math.max(256, checkpointBudget * 3),
-    ),
+    summary: inheritedSummary
+      ? `${truncateText(inheritedSummary, Math.max(64, limit - note.length - 2))}\n\n${note}`
+      : truncateText(note, limit),
     status: 'unknown',
   };
   checkpoint.statistics = { ...statistics };

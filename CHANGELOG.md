@@ -27,6 +27,14 @@ All notable changes to this project are documented in this file.
   every inherited fact in it was discarded. The cap is now a host trim applied before validation,
   keeping the newest entries.
 
+- **One bad reducer reply no longer erases the objective.** When a generation could not be parsed,
+  the deterministic fallback cloned the prior checkpoint -- keeping its constraints, files and
+  episodes -- and then overwrote `state.summary` with a notice, so the accumulated narrative of
+  every generation before it was replaced by the reducer's unusable output. A run compacting
+  repeatedly over days lost what it was doing to a single malformed response. The notice is now
+  appended to the inherited summary, and the inherited text absorbs any truncation so the
+  retrieval instruction always survives.
+
 ### Added
 
 - **A run says what it is doing while it does it (`<BOOK_HOME>/runs/<session>.json`).** Rewritten at

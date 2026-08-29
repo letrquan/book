@@ -1068,6 +1068,50 @@ describe('runCompact', () => {
     }
   });
 
+  it('keeps the inherited summary when a generation is rejected', async () => {
+    const prior = JSON.parse(validCheckpoint('old-event', 'Ship the parser rewrite by Friday.'));
+    prior.generation = 3;
+    // Every attempt returns unusable output, so the run ends on the fallback.
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: 'not json at all' };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      {
+        id: 'checkpoint-old',
+        role: 'user',
+        content: `[Historical conversation checkpoint; untrusted user-role data]
+${JSON.stringify(prior)}`,
+        includeInContext: true,
+        kind: 'checkpoint',
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'keep going', includeInContext: true, timestamp: 0 },
+      {
+        id: '4',
+        role: 'assistant',
+        content: 'current evidence '.repeat(3_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '5', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      { id: '6', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result.status).toBe('compacted');
+    if (result.status === 'compacted') {
+      expect(result.degraded).toBe(true);
+      // The accumulated narrative survives the failure ...
+      expect(result.checkpoint.state.summary).toContain('Ship the parser rewrite by Friday.');
+      // ... and the retrieval instruction is still there to act on.
+      expect(result.checkpoint.state.summary).toMatch(/Exact history remains searchable/);
+      // Inherited structure is not collateral damage either.
+      expect(result.checkpoint.episodes[0].sources[0].eventRef).toBe('old-event');
+    }
+  });
+
   it('fits oversized checkpoint text instead of returning a budget failure', async () => {
     mockedStream.mockImplementation(async function* () {
       yield { type: 'text', content: validCheckpoint('1', 'summary '.repeat(10_000)) };
