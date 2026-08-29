@@ -337,6 +337,22 @@ export async function runCompact(
     return { status: 'skipped', reason: 'too-short', message: 'Not enough messages to compact.' };
   }
 
+  // Everything needed to decide whether there is anything to compact is pure and
+  // cheap, so it runs before the hooks: a compaction that will immediately skip
+  // must not fire the user's PreCompact commands. Only once the work is known to
+  // be real do the hooks get a chance to observe or block it.
+  const contextWindow = resolveContextLimit(config);
+  const recentBudget = Math.min(RECENT_TAIL_MAX_TOKENS, contextWindow * RECENT_TAIL_FRACTION);
+  const selection = selectRecentBundles(contextHistory, recentBudget);
+  const summarizedMessages = selection.summarizedBundles.flat();
+  if (summarizedMessages.length === 0) {
+    return {
+      status: 'skipped',
+      reason: 'too-short',
+      message: 'No older complete turn is available to summarize.',
+    };
+  }
+
   let hookResult: Extract<CompactResult, { status: 'skipped' }> | undefined;
   try {
     hookResult = await runPreCompactHooks(config, options);
@@ -351,10 +367,8 @@ export async function runCompact(
     return { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' };
   }
 
-  const contextWindow = resolveContextLimit(config);
   const reducerConfig = resolveCompactModelConfig(config);
   const reducerProvider = options.provider ?? createProvider(reducerConfig);
-  const recentBudget = Math.min(RECENT_TAIL_MAX_TOKENS, contextWindow * RECENT_TAIL_FRACTION);
   const checkpointBudget = Math.max(
     1,
     Math.floor(
@@ -365,15 +379,6 @@ export async function runCompact(
     ),
   );
   const preTokens = options.preContextTokens ?? estimateHistoryTokens(contextHistory);
-  const selection = selectRecentBundles(contextHistory, recentBudget);
-  const summarizedMessages = selection.summarizedBundles.flat();
-  if (summarizedMessages.length === 0) {
-    return {
-      status: 'skipped',
-      reason: 'too-short',
-      message: 'No older complete turn is available to summarize.',
-    };
-  }
 
   const generation = nextGeneration(contextHistory);
   const initialRetained = selection.retainedBundles.flat();

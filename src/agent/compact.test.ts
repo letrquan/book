@@ -611,6 +611,27 @@ describe('runCompact', () => {
     expect(mockedStream).not.toHaveBeenCalled();
   });
 
+  it('skips a no-op compaction without running the pre-compact hooks', async () => {
+    const config = makeConfig();
+    config.settings.hooks.PreCompact = [
+      { command: `"${process.execPath}" -e "process.exit(0)"`, env: {} },
+    ];
+    const onHookEvent = vi.fn();
+    // Four short turns all fit the retention budget, so nothing is summarized.
+    const shortHistory: Message[] = [
+      { id: '1', role: 'user', content: 'hi', includeInContext: true, timestamp: 0 },
+      { id: '2', role: 'assistant', content: 'hello', includeInContext: true, timestamp: 0 },
+      { id: '3', role: 'user', content: 'ok', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'sure', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(config, shortHistory, { trigger: 'auto', onHookEvent });
+
+    expect(result).toMatchObject({ status: 'skipped', reason: 'too-short' });
+    expect(onHookEvent).not.toHaveBeenCalled();
+    expect(mockedStream).not.toHaveBeenCalled();
+  });
+
   it('uses a degraded retrieval checkpoint after repeated empty output', async () => {
     mockedStream.mockImplementation(async function* () {
       yield { type: 'text', content: '   ' };

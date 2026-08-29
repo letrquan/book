@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A no-op compaction no longer runs the user's `PreCompact` hooks.** Deciding whether there is
+  anything to summarize is pure and cheap, but it ran *after* the hooks — so every compaction
+  attempt that immediately returned `too-short` had already executed whatever shell commands
+  the user configured. On a long run the auto-compaction check fires repeatedly near the threshold, and
+  a hook with a side effect (a commit, a notification, a snapshot) was being fired each time for a
+  compaction that never happened. The emptiness check now runs first.
+
 ### Added
 
 - **A run says what it is doing while it does it (`<BOOK_HOME>/runs/<session>.json`).** Rewritten at
