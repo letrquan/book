@@ -1514,6 +1514,14 @@ export class AgentManager {
           this.persist(record);
         }
       };
+      // A re-driven agent still carries the dead process's root, which nothing
+      // here recreates — so it would run under a freshly minted root with no
+      // budget, unbounded, and invisible to the host's own inclusive total. Join
+      // the live budgeted root instead, when there is an unambiguous one.
+      if (record.rootRunId && !runtime.runAccounting.hasRoot(record.rootRunId)) {
+        const liveRoot = runtime.runAccounting.budgetedRootRunId();
+        if (liveRoot) record.rootRunId = liveRoot;
+      }
       const runContext = createAgentRunContext({
         sessionId: record.parentSessionId ?? `agent:${record.id}`,
         runId: record.runId,

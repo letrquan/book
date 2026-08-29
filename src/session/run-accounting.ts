@@ -17,6 +17,22 @@ type BudgetStatus = AgentRunAccounting['budgetStatus'];
  * the harness eligibility fingerprint, which already discards it and hashes
  * exactly this tuple. Keying on it instead bounds the retained set.
  */
+/** Restored spend across every root, so an aggregate snapshot counts it once each. */
+function mergeCarried(roots: readonly RootState[]): CarriedSpend | undefined {
+  const carried = roots.map((root) => root.carried).filter((value) => value !== undefined);
+  if (carried.length === 0) return undefined;
+  let usage: Usage | null = null;
+  let costUsd: number | null = 0;
+  for (const entry of carried) {
+    if (entry.usage) usage = addUsage(usage, entry.usage);
+    // One unpriceable carry makes the whole aggregate unpriceable, which is the
+    // fail-closed direction for anything a budget is compared against.
+    if (entry.costUsd === null) costUsd = null;
+    else if (costUsd !== null) costUsd += entry.costUsd;
+  }
+  return { usage, costUsd };
+}
+
 /** The single budget shared by these roots, or undefined if they disagree. */
 function distinctBudget(roots: readonly RootState[]): number | undefined {
   const defined = new Set<number>();
@@ -310,11 +326,40 @@ export class RunAccounting {
     return { allowed: true, status: 'within' };
   }
 
+  /** Has a root by this id been started in THIS process? */
+  hasRoot(rootRunId: string): boolean {
+    return this.roots.has(rootRunId);
+  }
+
+  /**
+   * The live budgeted root that work from a dead process should join.
+   *
+   * A managed agent re-driven after a restart still carries the previous
+   * process's `rootRunId`. Nothing recreates that root here, so `startExecution`
+   * would mint it with no `budgetUsd` and `checkBeforeModelCall` would then allow
+   * every call unconditionally — while the host's own gate stayed green, because
+   * the spend never reached its inclusive total either. Undefined when the answer
+   * is ambiguous, so adoption is never a guess.
+   */
+  budgetedRootRunId(): string | undefined {
+    const budgeted = [...this.roots.values()].filter((root) => root.budgetUsd !== undefined);
+    return budgeted.length === 1 ? budgeted[0].rootRunId : undefined;
+  }
+
   snapshotRun(runId: string): AgentRunAccounting | undefined {
     for (const root of this.roots.values()) {
       const execution = root.executions.get(runId);
       if (!execution) continue;
-      return this.makeSnapshot(root, [execution], execution);
+      // The root's `carried` is the OBJECTIVE's restored spend. Passing the whole
+      // root here billed every per-agent `run_end` event with it, so a child that
+      // spent two cents reported the objective's entire prior total as its own
+      // inclusive cost — and `budgetStatus: 'exceeded'` for a child that spent
+      // cents. A single execution's snapshot must describe that execution.
+      return this.makeSnapshot(
+        { rootRunId: root.rootRunId, budgetUsd: root.budgetUsd, executions: root.executions },
+        [execution],
+        execution,
+      );
     }
     return undefined;
   }
@@ -339,6 +384,11 @@ export class RunAccounting {
         // per submitted prompt. Report the cap whenever the defined ones agree, and
         // only fall back to undefined when they genuinely differ.
         budgetUsd: distinctBudget(roots),
+        // Carry the restored spend of every root. Omitting it made
+        // `HeadlessResult.accounting` report `budgetStatus: 'within'` in the same
+        // JSON object as `outcome.reason: 'budget_exceeded'`, so a supervisor
+        // gating on the status restarted a run that had already spent its ceiling.
+        carried: mergeCarried(roots),
         executions: new Map(),
       },
       executions,

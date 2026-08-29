@@ -305,6 +305,25 @@ export type AgentSessionTransitionResult =
 type AgentSessionListener = (snapshot: AgentSessionSnapshot) => void;
 
 /** Shared owner for agent-loop execution, interaction promises, and operation lifetime. */
+/**
+ * Usage written since the last record, so a stream of deltas still sums correctly.
+ *
+ * Clamped at zero per field: a compaction or a re-priced retry can make an
+ * inclusive total move backwards, and a negative delta would silently refund
+ * spend the run actually made.
+ */
+function subtractUsage(total: Usage, already: Usage): Usage {
+  const at = (left: number | undefined, right: number | undefined): number =>
+    Math.max(0, (left ?? 0) - (right ?? 0));
+  return {
+    promptTokens: at(total.promptTokens, already.promptTokens),
+    completionTokens: at(total.completionTokens, already.completionTokens),
+    totalTokens: at(total.totalTokens, already.totalTokens),
+    cacheReadInputTokens: at(total.cacheReadInputTokens, already.cacheReadInputTokens),
+    cacheCreationInputTokens: at(total.cacheCreationInputTokens, already.cacheCreationInputTokens),
+  };
+}
+
 export class AgentSession {
   readonly interactions = new AgentInteractionController();
   readonly operations = new AgentSessionOperations();
@@ -1040,6 +1059,14 @@ export class AgentSession {
        * leave half a plan on disk. The signature check keeps a per-wave callback
        * from appending an identical record on every tool result.
        */
+      /** Inclusive usage already written to the timeline for this run. */
+      let persistedUsage: Usage = {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      };
       let lastPlanSignature = '';
       const persistPlan = (): void => {
         if (!request.timelineStore) return;
@@ -1115,6 +1142,26 @@ export class AgentSession {
         },
         onUsage: (nextUsage, metadata) => {
           usage = nextUsage;
+          // Persist the INCLUSIVE delta, not just this response.
+          //
+          // Managed agents route their usage to the in-memory `RunAccounting` only
+          // (`manager.ts` accumulates onto the agent record) and Task subagents
+          // discard it outright (`subagent.ts` passes `onUsage: () => {}`), so this
+          // seam - the only writer of the `usage` record - persisted root spend
+          // alone. A run that spent $5 at the root and $45 across a fan-out
+          // restored a $5 carry and was authorised the whole fan-out again, which
+          // is precisely the delegated money a budget is supposed to bound.
+          //
+          // `RunAccounting` already tracks every execution under this root in
+          // process, so the honest number is its inclusive total minus whatever has
+          // already been written. Cost is still not stored: it is re-derived from
+          // tokens at bootstrap, deliberately at the most expensive model involved.
+          const inclusive = request.runContext
+            ? runtime.runAccounting.snapshotRoot(request.runContext.rootRunId).inclusiveUsage
+            : null;
+          const recordUsage = inclusive ? subtractUsage(inclusive, persistedUsage) : nextUsage;
+          if (inclusive) persistedUsage = inclusive;
+          if (recordUsage.totalTokens <= 0 && recordUsage.promptTokens <= 0) return;
           // `RunAccounting.roots` is rebuilt with the process, so without a durable
           // record forty restarts is forty independent budget caps. The 'usage'
           // SessionRecord type was already declared with no writers; this is it.
@@ -1126,7 +1173,7 @@ export class AgentSession {
               timestamp: Date.now(),
               data: {
                 version: 1,
-                usage: nextUsage,
+                usage: recordUsage,
                 requestedModel: metadata?.requestedModel,
                 responseModel: metadata?.responseModel,
               },

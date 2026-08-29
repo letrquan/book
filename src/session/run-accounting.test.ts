@@ -348,3 +348,60 @@ describe('a carry that could not be priced', () => {
     });
   });
 });
+
+describe('spend attribution across snapshot kinds', () => {
+  const meta = {
+    provider: 'anthropic',
+    requestedModel: 'claude-sonnet-5',
+    responseModel: 'claude-sonnet-5',
+    responseId: 'r1',
+    status: 'verified',
+  } as unknown as ProviderResponseMetadata;
+  const oneDollar = { promptTokens: 333_334, completionTokens: 0, totalTokens: 333_334 };
+
+  it('does not bill a child with the objective\u2019s restored spend', () => {
+    // `snapshotRun` passed the whole ROOT to `makeSnapshot`, so every per-agent
+    // `run_end` event reported a child that spent cents as having spent the entire
+    // objective's carried total — and `budgetStatus: 'exceeded'` for that child.
+    const accounting = new RunAccounting();
+    accounting.startRoot(context('root-e', 'root-e'), 50);
+    accounting.seedRoot('root-e', { usage: null, costUsd: 49 });
+    accounting.record(context('child-e', 'root-e'), oneDollar, meta);
+
+    const child = accounting.snapshotRun('child-e');
+    expect(child?.inclusiveCostUsd).toBeCloseTo(1, 4);
+    expect(child?.budgetStatus).toBe('within');
+  });
+
+  it('counts restored spend in the aggregate snapshot', () => {
+    // `snapshotAll` built a synthetic root that omitted `carried`, so
+    // `HeadlessResult.accounting` could report `within` in the same object as
+    // `outcome.reason: 'budget_exceeded'` — and a supervisor gating on the status
+    // restarted a run that had already spent its ceiling.
+    const accounting = new RunAccounting();
+    accounting.startRoot(context('root-f', 'root-f'), 50);
+    accounting.seedRoot('root-f', { usage: null, costUsd: 49.5 });
+    accounting.record(context('root-f', 'root-f'), oneDollar, meta);
+
+    const all = accounting.snapshotAll();
+    expect(all.inclusiveCostUsd).toBeCloseTo(50.5, 4);
+    expect(all.budgetStatus).toBe('exceeded');
+  });
+
+  it('lets a re-driven agent join the live budgeted root', () => {
+    // A resumed agent carries the dead process's rootRunId; nothing recreates it,
+    // so it would run with `budgetUsd: undefined` — unbounded, and invisible to
+    // the host's own gate.
+    const accounting = new RunAccounting();
+    accounting.startRoot(context('host-root', 'host-root'), 25);
+    expect(accounting.hasRoot('dead-process-root')).toBe(false);
+    expect(accounting.budgetedRootRunId()).toBe('host-root');
+  });
+
+  it('refuses to guess when more than one budgeted root is live', () => {
+    const accounting = new RunAccounting();
+    accounting.startRoot(context('r1', 'r1'), 25);
+    accounting.startRoot(context('r2', 'r2'), 10);
+    expect(accounting.budgetedRootRunId()).toBeUndefined();
+  });
+});
