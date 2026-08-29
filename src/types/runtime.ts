@@ -177,6 +177,11 @@ export interface AgentConfig {
   provider?: 'anthropic' | 'openai' | 'auto';
   /** Metadata from settings.provider.<id>.models.<model>, if selected. */
   modelInfo?: ProviderModelConfig;
+  /**
+   * Active subscription auth profile id, resolved once at config load. Unset
+   * means API-key auth; see `src/auth/selection.ts`.
+   */
+  authProfile?: string;
   /** Approved memory snapshot loaded once at session start. */
   memoryContext?: LoadedMemoryContext;
 }

@@ -5,7 +5,9 @@ import { collectAgentDiagnostics } from '../agents/diagnostics.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { resolveBookHome } from '../book-home.js';
+import { readCredential } from '../auth/store.js';
 import type { HookEntry } from '../settings.js';
+import type { AgentConfig } from '../types/runtime.js';
 
 /** Characters every supported shell passes through without quoting. */
 const SHELL_SAFE_BARE = /^[A-Za-z0-9_@%+=:,./\\-]+$/;
@@ -45,6 +47,36 @@ function approvalHint(label: string, workspace: string, rest: string): string {
   return command === null
     ? `${label} book trust ${rest} (run it from ${workspace})`
     : `${label} ${command}`;
+}
+
+/**
+ * One line naming what will actually authenticate the next request.
+ *
+ * An active auth profile outranks any API key in the environment - the
+ * transports replace the key headers entirely - so reporting "resolved"
+ * because BOOK_API_KEY happens to be set would name the wrong credential.
+ */
+function describeCredentials(config: AgentConfig): string {
+  if (config.authProfile) {
+    const credential = readCredential(config.authProfile);
+    if (!credential) {
+      return `auth profile "${config.authProfile}" selected, but nothing is logged in - run: book auth login ${config.authProfile}`;
+    }
+    const expiresAt = credential.tokens?.expiresAt;
+    const expiry =
+      expiresAt === undefined
+        ? 'no stated expiry'
+        : expiresAt <= Date.now()
+          ? credential.tokens?.refreshToken
+            ? 'expired, refreshable'
+            : 'expired, not refreshable - run: book auth login ' + config.authProfile
+          : 'valid until ' + new Date(expiresAt).toISOString();
+    const account = credential.tokens?.account;
+    return `auth profile "${config.authProfile}"${account ? ` (${account})` : ''} - ${expiry}`;
+  }
+  return config.apiKey
+    ? 'API key resolved'
+    : 'not resolved - set BOOK_API_KEY, run `book auth login <profile>`, or set provider.<id>.apiKey in settings';
 }
 
 /** The settings files doctor reads, in the order they are layered. */
@@ -112,12 +144,7 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   console.log('Platform:', process.platform, process.arch);
   console.log('Workspace:', config.workspace);
   console.log('Model:', config.model, '(' + config.baseUrl + ')');
-  console.log(
-    'Credentials:',
-    config.apiKey
-      ? 'resolved'
-      : 'not resolved - set BOOK_API_KEY or provider.<id>.apiKey in settings',
-  );
+  console.log('Credentials:', describeCredentials(config));
   console.log();
 
   // Settings layers.

@@ -8,7 +8,9 @@ import {
   SettingsRepository,
 } from '../settings-repository.js';
 import {
+  isAuthSettingPath,
   isExperimentalSettingPath,
+  WORKSPACE_AUTH_SETTINGS_MESSAGE,
   WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE,
 } from '../settings-scope.js';
 
@@ -74,6 +76,10 @@ export async function runConfigCommand(
     }
     if (isExperimentalSettingPath(key)) {
       console.error(WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE);
+      exit(1);
+    }
+    if (isAuthSettingPath(key)) {
+      console.error(WORKSPACE_AUTH_SETTINGS_MESSAGE);
       exit(1);
     }
     const topKey = parts[0];

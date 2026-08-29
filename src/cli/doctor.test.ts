@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { runDoctorCommand } from './doctor.js';
+import { writeCredential } from '../auth/store.js';
 
 // Only the backend probe is stubbed; `sandboxPolicySummary` and everything else
 // stay real. Whether the developer's machine has bubblewrap installed must not
@@ -54,7 +55,10 @@ beforeEach(() => {
   // Doctor is the command a user reaches for when nothing works, so no test here
   // may hand it a credential: clearing the key means every case below also proves
   // the report survives an unconfigured environment.
-  for (const key of ['BOOK_HOME', 'BOOK_API_KEY']) previousEnv[key] = process.env[key];
+  for (const key of ['BOOK_HOME', 'BOOK_API_KEY', 'BOOK_AUTH_PROFILE']) {
+    previousEnv[key] = process.env[key];
+    delete process.env[key];
+  }
   process.env.BOOK_HOME = bookHome;
   delete process.env.BOOK_API_KEY;
 });
@@ -145,8 +149,41 @@ describe('runDoctorCommand credentials', () => {
 
     const output = await doctorOutput();
 
-    expect(output).toContain('Credentials: resolved');
+    expect(output).toContain('Credentials: API key resolved');
     expect(output).not.toContain('test-key');
+  });
+
+  /**
+   * An active auth profile outranks any key in the environment - the transports
+   * replace the key headers outright - so naming the key here would point the
+   * user at the wrong credential when a subscription login is what actually
+   * fails.
+   */
+  it('names the active auth profile rather than a leftover API key', async () => {
+    writeSettings({ enabled: false });
+    process.env.BOOK_API_KEY = 'test-key';
+    process.env.BOOK_AUTH_PROFILE = 'anthropic';
+    writeCredential(
+      'anthropic',
+      {
+        kind: 'oauth',
+        tokens: { accessToken: 'secret-at', expiresAt: Date.now() + 3_600_000, account: 'a@b.c' },
+      },
+      { home: bookHome },
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('auth profile "anthropic" (a@b.c)');
+    expect(output).toContain('valid until');
+    expect(output).not.toContain('secret-at');
+  });
+
+  it('tells the user to log in when the selected profile has no credential', async () => {
+    writeSettings({ enabled: false });
+    process.env.BOOK_AUTH_PROFILE = 'codex';
+
+    expect(await doctorOutput()).toContain('book auth login codex');
   });
 });
 describe('runDoctorCommand project-declared hooks', () => {

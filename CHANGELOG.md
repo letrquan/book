@@ -4,6 +4,56 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Subscription authentication (`book auth login | logout | status`).** Book can now authenticate
+  with a provider subscription over OAuth instead of an API key, through two built-in profiles:
+  `anthropic` (Anthropic transport) and `codex` (OpenAI-compatible transport). The flow is
+  authorization-code with PKCE (S256) and a CSRF `state`, against a listener bound to `127.0.0.1`
+  only that serves exactly one matching callback; a mismatched callback is refused and the flow
+  keeps waiting for the real one. `--manual` skips the listener entirely and takes the redirect URL
+  pasted back, which is the flow that works when the browser is on a different machine from the CLI.
+
+  **Book bundles no vendor client ids.** A client id identifies which application an authorization
+  server releases a subscription token to, so shipping a vendor's first-party id would make every
+  Book user appear to that vendor as that vendor's own official CLI. The id is configuration -
+  `BOOK_AUTH_CLIENT_ID_<PROFILE>` or `auth.profiles.<id>.clientId` - and `book auth login` stops
+  with both of those lines, before it opens a browser or binds a port, when none is set.
+
+  Tokens live in `<BOOK_HOME>/auth.json` at mode `0600`, never in a workspace: a repository can
+  force-add a tracked `.book/settings.local.json` into a clone, so nothing a repository controls may
+  reach an account credential. The `auth` settings block is held to the same rule and read only from
+  a trusted source - `<BOOK_HOME>/settings.json`, an explicit `--settings` file, or the environment.
+  Every field in it decides where an account-wide token is obtained or sent (`profiles.<id>.baseUrl`
+  is the host that receives the Authorization header on every request), so both workspace layers are
+  stripped and `book config set auth.…` refuses rather than writing where it would be ignored. Reads fail closed and writes refuse a store they could not parse,
+  rather than silently discarding a refresh token. Endpoints, scopes, redirect, base URL, default
+  model, and headers are all overridable per profile, and a wholly new profile needs only
+  `authorizeUrl`, `tokenUrl`, and `baseUrl` - enough to point Book at a self-hosted authorization
+  server without a fork.
+
+  Selecting a model through a configured `provider/<id>` entry drops the auth profile: that entry
+  brings its own endpoint and key, and carrying the credential across the switch would send an
+  account-wide bearer token to whatever host it names.
+
+  Which credential a run spends is resolved once, at config load. An explicit `BOOK_AUTH_PROFILE` or
+  `auth.profile` wins (`api-key` pins the run to key auth); otherwise a stored credential is used
+  only when no API key resolved *and* exactly one credential matches the active provider - so adding
+  a login never silently retargets a workspace that already had a working key. An active profile
+  supplies the API base and a default model, and the transports send `Authorization: Bearer <token>`
+  *instead of* the API-key header rather than alongside it, which Anthropic rejects. Access tokens
+  refresh roughly two minutes before expiry, once per profile even across parallel subagents, and are
+  written back so concurrent `book` processes see them. With no profile active, both transports send
+  byte-identical headers to what they sent before.
+
+### Changed
+
+- **`book doctor` names the credential that will actually be used.** It reported
+  `Credentials: resolved` whenever an API key was present, which points at the wrong credential once
+  an auth profile is active - the transports replace the key headers outright. It now reports the
+  active profile, its account label, and its token expiry, or tells the user to run
+  `book auth login <profile>` when the selected profile has nothing stored.
+
 ### Fixed
 
 - **A no-op compaction no longer runs the user's `PreCompact` hooks.** Deciding whether there is

@@ -12,6 +12,8 @@ export default mergeConfig(
         '**/*.contract.test.{ts,tsx}',
         'src/agents/git-isolation.test.ts',
         'src/agents/manager.test.ts',
+        // Binds a real loopback listener, so it shares process-level port state.
+        'src/auth/loopback.test.ts',
         'src/jobs/shell-manager.test.ts',
         'src/rewind/snapshot-store.test.ts',
         'src/settings-cli.test.ts',

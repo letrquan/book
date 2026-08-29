@@ -7,6 +7,7 @@ import { resolveSettings, migrateLegacyPermissions } from './settings-loader.js'
 import { DEFAULT_SETTINGS, type CompactStrategy } from './settings.js';
 import { loadMemoryContext } from './memory-store.js';
 import { assertHarnessModeAvailable, assertSelectableWorkflow } from './harness/coordinator.js';
+import { selectAuthProfile, type AuthSelection } from './auth/selection.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
@@ -140,8 +141,8 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     settings.maxTokens !== undefined ||
     legacy?.maxTokens !== undefined;
   const effortExplicit = Boolean(process.env.BOOK_EFFORT || settings.effort);
-  const rawModel =
-    options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
+  const explicitModel =
+    options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model;
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
   validateLegacyCompactStrategy(process.env.BOOK_COMPACT_STRATEGY);
   const experimentalZeroMem =
@@ -154,11 +155,28 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   };
   const compactStrategy: CompactStrategy = 'summary';
   const defaultApiKey = process.env.BOOK_API_KEY || '';
-  const defaultBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl || DEFAULT_OPENAI_BASE_URL;
+  const explicitBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl;
+  const defaultProviderOverride = validateProvider(process.env.BOOK_PROVIDER) || 'auto';
+
+  // Selection is resolved before the config is assembled so that an active
+  // subscription profile can supply the endpoint and model the run would
+  // otherwise inherit from Book's OpenAI-shaped defaults. Redemption of the
+  // credential (refresh, headers) happens per request in `auth/resolve.ts`.
+  const auth: AuthSelection | undefined = selectAuthProfile({
+    settings,
+    providerType: defaultProviderOverride,
+    hasApiKey: Boolean(defaultApiKey),
+  });
+
+  const defaultBaseUrl = explicitBaseUrl || auth?.profile.baseUrl || DEFAULT_OPENAI_BASE_URL;
+  const rawModel = explicitModel || auth?.profile.defaultModel || 'gpt-4o';
   const defaultMaxTokens =
     envMaxTokens ?? settings.maxTokens ?? legacy?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const defaultEffort = validateEffort(process.env.BOOK_EFFORT) || settings.effort || 'high';
-  const defaultProvider = validateProvider(process.env.BOOK_PROVIDER) || 'auto';
+  const defaultProvider =
+    defaultProviderOverride !== 'auto'
+      ? defaultProviderOverride
+      : (auth?.profile.providerType ?? 'auto');
 
   let config: AgentConfig = {
     apiKey: defaultApiKey,
@@ -193,13 +211,18 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     memoryContext,
     effort: defaultEffort,
     provider: defaultProvider,
+    authProfile: auth?.profile.id,
   };
 
   config = applyModelDefaults(resolveModelProviderConfig(config, rawModel));
 
-  if (!config.apiKey && !options?.allowMissingApiKey) {
+  if (!config.apiKey && !options?.allowMissingApiKey && !auth?.credentialPresent) {
     throw new Error(
-      'BOOK_API_KEY or provider.<id>.apiKey not set. Set BOOK_API_KEY or use {env:VAR} in settings.',
+      auth
+        ? `Auth profile "${auth.profile.id}" is selected but nothing is logged in. ` +
+            `Run: book auth login ${auth.profile.id}`
+        : 'BOOK_API_KEY or provider.<id>.apiKey not set. Set BOOK_API_KEY, run ' +
+            '`book auth login <profile>`, or use {env:VAR} in settings.',
     );
   }
 
@@ -275,6 +298,11 @@ export function resolveModelProviderConfig(
     modelSelection: rawModel,
     modelInfo: provider.models[model],
     provider: provider.type,
+    // A named provider entry brings its own endpoint and key, so the
+    // subscription credential does not follow the model switch. Carrying it
+    // would send an account-wide bearer token to whatever host that entry
+    // names - a different vendor, a proxy, a gateway.
+    authProfile: undefined,
   };
 }
 
