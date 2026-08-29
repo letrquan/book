@@ -24,10 +24,7 @@ function run(ctx: ToolContext, name: string): Promise<ToolResult> {
 
 describe('Check', () => {
   it('reports a passing command as success', async () => {
-    const result = await run(
-      contextWith({ ok: `node -e "console.log('passed')"` }),
-      'ok',
-    );
+    const result = await run(contextWith({ ok: `node -e "console.log('passed')"` }), 'ok');
     expect(result.status).toBe('success');
   });
 

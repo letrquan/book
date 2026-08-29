@@ -213,16 +213,26 @@ export async function runAgentLoop(
       status: settledOutcome?.status,
     };
     if (!options?.isSubagent) {
-      runHooks(config.settings.hooks.Stop, 'Stop', { ...payload, event: 'Stop' }, {
-        onHookEvent: callbacks.onHookEvent,
-      }).catch((err) => console.warn('Stop hook failed:', err));
+      runHooks(
+        config.settings.hooks.Stop,
+        'Stop',
+        { ...payload, event: 'Stop' },
+        {
+          onHookEvent: callbacks.onHookEvent,
+        },
+      ).catch((err) => console.warn('Stop hook failed:', err));
     }
     // One-shot callers keep the legacy per-loop lifecycle. Multi-turn hosts
     // disable this and fire SessionEnd when the conversation is actually left.
     if (options?.manageSessionHooks !== false) {
-      runHooks(config.settings.hooks.SessionEnd, 'SessionEnd', { ...payload, event: 'SessionEnd' }, {
-        onHookEvent: callbacks.onHookEvent,
-      }).catch((err) => console.warn('SessionEnd hook failed:', err));
+      runHooks(
+        config.settings.hooks.SessionEnd,
+        'SessionEnd',
+        { ...payload, event: 'SessionEnd' },
+        {
+          onHookEvent: callbacks.onHookEvent,
+        },
+      ).catch((err) => console.warn('SessionEnd hook failed:', err));
     }
   };
   const hasPartialOutput = (): boolean => assistantOutputProduced;
@@ -694,7 +704,7 @@ export async function runAgentLoop(
                   hideAgents: options?.hideAgents,
                   toolCatalogSummary: toolSurface.catalogSummary(),
                   planMode: effectiveMode === 'plan',
-          planUnrestored: runtime.planUnrestored,
+                  planUnrestored: runtime.planUnrestored,
                   workflowPolicy: options?.harnessContext?.workflowPolicySection,
                 },
                 runtime.agentContextCache,
@@ -725,7 +735,7 @@ export async function runAgentLoop(
               hideAgents: options?.hideAgents,
               toolCatalogSummary: toolSurface.catalogSummary(),
               planMode: effectiveMode === 'plan',
-          planUnrestored: runtime.planUnrestored,
+              planUnrestored: runtime.planUnrestored,
               workflowPolicy: options?.harnessContext?.workflowPolicySection,
             },
             runtime.agentContextCache,
@@ -1158,16 +1168,16 @@ export async function runAgentLoop(
                           providerCode: streamErrorCode,
                         })
                       : streamErrorCode === 'output_cap'
-                      ? createTerminalOutcome('failed', 'output_cap', {
-                          partialOutput: hasPartialOutput(),
-                          message: streamError,
-                          providerCode: streamErrorCode,
-                        })
-                      : createTerminalOutcome('failed', 'provider_error', {
-                          partialOutput: hasPartialOutput(),
-                          message: streamError,
-                          providerCode: streamErrorCode,
-                        });
+                        ? createTerminalOutcome('failed', 'output_cap', {
+                            partialOutput: hasPartialOutput(),
+                            message: streamError,
+                            providerCode: streamErrorCode,
+                          })
+                        : createTerminalOutcome('failed', 'provider_error', {
+                            partialOutput: hasPartialOutput(),
+                            message: streamError,
+                            providerCode: streamErrorCode,
+                          });
 
         // A transport fault is not a failure of the work. Everything needed to send
         // the turn again is already committed: the partial assistant message was
@@ -2193,9 +2203,9 @@ export async function runAgentLoop(
         signal?.aborted
           ? classifyAbortReason(signal.reason, hasPartialOutput())
           : (continuationOutcome ??
-            createTerminalOutcome('completed', 'normal_completion', {
-              partialOutput: false,
-            })),
+              createTerminalOutcome('completed', 'normal_completion', {
+                partialOutput: false,
+              })),
       );
     }
 

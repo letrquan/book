@@ -25,7 +25,8 @@ export type WorktreeCapacityRefusal =
   | { ok: false; reason: 'worktree_limit'; message: string; active: number; limit: number }
   | { ok: false; reason: 'disk_space'; message: string; freeBytes: number; requiredBytes: number };
 
-export type WorktreeCapacity = { ok: true; active: number; freeBytes: number } | WorktreeCapacityRefusal;
+export type WorktreeCapacity =
+  { ok: true; active: number; freeBytes: number } | WorktreeCapacityRefusal;
 
 export interface WorktreeCapacityOptions {
   worktreeRoot: string;

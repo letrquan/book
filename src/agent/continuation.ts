@@ -72,7 +72,9 @@ function actionableTasks(tasks: readonly AgentTask[]): AgentTask[] {
     if (task.status === 'completed' || task.status === 'deleted') return false;
     return !task.blockedBy.some((id) => {
       const blocker = byId.get(id);
-      return blocker !== undefined && blocker.status !== 'completed' && blocker.status !== 'deleted';
+      return (
+        blocker !== undefined && blocker.status !== 'completed' && blocker.status !== 'deleted'
+      );
     });
   });
 }

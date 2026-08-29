@@ -31,6 +31,7 @@ export function defaultConfig(overrides: Partial<AgentConfig> = {}): AgentConfig
       toolRetries: 0,
       watchdog: false,
       streamReissueAttempts: 0,
+      outputCapContinuations: 0,
     },
     ...overrides,
   };

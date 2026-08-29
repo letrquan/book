@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  createTerminalOutcome,
-  terminalRecovery,
-  type AgentTerminalReason,
-} from './terminal.js';
+import { createTerminalOutcome, terminalRecovery, type AgentTerminalReason } from './terminal.js';
 
 function recoveryFor(reason: AgentTerminalReason) {
   return terminalRecovery(createTerminalOutcome('failed', reason, { partialOutput: false }));

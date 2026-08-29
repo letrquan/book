@@ -615,11 +615,17 @@ describe('stall tolerance while thinking', () => {
         thinkingStallTimeoutMs: 60_000,
       };
       const events = [];
-      for await (const event of chatCompletionStream(config, [{ role: 'user', content: 'x' }], [])) {
+      for await (const event of chatCompletionStream(
+        config,
+        [{ role: 'user', content: 'x' }],
+        [],
+      )) {
         events.push(event);
       }
       // It must not have stalled at the 5s chat ceiling.
-      expect(events.find((e) => e.type === 'error' && e.errorCode === 'stream_stall')).toBeUndefined();
+      expect(
+        events.find((e) => e.type === 'error' && e.errorCode === 'stream_stall'),
+      ).toBeUndefined();
     } finally {
       globalThis.fetch = originalFetch;
     }

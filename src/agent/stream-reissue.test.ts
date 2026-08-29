@@ -22,9 +22,17 @@ function callbacks(
   } as unknown as AgentLoopCallbacks;
 }
 
-function configWith(streamReissueAttempts: number) {
+function configWith(recoveries: number) {
   const config = defaultConfig();
-  config.retry = { ...config.retry, streamReissueAttempts };
+  // Transport faults and output caps draw on separate allowances so a large
+  // generated file cannot drain the budget a real socket drop needs. The fixture
+  // zeroes both, so a test that wants either must ask for it; passing 0 here is
+  // what asserts today's byte-for-byte behaviour.
+  config.retry = {
+    ...config.retry,
+    streamReissueAttempts: recoveries,
+    outputCapContinuations: recoveries,
+  };
   return config;
 }
 
