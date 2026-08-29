@@ -26,7 +26,7 @@ import {
   runCompact,
 } from '../src/agent/compact.js';
 import { runAgentLoop } from '../src/agent/loop.js';
-import { buildCompactFixtureHistory } from '../src/agent/compact-fixture.js';
+import { buildCompactFixtureHistory } from '../src/test/compact-fixture.js';
 import { createProvider, isAnthropicProvider, type Provider } from '../src/provider/index.js';
 import {
   evaluationControlsFromResult,

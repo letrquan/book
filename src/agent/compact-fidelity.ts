@@ -12,7 +12,7 @@
 
 import type { Message } from '../types/messages.js';
 import type { ConversationCheckpointV2 } from '../types/sessions.js';
-import type { PlantedFact } from './compact-fixture.js';
+import type { PlantedFact } from '../test/compact-fixture.js';
 
 /** One generation's observable output, as the harness records it. */
 export interface GenerationRecord {
@@ -50,23 +50,113 @@ export interface FidelityMetrics {
   /** Total reducer calls across every generation. */
   reducerCalls: number;
   /**
-   * Post-compaction request size as a fraction of the loop's preflight
-   * threshold, averaged. The design calls the gap between this and 1.0 the
-   * "dead budget" -- headroom compaction discards and then pays to rebuild.
+   * Post-compaction HISTORY tokens over `contextWindow * PREFLIGHT_FRACTION`,
+   * averaged. Deliberately a proxy, not the loop's own gate: the loop compares
+   * a full request estimate -- system prompt and tool schemas included --
+   * against a threshold computed after subtracting its output reserve, and
+   * neither of those is available here. The absolute value is therefore not
+   * the loop's utilization; what makes it useful is that it is computed the
+   * same way every run, so the design's "dead budget" -- headroom compaction
+   * discards and then pays to rebuild by re-reading files -- is comparable
+   * across changes.
    */
-  postRequestUtilization: number;
+  postHistoryUtilization: number;
 }
 
-/** Mirrors the loop's own preflight fraction; see `loop.ts`. */
+/**
+ * The loop's preflight fraction, duplicated here as the proxy's denominator.
+ * It is a literal on both sides; see `postHistoryUtilization` for why this
+ * metric is not the loop's gate and does not try to be.
+ */
 export const PREFLIGHT_FRACTION = 0.8;
+
+/**
+ * The recorded v2 fidelity baseline, measured 2026-08-29 after Carried Ledger
+ * phase 0 (items 0.1-0.5, 0.7) and audit item I landed.
+ *
+ * Floors, not targets, and they move in one direction only -- upward for
+ * retention and grounding, downward for reducer calls. A change that lowers one
+ * is a fidelity regression and has to be argued for rather than absorbed.
+ *
+ * They live beside the scorer, not in the test, so the provider-backed
+ * benchmark can grade against the same numbers instead of duplicating them.
+ *
+ * Read them before trusting compaction with a long run. Under this corpus's
+ * budget pressure v2 keeps only the newest third of what it was told, it drops
+ * the oldest facts first, and `minVerbatimUserRetention` is **zero**: neither
+ * constraint the user opened the conversation with is still in the checkpoint
+ * after a single generation. That is the decay the Carried Ledger's
+ * author-split exists to stop, and it is why the design puts user text in a
+ * host-owned ledger the fitter may not rewrite.
+ */
+export const FIDELITY_BASELINE = {
+  /** Measured 0.333 -- only the newest third of the planted facts survive. */
+  minFinalRetention: 0.33,
+  /** Measured 0.333 across the eight generations. */
+  minMeanRetention: 0.33,
+  /**
+   * Measured 0.0. Both user constraints are gone by generation 1: they are the
+   * oldest episodes, and the fitter evicts completed episodes oldest-first.
+   * Phase 2 is what changes this; recording the zero is the point.
+   */
+  minVerbatimUserRetention: 0,
+  minSupersessionCorrectness: 1,
+  minGroundedSourceRecall: 1,
+  /** Measured 0.898: most of the retained tail carries something. */
+  minRetentionPrecision: 0.89,
+  /** Measured 8 -- one reducer call per generation, no repairs spent. */
+  maxReducerCalls: 8,
+  /**
+   * Measured 0.144, and a ceiling rather than a floor. This is the design's
+   * "dead budget": compaction targets half the window, but the retention and
+   * checkpoint caps pin the real post-compaction history far below it, and the
+   * difference is headroom the agent is entitled to keep and instead pays to
+   * rebuild by re-reading files. Phase 1's budget rework is expected to raise
+   * this deliberately -- when it does, this constant must be updated
+   * consciously rather than drift.
+   */
+  maxPostHistoryUtilization: 0.15,
+} as const;
 
 function checkpointText(checkpoint: ConversationCheckpointV2): string {
   return JSON.stringify(checkpoint);
 }
 
-/** A fact is retained when every one of its literal terms is present. */
+/**
+ * A fact is retained when every one of its terms appears as a whole token.
+ *
+ * Plain `includes` is wrong here and quietly inflates every retention number:
+ * the corpus's superseded `npm` is a substring of its own replacement `pnpm`,
+ * so it could never be scored as lost while `pnpm` survived, and the accepted
+ * decision `1000` matches inside the token counts that appear in every
+ * checkpoint's `statistics`.
+ */
 export function factRetained(text: string, fact: PlantedFact): boolean {
-  return fact.terms.every((term) => text.includes(term));
+  return fact.terms.every((term) => containsToken(text, term));
+}
+
+function isWordChar(character: string | undefined): boolean {
+  return character !== undefined && /[A-Za-z0-9_]/.test(character);
+}
+
+/**
+ * Whole-token containment. Written by index rather than by regular expression so
+ * a term needs no escaping and a term ending in punctuation, like `query()`, is
+ * matched as readily as a bare word: an edge is only guarded when the term's own
+ * character there is a word character.
+ */
+function containsToken(text: string, term: string): boolean {
+  if (term.length === 0) return true;
+  const guardStart = isWordChar(term[0]);
+  const guardEnd = isWordChar(term[term.length - 1]);
+  for (let from = 0; ;) {
+    const at = text.indexOf(term, from);
+    if (at < 0) return false;
+    const before = at > 0 ? text[at - 1] : undefined;
+    const after = at + term.length < text.length ? text[at + term.length] : undefined;
+    if ((!guardStart || !isWordChar(before)) && (!guardEnd || !isWordChar(after))) return true;
+    from = at + 1;
+  }
 }
 
 /**
@@ -127,7 +217,15 @@ export function retentionPrecisionFor(
   if (retained.length === 0) return 1;
   const useful = retained.filter((message) => {
     if ((message.fileObservations ?? []).length > 0) return true;
-    const text = `${message.contextContent ?? message.content ?? ''}`;
+    // Prose is not the only place a fact lives. A retained turn whose evidence
+    // is a compiler error in a tool result is carrying its weight, and scoring
+    // only `content` understates precision on exactly the tool-heavy corpus
+    // this module added to cover that path.
+    const text = [
+      message.contextContent ?? message.content ?? '',
+      ...(message.toolCalls ?? []).map((call) => JSON.stringify(call.arguments ?? {})),
+      ...(message.toolResults ?? []).map((result) => result.content),
+    ].join(' ');
     return facts.some((fact) => factRetained(text, fact));
   });
   return useful.length / retained.length;
@@ -151,7 +249,7 @@ export function scoreFidelity(
   const supersessionPerGeneration: number[] = [];
   const groundedPerGeneration: number[] = [];
   const precisionPerGeneration: number[] = [];
-  const utilizationPerGeneration: number[] = [];
+  const historyUtilizationPerGeneration: number[] = [];
   let reducerCalls = 0;
 
   for (const record of generations) {
@@ -181,7 +279,7 @@ export function scoreFidelity(
 
     groundedPerGeneration.push(groundedSourceRatio(record.checkpoint, sourceHistory));
     precisionPerGeneration.push(retentionPrecisionFor(record.replacementHistory, facts));
-    utilizationPerGeneration.push(
+    historyUtilizationPerGeneration.push(
       record.postContextTokens / Math.max(1, contextWindow * PREFLIGHT_FRACTION),
     );
     reducerCalls += record.modelCalls;
@@ -203,7 +301,7 @@ export function scoreFidelity(
     groundedSourceRecall: mean(groundedPerGeneration),
     retentionPrecision: mean(precisionPerGeneration),
     reducerCalls,
-    postRequestUtilization: mean(utilizationPerGeneration),
+    postHistoryUtilization: mean(historyUtilizationPerGeneration),
   };
 }
 

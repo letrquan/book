@@ -6,6 +6,7 @@ import {
   supersessionCorrect,
   groundedSourceRatio,
   retentionPrecisionFor,
+  FIDELITY_BASELINE,
   PREFLIGHT_FRACTION,
   type GenerationRecord,
 } from './compact-fidelity.js';
@@ -15,7 +16,7 @@ import {
   buildToolHeavyFixtureHistory,
   buildToolHeavyPlantedFacts,
   type PlantedFact,
-} from './compact-fixture.js';
+} from '../test/compact-fixture.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message } from '../types/messages.js';
 import type { ConversationCheckpointV2 } from '../types/sessions.js';
@@ -36,51 +37,6 @@ const mockedStream = vi.mocked(chatCompletionStream);
 
 const GENERATIONS = 8;
 const CONTEXT_WINDOW = 32_000;
-
-/**
- * The v2 fidelity baseline, recorded 2026-08-29 after Carried Ledger phase 0
- * (items 0.1-0.5, 0.7) and audit item I landed.
- *
- * These are floors, not targets, and they move in one direction only -- upward
- * for retention and grounding, downward for reducer calls. A change that lowers
- * one is a fidelity regression and has to be argued for, not absorbed.
- *
- * Read the numbers before trusting compaction with a long run. Under this
- * corpus's budget pressure v2 keeps only the newest third of what it was told,
- * it drops the oldest facts first, and `minVerbatimUserRetention` is **zero**:
- * by generation 8 neither constraint the user opened the conversation with is
- * still in the checkpoint. That is the decay the Carried Ledger's author-split
- * exists to stop, and it is why the design puts user text in a host-owned
- * ledger the fitter may not rewrite.
- */
-export const FIDELITY_BASELINE = {
-  /** Measured 0.333 -- only the newest third of the planted facts survive. */
-  minFinalRetention: 0.33,
-  /** Measured 0.344 across the eight generations. */
-  minMeanRetention: 0.34,
-  /**
-   * Measured 0.0. Both user constraints are gone by generation 1: they are the
-   * oldest episodes, and the fitter evicts completed episodes oldest-first.
-   * Phase 2 is what changes this; recording the zero is the point.
-   */
-  minVerbatimUserRetention: 0,
-  minSupersessionCorrectness: 1,
-  minGroundedSourceRecall: 1,
-  /** Measured 0.898: most of the retained tail carries something. */
-  minRetentionPrecision: 0.89,
-  /** Measured 8 -- one reducer call per generation, no repairs spent. */
-  maxReducerCalls: 8,
-  /**
-   * Measured 0.142. This one is a ceiling rather than a floor, and it is the
-   * design's "dead budget": compaction targets half the window, but the
-   * retention and checkpoint caps pin the real post-compaction request far
-   * below the loop's preflight threshold, and the difference is headroom the
-   * agent is entitled to keep and instead pays to rebuild by re-reading files.
-   * Phase 1's budget rework is expected to raise this deliberately -- when it
-   * does, this constant must be updated consciously rather than drift.
-   */
-  maxPostRequestUtilization: 0.15,
-} as const;
 
 function makeConfig(): AgentConfig {
   return defaultConfig({
@@ -126,14 +82,22 @@ const EPISODE_PADDING = 'Context recorded during the handoff investigation. '.re
  * retention is a statement about Book's fitting behaviour and nothing else, so
  * the numbers move when compaction changes and stay put when it does not.
  */
-function scriptedReducer(facts: readonly PlantedFact[], history: readonly Message[]): void {
-  let call = 0;
+function scriptedReducer(
+  facts: readonly PlantedFact[],
+  history: readonly Message[],
+  /**
+   * Carried across generations by the caller. Declaring it inside would reset
+   * it on every re-install, and the summary this double claims to rewrite each
+   * generation would in fact be byte-identical throughout.
+   */
+  counter: { call: number },
+): void {
   const observed = new Set(history.map((message) => message.id));
   mockedStream.mockImplementation(async function* (...args: unknown[]) {
     const messages = args[1] as { role: string; content: string }[];
     const prompt = messages.at(-1)?.content ?? '';
     const seed = readSeed(prompt);
-    call++;
+    counter.call++;
 
     // Inherited episodes are re-emitted verbatim, as the prompt instructs.
     // Facts not yet recorded are added from the fixture, each grounded on a
@@ -161,7 +125,7 @@ function scriptedReducer(facts: readonly PlantedFact[], history: readonly Messag
         generation: 1,
         // Rewritten every generation, as a real reducer rewrites its narrative.
         state: {
-          summary: `Handoff state, revision ${call}. ${'Narrative the reducer rewrites each time. '.repeat(60)}`,
+          summary: `Handoff state, revision ${counter.call}. ${'Narrative the reducer rewrites each time. '.repeat(60)}`,
           status: 'active',
         },
         constraints: [],
@@ -206,10 +170,11 @@ async function runGenerations(
 ): Promise<{ records: GenerationRecord[]; sourceHistory: Message[] }> {
   const sourceHistory = [...history];
   const records: GenerationRecord[] = [];
+  const counter = { call: 0 };
   let current = history;
 
   for (let generation = 1; generation <= GENERATIONS; generation++) {
-    scriptedReducer(facts, current);
+    scriptedReducer(facts, current, counter);
     const result = await runCompact(makeConfig(), current, { trigger: 'auto' });
     if (result.status !== 'compacted') {
       throw new Error(`generation ${generation} did not compact: ${result.status}`);
@@ -240,6 +205,23 @@ describe('compaction fidelity scoring', () => {
   it('requires every term of a fact to be present', () => {
     expect(factRetained('alpha and beta', fact({ terms: ['alpha', 'beta'] }))).toBe(true);
     expect(factRetained('alpha only', fact({ terms: ['alpha', 'beta'] }))).toBe(false);
+  });
+
+  it('matches whole tokens, so a term is not found inside a larger word', () => {
+    // The corpus's superseded value `npm` is a substring of its own replacement
+    // `pnpm`; plain containment could never score it lost while pnpm survived.
+    expect(factRetained('use pnpm 9', fact({ terms: ['npm'] }))).toBe(false);
+    expect(factRetained('assume npm for now', fact({ terms: ['npm'] }))).toBe(true);
+    // `1000` occurs inside the token counts present in every checkpoint.
+    expect(factRetained('"preTokens":21000', fact({ terms: ['1000'] }))).toBe(false);
+    expect(factRetained('divide by 1000.', fact({ terms: ['1000'] }))).toBe(true);
+  });
+
+  it('matches a term that ends in punctuation', () => {
+    // A word boundary after `)` would demand a following word character, so a
+    // regex-based rule would never find this fact at all.
+    expect(factRetained('the query() signature', fact({ terms: ['query()'] }))).toBe(true);
+    expect(factRetained('eu-west-1 now', fact({ terms: ['eu-west-1'] }))).toBe(true);
   });
 
   it('counts supersession correct when both values are present', () => {
@@ -342,7 +324,7 @@ describe('compaction fidelity baseline', () => {
   it('keeps facts that live in tool output and file observations', async () => {
     const { history, turns } = buildToolHeavyFixtureHistory();
     const facts = buildToolHeavyPlantedFacts(turns);
-    scriptedReducer(facts, history);
+    scriptedReducer(facts, history, { call: 0 });
 
     const result = await runCompact(makeConfig(), history, { trigger: 'auto' });
 
@@ -375,10 +357,10 @@ describe('compaction fidelity baseline', () => {
     const { records, sourceHistory } = await runGenerations(history, facts);
     const metrics = scoreFidelity(records, facts, sourceHistory, CONTEXT_WINDOW);
 
-    // Not an assertion of goodness -- see `maxPostRequestUtilization`. This is
+    // Not an assertion of goodness -- see `maxPostHistoryUtilization`. This is
     // the number phase 1's budget rework exists to move.
-    expect(metrics.postRequestUtilization).toBeLessThanOrEqual(
-      FIDELITY_BASELINE.maxPostRequestUtilization,
+    expect(metrics.postHistoryUtilization).toBeLessThanOrEqual(
+      FIDELITY_BASELINE.maxPostHistoryUtilization,
     );
     expect(resolveContextLimit(makeConfig())).toBe(CONTEXT_WINDOW);
     expect(PREFLIGHT_FRACTION).toBe(0.8);

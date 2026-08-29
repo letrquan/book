@@ -81,6 +81,12 @@ All notable changes to this project are documented in this file.
   retention of the user's own opening constraints is zero.** Those thresholds are now asserted in
   the unit tier and move upward only.
 
+- **Compaction's enlarged reducer cap can no longer overflow a multi-chunk reduction.** Fitting once
+  at the end means the rolling checkpoint that seeds the next chunk's prompt is bounded by the
+  reducer's output cap rather than by the smaller budget the plan reserved for it, so the two
+  changes together could push a chunk request past the context window. The cap is now bounded by
+  the arithmetic that keeps the worst-case request plus its own output inside the window.
+
 ### Added
 
 - **A run says what it is doing while it does it (`<BOOK_HOME>/runs/<session>.json`).** Rewritten at

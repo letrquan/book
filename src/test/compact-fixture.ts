@@ -1,9 +1,10 @@
 /**
  * The planted-fact corpus that compaction fidelity is scored against.
  *
- * This lives in `src/` rather than `scripts/` so the deterministic CI tier can
- * use it: `scripts/` importing `src/` is established, the reverse is not, and a
- * unit-tier fidelity harness must not depend on a benchmark script.
+ * It lives in `src/test/` -- where CLAUDE.md puts shared fixtures -- rather
+ * than in `scripts/`, so the deterministic CI tier can use it: `scripts/`
+ * importing `src/` is established, the reverse is not, and a unit-tier fidelity
+ * harness must not depend on a benchmark script.
  *
  * The history is the one the provider-backed `npm run eval:compact` benchmark
  * already used, unchanged, so both tiers score the same conversation. What is
