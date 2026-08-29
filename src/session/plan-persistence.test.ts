@@ -228,9 +228,16 @@ describe('carried spend across a restart', () => {
     });
   });
 
-  it('flags a restored total as estimated when a prior process could not price it', () => {
+  it('refuses to treat an unpriceable restored total as zero spend', () => {
+    // This used to report `estimated`, which the budget gate permits — while
+    // `makeSnapshot`'s `carried?.costUsd ?? 0` turned the unknown amount into a $0
+    // baseline. Together they re-armed the cap from zero on every restart and every
+    // submitted prompt, so N restarts authorised N x the budget: precisely the
+    // failure the objective-scoped carry exists to prevent. "We know spend happened
+    // but not how much" has to fail closed, and only ever bites a run that actually
+    // asked for a ceiling — `checkBeforeModelCall` returns early without one.
     const accounting = new RunAccounting();
     accounting.seedRoot('root-2', { usage: null, costUsd: null });
-    expect(accounting.snapshotRoot('root-2')).toMatchObject({ costStatus: 'estimated' });
+    expect(accounting.snapshotRoot('root-2')).toMatchObject({ costStatus: 'unknown' });
   });
 });
