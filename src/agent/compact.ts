@@ -38,6 +38,18 @@ const RECENT_TAIL_FRACTION = 0.2;
 const CHECKPOINT_MAX_TOKENS = 4_096;
 const CHECKPOINT_FRACTION = 0.1;
 const SUMMARIZER_INPUT_FRACTION = 0.65;
+/**
+ * The reducer's provider cap has to sit above the checkpoint content budget. The
+ * model emits a whole JSON envelope around `checkpointBudget` tokens of content,
+ * and on an adaptive-thinking model the thinking is spent from this same cap --
+ * `anthropic.ts` sets `output_config` for the reducer with no compaction
+ * exemption. Sending the content budget as `max_tokens` meant the reply was cut
+ * off mid-JSON, which the parser can only read as malformed output.
+ */
+const REDUCER_OUTPUT_HEADROOM = 3;
+const REDUCER_OUTPUT_MIN_MARGIN_TOKENS = 2_048;
+/** Provider finish reasons that mean "cut off at the cap", not "done". */
+const TRUNCATION_FINISH_REASONS = new Set(['length', 'max_tokens']);
 const MESSAGE_OVERHEAD_TOKENS = 6;
 const TOOL_OVERHEAD_TOKENS = 12;
 const RETAINED_TOOL_RESULT_MAX_TOKENS = 2_000;
@@ -162,7 +174,7 @@ interface CurrentCoverage {
 }
 
 type GenerateResult =
-  | { ok: true; text: string }
+  | { ok: true; text: string; truncated: boolean }
   | {
       ok: false;
       contextOverflow: boolean;
@@ -377,6 +389,13 @@ export async function runCompact(
       ),
     ),
   );
+  // An explicit `checkpointMaxTokens` is an evaluation knob and stays the literal
+  // provider cap; otherwise the cap is derived so the envelope and any thinking
+  // tokens fit around a checkpoint of `checkpointBudget`.
+  const reducerOutputCap =
+    options.checkpointMaxTokens !== undefined
+      ? checkpointBudget
+      : resolveReducerOutputCap(checkpointBudget, contextWindow, reducerConfig);
   const preTokens = options.preContextTokens ?? estimateHistoryTokens(contextHistory);
 
   const generation = nextGeneration(contextHistory);
@@ -463,7 +482,7 @@ export async function runCompact(
       let generated = await generateCheckpoint(
         reducerConfig,
         prompt,
-        checkpointBudget,
+        reducerOutputCap,
         options.signal,
         reducerProvider,
         options,
@@ -486,14 +505,18 @@ export async function runCompact(
         rollingCheckpoint,
         checkpointBudget,
       );
-      if (!candidate.ok && !repairUsed && modelCalls < MAX_MODEL_CALLS) {
+      // A truncated reply is not malformed reasoning, it is an unfinished
+      // sentence: re-asking with a strictly longer repair prompt would truncate
+      // again, so the one repair attempt is kept for a reply that could use it.
+      if (generated.truncated) attemptReasons.add('invalid-checkpoint');
+      if (!candidate.ok && !generated.truncated && !repairUsed && modelCalls < MAX_MODEL_CALLS) {
         repairUsed = true;
         const repairPrompt = buildRepairPrompt(prompt, generated.text, candidate.error);
         modelCalls++;
         generated = await generateCheckpoint(
           reducerConfig,
           repairPrompt,
-          checkpointBudget,
+          reducerOutputCap,
           options.signal,
           reducerProvider,
           options,
@@ -1017,6 +1040,7 @@ async function generateCheckpoint(
   let text = '';
   let sawDone = false;
   let usageRecorded = false;
+  let truncated = false;
   const requestConfig = options?.effort
     ? { ...config, effort: options.effort, effortExplicit: true }
     : config;
@@ -1057,6 +1081,9 @@ async function generateCheckpoint(
             responseId: event.responseId,
             finishReasons: event.finishReasons,
           };
+          truncated = (event.finishReasons ?? []).some((reason) =>
+            TRUNCATION_FINISH_REASONS.has(reason),
+          );
           if (event.usage) options?.onUsage?.(event.usage, metadata);
           else options?.onUsageMissing?.(metadata);
         }
@@ -1093,7 +1120,7 @@ async function generateCheckpoint(
       },
     };
   }
-  return { ok: true, text };
+  return { ok: true, text, truncated };
 }
 
 function parseAndValidateCheckpoint(
@@ -1365,6 +1392,25 @@ function sanitizeModelText(text: string): string {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Bounded above by what the model will accept and by the room the summarizer's
+ * own input leaves in the window, so raising the cap can never turn a working
+ * compaction into a context overflow.
+ */
+function resolveReducerOutputCap(
+  checkpointBudget: number,
+  contextWindow: number,
+  config: AgentConfig,
+): number {
+  const wanted = Math.max(
+    checkpointBudget * REDUCER_OUTPUT_HEADROOM,
+    checkpointBudget + REDUCER_OUTPUT_MIN_MARGIN_TOKENS,
+  );
+  const windowCeiling = Math.floor(contextWindow * (1 - SUMMARIZER_INPUT_FRACTION));
+  const modelCeiling = config.modelInfo?.maxOutputTokens ?? Number.POSITIVE_INFINITY;
+  return Math.max(checkpointBudget, Math.min(wanted, windowCeiling, modelCeiling));
 }
 
 function fitCheckpoint(

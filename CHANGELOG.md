@@ -35,6 +35,15 @@ All notable changes to this project are documented in this file.
   appended to the inherited summary, and the inherited text absorbs any truncation so the
   retrieval instruction always survives.
 
+- **The compaction reducer is no longer cut off mid-JSON by its own budget.** Its provider
+  `max_tokens` was set to the checkpoint *content* budget, so the model had to fit a whole JSON
+  envelope into the space allotted to the text inside it -- and on an adaptive-thinking model the
+  thinking is spent from that same cap, with no compaction exemption. The cap is now derived above
+  the content budget, bounded by the model's own output limit and by the room the summarizer's
+  input leaves in the window. A reply that still stops at the cap is recognized as truncated
+  rather than malformed, so it no longer spends the single repair attempt on a longer prompt that
+  could only overrun again.
+
 ### Added
 
 - **A run says what it is doing while it does it (`<BOOK_HOME>/runs/<session>.json`).** Rewritten at

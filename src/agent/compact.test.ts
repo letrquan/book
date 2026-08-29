@@ -1188,6 +1188,36 @@ ${JSON.stringify(prior)}`,
     });
 
     expect(result.status).toBe('compacted');
-    expect(mockedStream.mock.calls[0][3]).toMatchObject({ maxOutputTokens: 819 });
+    const cap = (mockedStream.mock.calls[0][3] as { maxOutputTokens: number }).maxOutputTokens;
+    expect(Number.isInteger(cap)).toBe(true);
+    // The provider cap sits above the 819-token checkpoint content budget at this
+    // window, leaving room for the JSON envelope and any thinking tokens, and is
+    // still bounded by the window the summarizer's own input has to share.
+    expect(cap).toBeGreaterThan(819);
+    expect(cap).toBeLessThanOrEqual(Math.floor(8_192 * 0.35));
+  });
+
+  it('does not spend the repair attempt on a reply cut off at the output cap', async () => {
+    // Truncated JSON: unparseable, but the cause is the cap, not the model.
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: '{"version":2,"state":{"summary":"partial' };
+      yield {
+        type: 'done',
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        finishReasons: ['max_tokens'],
+      };
+    });
+
+    const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
+
+    expect(result.status).toBe('compacted');
+    if (result.status === 'compacted') {
+      // One call, not two: the repair prompt is strictly longer than the prompt
+      // that just overran, so re-asking could only overrun again.
+      expect(result.modelCalls).toBe(1);
+      expect(result.degraded).toBe(true);
+      expect(result.checkpoint.coverage?.reasons).toContain('invalid-checkpoint');
+    }
+    expect(mockedStream).toHaveBeenCalledTimes(1);
   });
 });
