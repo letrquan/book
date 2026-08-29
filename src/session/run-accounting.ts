@@ -357,9 +357,13 @@ export class RunAccounting {
     let inclusiveUsage: Usage | null = root.carried?.usage ?? null;
     let inclusiveCost = root.carried?.costUsd ?? 0;
     let costStatus: AgentRunAccounting['costStatus'] = 'known';
-    // A prior process that could not price part of its spend leaves the restored
-    // total a lower bound, which is exactly what 'estimated' means here.
-    if (root.carried && root.carried.costUsd === null) costStatus = 'estimated';
+    // A carry we could not price is NOT zero spend. Treating it as `estimated`
+    // let the `?? 0` above launder an unknown amount into a $0 baseline that the
+    // budget gate then permitted, so the cap re-armed from zero on every prompt
+    // and every restart — the exact failure the objective-scoped carry exists to
+    // prevent. `unknown` fails the gate closed, and only ever for a run that
+    // actually set a budget: `checkBeforeModelCall` returns early without one.
+    if (root.carried && root.carried.costUsd === null) costStatus = 'unknown';
     const unknownModels = new Set<string>();
     const modelIdentities = new Map<string, AgentModelIdentity>();
     const missingSources = new Set<string>();

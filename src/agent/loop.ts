@@ -1969,7 +1969,12 @@ export async function runAgentLoop(
           const entry = await prepareToolCall(callIndex, false);
           if (entry) await finishCall(entry, await executeToolCall(entry));
           publishResult(callIndex, resultAt(callIndex));
-          if (callbacks.onTodos && toolContext.todos) callbacks.onTodos(toolContext.todos);
+          // A COPY. The runtime's array is mutated in place (M2's discipline, so the
+          // context and the runtime cannot diverge), which means every call would
+          // otherwise hand a consumer the identical reference — and React's
+          // `useState` identity bail-out, plus any `useMemo` keyed on it, would stop
+          // seeing changes.
+          if (callbacks.onTodos && toolContext.todos) callbacks.onTodos([...toolContext.todos]);
           if (callbacks.onTasks && toolContext.tasks) callbacks.onTasks(toolContext.tasks);
           callIndex++;
           continue;
@@ -2003,7 +2008,12 @@ export async function runAgentLoop(
         }
         for (let index = waveStart; index < callIndex; index++) {
           publishResult(index, resultAt(index));
-          if (callbacks.onTodos && toolContext.todos) callbacks.onTodos(toolContext.todos);
+          // A COPY. The runtime's array is mutated in place (M2's discipline, so the
+          // context and the runtime cannot diverge), which means every call would
+          // otherwise hand a consumer the identical reference — and React's
+          // `useState` identity bail-out, plus any `useMemo` keyed on it, would stop
+          // seeing changes.
+          if (callbacks.onTodos && toolContext.todos) callbacks.onTodos([...toolContext.todos]);
           if (callbacks.onTasks && toolContext.tasks) callbacks.onTasks(toolContext.tasks);
         }
       }
@@ -2146,7 +2156,11 @@ export async function runAgentLoop(
       const blockedTurnLimit = options?.unattended
         ? config.settings.continuation.blockedToolTurnLimit
         : 0;
-      if (blockedTurnLimit > 0 && effectiveMode !== 'plan' && blockedTurnStreak >= blockedTurnLimit) {
+      if (
+        blockedTurnLimit > 0 &&
+        effectiveMode !== 'plan' &&
+        blockedTurnStreak >= blockedTurnLimit
+      ) {
         const refused = [...new Set(blockedTurnTools)].sort().join(', ');
         log.warn('every tool call refused on consecutive turns; stopping', {
           turn,

@@ -342,6 +342,7 @@ function refusedToolProvider(): Provider {
 async function runDenied(
   config: ReturnType<typeof configWith>,
   provider: Provider,
+  unattended = true,
 ): Promise<{ outcome?: AgentTerminalOutcome; denials: number }> {
   let outcome: AgentTerminalOutcome | undefined;
   let denials = 0;
@@ -366,6 +367,7 @@ async function runDenied(
     provider,
     isNewSession: false,
     runtime: new SessionRuntime(),
+    unattended,
   });
   return { outcome, denials };
 }
@@ -501,5 +503,22 @@ describe('the session-state block across a long run', () => {
     );
     // The original prompt plus at least one continuation, each with its own block.
     expect(stamped.length).toBeGreaterThan(1);
+  });
+});
+
+describe('the refusal brake only applies where nobody can say otherwise', () => {
+  it('leaves an interactive run alone when a person declines', () => {
+    // A refusal in the TUI is a human saying no, and they are right there to say
+    // something else next. Ending their session `failed / all_tools_blocked` for
+    // declining three calls — and telling them to "change the permission mode" —
+    // would be absurd. The spin this brake exists for is headless, which answers
+    // every unresolved prompt `deny` with nobody present.
+    const config = configWith({ enabled: false });
+    config.settings.continuation.blockedToolTurnLimit = 3;
+    config.maxTurns = 6;
+
+    return runDenied(config, refusedToolProvider(), false).then(({ outcome }) => {
+      expect(outcome?.reason).not.toBe('all_tools_blocked');
+    });
   });
 });

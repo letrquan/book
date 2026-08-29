@@ -318,3 +318,33 @@ describe('the budget rail actually caps', () => {
     expect(elapsed).toBeLessThan(1000);
   });
 });
+
+describe('a carry that could not be priced', () => {
+  it('fails the budget closed instead of restarting the cap from zero', () => {
+    // `inclusiveCost = root.carried?.costUsd ?? 0` turned "we know spend happened
+    // but not how much" into "$0 spent". Paired with a status the gate permits,
+    // the cap re-armed from zero on every prompt and every restart — so N prompts
+    // authorised N x the budget, which is the exact failure the objective-scoped
+    // carry exists to prevent.
+    const accounting = new RunAccounting();
+    accounting.startRoot(context('root-c', 'root-c'), 50);
+    accounting.seedRoot('root-c', { usage: null, costUsd: null });
+
+    const snapshot = accounting.snapshotRoot('root-c');
+    expect(snapshot.costStatus).toBe('unknown');
+    expect(accounting.checkBeforeModelCall('root-c', 'claude-sonnet-5')).toMatchObject({
+      allowed: false,
+      status: 'unknown',
+    });
+  });
+
+  it('leaves an unbudgeted run alone', () => {
+    // Failing closed is only correct where a ceiling was actually asked for.
+    const accounting = new RunAccounting();
+    accounting.startRoot(context('root-d', 'root-d'));
+    accounting.seedRoot('root-d', { usage: null, costUsd: null });
+    expect(accounting.checkBeforeModelCall('root-d', 'claude-sonnet-5')).toMatchObject({
+      allowed: true,
+    });
+  });
+});

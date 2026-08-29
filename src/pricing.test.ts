@@ -167,3 +167,28 @@ describe('costReport (unchanged)', () => {
     expect(costReport('claude-sonnet-5', null)).toContain('No token usage recorded');
   });
 });
+
+describe('prefix pricing must not price a sibling model', () => {
+  it('refuses to price gpt-4o-mini from gpt-4o', () => {
+    // `gpt-4o-mini` starts with `gpt-4o` at a separator boundary, but it is a
+    // different model roughly 16x cheaper. Pricing it from its prefix replaces an
+    // honest `unknown` with an enforced figure wrong by an order of magnitude —
+    // and the budget gate acts on that figure, terminating the run
+    // `budget_exceeded` at a fraction of the real spend.
+    expect(resolveModelPricing('gpt-4o-mini')).toBeUndefined();
+    expect(resolveModelPricing('gpt-5-mini')).toBeUndefined();
+    expect(resolveModelPricing('gpt-5-nano')).toBeUndefined();
+    expect(hasKnownPricing('gpt-4o-mini')).toBe(false);
+  });
+
+  it('still prices a dated re-resolution of the same model', () => {
+    // The case the forward direction exists for: providers resolve an alias to a
+    // dated id, which is the same model and must keep its rate.
+    expect(resolveModelPricing('claude-sonnet-5-20260115')).toMatchObject({
+      key: 'claude-sonnet-5',
+    });
+    expect(resolveModelPricing('claude-sonnet-5-2026-01-15')).toMatchObject({
+      key: 'claude-sonnet-5',
+    });
+  });
+});
