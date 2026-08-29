@@ -29,6 +29,27 @@ function fail(error: string): ToolResult {
   return toolFailure(error);
 }
 
+/**
+ * A timeout is not a failing check. `exec` kills the child with SIGTERM on
+ * timeout, and reporting that through the same path as a non-zero exit tells the
+ * agent its suite failed when the suite never finished — so it "fixes" a passing
+ * test. Any completion gate built on Check inherits this predicate, so the two
+ * outcomes have to stay distinguishable.
+ */
+function timedOut(command: string, timeoutMs: number, output: string): ToolResult {
+  const seconds = (timeoutMs / 1000).toFixed(timeoutMs % 1000 === 0 ? 0 : 1);
+  return toolFailure(
+    `Check timed out after ${seconds}s and was killed; it did not fail. Command: ${command}`,
+    {
+      code: 'check_timed_out',
+      retryable: true,
+      remediation: `Raise agents.checkTimeoutMs (currently ${timeoutMs}) or narrow the check command. Do not treat this as a failing check.`,
+      details: { command, timeoutMs },
+      content: output,
+    },
+  );
+}
+
 async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const name = typeof args.name === 'string' ? args.name.trim() : '';
   if (!name) return fail('name must be a configured or detected check');
@@ -39,17 +60,27 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
     return fail(`Unknown check "${name}". Available checks: ${available.join(', ') || '(none)'}`);
   }
 
+  const timeoutMs = ctx.agentConfig?.settings.agents.checkTimeoutMs ?? 120_000;
+
   return new Promise((resolve) => {
     exec(
       command,
       {
         cwd: ctx.workspaceRoot,
         env: { ...process.env, ...ctx.env },
-        timeout: 120_000,
+        timeout: timeoutMs,
         maxBuffer: 10 * 1024 * 1024,
       },
       (error, stdout, stderr) => {
         if (error) {
+          // `exec` signals a timeout by killing the child; a genuine non-zero exit
+          // carries a code and no signal.
+          const killed = (error as { killed?: boolean }).killed === true;
+          const signal = (error as { signal?: string | null }).signal;
+          if (killed && signal) {
+            resolve(timedOut(command, timeoutMs, stdout || stderr || ''));
+            return;
+          }
           resolve(fail(stderr || stdout || error.message));
           return;
         }

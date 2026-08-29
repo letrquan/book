@@ -114,6 +114,14 @@ export interface AgentRecord {
   runId?: string;
   planId?: string;
   status: AgentStatus;
+  /**
+   * Set when this record was interrupted by process death rather than by a
+   * decision, so a later start can tell "died mid-flight" from "genuinely
+   * stopped" and re-drive it.
+   */
+  resumable?: boolean;
+  /** The status held before the interruption, for the re-drive to reason about. */
+  resumedFromStatus?: AgentStatus;
   applicationStatus: AgentApplicationStatus;
   worktree?: string;
   branch?: string;
@@ -156,6 +164,17 @@ export interface AgentSummary {
   agentId: string;
   displayName: string;
   profile: string;
+  /**
+   * What this agent was spawned to do, bounded.
+   *
+   * The root's view of its own fan-out was `patcher-3 / interrupted / <no
+   * summary>` — enough to know something happened, not enough to decide anything
+   * — while purpose and planId sat unused on disk. After a compaction or two that
+   * is all the parent has left of a delegated unit of work.
+   */
+  purpose?: string;
+  /** Groups agents that share a snapshot and a plan. */
+  planId?: string;
   status: AgentStatus;
   resolvedModel: string;
   isolation: AgentIsolation;

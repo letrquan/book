@@ -20,6 +20,8 @@ import { createAgentRunContext, type AgentRunContext, type AgentRunResult } from
 import { resolveContextLimit, shouldCompact, usagePressureTokens } from './agent/compact.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { observationKey } from './tools/file-provenance.js';
+import { normalizePersistedTodos } from './tools/todo.js';
+import { estimateUsageCost } from './pricing.js';
 import { createSessionHistoryTools } from './tools/session-history.js';
 import {
   createStreamParser,
@@ -35,6 +37,24 @@ import {
 import { getOrCreateAgentManager } from './agents/manager.js';
 import { resolvePermissionMode } from './permission-mode.js';
 import { assertHarnessModeAvailable, createHarnessCoordinator } from './harness/coordinator.js';
+
+/**
+ * Re-price restored tokens.
+ *
+ * The tokens are one pool but may have been spent across several models, and the
+ * records do not attribute them. Charging the whole pool at the most expensive
+ * model's rate keeps the restored total an upper bound — the safe direction for a
+ * spend ceiling. Any unpriceable model makes the total unknown.
+ */
+function carriedCostUsd(usage: Usage, models: readonly string[]): number | null {
+  let worst: number | null = null;
+  for (const model of models) {
+    const quote = estimateUsageCost(model, usage);
+    if (quote.status !== 'known') return null;
+    worst = worst === null ? quote.costUsd : Math.max(worst, quote.costUsd);
+  }
+  return worst;
+}
 
 export async function runHeadless(
   config: AgentConfig,
@@ -55,6 +75,17 @@ export async function runHeadless(
   };
   const agentSession = new AgentSession();
   const runtime = agentSession.getRuntime();
+  // Seed the plan from the resumed session. Both lists are mutated in place by
+  // their tools, so pushing into the runtime's arrays is what makes the plan
+  // visible to the loop — reassigning would detach the runtime from the
+  // ToolContext the loop seeds from.
+  runtime.todos.push(...normalizePersistedTodos(opts.plan?.todos));
+  if (opts.plan?.tasks?.length) runtime.tasks.push(...opts.plan.tasks);
+  // Resuming prior work with nothing to show for it is the case worth naming: an
+  // empty list renders as no list at all, so without this the model cannot tell a
+  // dropped plan from a task that never had one.
+  runtime.planUnrestored =
+    opts.history.length > 0 && runtime.todos.length === 0 && runtime.tasks.length === 0;
   const harnessCoordinator =
     harnessMode === 'off'
       ? undefined
@@ -515,6 +546,17 @@ export async function runHeadless(
             : undefined,
       });
       runtime.runAccounting.startRoot(runContext, opts.maxBudgetUsd);
+      // Carry spend forward from earlier processes of this session, so a USD cap
+      // bounds the objective rather than one process.
+      if (opts.carriedUsage) {
+        runtime.runAccounting.seedRoot(runContext.rootRunId, {
+          usage: opts.carriedUsage,
+          costUsd: carriedCostUsd(
+            opts.carriedUsage,
+            opts.carriedModels?.length ? opts.carriedModels : [config.model],
+          ),
+        });
+      }
 
       const dispatch = await dispatchSubmittedPrompt(submitted, runContext);
       if (dispatch.kind === 'prompt' && dispatch.shellErrors?.length) {

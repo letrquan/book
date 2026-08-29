@@ -1,5 +1,6 @@
 import type { AgentCompletion, AgentRecord, AgentSummary } from './types.js';
 
+const PURPOSE_PREVIEW_CHARS = 200;
 const SUMMARY_PREVIEW_CHARS = 2000;
 const COMPLETION_PREVIEW_CHARS = 50 * 1024;
 
@@ -30,6 +31,8 @@ export function projectAgentSummary(record: AgentRecord): AgentSummary {
     agentId: record.id,
     displayName: record.displayName ?? record.name,
     profile: record.profile ?? record.name,
+    purpose: preview(record.purpose, PURPOSE_PREVIEW_CHARS).value,
+    planId: record.planId,
     status: record.status,
     resolvedModel: record.resolvedModel ?? 'unknown',
     isolation: record.isolation ?? 'worktree',

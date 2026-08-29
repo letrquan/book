@@ -13,13 +13,36 @@ function isTodoList(value: unknown): value is Todo[] {
   return Array.isArray(value);
 }
 
+const TODO_STATUSES: ReadonlySet<string> = new Set(['pending', 'in_progress', 'completed']);
+
+/**
+ * Restore todos from a persisted plan record, dropping anything malformed.
+ *
+ * A record on disk is untrusted input — it may predate a status change or have
+ * been hand-edited — and one bad entry must not cost the whole restored plan.
+ */
+export function normalizePersistedTodos(
+  todos: ReadonlyArray<{ content?: unknown; status?: unknown; activeForm?: unknown }> | undefined,
+): Todo[] {
+  const restored: Todo[] = [];
+  for (const todo of todos ?? []) {
+    if (typeof todo?.content !== 'string' || todo.content.length === 0) continue;
+    if (typeof todo.status !== 'string' || !TODO_STATUSES.has(todo.status)) continue;
+    restored.push({
+      content: todo.content,
+      status: todo.status as TodoStatus,
+      activeForm: typeof todo.activeForm === 'string' ? todo.activeForm : undefined,
+    });
+  }
+  return restored;
+}
+
 async function todoWrite(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const todos = args.todos;
   if (!isTodoList(todos)) {
     return toolFailure('todos must be an array');
   }
 
-  const validStatuses = new Set(['pending', 'in_progress', 'completed']);
   const parsed: Todo[] = [];
   for (let i = 0; i < todos.length; i++) {
     const t = todos[i] as unknown as Record<string, unknown>;
@@ -27,7 +50,7 @@ async function todoWrite(args: Record<string, unknown>, ctx: ToolContext): Promi
       return toolFailure(`Todo ${i + 1}: missing or empty 'content'`);
     }
     const status = t.status as string;
-    if (!validStatuses.has(status)) {
+    if (!TODO_STATUSES.has(status)) {
       return toolFailure(
         `Todo ${i + 1}: invalid status '${status}' (must be pending, in_progress, or completed)`,
       );
@@ -48,7 +71,19 @@ async function todoWrite(args: Record<string, unknown>, ctx: ToolContext): Promi
   }
 
   // Write todos into ToolContext (eliminates module-level mutable state).
-  ctx.todos = parsed;
+  //
+  // Mutate in place rather than reassigning. `ctx.todos` is bound to the array
+  // `SessionRuntime` owns (the loop seeds it per invocation), the same discipline
+  // `tools/tasks.ts` already follows. Reassigning would detach the context from
+  // the runtime's array, so every later read — the seed on the next invocation,
+  // the `<session-state>` render, the persistence writer — would see a stale list
+  // while this one silently diverged.
+  if (ctx.todos) {
+    ctx.todos.length = 0;
+    ctx.todos.push(...parsed);
+  } else {
+    ctx.todos = parsed;
+  }
 
   const summary = parsed.length
     ? parsed

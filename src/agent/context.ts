@@ -391,6 +391,12 @@ export interface SystemPromptOverrides {
    * anywhere in the system prompt would invalidate the conversation cache.
    */
   planMode?: boolean;
+  /**
+   * Task state, like `planMode`: set when this process resumed a session that had
+   * prior work but no persisted plan, so the session-state block can say the plan
+   * did not survive instead of rendering nothing.
+   */
+  planUnrestored?: boolean;
 }
 
 /**
@@ -529,6 +535,7 @@ async function ensureSessionState(
   history: Message[],
   todos: Array<{ content: string; status: string; activeForm?: string }>,
   planMode: boolean,
+  planUnrestored: boolean,
   signal?: AbortSignal,
   cache?: AgentContextCache,
 ): Promise<void> {
@@ -546,6 +553,7 @@ async function ensureSessionState(
     workspace: config.workspace,
     git: await (cache?.git(config.workspace, signal) ?? gitContext(config.workspace, signal)),
     planMode,
+    planUnrestored,
     todos,
     staleFiles: checkpoint
       ? await collectStaleCheckpointFiles(
@@ -573,6 +581,7 @@ export async function buildMessages(
     history,
     todos ?? [],
     systemOverrides?.planMode ?? false,
+    systemOverrides?.planUnrestored ?? false,
     signal,
     cache,
   );

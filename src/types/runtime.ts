@@ -36,6 +36,21 @@ export interface RetryConfig {
   streamStallTimeoutMs: number; // default 20000 (20s, matches Claude Code)
   toolRetries: number; // default 1
   watchdog: boolean; // default false — CI mode: retry 429/529 indefinitely
+  /**
+   * Re-sends of a turn after a transport failure that left the work intact.
+   * Optional, and absent means 0 — a caller that builds a RetryConfig by hand
+   * keeps the original end-the-run-on-any-stream-error behavior rather than
+   * silently inheriting a retry policy it never asked for.
+   */
+  streamReissueAttempts?: number;
+  /**
+   * Continuations allowed after the provider's output cap, budgeted separately
+   * from transport faults so a large generated file cannot drain the allowance a
+   * real socket drop needs. Optional, and absent means 0.
+   */
+  outputCapContinuations?: number;
+  /** Stall ceiling while the model is thinking; absent falls back to the chat one. */
+  thinkingStallTimeoutMs?: number;
 }
 
 export type AgentTaskStatus = 'pending' | 'in_progress' | 'completed' | 'deleted';

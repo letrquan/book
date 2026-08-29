@@ -230,6 +230,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           history: bootstrap.history,
           transcript: bootstrap.transcript,
           compactBoundaries: bootstrap.compactBoundaries,
+          plan: bootstrap.plan,
+          carriedUsage: bootstrap.carriedUsage,
+          carriedModels: bootstrap.carriedModels,
           mode,
           maxTurns: options.maxTurns ? parseInt(options.maxTurns as string, 10) : undefined,
           maxBudgetUsd: options.maxBudgetUsd

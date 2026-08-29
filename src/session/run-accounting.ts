@@ -23,7 +23,20 @@ interface ExecutionState {
 interface RootState {
   readonly rootRunId: string;
   budgetUsd?: number;
+  /**
+   * Spend from earlier processes working the same objective, restored at
+   * bootstrap. Without it `roots` is rebuilt with the process, so forty restarts
+   * is forty independent caps and `--max-budget-usd` means "for this process"
+   * rather than "for this objective".
+   */
+  carried?: CarriedSpend;
   readonly executions: Map<string, ExecutionState>;
+}
+
+export interface CarriedSpend {
+  usage: Usage | null;
+  /** Null when a prior process could not price some of its spend. */
+  costUsd: number | null;
 }
 
 function addUsage(current: Usage | null, next: Usage): Usage {
@@ -124,6 +137,21 @@ export class RunAccounting {
     this.ensureExecution(this.roots.get(context.rootRunId)!, context);
   }
 
+  /**
+   * Restore spend recorded by earlier processes of the same root.
+   *
+   * Idempotent per root: the seed replaces rather than accumulates, so calling it
+   * twice with the same restored total cannot double-charge the budget.
+   */
+  seedRoot(rootRunId: string, carried: CarriedSpend): void {
+    const root = this.roots.get(rootRunId) ?? {
+      rootRunId,
+      executions: new Map<string, ExecutionState>(),
+    };
+    root.carried = carried;
+    this.roots.set(rootRunId, root);
+  }
+
   startExecution(context: AgentRunContext): void {
     const root = this.roots.get(context.rootRunId) ?? {
       rootRunId: context.rootRunId,
@@ -180,8 +208,17 @@ export class RunAccounting {
     this.roots.set(context.rootRunId, root);
     const execution = this.ensureExecution(root, context);
     const identity = missingUsageIdentity(metadata);
-    execution.costUsd = null;
-    execution.costStatus = 'unknown';
+    // A provider attempt that reported no usage leaves the running total a lower
+    // bound, not an unknown quantity. Latching to 'unknown' here — and nulling the
+    // accumulated cost, which `makeSnapshot` independently re-derives 'unknown'
+    // from — permanently disabled `checkBeforeModelCall`, because `mergeCostStatus`
+    // never recovers from 'unknown'. Since this fires from the provider's
+    // `onRetry`, one transient 429 turned a USD budget into a hard stop on every
+    // later call: the reliability layer and the only spend rail were mutually
+    // exclusive. Degrade to 'estimated' instead, which the budget gate allows while
+    // still enforcing against the known floor. `missingSources` keeps the omission
+    // visible in the snapshot.
+    if (execution.costStatus !== 'unknown') execution.costStatus = 'estimated';
     execution.unknownModels.add(metadata.responseModel ?? metadata.requestedModel);
     execution.missingSources.add(source);
     if (
@@ -263,9 +300,12 @@ export class RunAccounting {
     executions: ExecutionState[],
     direct?: ExecutionState,
   ): AgentRunAccounting {
-    let inclusiveUsage: Usage | null = null;
-    let inclusiveCost = 0;
+    let inclusiveUsage: Usage | null = root.carried?.usage ?? null;
+    let inclusiveCost = root.carried?.costUsd ?? 0;
     let costStatus: AgentRunAccounting['costStatus'] = 'known';
+    // A prior process that could not price part of its spend leaves the restored
+    // total a lower bound, which is exactly what 'estimated' means here.
+    if (root.carried && root.carried.costUsd === null) costStatus = 'estimated';
     const unknownModels = new Set<string>();
     const modelIdentities: AgentModelIdentity[] = [];
     const missingSources = new Set<string>();

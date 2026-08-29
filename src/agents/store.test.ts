@@ -547,6 +547,31 @@ describe('AgentStore recovery of host-owned agents', () => {
     });
   }
 
+  it('marks a process-death interruption resumable, with the status it held', () => {
+    // The distinction a restart needs: "died mid-flight" versus "genuinely
+    // stopped". Without it the whole pending backlog became terminal records
+    // nothing ever re-drove.
+    root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
+    const store = new AgentStore('repo', root, true, {
+      instanceId: '11111111-1111-4111-8111-111111111111',
+      pid: 12345,
+      hostname: 'test-host',
+      now: () => 1,
+    });
+    const record = reviewerRecord('reviewer-1');
+    record.status = 'running';
+    store.saveAgent(record);
+
+    const recovered = restart(root).recoverAbandonedAgents()[0]!;
+
+    expect(recovered).toMatchObject({
+      status: 'interrupted',
+      stopReason: 'process_exit',
+      resumable: true,
+      resumedFromStatus: 'running',
+    });
+  });
+
   it('recovers a suppressed agent without leaving a completion to deliver', () => {
     root = mkdtempSync(join(tmpdir(), 'book-agent-store-'));
     const store = new AgentStore('repo', root, true, {

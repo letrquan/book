@@ -730,7 +730,9 @@ describe('runAgentLoop streaming render callbacks', () => {
   });
 
   it.each([
-    ['max_tokens', 'protocol_error'],
+    // An output cap is continuable work, not a malformed response, so it carries
+    // its own reason and terminalRecovery() can continue the turn.
+    ['max_tokens', 'output_cap'],
     ['model_context_window_exceeded', 'context_overflow'],
     ['refusal', 'provider_error'],
   ] as const)(
@@ -1038,7 +1040,7 @@ describe('runAgentLoop streaming render callbacks', () => {
     );
 
     expect(calls).toBe(1);
-    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'protocol_error' });
+    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'output_cap' });
   });
 
   it('continues the active turn after between-turn auto compaction', async () => {
@@ -2089,9 +2091,12 @@ describe('runAgentLoop error handling', () => {
 
     expect(retryCalls.length).toBeGreaterThanOrEqual(2);
     expect(retryCalls[0].phase).toBe('transport');
+    // A retried attempt leaves the total a lower bound, so the run stays priced
+    // ('estimated') and the USD budget keeps enforcing. Latching to 'unknown' made
+    // one transient retry disable the budget for the rest of the run.
     expect(runtime.runAccounting.snapshotRun(runContext.runId)).toMatchObject({
       completeness: 'partial',
-      costStatus: 'unknown',
+      costStatus: 'estimated',
       missingSources: expect.arrayContaining(['failed_provider_attempt_usage']),
     });
   });

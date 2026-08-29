@@ -68,6 +68,7 @@ import {
   type AgentSessionSendControl,
   type AgentSessionSendResult,
 } from '../../session/agent-session.js';
+import { normalizePersistedTodos } from '../../tools/todo.js';
 import { SessionRuntime } from '../../session/runtime.js';
 import { createInteractiveAgentSession } from '../../session/interactive-session.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
@@ -223,6 +224,27 @@ function buildHandoffPrompt(plan: string): string {
   ].join('\n');
 }
 
+/**
+ * Build the session runtime with the plan a resumed session persisted.
+ *
+ * Seeded by pushing into the runtime's own arrays: the tools mutate those arrays
+ * in place, so replacing them here would detach the runtime from what the loop
+ * reads.
+ */
+function createSeededRuntime(
+  session: UseAgentSessionOptions,
+  initialTranscript: Message[],
+): SessionRuntime {
+  const runtime = new SessionRuntime({
+    fileObservationLedger: buildObservationLedger(initialTranscript),
+  });
+  runtime.todos.push(...normalizePersistedTodos(session.plan?.todos));
+  if (session.plan?.tasks?.length) runtime.tasks.push(...session.plan.tasks);
+  runtime.planUnrestored =
+    initialTranscript.length > 0 && runtime.todos.length === 0 && runtime.tasks.length === 0;
+  return runtime;
+}
+
 export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const initialTranscript = session.transcript ?? session.history;
   const initialContext = session.contextHistory ?? session.history;
@@ -265,9 +287,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const [ownedProviders, setOwnedProviders] = useState(() => readOwnedProviders());
   const [agentSession] = useState(() =>
     createInteractiveAgentSession({
-      runtime: new SessionRuntime({
-        fileObservationLedger: buildObservationLedger(initialTranscript),
-      }),
+      runtime: createSeededRuntime(session, initialTranscript),
       additionalTools: session.additionalTools,
     }),
   );

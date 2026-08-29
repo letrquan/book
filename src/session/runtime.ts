@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
 import type { AgentTask, BackgroundShellStore } from '../types/runtime.js';
+import type { Todo } from '../tools/todo.js';
 import type { FileObservation, ToolDiscoveryState } from '../types/tools.js';
 import { AgentContextCache } from '../agent/context.js';
 import { ToolExecutionScheduler } from '../tools/execution-scheduler.js';
@@ -17,6 +18,7 @@ import { ZeroMemRuntime } from '../agent/zero-mem-runtime.js';
 
 export interface SessionRuntimeOptions {
   tasks?: AgentTask[];
+  todos?: Todo[];
   backgroundShells?: BackgroundShellStore;
   fileObservationLedger?: Map<string, FileObservation>;
   toolDiscoveryState?: ToolDiscoveryState;
@@ -34,6 +36,18 @@ export interface SessionRuntimeOptions {
 /** Mutable resources owned by one logical agent session. */
 export class SessionRuntime {
   readonly tasks: AgentTask[];
+  /**
+   * The session's todo list. A readonly *binding* over a mutable array, matching
+   * `tasks` — the loop seeds `ToolContext.todos` from it per invocation and
+   * TodoWrite mutates it in place, so the plan survives across invocations within
+   * one process and can be rehydrated from a `plan` record after a restart.
+   */
+  readonly todos: Todo[];
+  /**
+   * Set by a host that resumed a session with prior work but no persisted plan.
+   * Surfaced once in `<session-state>` so a dropped plan is a visible event.
+   */
+  planUnrestored = false;
   readonly backgroundShells: BackgroundShellStore;
   readonly fileObservationLedger: Map<string, FileObservation>;
   readonly toolDiscoveryState: ToolDiscoveryState;
@@ -64,6 +78,7 @@ export class SessionRuntime {
 
   constructor(options: SessionRuntimeOptions = {}) {
     this.tasks = options.tasks ?? [];
+    this.todos = options.todos ?? [];
     this.backgroundShells = options.backgroundShells ?? { nextId: 1, shells: new Map() };
     this.fileObservationLedger = options.fileObservationLedger ?? new Map();
     this.toolDiscoveryState = options.toolDiscoveryState ?? { clock: 0, loaded: new Map() };

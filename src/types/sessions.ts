@@ -1,4 +1,5 @@
-import type { ImageAttachment, Message } from './messages.js';
+import type { ImageAttachment, Message, Usage } from './messages.js';
+import type { AgentTask } from './runtime.js';
 import type { FileObservation } from './tools.js';
 
 /** What triggered a compaction attempt. */
@@ -154,10 +155,46 @@ export interface SessionRecord {
     | 'session_meta'
     | 'compact'
     | 'turn_checkpoint'
-    | 'rewind';
+    | 'rewind'
+    | 'plan';
   eventId?: string;
   timestamp: number;
   data: unknown;
+}
+
+/**
+ * Payload stored in a SessionRecord of type `plan` — last record wins.
+ *
+ * The plan is the only long-horizon state with no other home: todos live on the
+ * per-invocation ToolContext and the task graph on the in-process SessionRuntime,
+ * so both die at process exit.
+ *
+ * Readers must tolerate absence: `SessionStore.load` dispatches record types with
+ * no default branch, so an older binary ignores this record rather than failing.
+ */
+export interface PlanRecordData {
+  version: 1;
+  todos?: PersistedTodo[];
+  tasks?: AgentTask[];
+}
+
+export interface PersistedTodo {
+  content: string;
+  status: string;
+  activeForm?: string;
+}
+
+/**
+ * Payload stored in a SessionRecord of type `usage` — one per provider response.
+ *
+ * Tokens only: pricing can change between processes, so USD is re-derived at
+ * bootstrap rather than trusted from an older record.
+ */
+export interface UsageRecordData {
+  version: 1;
+  usage: Usage;
+  requestedModel?: string;
+  responseModel?: string;
 }
 
 /** Payload stored in a SessionRecord of type `compact`. */
@@ -266,6 +303,21 @@ export interface LoadedSession {
   rewindTargets: RewindTarget[];
   activeEventIds: string[];
   meta: SessionMeta;
+  /**
+   * The newest `plan` record, if the session ever wrote one. Absent means no plan
+   * was ever recorded; present-but-empty means it was deliberately cleared. That
+   * distinction is what lets a resumed run tell "nothing to do" from "my plan did
+   * not survive the restart".
+   */
+  plan?: PlanRecordData;
+  /**
+   * Token totals recorded by earlier processes of this session, summed from the
+   * `usage` records. USD is deliberately not stored: pricing changes between
+   * processes, so cost is re-derived from these tokens at bootstrap.
+   */
+  carriedUsage?: Usage;
+  /** Models those tokens were spent on, for re-deriving the cost. */
+  carriedModels?: string[];
   /** @deprecated Use contextHistory. */
   history: Message[];
 }

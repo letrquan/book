@@ -1,10 +1,11 @@
 import type {
   CompactBoundary,
+  PlanRecordData,
   RewindTarget,
   SessionMeta,
   SessionStoreInterface,
 } from '../types/sessions.js';
-import type { Message } from '../types/messages.js';
+import type { Message, Usage } from '../types/messages.js';
 import { normalizeWorkspace } from './store.js';
 
 export type SessionStartSource = 'startup' | 'resume' | 'clear';
@@ -18,6 +19,15 @@ export interface SessionBootstrap {
   compactBoundaries?: CompactBoundary[];
   rewindTargets?: RewindTarget[];
   activeEventIds?: string[];
+  /**
+   * The newest persisted plan, when the resumed session recorded one. Absent on a
+   * fresh session and on a resumed session that never wrote a plan — the hosts use
+   * that distinction to tell "no plan yet" from "the plan did not survive".
+   */
+  plan?: PlanRecordData;
+  /** Token totals from earlier processes of this session; cost is re-derived. */
+  carriedUsage?: Usage;
+  carriedModels?: string[];
   source: SessionStartSource;
   persisted: boolean;
   created: boolean;
@@ -159,6 +169,7 @@ export function resolveSessionBootstrap(
         compactBoundaries: loaded.compactBoundaries,
         rewindTargets: loaded.rewindTargets,
         activeEventIds: loaded.activeEventIds,
+        plan: loaded.plan,
         source: 'resume',
         persisted: true,
         created: true,
@@ -174,6 +185,9 @@ export function resolveSessionBootstrap(
       compactBoundaries: loaded.compactBoundaries,
       rewindTargets: loaded.rewindTargets,
       activeEventIds: loaded.activeEventIds,
+      plan: loaded.plan,
+      carriedUsage: loaded.carriedUsage,
+      carriedModels: loaded.carriedModels,
       source: 'resume',
       persisted: true,
       created: false,

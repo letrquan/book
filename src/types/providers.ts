@@ -1,6 +1,6 @@
 import type { AgentRuntimeEvent } from '../agents/types.js';
 import type { Message, ProviderMessageMetadata, Usage } from './messages.js';
-import type { PermissionMode, RetryPhase } from './runtime.js';
+import type { AgentTask, PermissionMode, RetryPhase } from './runtime.js';
 import type { CompactResult } from './sessions.js';
 import type { AgentTerminalOutcome } from './terminal.js';
 import type { PlanApprovalResult, ToolCall, ToolResult, UserQuestionHandler } from './tools.js';
@@ -118,6 +118,19 @@ export interface AgentLoopCallbacks {
   onAssistantMessageComplete?: (message: Message) => void;
   /** Called after each tool execution with the current agent todo list. */
   onTodos?: (todos: Array<{ content: string; status: string; activeForm?: string }>) => void;
+  /**
+   * Fires after a tool wave that may have mutated the task graph, mirroring
+   * `onTodos`. The task tools have no callback of their own, so this is the seam a
+   * host uses to persist the plan; it fires per wave, not per mutation.
+   */
+  onTasks?: (tasks: AgentTask[]) => void;
+  /**
+   * A user-role message the loop itself appended (a continuation, a work-state
+   * refresh). Hosts write the user message before `send`, so without this the only
+   * writer to the session file never sees these and a `--resume` reads a
+   * conversation with unexplained gaps between assistant turns.
+   */
+  onUserMessageAppended?: (message: Message) => void;
   /** Called when a transport-level retry starts (delay > 0). */
   onRetry?: (phase: RetryPhase, attempt: number, max: number, delayMs: number) => void;
   /** Called when the response stream stalls (no data for streamStallTimeoutMs). */

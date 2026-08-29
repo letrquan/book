@@ -1038,7 +1038,7 @@ describe('AgentSession', () => {
     });
   });
 
-  it('marks root accounting unknown when compaction completes without usage', async () => {
+  it('flags root accounting estimated when compaction completes without usage', async () => {
     const runtime = new SessionRuntime();
     const runContext = createAgentRunContext({
       sessionId: 'session-1',
@@ -1070,10 +1070,12 @@ describe('AgentSession', () => {
       options: { trigger: 'auto' },
     });
 
+    // The omission stays visible, but it no longer nulls the accumulated cost or
+    // latches the run into a permanent budget refusal.
     expect(runtime.runAccounting.snapshotRoot(runContext.rootRunId)).toMatchObject({
-      costUsd: null,
-      costStatus: 'unknown',
-      budgetStatus: 'unknown',
+      costUsd: 0,
+      costStatus: 'estimated',
+      budgetStatus: 'within',
       modelIdentities: [{ responseId: 'compact-response-without-usage', status: 'verified' }],
       missingSources: ['compaction_usage'],
     });

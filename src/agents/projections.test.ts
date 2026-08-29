@@ -67,3 +67,36 @@ describe('managed-agent projections', () => {
     expect(completion.errorTruncated).toBe(true);
   });
 });
+
+describe('projectAgentSummary purpose', () => {
+  it('carries purpose and planId so the root can tell its agents apart', () => {
+    // Without these the parent sees rows of `patcher-3 / interrupted / <no
+    // summary>` while the information it needs sits unused on disk — and after a
+    // compaction that row is all it has left of a delegated unit of work.
+    const summary = projectAgentSummary({
+      id: 'a1',
+      name: 'patcher',
+      status: 'interrupted',
+      purpose: 'migrate src/api call sites off framework X',
+      planId: 'plan-7',
+      createdAt: 0,
+      updatedAt: 0,
+    } as unknown as Parameters<typeof projectAgentSummary>[0]);
+
+    expect(summary.purpose).toBe('migrate src/api call sites off framework X');
+    expect(summary.planId).toBe('plan-7');
+  });
+
+  it('bounds a long purpose rather than letting it flood the projection', () => {
+    const summary = projectAgentSummary({
+      id: 'a1',
+      name: 'patcher',
+      status: 'running',
+      purpose: 'x'.repeat(5_000),
+      createdAt: 0,
+      updatedAt: 0,
+    } as unknown as Parameters<typeof projectAgentSummary>[0]);
+
+    expect(summary.purpose!.length).toBeLessThan(300);
+  });
+});

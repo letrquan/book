@@ -118,10 +118,18 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     streamStallTimeoutMs: process.env.BOOK_STREAM_STALL_TIMEOUT_MS
       ? clampInt(process.env.BOOK_STREAM_STALL_TIMEOUT_MS, 5000, 120000)
       : (settings.retry?.streamStallTimeoutMs ?? DEFAULT_SETTINGS.retry.streamStallTimeoutMs),
+    thinkingStallTimeoutMs: process.env.BOOK_THINKING_STALL_TIMEOUT_MS
+      ? clampInt(process.env.BOOK_THINKING_STALL_TIMEOUT_MS, 10_000, 1_800_000)
+      : (settings.retry?.thinkingStallTimeoutMs ?? DEFAULT_SETTINGS.retry.thinkingStallTimeoutMs),
     toolRetries: process.env.BOOK_TOOL_RETRIES
       ? clampInt(process.env.BOOK_TOOL_RETRIES, 0, 3)
       : (settings.retry?.toolRetries ?? DEFAULT_SETTINGS.retry.toolRetries),
     watchdog: process.env.BOOK_RETRY_WATCHDOG === '1' || settings.retry?.watchdog === true,
+    streamReissueAttempts: process.env.BOOK_STREAM_REISSUE_ATTEMPTS
+      ? clampInt(process.env.BOOK_STREAM_REISSUE_ATTEMPTS, 0, 10)
+      : (settings.retry?.streamReissueAttempts ?? DEFAULT_SETTINGS.retry.streamReissueAttempts),
+    outputCapContinuations:
+      settings.retry?.outputCapContinuations ?? DEFAULT_SETTINGS.retry.outputCapContinuations,
   };
 
   const memoryContext = settings.memory.enabled ? loadMemoryContext(resolvedWorkspace) : undefined;

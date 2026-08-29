@@ -70,9 +70,18 @@ import { isContextOverflowError } from '../provider/reliability.js';
 import {
   classifyAbortReason,
   createTerminalOutcome,
+  terminalRecovery,
   type AgentTerminalOutcome,
 } from '../types/terminal.js';
 import type { AgentRunContext } from '../types/runs.js';
+import { delay } from '../async.js';
+import {
+  buildProgressWitness,
+  decideContinuation,
+  renderWorkState,
+  witnessSignature,
+  type ContinuationStopReason,
+} from './continuation.js';
 
 const log = createDebugLogger('agent');
 const SKILL_INFRASTRUCTURE_TOOLS = new Set(['InvokeSkill', 'ReadSkillResource', 'ToolSearch']);
@@ -175,10 +184,46 @@ export async function runAgentLoop(
   const newHistory = [...history];
   let assistantOutputProduced = false;
   let terminalEmitted = false;
+  /** The settled outcome, so the terminal hooks can report why the run stopped. */
+  let settledOutcome: AgentTerminalOutcome | undefined;
   const finishTerminal = (outcome: AgentTerminalOutcome): void => {
     if (terminalEmitted) return;
     terminalEmitted = true;
+    settledOutcome = outcome;
     callbacks.onTerminal?.(outcome);
+  };
+  let terminalHooksFired = false;
+  /**
+   * Stop and SessionEnd, fired once when the agent has actually stopped.
+   *
+   * Both carry the settled outcome so a hook can distinguish an honest completion
+   * from a failure. Neither passes `signal`: they are notifications about a run
+   * that has already ended, and `runHooks` throws on an aborted signal ahead of
+   * its empty-list guard — which made every Ctrl-C log a hook failure.
+   *
+   * Subagents are excluded: `Task` and every managed agent run this same loop with
+   * the parent's hook config, and the manager already fires SubagentStop per child.
+   */
+  const fireTerminalHooks = (): void => {
+    if (terminalHooksFired) return;
+    terminalHooksFired = true;
+    const payload = {
+      workspace: config.workspace,
+      stopReason: settledOutcome?.reason,
+      status: settledOutcome?.status,
+    };
+    if (!options?.isSubagent) {
+      runHooks(config.settings.hooks.Stop, 'Stop', { ...payload, event: 'Stop' }, {
+        onHookEvent: callbacks.onHookEvent,
+      }).catch((err) => console.warn('Stop hook failed:', err));
+    }
+    // One-shot callers keep the legacy per-loop lifecycle. Multi-turn hosts
+    // disable this and fire SessionEnd when the conversation is actually left.
+    if (options?.manageSessionHooks !== false) {
+      runHooks(config.settings.hooks.SessionEnd, 'SessionEnd', { ...payload, event: 'SessionEnd' }, {
+        onHookEvent: callbacks.onHookEvent,
+      }).catch((err) => console.warn('SessionEnd hook failed:', err));
+    }
   };
   const hasPartialOutput = (): boolean => assistantOutputProduced;
   const retry = config.retry;
@@ -378,7 +423,11 @@ export async function runAgentLoop(
     agentConfig: config,
     signal,
     nestedToolObserver: options?.nestedToolObserver,
-    todos: [],
+    // Seed from the runtime, not an empty literal. A fresh `[]` here meant the plan
+    // died at every invocation boundary: on `--resume` the model came back to a
+    // compacted narrative and no todos, and an empty list renders identically to
+    // never having had one, so nothing prompted it to rebuild.
+    todos: runtime.todos,
     tasks: runtime.tasks,
     backgroundShells: runtime.backgroundShells,
     fileObservationLedger: runtime.fileObservationLedger,
@@ -463,6 +512,17 @@ export async function runAgentLoop(
     /** Avoid re-attempting compact for the same pressure snapshot after skip/fail. */
     let lastCompactAttemptKey: string | null = null;
     let retrySameTurn = false;
+    /** Turn re-sends spent on transport faults; bounded by retry.streamReissueAttempts. */
+    let streamReissues = 0;
+    /** Continuations after an output cap; budgeted separately from transport faults. */
+    let outputCapContinues = 0;
+    /** Host-authored continuations spent, and the witnesses they were taken at. */
+    let continuationCount = 0;
+    const continuationWitnesses: string[] = [];
+    let continuationStop: ContinuationStopReason | undefined;
+    const runStartedAt = Date.now();
+    /** Guards the periodic work-state message against a same-turn re-issue. */
+    let lastWorkStateTurn = -1;
     let emptyResponseRetryTurn: number | null = null;
     let forcedCompactTurn: number | null = null;
     let effectiveMode = initialMode;
@@ -532,6 +592,40 @@ export async function runAgentLoop(
         log.debug('turn start', { turn, maxTurns: config.maxTurns, mode: effectiveMode });
       }
 
+      // Periodic host-authored plan restatement. It keeps the plan fresh across a
+      // long tool-grinding stretch, and it is the only guaranteed producer of
+      // compaction bundle boundaries in a run with one user turn: a run that never
+      // stops never produces a continuation message either, so without this the
+      // candidate span is all-assistant and the retained tail is unconditionally
+      // zero from generation 2 onward.
+      const refreshTurns = config.settings.continuation.planRefreshTurns;
+      if (
+        config.settings.continuation.enabled &&
+        refreshTurns > 0 &&
+        turn > 0 &&
+        turn !== lastWorkStateTurn &&
+        turn % refreshTurns === 0
+      ) {
+        const workState = renderWorkState({
+          todos: toolContext.todos ?? [],
+          tasks: toolContext.tasks ?? [],
+        });
+        if (workState) {
+          lastWorkStateTurn = turn;
+          const message: Message = {
+            id: crypto.randomUUID(),
+            role: 'user',
+            content: workState,
+            includeInContext: true,
+            kind: 'conversation',
+            timestamp: Date.now(),
+          };
+          newHistory.push(message);
+          callbacks.onUserMessageAppended?.(message);
+          log.debug('work-state refresh appended', { turn });
+        }
+      }
+
       toolContext.currentTurn = turn;
       syncSkillRestrictions(turn);
       const activeDefinitions = toolSurface.activeDefinitions();
@@ -547,6 +641,7 @@ export async function runAgentLoop(
           hideAgents: options?.hideAgents,
           toolCatalogSummary: toolSurface.catalogSummary(),
           planMode: effectiveMode === 'plan',
+          planUnrestored: runtime.planUnrestored,
           workflowPolicy: options?.harnessContext?.workflowPolicySection,
         },
         runtime.agentContextCache,
@@ -599,6 +694,7 @@ export async function runAgentLoop(
                   hideAgents: options?.hideAgents,
                   toolCatalogSummary: toolSurface.catalogSummary(),
                   planMode: effectiveMode === 'plan',
+          planUnrestored: runtime.planUnrestored,
                   workflowPolicy: options?.harnessContext?.workflowPolicySection,
                 },
                 runtime.agentContextCache,
@@ -629,6 +725,7 @@ export async function runAgentLoop(
               hideAgents: options?.hideAgents,
               toolCatalogSummary: toolSurface.catalogSummary(),
               planMode: effectiveMode === 'plan',
+          planUnrestored: runtime.planUnrestored,
               workflowPolicy: options?.harnessContext?.workflowPolicySection,
             },
             runtime.agentContextCache,
@@ -834,8 +931,12 @@ export async function runAgentLoop(
       );
       if (!streamError && streamDone && finishReason) {
         if (finishReason === 'length' || finishReason === 'max_tokens') {
-          streamError = 'The provider stopped because the response reached its output limit.';
-          streamErrorCode = 'protocol_error';
+          // Not a protocol error. On a migration or a generated file, hitting the
+          // output cap is the shape of the work, not an anomaly — and classifying
+          // it as a protocol error made it unrecoverable.
+          streamError =
+            'The provider stopped because the response reached its output limit. Continue from exactly where you stopped; do not restart the answer.';
+          streamErrorCode = 'output_cap';
         } else if (finishReason === 'model_context_window_exceeded') {
           streamError = 'The provider stopped because the model context window was exceeded.';
           streamErrorCode = 'context_overflow';
@@ -1022,7 +1123,6 @@ export async function runAgentLoop(
           // not see — the transcript read as though the model never spoke.
           callbacks.onAssistantMessageComplete?.(partialMessage);
         }
-        callbacks.onError(streamError);
         const streamOutcome =
           streamErrorCode === 'stream_stall'
             ? createTerminalOutcome('timed_out', 'stream_stall', {
@@ -1051,11 +1151,86 @@ export async function runAgentLoop(
                         message: streamError,
                         providerCode: streamErrorCode,
                       })
-                    : createTerminalOutcome('failed', 'provider_error', {
-                        partialOutput: hasPartialOutput(),
-                        message: streamError,
-                        providerCode: streamErrorCode,
-                      });
+                    : streamErrorCode === 'auth' || streamErrorCode === 'quota'
+                      ? createTerminalOutcome('failed', 'credentials_rejected', {
+                          partialOutput: hasPartialOutput(),
+                          message: streamError,
+                          providerCode: streamErrorCode,
+                        })
+                      : streamErrorCode === 'output_cap'
+                      ? createTerminalOutcome('failed', 'output_cap', {
+                          partialOutput: hasPartialOutput(),
+                          message: streamError,
+                          providerCode: streamErrorCode,
+                        })
+                      : createTerminalOutcome('failed', 'provider_error', {
+                          partialOutput: hasPartialOutput(),
+                          message: streamError,
+                          providerCode: streamErrorCode,
+                        });
+
+        // A transport fault is not a failure of the work. Everything needed to send
+        // the turn again is already committed: the partial assistant message was
+        // pushed above and every dangling `tool_use` was settled with a `cancelled`
+        // result, so the history stays valid to the provider and no tool re-executes.
+        //
+        // Output-cap continuations draw on their own allowance: a large generated
+        // file legitimately hits the cap turn after turn, and sharing the transport
+        // budget would leave nothing for a real socket drop afterwards.
+        const recovery = terminalRecovery(streamOutcome);
+        const spent = recovery === 'continue' ? outputCapContinues : streamReissues;
+        const allowed =
+          recovery === 'continue'
+            ? (config.retry.outputCapContinuations ?? 0)
+            : (config.retry.streamReissueAttempts ?? 0);
+        if (
+          (recovery === 'reissue' || recovery === 'continue') &&
+          spent < allowed &&
+          !signal?.aborted
+        ) {
+          if (recovery === 'continue') outputCapContinues++;
+          else streamReissues++;
+          log.warn('stream ended mid-turn; re-issuing', {
+            turn,
+            recovery,
+            attempt: spent + 1,
+            allowed,
+            reason: streamOutcome.reason,
+          });
+          // Back off before re-sending a transport fault: an immediate retry against
+          // a provider that just went quiet usually buys another stall. An output cap
+          // is not a fault, so it continues immediately.
+          const reissueDelayMs =
+            recovery === 'continue'
+              ? 0
+              : Math.min(config.retry.maxDelayMs, config.retry.baseDelayMs * 2 ** streamReissues);
+          callbacks.onRetry?.('transport', spent + 1, allowed, reissueDelayMs);
+          await delay(reissueDelayMs, signal);
+          if (!signal?.aborted) {
+            retrySameTurn = true;
+            continue;
+          }
+        }
+
+        // A parked run is not a failed one: nothing is wrong with the work, it
+        // needs an operator. Escalate so a supervisor can wait for a new key
+        // rather than tear the objective down.
+        if (terminalRecovery(streamOutcome) === 'park' && !options?.isSubagent) {
+          runHooks(
+            config.settings.hooks.Notification,
+            'Notification',
+            {
+              workspace: config.workspace,
+              event: 'Notification',
+              severity: 'alarm',
+              kind: 'credentials_rejected',
+              message: streamError,
+            },
+            { onHookEvent: callbacks.onHookEvent },
+          ).catch(() => {});
+        }
+
+        callbacks.onError(streamError);
         finishTerminal(streamOutcome);
         return newHistory;
       }
@@ -1750,6 +1925,7 @@ export async function runAgentLoop(
           if (entry) await finishCall(entry, await executeToolCall(entry));
           publishResult(callIndex, resultAt(callIndex));
           if (callbacks.onTodos && toolContext.todos) callbacks.onTodos(toolContext.todos);
+          if (callbacks.onTasks && toolContext.tasks) callbacks.onTasks(toolContext.tasks);
           callIndex++;
           continue;
         }
@@ -1783,6 +1959,7 @@ export async function runAgentLoop(
         for (let index = waveStart; index < callIndex; index++) {
           publishResult(index, resultAt(index));
           if (callbacks.onTodos && toolContext.todos) callbacks.onTodos(toolContext.todos);
+          if (callbacks.onTasks && toolContext.tasks) callbacks.onTasks(toolContext.tasks);
         }
       }
 
@@ -1862,6 +2039,98 @@ export async function runAgentLoop(
       });
 
       if (toolCalls.length === 0 || signal?.aborted || handoffRequested || planStopRequested) {
+        // The turn produced no tool calls. Historically that ended the run, making
+        // one user message the whole run — a model that says "I've finished"
+        // stopped there with half its plan outstanding. Ask whether there is
+        // demonstrably work left, and if so append a host-authored user turn and
+        // keep going in the SAME invocation, so the tool context and todo list
+        // survive and `ensureSessionState` attaches a fresh block.
+        const witness = buildProgressWitness({
+          todos: toolContext.todos ?? [],
+          fileObservations: runtime.fileObservationLedger,
+          toolCallCount: [...runtime.toolCallStats.values()].reduce(
+            (sum, entry) => sum + entry.calls,
+            0,
+          ),
+        });
+        const decision = decideContinuation({
+          settings: config.settings.continuation,
+          todos: toolContext.todos ?? [],
+          tasks: toolContext.tasks ?? [],
+          consecutive: continuationCount,
+          priorWitnesses: continuationWitnesses,
+          witness,
+          elapsedMs: Date.now() - runStartedAt,
+          aborted: signal?.aborted,
+          handoffRequested: Boolean(handoffRequested),
+          planStopRequested: Boolean(planStopRequested),
+        });
+        if (decision.kind === 'continue') {
+          continuationCount++;
+          continuationWitnesses.push(witnessSignature(witness));
+          const message: Message = {
+            id: crypto.randomUUID(),
+            role: 'user',
+            content: decision.prompt,
+            includeInContext: true,
+            // Load-bearing: `splitUserLedBundles` opens a compaction bundle on
+            // `role === 'user' && kind !== 'checkpoint'`.
+            kind: 'conversation',
+            timestamp: Date.now(),
+          };
+          newHistory.push(message);
+          callbacks.onUserMessageAppended?.(message);
+          log.info('continuing run', {
+            turn,
+            consecutive: continuationCount,
+            trigger: decision.trigger,
+          });
+          continue;
+        }
+        // A completed plan is the model's opinion. Give the project a chance to
+        // refuse it: a blocking Stop hook (`npm run check`, a lint gate) turns
+        // "I'm finished" into another turn carrying the reason it is not.
+        if (
+          decision.reason === 'objective_complete' &&
+          config.settings.continuation.enabled &&
+          !options?.isSubagent &&
+          config.settings.hooks.Stop.length > 0 &&
+          continuationCount < config.settings.continuation.maxConsecutive
+        ) {
+          const gate = await runHooks(
+            config.settings.hooks.Stop,
+            'Stop',
+            { workspace: config.workspace, event: 'Stop', status: 'completed' },
+            { onHookEvent: callbacks.onHookEvent },
+          ).catch(() => []);
+          const blocked = gate.find((result) => result.action === 'block');
+          if (blocked) {
+            // The gate already ran and reported; firing Stop again from `finally`
+            // would re-run the check and double-report it.
+            terminalHooksFired = true;
+            continuationCount++;
+            continuationWitnesses.push(witnessSignature(witness));
+            const message: Message = {
+              id: crypto.randomUUID(),
+              role: 'user',
+              content: [
+                '[continuation] A completion gate refused this as finished.',
+                '',
+                blocked.message ?? 'The configured Stop hook blocked completion.',
+                '',
+                'Address that, then finish. Do not simply repeat that you are done.',
+              ].join('\n'),
+              includeInContext: true,
+              kind: 'conversation',
+              timestamp: Date.now(),
+            };
+            newHistory.push(message);
+            callbacks.onUserMessageAppended?.(message);
+            log.info('completion gate blocked; continuing', { turn });
+            continue;
+          }
+        }
+        continuationStop = decision.reason;
         break;
       }
     }
@@ -1891,12 +2160,42 @@ export async function runAgentLoop(
     }
 
     if (!terminalEmitted) {
+      // A continued run reports why it stopped. `no_progress`, `blocked_plan`, and
+      // `continuation_limit` are failures — the objective was not reached, and a
+      // supervisor must be able to tell that from an honest completion.
+      const continuationOutcome =
+        continuationStop === 'no_progress'
+          ? createTerminalOutcome('failed', 'no_progress', {
+              partialOutput: hasPartialOutput(),
+              message:
+                'The run made no observable progress across consecutive continuations: no todo, file, or tool-call change.',
+            })
+          : continuationStop === 'blocked_plan'
+            ? createTerminalOutcome('failed', 'blocked_plan', {
+                partialOutput: hasPartialOutput(),
+                message:
+                  'Every remaining task is blocked by unfinished work, so nothing can be done next.',
+              })
+            : continuationStop === 'continuation_limit' || continuationStop === 'wall_clock'
+              ? createTerminalOutcome('failed', 'continuation_limit', {
+                  partialOutput: hasPartialOutput(),
+                  message:
+                    continuationStop === 'wall_clock'
+                      ? 'Stopped at the configured wall-clock ceiling.'
+                      : `Stopped after ${continuationCount} continuations without finishing the plan.`,
+                })
+              : continuationStop === 'objective_complete'
+                ? createTerminalOutcome('completed', 'objective_complete', {
+                    partialOutput: false,
+                  })
+                : undefined;
       finishTerminal(
         signal?.aborted
           ? classifyAbortReason(signal.reason, hasPartialOutput())
-          : createTerminalOutcome('completed', 'normal_completion', {
+          : (continuationOutcome ??
+            createTerminalOutcome('completed', 'normal_completion', {
               partialOutput: false,
-            }),
+            })),
       );
     }
 
@@ -1925,35 +2224,18 @@ export async function runAgentLoop(
     // per child. Without the guard, one user prompt that spawns three managed
     // agents would fire Stop four times, three of them reporting a worktree as
     // the workspace.
-    if (!options?.isSubagent) {
-      runHooks(
-        config.settings.hooks.Stop,
-        'Stop',
-        {
-          workspace: config.workspace,
-          event: 'Stop',
-        },
-        { onHookEvent: callbacks.onHookEvent },
-      ).catch((err) => console.warn('Stop hook failed:', err));
-    }
-
-    // One-shot callers keep the legacy per-loop lifecycle. Multi-turn hosts
-    // disable this and fire SessionEnd when the conversation is actually left.
-    if (options?.manageSessionHooks !== false) {
-      runHooks(
-        config.settings.hooks.SessionEnd,
-        'SessionEnd',
-        {
-          workspace: config.workspace,
-          event: 'SessionEnd',
-        },
-        { onHookEvent: callbacks.onHookEvent },
-      ).catch((err) => console.warn('SessionEnd hook failed:', err));
-    }
+    fireTerminalHooks();
 
     callbacks.onDone();
     return newHistory;
   } finally {
+    // Every early `return newHistory` above — a blocked prompt, a context overflow,
+    // a spent run budget, an unrecoverable stream error — used to skip both
+    // terminal hooks. That gap was defensible for a session a human is watching. It
+    // is not when a shell script is the only observer and cannot otherwise tell
+    // "finished the objective" from "the socket died". Firing from `finally` closes
+    // it; `terminalHooksFired` keeps it exactly once.
+    fireTerminalHooks();
     skillRegistry.endRun(signal?.aborted ? 'run_aborted' : 'run_complete');
     flushSkillEvents();
     disposeSkillRestrictions();

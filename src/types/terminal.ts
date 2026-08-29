@@ -18,7 +18,51 @@ export type AgentTerminalReason =
   | 'session_disposed'
   | 'session_replaced'
   | 'transport_interrupted'
+  | 'output_cap'
+  | 'credentials_rejected'
+  | 'objective_complete'
+  | 'continuation_limit'
+  | 'blocked_plan'
+  | 'no_progress'
   | 'missing_terminal';
+
+/**
+ * What a host may do about a terminal outcome.
+ *
+ * - `reissue` — a transport fault: the failure is about the wire, not the work,
+ *   so the turn can be sent again against the history already on disk.
+ * - `continue` — not a fault at all. The model was cut off mid-answer by the
+ *   output cap and should carry on. Kept distinct from `reissue` so a large
+ *   generated file cannot drain the budget reserved for real transport faults.
+ * - `park` — the run cannot proceed but nothing is wrong with the work; it needs
+ *   an operator (an expired credential). Distinguished from `none` so a
+ *   supervisor can wait rather than declare failure.
+ * - `none` — a genuine end: the budget is gone, policy refused, the user
+ *   cancelled, the context will not fit.
+ *
+ * A function rather than a field on the readonly outcome, so no existing producer
+ * or consumer of `AgentTerminalOutcome` has to change.
+ */
+export type TerminalRecovery = 'none' | 'reissue' | 'continue' | 'park';
+
+export function terminalRecovery(outcome: AgentTerminalOutcome): TerminalRecovery {
+  switch (outcome.reason) {
+    case 'stream_stall':
+    case 'provider_timeout':
+    case 'transport_interrupted':
+    case 'provider_error':
+      return 'reissue';
+    case 'output_cap':
+      return 'continue';
+    case 'credentials_rejected':
+      return 'park';
+    default:
+      // Everything else — budget_exceeded, blocked_by_policy, user_cancelled,
+      // max_turns, context_overflow, protocol_error — is a real end. Re-sending
+      // would reproduce it, and for the budget it would also spend past the cap.
+      return 'none';
+  }
+}
 
 export interface AgentTerminalOutcome {
   readonly status: AgentTerminalStatus;

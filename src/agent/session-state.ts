@@ -29,6 +29,13 @@ export interface SessionStateInput {
   todos?: Array<{ content: string; status: string; activeForm?: string }>;
   /** Checkpoint files that no longer match what the agent observed. */
   staleFiles?: string[];
+  /**
+   * Set when a resumed session has prior work but no plan came back with it. An
+   * empty todo list renders nothing at all, so without this line a restart that
+   * dropped the plan is indistinguishable from a task that never had one — and
+   * the model silently re-derives instead of deliberately rebuilding.
+   */
+  planUnrestored?: boolean;
 }
 
 function todoLines(todos: NonNullable<SessionStateInput['todos']>): string[] {
@@ -54,6 +61,11 @@ export function renderSessionState(input: SessionStateInput): string {
     ...(input.planMode ? [PLAN_MODE_LINE] : []),
     ...(stale.length
       ? [`- Stale since checkpoint: ${stale.join(', ')} — reread before exact reliance`]
+      : []),
+    ...(input.planUnrestored && (input.todos ?? []).length === 0
+      ? [
+          '- No task list was restored from the previous process, though this session has earlier work. Re-establish the plan before continuing.',
+        ]
       : []),
     ...todoLines(input.todos ?? []),
     '</session-state>',

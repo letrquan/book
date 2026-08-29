@@ -31,6 +31,12 @@ export interface HookContext {
   worktree?: string;
   status?: string;
   stopReason?: string;
+  /** Notification: how loudly this wants to be heard. Only `alarm` wakes anyone. */
+  severity?: 'alarm' | 'warn' | 'info';
+  /** Notification: a stable machine-readable kind, e.g. `agent_disk_space`. */
+  kind?: string;
+  /** Notification: human-readable detail. */
+  message?: string;
 }
 
 /** Result of running a single hook. */
@@ -83,10 +89,17 @@ export async function runHooks(
     worktree: ctx.worktree ?? null,
     status: ctx.status ?? null,
     stopReason: ctx.stopReason ?? null,
+    severity: ctx.severity ?? null,
+    kind: ctx.kind ?? null,
+    message: ctx.message ?? null,
   });
 
   const results: HookResult[] = [];
-  const blockingEvents: HookEvent[] = ['PreToolUse', 'UserPromptSubmit', 'PreCompact'];
+  // `Stop` is blocking so a project can refuse a premature "I'm finished": the
+  // hook's `block` becomes a continuation turn carrying its message. That is the
+  // only way "do not consider this done until `npm run check` passes" is
+  // expressible from outside the process at all.
+  const blockingEvents: HookEvent[] = ['PreToolUse', 'UserPromptSubmit', 'PreCompact', 'Stop'];
 
   for (const entry of hooks) {
     opts?.signal?.throwIfAborted();
@@ -220,6 +233,9 @@ async function runSingleHook(
     worktree: ctx.worktree,
     status: ctx.status,
     stop_reason: ctx.stopReason,
+    severity: ctx.severity,
+    kind: ctx.kind,
+    message: ctx.message,
   });
 
   return new Promise<HookResult>((resolve, reject) => {

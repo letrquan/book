@@ -421,10 +421,93 @@ BOOK_ZERO_MEM_MODEL_CACHE=/path/to/model-cache npm run eval:zero-mem -- --model 
     "checks": {
       "test": "npm test",
       "typecheck": "npm run typecheck"
-    }
+    },
+    "checkTimeoutMs": 120000
   }
 }
 ```
+
+`agents.checkTimeoutMs` caps one `Check` run (default 120 s, maximum 2 h). A check that exceeds it
+is killed and reported as `check_timed_out` — explicitly *not* as a failing check, so an agent does
+not "fix" code that was passing. Raise it for repositories whose full suite runs longer than the
+default; `npm test` here builds first and routinely does.
+
+### Unattended runs
+
+By default a run ends at the first turn that produces no tool calls: one user message is the whole
+run. For long autonomous work, `continuation` lets the loop keep going while the plan says there is
+work left.
+
+```json
+{
+  "continuation": {
+    "enabled": true,
+    "maxConsecutive": 50,
+    "noProgressLimit": 3,
+    "planRefreshTurns": 25,
+    "maxWallClockMs": 0
+  },
+  "retry": { "streamReissueAttempts": 3, "outputCapContinuations": 10 }
+}
+```
+
+Continuation never overrides an abort, an approved plan handoff, a spent budget, or a policy
+refusal. `noProgressLimit` is the brake: when the todo list, the observed-file hashes, and the
+tool-call count are all unchanged across that many boundaries, the run ends as `no_progress` instead
+of spinning. `planRefreshTurns` restates the open plan periodically, which also keeps compaction from
+retaining an empty tail in a run that never stops on its own. Terminal outcomes gain
+`objective_complete`, `continuation_limit`, `blocked_plan`, and `no_progress` so a supervisor can
+tell them apart — `blocked_plan` specifically means every remaining task is waiting on unfinished
+work, which is a stall, not a success.
+
+Thinking models get their own stall ceiling. `retry.streamStallTimeoutMs` (20 s) is tuned for a chat,
+where that much silence means something broke; adaptive thinking is on by default for Opus and Sonnet
+at `high` effort, and a long quiet stretch before the first token is the model working. While thinking
+is enabled Book uses `retry.thinkingStallTimeoutMs` instead (default 15 minutes,
+`BOOK_THINKING_STALL_TIMEOUT_MS`). Raise it if a very high-effort Opus run still reports
+`stream_stall`.
+
+`retry.streamReissueAttempts` re-sends a turn after a transport fault — a stalled stream, a dropped
+socket — onto the history already committed. Set it to 0 to end the run on any stream error, as
+earlier versions did. `retry.outputCapContinuations` is a separate allowance for continuing after the
+provider's output limit, so a large generated file cannot drain the budget a real socket drop needs.
+
+For a supervised loop, use `--session-id` (resume-or-create) rather than `--continue`, which selects
+the most recently touched session in the directory and can be hijacked by an unrelated `book -p`
+invocation:
+
+```sh
+ID=$(uuidgen)
+while ! book -p --session-id "$ID" --output-format stream-json         --max-budget-usd 500 "$OBJECTIVE"      | jq -e 'select(.type=="result") | .outcome.reason=="objective_complete"'; do sleep 30; done
+```
+
+`--max-budget-usd` accumulates across restarts of the same session, so the cap bounds the objective
+rather than each process.
+
+Check on a run at any point, from any shell, with no provider configured:
+
+```sh
+book status                 # newest session in this workspace
+book status <id|name> --json
+```
+
+It reports the byte-exact original objective, how much history has been compacted away, cumulative
+tokens with an upper-bound USD figure, and the plan as last persisted.
+
+To be told when something needs a person, configure a `Notification` hook. Only `severity: "alarm"`
+is meant to wake anyone — everything else is a line to tail:
+
+```json
+{
+  "hooks": {
+    "Notification": [{ "command": "[ \"$severity\" = alarm ] && ntfy publish my-topic \"$message\"" }]
+  }
+}
+```
+
+Managed agents refuse to spawn rather than fill the disk: `agents.maxWorktrees` (default 24) caps
+simultaneous worktrees per repository and `agents.minFreeDiskBytes` (default 2 GB) is the free-space
+floor. Both raise an `alarm` notification when they bite, and 0 disables either check.
 
 `compactStrategy` supports only `summary`, the production default. Zero-Mem is retained as an
 explicitly named experiment and is unavailable under shipped defaults. Opt in for one process with

@@ -285,7 +285,12 @@ export interface ToolContext {
   currentTurn?: number;
   /** Observer for display-only tools invoked inside Task subagents. */
   nestedToolObserver?: NestedToolObserver;
-  /** Agent todo list — written by TodoWrite, read by the loop for context injection. */
+  /**
+   * Agent todo list — written by TodoWrite, read by the loop for context injection.
+   * Bound to the array `SessionRuntime` owns; TodoWrite mutates it in place rather
+   * than reassigning, so the runtime, the session-state render, and the plan
+   * persistence writer all observe the same list.
+   */
   todos?: Array<{ content: string; status: string; activeForm?: string }>;
   /** Agent task list — written by TaskCreate/TaskUpdate and shared across tool calls. */
   tasks?: AgentTask[];

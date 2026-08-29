@@ -67,7 +67,7 @@ describe('RunAccounting', () => {
     });
   });
 
-  it('fails future budget checks closed when a compaction omits usage', () => {
+  it('keeps enforcing against the known floor when a compaction omits usage', () => {
     const accounting = new RunAccounting();
     const root = context('root');
     accounting.startRoot(root, 1);
@@ -83,17 +83,20 @@ describe('RunAccounting', () => {
       'compaction_usage',
     );
 
+    // Missing usage makes the running total a lower bound, not an unknown
+    // quantity. The omission stays visible via completeness/unknownModels/
+    // missingSources, but it no longer latches the run into a permanent refusal.
     expect(accounting.snapshotRoot(root.rootRunId)).toMatchObject({
-      costUsd: null,
-      costStatus: 'unknown',
-      budgetStatus: 'unknown',
+      completeness: 'partial',
+      costStatus: 'estimated',
+      budgetStatus: 'within',
       unknownModels: ['gpt-5-2025-08-07'],
       modelIdentities: [{ responseId: 'compact-without-usage', status: 'verified' }],
       missingSources: ['compaction_usage'],
     });
     expect(accounting.checkBeforeModelCall(root.rootRunId, 'gpt-5')).toMatchObject({
-      allowed: false,
-      status: 'unknown',
+      allowed: true,
+      status: 'within',
     });
   });
 
@@ -110,9 +113,58 @@ describe('RunAccounting', () => {
 
     expect(accounting.snapshotRoot(root.rootRunId)).toMatchObject({
       completeness: 'partial',
-      costStatus: 'unknown',
-      budgetStatus: 'unknown',
+      costStatus: 'estimated',
+      budgetStatus: 'within',
       missingSources: ['failed_provider_attempt_usage'],
+    });
+  });
+
+  it('survives a transient retry and still stops at the cap', () => {
+    // The reported failure: markUsageUnknown fires from the provider's onRetry, so
+    // one transient 429 used to refuse every later call — making the reliability
+    // layer and the USD budget mutually exclusive.
+    const accounting = new RunAccounting();
+    const root = context('root');
+    accounting.startRoot(root, 1);
+
+    accounting.record(root, usage(1_000, 100), {
+      provider: 'anthropic',
+      requestedModel: 'claude-sonnet-5',
+      responseModel: 'claude-sonnet-5',
+      responseId: 'turn-1',
+    });
+    accounting.markUsageUnknown(
+      root,
+      { provider: 'anthropic', requestedModel: 'claude-sonnet-5' },
+      'failed_provider_attempt_usage',
+    );
+
+    expect(accounting.checkBeforeModelCall(root.rootRunId, 'claude-sonnet-5')).toMatchObject({
+      allowed: true,
+    });
+
+    for (let i = 0; i < 300; i++) {
+      accounting.record(root, usage(1_000_000, 100_000), {
+        provider: 'anthropic',
+        requestedModel: 'claude-sonnet-5',
+        responseModel: 'claude-sonnet-5',
+        responseId: `turn-over-${i}`,
+      });
+    }
+    expect(accounting.checkBeforeModelCall(root.rootRunId, 'claude-sonnet-5')).toMatchObject({
+      allowed: false,
+      status: 'exceeded',
+    });
+  });
+
+  it('still fails closed when the model itself cannot be priced', () => {
+    const accounting = new RunAccounting();
+    const root = context('root');
+    accounting.startRoot(root, 1);
+
+    expect(accounting.checkBeforeModelCall(root.rootRunId, 'not-a-real-model')).toMatchObject({
+      allowed: false,
+      status: 'unknown',
     });
   });
 

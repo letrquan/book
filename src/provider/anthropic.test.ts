@@ -584,3 +584,44 @@ describe('countCacheBreakpoints', () => {
     ).toBe(0);
   });
 });
+
+describe('stall tolerance while thinking', () => {
+  it('gives a thinking model a longer stall ceiling than the chat one', async () => {
+    // The chat-tuned 20s ceiling cancels a healthy high-effort request mid-thought
+    // and reports stream_stall — the most common way an Opus run "just stops".
+    const reads: number[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      body: {
+        getReader: () => ({
+          read: () =>
+            new Promise((resolve) => {
+              reads.push(Date.now());
+              // Never resolves within the test; the race decides the outcome.
+              setTimeout(() => resolve({ done: true, value: undefined }), 50);
+            }),
+          cancel: async () => {},
+        }),
+      },
+    })) as unknown as typeof fetch;
+
+    try {
+      const config = defaultConfig({ model: 'claude-opus-5' });
+      config.retry = {
+        ...config.retry,
+        streamStallTimeoutMs: 5_000,
+        thinkingStallTimeoutMs: 60_000,
+      };
+      const events = [];
+      for await (const event of chatCompletionStream(config, [{ role: 'user', content: 'x' }], [])) {
+        events.push(event);
+      }
+      // It must not have stalled at the 5s chat ceiling.
+      expect(events.find((e) => e.type === 'error' && e.errorCode === 'stream_stall')).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});

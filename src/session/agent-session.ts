@@ -15,6 +15,7 @@ import type {
   CompactBoundary,
   CompactRecordData,
   CompactResult,
+  PlanRecordData,
   RewindSnapshotCaptureResult,
   RewindSnapshotStoreInterface,
   RewindTarget,
@@ -1023,6 +1024,34 @@ export class AgentSession {
         });
         effectiveHistory = prepared.history;
       }
+      /**
+       * Append a whole-plan snapshot. Both todo and task writers call this, and
+       * the loader takes the last `plan` record, so an interleaved write cannot
+       * leave half a plan on disk. The signature check keeps a per-wave callback
+       * from appending an identical record on every tool result.
+       */
+      let lastPlanSignature = '';
+      const persistPlan = (): void => {
+        if (!request.timelineStore) return;
+        const data: PlanRecordData = {
+          version: 1,
+          todos: runtime.todos.map((todo) => ({
+            content: todo.content,
+            status: todo.status,
+            activeForm: todo.activeForm,
+          })),
+          tasks: runtime.tasks,
+        };
+        const signature = JSON.stringify(data);
+        if (signature === lastPlanSignature) return;
+        lastPlanSignature = signature;
+        request.timelineStore.append(request.sessionId, {
+          type: 'plan',
+          timestamp: Date.now(),
+          data,
+        } satisfies SessionRecord);
+      };
+
       const baseLoopCallbacks: AgentLoopCallbacks = {
         onText: (content: string) => {
           streamedAssistantText += content;
@@ -1076,6 +1105,23 @@ export class AgentSession {
         },
         onUsage: (nextUsage, metadata) => {
           usage = nextUsage;
+          // `RunAccounting.roots` is rebuilt with the process, so without a durable
+          // record forty restarts is forty independent budget caps. The 'usage'
+          // SessionRecord type was already declared with no writers; this is it.
+          // Cost is not stored — pricing can change between processes, so it is
+          // re-derived from tokens at bootstrap.
+          if (request.isCurrent?.() !== false) {
+            request.timelineStore?.append(request.sessionId, {
+              type: 'usage',
+              timestamp: Date.now(),
+              data: {
+                version: 1,
+                usage: nextUsage,
+                requestedModel: metadata?.requestedModel,
+                responseModel: metadata?.responseModel,
+              },
+            } satisfies SessionRecord);
+          }
           callbacks.onUsage?.(nextUsage, metadata);
         },
         getMode: callbacks.getMode,
@@ -1102,7 +1148,38 @@ export class AgentSession {
           } satisfies SessionRecord);
           callbacks.onAssistantMessageComplete?.(message);
         },
-        onTodos: callbacks.onTodos,
+        // The plan is persisted from here because this is the only seam that sees
+        // every mutation with the session store in scope.
+        onTodos: (todos) => {
+          if (request.isCurrent?.() !== false) persistPlan();
+          callbacks.onTodos?.(todos);
+        },
+        onTasks: () => {
+          if (request.isCurrent?.() !== false) persistPlan();
+        },
+        /**
+         * Persist a user message the loop authored rather than the host — a
+         * continuation, a work-state refresh. Hosts write the user message before
+         * `send`, so nothing else records these and a resumed session would show
+         * assistant turns answering questions that were never asked.
+         *
+         * `UserPromptSubmit` hooks and memory capture are deliberately skipped:
+         * this is the agent talking to itself, not a person submitting a prompt.
+         */
+        onUserMessageAppended: (message) => {
+          if (request.isCurrent?.() === false) return;
+          request.timelineStore?.append(request.sessionId, {
+            type: 'user',
+            eventId: message.id,
+            timestamp: message.timestamp,
+            data: {
+              id: message.id,
+              content: message.content,
+              kind: message.kind ?? 'conversation',
+              includeInContext: message.includeInContext ?? true,
+            },
+          } satisfies SessionRecord);
+        },
         onRetry: callbacks.onRetry,
         onStreamStall: callbacks.onStreamStall,
         onStreamResume: callbacks.onStreamResume,
