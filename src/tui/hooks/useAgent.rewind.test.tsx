@@ -104,6 +104,10 @@ function Harness({
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'book-use-agent-rewind-'));
   roots.push(root);
+  // User preferences now persist to the user-global layer, which resolves
+  // through BOOK_HOME. Without pinning it here the test would write the
+  // developer's real ~/.book/settings.json.
+  process.env.BOOK_HOME = join(root, 'home');
   const workspace = join(root, 'workspace');
   const timeline = new SessionStore(join(root, 'sessions'));
   const sessionId = timeline.create({ cwd: workspace });
@@ -175,8 +179,12 @@ function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 30));
 }
 
+const originalBookHome = process.env.BOOK_HOME;
+
 afterEach(() => {
   cleanup();
+  if (originalBookHome === undefined) delete process.env.BOOK_HOME;
+  else process.env.BOOK_HOME = originalBookHome;
   latest = undefined;
   callOrder.length = 0;
   agentLoopState.nextError = null;
@@ -212,7 +220,9 @@ describe('useAgent rewind integration', () => {
     expect(latest!.liveConfig.model).toBe(config.model);
     expect(latest!.liveConfig.compactModel).toBe('router/gemini-flash');
     expect(latest!.liveConfig.settings.compactModel).toBe('router/gemini-flash');
-    expect(readFileSync(join(config.workspace, '.book', 'settings.local.json'), 'utf8')).toContain(
+    // The compact model is a preference about how Book works for this user, so
+    // it is written to the user-global layer and follows them across checkouts.
+    expect(readFileSync(join(process.env.BOOK_HOME!, 'settings.json'), 'utf8')).toContain(
       'router/gemini-flash',
     );
   });

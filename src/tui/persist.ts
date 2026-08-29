@@ -6,8 +6,13 @@
  * project → local. Two write targets are exposed:
  *  - `*Local`  → <workspace>/.book/settings.local.json (per-project, gitignored)
  *  - `*Global` → ~/.book/settings.json (shared across every project)
- * Provider registries, API keys, and the active model are persisted globally so
- * they follow the user across folders rather than being re-entered per project.
+ * The split is by whose choice it is. A preference about how Book behaves for
+ * *you* - provider registries, API keys, model, effort, compaction model,
+ * permission default mode, thinking display, startup animation, memory
+ * auto-save - is global, so it follows you across folders rather than being
+ * re-set per project. What stays local is what is genuinely about *this*
+ * repository: which skills are on, and the permission rules approved for its
+ * tools.
  */
 import { existsSync } from 'fs';
 import { join } from 'path';

@@ -4,6 +4,40 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **`book config set` now writes the user-global layer by default, so a setting follows you instead
+  of the directory you happened to be in.** It previously wrote `<workspace>/.book/settings.local.json`
+  unconditionally, with no way to ask for another layer: the same preference had to be re-set in
+  every checkout, and because the local layer resolves *last*, a stray value left in one silently
+  outranked a later deliberate one. `--project` and `--local` reach the two workspace layers,
+  `-g`/`--global` states the new default explicitly, and more than one scope is an error. A
+  user-global write that a workspace layer still shadows now reports it rather than looking inert.
+
+- **TUI preferences are saved by whose choice they are.** Effort, compact model, thinking display,
+  startup animation, and memory auto-capture moved from the project-local layer to the user-global
+  one, joining model, provider registries, API keys, and the permission default mode. Skill
+  overrides, approved permission rules, per-profile agent models, and the theme stay project-local:
+  those are about the repository, and a theme name can come from a project's `.book/themes`, where
+  it would not resolve elsewhere.
+
+### Added
+
+- **`book config unset <key>`** removes a key from one layer, so a shadowing value can be cleared
+  with the tool that reported it rather than by hand.
+
+- **`book config get`/`list` take a scope.** Without one they still report the resolved merge;
+  with `--global`, `--project`, or `--local` they read that single file verbatim, which is what
+  answers "why is this not the value I set".
+
+### Fixed
+
+- **`book config` no longer fails on the configuration it exists to repair.** It resolved the merged
+  settings on every invocation, so one malformed layer made every subcommand throw -- including the
+  read that would have identified the broken file and the write that would have replaced the bad
+  value. The merge is now resolved only for the reads that need it, and a scoped read reports an
+  unreadable layer as unreadable rather than as empty.
+
 ### Fixed
 
 - **A no-op compaction no longer runs the user's `PreCompact` hooks.** Deciding whether there is

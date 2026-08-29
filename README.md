@@ -66,7 +66,10 @@ book --continue  # most recent session in current directory
 book doctor
 book config list
 book config get permissions.deny
-book config set permissions.allow '["Read(*)","Glob(*)","Grep(*)"]'
+book config set permissions.allow '["Read(*)","Glob(*)","Grep(*)"]'  # user-global by default
+book config set --local permissions.allow '["Read(*)"]'              # just this checkout
+book config list --local                                             # what this checkout overrides
+book config unset --local permissions.allow                          # drop the override
 
 # Manage MCP servers (JSON shape is compatible with the wider MCP ecosystem)
 book mcp list
@@ -164,6 +167,27 @@ Settings are loaded in priority order (later wins):
 3. `.book/settings.local.json` (local, should be gitignored)
 4. `--settings <path>` CLI flag
 
+#### Scopes
+
+`book config set` writes the **user-global** layer (`<BOOK_HOME>/settings.json`, normally
+`~/.book/settings.json`) unless told otherwise, so a preference you set once applies in every
+checkout. Pass `--project` to write the checked-in `.book/settings.json`, or `--local` to write the
+gitignored `.book/settings.local.json`. `-g`/`--global` states the default explicitly; passing more
+than one scope is an error.
+
+`book config get` and `book config list` report the *resolved* merge of all layers by default.
+Given a scope they read that one file verbatim instead, which is how you find the stray value
+overriding you — the local layer resolves last, so anything left there outranks a later global
+write. `book config unset <key>` removes a key from a scope (also user-global by default). A
+user-global write that a workspace layer still shadows says so, and names the `unset` that clears
+it.
+
+Two groups of keys are refused in every scope. Trust decisions
+(`mcp.projectServers`, `permissions.projectAllowRules`, `hooks.projectEntries`,
+`commands.projectCommands`) live in `<BOOK_HOME>/trust.json` and are recorded with `book trust`.
+Experimental capability flags (`experimental.*`) are not writable by `book config` at all — edit the
+user-global file directly, pass `--settings`, or use the environment opt-in.
+
 Set `BOOK_HOME` to replace the default `~/.book` user-state root. This relocates user settings,
 sessions, memory, managed-agent state and worktrees, jobs, rewind snapshots, telemetry, tool output,
 MCP configuration, and user-level skills, commands, agents, and `AGENTS.md` discovery. Project-local
@@ -258,8 +282,16 @@ Inside the TUI, `/config` opens a visual settings menu. Use it to change the mai
 strategy, compact model, effort, theme, memory auto-capture, startup fire, or the model assigned to
 each managed-agent profile.
 The startup fire plays only for a new, empty launch session and is skipped automatically for
-screen-reader or reduced-motion mode. Press Esc to skip it. TUI preference changes are saved in
-`.book/settings.local.json`; set `ui.startupAnimation` to `false` there to disable the effect.
+screen-reader or reduced-motion mode. Press Esc to skip it.
+
+TUI preference changes are saved by whose choice they are. Preferences about how Book behaves for
+*you* — model, effort, compact model, permission default mode, provider registries and API keys,
+thinking display, startup animation, memory auto-capture — are written to the user-global
+`~/.book/settings.json` and follow you across projects. What is genuinely about *this* repository
+stays in `.book/settings.local.json`: skill overrides, approved permission rules, per-profile agent
+models, and the theme (a theme name can come from a project's `.book/themes`, so it would not
+resolve elsewhere). Set `ui.startupAnimation` to `false` in `~/.book/settings.json` to disable the
+effect everywhere.
 
 ### File mutations
 

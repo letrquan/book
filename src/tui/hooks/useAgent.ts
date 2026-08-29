@@ -41,7 +41,6 @@ import { loadMemoryContext } from '../../memory-store.js';
 import {
   readSettingsGlobal,
   removeProviderGlobal,
-  persistSettingLocal,
   persistAgentProfileModel,
   persistSettingGlobal,
   persistSettingsGlobal,
@@ -1757,7 +1756,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       updateEffortLevel(
         liveConfigRef.current,
         level,
-        (selected) => persistSettingLocal(config.workspace, 'effort', selected),
+        (selected) => persistSettingGlobal('effort', selected),
         (selected) =>
           setLiveConfig((current) => ({
             ...current,
@@ -1765,7 +1764,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             effortExplicit: true,
           })),
       ),
-    [config.workspace],
+    [],
   );
 
   const setAgentProfileModel = useCallback(
@@ -1792,19 +1791,16 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [config.workspace],
   );
 
-  const setCompactModel = useCallback(
-    (model: string) => {
-      const result = persistSettingLocal(config.workspace, 'compactModel', model);
-      if (!result.ok) return result;
-      setLiveConfig((current) => ({
-        ...current,
-        compactModel: model,
-        settings: { ...current.settings, compactModel: model },
-      }));
-      return { ok: true };
-    },
-    [config.workspace],
-  );
+  const setCompactModel = useCallback((model: string) => {
+    const result = persistSettingGlobal('compactModel', model);
+    if (!result.ok) return result;
+    setLiveConfig((current) => ({
+      ...current,
+      compactModel: model,
+      settings: { ...current.settings, compactModel: model },
+    }));
+    return { ok: true };
+  }, []);
 
   const setSkillActivation = useCallback(
     (skillName: string, activation: SkillActivation) => {
@@ -1868,51 +1864,42 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [config.workspace],
   );
 
-  const setMemoryAutoSave = useCallback(
-    (enabled: boolean) => {
-      setLiveConfig((c) => ({
-        ...c,
-        settings: {
-          ...c.settings,
-          memory: { ...c.settings.memory, autoSave: enabled },
-        },
-      }));
-      persistSettingLocal(config.workspace, 'memory.autoSave', enabled);
-    },
-    [config.workspace],
-  );
+  const setMemoryAutoSave = useCallback((enabled: boolean) => {
+    setLiveConfig((c) => ({
+      ...c,
+      settings: {
+        ...c.settings,
+        memory: { ...c.settings.memory, autoSave: enabled },
+      },
+    }));
+    persistSettingGlobal('memory.autoSave', enabled);
+  }, []);
 
-  const setShowThinking = useCallback(
-    (enabled: boolean) => {
-      const result = persistSettingLocal(config.workspace, 'ui.showThinking', enabled);
-      if (!result.ok) return result;
-      setLiveConfig((current) => ({
-        ...current,
-        settings: {
-          ...current.settings,
-          ui: { ...current.settings.ui, showThinking: enabled },
-        },
-      }));
-      return { ok: true };
-    },
-    [config.workspace],
-  );
+  const setShowThinking = useCallback((enabled: boolean) => {
+    const result = persistSettingGlobal('ui.showThinking', enabled);
+    if (!result.ok) return result;
+    setLiveConfig((current) => ({
+      ...current,
+      settings: {
+        ...current.settings,
+        ui: { ...current.settings.ui, showThinking: enabled },
+      },
+    }));
+    return { ok: true };
+  }, []);
 
-  const setStartupAnimation = useCallback(
-    (enabled: boolean) => {
-      const result = persistSettingLocal(config.workspace, 'ui.startupAnimation', enabled);
-      if (!result.ok) return result;
-      setLiveConfig((current) => ({
-        ...current,
-        settings: {
-          ...current.settings,
-          ui: { ...current.settings.ui, startupAnimation: enabled },
-        },
-      }));
-      return { ok: true };
-    },
-    [config.workspace],
-  );
+  const setStartupAnimation = useCallback((enabled: boolean) => {
+    const result = persistSettingGlobal('ui.startupAnimation', enabled);
+    if (!result.ok) return result;
+    setLiveConfig((current) => ({
+      ...current,
+      settings: {
+        ...current.settings,
+        ui: { ...current.settings.ui, startupAnimation: enabled },
+      },
+    }));
+    return { ok: true };
+  }, []);
 
   // Add an allow rule from the "Always allow" approval flow (CC-aligned) and
   // surface it live in settings so the next call is auto-allowed.
