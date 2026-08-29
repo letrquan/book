@@ -84,8 +84,7 @@ export const conversationCheckpointV2Schema = z.object({
         sources: z.array(sourceRefSchema).min(1),
         observation: z.any().optional(),
       }),
-    )
-    .max(MAX_CHECKPOINT_FILES),
+    ),
   episodes: z.array(
     z.object({
       task: z.string().min(1),
@@ -1112,6 +1111,15 @@ function parseAndValidateCheckpoint(
   checkpoint.generation = generation;
   checkpoint.statistics = { ...statistics };
   checkpoint.coverage = undefined;
+  // `files` is capped by the host, not by the schema. As a parse rule a 31st file
+  // rejected the entire checkpoint -- costing the repair attempt and dropping the
+  // generation to the degraded fallback over an excess the host can simply trim.
+  // The same rule applied when re-reading a prior checkpoint message, where the
+  // rejection silently discarded every inherited fact. Trimming keeps the newest
+  // entries, matching the direction `fitCheckpoint` already evicts in.
+  if (checkpoint.files.length > MAX_CHECKPOINT_FILES) {
+    checkpoint.files = checkpoint.files.slice(-MAX_CHECKPOINT_FILES);
+  }
   checkpoint.constraints = checkpoint.constraints.map((constraint) => ({
     ...constraint,
     scope:

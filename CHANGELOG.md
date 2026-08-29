@@ -20,6 +20,13 @@ All notable changes to this project are documented in this file.
   output -- failed validation, burned the single repair attempt, and dropped the whole generation
   to the degraded fallback. Quotes are now checked against the same bytes the reducer was given.
 
+- **A 31st touched file no longer throws away the whole checkpoint.** The 30-file cap was a schema
+  rule, so exceeding it failed the parse rather than trimming the excess -- spending the repair
+  attempt and degrading the generation. Worse, the same rule ran when *re-reading* a prior
+  checkpoint from history, so an over-long checkpoint silently stopped being recognized as one and
+  every inherited fact in it was discarded. The cap is now a host trim applied before validation,
+  keeping the newest entries.
+
 ### Added
 
 - **A run says what it is doing while it does it (`<BOOK_HOME>/runs/<session>.json`).** Rewritten at

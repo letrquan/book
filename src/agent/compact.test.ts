@@ -692,6 +692,66 @@ describe('runCompact', () => {
     }
   });
 
+  it('trims an over-long file list instead of rejecting the checkpoint', async () => {
+    const files = Array.from({ length: 34 }, (_, index) => ({
+      path: `src/file-${index}.ts`,
+      summary: `touched file ${index}`,
+      sources: [{ eventRef: 'session://current/event/1' }],
+    }));
+    mockedStream.mockImplementation(async function* () {
+      yield {
+        type: 'text',
+        content: JSON.stringify({
+          version: 2,
+          generation: 1,
+          state: { summary: 'Touched many files.', status: 'active' },
+          constraints: [],
+          files,
+          episodes: [],
+          openThreads: [],
+          statistics: {
+            summarizedMessages: 2,
+            retainedMessages: 2,
+            preTokens: 1,
+            postTokens: 1,
+          },
+        }),
+      };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'touch every file', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'Reading the tree. '.repeat(3_000),
+        includeInContext: true,
+        timestamp: 0,
+        fileObservations: files.map((file, index) => ({
+          path: file.path,
+          workspaceId: 'w',
+          sha256: `${index}`.padStart(64, '0'),
+          byteSize: 10,
+          operation: 'read' as const,
+          sourceRef: 'session://current/event/2',
+          timestamp: index,
+        })),
+      },
+      { id: '3', role: 'user', content: 'and now?', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'idle', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result.status).toBe('compacted');
+    if (result.status === 'compacted') {
+      expect(result.degraded).toBeFalsy();
+      expect(result.checkpoint.files.length).toBeLessThanOrEqual(30);
+      // Trimming keeps the newest entries, the direction `fitCheckpoint` evicts in.
+      expect(result.checkpoint.files.at(-1)?.path).toBe('src/file-33.ts');
+    }
+  });
+
   it('uses a degraded retrieval checkpoint after repeated empty output', async () => {
     mockedStream.mockImplementation(async function* () {
       yield { type: 'text', content: '   ' };
