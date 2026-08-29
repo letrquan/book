@@ -10,13 +10,54 @@ import type { AgentModelIdentity, AgentRunAccounting, AgentRunContext } from '..
 
 type BudgetStatus = AgentRunAccounting['budgetStatus'];
 
+/**
+ * The identity of a model call, ignoring which response it came from.
+ *
+ * Deliberately excludes `responseId`: the only consumer of `modelIdentities` is
+ * the harness eligibility fingerprint, which already discards it and hashes
+ * exactly this tuple. Keying on it instead bounds the retained set.
+ */
+/** The single budget shared by these roots, or undefined if they disagree. */
+function distinctBudget(roots: readonly RootState[]): number | undefined {
+  const defined = new Set<number>();
+  for (const root of roots) {
+    if (root.budgetUsd !== undefined) defined.add(root.budgetUsd);
+  }
+  return defined.size === 1 ? [...defined][0] : undefined;
+}
+
+function modelIdentityKey(identity: AgentModelIdentity): string {
+  // JSON rather than a joined string: a separator character could occur inside a
+  // model or provider name and collide two distinct identities into one key.
+  return JSON.stringify([
+    identity.provider,
+    identity.requestedModel,
+    identity.responseModel ?? '',
+    identity.status,
+  ]);
+}
+
 interface ExecutionState {
   readonly context: AgentRunContext;
   usage: Usage | null;
   costUsd: number | null;
   costStatus: 'known' | 'estimated' | 'unknown';
   readonly unknownModels: Set<string>;
-  readonly modelIdentities: AgentModelIdentity[];
+  /**
+   * Distinct model identities, keyed by the tuple consumers actually read.
+   *
+   * This used to be an array deduped on `responseId`, which grew one entry per
+   * provider response, per retry, and per compaction — and the predicate could
+   * never match for an identity with no `responseId`, so those were appended
+   * unconditionally. Both `record()` and `makeSnapshot()` then linear-scanned it
+   * per element, and `makeSnapshot` runs inside `checkBeforeModelCall` before
+   * every model call: quadratic work on the hot path of the spend rail, measured
+   * at 8.4 s per call by 40k responses. Keyed by identity rather than by
+   * response, the set is bounded by the number of distinct model/provider/status
+   * combinations — a handful — and the only consumer, the harness fingerprint,
+   * already discards `responseId`.
+   */
+  readonly modelIdentities: Map<string, AgentModelIdentity>;
   readonly missingSources: Set<string>;
 }
 
@@ -115,7 +156,7 @@ export class RunAccounting {
       costUsd: 0,
       costStatus: 'known',
       unknownModels: new Set<string>(),
-      modelIdentities: [],
+      modelIdentities: new Map<string, AgentModelIdentity>(),
       missingSources: new Set<string>(),
     } satisfies ExecutionState;
     root.executions.set(context.runId, execution);
@@ -186,12 +227,9 @@ export class RunAccounting {
       execution.costUsd = null;
       execution.unknownModels.add(quote.model);
     }
-    if (
-      !execution.modelIdentities.some(
-        (item) => item.responseId === identity.responseId && item.responseId !== undefined,
-      )
-    ) {
-      execution.modelIdentities.push(identity);
+    const identityKey = modelIdentityKey(identity);
+    if (!execution.modelIdentities.has(identityKey)) {
+      execution.modelIdentities.set(identityKey, identity);
     }
     root.executions.set(context.runId, execution);
   }
@@ -221,12 +259,9 @@ export class RunAccounting {
     if (execution.costStatus !== 'unknown') execution.costStatus = 'estimated';
     execution.unknownModels.add(metadata.responseModel ?? metadata.requestedModel);
     execution.missingSources.add(source);
-    if (
-      !execution.modelIdentities.some(
-        (item) => item.responseId === identity.responseId && item.responseId !== undefined,
-      )
-    ) {
-      execution.modelIdentities.push(identity);
+    const identityKey = modelIdentityKey(identity);
+    if (!execution.modelIdentities.has(identityKey)) {
+      execution.modelIdentities.set(identityKey, identity);
     }
     root.executions.set(context.runId, execution);
   }
@@ -235,6 +270,16 @@ export class RunAccounting {
     const root = this.roots.get(rootRunId);
     if (!root || root.budgetUsd === undefined) {
       return { allowed: true, status: 'within' };
+    }
+    // A non-finite ceiling is not a ceiling. `NaN` is not `undefined`, so the budget
+    // reads as configured while every comparison against it is false — the rail
+    // reports itself active and permits everything. Fail closed instead.
+    if (!Number.isFinite(root.budgetUsd) || root.budgetUsd < 0) {
+      return {
+        allowed: false,
+        status: 'unknown',
+        message: `Refusing to run: the USD budget is not a usable number (${root.budgetUsd}).`,
+      };
     }
     if (!hasKnownPricing(requestedModel)) {
       return {
@@ -251,7 +296,11 @@ export class RunAccounting {
         message: 'Cannot enforce the USD budget because provider identity or pricing is unknown.',
       };
     }
-    if (snapshot.costUsd !== null && snapshot.costUsd >= root.budgetUsd) {
+    // Enforce against INCLUSIVE spend. `costUsd` is the root execution's own cost,
+    // so a run that delegates could pass this gate indefinitely while its agents
+    // spent without limit — the same snapshot would report `budgetStatus:
+    // 'exceeded'` while this returned `{allowed: true}`.
+    if (snapshot.inclusiveCostUsd !== null && snapshot.inclusiveCostUsd >= root.budgetUsd) {
       return {
         allowed: false,
         status: 'exceeded',
@@ -284,7 +333,12 @@ export class RunAccounting {
     const snapshot = this.makeSnapshot(
       {
         rootRunId: roots[0]?.rootRunId ?? '',
-        budgetUsd: roots.length === 1 ? roots[0]?.budgetUsd : undefined,
+        // Every root in a process carries the same cap: it comes from one flag. The
+        // old `roots.length === 1` guard therefore reported `not_configured` for a
+        // budgeted run the moment a second root existed - which headless creates
+        // per submitted prompt. Report the cap whenever the defined ones agree, and
+        // only fall back to undefined when they genuinely differ.
+        budgetUsd: distinctBudget(roots),
         executions: new Map(),
       },
       executions,
@@ -307,7 +361,7 @@ export class RunAccounting {
     // total a lower bound, which is exactly what 'estimated' means here.
     if (root.carried && root.carried.costUsd === null) costStatus = 'estimated';
     const unknownModels = new Set<string>();
-    const modelIdentities: AgentModelIdentity[] = [];
+    const modelIdentities = new Map<string, AgentModelIdentity>();
     const missingSources = new Set<string>();
     for (const execution of executions) {
       if (execution.usage) inclusiveUsage = addUsage(inclusiveUsage, execution.usage);
@@ -316,13 +370,8 @@ export class RunAccounting {
       if (execution.costStatus === 'estimated' && costStatus === 'known') costStatus = 'estimated';
       for (const model of execution.unknownModels) unknownModels.add(model);
       for (const source of execution.missingSources) missingSources.add(source);
-      for (const identity of execution.modelIdentities) {
-        if (
-          !modelIdentities.some(
-            (item) => item.responseId === identity.responseId && item.responseId !== undefined,
-          )
-        )
-          modelIdentities.push(identity);
+      for (const [key, identity] of execution.modelIdentities) {
+        if (!modelIdentities.has(key)) modelIdentities.set(key, identity);
       }
     }
     const budgetStatus: BudgetStatus =
@@ -339,12 +388,13 @@ export class RunAccounting {
       directUsage: direct?.usage ?? null,
       inclusiveUsage,
       costUsd: costStatus === 'unknown' ? null : direct ? direct.costUsd : inclusiveCost,
+      inclusiveCostUsd: costStatus === 'unknown' ? null : inclusiveCost,
       costStatus,
       pricingVersion: PRICING_VERSION,
       unknownModels: [...unknownModels],
       budgetUsd: root.budgetUsd,
       budgetStatus,
-      modelIdentities,
+      modelIdentities: [...modelIdentities.values()],
       completeness: missingSources.size === 0 ? 'complete' : 'partial',
       missingSources: [...missingSources],
     };

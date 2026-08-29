@@ -4,6 +4,38 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--max-budget-usd` is a cap again, for four independent reasons it was not.**
+  (1) It was enforced against the root execution's *own* cost, never the inclusive
+  figure, so every dollar spent by managed agents and subagents was invisible to it —
+  the same snapshot would report `budgetStatus: 'exceeded'` while the pre-call check
+  returned `{allowed: true}`. Snapshots now carry `inclusiveCostUsd` and the gate
+  enforces against it. (2) The flag was parsed with an unvalidated `parseFloat` behind
+  a truthiness guard, so `--max-budget-usd none` produced `NaN` — which is not
+  `undefined`, so the budget read as *configured* while every comparison against it
+  was false, and `0` was falsy so an explicit zero cap meant unlimited. Both flags are
+  now validated at the boundary and the check fails closed on a non-finite ceiling.
+  (3) Headless mints a fresh root per submitted prompt and re-seeded the full budget
+  into each, so a hundred stream-json prompts under a $50 cap authorised $5000 in one
+  process; spend now carries between prompts through the same seam that carries it
+  between processes. (4) `snapshotAll` reported a budgeted run as `not_configured` as
+  soon as a second root existed.
+
+- **The budget check no longer gets slower for the life of the run.** `modelIdentities`
+  grew one entry per provider response, per retry and per compaction — and its dedupe
+  predicate could never match an identity with no `responseId`, so those were appended
+  unconditionally. Both `record()` and `makeSnapshot()` then linear-scanned it per
+  element, and `makeSnapshot` runs inside `checkBeforeModelCall` before *every* model
+  call: quadratic work on the hot path of the spend rail, measured at 8.4 s per call by
+  40k responses. The set is now keyed by the identity tuple its only consumer actually
+  reads, which bounds it to the distinct model/provider/status combinations.
+
+- **`--max-turns` no longer runs zero turns and reports success.** `parseInt('none', 10)`
+  is `NaN` and `'none'` is truthy, so the typo passed the guard; every disjunct of the
+  turn guard is false for `NaN`, so the loop body never ran and the run exited
+  `completed / normal_completion` having made no provider call and written no output.
+
 ### Added
 
 - **A brake that a spinning run cannot forge (`continuation.blockedToolTurnLimit`).** A run whose

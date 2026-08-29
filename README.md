@@ -452,6 +452,11 @@ work left.
 }
 ```
 
+`--max-budget-usd` bounds the **objective**, not one process and not one prompt: spend is carried
+across restarts and across submitted prompts, and enforced against *inclusive* cost, so work done by
+managed agents and subagents counts against the same ceiling. A cap that cannot be evaluated fails
+closed — a non-finite value is refused at startup rather than silently permitting everything.
+
 Continuation never overrides an abort, an approved plan handoff, a spent budget, or a policy
 refusal. `noProgressLimit` is the brake: when the todo list, the observed-file hashes, and the
 tool-call count are all unchanged across that many boundaries, the run ends as `no_progress` instead

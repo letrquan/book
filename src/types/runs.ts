@@ -16,7 +16,17 @@ export interface AgentRunAccounting {
   readonly runIds: readonly string[];
   readonly directUsage: import('./messages.js').Usage | null;
   readonly inclusiveUsage: import('./messages.js').Usage | null;
+  /**
+   * This execution's own spend. For a root snapshot that is the root turn alone —
+   * it deliberately excludes managed agents and subagents.
+   */
   readonly costUsd: number | null;
+  /**
+   * Everything spent under this root, delegated work included. This is what a
+   * budget must be enforced against: `costUsd` omits every dollar a fan-out spent,
+   * which is most of the money in a run that delegates.
+   */
+  readonly inclusiveCostUsd: number | null;
   readonly costStatus: 'known' | 'estimated' | 'unknown';
   readonly pricingVersion: string;
   readonly unknownModels: readonly string[];

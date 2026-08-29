@@ -526,6 +526,22 @@ export async function runHeadless(
       if (opts.prompt) prompts.unshift(opts.prompt);
     }
 
+    // A USD cap has to bound the OBJECTIVE, not one prompt. Every submitted line
+    // mints a fresh root and `startRoot` seeds the full cap into it, so a hundred
+    // stream-json prompts under a $50 cap would authorise $5000 inside a single
+    // process. Carry the accumulated spend into each subsequent root through the
+    // same seam that already carries it across processes.
+    let carriedSpend: { usage: Usage | null; costUsd: number | null } | undefined =
+      opts.carriedUsage
+        ? {
+            usage: opts.carriedUsage,
+            costUsd: carriedCostUsd(
+              opts.carriedUsage,
+              opts.carriedModels?.length ? opts.carriedModels : [config.model],
+            ),
+          }
+        : undefined;
+
     for (const submitted of prompts) {
       // The run exists before dispatch, not after it. A host-performed command
       // spawns managed agents of its own, and those agents are only budgeted and
@@ -548,14 +564,8 @@ export async function runHeadless(
       runtime.runAccounting.startRoot(runContext, opts.maxBudgetUsd);
       // Carry spend forward from earlier processes of this session, so a USD cap
       // bounds the objective rather than one process.
-      if (opts.carriedUsage) {
-        runtime.runAccounting.seedRoot(runContext.rootRunId, {
-          usage: opts.carriedUsage,
-          costUsd: carriedCostUsd(
-            opts.carriedUsage,
-            opts.carriedModels?.length ? opts.carriedModels : [config.model],
-          ),
-        });
+      if (carriedSpend) {
+        runtime.runAccounting.seedRoot(runContext.rootRunId, carriedSpend);
       }
 
       const dispatch = await dispatchSubmittedPrompt(submitted, runContext);
@@ -672,6 +682,13 @@ export async function runHeadless(
       transcript.push(userMessage);
       rootContexts.set(runContext.rootRunId, runContext);
       await runParentTurn(contextMessage, prompt, userMessage, runContext, commandContext);
+      // Fold this prompt's inclusive spend into the carry so the next root starts
+      // where this one finished instead of back at zero.
+      const spentSoFar = runtime.runAccounting.snapshotRoot(runContext.rootRunId);
+      carriedSpend = {
+        usage: spentSoFar.inclusiveUsage,
+        costUsd: spentSoFar.inclusiveCostUsd,
+      };
       // An unapprovable plan is the deliverable: queued prompts would only
       // re-plan against a workspace nothing is allowed to change.
       if (planNotApplied.outcome) break;

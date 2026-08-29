@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RunAccounting } from './run-accounting.js';
 import type { AgentRunContext } from '../types/runs.js';
+import type { ProviderResponseMetadata } from '../types/providers.js';
 
 function context(runId: string, rootRunId = 'root'): AgentRunContext {
   return {
@@ -225,5 +226,95 @@ describe('RunAccounting', () => {
       allowed: false,
       status: 'exceeded',
     });
+  });
+});
+
+describe('the budget rail actually caps', () => {
+  const ctx = (rootRunId: string, runId: string): AgentRunContext => context(runId, rootRunId);
+  const meta = {
+    provider: 'anthropic',
+    requestedModel: 'claude-sonnet-5',
+    responseModel: 'claude-sonnet-5',
+    responseId: 'resp-1',
+    status: 'verified',
+  } as unknown as ProviderResponseMetadata;
+  const usage = { promptTokens: 1_000_000, completionTokens: 0, totalTokens: 1_000_000 };
+
+  it('counts spend by delegated agents against the cap', () => {
+    // `costUsd` is the root execution's OWN spend. Enforcing on it let a run that
+    // delegates pass the gate forever while its agents spent without limit — the
+    // same snapshot reported `budgetStatus: 'exceeded'` while the check allowed.
+    const accounting = new RunAccounting();
+    const root = ctx('root-1', 'root-1');
+    accounting.startRoot(root, 2);
+
+    // All of it spent by a child, none by the root itself.
+    accounting.record(ctx('root-1', 'child-1'), usage, meta);
+
+    const snapshot = accounting.snapshotRoot('root-1');
+    expect(snapshot.costUsd).toBe(0); // the root turn alone
+    expect(snapshot.inclusiveCostUsd).toBeCloseTo(3, 5); // $3/M prompt tokens
+    expect(snapshot.budgetStatus).toBe('exceeded');
+    // The gate must agree with the snapshot.
+    expect(accounting.checkBeforeModelCall('root-1', 'claude-sonnet-5')).toMatchObject({
+      allowed: false,
+      status: 'exceeded',
+    });
+  });
+
+  it('refuses to run against a budget that is not a usable number', () => {
+    // `NaN` is not `undefined`, so the budget reads as configured while every
+    // comparison against it is false: the rail reports itself on and permits
+    // everything. Fail closed instead.
+    const accounting = new RunAccounting();
+    accounting.startRoot(ctx('root-2', 'root-2'), Number.NaN);
+    expect(accounting.checkBeforeModelCall('root-2', 'claude-sonnet-5')).toMatchObject({
+      allowed: false,
+      status: 'unknown',
+    });
+  });
+
+  it('treats an explicit zero as a real zero cap, not as absent', () => {
+    const accounting = new RunAccounting();
+    accounting.startRoot(ctx('root-3', 'root-3'), 0);
+    expect(accounting.checkBeforeModelCall('root-3', 'claude-sonnet-5')).toMatchObject({
+      allowed: false,
+      status: 'exceeded',
+    });
+  });
+
+  it('reports the cap in snapshotAll once more than one root exists', () => {
+    // Headless mints a root per submitted prompt, and the old `roots.length === 1`
+    // guard reported a budgeted run as `not_configured` from the second one on.
+    const accounting = new RunAccounting();
+    accounting.startRoot(ctx('root-a', 'root-a'), 50);
+    accounting.startRoot(ctx('root-b', 'root-b'), 50);
+    const all = accounting.snapshotAll();
+    expect(all.budgetUsd).toBe(50);
+    expect(all.budgetStatus).not.toBe('not_configured');
+  });
+
+  it('keeps the pre-call check flat as responses accumulate', () => {
+    // `makeSnapshot` runs inside `checkBeforeModelCall` before every model call.
+    // It used to linear-scan a `modelIdentities` array that grew one entry per
+    // response and deduped with `.some()` — quadratic on the hot path of the spend
+    // rail, measured at 8.4s per call by 40k responses. The identity set is now
+    // keyed by the tuple its only consumer reads, so it stays bounded.
+    const accounting = new RunAccounting();
+    const root = ctx('root-perf', 'root-perf');
+    accounting.startRoot(root, 1_000_000);
+    for (let i = 0; i < 20_000; i++) {
+      accounting.record(root, { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, {
+        ...meta,
+        responseId: `resp-${i}`,
+      } as unknown as ProviderResponseMetadata);
+    }
+    expect(accounting.snapshotRoot('root-perf').modelIdentities).toHaveLength(1);
+
+    const started = performance.now();
+    for (let i = 0; i < 50; i++) accounting.checkBeforeModelCall('root-perf', 'claude-sonnet-5');
+    const elapsed = performance.now() - started;
+    // Generous: the point is that it is not seconds per call.
+    expect(elapsed).toBeLessThan(1000);
   });
 });
