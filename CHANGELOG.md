@@ -4,39 +4,33 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-
-- **`--max-budget-usd` is a cap again, for four independent reasons it was not.**
-  (1) It was enforced against the root execution's *own* cost, never the inclusive
-  figure, so every dollar spent by managed agents and subagents was invisible to it —
-  the same snapshot would report `budgetStatus: 'exceeded'` while the pre-call check
-  returned `{allowed: true}`. Snapshots now carry `inclusiveCostUsd` and the gate
-  enforces against it. (2) The flag was parsed with an unvalidated `parseFloat` behind
-  a truthiness guard, so `--max-budget-usd none` produced `NaN` — which is not
-  `undefined`, so the budget read as *configured* while every comparison against it
-  was false, and `0` was falsy so an explicit zero cap meant unlimited. Both flags are
-  now validated at the boundary and the check fails closed on a non-finite ceiling.
-  (3) Headless mints a fresh root per submitted prompt and re-seeded the full budget
-  into each, so a hundred stream-json prompts under a $50 cap authorised $5000 in one
-  process; spend now carries between prompts through the same seam that carries it
-  between processes. (4) `snapshotAll` reported a budgeted run as `not_configured` as
-  soon as a second root existed.
-
-- **The budget check no longer gets slower for the life of the run.** `modelIdentities`
-  grew one entry per provider response, per retry and per compaction — and its dedupe
-  predicate could never match an identity with no `responseId`, so those were appended
-  unconditionally. Both `record()` and `makeSnapshot()` then linear-scanned it per
-  element, and `makeSnapshot` runs inside `checkBeforeModelCall` before *every* model
-  call: quadratic work on the hot path of the spend rail, measured at 8.4 s per call by
-  40k responses. The set is now keyed by the identity tuple its only consumer actually
-  reads, which bounds it to the distinct model/provider/status combinations.
-
-- **`--max-turns` no longer runs zero turns and reports success.** `parseInt('none', 10)`
-  is `NaN` and `'none'` is truthy, so the typo passed the guard; every disjunct of the
-  turn guard is false for `NaN`, so the loop body never ran and the run exited
-  `completed / normal_completion` having made no provider call and written no output.
-
 ### Added
+
+- **A run says what it is doing while it does it (`<BOOK_HOME>/runs/<session>.json`).** Rewritten at
+  every turn boundary with turn, elapsed, spend, the current todo, the last tool, free disk, and the
+  terminal outcome once there is one. Until now the choice was silence or a firehose: the default
+  `--output-format text` emits nothing at all until a run terminates, and the only other on-disk
+  signal is the transcript's mtime — which advances at exactly the same rate for a healthy run, a
+  refusal spin, and a run wedged on a permission prompt. Written temp-file-then-rename so a reader
+  never sees a torn record, and rewritten rather than appended so it stays bounded over a week.
+  This is the writer half of what `book status` will read.
+
+- **A crash leaves a record.** There was no `uncaughtException` or `unhandledRejection` handler
+  anywhere, and `index.ts` ends in a bare `program.parse()` whose promise nothing awaits — so when a
+  long run died the operator got a stack trace on a stderr they may have redirected days ago, and
+  nothing durable said why. The status file now carries a `crash` field written from the exit path,
+  which is what distinguishes "finished the objective" from "the socket died".
+
+- **Free disk space is observable.** Nothing in the codebase could see it, yet a long run's most
+  likely hard failure is ENOSPC and a disk-below-floor alarm needs a sensor to read.
+
+- **The model is told how long it has been running.** The only temporal signal in the whole prompt
+  was a UTC calendar date at day granularity, so a model five days into a week-long objective could
+  not distinguish that from turn 3 — it could not pace itself, notice it had been circling the same
+  file since Tuesday, or honour a time-bounded instruction. `<session-state>` now carries a coarse
+  `Running for:` line, suppressed when an evaluator has frozen the date so equivalent arms still get
+  byte-identical prompts.
+
 
 - **A brake that a spinning run cannot forge (`continuation.blockedToolTurnLimit`).** A run whose
   every tool call is refused now stops as `all_tools_blocked`, naming the tools to unblock. This
@@ -141,6 +135,42 @@ All notable changes to this project are documented in this file.
 - **Eye-friendly built-in themes.** Added `catppuccin` (Catppuccin Mocha pastel palette for minimal eye fatigue), `nord` (Arctic glacial slate for reduced blue-light glare), `gruvbox` (warm retro-earthy dark palette with amber and olive tones), and `solarized-dark` (scientifically tuned Lab color space contrast). All four themes are selectable via `/theme` picker and direct slash commands (`/theme <name>`).
 
 ### Fixed
+
+- **`--include-partial-messages` did nothing, and forced maximum stream volume.** Commander leaves an
+  unpassed boolean `undefined` and the gate was `!== false`, so every stream-json run emitted every
+  assistant and reasoning delta whether or not anyone asked. It is now the opt-in it always claimed
+  to be.
+
+- **`--max-budget-usd` is a cap again, for four independent reasons it was not.**
+  (1) It was enforced against the root execution's *own* cost, never the inclusive
+  figure, so every dollar spent by managed agents and subagents was invisible to it —
+  the same snapshot would report `budgetStatus: 'exceeded'` while the pre-call check
+  returned `{allowed: true}`. Snapshots now carry `inclusiveCostUsd` and the gate
+  enforces against it. (2) The flag was parsed with an unvalidated `parseFloat` behind
+  a truthiness guard, so `--max-budget-usd none` produced `NaN` — which is not
+  `undefined`, so the budget read as *configured* while every comparison against it
+  was false, and `0` was falsy so an explicit zero cap meant unlimited. Both flags are
+  now validated at the boundary and the check fails closed on a non-finite ceiling.
+  (3) Headless mints a fresh root per submitted prompt and re-seeded the full budget
+  into each, so a hundred stream-json prompts under a $50 cap authorised $5000 in one
+  process; spend now carries between prompts through the same seam that carries it
+  between processes. (4) `snapshotAll` reported a budgeted run as `not_configured` as
+  soon as a second root existed.
+
+- **The budget check no longer gets slower for the life of the run.** `modelIdentities`
+  grew one entry per provider response, per retry and per compaction — and its dedupe
+  predicate could never match an identity with no `responseId`, so those were appended
+  unconditionally. Both `record()` and `makeSnapshot()` then linear-scanned it per
+  element, and `makeSnapshot` runs inside `checkBeforeModelCall` before *every* model
+  call: quadratic work on the hot path of the spend rail, measured at 8.4 s per call by
+  40k responses. The set is now keyed by the identity tuple its only consumer actually
+  reads, which bounds it to the distinct model/provider/status combinations.
+
+- **`--max-turns` no longer runs zero turns and reports success.** `parseInt('none', 10)`
+  is `NaN` and `'none'` is truthy, so the typo passed the guard; every disjunct of the
+  turn guard is false for `NaN`, so the loop body never ran and the run exited
+  `completed / normal_completion` having made no provider call and written no output.
+
 
 - **A thinking model no longer gets cancelled mid-thought.** `retry.streamStallTimeoutMs` is 20
   seconds, which is right for a chat: that much silence means something broke. But adaptive thinking

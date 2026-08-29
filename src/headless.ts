@@ -1,4 +1,5 @@
 import type { AgentConfig } from './types/runtime.js';
+import { RunStatusWriter } from './run-status.js';
 import type { CompactResult, CompactBoundary } from './types/sessions.js';
 import type { ImageAttachment, Message, Usage } from './types/messages.js';
 import type { HeadlessOptions, HeadlessPlanOutcome, HeadlessResult } from './types/public-sdk.js';
@@ -73,6 +74,8 @@ export async function runHeadless(
     }
     stdout.write(JSON.stringify(obj) + '\n');
   };
+  /** Set once the run's liveness file exists; released in the outer `finally`. */
+  let disposeCrashHandlers: (() => void) | undefined;
   const agentSession = new AgentSession();
   const runtime = agentSession.getRuntime();
   // Seed the plan from the resumed session. Both lists are mutated in place by
@@ -136,6 +139,20 @@ export async function runHeadless(
       );
     }
     const runtimeSessionId = sessionId ?? crypto.randomUUID();
+
+    // The run's liveness file. Headless is the host that most needs it: the
+    // default `--output-format text` emits nothing at all until termination, so
+    // without this an unattended run is completely opaque while it works. Owned
+    // here rather than in the loop because subagents and managed agents call the
+    // loop directly and must not each claim to be "the run".
+    const statusWriter = new RunStatusWriter({
+      sessionId: runtimeSessionId,
+      runId: runtimeSessionId,
+      workspace: config.workspace,
+      budgetUsd: opts.maxBudgetUsd,
+      startedAt: Date.now(),
+    });
+    disposeCrashHandlers = statusWriter.installCrashHandlers();
 
     // Headless permission policy: if a prompt would be shown and no rule resolves
     // it, deny the tool — headless can't interactively prompt. Callers who want
@@ -355,6 +372,13 @@ export async function runHeadless(
       },
       onAssistantMessageComplete: (message) => {
         if (!transcript.some((item) => item.id === message.id)) transcript.push(message);
+        // The completed turn, always. `--include-partial-messages` adds the deltas
+        // on top of this; it does not decide whether the stream carries assistant
+        // text at all. Emitting only deltas made the flag load-bearing for the
+        // basic contract, which is why leaving it off had to mean "maximum volume".
+        if (opts.outputFormat === 'stream-json' && message.content) {
+          emit({ type: 'assistant', text: message.content, complete: true });
+        }
       },
     });
     const runParentTurn = async (
@@ -404,6 +428,7 @@ export async function runHeadless(
             allowedTools: commandContext?.allowedTools,
             modelOverride: commandContext?.modelOverride,
             commands: commandContext ? [commandContext.command] : undefined,
+            statusWriter,
           },
         });
       } catch (error) {
@@ -892,6 +917,7 @@ export async function runHeadless(
         }
       }
     }
+    disposeCrashHandlers?.();
     agentSession.dispose('headless_complete');
   }
 }
@@ -935,10 +961,15 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
       emit({ type: 'run_start', run: event.context, ambient: event.ambient });
       break;
     case 'text':
-      if (opts.includePartialMessages !== false) emit({ type: 'assistant', text: event.content });
+      // Deltas are opt IN, and are additional to the completed message emitted at
+      // turn end. Commander leaves an unpassed boolean `undefined`, so the old
+      // `!== false` gate meant the flag did nothing and every run paid maximum
+      // stream volume whether or not anyone asked for them.
+      if (opts.includePartialMessages === true)
+        emit({ type: 'assistant', text: event.content, complete: false });
       break;
     case 'reasoning':
-      if (opts.includePartialMessages !== false) emit({ type: 'reasoning', text: event.content });
+      if (opts.includePartialMessages === true) emit({ type: 'reasoning', text: event.content });
       break;
     case 'tool_use':
       emit({ type: 'tool_use', tool_call: event.toolCall });

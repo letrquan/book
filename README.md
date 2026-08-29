@@ -452,6 +452,13 @@ work left.
 }
 ```
 
+While a run is going, `<BOOK_HOME>/runs/<session-id>.json` says what it is doing: turn, elapsed,
+spend, the current todo, the last tool, free disk, and — once it stops — the terminal outcome, or a
+`crash` field if the process died without reaching one. It is rewritten at each turn boundary
+(temp-file then rename, so a reader never sees a torn record) and stays a fixed size however long the
+run lasts. This is the signal to watch for "is it stuck": the transcript's mtime advances identically
+whether a run is working or wedged.
+
 `--max-budget-usd` bounds the **objective**, not one process and not one prompt: spend is carried
 across restarts and across submitted prompts, and enforced against *inclusive* cost, so work done by
 managed agents and subagents counts against the same ceiling. A cap that cannot be evaluated fails

@@ -130,6 +130,12 @@ export async function runAgentLoop(
     assistantMessageId?: (turn: number) => string | undefined;
     /** True when this loop is a subagent (Task tool) invocation — skips memory auto-capture. */
     isSubagent?: boolean;
+    /**
+     * Liveness writer for the run's status file, supplied by the host that owns
+     * the session. Subagents and managed agents call this loop directly, so
+     * letting the loop create its own would make "is the run alive" ambiguous.
+     */
+    statusWriter?: import('../run-status.js').RunStatusWriter;
     /** Display-only observer for tools invoked by this subagent. */
     nestedToolObserver?: NestedToolObserver;
     /** Trace id of the Task invocation that launched this subagent loop. */
@@ -190,6 +196,16 @@ export async function runAgentLoop(
     if (terminalEmitted) return;
     terminalEmitted = true;
     settledOutcome = outcome;
+    // Stamp the outcome into the liveness file before telling anyone else: this is
+    // what lets a supervisor distinguish "finished the objective" from "the
+    // process is gone and left nothing behind".
+    options?.statusWriter?.update({
+      turn: options.statusWriter.snapshot().turn,
+      openTodos: options.statusWriter.snapshot().openTodos,
+      currentTodo: options.statusWriter.snapshot().currentTodo,
+      costUsd: options.statusWriter.snapshot().costUsd,
+      terminal: { status: outcome.status, reason: outcome.reason, message: outcome.message },
+    });
     callbacks.onTerminal?.(outcome);
   };
   let terminalHooksFired = false;
@@ -663,6 +679,7 @@ export async function runAgentLoop(
           toolCatalogSummary: toolSurface.catalogSummary(),
           planMode: effectiveMode === 'plan',
           planUnrestored: runtime.planUnrestored,
+          runStartedAt,
           workflowPolicy: options?.harnessContext?.workflowPolicySection,
         },
         runtime.agentContextCache,
@@ -716,6 +733,7 @@ export async function runAgentLoop(
                   toolCatalogSummary: toolSurface.catalogSummary(),
                   planMode: effectiveMode === 'plan',
                   planUnrestored: runtime.planUnrestored,
+                  runStartedAt,
                   workflowPolicy: options?.harnessContext?.workflowPolicySection,
                 },
                 runtime.agentContextCache,
@@ -747,6 +765,7 @@ export async function runAgentLoop(
               toolCatalogSummary: toolSurface.catalogSummary(),
               planMode: effectiveMode === 'plan',
               planUnrestored: runtime.planUnrestored,
+              runStartedAt,
               workflowPolicy: options?.harnessContext?.workflowPolicySection,
             },
             runtime.agentContextCache,
@@ -2079,6 +2098,24 @@ export async function runAgentLoop(
         toolCallCount: toolCalls.length,
         toolResultCount: toolResults.length,
       });
+
+      // The run's only always-on liveness signal. Written at the turn boundary
+      // because that is the one place a stalled run is distinguishable from a
+      // working one: the transcript's mtime advances identically for both.
+      if (options?.statusWriter) {
+        const todos = toolContext.todos ?? [];
+        options.statusWriter.update({
+          turn,
+          lastTool: toolCalls.length
+            ? canonicalToolName(toolCalls[toolCalls.length - 1].name)
+            : undefined,
+          currentTodo: todos.find((todo) => todo.status === 'in_progress')?.content,
+          openTodos: todos.filter((todo) => todo.status !== 'completed').length,
+          costUsd: options.runContext
+            ? runtime.runAccounting.snapshotRoot(options.runContext.rootRunId).inclusiveCostUsd
+            : null,
+        });
+      }
 
       // Every tool call refused, N turns running.
       //

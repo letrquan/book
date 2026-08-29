@@ -4,6 +4,7 @@ import { createRegistry, createDefaultRegistry } from '../tools/registry.js';
 import { todoTools } from '../tools/todo.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { SessionRuntime } from '../session/runtime.js';
+import { renderSessionState } from './session-state.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { Provider } from '../provider/index.js';
 import type { AgentTerminalOutcome } from '../types/terminal.js';
@@ -451,5 +452,54 @@ describe('the no-progress witness', () => {
     const { outcome } = await runDenied(config, provider);
 
     expect(outcome).toMatchObject({ status: 'failed', reason: 'no_progress' });
+  });
+});
+
+describe('the session-state block across a long run', () => {
+  it('tells the model how long it has been running, coarsely', () => {
+    // The only temporal signal in the entire prompt was a UTC calendar date at day
+    // granularity, so a model five days into a week-long objective could not tell
+    // that from turn 3 — it could not pace itself or notice it had been circling.
+    expect(renderSessionState({ workspace: '/w', runElapsedMs: 5 * 24 * 3600_000 })).toContain(
+      '- Running for: 5d 0h',
+    );
+    // Below a minute there is nothing worth saying.
+    expect(renderSessionState({ workspace: '/w', runElapsedMs: 5_000 })).not.toContain(
+      'Running for',
+    );
+    // Absent when the host does not track it.
+    expect(renderSessionState({ workspace: '/w' })).not.toContain('Running for');
+  });
+
+  it('omits elapsed time when the evaluator has frozen the clock', () => {
+    // Equivalent evaluation arms must receive byte-identical prompts.
+    const previous = process.env.BOOK_EVALUATION_DATE;
+    process.env.BOOK_EVALUATION_DATE = '2026-01-01';
+    try {
+      expect(renderSessionState({ workspace: '/w', runElapsedMs: 9 * 3600_000 })).not.toContain(
+        'Running for',
+      );
+    } finally {
+      if (previous === undefined) delete process.env.BOOK_EVALUATION_DATE;
+      else process.env.BOOK_EVALUATION_DATE = previous;
+    }
+  });
+
+  it('stamps every continuation message, not just the first user turn', async () => {
+    // `ensureSessionState` early-returns on `newest.sessionState !== undefined`,
+    // and before continuation existed a whole run had exactly ONE user message —
+    // so the date, git status, todos and stale-file warnings were rendered once at
+    // turn 1 and frozen for the life of the run. Continuation appends real user
+    // messages, which is what makes each one get a fresh block. If a future change
+    // reuses one message or marks continuations as checkpoints, this fails.
+    const { history } = await run(
+      configWith({ enabled: true, noProgressLimit: 3 }),
+      stallingProvider(),
+    );
+    const stamped = history.filter(
+      (message) => message.role === 'user' && message.sessionState !== undefined,
+    );
+    // The original prompt plus at least one continuation, each with its own block.
+    expect(stamped.length).toBeGreaterThan(1);
   });
 });

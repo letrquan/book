@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { readFile, stat } from 'fs/promises';
 import { resolve } from 'path';
 import { workspaceIdentity } from '../tools/file-provenance.js';
-import { normalizePromptPath, promptCurrentDate } from './prompt-determinism.js';
+import { normalizePromptPath, promptCurrentDate, promptElapsed } from './prompt-determinism.js';
 
 /**
  * Per-turn workspace facts. They travel at the tail of the newest user turn
@@ -36,6 +36,8 @@ export interface SessionStateInput {
    * the model silently re-derives instead of deliberately rebuilding.
    */
   planUnrestored?: boolean;
+  /** Milliseconds since this run began, rendered coarsely. */
+  runElapsedMs?: number;
 }
 
 function todoLines(todos: NonNullable<SessionStateInput['todos']>): string[] {
@@ -53,10 +55,12 @@ function todoLines(todos: NonNullable<SessionStateInput['todos']>): string[] {
 
 export function renderSessionState(input: SessionStateInput): string {
   const stale = (input.staleFiles ?? []).map((path) => normalizePromptPath(path, input.workspace));
+  const elapsed = input.runElapsedMs === undefined ? undefined : promptElapsed(input.runElapsedMs);
 
   return [
     '<session-state>',
     `- Current date: ${promptCurrentDate()}`,
+    ...(elapsed ? [`- Running for: ${elapsed}`] : []),
     ...(input.git ? [`- Git: ${input.git}`] : []),
     ...(input.planMode ? [PLAN_MODE_LINE] : []),
     ...(stale.length

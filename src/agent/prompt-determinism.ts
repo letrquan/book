@@ -20,6 +20,32 @@ export function promptCurrentDate(): string {
     : new Date().toISOString().split('T')[0];
 }
 
+/**
+ * How long this run has been going, coarsely, for the session-state block.
+ *
+ * The only temporal signal in the whole prompt is a UTC calendar date at day
+ * granularity, so a model five days into a week-long objective cannot tell that
+ * from turn 3: it cannot pace itself, cannot notice it has been circling the same
+ * file since Tuesday, and cannot honour a time-bounded instruction in the
+ * objective itself.
+ *
+ * Coarse on purpose. The block is stamped once per user message and memoized, so
+ * exact milliseconds would add churn without adding anything a model can act on.
+ * Suppressed entirely when the evaluator has frozen the date, so equivalent arms
+ * still receive byte-identical prompts.
+ */
+export function promptElapsed(elapsedMs: number): string | undefined {
+  if (process.env.BOOK_EVALUATION_DATE?.trim()) return undefined;
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 60_000) return undefined;
+  const minutes = Math.floor(elapsedMs / 60_000);
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
 function evaluationIsolationEnabled(): boolean {
   return Boolean(process.env.BOOK_HOME?.trim() && process.env.BOOK_EVALUATION_RUN_ID?.trim());
 }
