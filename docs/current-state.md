@@ -1,12 +1,12 @@
 # Book Current State
 
-This is the implementation-backed product snapshot for Book as of 2026-08-26. Update this file
+This is the implementation-backed product snapshot for Book as of 2026-08-29. Update this file
 when a user-facing surface changes; the README is the usage guide and this page is the status
-reference for roadmap and design documents. This refresh re-verified the interactive transcript and
-terminal interaction path, reasoning/retry propagation, and headless/stream-JSON framing only
-(surfaces not re-verified this run: project-declaration trust gates, the experimental Zero-Mem
-capability boundary, providers, MCP, other settings and sandbox behavior, managed agents,
-`/review`, background jobs, skills, and the adaptive harness).
+reference for roadmap and design documents. This refresh re-verified the reasoning-tag split and
+its empty-turn boundary only (surfaces not re-verified this run: the interactive transcript and
+terminal interaction path, retry propagation, headless/stream-JSON framing, project-declaration
+trust gates, the experimental Zero-Mem capability boundary, providers, MCP, other settings and
+sandbox behavior, managed agents, `/review`, background jobs, skills, and the adaptive harness).
 
 ## Release Identity
 
@@ -53,10 +53,12 @@ capability boundary, providers, MCP, other settings and sandbox behavior, manage
 - Provider-native reasoning and inline `<think>`, `<thinking>`, `<reasoning>`, and
   `<reasoning_context>` blocks are kept separate from answer prose: the TUI streams active
   thinking, collapses completed thoughts to a counted row in compact mode, and reopens them in
-  detailed mode, while fenced-code examples remain ordinary answer content. Shared reasoning-tag
-  helpers let the agent loop recognize closed reasoning-only completions, retry an empty turn once,
-  and emit `reasoning`/`attempt_discarded` events so session and headless hosts preserve the
-  boundary.
+  detailed mode, while fenced-code examples remain ordinary answer content. A block the provider
+  opened and never closed is read as thinking while the message streams and on a turn that called a
+  tool, and as answer text once the turn has settled with no tool call, so a finished reply is never
+  collapsed into a single thought row. Shared reasoning-tag helpers let the agent loop recognize
+  closed reasoning-only completions, retry an empty turn once, and emit
+  `reasoning`/`attempt_discarded` events so session and headless hosts preserve the boundary.
 - Headless stream-JSON hosts forward shared reasoning, tool, question, managed-agent, evidence,
   retry-discard, and error events; host-performed slash commands produce a `command_result` record
   with human and machine projections. The input parser accepts fragmented chunks and CRLF line
@@ -271,11 +273,15 @@ Work aimed at running an objective unattended for days rather than hours. All of
   intentionally bypasses Book's handler for terminal-native selection. An OSC 52 write is not
   confirmation that a terminal clipboard accepted the text; the UI distinguishes the `terminal`
   fallback from a confirmed local clipboard command and reports failure when neither path succeeds.
-- Reasoning-tag handling has two deliberately different readings. Rendering treats an unclosed
-  recognized tag as thinking through the end of a streaming message, while empty-turn detection
-  strips only closed tags and leaves an unclosed tag in answer text; this favors preserving a real
-  answer over triggering a retry on ambiguous markup. A reasoning-only/empty response receives at
-  most one same-turn retry, and already-emitted attempt text is marked `attempt_discarded` rather
+- Reasoning-tag handling has two readings that converge at the end of a turn. While a message is
+  still streaming, and on a settled turn that called a tool, rendering treats an unclosed recognized
+  tag as thinking through the end of the message, so private text stays collapsed and behind the
+  thinking-display setting. On a settled turn that called no tool — everything it will ever say —
+  the trailing unterminated block is read back as answer text, which is the reading empty-turn
+  detection already uses, since it strips only closed tags. Both favor preserving a real answer over
+  triggering a retry, or hiding one, on ambiguous markup; only the trailing block is promoted, and
+  an earlier block the provider did close stays collapsed. A reasoning-only/empty response receives
+  at most one same-turn retry, and already-emitted attempt text is marked `attempt_discarded` rather
   than persisted as the replacement turn.
 - Print/headless and SDK hosts run only the built-ins marked non-interactive — `/init`,
   `/security-review`, and `/review` — plus any `.book/commands/*.md` file. Every other built-in
