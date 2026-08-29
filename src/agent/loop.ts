@@ -556,6 +556,8 @@ export async function runAgentLoop(
     /** Avoid re-attempting compact for the same pressure snapshot after skip/fail. */
     let lastCompactAttemptKey: string | null = null;
     let retrySameTurn = false;
+    /** True while replaying a turn, so its messages do not reuse the host's id. */
+    let reissuedThisTurn = false;
     /** Turn re-sends spent on transport faults; bounded by retry.streamReissueAttempts. */
     let streamReissues = 0;
     /** Continuations after an output cap; budgeted separately from transport faults. */
@@ -640,8 +642,17 @@ export async function runAgentLoop(
 
       if (retrySameTurn) {
         retrySameTurn = false;
+        // A re-issue produces a SECOND assistant message for the same turn - the
+        // truncated partial is already pushed and persisted, by design, so the
+        // history stays valid and no tool re-executes. What must not be reused is
+        // its identity: the host's `assistantMessageId` is keyed on `turn`, which
+        // has not changed, so both messages landed under one session `eventId`
+        // (collapsing them in `load()` and leaving `/rewind` unable to address
+        // either) and both were emitted as `complete: true`.
+        reissuedThisTurn = true;
         log.info('retrying current turn', { turn });
       } else {
+        reissuedThisTurn = false;
         turn++;
         callbacks.onTurnStart(turn);
         log.debug('turn start', { turn, maxTurns: config.maxTurns, mode: effectiveMode });
@@ -1163,7 +1174,9 @@ export async function runAgentLoop(
             return result;
           });
           const partialMessage: Message = {
-            id: options?.assistantMessageId?.(turn) ?? crypto.randomUUID(),
+            id:
+              (reissuedThisTurn ? undefined : options?.assistantMessageId?.(turn)) ??
+              crypto.randomUUID(),
             role: 'assistant',
             content: assistantContent,
             reasoningContent: reasoningContent || undefined,
@@ -1265,6 +1278,35 @@ export async function runAgentLoop(
           callbacks.onRetry?.('transport', spent + 1, allowed, reissueDelayMs);
           await delay(reissueDelayMs, signal);
           if (!signal?.aborted) {
+            // Never re-send a request that ENDS with an assistant message.
+            //
+            // That shape is assistant prefill, which Anthropic rejects outright
+            // while extended thinking is on — the default for every Opus and Sonnet
+            // model here. The 400 comes back as `provider_error`, whose recovery is
+            // `reissue`, so the loop would re-send the identical rejected request
+            // until the transport allowance ran out and then report a transport
+            // fault for what was really a malformed request. A turn that made tool
+            // calls is unaffected: its cancelled `tool_result`s already end the
+            // history with a user message.
+            //
+            // It also delivers the instruction that was otherwise composed into
+            // `streamError` and then dropped, because this branch returns before
+            // `callbacks.onError`.
+            if (newHistory.at(-1)?.role === 'assistant') {
+              const resume: Message = {
+                id: crypto.randomUUID(),
+                role: 'user',
+                content:
+                  recovery === 'continue'
+                    ? '[continuation] Your previous message was cut off at the output limit. Continue from exactly where you stopped. Do not restart or repeat what you already wrote.'
+                    : '[continuation] The connection dropped before your previous message finished. Continue from exactly where you stopped. Do not restart or repeat what you already wrote.',
+                includeInContext: true,
+                kind: 'conversation',
+                timestamp: Date.now(),
+              };
+              newHistory.push(resume);
+              callbacks.onUserMessageAppended?.(resume);
+            }
             retrySameTurn = true;
             continue;
           }
@@ -1365,7 +1407,9 @@ export async function runAgentLoop(
           }),
         );
         const malformedMessage: Message = {
-          id: options?.assistantMessageId?.(turn) ?? crypto.randomUUID(),
+          id:
+            (reissuedThisTurn ? undefined : options?.assistantMessageId?.(turn)) ??
+            crypto.randomUUID(),
           role: 'assistant',
           content: [assistantContent, `[Tool batch rejected: ${message}]`]
             .filter(Boolean)
@@ -2104,7 +2148,9 @@ export async function runAgentLoop(
       }
 
       const assistantMessage: Message = {
-        id: options?.assistantMessageId?.(turn) ?? crypto.randomUUID(),
+        id:
+          (reissuedThisTurn ? undefined : options?.assistantMessageId?.(turn)) ??
+          crypto.randomUUID(),
         role: 'assistant',
         content: assistantContent,
         reasoningContent: reasoningContent || undefined,

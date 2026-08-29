@@ -223,3 +223,63 @@ describe('a rejected credential parks rather than retries', () => {
     expect(outcome?.reason).toBe('credentials_rejected');
   });
 });
+
+describe('the shape of a re-issued request', () => {
+  it('never ends a re-sent request with an assistant message', async () => {
+    // Assistant prefill is rejected by Anthropic whenever extended thinking is on,
+    // which is the default for every Opus and Sonnet model here. The 400 comes back
+    // as `provider_error`, whose recovery is `reissue` — so the loop re-sent the
+    // identical rejected request until the allowance ran out, then reported a
+    // transport fault for what was really a malformed request.
+    const seen: Array<string | undefined> = [];
+    let attempt = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config: unknown, messages: Array<{ role: string }>) {
+        attempt++;
+        seen.push(messages.at(-1)?.role);
+        if (attempt === 1) {
+          yield { type: 'text', content: 'a very long file, truncated' };
+          yield { type: 'done', finishReasons: ['length'] };
+          return;
+        }
+        yield { type: 'text', content: 'the rest' };
+        yield { type: 'done' };
+      },
+    } as unknown as Provider;
+
+    const { outcome } = await run(3, provider);
+
+    expect(attempt).toBe(2);
+    expect(outcome?.status).toBe('completed');
+    // The retry must have been handed a user turn, not the truncated assistant one.
+    expect(seen[1]).toBe('user');
+  });
+
+  it('gives the replayed turn its own message identity', async () => {
+    // `assistantMessageId` is keyed on `turn`, which does not change on a re-issue,
+    // so the truncated partial and its replacement shared one session `eventId`:
+    // `load()` collapsed them and `/rewind` could address neither.
+    const ids = new Set<string>();
+    let attempt = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        attempt++;
+        if (attempt === 1) {
+          yield { type: 'error', error: 'stream stalled', errorCode: 'stream_stall' };
+          return;
+        }
+        yield { type: 'text', content: 'finished' };
+        yield { type: 'done' };
+      },
+    } as unknown as Provider;
+
+    const { history } = await run(3, provider);
+    for (const message of history) {
+      if (message.role === 'assistant') ids.add(message.id);
+    }
+    const assistants = history.filter((message) => message.role === 'assistant');
+    expect(ids.size).toBe(assistants.length);
+  });
+});
