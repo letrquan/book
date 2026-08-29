@@ -82,11 +82,22 @@ function fencedRanges(content: string): Array<[number, number]> {
   return ranges;
 }
 
-function splitWith(content: string, pattern: RegExp): MessagePart[] {
+/**
+ * A split, plus whether its last block is one the provider opened and never
+ * closed. Such a block always runs to the end of the content, so there is at
+ * most one and it is always the final part.
+ */
+interface Split {
+  parts: MessagePart[];
+  unterminated: boolean;
+}
+
+function splitWith(content: string, pattern: RegExp): Split {
   const parts: MessagePart[] = [];
   const fenced = fencedRanges(content);
   pattern.lastIndex = 0;
   let lastIndex = 0;
+  let unterminated = false;
   let match: RegExpExecArray | null;
 
   while ((match = pattern.exec(content)) !== null) {
@@ -95,20 +106,60 @@ function splitWith(content: string, pattern: RegExp): MessagePart[] {
     const before = content.slice(lastIndex, index);
     if (before) parts.push({ kind: 'markdown', text: before });
     parts.push({ kind: 'think', text: match[2].trim() });
+    unterminated = !match[0].toLowerCase().endsWith(`</${match[1].toLowerCase()}>`);
     lastIndex = pattern.lastIndex;
   }
 
   const after = content.slice(lastIndex);
   if (after) parts.push({ kind: 'markdown', text: after });
-  return parts.length > 0 ? parts : [{ kind: 'markdown', text: content }];
+  return parts.length > 0
+    ? { parts, unterminated }
+    : { parts: [{ kind: 'markdown', text: content }], unterminated: false };
 }
 
 /**
  * Split a message into its answer segments and its reasoning blocks, in order,
  * treating an unclosed tag as reasoning running to the end of the message.
+ *
+ * That reading is right while the message streams — it is what keeps a thought
+ * out of the answer as it arrives — but on a settled message it is a trap. A
+ * provider that opened a reasoning tag and never closed it files the whole
+ * finished answer as one thought, and the transcript collapses a turn that
+ * answered in full down to a single `thought` line, which is indistinguishable
+ * from an agent that quit mid-task. It happens: an OpenAI-compatible router
+ * replays prior reasoning into history inside these very tags, and a model that
+ * sees the convention starts emitting it — inconsistently closed.
+ *
+ * So pass `concluded` when the message is complete *and* called no tools — when
+ * it is everything the turn will ever say. An unterminated block is then read
+ * back as answer text, the same conservative reading the agent loop already
+ * uses to decide the turn produced something (see
+ * `CLOSED_REASONING_TAG_PATTERN`), so renderer and loop agree about what the
+ * message is. The worst case becomes reasoning shown inline rather than an
+ * answer that vanished.
+ *
+ * Both halves of that condition matter. A turn that called a tool has not
+ * finished speaking and was never at risk — `answeredNothing` in the loop
+ * already exempts it — so promoting its narration would only publish reasoning
+ * the reader chose to keep collapsed, including when they turned thinking
+ * display off entirely.
  */
-export function splitReasoningParts(content: string): MessagePart[] {
-  return splitWith(content, REASONING_TAG_PATTERN);
+export function splitReasoningParts(
+  content: string,
+  options?: { concluded?: boolean },
+): MessagePart[] {
+  const { parts, unterminated } = splitWith(content, REASONING_TAG_PATTERN);
+  if (!options?.concluded || !unterminated) return parts;
+  // Promoted whether or not some answer survives beside it. A block the
+  // provider never closed is not a delimited thought, and a one-line preamble
+  // ahead of a swallowed report is not an answer the reader can use.
+  //
+  // Only the trailing block is promoted. An earlier block the provider did
+  // close is reasoning it meant to delimit, and stays one.
+  const last = parts.length - 1;
+  return parts.map((part, index) =>
+    index === last && part.kind === 'think' ? { kind: 'markdown', text: part.text } : part,
+  );
 }
 
 /**
@@ -123,7 +174,7 @@ export function stripReasoningTags(content: string): string {
   // The overwhelming majority of turns carry no markup at all; skip the scan.
   if (!content.includes('<')) return content;
   return splitWith(content, CLOSED_REASONING_TAG_PATTERN)
-    .filter((part): part is MarkdownPart => part.kind === 'markdown')
+    .parts.filter((part): part is MarkdownPart => part.kind === 'markdown')
     .map((part) => part.text)
     .join('');
 }

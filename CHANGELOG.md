@@ -49,6 +49,23 @@ All notable changes to this project are documented in this file.
   activate) no longer stamps a failure notice onto a turn that succeeded, and it replaces the
   transient banner rather than doubling it. What went wrong is visible when it happens and still
   there after `--resume`.
+- **A finished answer no longer vanishes into a collapsed thought.** The renderer reads a reasoning
+  tag the provider never closed as reasoning running to the end of the message, which is what keeps a
+  thought out of the answer while it streams. On a settled message that reading is a trap. An
+  OpenAI-compatible router replays a turn's out-of-band reasoning back into history wrapped in
+  `<reasoning_context>` tags, and a model that sees the convention starts emitting it — inconsistently
+  closed. One such turn opened the tag, wrote a complete report, and never closed it, so the
+  transcript filed all fourteen thousand characters as a single thought and collapsed it to one dim
+  `thought` row: indistinguishable from an agent that quit mid-task. The loop had already learned this
+  lesson — its emptiness test reads only tags the provider actually closed — but the renderer had no
+  matching guard, so the two disagreed about whether the turn had answered. `splitReasoningParts` now
+  takes `concluded`, and a turn that is complete and called no tools reads an unterminated block back
+  as answer text, exactly as the loop already does. Both halves of that condition carry weight: a turn
+  that called a tool has not finished speaking and was never at risk, and promoting its narration
+  would publish a thought the reader had collapsed — past `showThinking`, since promoted text renders
+  as markdown and no longer meets that gate. The dangling tag itself is dropped rather than shown,
+  because `marked` renders raw markup as a fenced `html` block and would bury the recovered answer a
+  second time.
 - **A stream that dies mid-tool-call no longer wedges the session.** A cut stream can carry a
   finished tool call the loop never got to run. `buildMessages` puts `tool_calls` on the assistant
   message but emits results only for calls that have one, so that dangling call made every later
