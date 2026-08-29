@@ -64,3 +64,39 @@ export function deleteNestedValue(
   }
   return true;
 }
+
+/**
+ * Parse a numeric CLI flag, refusing anything that is not a usable number.
+ *
+ * `parseInt('none', 10)` is `NaN`, and the old guard was truthiness — `'none'` is
+ * truthy, so the typo sailed through. Downstream, `NaN` loses every comparison it
+ * takes part in, which is the worst possible failure for a limit: `--max-turns`
+ * ran zero turns and reported `completed`, and `--max-budget-usd` read as
+ * *configured* while permitting unbounded spend. Reject it at the boundary, and
+ * test presence with `!== undefined` so an explicit `0` is a real zero rather than
+ * a missing flag.
+ */
+export function parseNumericFlag(
+  raw: unknown,
+  flag: string,
+  opts: { integer?: boolean; min?: number } = {},
+): number | undefined {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const text = String(raw).trim();
+  const value = opts.integer ? Number.parseInt(text, 10) : Number.parseFloat(text);
+  // Number.parse* stops at the first bad character, so '12abc' would otherwise
+  // silently become 12.
+  if (!Number.isFinite(value) || !/^[+-]?(\d+\.?\d*|\.\d+)$/.test(text)) {
+    throw new Error(`${flag} expects a number, but received "${text}".`);
+  }
+  // `Number.parseInt('2.5', 10)` is 2, so testing the parsed value would never
+  // catch a fractional input for an integer flag - it would silently truncate.
+  if (opts.integer && text.includes('.')) {
+    throw new Error(`${flag} expects a whole number, but received "${text}".`);
+  }
+  const min = opts.min ?? 0;
+  if (value < min) {
+    throw new Error(`${flag} must be at least ${min}, but received "${text}".`);
+  }
+  return value;
+}

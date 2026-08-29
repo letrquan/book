@@ -19,6 +19,7 @@ function eligibleRun(): AgentRunResult {
       directUsage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
       inclusiveUsage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
       costUsd: 0.001,
+      inclusiveCostUsd: 0.001,
       costStatus: 'known',
       pricingVersion: 'pricing-v1',
       unknownModels: [],
@@ -152,6 +153,7 @@ describe('evaluateRunEligibility', () => {
         ...base.accounting!,
         costStatus: 'unknown' as const,
         costUsd: null,
+        inclusiveCostUsd: null,
         modelIdentities: [
           {
             ...base.accounting!.modelIdentities[0],
@@ -192,6 +194,7 @@ describe('evaluateRunEligibility', () => {
         ...base.accounting!,
         runIds: ['root-run', 'hidden-child'],
         costUsd: null,
+        inclusiveCostUsd: null,
       },
     };
 

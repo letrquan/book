@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RunAccounting } from './run-accounting.js';
 import type { AgentRunContext } from '../types/runs.js';
+import type { ProviderResponseMetadata } from '../types/providers.js';
 
 function context(runId: string, rootRunId = 'root'): AgentRunContext {
   return {
@@ -67,7 +68,7 @@ describe('RunAccounting', () => {
     });
   });
 
-  it('fails future budget checks closed when a compaction omits usage', () => {
+  it('keeps enforcing against the known floor when a compaction omits usage', () => {
     const accounting = new RunAccounting();
     const root = context('root');
     accounting.startRoot(root, 1);
@@ -83,17 +84,20 @@ describe('RunAccounting', () => {
       'compaction_usage',
     );
 
+    // Missing usage makes the running total a lower bound, not an unknown
+    // quantity. The omission stays visible via completeness/unknownModels/
+    // missingSources, but it no longer latches the run into a permanent refusal.
     expect(accounting.snapshotRoot(root.rootRunId)).toMatchObject({
-      costUsd: null,
-      costStatus: 'unknown',
-      budgetStatus: 'unknown',
+      completeness: 'partial',
+      costStatus: 'estimated',
+      budgetStatus: 'within',
       unknownModels: ['gpt-5-2025-08-07'],
       modelIdentities: [{ responseId: 'compact-without-usage', status: 'verified' }],
       missingSources: ['compaction_usage'],
     });
     expect(accounting.checkBeforeModelCall(root.rootRunId, 'gpt-5')).toMatchObject({
-      allowed: false,
-      status: 'unknown',
+      allowed: true,
+      status: 'within',
     });
   });
 
@@ -110,9 +114,58 @@ describe('RunAccounting', () => {
 
     expect(accounting.snapshotRoot(root.rootRunId)).toMatchObject({
       completeness: 'partial',
-      costStatus: 'unknown',
-      budgetStatus: 'unknown',
+      costStatus: 'estimated',
+      budgetStatus: 'within',
       missingSources: ['failed_provider_attempt_usage'],
+    });
+  });
+
+  it('survives a transient retry and still stops at the cap', () => {
+    // The reported failure: markUsageUnknown fires from the provider's onRetry, so
+    // one transient 429 used to refuse every later call — making the reliability
+    // layer and the USD budget mutually exclusive.
+    const accounting = new RunAccounting();
+    const root = context('root');
+    accounting.startRoot(root, 1);
+
+    accounting.record(root, usage(1_000, 100), {
+      provider: 'anthropic',
+      requestedModel: 'claude-sonnet-5',
+      responseModel: 'claude-sonnet-5',
+      responseId: 'turn-1',
+    });
+    accounting.markUsageUnknown(
+      root,
+      { provider: 'anthropic', requestedModel: 'claude-sonnet-5' },
+      'failed_provider_attempt_usage',
+    );
+
+    expect(accounting.checkBeforeModelCall(root.rootRunId, 'claude-sonnet-5')).toMatchObject({
+      allowed: true,
+    });
+
+    for (let i = 0; i < 300; i++) {
+      accounting.record(root, usage(1_000_000, 100_000), {
+        provider: 'anthropic',
+        requestedModel: 'claude-sonnet-5',
+        responseModel: 'claude-sonnet-5',
+        responseId: `turn-over-${i}`,
+      });
+    }
+    expect(accounting.checkBeforeModelCall(root.rootRunId, 'claude-sonnet-5')).toMatchObject({
+      allowed: false,
+      status: 'exceeded',
+    });
+  });
+
+  it('still fails closed when the model itself cannot be priced', () => {
+    const accounting = new RunAccounting();
+    const root = context('root');
+    accounting.startRoot(root, 1);
+
+    expect(accounting.checkBeforeModelCall(root.rootRunId, 'not-a-real-model')).toMatchObject({
+      allowed: false,
+      status: 'unknown',
     });
   });
 
@@ -173,5 +226,182 @@ describe('RunAccounting', () => {
       allowed: false,
       status: 'exceeded',
     });
+  });
+});
+
+describe('the budget rail actually caps', () => {
+  const ctx = (rootRunId: string, runId: string): AgentRunContext => context(runId, rootRunId);
+  const meta = {
+    provider: 'anthropic',
+    requestedModel: 'claude-sonnet-5',
+    responseModel: 'claude-sonnet-5',
+    responseId: 'resp-1',
+    status: 'verified',
+  } as unknown as ProviderResponseMetadata;
+  const usage = { promptTokens: 1_000_000, completionTokens: 0, totalTokens: 1_000_000 };
+
+  it('counts spend by delegated agents against the cap', () => {
+    // `costUsd` is the root execution's OWN spend. Enforcing on it let a run that
+    // delegates pass the gate forever while its agents spent without limit — the
+    // same snapshot reported `budgetStatus: 'exceeded'` while the check allowed.
+    const accounting = new RunAccounting();
+    const root = ctx('root-1', 'root-1');
+    accounting.startRoot(root, 2);
+
+    // All of it spent by a child, none by the root itself.
+    accounting.record(ctx('root-1', 'child-1'), usage, meta);
+
+    const snapshot = accounting.snapshotRoot('root-1');
+    expect(snapshot.costUsd).toBe(0); // the root turn alone
+    expect(snapshot.inclusiveCostUsd).toBeCloseTo(3, 5); // $3/M prompt tokens
+    expect(snapshot.budgetStatus).toBe('exceeded');
+    // The gate must agree with the snapshot.
+    expect(accounting.checkBeforeModelCall('root-1', 'claude-sonnet-5')).toMatchObject({
+      allowed: false,
+      status: 'exceeded',
+    });
+  });
+
+  it('refuses to run against a budget that is not a usable number', () => {
+    // `NaN` is not `undefined`, so the budget reads as configured while every
+    // comparison against it is false: the rail reports itself on and permits
+    // everything. Fail closed instead.
+    const accounting = new RunAccounting();
+    accounting.startRoot(ctx('root-2', 'root-2'), Number.NaN);
+    expect(accounting.checkBeforeModelCall('root-2', 'claude-sonnet-5')).toMatchObject({
+      allowed: false,
+      status: 'unknown',
+    });
+  });
+
+  it('treats an explicit zero as a real zero cap, not as absent', () => {
+    const accounting = new RunAccounting();
+    accounting.startRoot(ctx('root-3', 'root-3'), 0);
+    expect(accounting.checkBeforeModelCall('root-3', 'claude-sonnet-5')).toMatchObject({
+      allowed: false,
+      status: 'exceeded',
+    });
+  });
+
+  it('reports the cap in snapshotAll once more than one root exists', () => {
+    // Headless mints a root per submitted prompt, and the old `roots.length === 1`
+    // guard reported a budgeted run as `not_configured` from the second one on.
+    const accounting = new RunAccounting();
+    accounting.startRoot(ctx('root-a', 'root-a'), 50);
+    accounting.startRoot(ctx('root-b', 'root-b'), 50);
+    const all = accounting.snapshotAll();
+    expect(all.budgetUsd).toBe(50);
+    expect(all.budgetStatus).not.toBe('not_configured');
+  });
+
+  it('keeps the pre-call check flat as responses accumulate', () => {
+    // `makeSnapshot` runs inside `checkBeforeModelCall` before every model call.
+    // It used to linear-scan a `modelIdentities` array that grew one entry per
+    // response and deduped with `.some()` — quadratic on the hot path of the spend
+    // rail, measured at 8.4s per call by 40k responses. The identity set is now
+    // keyed by the tuple its only consumer reads, so it stays bounded.
+    const accounting = new RunAccounting();
+    const root = ctx('root-perf', 'root-perf');
+    accounting.startRoot(root, 1_000_000);
+    for (let i = 0; i < 20_000; i++) {
+      accounting.record(root, { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, {
+        ...meta,
+        responseId: `resp-${i}`,
+      } as unknown as ProviderResponseMetadata);
+    }
+    expect(accounting.snapshotRoot('root-perf').modelIdentities).toHaveLength(1);
+
+    const started = performance.now();
+    for (let i = 0; i < 50; i++) accounting.checkBeforeModelCall('root-perf', 'claude-sonnet-5');
+    const elapsed = performance.now() - started;
+    // Generous: the point is that it is not seconds per call.
+    expect(elapsed).toBeLessThan(1000);
+  });
+});
+
+describe('a carry that could not be priced', () => {
+  it('fails the budget closed instead of restarting the cap from zero', () => {
+    // `inclusiveCost = root.carried?.costUsd ?? 0` turned "we know spend happened
+    // but not how much" into "$0 spent". Paired with a status the gate permits,
+    // the cap re-armed from zero on every prompt and every restart — so N prompts
+    // authorised N x the budget, which is the exact failure the objective-scoped
+    // carry exists to prevent.
+    const accounting = new RunAccounting();
+    accounting.startRoot(context('root-c', 'root-c'), 50);
+    accounting.seedRoot('root-c', { usage: null, costUsd: null });
+
+    const snapshot = accounting.snapshotRoot('root-c');
+    expect(snapshot.costStatus).toBe('unknown');
+    expect(accounting.checkBeforeModelCall('root-c', 'claude-sonnet-5')).toMatchObject({
+      allowed: false,
+      status: 'unknown',
+    });
+  });
+
+  it('leaves an unbudgeted run alone', () => {
+    // Failing closed is only correct where a ceiling was actually asked for.
+    const accounting = new RunAccounting();
+    accounting.startRoot(context('root-d', 'root-d'));
+    accounting.seedRoot('root-d', { usage: null, costUsd: null });
+    expect(accounting.checkBeforeModelCall('root-d', 'claude-sonnet-5')).toMatchObject({
+      allowed: true,
+    });
+  });
+});
+
+describe('spend attribution across snapshot kinds', () => {
+  const meta = {
+    provider: 'anthropic',
+    requestedModel: 'claude-sonnet-5',
+    responseModel: 'claude-sonnet-5',
+    responseId: 'r1',
+    status: 'verified',
+  } as unknown as ProviderResponseMetadata;
+  const oneDollar = { promptTokens: 333_334, completionTokens: 0, totalTokens: 333_334 };
+
+  it('does not bill a child with the objective\u2019s restored spend', () => {
+    // `snapshotRun` passed the whole ROOT to `makeSnapshot`, so every per-agent
+    // `run_end` event reported a child that spent cents as having spent the entire
+    // objective's carried total — and `budgetStatus: 'exceeded'` for that child.
+    const accounting = new RunAccounting();
+    accounting.startRoot(context('root-e', 'root-e'), 50);
+    accounting.seedRoot('root-e', { usage: null, costUsd: 49 });
+    accounting.record(context('child-e', 'root-e'), oneDollar, meta);
+
+    const child = accounting.snapshotRun('child-e');
+    expect(child?.inclusiveCostUsd).toBeCloseTo(1, 4);
+    expect(child?.budgetStatus).toBe('within');
+  });
+
+  it('counts restored spend in the aggregate snapshot', () => {
+    // `snapshotAll` built a synthetic root that omitted `carried`, so
+    // `HeadlessResult.accounting` could report `within` in the same object as
+    // `outcome.reason: 'budget_exceeded'` — and a supervisor gating on the status
+    // restarted a run that had already spent its ceiling.
+    const accounting = new RunAccounting();
+    accounting.startRoot(context('root-f', 'root-f'), 50);
+    accounting.seedRoot('root-f', { usage: null, costUsd: 49.5 });
+    accounting.record(context('root-f', 'root-f'), oneDollar, meta);
+
+    const all = accounting.snapshotAll();
+    expect(all.inclusiveCostUsd).toBeCloseTo(50.5, 4);
+    expect(all.budgetStatus).toBe('exceeded');
+  });
+
+  it('lets a re-driven agent join the live budgeted root', () => {
+    // A resumed agent carries the dead process's rootRunId; nothing recreates it,
+    // so it would run with `budgetUsd: undefined` — unbounded, and invisible to
+    // the host's own gate.
+    const accounting = new RunAccounting();
+    accounting.startRoot(context('host-root', 'host-root'), 25);
+    expect(accounting.hasRoot('dead-process-root')).toBe(false);
+    expect(accounting.budgetedRootRunId()).toBe('host-root');
+  });
+
+  it('refuses to guess when more than one budgeted root is live', () => {
+    const accounting = new RunAccounting();
+    accounting.startRoot(context('r1', 'r1'), 25);
+    accounting.startRoot(context('r2', 'r2'), 10);
+    expect(accounting.budgetedRootRunId()).toBeUndefined();
   });
 });

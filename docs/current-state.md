@@ -156,6 +156,31 @@ capability boundary, providers, MCP, other settings and sandbox behavior, manage
 - Web access: HTTPS and public destinations by default; HTTP and private-network exceptions require
   explicit environment opt-ins.
 
+## Long-Horizon Execution
+
+Work aimed at running an objective unattended for days rather than hours. All of it is gated on
+`continuation.enabled` (default off) except where noted.
+
+- **Continuation.** `runAgentLoop` no longer ends at the model's first tool-free turn; it appends a
+  host-authored user turn while the plan says work remains. Two independent brakes stop a run that
+  is going nowhere: `noProgressLimit` (identical todos, file hashes and *executed* tool calls across
+  boundaries) and `blockedToolTurnLimit`, which ends a run whose every tool call was refused on N
+  consecutive turns. The second is enforced in unattended hosts regardless of
+  `continuation.enabled`, because that spin predates continuation; it does not apply in the TUI or
+  in plan mode, where a refusal is a person or a policy, not a stall.
+- **Spend.** `--max-budget-usd` bounds the *objective*: enforced against inclusive cost so delegated
+  work counts, carried across submitted prompts and across restarts, persisted from the inclusive
+  total so managed-agent and subagent tokens survive a restart, and fail-closed on a ceiling that
+  cannot be evaluated. The pre-call check is O(1) in responses.
+- **Transport.** A dropped stream re-issues the turn against the history already on disk rather than
+  ending the run, with a separate allowance for output-cap continuations. A re-issued request never
+  ends on an assistant message, because that is prefill and is refused while thinking is enabled.
+- **Liveness.** `<BOOK_HOME>/runs/<session-id>.json` carries turn, elapsed, spend, current todo,
+  last tool, free disk and the terminal outcome, rewritten at each turn boundary and bounded in
+  size; a `crash` field is written from the exit path when a process dies without one.
+- **Restart.** Todos and the task DAG persist and restore, and a resumed session is told when a plan
+  record existed but came back empty - never when one was simply never written.
+
 ## Known Boundaries
 
 - Four classes of repository-controlled input carry an explicit trust boundary, each
@@ -211,7 +236,9 @@ capability boundary, providers, MCP, other settings and sandbox behavior, manage
   `BOOK_HOME/models/zero-mem`; downloads are refused unless
   `BOOK_ZERO_MEM_LOCAL_FILES_ONLY=false` is set once, and an unavailable model fails the turn with
   that instruction. When enabled, auto-compaction is off for the main agent, `/compact` only warms
-  the index and reports that history was not replaced, and subagents keep the summary path. Legacy
+  the index and reports that history was not replaced, and subagents keep the summary path. The
+  loop's context-overflow recovery is the one exception: a turn the provider refuses for size still
+  falls back to summary compaction, because warming an index cannot shrink that request. Legacy
   `compactStrategy: zero-mem` and `BOOK_COMPACT_STRATEGY=zero-mem` selectors fail with migration
   guidance rather than silently enabling the experiment.
 - Managed-agent planning-task linkage, rerun, and task-aware cleanup from the background-job plan

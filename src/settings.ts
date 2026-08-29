@@ -98,6 +98,16 @@ export const HOOK_EVENTS = [
   'PostCompact',
   'SubagentStart',
   'SubagentStop',
+  /**
+   * Something a human should know about while nobody is watching: a run parked on
+   * a rejected credential, a budget crossing its ceiling, a refused spawn because
+   * the disk is nearly full. Wire ntfy/Slack/SMS here as an ordinary shell hook.
+   *
+   * Only `severity: 'alarm'` is meant to wake anyone; everything else is a line to
+   * tail. `hooksSchema` is generated from this array, so the schema cost is one
+   * entry.
+   */
+  'Notification',
 ] as const;
 
 export type HookEvent = (typeof HOOK_EVENTS)[number];
@@ -129,8 +139,33 @@ export const retrySettingsSchema = z.object({
   totalBudgetMs: z.number().int().min(0).max(600000).default(0),
   requestTimeoutMs: z.number().int().min(5000).max(600000).default(600000),
   streamStallTimeoutMs: z.number().int().min(5000).max(120000).default(20000),
+  /**
+   * Stall ceiling while the model is thinking, which is a different regime.
+   *
+   * `streamStallTimeoutMs` is tuned for a chat: 20s of silence means something
+   * broke. But with adaptive thinking on — the default for every Opus and Sonnet
+   * model here, at `high` effort unless told otherwise — a long quiet stretch
+   * before the first token is the model working, not a fault. Applying the chat
+   * timeout to it cancels a healthy request and reports `stream_stall`.
+   */
+  thinkingStallTimeoutMs: z.number().int().min(10_000).max(1_800_000).default(900_000),
   toolRetries: z.number().int().min(0).max(3).default(1),
   watchdog: z.boolean().default(false),
+  /**
+   * How many times a turn may be re-sent after a transport fault that left the
+   * work intact — a stalled stream, a dropped socket.
+   *
+   * `maxAttempts` covers connection setup only; once a 200 response is streaming
+   * it is out of scope, so without this a single 20-second provider silence ended
+   * the run. Set to 0 to restore that behavior exactly.
+   */
+  streamReissueAttempts: z.number().int().min(0).max(10).default(3),
+  /**
+   * Separate allowance for continuing after the provider's output cap. A large
+   * generated file legitimately hits the cap on consecutive turns, and sharing
+   * the transport budget would leave nothing for a real socket drop afterwards.
+   */
+  outputCapContinuations: z.number().int().min(0).max(50).default(10),
 });
 
 export type RetrySettings = z.infer<typeof retrySettingsSchema>;
@@ -170,6 +205,50 @@ export const providerConfigSchema = z.object({
   models: z.record(providerModelSchema).default({}),
 });
 
+/**
+ * Continuation: whether a turn that stops with no tool calls may be re-driven.
+ *
+ * `runAgentLoop` ends as soon as a turn produces no tool calls, so one user
+ * message is the whole run and a model that writes "I've finished" stops there.
+ * Enabling this lets the loop append a host-authored user turn and keep going
+ * while there is demonstrably work left.
+ *
+ * Off by default: it changes when a run ends, and continuation without the
+ * no-progress brake below would let a stalled run spin and bill silently, where
+ * today it stops and a human notices.
+ */
+export const continuationSettingsSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Consecutive host-authored continuations before the run stops regardless. */
+  maxConsecutive: z.number().int().min(1).max(1000).default(50),
+  /**
+   * Identical progress witnesses in a row before the run stops as no-progress.
+   * Minimum 1: a 0 here would fire on the first boundary, before any witness
+   * exists, and label a run that never got a chance to spin as spinning.
+   */
+  noProgressLimit: z.number().int().min(1).max(20).default(3),
+  /**
+   * Consecutive turns in which EVERY tool call was refused before the run stops.
+   *
+   * Enforced even when `enabled` is false, deliberately. The spin it catches
+   * predates continuation and needs no continuation to happen: a headless run in
+   * the default permission mode answers every prompt `deny`, so the model can
+   * re-issue a refused call forever while `toolCalls.length > 0` keeps the
+   * turn-end gate from ever firing. None of the existing anti-loop signals see it
+   * either — the repeated-failure breaker ignores anything that is not `error`,
+   * and `toolCallStats.failures` excludes `blocked` by construction.
+   *
+   * 0 disables the guard.
+   */
+  blockedToolTurnLimit: z.number().int().min(0).max(100).default(3),
+  /** Turns between host-authored work-state messages; 0 disables them. */
+  planRefreshTurns: z.number().int().min(0).max(500).default(25),
+  /** Wall-clock ceiling for one continued run; 0 means no ceiling. */
+  maxWallClockMs: z.number().int().min(0).default(0),
+});
+
+export type ContinuationSettings = z.infer<typeof continuationSettingsSchema>;
+
 export const memorySettingsSchema = z.object({
   enabled: z.boolean().default(true),
   autoSave: z.boolean().default(true),
@@ -186,6 +265,43 @@ export const agentSettingsSchema = z.object({
   telemetry: z.boolean().default(true),
   retentionDays: z.number().int().min(1).max(3650).default(30),
   checks: z.record(z.union([z.string().min(1), z.array(z.string().min(1)).min(1)])).default({}),
+  /**
+   * Wall-clock ceiling for one `Check` run. The 120s default suits a focused
+   * suite; a full `npm test` on a large repository routinely exceeds it, and a
+   * check that always times out is worse than no check because the timeout was
+   * reported as a failing suite. Raise it per project rather than per invocation.
+   */
+  checkTimeoutMs: z.number().int().min(1_000).max(7_200_000).default(120_000),
+  /**
+   * Simultaneous agent worktrees per repository; 0 disables the check.
+   *
+   * Nothing reclaims a worktree automatically outside the TUI, and the store's
+   * retention sweep runs once at startup with a 30-day default — so on a long
+   * unattended run the count only grows. Sized above `maxConcurrent` so ordinary
+   * fan-out is unaffected and only accumulation trips it.
+   */
+  maxWorktrees: z.number().int().min(0).max(256).default(24),
+  /**
+   * Re-drive agents that were interrupted by process death on the next start.
+   *
+   * A restart otherwise converts the whole pending backlog into terminal records
+   * nothing picks up, silently losing hours of child work on a wide fan-out. The
+   * re-drive is contained: explorers are read-only and patchers/validators run in
+   * their own worktree, so nothing reaches the parent workspace without the usual
+   * evidence gate. Only `process_exit` interruptions qualify — a user stop stays
+   * stopped.
+   */
+  resumeInterrupted: z.boolean().default(true),
+  /**
+   * Refuse a new worktree when free disk would fall below this; 0 disables.
+   * Worktrees share the filesystem with the workspace, so exhausting it breaks
+   * the root agent's own Edit and Bash, not just the child's.
+   */
+  minFreeDiskBytes: z
+    .number()
+    .int()
+    .min(0)
+    .default(2 * 1024 * 1024 * 1024),
   profiles: z
     .record(
       z.object({
@@ -369,6 +485,7 @@ export const bookSettingsSchema = z.object({
   hooks: hooksSchema.default({}),
   retry: retrySettingsSchema.default({}),
   memory: memorySettingsSchema.default({}),
+  continuation: continuationSettingsSchema.default({}),
   agents: agentSettingsSchema.default({}),
   toolDiscovery: toolDiscoverySettingsSchema.default({}),
   toolExecution: toolExecutionSettingsSchema.default({}),
@@ -437,6 +554,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     PostCompact: [],
     SubagentStart: [],
     SubagentStop: [],
+    Notification: [],
     projectEntries: {},
   },
   additionalDirectories: [],
@@ -451,8 +569,19 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     totalBudgetMs: 0,
     requestTimeoutMs: 600000,
     streamStallTimeoutMs: 20000,
+    thinkingStallTimeoutMs: 900_000,
     toolRetries: 1,
     watchdog: false,
+    streamReissueAttempts: 3,
+    outputCapContinuations: 10,
+  },
+  continuation: {
+    enabled: false,
+    maxConsecutive: 50,
+    noProgressLimit: 3,
+    blockedToolTurnLimit: 3,
+    planRefreshTurns: 25,
+    maxWallClockMs: 0,
   },
   memory: {
     enabled: true,
@@ -469,6 +598,10 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     telemetry: true,
     retentionDays: 30,
     checks: {},
+    checkTimeoutMs: 120_000,
+    maxWorktrees: 24,
+    resumeInterrupted: true,
+    minFreeDiskBytes: 2 * 1024 * 1024 * 1024,
     profiles: {},
     ui: { enabled: true },
     routing: { inlineSearchBudget: 3, exploreReminder: true },

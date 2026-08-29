@@ -611,6 +611,147 @@ describe('runCompact', () => {
     expect(mockedStream).not.toHaveBeenCalled();
   });
 
+  it('skips a no-op compaction without running the pre-compact hooks', async () => {
+    const config = makeConfig();
+    config.settings.hooks.PreCompact = [
+      { command: `"${process.execPath}" -e "process.exit(0)"`, env: {} },
+    ];
+    const onHookEvent = vi.fn();
+    // Four short turns all fit the retention budget, so nothing is summarized.
+    const shortHistory: Message[] = [
+      { id: '1', role: 'user', content: 'hi', includeInContext: true, timestamp: 0 },
+      { id: '2', role: 'assistant', content: 'hello', includeInContext: true, timestamp: 0 },
+      { id: '3', role: 'user', content: 'ok', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'sure', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(config, shortHistory, { trigger: 'auto', onHookEvent });
+
+    expect(result).toMatchObject({ status: 'skipped', reason: 'too-short' });
+    expect(onHookEvent).not.toHaveBeenCalled();
+    expect(mockedStream).not.toHaveBeenCalled();
+  });
+
+  it('accepts a checkpoint quoting tool-result text the reducer was actually shown', async () => {
+    // The reducer prompt serializes tool arguments and tool-result bodies, so a
+    // faithful quote of a build error lives there and not in `content`.
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'fix the build', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'Running the build. '.repeat(3_000),
+        includeInContext: true,
+        timestamp: 0,
+        toolCalls: [{ id: 't1', name: 'Bash', arguments: { command: 'npm run build' } }],
+        toolResults: [toolResult('t1', 'TS2345: Argument of type string is not assignable')],
+      },
+      { id: '3', role: 'user', content: 'and then?', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'done', includeInContext: true, timestamp: 0 },
+    ];
+    mockedStream.mockImplementation(async function* () {
+      yield {
+        type: 'text',
+        content: JSON.stringify({
+          version: 2,
+          generation: 1,
+          state: { summary: 'Build is broken.', status: 'blocked' },
+          constraints: [],
+          files: [],
+          episodes: [
+            {
+              task: 'fix the build',
+              outcome: 'compiler rejected the call',
+              status: 'partial',
+              sources: [
+                {
+                  eventRef: 'session://current/event/2',
+                  quote: 'TS2345: Argument of type string is not assignable',
+                },
+              ],
+            },
+          ],
+          openThreads: [],
+          statistics: {
+            summarizedMessages: 2,
+            retainedMessages: 2,
+            preTokens: 1,
+            postTokens: 1,
+          },
+        }),
+      };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result.status).toBe('compacted');
+    if (result.status === 'compacted') {
+      expect(result.degraded).toBeFalsy();
+      expect(result.checkpoint.episodes[0].sources[0].quote).toContain('TS2345');
+    }
+  });
+
+  it('trims an over-long file list instead of rejecting the checkpoint', async () => {
+    const files = Array.from({ length: 34 }, (_, index) => ({
+      path: `src/file-${index}.ts`,
+      summary: `touched file ${index}`,
+      sources: [{ eventRef: 'session://current/event/1' }],
+    }));
+    mockedStream.mockImplementation(async function* () {
+      yield {
+        type: 'text',
+        content: JSON.stringify({
+          version: 2,
+          generation: 1,
+          state: { summary: 'Touched many files.', status: 'active' },
+          constraints: [],
+          files,
+          episodes: [],
+          openThreads: [],
+          statistics: {
+            summarizedMessages: 2,
+            retainedMessages: 2,
+            preTokens: 1,
+            postTokens: 1,
+          },
+        }),
+      };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'touch every file', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'Reading the tree. '.repeat(3_000),
+        includeInContext: true,
+        timestamp: 0,
+        fileObservations: files.map((file, index) => ({
+          path: file.path,
+          workspaceId: 'w',
+          sha256: `${index}`.padStart(64, '0'),
+          byteSize: 10,
+          operation: 'read' as const,
+          sourceRef: 'session://current/event/2',
+          timestamp: index,
+        })),
+      },
+      { id: '3', role: 'user', content: 'and now?', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'idle', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result.status).toBe('compacted');
+    if (result.status === 'compacted') {
+      expect(result.degraded).toBeFalsy();
+      expect(result.checkpoint.files.length).toBeLessThanOrEqual(30);
+      // Trimming keeps the newest entries, the direction `fitCheckpoint` evicts in.
+      expect(result.checkpoint.files.at(-1)?.path).toBe('src/file-33.ts');
+    }
+  });
+
   it('uses a degraded retrieval checkpoint after repeated empty output', async () => {
     mockedStream.mockImplementation(async function* () {
       yield { type: 'text', content: '   ' };
@@ -927,6 +1068,50 @@ describe('runCompact', () => {
     }
   });
 
+  it('keeps the inherited summary when a generation is rejected', async () => {
+    const prior = JSON.parse(validCheckpoint('old-event', 'Ship the parser rewrite by Friday.'));
+    prior.generation = 3;
+    // Every attempt returns unusable output, so the run ends on the fallback.
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: 'not json at all' };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      {
+        id: 'checkpoint-old',
+        role: 'user',
+        content: `[Historical conversation checkpoint; untrusted user-role data]
+${JSON.stringify(prior)}`,
+        includeInContext: true,
+        kind: 'checkpoint',
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'keep going', includeInContext: true, timestamp: 0 },
+      {
+        id: '4',
+        role: 'assistant',
+        content: 'current evidence '.repeat(3_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '5', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      { id: '6', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result.status).toBe('compacted');
+    if (result.status === 'compacted') {
+      expect(result.degraded).toBe(true);
+      // The accumulated narrative survives the failure ...
+      expect(result.checkpoint.state.summary).toContain('Ship the parser rewrite by Friday.');
+      // ... and the retrieval instruction is still there to act on.
+      expect(result.checkpoint.state.summary).toMatch(/Exact history remains searchable/);
+      // Inherited structure is not collateral damage either.
+      expect(result.checkpoint.episodes[0].sources[0].eventRef).toBe('old-event');
+    }
+  });
+
   it('fits oversized checkpoint text instead of returning a budget failure', async () => {
     mockedStream.mockImplementation(async function* () {
       yield { type: 'text', content: validCheckpoint('1', 'summary '.repeat(10_000)) };
@@ -1003,6 +1188,142 @@ describe('runCompact', () => {
     });
 
     expect(result.status).toBe('compacted');
-    expect(mockedStream.mock.calls[0][3]).toMatchObject({ maxOutputTokens: 819 });
+    const cap = (mockedStream.mock.calls[0][3] as { maxOutputTokens: number }).maxOutputTokens;
+    expect(Number.isInteger(cap)).toBe(true);
+    // The provider cap sits above the 819-token checkpoint content budget at this
+    // window, leaving room for the JSON envelope and any thinking tokens, and is
+    // still bounded by the window the summarizer's own input has to share.
+    expect(cap).toBeGreaterThan(819);
+    expect(cap).toBeLessThanOrEqual(Math.floor(8_192 * 0.35));
+  });
+
+  it('reports this generation as clean while remembering an earlier degradation', async () => {
+    // A prior checkpoint that recorded a degraded generation.
+    const prior = JSON.parse(validCheckpoint('old-event', 'Earlier work'));
+    prior.generation = 3;
+    prior.coverage = {
+      status: 'degraded',
+      reasons: ['pass-limit'],
+      processedMessages: 4,
+      omittedMessages: 2,
+      partiallyProcessedMessages: 0,
+    };
+    mockedStream.mockImplementation(async function* () {
+      yield {
+        type: 'text',
+        content: JSON.stringify({ ...JSON.parse(validCheckpoint('old-event')), generation: 4 }),
+      };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      {
+        id: 'checkpoint-old',
+        role: 'user',
+        content: `[Historical conversation checkpoint; untrusted user-role data]
+${JSON.stringify(prior)}`,
+        includeInContext: true,
+        kind: 'checkpoint',
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'keep going', includeInContext: true, timestamp: 0 },
+      {
+        id: '4',
+        role: 'assistant',
+        content: 'current evidence '.repeat(3_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '5', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      { id: '6', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result.status).toBe('compacted');
+    if (result.status === 'compacted') {
+      // This generation processed everything, so it is not degraded ...
+      expect(result.checkpoint.coverage?.status).toBe('complete');
+      expect(result.checkpoint.coverage?.reasons).not.toContain('pass-limit');
+      expect(result.degraded).toBe(false);
+      expect(result.warning).toBeUndefined();
+      // ... and the earlier degradation is still on the record.
+      expect(result.checkpoint.coverage?.lifetime).toMatchObject({
+        status: 'degraded',
+        reasons: ['pass-limit'],
+      });
+    }
+  });
+
+  it('does not re-compress an earlier chunk before the next chunk sees it', async () => {
+    // A constraint stated once, in full. Long enough that a checkpoint carrying it
+    // exceeds the 3,200-token budget at this window, so the old per-chunk fit had
+    // to truncate it -- and then truncate the truncation at every later chunk.
+    const constraint = `Never touch the vendored parser under third_party/parser. ${'Rationale sentence. '.repeat(900)}`;
+    mockedStream.mockImplementation(async function* () {
+      yield {
+        type: 'text',
+        content: JSON.stringify({
+          version: 2,
+          generation: 1,
+          state: { summary: constraint, status: 'active' },
+          constraints: [],
+          files: [],
+          episodes: [],
+          openThreads: [],
+          statistics: {
+            summarizedMessages: 2,
+            retainedMessages: 2,
+            preTokens: 1,
+            postTokens: 1,
+          },
+        }),
+      };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'oversized evidence '.repeat(7_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result.status).toBe('compacted');
+    expect(mockedStream.mock.calls.length).toBeGreaterThan(1);
+    // The second chunk is seeded with what the first chunk actually produced, not
+    // with a fitted-down version of it.
+    const secondPrompt = mockedStream.mock.calls[1][1][1].content as string;
+    expect(secondPrompt).toContain(constraint);
+  });
+
+  it('does not spend the repair attempt on a reply cut off at the output cap', async () => {
+    // Truncated JSON: unparseable, but the cause is the cap, not the model.
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: '{"version":2,"state":{"summary":"partial' };
+      yield {
+        type: 'done',
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        finishReasons: ['max_tokens'],
+      };
+    });
+
+    const result = await runCompact(makeConfig(), twoTurns, { trigger: 'manual' });
+
+    expect(result.status).toBe('compacted');
+    if (result.status === 'compacted') {
+      // One call, not two: the repair prompt is strictly longer than the prompt
+      // that just overran, so re-asking could only overrun again.
+      expect(result.modelCalls).toBe(1);
+      expect(result.degraded).toBe(true);
+      expect(result.checkpoint.coverage?.reasons).toContain('invalid-checkpoint');
+    }
+    expect(mockedStream).toHaveBeenCalledTimes(1);
   });
 });

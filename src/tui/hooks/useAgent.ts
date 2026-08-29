@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { planWasLost } from '../../agent/session-state.js';
 import type { Message, Usage, LocalCommandDisplay } from '../../types/messages.js';
 import type {
   ElicitationHandler,
@@ -24,6 +25,7 @@ import type {
   RewindRecordData,
   RewindSnapshotStoreInterface,
   RewindTarget,
+  PlanRecordData,
 } from '../../types/sessions.js';
 import { resolveContextLimit, shouldCompact, usagePressureTokens } from '../../agent/compact.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
@@ -68,6 +70,7 @@ import {
   type AgentSessionSendControl,
   type AgentSessionSendResult,
 } from '../../session/agent-session.js';
+import { normalizePersistedTodos } from '../../tools/todo.js';
 import { SessionRuntime } from '../../session/runtime.js';
 import { createInteractiveAgentSession } from '../../session/interactive-session.js';
 import type { AgentCompletionNotification } from '../../agents/types.js';
@@ -223,6 +226,31 @@ function buildHandoffPrompt(plan: string): string {
   ].join('\n');
 }
 
+/**
+ * Build the session runtime with the plan a resumed session persisted.
+ *
+ * Seeded by pushing into the runtime's own arrays: the tools mutate those arrays
+ * in place, so replacing them here would detach the runtime from what the loop
+ * reads.
+ */
+function createSeededRuntime(
+  session: UseAgentSessionOptions,
+  initialTranscript: Message[],
+): SessionRuntime {
+  const runtime = new SessionRuntime({
+    fileObservationLedger: buildObservationLedger(initialTranscript),
+  });
+  runtime.todos.push(...normalizePersistedTodos(session.plan?.todos));
+  if (session.plan?.tasks?.length) runtime.tasks.push(...session.plan.tasks);
+  runtime.planUnrestored = planWasLost({
+    planRecordExisted: session.plan !== undefined,
+    priorMessages: initialTranscript.length,
+    todos: runtime.todos.length,
+    tasks: runtime.tasks.length,
+  });
+  return runtime;
+}
+
 export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const initialTranscript = session.transcript ?? session.history;
   const initialContext = session.contextHistory ?? session.history;
@@ -265,9 +293,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const [ownedProviders, setOwnedProviders] = useState(() => readOwnedProviders());
   const [agentSession] = useState(() =>
     createInteractiveAgentSession({
-      runtime: new SessionRuntime({
-        fileObservationLedger: buildObservationLedger(initialTranscript),
-      }),
+      runtime: createSeededRuntime(session, initialTranscript),
       additionalTools: session.additionalTools,
     }),
   );
@@ -442,6 +468,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       contextHistory: Message[] = transcript,
       boundaries: CompactBoundary[] = [],
       targets: RewindTarget[] = [],
+      plan?: PlanRecordData,
     ) => {
       sessionIdRef.current = nextId;
       sessionNameRef.current = nextName;
@@ -466,10 +493,22 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       setRetryAttempt(0);
       setRetryMax(0);
       setRetryCountdownMs(0);
-      agentSession.replaceRuntime(
+      const nextRuntime = agentSession.replaceRuntime(
         { fileObservationLedger: buildObservationLedger(transcript) },
         'session_transition',
       );
+      // `replaceRuntime` hands back empty lists, so without this a transition into
+      // a session drops its persisted plan on the floor — and, because the flag
+      // stays false too, says nothing about having done so.
+      nextRuntime.todos.push(...normalizePersistedTodos(plan?.todos));
+      if (plan?.tasks?.length) nextRuntime.tasks.push(...plan.tasks);
+      nextRuntime.planUnrestored = planWasLost({
+        planRecordExisted: plan !== undefined,
+        priorMessages: transcript.length,
+        todos: nextRuntime.todos.length,
+        tasks: nextRuntime.tasks.length,
+      });
+      setAgentTodos([...nextRuntime.todos]);
       setLiveConfig((current) => ({
         ...current,
         memoryContext: current.settings.memory.enabled
@@ -522,6 +561,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             bootstrap.contextHistory ?? bootstrap.history,
             bootstrap.compactBoundaries,
             bootstrap.rewindTargets,
+            bootstrap.plan,
           );
         },
       });
@@ -555,6 +595,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             bootstrap.contextHistory ?? bootstrap.history,
             bootstrap.compactBoundaries,
             bootstrap.rewindTargets,
+            bootstrap.plan,
           );
         },
       });

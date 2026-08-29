@@ -15,10 +15,12 @@ import { runHooks } from '../hooks.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { createRegistry } from '../tools/registry-core.js';
 import { createCapabilityRegistry, describeCapabilities } from './capabilities.js';
+import { checkWorktreeCapacity } from './resource-governor.js';
 import {
   applyVerifiedCandidate,
   commitAgentWork,
   createAgentWorktree,
+  defaultWorktreeRoot,
   createSyntheticSnapshot,
   checkoutAgentCommit,
   findGitRoot,
@@ -421,6 +423,28 @@ export class AgentManager {
         if (record.planId && record.snapshotId)
           this.planSnapshots.set(record.planId, record.snapshotId);
       }
+      // Re-drive what died mid-flight. `ensureInitialized` already hydrates agents,
+      // plans, evidence, and snapshots — it just never pushed anything onto the
+      // queue, so a restart turned the entire pending backlog into terminal records
+      // nothing picked up. `prompt` and `purpose` are on disk and never mutated
+      // after spawn, so the re-drive needs no information a restart cannot have.
+      if (this.config.settings.agents.resumeInterrupted) {
+        for (const record of this.agents.values()) {
+          if (!record.resumable) continue;
+          // A user stop stays stopped; only process death is resumable, and only
+          // for work that had not reached a terminal decision of its own.
+          if (record.stopReason !== 'process_exit') continue;
+          if (!['queued', 'starting', 'running'].includes(record.resumedFromStatus ?? '')) continue;
+          record.resumable = false;
+          record.status = 'queued';
+          record.stopReason = undefined;
+          record.finishedAt = undefined;
+          this.persist(record);
+          this.queue.push(record.id);
+          this.emit({ type: 'agent_update', agent: clone(record) });
+        }
+        if (this.queue.length > 0) queueMicrotask(() => this.pump());
+      }
       this.exitHandler = () => {
         for (const record of this.agents.values()) {
           if (
@@ -430,6 +454,16 @@ export class AgentManager {
           )
             continue;
           if (!this.store?.isOwnedByCurrent(record.id)) continue;
+          // Record what this agent was doing BEFORE overwriting it. `resumable` is
+          // the only thing the next start's re-drive consults, and this handler is
+          // the ordinary way a fan-out dies — Ctrl-C, or the process simply
+          // finishing while children are still queued. Without these two fields
+          // `recoverAbandonedAgents` never sees them either, because it walks only
+          // ACTIVE_STATUSES and `interrupted` is terminal: `agents.resumeInterrupted`
+          // then fired solely after a SIGKILL that skipped this handler, which is
+          // the one case it was least needed.
+          record.resumable = true;
+          record.resumedFromStatus = record.status;
           record.status = 'interrupted';
           record.stopReason = 'process_exit';
           record.pendingPermission = undefined;
@@ -1325,6 +1359,38 @@ export class AgentManager {
                 .map((id) => this.evidence.get(id)?.patchCandidate?.headCommit)
                 .find((head): head is string => Boolean(head))
             : undefined;
+        // Admission control before the checkout, not after. A worktree shares the
+        // filesystem with the workspace, so exhausting the disk here breaks the
+        // root agent's own writes; refusing with a named reason is recoverable,
+        // discovering it mid-edit is not.
+        const capacity = checkWorktreeCapacity({
+          worktreeRoot: this.options.worktreeRoot ?? defaultWorktreeRoot(),
+          repoHash: snapshot.repoHash,
+          maxWorktrees: this.config.settings.agents.maxWorktrees,
+          minFreeDiskBytes: this.config.settings.agents.minFreeDiskBytes,
+        });
+        if (!capacity.ok) {
+          // Escalate rather than only failing the child: this is the failure that
+          // takes the whole run down, so it is worth waking someone for.
+          // `hookEventSink` is the callback runHooks invokes to REPORT that a hook
+          // ran; calling it directly notifies nobody and is undefined outside
+          // headless with --include-hook-events. Both limits are on by default in
+          // every host, so the ntfy/Slack hook the README tells the user to wire
+          // has never fired for either of them.
+          void runHooks(
+            this.config.settings.hooks.Notification,
+            'Notification',
+            {
+              workspace: this.config.workspace,
+              event: 'Notification',
+              severity: 'alarm',
+              kind: `agent_${capacity.reason}`,
+              message: capacity.message,
+            },
+            { onHookEvent: this.hookEventSink },
+          ).catch(() => {});
+          throw new Error(capacity.message);
+        }
         const worktree = await (this.options.createWorktree ?? createAgentWorktree)(
           snapshot,
           record.id,
@@ -1448,6 +1514,14 @@ export class AgentManager {
           this.persist(record);
         }
       };
+      // A re-driven agent still carries the dead process's root, which nothing
+      // here recreates — so it would run under a freshly minted root with no
+      // budget, unbounded, and invisible to the host's own inclusive total. Join
+      // the live budgeted root instead, when there is an unambiguous one.
+      if (record.rootRunId && !runtime.runAccounting.hasRoot(record.rootRunId)) {
+        const liveRoot = runtime.runAccounting.budgetedRootRunId();
+        if (liveRoot) record.rootRunId = liveRoot;
+      }
       const runContext = createAgentRunContext({
         sessionId: record.parentSessionId ?? `agent:${record.id}`,
         runId: record.runId,
@@ -1746,7 +1820,8 @@ export class AgentManager {
 
       if (
         !this.disposed &&
-        record.pendingMessages.length > 0 &&
+        // Defensive: a resumed record comes off disk and may predate this field.
+        (record.pendingMessages?.length ?? 0) > 0 &&
         record.status !== 'stopped' &&
         record.status !== 'queued'
       ) {

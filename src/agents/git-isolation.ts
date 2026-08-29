@@ -176,10 +176,15 @@ export async function createSyntheticSnapshot(
   };
 }
 
+/** Where agent worktrees live when a host does not override the root. */
+export function defaultWorktreeRoot(): string {
+  return join(resolveBookHome(), 'worktrees');
+}
+
 export async function createAgentWorktree(
   snapshot: AgentSnapshot,
   agentId: string,
-  worktreeRoot = join(resolveBookHome(), 'worktrees'),
+  worktreeRoot = defaultWorktreeRoot(),
   startCommit = snapshot.commit,
 ): Promise<{ path: string; branch: string }> {
   const path = join(worktreeRoot, snapshot.repoHash, agentId);

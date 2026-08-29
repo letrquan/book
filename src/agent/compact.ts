@@ -38,6 +38,18 @@ const RECENT_TAIL_FRACTION = 0.2;
 const CHECKPOINT_MAX_TOKENS = 4_096;
 const CHECKPOINT_FRACTION = 0.1;
 const SUMMARIZER_INPUT_FRACTION = 0.65;
+/**
+ * The reducer's provider cap has to sit above the checkpoint content budget. The
+ * model emits a whole JSON envelope around `checkpointBudget` tokens of content,
+ * and on an adaptive-thinking model the thinking is spent from this same cap --
+ * `anthropic.ts` sets `output_config` for the reducer with no compaction
+ * exemption. Sending the content budget as `max_tokens` meant the reply was cut
+ * off mid-JSON, which the parser can only read as malformed output.
+ */
+const REDUCER_OUTPUT_HEADROOM = 3;
+const REDUCER_OUTPUT_MIN_MARGIN_TOKENS = 2_048;
+/** Provider finish reasons that mean "cut off at the cap", not "done". */
+const TRUNCATION_FINISH_REASONS = new Set(['length', 'max_tokens']);
 const MESSAGE_OVERHEAD_TOKENS = 6;
 const TOOL_OVERHEAD_TOKENS = 12;
 const RETAINED_TOOL_RESULT_MAX_TOKENS = 2_000;
@@ -76,16 +88,14 @@ export const conversationCheckpointV2Schema = z.object({
       sources: z.array(sourceRefSchema).min(1),
     }),
   ),
-  files: z
-    .array(
-      z.object({
-        path: z.string().min(1),
-        summary: z.string().min(1),
-        sources: z.array(sourceRefSchema).min(1),
-        observation: z.any().optional(),
-      }),
-    )
-    .max(MAX_CHECKPOINT_FILES),
+  files: z.array(
+    z.object({
+      path: z.string().min(1),
+      summary: z.string().min(1),
+      sources: z.array(sourceRefSchema).min(1),
+      observation: z.any().optional(),
+    }),
+  ),
   episodes: z.array(
     z.object({
       task: z.string().min(1),
@@ -107,6 +117,12 @@ export const conversationCheckpointV2Schema = z.object({
     .object({
       status: z.enum(['complete', 'degraded']),
       reasons: z.array(coverageReasonSchema),
+      lifetime: z
+        .object({
+          status: z.enum(['complete', 'degraded']),
+          reasons: z.array(coverageReasonSchema),
+        })
+        .optional(),
       processedMessages: z.number().int().nonnegative(),
       omittedMessages: z.number().int().nonnegative(),
       partiallyProcessedMessages: z.number().int().nonnegative(),
@@ -163,7 +179,7 @@ interface CurrentCoverage {
 }
 
 type GenerateResult =
-  | { ok: true; text: string }
+  | { ok: true; text: string; truncated: boolean }
   | {
       ok: false;
       contextOverflow: boolean;
@@ -337,6 +353,22 @@ export async function runCompact(
     return { status: 'skipped', reason: 'too-short', message: 'Not enough messages to compact.' };
   }
 
+  // Everything needed to decide whether there is anything to compact is pure and
+  // cheap, so it runs before the hooks: a compaction that will immediately skip
+  // must not fire the user's PreCompact commands. Only once the work is known to
+  // be real do the hooks get a chance to observe or block it.
+  const contextWindow = resolveContextLimit(config);
+  const recentBudget = Math.min(RECENT_TAIL_MAX_TOKENS, contextWindow * RECENT_TAIL_FRACTION);
+  const selection = selectRecentBundles(contextHistory, recentBudget);
+  const summarizedMessages = selection.summarizedBundles.flat();
+  if (summarizedMessages.length === 0) {
+    return {
+      status: 'skipped',
+      reason: 'too-short',
+      message: 'No older complete turn is available to summarize.',
+    };
+  }
+
   let hookResult: Extract<CompactResult, { status: 'skipped' }> | undefined;
   try {
     hookResult = await runPreCompactHooks(config, options);
@@ -351,10 +383,8 @@ export async function runCompact(
     return { status: 'failed', reason: 'aborted', error: 'Compaction aborted.' };
   }
 
-  const contextWindow = resolveContextLimit(config);
   const reducerConfig = resolveCompactModelConfig(config);
   const reducerProvider = options.provider ?? createProvider(reducerConfig);
-  const recentBudget = Math.min(RECENT_TAIL_MAX_TOKENS, contextWindow * RECENT_TAIL_FRACTION);
   const checkpointBudget = Math.max(
     1,
     Math.floor(
@@ -364,16 +394,14 @@ export async function runCompact(
       ),
     ),
   );
+  // An explicit `checkpointMaxTokens` is an evaluation knob and stays the literal
+  // provider cap; otherwise the cap is derived so the envelope and any thinking
+  // tokens fit around a checkpoint of `checkpointBudget`.
+  const reducerOutputCap =
+    options.checkpointMaxTokens !== undefined
+      ? checkpointBudget
+      : resolveReducerOutputCap(checkpointBudget, contextWindow, reducerConfig);
   const preTokens = options.preContextTokens ?? estimateHistoryTokens(contextHistory);
-  const selection = selectRecentBundles(contextHistory, recentBudget);
-  const summarizedMessages = selection.summarizedBundles.flat();
-  if (summarizedMessages.length === 0) {
-    return {
-      status: 'skipped',
-      reason: 'too-short',
-      message: 'No older complete turn is available to summarize.',
-    };
-  }
 
   const generation = nextGeneration(contextHistory);
   const initialRetained = selection.retainedBundles.flat();
@@ -384,9 +412,9 @@ export async function runCompact(
     postTokens: estimateHistoryTokens(initialRetained),
   };
   const rawValidationHistory = contextHistory.filter((message) => message.kind !== 'checkpoint');
-  const baseReasons = new Set<CompactCoverageReason>(
-    selection.priorCheckpoint?.coverage?.reasons ?? [],
-  );
+  // Seeded empty on purpose. These are the reasons *this* compaction ran into;
+  // the accumulated record is carried forward separately by `mergeCoverage`.
+  const baseReasons = new Set<CompactCoverageReason>();
   const seedCheckpoint = selection.priorCheckpoint
     ? cloneCheckpoint(selection.priorCheckpoint)
     : undefined;
@@ -459,7 +487,7 @@ export async function runCompact(
       let generated = await generateCheckpoint(
         reducerConfig,
         prompt,
-        checkpointBudget,
+        reducerOutputCap,
         options.signal,
         reducerProvider,
         options,
@@ -480,16 +508,19 @@ export async function runCompact(
         statistics,
         rawValidationHistory,
         rollingCheckpoint,
-        checkpointBudget,
       );
-      if (!candidate.ok && !repairUsed && modelCalls < MAX_MODEL_CALLS) {
+      // A truncated reply is not malformed reasoning, it is an unfinished
+      // sentence: re-asking with a strictly longer repair prompt would truncate
+      // again, so the one repair attempt is kept for a reply that could use it.
+      if (generated.truncated) attemptReasons.add('invalid-checkpoint');
+      if (!candidate.ok && !generated.truncated && !repairUsed && modelCalls < MAX_MODEL_CALLS) {
         repairUsed = true;
         const repairPrompt = buildRepairPrompt(prompt, generated.text, candidate.error);
         modelCalls++;
         generated = await generateCheckpoint(
           reducerConfig,
           repairPrompt,
-          checkpointBudget,
+          reducerOutputCap,
           options.signal,
           reducerProvider,
           options,
@@ -509,7 +540,6 @@ export async function runCompact(
           statistics,
           rawValidationHistory,
           rollingCheckpoint,
-          checkpointBudget,
         );
       }
 
@@ -1013,6 +1043,7 @@ async function generateCheckpoint(
   let text = '';
   let sawDone = false;
   let usageRecorded = false;
+  let truncated = false;
   const requestConfig = options?.effort
     ? { ...config, effort: options.effort, effortExplicit: true }
     : config;
@@ -1053,6 +1084,9 @@ async function generateCheckpoint(
             responseId: event.responseId,
             finishReasons: event.finishReasons,
           };
+          truncated = (event.finishReasons ?? []).some((reason) =>
+            TRUNCATION_FINISH_REASONS.has(reason),
+          );
           if (event.usage) options?.onUsage?.(event.usage, metadata);
           else options?.onUsageMissing?.(metadata);
         }
@@ -1089,7 +1123,7 @@ async function generateCheckpoint(
       },
     };
   }
-  return { ok: true, text };
+  return { ok: true, text, truncated };
 }
 
 function parseAndValidateCheckpoint(
@@ -1098,15 +1132,23 @@ function parseAndValidateCheckpoint(
   statistics: ConversationCheckpointV2['statistics'],
   history: readonly Message[],
   inherited: ConversationCheckpointV2 | undefined,
-  checkpointBudget: number,
 ): { ok: true; checkpoint: ConversationCheckpointV2 } | { ok: false; error: string } {
   const parsed = conversationCheckpointV2Schema.safeParse(parseJsonObject(text));
   if (!parsed.success) return { ok: false, error: parsed.error.message };
-  let checkpoint = parsed.data as ConversationCheckpointV2;
+  const checkpoint = parsed.data as ConversationCheckpointV2;
   checkpoint.version = 2;
   checkpoint.generation = generation;
   checkpoint.statistics = { ...statistics };
   checkpoint.coverage = undefined;
+  // `files` is capped by the host, not by the schema. As a parse rule a 31st file
+  // rejected the entire checkpoint -- costing the repair attempt and dropping the
+  // generation to the degraded fallback over an excess the host can simply trim.
+  // The same rule applied when re-reading a prior checkpoint message, where the
+  // rejection silently discarded every inherited fact. Trimming keeps the newest
+  // entries, matching the direction `fitCheckpoint` already evicts in.
+  if (checkpoint.files.length > MAX_CHECKPOINT_FILES) {
+    checkpoint.files = checkpoint.files.slice(-MAX_CHECKPOINT_FILES);
+  }
   checkpoint.constraints = checkpoint.constraints.map((constraint) => ({
     ...constraint,
     scope:
@@ -1116,12 +1158,12 @@ function parseAndValidateCheckpoint(
   }));
   hydrateCheckpointFileObservations(checkpoint, history, inherited);
   const validationError = validateCheckpoint(checkpoint, history, inherited);
-  if (validationError) return { ok: false, error: validationError };
-  checkpoint = fitCheckpoint(checkpoint, checkpointBudget, history, inherited);
-  const fittedValidationError = validateCheckpoint(checkpoint, history, inherited);
-  return fittedValidationError
-    ? { ok: false, error: fittedValidationError }
-    : { ok: true, checkpoint };
+  // No fit here. Fitting is lossy and its ladder restarts at 512 characters every
+  // time, so fitting per chunk truncated chunk 1's span once per chunk and again
+  // at every future generation -- compounding into the paraphrase-of-a-paraphrase
+  // decay that makes a week-old checkpoint useless. The single fit at the end of
+  // `runCompact` is followed by its own validation and deterministic fallback.
+  return validationError ? { ok: false, error: validationError } : { ok: true, checkpoint };
 }
 
 function parseJsonObject(text: string): unknown {
@@ -1156,6 +1198,21 @@ function validateCheckpoint(
   inherited?: ConversationCheckpointV2,
 ): string | undefined {
   const events = new Map(history.map((message) => [message.id, message]));
+  // A quote must be checked against the same bytes the reducer was shown, which is
+  // `serializeReferencedMessageBody` -- the body that carries reasoning, tool
+  // arguments, tool-result content, and file observations. Checking `content`
+  // alone rejected a faithful quote of a build error as a hallucination, which
+  // costs the one repair attempt and degrades the whole checkpoint. Memoized
+  // because a message with many sources would otherwise re-serialize per source.
+  const referencedBodies = new Map<string, string>();
+  const referencedBody = (message: Message): string => {
+    let body = referencedBodies.get(message.id);
+    if (body === undefined) {
+      body = serializeReferencedMessageBody(message);
+      referencedBodies.set(message.id, body);
+    }
+    return body;
+  };
   const inheritedSources = collectSourceKeys(inherited);
   const inheritedPaths = new Set(
     (inherited?.files ?? []).map((file) => normalizeObservedPath(file.path)),
@@ -1177,7 +1234,7 @@ function validateCheckpoint(
       const eventId = source.eventRef.replace(/^session:\/\/current\/event\//, '');
       const event = events.get(eventId);
       if (!event) return `Checkpoint cites unknown event reference: ${source.eventRef}`;
-      if (source.quote && !(event.contextContent ?? event.content).includes(source.quote)) {
+      if (source.quote && !referencedBody(event).includes(source.quote)) {
         return `Checkpoint quote does not occur in cited event: ${source.eventRef}`;
       }
       if (source.toolResultRef) {
@@ -1308,15 +1365,21 @@ function makeDeterministicFallback(
         statistics: { ...statistics },
       };
   const sanitized = sanitizeModelText(modelText);
-  checkpoint.version = 2;
-  checkpoint.generation = generation;
+  const limit = Math.max(256, checkpointBudget * 3);
+  const note = sanitized
+    ? `${sanitized} ${RETRIEVAL_WARNING}`
+    : `The summarizer returned no usable structured checkpoint. ${RETRIEVAL_WARNING}`;
+  // A rejected generation is a failure to ADD, not a reason to forget. The
+  // inherited summary is the accumulated narrative of every generation before
+  // this one, and overwriting it with this notice discarded all of it because a
+  // single reducer reply came back unusable -- on a long run the most likely
+  // moment to lose the objective. The note is appended instead, and the inherited
+  // text absorbs the truncation so the retrieval instruction always survives.
+  const inheritedSummary = lastValid?.state.summary.trim();
   checkpoint.state = {
-    summary: truncateText(
-      sanitized
-        ? `${sanitized} ${RETRIEVAL_WARNING}`
-        : `The summarizer returned no usable structured checkpoint. ${RETRIEVAL_WARNING}`,
-      Math.max(256, checkpointBudget * 3),
-    ),
+    summary: inheritedSummary
+      ? `${truncateText(inheritedSummary, Math.max(64, limit - note.length - 2))}\n\n${note}`
+      : truncateText(note, limit),
     status: 'unknown',
   };
   checkpoint.statistics = { ...statistics };
@@ -1331,6 +1394,25 @@ function sanitizeModelText(text: string): string {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Bounded above by what the model will accept and by the room the summarizer's
+ * own input leaves in the window, so raising the cap can never turn a working
+ * compaction into a context overflow.
+ */
+function resolveReducerOutputCap(
+  checkpointBudget: number,
+  contextWindow: number,
+  config: AgentConfig,
+): number {
+  const wanted = Math.max(
+    checkpointBudget * REDUCER_OUTPUT_HEADROOM,
+    checkpointBudget + REDUCER_OUTPUT_MIN_MARGIN_TOKENS,
+  );
+  const windowCeiling = Math.floor(contextWindow * (1 - SUMMARIZER_INPUT_FRACTION));
+  const modelCeiling = config.modelInfo?.maxOutputTokens ?? Number.POSITIVE_INFINITY;
+  return Math.max(checkpointBudget, Math.min(wanted, windowCeiling, modelCeiling));
 }
 
 function fitCheckpoint(
@@ -1466,15 +1548,21 @@ function mergeCoverage(
 ): ConversationCheckpointCoverage {
   const prior = priorCoverage(priorCheckpoint);
   const currentOmitted = new Set([...current.omittedIds, ...postBudgetOmitted]);
-  const mergedReasons = [...new Set([...prior.reasons, ...reasons])];
+  const generationReasons = [...reasons];
+  // `context-overflow` alone is a retry the run recovered from, not lost coverage.
   const degraded =
-    prior.status === 'degraded' ||
     currentOmitted.size > 0 ||
     current.partialIds.size > 0 ||
-    mergedReasons.some((reason) => reason !== 'context-overflow');
+    generationReasons.some((reason) => reason !== 'context-overflow');
+  const priorLifetime = prior.lifetime ?? { status: prior.status, reasons: prior.reasons };
+  const lifetimeReasons = [...new Set([...priorLifetime.reasons, ...generationReasons])];
   return {
     status: degraded ? 'degraded' : 'complete',
-    reasons: mergedReasons,
+    reasons: generationReasons,
+    lifetime: {
+      status: priorLifetime.status === 'degraded' || degraded ? 'degraded' : 'complete',
+      reasons: lifetimeReasons,
+    },
     processedMessages: prior.processedMessages + current.processedIds.size,
     omittedMessages: prior.omittedMessages + currentOmitted.size,
     partiallyProcessedMessages: prior.partiallyProcessedMessages + current.partialIds.size,

@@ -4,12 +4,309 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A no-op compaction no longer runs the user's `PreCompact` hooks.** Deciding whether there is
+  anything to summarize is pure and cheap, but it ran *after* the hooks — so every compaction
+  attempt that immediately returned `too-short` had already executed whatever shell commands
+  the user configured. On a long run the auto-compaction check fires repeatedly near the threshold, and
+  a hook with a side effect (a commit, a notification, a snapshot) was being fired each time for a
+  compaction that never happened. The emptiness check now runs first.
+
+- **A checkpoint quoting a build error is no longer rejected as a hallucination.** The reducer is
+  shown each message serialized with its reasoning, tool arguments, tool-result bodies, and file
+  observations, but its quotes were validated against the message's `content` alone. So a faithful
+  quote of the exact thing worth remembering -- a compiler error, a failing assertion, a command's
+  output -- failed validation, burned the single repair attempt, and dropped the whole generation
+  to the degraded fallback. Quotes are now checked against the same bytes the reducer was given.
+
+- **A 31st touched file no longer throws away the whole checkpoint.** The 30-file cap was a schema
+  rule, so exceeding it failed the parse rather than trimming the excess -- spending the repair
+  attempt and degrading the generation. Worse, the same rule ran when *re-reading* a prior
+  checkpoint from history, so an over-long checkpoint silently stopped being recognized as one and
+  every inherited fact in it was discarded. The cap is now a host trim applied before validation,
+  keeping the newest entries.
+
+- **One bad reducer reply no longer erases the objective.** When a generation could not be parsed,
+  the deterministic fallback cloned the prior checkpoint -- keeping its constraints, files and
+  episodes -- and then overwrote `state.summary` with a notice, so the accumulated narrative of
+  every generation before it was replaced by the reducer's unusable output. A run compacting
+  repeatedly over days lost what it was doing to a single malformed response. The notice is now
+  appended to the inherited summary, and the inherited text absorbs any truncation so the
+  retrieval instruction always survives.
+
+- **The compaction reducer is no longer cut off mid-JSON by its own budget.** Its provider
+  `max_tokens` was set to the checkpoint *content* budget, so the model had to fit a whole JSON
+  envelope into the space allotted to the text inside it -- and on an adaptive-thinking model the
+  thinking is spent from that same cap, with no compaction exemption. The cap is now derived above
+  the content budget, bounded by the model's own output limit and by the room the summarizer's
+  input leaves in the window. A reply that still stops at the cap is recognized as truncated
+  rather than malformed, so it no longer spends the single repair attempt on a longer prompt that
+  could only overrun again.
+
+- **Compaction no longer compresses the same text once per chunk.** `fitCheckpoint` ran inside
+  `parseAndValidateCheckpoint`, which runs once per chunk of a multi-pass reduction -- so in a
+  K-chunk plan the first chunk's checkpoint was fitted K times, again in the post-budget loop, and
+  again at every future generation. The ladder is lossy and restarts at 512 characters each time,
+  so a constraint stated once in full was truncated, then the truncation truncated, until it was
+  dropped outright: a regression test shows a verbatim constraint disappearing from the second
+  chunk's prompt entirely under the old order. Fitting now happens once, at the end, where it is
+  already followed by validation and a deterministic fallback.
+
+- **A context overflow under Zero-Mem is recoverable again.** The experiment disabled routine
+  auto-compaction, which is intended -- but it also nulled the loop's `onCompact` callback
+  entirely, and the loop's context-overflow recovery is deliberately *not* gated on the
+  auto-compaction setting. So the one path that exists to rescue a turn the provider has already
+  refused for size could never run, and `AgentSession.compact` would have answered it by warming a
+  search index in any case. An automatic attempt now runs the real compactor; `/compact` still only
+  warms the index.
+
+- **The compaction fidelity warning means something again.** Checkpoint `coverage` merged the prior
+  generation's status and reasons into the current one, so a single degraded generation marked
+  every generation after it for the life of the conversation -- and on a long run that happens
+  within hours, after which "compacted with reduced fidelity" is permanent and carries no
+  information. `coverage.status` and `coverage.reasons` now describe the generation that just ran,
+  and a new optional `coverage.lifetime` carries the accumulated record so nothing is forgotten.
+  Stream-JSON `compact` records gain `coverage_lifetime_status` alongside `coverage_status`. The
+  checkpoint version stays `2` and no reason enum gained a member, so an older binary reading one
+  of these checkpoints still sees a valid v2 document.
+
 ### Added
+
+- **A run says what it is doing while it does it (`<BOOK_HOME>/runs/<session>.json`).** Rewritten at
+  every turn boundary with turn, elapsed, spend, the current todo, the last tool, free disk, and the
+  terminal outcome once there is one. Until now the choice was silence or a firehose: the default
+  `--output-format text` emits nothing at all until a run terminates, and the only other on-disk
+  signal is the transcript's mtime — which advances at exactly the same rate for a healthy run, a
+  refusal spin, and a run wedged on a permission prompt. Written temp-file-then-rename so a reader
+  never sees a torn record, and rewritten rather than appended so it stays bounded over a week.
+  This is the writer half of what `book status` will read.
+
+- **A crash leaves a record.** There was no `uncaughtException` or `unhandledRejection` handler
+  anywhere, and `index.ts` ends in a bare `program.parse()` whose promise nothing awaits — so when a
+  long run died the operator got a stack trace on a stderr they may have redirected days ago, and
+  nothing durable said why. The status file now carries a `crash` field written from the exit path,
+  which is what distinguishes "finished the objective" from "the socket died".
+
+- **Free disk space is observable.** Nothing in the codebase could see it, yet a long run's most
+  likely hard failure is ENOSPC and a disk-below-floor alarm needs a sensor to read.
+
+- **The model is told how long it has been running.** The only temporal signal in the whole prompt
+  was a UTC calendar date at day granularity, so a model five days into a week-long objective could
+  not distinguish that from turn 3 — it could not pace itself, notice it had been circling the same
+  file since Tuesday, or honour a time-bounded instruction. `<session-state>` now carries a coarse
+  `Running for:` line, suppressed when an evaluator has frozen the date so equivalent arms still get
+  byte-identical prompts.
+
+
+- **A brake that a spinning run cannot forge (`continuation.blockedToolTurnLimit`).** A run whose
+  every tool call is refused now stops as `all_tools_blocked`, naming the tools to unblock. This
+  spin was invisible to everything: it never produces a tool-free turn, so the turn-end gate and
+  every brake behind it never fire; `noteRepeatedFailure` ignores anything that is not an `error`;
+  and `toolCallStats.failures` excludes `blocked` by construction. Headless answers every unresolved
+  prompt `deny`, so in the default permission mode an unattended run would re-issue refused calls
+  until the budget died. Enforced even with `continuation.enabled` false, because the spin predates
+  continuation and needs none of it. `0` disables.
+
+- **The no-progress witness no longer counts refused calls as progress.** It drew its tool-call leg
+  from `toolCallStats`, which increments for *every* attempted call including refusals — so in a
+  denial or policy-block stall the single leg meant to prove nothing had moved was guaranteed to
+  move, while the todos, the file ledger, and the done-check all stayed frozen. The witness now
+  counts only calls that actually ran. Until now this was masked by the run ending at the model's
+  first tool-free turn; the continuation driver removes exactly that mask.
+
+- **A deliberate stop is distinguishable from success.** Terminal reasons gain `plan_stop` and
+  `handoff_requested`; both previously exited `completed / normal_completion`, byte-identical to a
+  finished objective, and the approver's message explaining a plan stop was discarded. The status
+  stays `completed` — neither is a failure — so only the vocabulary changes.
+
+- **A restart re-drives the agents that died with it (`agents.resumeInterrupted`).** `AgentManager`
+  already hydrated agents, plans, evidence, and snapshots on start — it just never pushed anything
+  onto its queue, which is a bare array written only at spawn and retry. So a reboot mid-fan-out
+  converted the entire pending backlog into `interrupted` records nothing ever picked up, silently
+  discarding hours of child work. Recovery now records *why* an agent stopped (`resumable` plus the
+  status it held), and the next start re-queues only those that died by process exit; a user stop
+  stays stopped. The re-drive is contained — explorers are read-only and patchers run in their own
+  worktree, so nothing reaches the parent workspace without the usual evidence gate.
+
+- **A `Stop` hook can now refuse a premature completion.** `Stop` joins the blocking events, and
+  under `continuation.enabled` a blocked completion becomes another turn carrying the hook's reason
+  instead of ending the run. A hook's `block` was previously collected and discarded, which made
+  "do not consider this finished until `npm run check` passes" inexpressible from outside the
+  process. The gate runs once, before the objective is declared complete, and suppresses the
+  duplicate `Stop` that would otherwise fire on the way out.
+- **`AgentList` and `AgentRead` now show what an agent was *for*.** `purpose` (bounded to 200
+  characters) and `planId` join the agent summary. The root previously saw rows of
+  `patcher-3 / interrupted / <no summary>` while both fields sat unused on disk — and after a
+  compaction or two that row is all a parent has left of a delegated unit of work.
+
+- **`book status` — what a run is doing and what it has spent, without a credential.** Reports the
+  byte-exact original objective, message and compaction counts, cumulative tokens and an upper-bound
+  USD figure, and the restored plan, for the newest session in a workspace or one named by id or
+  name. `--json` for a supervisor. The objective is read from the transcript rather than a summary
+  because the transcript is never rewritten by compaction, so the user's first words survive verbatim
+  however many generations have passed. Credential-free by construction and asserted in
+  `subcommands.contract.test.ts` — a run whose provider is misconfigured is exactly when someone
+  needs to read its state.
+- **`Notification` hook event.** Fires when something wants a human while nobody is watching, with
+  `severity` (`alarm`/`warn`/`info`), a machine-readable `kind`, and a message. Only `alarm` is meant
+  to wake anyone. Wire ntfy, Slack, or SMS as an ordinary shell hook.
+- **Worktree admission control (`agents.maxWorktrees`, `agents.minFreeDiskBytes`).** A wide fan-out
+  on a large repository is the one failure that takes the whole run down rather than one agent:
+  worktrees share the filesystem with the workspace, so exhausting it breaks the root agent's own
+  `Edit` and `Bash`. Nothing reclaimed them automatically — `AgentManager.dismiss` has exactly one
+  caller, a TUI keypress, so print mode, the SDK, and any supervised runner reclaimed nothing ever,
+  and the store's retention sweep runs once at startup with a 30-day default that cannot fire inside
+  a week-long run. A spawn is now refused *before* it consumes the last of the disk, with a typed
+  reason and an `alarm` notification. Per-worktree byte accounting is deliberately not attempted: it
+  is an O(files) walk on every spawn and stale the moment a build writes, while free space is the
+  quantity that matters and costs one syscall.
+
+- **`continuation` — a run can outlive one user message.** `runAgentLoop` ended as soon as a turn
+  produced no tool calls, so one user message was the whole run and a model that wrote "I've
+  finished the auth module" exited as a normal completion with half its plan outstanding. With
+  `continuation.enabled` the loop instead appends a host-authored user turn naming what is still
+  open and keeps going in the same invocation, so the tool context and todo list survive and the
+  session-state block is re-rendered fresh at every boundary. It never continues past an abort, an
+  approved plan handoff, a spent budget, or a policy refusal.
+
+  Shipping with it, and not optional: a no-progress brake. Continuation without one is strictly
+  worse than neither, because today a stalled run stops and a human notices. The brake compares a
+  witness built from the todo list, observed-file hashes, and the tool-call count across
+  continuation boundaries; `continuation.noProgressLimit` identical witnesses in a row ends the run
+  as `no_progress` rather than spinning overnight against the budget. A plan whose every remaining
+  task is blocked by unfinished work reports `blocked_plan` rather than being mistaken for success.
+
+  Also new: every `continuation.planRefreshTurns` turns the host restates the open plan as a user
+  message. That keeps the plan from going stale across a long tool-grinding stretch, and it is the
+  only *guaranteed* source of compaction bundle boundaries — a run that grinds tool calls never
+  stops, so it never triggers a continuation either, and without it the compaction candidate span is
+  all-assistant and the retained tail is unconditionally zero from generation 2 onward.
+- **`agents.checkTimeoutMs` bounds a `Check` run, and a timeout is no longer reported as a
+  failure.** The ceiling was hardcoded at 120 s, and `exec` signals a timeout by killing the child —
+  which arrived through the same path as a non-zero exit. On any repository whose suite runs longer
+  than two minutes (this one builds first, so `npm test` always does), every `Check` reported a
+  failing suite that had in fact never finished, inviting an agent to "fix" passing code. A timeout
+  now returns a distinct, retryable `check_timed_out` that names the command and the ceiling, and
+  the ceiling is configurable from 1 s to 2 h.
+- **The plan now survives a restart.** Todos were the only long-horizon state with no home
+  anywhere: the loop seeded `ToolContext.todos` from a fresh `[]` on every invocation, TodoWrite
+  reassigned rather than mutated, and nothing wrote them to disk. Worse, an empty task list renders
+  as no list at all, so a dropped plan was indistinguishable from a task that never had one and the
+  model silently re-derived instead of deliberately rebuilding. Todos now live on `SessionRuntime`
+  beside the task graph, TodoWrite mutates that array in place, and both persist as a whole-plan
+  `plan` session record (last record wins) that `--resume`, `--session-id`, and `fork` all restore.
+  Older binaries ignore the record rather than breaking on it. When a session resumes with prior
+  work and no plan, `<session-state>` says so explicitly instead of rendering nothing.
 
 - **Eye-friendly built-in themes.** Added `catppuccin` (Catppuccin Mocha pastel palette for minimal eye fatigue), `nord` (Arctic glacial slate for reduced blue-light glare), `gruvbox` (warm retro-earthy dark palette with amber and olive tones), and `solarized-dark` (scientifically tuned Lab color space contrast). All four themes are selectable via `/theme` picker and direct slash commands (`/theme <name>`).
 
 ### Fixed
 
+- **`--include-partial-messages` did nothing, and forced maximum stream volume.** Commander leaves an
+  unpassed boolean `undefined` and the gate was `!== false`, so every stream-json run emitted every
+  assistant and reasoning delta whether or not anyone asked. It is now the opt-in it always claimed
+  to be.
+
+- **`--max-budget-usd` is a cap again, for four independent reasons it was not.**
+  (1) It was enforced against the root execution's *own* cost, never the inclusive
+  figure, so every dollar spent by managed agents and subagents was invisible to it —
+  the same snapshot would report `budgetStatus: 'exceeded'` while the pre-call check
+  returned `{allowed: true}`. Snapshots now carry `inclusiveCostUsd` and the gate
+  enforces against it. (2) The flag was parsed with an unvalidated `parseFloat` behind
+  a truthiness guard, so `--max-budget-usd none` produced `NaN` — which is not
+  `undefined`, so the budget read as *configured* while every comparison against it
+  was false, and `0` was falsy so an explicit zero cap meant unlimited. Both flags are
+  now validated at the boundary and the check fails closed on a non-finite ceiling.
+  (3) Headless mints a fresh root per submitted prompt and re-seeded the full budget
+  into each, so a hundred stream-json prompts under a $50 cap authorised $5000 in one
+  process; spend now carries between prompts through the same seam that carries it
+  between processes. (4) `snapshotAll` reported a budgeted run as `not_configured` as
+  soon as a second root existed.
+
+- **The budget check no longer gets slower for the life of the run.** `modelIdentities`
+  grew one entry per provider response, per retry and per compaction — and its dedupe
+  predicate could never match an identity with no `responseId`, so those were appended
+  unconditionally. Both `record()` and `makeSnapshot()` then linear-scanned it per
+  element, and `makeSnapshot` runs inside `checkBeforeModelCall` before *every* model
+  call: quadratic work on the hot path of the spend rail, measured at 8.4 s per call by
+  40k responses. The set is now keyed by the identity tuple its only consumer actually
+  reads, which bounds it to the distinct model/provider/status combinations.
+
+- **`--max-turns` no longer runs zero turns and reports success.** `parseInt('none', 10)`
+  is `NaN` and `'none'` is truthy, so the typo passed the guard; every disjunct of the
+  turn guard is false for `NaN`, so the loop body never ran and the run exited
+  `completed / normal_completion` having made no provider call and written no output.
+
+
+- **A thinking model no longer gets cancelled mid-thought.** `retry.streamStallTimeoutMs` is 20
+  seconds, which is right for a chat: that much silence means something broke. But adaptive thinking
+  is on by default for every Opus and Sonnet model here, at `high` effort unless told otherwise, and
+  a long quiet stretch before the first token is the model working. The chat ceiling was applied to
+  it anyway, so a healthy high-effort request was cancelled and reported as `stream_stall` — the most
+  common way an Opus run appears to "just stop". Thinking now has its own ceiling,
+  `retry.thinkingStallTimeoutMs` (default 15 minutes, `BOOK_THINKING_STALL_TIMEOUT_MS`), applied only
+  while thinking is enabled; the chat timeout is unchanged everywhere else.
+- **Claude Opus 5 is selectable and priceable.** `provider/anthropic.ts` already listed
+  `claude-opus-5` as an adaptive-thinking model, so Book sent it thinking parameters — but it was
+  missing from both the model picker and the pricing table. With a USD budget set, `hasKnownPricing`
+  returned false and `checkBeforeModelCall`, which fails closed, refused **every** call: choosing
+  Opus made the run stop before it started. It now appears in `/model` and carries the Opus family
+  rate (re-verify against published pricing before a release).
+- **Undated model aliases resolve to their dated entry.** `claude-haiku-4-5` was unpriced because
+  the table only held `claude-haiku-4-5-20251001`, and the alias is what a person types. Pricing now
+  resolves an alias to its dated entry when exactly one candidate matches — a bare family name like
+  `claude-opus` stays unknown rather than being guessed at a generation.
+- **A rejected credential parks instead of burning every retry.** 401/403 and 402 surfaced as a
+  generic provider error, which the new transport recovery treats as re-issuable — so an invalid key
+  was re-sent until the attempts ran out, and the run then reported a transport fault rather than the
+  real cause. They now produce `credentials_rejected`, which is classified `park`: not retried,
+  reported honestly, and escalated through the `Notification` hook so a supervisor can wait for a new
+  key rather than tear the objective down.
+- **A USD budget no longer refuses the run it is meant to bound.** Two independent faults made
+  `--max-budget-usd` unusable against Anthropic. No Claude entry in the pricing table declared a
+  `cacheRead`/`cacheCreation` rate, and Book sets `cache_control` on every Anthropic request — so
+  from the first cached turn every estimate returned `cache-pricing-unavailable`, and
+  `checkBeforeModelCall`, which fails closed on unknown pricing, refused every subsequent call.
+  Separately, a provider attempt that reported no usage latched the run's cost status to `unknown`
+  and nulled the accumulated cost; since that fires from the provider's `onRetry`, one transient
+  429 permanently disabled the budget, making the reliability layer and the only spend rail
+  mutually exclusive. Cache rates now ship for every Claude entry, and missing attempt usage
+  degrades to `estimated` — a lower bound the budget still enforces against — while staying visible
+  through `completeness`, `unknownModels`, and `missingSources`. A genuinely unpriceable model still
+  fails closed.
+- **Dated model ids are priced from their family.** Providers routinely resolve an alias to a dated
+  id (`claude-sonnet-5` → `claude-sonnet-5-20260115`), which the table missed entirely; combined
+  with the fail-closed budget gate, that turned a routine provider-side rename into a refused run.
+  Pricing now falls back to the longest table key the id extends at a separator boundary, so
+  `gpt-5` cannot claim `gpt-51`, and `/cost` and `/usage` resolve the same way instead of printing
+  "pricing unknown". `estimateUsageCost` and `hasKnownPricing` also accept a per-model override map.
+- **A USD budget survives a restart.** `RunAccounting` was rebuilt with the process, so forty
+  restarts meant forty independent caps. Provider usage is now written to the `usage` session record
+  type (declared long ago with no writers) and summed back at bootstrap, so `--max-budget-usd`
+  bounds the objective rather than one process. Only tokens are stored — pricing changes between
+  processes — and the restored total is re-priced at the most expensive model involved, keeping it
+  an upper bound, which is the safe direction for a ceiling.
+- **A dropped stream no longer ends the run.** Every stream failure mapped straight to a terminal
+  outcome and returned, so a twenty-second provider silence, a closed socket, or a suspended laptop
+  killed the turn — and `retry.maxAttempts` could not help, because it covers connection setup only
+  and is out of scope once a 200 response is streaming. The loop already committed everything needed
+  to recover and then discarded it: the partial assistant message is persisted, and every dangling
+  `tool_use` is settled with a `cancelled` result, so the history stays valid to the provider and no
+  tool re-executes. A transport fault now re-sends the turn onto that history, bounded by
+  `retry.streamReissueAttempts` (default 3) with exponential backoff; set it to 0 to restore the
+  previous behavior exactly. Which failures qualify is decided by one `terminalRecovery()`
+  classifier — a budget, a policy block, a cancellation, or a context overflow is still a genuine
+  end — and when the attempts are spent the original diagnosis is preserved rather than replaced.
+  Hitting `max_tokens` now produces an `output_cap` reason instead of `protocol_error`, with its own
+  `retry.outputCapContinuations` allowance so a large generated file cannot drain the budget a real
+  socket drop needs.
+- **`Stop` and `SessionEnd` fire on every path, and say why the run stopped.** Both were skipped by
+  each early return — a blocked prompt, a context overflow, a spent run budget, an unrecoverable
+  stream error. That gap was defensible for a session a human is watching; it is not when a shell
+  script is the only observer and cannot otherwise distinguish "finished the objective" from "the
+  socket died". They now fire from a `finally`, exactly once, carrying the settled terminal status
+  and reason.
 - **The spinner keeps its own hue in every built-in theme.** Five of the six themes anchor
   `shimmerPair` on `assistantAccent` — the agent's own colour — and ease to a lighter tint of it.
   Nord shipped the pair transposed, so it started on `brand`, and Catppuccin ended its breath on

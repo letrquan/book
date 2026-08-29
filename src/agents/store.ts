@@ -842,6 +842,12 @@ export class AgentStore {
       }
       const agent = this.loadAgent(summary.id) ?? summary;
       const lastSeenAt = agent.updatedAt;
+      // Record that this died mid-flight rather than being stopped. Without the
+      // distinction a restart cannot tell an abandoned agent from a deliberately
+      // stopped one, so the whole pending backlog became terminal records that
+      // nothing ever re-drove.
+      agent.resumedFromStatus = agent.status;
+      agent.resumable = true;
       agent.status = 'interrupted';
       agent.stopReason = 'process_exit';
       agent.pendingPermission = undefined;

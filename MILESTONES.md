@@ -34,6 +34,21 @@ runtime defaults and known boundaries, see [docs/current-state.md](docs/current-
 
 ## Current Priorities
 
+### 0. Long-Horizon Execution
+
+Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surface.
+
+- [x] Continuation past a premature stop, with a no-progress brake that cannot be forged by refused
+      tool calls and a separate brake for a run whose every call is refused.
+- [x] A USD ceiling that bounds the objective: inclusive of delegated spend, carried across prompts
+      and restarts, durable for managed agents and subagents, fail-closed when unevaluable, O(1).
+- [x] Stream re-issue that survives a dropped connection, and never re-sends assistant prefill.
+- [x] A liveness file and a crash record, so a run in flight is legible from outside.
+- [x] Plan persistence across restarts, and an honest "the plan did not survive" signal.
+- [ ] Compaction fidelity: the Carried Ledger's Phase 0.8 baseline, recorded after Phase 0 lands.
+- [ ] A control surface for a run in flight - at hour 30 the only interventions are `kill` and wait.
+- [ ] Monotonic clock for liveness/lease/TTL decisions; every one is on the settable wall clock.
+
 ### 1. Trust Boundary and Sandbox Hardening
 
 - [ ] Add a user-owned workspace trust database and a first-open review flow.

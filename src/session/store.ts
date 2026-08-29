@@ -21,6 +21,8 @@ import type {
   CompactBoundary,
   CompactRecordData,
   LoadedSession,
+  PlanRecordData,
+  UsageRecordData,
   RewindRecordData,
   RewindTarget,
   SessionHistorySearchResult,
@@ -28,7 +30,7 @@ import type {
   SessionRecord,
   TurnCheckpointRecordData,
 } from '../types/sessions.js';
-import type { ImageAttachment, Message } from '../types/messages.js';
+import type { ImageAttachment, Message, Usage } from '../types/messages.js';
 import { createDebugLogger } from '../debug-log.js';
 import { normalizeToolResult } from '../tools/result.js';
 import { deriveSessionName } from './name.js';
@@ -475,6 +477,9 @@ export class SessionStore {
     >();
     const checkpointByUserEventId = new Map<string, string>();
     const snapshotIds = new Set<string>();
+    let latestPlan: PlanRecordData | undefined;
+    let carriedUsage: Usage | undefined;
+    const carriedModels = new Set<string>();
     let count = 0;
     for (let lineIndex = 0; lineIndex < records.length; lineIndex++) {
       const record = records[lineIndex];
@@ -506,6 +511,35 @@ export class SessionStore {
         continue;
       }
       if (data.kind === 'session_meta' || data.kind === 'session_touch') continue;
+
+      if (record.type === 'usage') {
+        const entry = record.data as UsageRecordData;
+        if (entry?.version === 1 && entry.usage) {
+          carriedUsage = {
+            promptTokens: (carriedUsage?.promptTokens ?? 0) + (entry.usage.promptTokens ?? 0),
+            completionTokens:
+              (carriedUsage?.completionTokens ?? 0) + (entry.usage.completionTokens ?? 0),
+            totalTokens: (carriedUsage?.totalTokens ?? 0) + (entry.usage.totalTokens ?? 0),
+            cacheCreationInputTokens:
+              (carriedUsage?.cacheCreationInputTokens ?? 0) +
+              (entry.usage.cacheCreationInputTokens ?? 0),
+            cacheReadInputTokens:
+              (carriedUsage?.cacheReadInputTokens ?? 0) + (entry.usage.cacheReadInputTokens ?? 0),
+          };
+          const model = entry.responseModel ?? entry.requestedModel;
+          if (model) carriedModels.add(model);
+        }
+        continue;
+      }
+
+      if (record.type === 'plan') {
+        // Last record wins: each write is a whole-plan snapshot, so replaying to
+        // the end yields the newest plan without merging. A malformed record is
+        // skipped rather than clearing a good earlier one.
+        const plan = record.data as PlanRecordData;
+        if (plan?.version === 1) latestPlan = plan;
+        continue;
+      }
 
       if (record.type === 'turn_checkpoint') {
         const checkpoint = record.data as TurnCheckpointRecordData;
@@ -735,6 +769,9 @@ export class SessionStore {
       rewindTargets,
       activeEventIds,
       meta,
+      plan: latestPlan,
+      carriedUsage,
+      carriedModels: [...carriedModels],
       history: contextHistory,
     };
     if (parsedCache) parsedCache.loaded = loaded;
@@ -957,6 +994,15 @@ function cloneLoadedSession(session: LoadedSession): LoadedSession {
     rewindTargets: [...session.rewindTargets],
     activeEventIds: [...session.activeEventIds],
     meta: { ...session.meta },
+    plan: session.plan
+      ? {
+          version: 1,
+          todos: session.plan.todos?.map((todo) => ({ ...todo })),
+          tasks: session.plan.tasks?.map((task) => ({ ...task })),
+        }
+      : undefined,
+    carriedUsage: session.carriedUsage ? { ...session.carriedUsage } : undefined,
+    carriedModels: session.carriedModels ? [...session.carriedModels] : undefined,
     history: contextHistory,
   };
 }

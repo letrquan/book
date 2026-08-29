@@ -30,6 +30,8 @@ export function defaultConfig(overrides: Partial<AgentConfig> = {}): AgentConfig
       streamStallTimeoutMs: 0,
       toolRetries: 0,
       watchdog: false,
+      streamReissueAttempts: 0,
+      outputCapContinuations: 0,
     },
     ...overrides,
   };

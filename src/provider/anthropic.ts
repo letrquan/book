@@ -444,7 +444,9 @@ export async function* chatCompletionStream(
   });
 
   // Thinking / effort — only for models that support adaptive thinking.
+  let thinkingEnabled = false;
   if (config.modelInfo?.effort !== false && supportsAdaptiveThinking(config.model)) {
+    thinkingEnabled = true;
     const effort = config.effort ?? 'high';
     body.thinking = { type: 'adaptive', display: 'summarized' };
     body.output_config = { effort };
@@ -526,7 +528,13 @@ export async function* chatCompletionStream(
   let responseModel: string | undefined;
   let responseId: string | undefined;
   const finishReasons = new Set<string>();
-  const stallTimeoutMs = retry.streamStallTimeoutMs;
+  // A thinking model goes quiet on purpose. The chat-tuned 20s ceiling cancels a
+  // healthy request mid-thought and reports it as a stalled stream, which is the
+  // single most common way a high-effort Opus run "just stops".
+  const stallTimeoutMs =
+    thinkingEnabled && retry.thinkingStallTimeoutMs
+      ? Math.max(retry.streamStallTimeoutMs, retry.thinkingStallTimeoutMs)
+      : retry.streamStallTimeoutMs;
 
   try {
     while (true) {

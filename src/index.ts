@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import './runtime-env.js';
 import { program } from 'commander';
+import { runStatusCommand } from './cli/status-cmd.js';
+import { exit } from './cli/exit.js';
 import { runDoctorCommand } from './cli/doctor.js';
 import { runToolStatsCommand } from './cli/tool-stats.js';
 import { runConfigCommand } from './cli/config-cmd.js';
@@ -95,6 +97,22 @@ program
   .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
   .action(async (options: { workspace?: string }) => {
     await runDoctorCommand(resolveWorkspace(options.workspace));
+  });
+
+// ---- book status ----
+program
+  .command('status')
+  .description('Report what a session is working on and what it has spent (no credentials needed)')
+  .argument('[session]', 'Session id or name (defaults to the most recent in this workspace)')
+  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
+  .option('--json', 'Emit the status as JSON')
+  .action((session: string | undefined, options: { workspace?: string; json?: boolean }) => {
+    const code = runStatusCommand({
+      session,
+      workspace: resolveWorkspace(options.workspace),
+      json: options.json,
+    });
+    if (code !== 0) exit(code);
   });
 
 // ---- book tool-stats ----

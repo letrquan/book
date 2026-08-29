@@ -1,4 +1,6 @@
 import type { AgentConfig } from './types/runtime.js';
+import { planWasLost } from './agent/session-state.js';
+import { RunStatusWriter } from './run-status.js';
 import type { CompactResult, CompactBoundary } from './types/sessions.js';
 import type { ImageAttachment, Message, Usage } from './types/messages.js';
 import type { HeadlessOptions, HeadlessPlanOutcome, HeadlessResult } from './types/public-sdk.js';
@@ -20,6 +22,8 @@ import { createAgentRunContext, type AgentRunContext, type AgentRunResult } from
 import { resolveContextLimit, shouldCompact, usagePressureTokens } from './agent/compact.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { observationKey } from './tools/file-provenance.js';
+import { normalizePersistedTodos } from './tools/todo.js';
+import { estimateUsageCost } from './pricing.js';
 import { createSessionHistoryTools } from './tools/session-history.js';
 import {
   createStreamParser,
@@ -35,6 +39,24 @@ import {
 import { getOrCreateAgentManager } from './agents/manager.js';
 import { resolvePermissionMode } from './permission-mode.js';
 import { assertHarnessModeAvailable, createHarnessCoordinator } from './harness/coordinator.js';
+
+/**
+ * Re-price restored tokens.
+ *
+ * The tokens are one pool but may have been spent across several models, and the
+ * records do not attribute them. Charging the whole pool at the most expensive
+ * model's rate keeps the restored total an upper bound — the safe direction for a
+ * spend ceiling. Any unpriceable model makes the total unknown.
+ */
+function carriedCostUsd(usage: Usage, models: readonly string[]): number | null {
+  let worst: number | null = null;
+  for (const model of models) {
+    const quote = estimateUsageCost(model, usage);
+    if (quote.status !== 'known') return null;
+    worst = worst === null ? quote.costUsd : Math.max(worst, quote.costUsd);
+  }
+  return worst;
+}
 
 export async function runHeadless(
   config: AgentConfig,
@@ -53,8 +75,29 @@ export async function runHeadless(
     }
     stdout.write(JSON.stringify(obj) + '\n');
   };
+  /** Set once the run's liveness file exists; released in the outer `finally`. */
+  let disposeCrashHandlers: (() => void) | undefined;
   const agentSession = new AgentSession();
   const runtime = agentSession.getRuntime();
+  // Seed the plan from the resumed session. Both lists are mutated in place by
+  // their tools, so pushing into the runtime's arrays is what makes the plan
+  // visible to the loop — reassigning would detach the runtime from the
+  // ToolContext the loop seeds from.
+  runtime.todos.push(...normalizePersistedTodos(opts.plan?.todos));
+  if (opts.plan?.tasks?.length) runtime.tasks.push(...opts.plan.tasks);
+  // Resuming prior work with nothing to show for it is the case worth naming: an
+  // empty list renders as no list at all, so without this the model cannot tell a
+  // dropped plan from a task that never had one.
+  // `plan === undefined` means no plan record was ever written — an ordinary
+  // conversation that never called TodoWrite. Reporting that as "your plan did not
+  // survive" told every such resumed session to rebuild a plan it never had, and
+  // pushed the model to invent one. Only a record that came back empty is a loss.
+  runtime.planUnrestored = planWasLost({
+    planRecordExisted: opts.plan !== undefined,
+    priorMessages: opts.history.length,
+    todos: runtime.todos.length,
+    tasks: runtime.tasks.length,
+  });
   const harnessCoordinator =
     harnessMode === 'off'
       ? undefined
@@ -105,6 +148,20 @@ export async function runHeadless(
       );
     }
     const runtimeSessionId = sessionId ?? crypto.randomUUID();
+
+    // The run's liveness file. Headless is the host that most needs it: the
+    // default `--output-format text` emits nothing at all until termination, so
+    // without this an unattended run is completely opaque while it works. Owned
+    // here rather than in the loop because subagents and managed agents call the
+    // loop directly and must not each claim to be "the run".
+    const statusWriter = new RunStatusWriter({
+      sessionId: runtimeSessionId,
+      runId: runtimeSessionId,
+      workspace: config.workspace,
+      budgetUsd: opts.maxBudgetUsd,
+      startedAt: Date.now(),
+    });
+    disposeCrashHandlers = statusWriter.installCrashHandlers();
 
     // Headless permission policy: if a prompt would be shown and no rule resolves
     // it, deny the tool — headless can't interactively prompt. Callers who want
@@ -324,6 +381,13 @@ export async function runHeadless(
       },
       onAssistantMessageComplete: (message) => {
         if (!transcript.some((item) => item.id === message.id)) transcript.push(message);
+        // The completed turn, always. `--include-partial-messages` adds the deltas
+        // on top of this; it does not decide whether the stream carries assistant
+        // text at all. Emitting only deltas made the flag load-bearing for the
+        // basic contract, which is why leaving it off had to mean "maximum volume".
+        if (opts.outputFormat === 'stream-json' && message.content) {
+          emit({ type: 'assistant', text: message.content, complete: true });
+        }
       },
     });
     const runParentTurn = async (
@@ -373,6 +437,10 @@ export async function runHeadless(
             allowedTools: commandContext?.allowedTools,
             modelOverride: commandContext?.modelOverride,
             commands: commandContext ? [commandContext.command] : undefined,
+            statusWriter,
+            // No human can resolve a permission prompt here: `permissionRequired`
+            // answers `deny` unconditionally.
+            unattended: true,
           },
         });
       } catch (error) {
@@ -495,6 +563,22 @@ export async function runHeadless(
       if (opts.prompt) prompts.unshift(opts.prompt);
     }
 
+    // A USD cap has to bound the OBJECTIVE, not one prompt. Every submitted line
+    // mints a fresh root and `startRoot` seeds the full cap into it, so a hundred
+    // stream-json prompts under a $50 cap would authorise $5000 inside a single
+    // process. Carry the accumulated spend into each subsequent root through the
+    // same seam that already carries it across processes.
+    let carriedSpend: { usage: Usage | null; costUsd: number | null } | undefined =
+      opts.carriedUsage
+        ? {
+            usage: opts.carriedUsage,
+            costUsd: carriedCostUsd(
+              opts.carriedUsage,
+              opts.carriedModels?.length ? opts.carriedModels : [config.model],
+            ),
+          }
+        : undefined;
+
     for (const submitted of prompts) {
       // The run exists before dispatch, not after it. A host-performed command
       // spawns managed agents of its own, and those agents are only budgeted and
@@ -515,6 +599,11 @@ export async function runHeadless(
             : undefined,
       });
       runtime.runAccounting.startRoot(runContext, opts.maxBudgetUsd);
+      // Carry spend forward from earlier processes of this session, so a USD cap
+      // bounds the objective rather than one process.
+      if (carriedSpend) {
+        runtime.runAccounting.seedRoot(runContext.rootRunId, carriedSpend);
+      }
 
       const dispatch = await dispatchSubmittedPrompt(submitted, runContext);
       if (dispatch.kind === 'prompt' && dispatch.shellErrors?.length) {
@@ -630,6 +719,13 @@ export async function runHeadless(
       transcript.push(userMessage);
       rootContexts.set(runContext.rootRunId, runContext);
       await runParentTurn(contextMessage, prompt, userMessage, runContext, commandContext);
+      // Fold this prompt's inclusive spend into the carry so the next root starts
+      // where this one finished instead of back at zero.
+      const spentSoFar = runtime.runAccounting.snapshotRoot(runContext.rootRunId);
+      carriedSpend = {
+        usage: spentSoFar.inclusiveUsage,
+        costUsd: spentSoFar.inclusiveCostUsd,
+      };
       // An unapprovable plan is the deliverable: queued prompts would only
       // re-plan against a workspace nothing is allowed to change.
       if (planNotApplied.outcome) break;
@@ -833,6 +929,7 @@ export async function runHeadless(
         }
       }
     }
+    disposeCrashHandlers?.();
     agentSession.dispose('headless_complete');
   }
 }
@@ -876,10 +973,15 @@ function emitAgentEvent(event: AgentEvent, opts: HeadlessOptions, emit: Headless
       emit({ type: 'run_start', run: event.context, ambient: event.ambient });
       break;
     case 'text':
-      if (opts.includePartialMessages !== false) emit({ type: 'assistant', text: event.content });
+      // Deltas are opt IN, and are additional to the completed message emitted at
+      // turn end. Commander leaves an unpassed boolean `undefined`, so the old
+      // `!== false` gate meant the flag did nothing and every run paid maximum
+      // stream volume whether or not anyone asked for them.
+      if (opts.includePartialMessages === true)
+        emit({ type: 'assistant', text: event.content, complete: false });
       break;
     case 'reasoning':
-      if (opts.includePartialMessages !== false) emit({ type: 'reasoning', text: event.content });
+      if (opts.includePartialMessages === true) emit({ type: 'reasoning', text: event.content });
       break;
     case 'tool_use':
       emit({ type: 'tool_use', tool_call: event.toolCall });
@@ -947,6 +1049,8 @@ function emitCompactBoundary(
     model_calls: result.modelCalls,
     degraded: result.degraded,
     coverage_status: result.checkpoint.coverage?.status ?? 'complete',
+    // This generation's status above; the conversation's accumulated one here.
+    coverage_lifetime_status: result.checkpoint.coverage?.lifetime?.status ?? 'complete',
     coverage: result.checkpoint.coverage,
     warning: result.warning,
   });

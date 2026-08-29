@@ -87,11 +87,16 @@ describe('AgentSession', () => {
       semanticModel: 'test-zero-mem',
     });
     const runtime = new SessionRuntime({ zeroMemRuntime });
+    const hostOnCompact = vi.fn();
     const runLoop = vi.fn<AgentLoopRunner>(
       async (config, _registry, _prompt, history, callbacks) => {
+        // Routine compaction stays off under Zero-Mem ...
         expect(config.autoCompactEnabled).toBe(false);
         expect(history).toEqual([evidence]);
-        expect(callbacks.onCompact).toBeUndefined();
+        // ... but the callback survives, because the loop's context-overflow
+        // recovery is not gated by `autoCompactEnabled` and is the only thing
+        // standing between an overflowed turn and a dead run.
+        expect(callbacks.onCompact).toBeDefined();
         return history;
       },
     );
@@ -112,7 +117,7 @@ describe('AgentSession', () => {
         },
       ],
       sessionId: 'session-zero',
-      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+      callbacks: { onEvent: () => {}, onTurnStart: () => {}, onCompact: hostOnCompact },
     });
 
     expect(zeroMemRuntime.prepare).toHaveBeenCalledWith(
@@ -230,6 +235,31 @@ describe('AgentSession', () => {
       status: 'skipped',
       message: expect.stringContaining('3 trace messages'),
     });
+  });
+
+  it('runs the real compactor for an automatic compact under Zero-Mem', async () => {
+    // Under Zero-Mem the loop's routine compaction is already off, so the only
+    // caller that reaches here with `auto` is the context-overflow recovery.
+    // Warming an index cannot recover an overflowed turn; replacing history can.
+    const zeroMemRuntime = new ZeroMemRuntime();
+    const warm = vi.spyOn(zeroMemRuntime, 'warm');
+    const compactRunner = vi.fn().mockResolvedValue({ status: 'skipped', reason: 'too-short' });
+    const session = new AgentSession({
+      compactRunner,
+      runtime: new SessionRuntime({ zeroMemRuntime }),
+    });
+
+    const outcome = await session.compact({
+      config: defaultConfig({ experimentalZeroMem: true }),
+      history: [],
+      sessionId: 'session-zero',
+      transcriptOrdinal: 1,
+      options: { trigger: 'auto' },
+    });
+
+    expect(compactRunner).toHaveBeenCalledTimes(1);
+    expect(warm).not.toHaveBeenCalled();
+    expect(outcome.result).toMatchObject({ status: 'skipped', reason: 'too-short' });
   });
 
   it('owns and replaces session runtime resources during reset', () => {
@@ -1038,7 +1068,7 @@ describe('AgentSession', () => {
     });
   });
 
-  it('marks root accounting unknown when compaction completes without usage', async () => {
+  it('flags root accounting estimated when compaction completes without usage', async () => {
     const runtime = new SessionRuntime();
     const runContext = createAgentRunContext({
       sessionId: 'session-1',
@@ -1070,10 +1100,12 @@ describe('AgentSession', () => {
       options: { trigger: 'auto' },
     });
 
+    // The omission stays visible, but it no longer nulls the accumulated cost or
+    // latches the run into a permanent budget refusal.
     expect(runtime.runAccounting.snapshotRoot(runContext.rootRunId)).toMatchObject({
-      costUsd: null,
-      costStatus: 'unknown',
-      budgetStatus: 'unknown',
+      costUsd: 0,
+      costStatus: 'estimated',
+      budgetStatus: 'within',
       modelIdentities: [{ responseId: 'compact-response-without-usage', status: 'verified' }],
       missingSources: ['compaction_usage'],
     });
@@ -1179,6 +1211,52 @@ describe('AgentSession', () => {
     } finally {
       persisted.cleanup();
       timeline.cleanup();
+    }
+  });
+
+  it('carries the persisted plan through an in-TUI resume', async () => {
+    // Both launch-time paths pass `plan: loaded.plan`; the in-TUI `/resume`
+    // bootstrap silently did not. A user who wrote a 12-item plan, switched away
+    // and came back resumed a half-finished multi-hour objective with an empty
+    // task list — and, because `planUnrestored` also stayed false, with no notice
+    // that anything had been dropped.
+    const fixture = createSessionFixture('book-agent-session-resume-plan-');
+    try {
+      const currentSessionId = fixture.store.create({ cwd: '/proj' });
+      const selectedSessionId = fixture.store.create({ cwd: '/proj', name: 'planned' });
+      const config = { ...defaultConfig(), workspace: '/proj' };
+      fixture.store.append(selectedSessionId, {
+        type: 'user',
+        eventId: 'user-1',
+        timestamp: 1,
+        data: { id: 'user-1', content: 'migrate the call sites', kind: 'conversation' },
+      });
+      fixture.store.append(selectedSessionId, {
+        type: 'plan',
+        eventId: 'plan-1',
+        timestamp: 2,
+        data: {
+          version: 1,
+          todos: [{ content: 'migrate the call sites', status: 'in_progress' }],
+          tasks: [],
+        },
+      });
+
+      const session = new AgentSession();
+      await session.startLifecycle(config, currentSessionId, 'startup');
+      const result = await session.resumeSession({
+        config,
+        currentSessionId,
+        store: fixture.store,
+        selector: 'planned',
+      });
+
+      expect(result.status).toBe('transitioned');
+      expect(result.status === 'transitioned' && result.bootstrap.plan).toMatchObject({
+        todos: [{ content: 'migrate the call sites', status: 'in_progress' }],
+      });
+    } finally {
+      fixture.cleanup();
     }
   });
 

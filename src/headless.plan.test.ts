@@ -111,11 +111,13 @@ describe('runHeadless — plan mode without an approver', () => {
     expect(out.text()).toContain(PLAN);
     expect(out.text()).toContain('non-interactive host');
     expect(out.text()).not.toContain('SKIPPED');
-    // "completed successfully but took no action": the CLI exits 0 on a
-    // completed outcome, and `plan.status` carries the not-applied fact.
-    expect(result.outcome).toEqual({
+    // "completed successfully but took no action": the CLI still exits 0 on a
+    // completed outcome, and `plan.status` carries the not-applied fact. The
+    // reason is `plan_stop` rather than `normal_completion` so a supervisor can
+    // distinguish this from a finished objective without parsing the payload.
+    expect(result.outcome).toMatchObject({
       status: 'completed',
-      reason: 'normal_completion',
+      reason: 'plan_stop',
       partialOutput: false,
     });
   });
@@ -147,7 +149,7 @@ describe('runHeadless — plan mode without an approver', () => {
     });
     expect(payload.result.outcome).toMatchObject({
       status: 'completed',
-      reason: 'normal_completion',
+      reason: 'plan_stop',
     });
   });
 

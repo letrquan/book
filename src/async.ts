@@ -22,6 +22,26 @@ export function onAbort(signal: AbortSignal | undefined, handler: () => void): (
   return () => signal.removeEventListener('abort', handler);
 }
 
+/**
+ * Sleep, resolving early if `signal` aborts.
+ *
+ * Resolves rather than throws on abort: callers use it for backoff and check the
+ * signal themselves at the point where cancelling changes what they do next.
+ */
+export async function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0 || signal?.aborted) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      unsubscribe();
+      resolve();
+    }, ms);
+    const unsubscribe = onAbort(signal, () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
 /** Yield a macrotask so terminal input, Ink rendering, timers, and aborts can run. */
 export async function yieldToEventLoop(signal?: AbortSignal): Promise<void> {
   throwIfAborted(signal);

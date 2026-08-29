@@ -421,10 +421,117 @@ BOOK_ZERO_MEM_MODEL_CACHE=/path/to/model-cache npm run eval:zero-mem -- --model 
     "checks": {
       "test": "npm test",
       "typecheck": "npm run typecheck"
-    }
+    },
+    "checkTimeoutMs": 120000
   }
 }
 ```
+
+`agents.checkTimeoutMs` caps one `Check` run (default 120 s, maximum 2 h). A check that exceeds it
+is killed and reported as `check_timed_out` — explicitly *not* as a failing check, so an agent does
+not "fix" code that was passing. Raise it for repositories whose full suite runs longer than the
+default; `npm test` here builds first and routinely does.
+
+### Unattended runs
+
+By default a run ends at the first turn that produces no tool calls: one user message is the whole
+run. For long autonomous work, `continuation` lets the loop keep going while the plan says there is
+work left.
+
+```json
+{
+  "continuation": {
+    "enabled": true,
+    "maxConsecutive": 50,
+    "noProgressLimit": 3,
+    "blockedToolTurnLimit": 3,
+    "planRefreshTurns": 25,
+    "maxWallClockMs": 0
+  },
+  "retry": { "streamReissueAttempts": 3, "outputCapContinuations": 10 }
+}
+```
+
+While a run is going, `<BOOK_HOME>/runs/<session-id>.json` says what it is doing: turn, elapsed,
+spend, the current todo, the last tool, free disk, and — once it stops — the terminal outcome, or a
+`crash` field if the process died without reaching one. It is rewritten at each turn boundary
+(temp-file then rename, so a reader never sees a torn record) and stays a fixed size however long the
+run lasts. This is the signal to watch for "is it stuck": the transcript's mtime advances identically
+whether a run is working or wedged.
+
+`--max-budget-usd` bounds the **objective**, not one process and not one prompt: spend is carried
+across restarts and across submitted prompts, and enforced against *inclusive* cost, so work done by
+managed agents and subagents counts against the same ceiling. A cap that cannot be evaluated fails
+closed — a non-finite value is refused at startup rather than silently permitting everything.
+
+Continuation never overrides an abort, an approved plan handoff, a spent budget, or a policy
+refusal. `noProgressLimit` is the brake: when the todo list, the observed-file hashes, and the
+tool-call count are all unchanged across that many boundaries, the run ends as `no_progress` instead
+of spinning. Only tool calls that actually *ran* count toward that witness: a refused call is a
+policy decision, not work, and counting it would move the one signal meant to prove nothing moved.
+
+`blockedToolTurnLimit` is a second, independent brake, and it is enforced **even when `enabled` is
+false**. It stops a run whose every tool call was refused on that many consecutive turns, ending it
+as `all_tools_blocked` and naming the tools to unblock. It is separate because a refusal spin never
+produces a tool-free turn, so the turn-end gate — and therefore every brake behind it — never fires:
+a headless run in the default permission mode answers each prompt `deny` and would otherwise
+re-issue refused calls until the budget ran out. Set it to `0` to disable. `planRefreshTurns` restates the open plan periodically, which also keeps compaction from
+retaining an empty tail in a run that never stops on its own. Terminal outcomes gain
+`objective_complete`, `continuation_limit`, `blocked_plan`, `no_progress`, and `all_tools_blocked`
+so a supervisor can tell them apart — `blocked_plan` specifically means every remaining task is waiting on unfinished
+work, which is a stall, not a success. A deliberate stop is also no longer indistinguishable from
+success: handing an approved plan back reports `handoff_requested`, and a plan stop reports
+`plan_stop` and carries the approver's own message. Both keep the `completed` status, because
+neither is a failure.
+
+Thinking models get their own stall ceiling. `retry.streamStallTimeoutMs` (20 s) is tuned for a chat,
+where that much silence means something broke; adaptive thinking is on by default for Opus and Sonnet
+at `high` effort, and a long quiet stretch before the first token is the model working. While thinking
+is enabled Book uses `retry.thinkingStallTimeoutMs` instead (default 15 minutes,
+`BOOK_THINKING_STALL_TIMEOUT_MS`). Raise it if a very high-effort Opus run still reports
+`stream_stall`.
+
+`retry.streamReissueAttempts` re-sends a turn after a transport fault — a stalled stream, a dropped
+socket — onto the history already committed. Set it to 0 to end the run on any stream error, as
+earlier versions did. `retry.outputCapContinuations` is a separate allowance for continuing after the
+provider's output limit, so a large generated file cannot drain the budget a real socket drop needs.
+
+For a supervised loop, use `--session-id` (resume-or-create) rather than `--continue`, which selects
+the most recently touched session in the directory and can be hijacked by an unrelated `book -p`
+invocation:
+
+```sh
+ID=$(uuidgen)
+while ! book -p --session-id "$ID" --output-format stream-json         --max-budget-usd 500 "$OBJECTIVE"      | jq -e 'select(.type=="result") | .outcome.reason=="objective_complete"'; do sleep 30; done
+```
+
+`--max-budget-usd` accumulates across restarts of the same session, so the cap bounds the objective
+rather than each process.
+
+Check on a run at any point, from any shell, with no provider configured:
+
+```sh
+book status                 # newest session in this workspace
+book status <id|name> --json
+```
+
+It reports the byte-exact original objective, how much history has been compacted away, cumulative
+tokens with an upper-bound USD figure, and the plan as last persisted.
+
+To be told when something needs a person, configure a `Notification` hook. Only `severity: "alarm"`
+is meant to wake anyone — everything else is a line to tail:
+
+```json
+{
+  "hooks": {
+    "Notification": [{ "command": "[ \"$severity\" = alarm ] && ntfy publish my-topic \"$message\"" }]
+  }
+}
+```
+
+Managed agents refuse to spawn rather than fill the disk: `agents.maxWorktrees` (default 24) caps
+simultaneous worktrees per repository and `agents.minFreeDiskBytes` (default 2 GB) is the free-space
+floor. Both raise an `alarm` notification when they bite, and 0 disables either check.
 
 `compactStrategy` supports only `summary`, the production default. Zero-Mem is retained as an
 explicitly named experiment and is unavailable under shipped defaults. Opt in for one process with
@@ -449,7 +556,9 @@ When enabled, Zero-Mem keeps the original session transcript authoritative, buil
 BGE-M3/NER index, incrementally indexes completed turns, and retrieves query-specific evidence
 before each main-agent run. It does not persist retrieved evidence as a checkpoint. Manual
 `/compact` initializes or refreshes the index and reports readiness without replacing conversation
-history; managed subagents continue to use summary compaction.
+history; managed subagents continue to use summary compaction. Routine auto-compaction stays off,
+but if the provider reports a context overflow the loop still falls back to summary compaction for
+that turn -- warming an index cannot shrink a request the provider has already refused.
 
 Migration: remove `compactStrategy: "zero-mem"` and replace it with the trusted
 `experimental.zeroMem` opt-in above. `BOOK_COMPACT_STRATEGY=zero-mem` is also rejected; use

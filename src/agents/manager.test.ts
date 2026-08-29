@@ -530,15 +530,17 @@ describe('AgentManager lifecycle', () => {
     });
     const finished = await manager.wait(spawned.id, 1000);
 
+    // Missing compaction usage leaves the total a lower bound, not an unknown
+    // quantity: the omission stays visible through completeness/missingSources,
+    // but it no longer latches the run into a permanent budget refusal.
     expect(runtime.runAccounting.snapshotRun(finished.runId!)).toMatchObject({
-      costUsd: null,
-      costStatus: 'unknown',
-      budgetStatus: 'unknown',
+      completeness: 'partial',
+      costStatus: 'estimated',
       missingSources: ['compaction_usage'],
     });
     expect(
       runtime.runAccounting.checkBeforeModelCall(parentContext.rootRunId, 'gpt-5'),
-    ).toMatchObject({ allowed: false, status: 'unknown' });
+    ).toMatchObject({ allowed: true });
     manager.dispose();
   });
 
@@ -1503,5 +1505,97 @@ describe('reviewRunnerFor attribution', () => {
       parentSessionId: 'session-7',
       notifyParentOnCompletion: false,
     });
+  });
+});
+
+describe('resuming an interrupted backlog', () => {
+  it('re-drives agents that died mid-flight on the next start', async () => {
+    // A restart used to convert the entire pending backlog into terminal records
+    // nothing picked up: ensureInitialized hydrates agents, plans, evidence, and
+    // snapshots, but never pushed anything onto the queue.
+    const root = tempRoot();
+    const bookHome = tempRoot();
+    vi.stubEnv('BOOK_HOME', bookHome);
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+
+    const store = new AgentStore(repositoryHash(root), bookHome, true);
+    store.saveAgent({
+      id: 'patcher-1',
+      name: 'patcher',
+      role: 'patcher',
+      description: '',
+      prompt: 'migrate the call sites',
+      purpose: 'migrate the call sites',
+      status: 'interrupted',
+      stopReason: 'process_exit',
+      resumable: true,
+      resumedFromStatus: 'running',
+      applicationStatus: 'none',
+      referencedEvidenceIds: [],
+      transcript: [],
+      pendingMessages: [],
+      isolation: 'none',
+      createdAt: 1,
+      updatedAt: 1,
+    } as unknown as Parameters<AgentStore['saveAgent']>[0]);
+
+    const prompts: string[] = [];
+    const manager = new AgentManager(config, [], {
+      storeRoot: bookHome,
+      findGitRoot: async () => undefined,
+      runLoop: async (_c, _r, prompt, history) => {
+        prompts.push(prompt);
+        return history;
+      },
+    });
+
+    await manager.list();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(prompts).toContain('migrate the call sites');
+  });
+
+  it('leaves a user-stopped agent stopped', async () => {
+    const root = tempRoot();
+    const bookHome = tempRoot();
+    vi.stubEnv('BOOK_HOME', bookHome);
+    const config = defaultConfig({ workspace: root });
+    config.settings.agents.persist = true;
+
+    const store = new AgentStore(repositoryHash(root), bookHome, true);
+    store.saveAgent({
+      id: 'patcher-2',
+      name: 'patcher',
+      role: 'patcher',
+      description: '',
+      prompt: 'do not resume me',
+      status: 'stopped',
+      stopReason: 'user',
+      resumable: true,
+      resumedFromStatus: 'running',
+      applicationStatus: 'none',
+      referencedEvidenceIds: [],
+      transcript: [],
+      pendingMessages: [],
+      isolation: 'none',
+      createdAt: 1,
+      updatedAt: 1,
+    } as unknown as Parameters<AgentStore['saveAgent']>[0]);
+
+    const prompts: string[] = [];
+    const manager = new AgentManager(config, [], {
+      storeRoot: bookHome,
+      findGitRoot: async () => undefined,
+      runLoop: async (_c, _r, prompt, history) => {
+        prompts.push(prompt);
+        return history;
+      },
+    });
+
+    await manager.list();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(prompts).toEqual([]);
   });
 });

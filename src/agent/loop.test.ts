@@ -730,7 +730,9 @@ describe('runAgentLoop streaming render callbacks', () => {
   });
 
   it.each([
-    ['max_tokens', 'protocol_error'],
+    // An output cap is continuable work, not a malformed response, so it carries
+    // its own reason and terminalRecovery() can continue the turn.
+    ['max_tokens', 'output_cap'],
     ['model_context_window_exceeded', 'context_overflow'],
     ['refusal', 'provider_error'],
   ] as const)(
@@ -1038,7 +1040,7 @@ describe('runAgentLoop streaming render callbacks', () => {
     );
 
     expect(calls).toBe(1);
-    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'protocol_error' });
+    expect(outcomes[0]).toMatchObject({ status: 'failed', reason: 'output_cap' });
   });
 
   it('continues the active turn after between-turn auto compaction', async () => {
@@ -2089,9 +2091,12 @@ describe('runAgentLoop error handling', () => {
 
     expect(retryCalls.length).toBeGreaterThanOrEqual(2);
     expect(retryCalls[0].phase).toBe('transport');
+    // A retried attempt leaves the total a lower bound, so the run stays priced
+    // ('estimated') and the USD budget keeps enforcing. Latching to 'unknown' made
+    // one transient retry disable the budget for the rest of the run.
     expect(runtime.runAccounting.snapshotRun(runContext.runId)).toMatchObject({
       completeness: 'partial',
-      costStatus: 'unknown',
+      costStatus: 'estimated',
       missingSources: expect.arrayContaining(['failed_provider_attempt_usage']),
     });
   });
@@ -3300,9 +3305,14 @@ describe('runAgentLoop plan mode', () => {
     expect(results[0].structuredError?.message).toContain('No changes were applied');
     expect(results[0].structuredError?.details).toEqual({ reason: 'approval_unavailable' });
     expect(results[0].structuredError?.message).not.toContain('SKIPPED');
-    expect(terminalOutcomes).toEqual([
-      { status: 'completed', reason: 'normal_completion', partialOutput: false },
-    ]);
+    // `plan_stop`, not `normal_completion`: stopping to hand a plan back is an
+    // honest end but it is not the same end as finishing the objective, and a
+    // supervisor keying on the reason has to be able to tell them apart. The
+    // status stays `completed` because this is not a failure, so exit codes and
+    // every status-keyed consumer are unchanged.
+    expect(terminalOutcomes).toMatchObject([{ status: 'completed', reason: 'plan_stop' }]);
+    // The approver's own explanation used to be discarded on the floor.
+    expect(terminalOutcomes[0].message).toBeTruthy();
     expect(errors).toEqual([]);
   });
 
@@ -3356,7 +3366,7 @@ describe('runAgentLoop plan mode', () => {
     );
 
     expect(errors).toEqual([]);
-    expect(terminalOutcomes.map((outcome) => outcome.reason)).toEqual(['normal_completion']);
+    expect(terminalOutcomes.map((outcome) => outcome.reason)).toEqual(['plan_stop']);
   });
 });
 

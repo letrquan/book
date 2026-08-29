@@ -10,6 +10,7 @@ import { mcpServersToRecord, partitionMcpServersByApproval } from '../mcp-approv
 import { resolveMcpServerList } from '../mcp-config.js';
 import { collectWithheldProjectNotices } from '../project-approval-notices.js';
 import { exit } from './exit.js';
+import { parseNumericFlag } from './utils.js';
 import { join } from 'path';
 import type { AgentConfig } from '../types/runtime.js';
 import type { RewindSnapshotStoreInterface } from '../types/sessions.js';
@@ -152,7 +153,10 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       allowMissingApiKey: options.print === undefined && !options.scrollback,
     }) as AgentConfig;
     if (options.effort) config.effort = options.effort as AgentConfig['effort'];
-    if (options.maxTurns) config.maxTurns = parseInt(options.maxTurns as string, 10);
+    const interactiveMaxTurns = parseNumericFlag(options.maxTurns, '--max-turns', {
+      integer: true,
+    });
+    if (interactiveMaxTurns !== undefined) config.maxTurns = interactiveMaxTurns;
     if (options.agents) {
       const agentsMode = String(options.agents);
       if (!['adaptive', 'manual', 'off'].includes(agentsMode)) {
@@ -230,11 +234,12 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           history: bootstrap.history,
           transcript: bootstrap.transcript,
           compactBoundaries: bootstrap.compactBoundaries,
+          plan: bootstrap.plan,
+          carriedUsage: bootstrap.carriedUsage,
+          carriedModels: bootstrap.carriedModels,
           mode,
-          maxTurns: options.maxTurns ? parseInt(options.maxTurns as string, 10) : undefined,
-          maxBudgetUsd: options.maxBudgetUsd
-            ? parseFloat(options.maxBudgetUsd as string)
-            : undefined,
+          maxTurns: parseNumericFlag(options.maxTurns, '--max-turns', { integer: true }),
+          maxBudgetUsd: parseNumericFlag(options.maxBudgetUsd, '--max-budget-usd'),
           verbose: options.verbose as boolean | undefined,
           jsonSchema: options.jsonSchema ? JSON.parse(options.jsonSchema as string) : undefined,
           sessionStore,
