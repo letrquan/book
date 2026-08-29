@@ -18,10 +18,7 @@ import {
 } from '../settings-repository.js';
 import { resolveBookHome } from '../book-home.js';
 import type { SkillActivation, SkillExecution } from '../settings.js';
-import {
-  isExperimentalSettingPath,
-  WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE,
-} from '../settings-scope.js';
+import { blockedWorkspaceSettingPath } from '../settings-scope.js';
 
 const LOCAL_DIR = '.book';
 const LOCAL_FILE = 'settings.local.json';
@@ -95,8 +92,9 @@ export function persistSettingsLocal(
   workspace: string,
   values: Record<string, unknown>,
 ): { ok: boolean; error?: string } {
-  if (Object.keys(values).some(isExperimentalSettingPath)) {
-    return { ok: false, error: WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE };
+  for (const key of Object.keys(values)) {
+    const blocked = blockedWorkspaceSettingPath(key);
+    if (blocked) return { ok: false, error: blocked };
   }
   return persistSettingsAt(localSettingsPath(workspace), values);
 }

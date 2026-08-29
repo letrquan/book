@@ -168,7 +168,12 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     hasApiKey: Boolean(defaultApiKey),
   });
 
-  const defaultBaseUrl = explicitBaseUrl || auth?.profile.baseUrl || DEFAULT_OPENAI_BASE_URL;
+  // Deliberately *not* the profile's endpoint: `defaultBaseUrl` is the value a
+  // named `provider.<id>` entry inherits when it declares none, and a provider
+  // entry inheriting the subscription vendor's host would post that entry's own
+  // API key there. The profile supplies the live base URL below instead.
+  const defaultBaseUrl = explicitBaseUrl || DEFAULT_OPENAI_BASE_URL;
+  const profileBaseUrl = explicitBaseUrl || auth?.profile.baseUrl || DEFAULT_OPENAI_BASE_URL;
   const rawModel = explicitModel || auth?.profile.defaultModel || 'gpt-4o';
   const defaultMaxTokens =
     envMaxTokens ?? settings.maxTokens ?? legacy?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
@@ -180,7 +185,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
 
   let config: AgentConfig = {
     apiKey: defaultApiKey,
-    baseUrl: defaultBaseUrl,
+    baseUrl: profileBaseUrl,
     model: rawModel,
     modelSelection: rawModel,
     compactModel,
@@ -197,6 +202,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     defaultEffort,
     defaultApiKey,
     defaultBaseUrl,
+    defaultProfileBaseUrl: auth ? profileBaseUrl : undefined,
     defaultProvider,
     autoCompactEnabled: settings.autoCompactEnabled ?? legacy?.autoCompactEnabled ?? true,
     workspace: resolvedWorkspace,
@@ -216,11 +222,22 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
 
   config = applyModelDefaults(resolveModelProviderConfig(config, rawModel));
 
-  if (!config.apiKey && !options?.allowMissingApiKey && !auth?.credentialPresent) {
+  // Read off the *resolved* config: `resolveModelProviderConfig` may have
+  // cleared `authProfile` for a named provider entry, and a guard keyed on the
+  // pre-resolution selection would then wave through a run with no credential
+  // at all - the failure the guard exists to name, deferred to an opaque 401.
+  const activeProfile = config.authProfile
+    ? auth?.profile.id === config.authProfile
+      ? auth
+      : undefined
+    : undefined;
+  const credentialPresent = config.authProfile ? Boolean(activeProfile?.credentialPresent) : false;
+
+  if (!config.apiKey && !options?.allowMissingApiKey && !credentialPresent) {
     throw new Error(
-      auth
-        ? `Auth profile "${auth.profile.id}" is selected but nothing is logged in. ` +
-            `Run: book auth login ${auth.profile.id}`
+      config.authProfile
+        ? `Auth profile "${config.authProfile}" is selected but nothing is logged in. ` +
+            `Run: book auth login ${config.authProfile}`
         : 'BOOK_API_KEY or provider.<id>.apiKey not set. Set BOOK_API_KEY, run ' +
             '`book auth login <profile>`, or use {env:VAR} in settings.',
     );
@@ -233,7 +250,10 @@ function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
   return {
     ...config,
     apiKey: config.defaultApiKey ?? config.apiKey,
-    baseUrl: config.defaultBaseUrl ?? config.baseUrl,
+    // An active auth profile keeps its own endpoint across a plain model
+    // switch; `defaultBaseUrl` is the profile-free fallback a named provider
+    // entry inherits instead.
+    baseUrl: config.defaultProfileBaseUrl ?? config.defaultBaseUrl ?? config.baseUrl,
     model,
     modelSelection: model,
     modelInfo: undefined,

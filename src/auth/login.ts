@@ -121,7 +121,7 @@ export async function runOAuthLogin(options: LoginOptions): Promise<LoginResult>
 
     const opened = options.noBrowser
       ? false
-      : openInBrowser(authorizeUrl, options.platform ?? process.platform);
+      : await openInBrowser(authorizeUrl, options.platform ?? process.platform);
     options.events.onAuthorizeUrl(authorizeUrl, opened);
 
     let code: string;

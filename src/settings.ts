@@ -208,6 +208,13 @@ export const providerModelSchema = z.object({
 export const authProfileOverrideSchema = z.object({
   label: z.string().min(1).optional(),
   clientId: z.string().min(1).optional(),
+  /**
+   * Only for a confidential client. Supports `{env:VAR}` / `{file:path}`
+   * indirection like every other secret in settings, and is read exclusively
+   * from a trusted layer - the whole `auth` block is stripped from any
+   * workspace file.
+   */
+  clientSecret: z.string().min(1).optional(),
   providerType: z.enum(['anthropic', 'openai']).optional(),
   authorizeUrl: z.string().url().optional(),
   tokenUrl: z.string().url().optional(),

@@ -7,12 +7,7 @@ import {
   SETTINGS_TOP_LEVEL_KEYS,
   SettingsRepository,
 } from '../settings-repository.js';
-import {
-  isAuthSettingPath,
-  isExperimentalSettingPath,
-  WORKSPACE_AUTH_SETTINGS_MESSAGE,
-  WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE,
-} from '../settings-scope.js';
+import { blockedWorkspaceSettingPath } from '../settings-scope.js';
 
 /**
  * Settings paths held in `<BOOK_HOME>/trust.json` rather than in either
@@ -74,12 +69,9 @@ export async function runConfigCommand(
       console.error('Invalid key. Use dot-separated path: e.g. permissions.deny');
       exit(1);
     }
-    if (isExperimentalSettingPath(key)) {
-      console.error(WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE);
-      exit(1);
-    }
-    if (isAuthSettingPath(key)) {
-      console.error(WORKSPACE_AUTH_SETTINGS_MESSAGE);
+    const blocked = blockedWorkspaceSettingPath(key);
+    if (blocked) {
+      console.error(blocked);
       exit(1);
     }
     const topKey = parts[0];

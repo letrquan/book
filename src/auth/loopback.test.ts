@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { networkInterfaces } from 'node:os';
 import { createState } from './pkce.js';
 import { startLoopbackListener, type LoopbackListener } from './loopback.js';
 
@@ -28,15 +29,27 @@ describe('loopback listener', () => {
     }
   });
 
+  /**
+   * A listener on 0.0.0.0 would accept an authorization code from anything that
+   * can route to this machine. Asserting a successful fetch to 127.0.0.1 proves
+   * nothing - that works on any bind address - so this reads the bound address
+   * off the server and checks a non-loopback local interface is refused.
+   */
   it('binds 127.0.0.1 only, not every interface', async () => {
     const state = createState();
     const listener = await listen(state);
     try {
-      // A listener on 0.0.0.0 would accept an authorization code from anything
-      // that can route here. Loopback is the whole security boundary.
-      await expect(
-        fetch(`http://127.0.0.1:${listener.port}${PATH}?state=${state}&code=c`),
-      ).resolves.toBeDefined();
+      expect(listener.address).toBe('127.0.0.1');
+
+      const external = networkInterfaces();
+      const routable = Object.values(external)
+        .flat()
+        .find((entry) => entry && entry.family === 'IPv4' && !entry.internal);
+      if (routable) {
+        await expect(
+          fetch(`http://${routable.address}:${listener.port}${PATH}?state=${state}&code=c`),
+        ).rejects.toThrow();
+      }
     } finally {
       listener.close();
     }
@@ -82,6 +95,67 @@ describe('loopback listener', () => {
     } finally {
       listener.close();
     }
+  });
+
+  /**
+   * The state check must run before `error` is honoured. Otherwise any page the
+   * user happens to visit during the login window kills the flow with a bare
+   * `<img src="http://127.0.0.1:54545/callback?error=x">` — no CORS permission
+   * and no knowledge of the request needed.
+   */
+  it('ignores an error callback that cannot prove it belongs to this flow', async () => {
+    const state = createState();
+    const listener = await listen(state);
+    try {
+      const forged = await fetch(
+        callbackUrl(listener, { error: 'access_denied', state: createState() }),
+      );
+      expect(forged.status).toBe(400);
+
+      // Still listening: the real redirect lands normally.
+      await fetch(callbackUrl(listener, { code: 'the-real-code', state }));
+      await expect(listener.result).resolves.toEqual({ code: 'the-real-code' });
+    } finally {
+      listener.close();
+    }
+  });
+
+  it('ignores an error callback carrying no state at all', async () => {
+    const state = createState();
+    const listener = await listen(state);
+    try {
+      const forged = await fetch(`http://127.0.0.1:${listener.port}${PATH}?error=access_denied`);
+      expect(forged.status).toBe(400);
+      await fetch(callbackUrl(listener, { code: 'real', state }));
+      await expect(listener.result).resolves.toEqual({ code: 'real' });
+    } finally {
+      listener.close();
+    }
+  });
+
+  /**
+   * The page is served as text/html from the origin that is about to receive an
+   * authorization code, and `error_description` is request input.
+   */
+  it('escapes reflected error text instead of serving it as markup', async () => {
+    const state = createState();
+    const listener = await listen(state);
+    try {
+      const response = await fetch(
+        callbackUrl(listener, {
+          error: 'access_denied',
+          error_description: '<img src=x onerror=alert(1)>',
+          state,
+        }),
+      );
+      const body = await response.text();
+      expect(body).not.toContain('<img src=x');
+      expect(body).toContain('&lt;img src=x onerror=alert(1)&gt;');
+      expect(response.headers.get('content-security-policy')).toContain("default-src 'none'");
+    } finally {
+      listener.close();
+    }
+    await expect(listener.result).rejects.toThrow();
   });
 
   it('rejects a redirect that carries no code', async () => {

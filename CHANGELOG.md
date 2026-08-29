@@ -32,9 +32,28 @@ All notable changes to this project are documented in this file.
   `authorizeUrl`, `tokenUrl`, and `baseUrl` - enough to point Book at a self-hosted authorization
   server without a fork.
 
-  Selecting a model through a configured `provider/<id>` entry drops the auth profile: that entry
-  brings its own endpoint and key, and carrying the credential across the switch would send an
-  account-wide bearer token to whatever host it names.
+  **The credential is bound to its profile's origin**, enforced where the request header is built
+  rather than at each place a base URL can change. `BOOK_BASE_URL`, a `provider.<id>` entry, and a
+  legacy `.bookrc.json` can all retarget a request after the profile was selected - and
+  `.bookrc.json` is repository-controlled and covered by no settings trust layer - so guarding the
+  settings keys alone left the token reachable by a cloned repository. A mismatch is refused with a
+  message naming the override that caused it. Selecting a model through a configured
+  `provider/<id>` entry additionally drops the profile, since that entry brings its own endpoint
+  and key; such an entry no longer inherits the profile's endpoint either, which would have posted
+  the entry's own API key to the subscription vendor.
+
+  The login listener refuses any callback that cannot prove it belongs to the flow *before* it
+  honours an `error` parameter, so a bare `<img src=".../callback?error=x">` on a page the user
+  happens to visit can no longer kill a login in progress; reflected error text is HTML-escaped and
+  the page carries a `default-src 'none'` CSP. The redirect names `127.0.0.1` rather than
+  `localhost` (RFC 8252 §7.3), matching the address the listener actually binds. A shared token
+  refresh carries no caller's AbortSignal, so cancelling one turn no longer fails the parallel
+  subagents awaiting the same refresh; a refresh response that omits `expires_in` or `scope` keeps
+  the stored values rather than overwriting them with undefined, and `expires_in` is accepted as a
+  numeric string. Losing a cross-process refresh race re-reads the store and uses the token the
+  other process wrote instead of demanding a fresh login. Confidential clients
+  (`auth.profiles.<id>.clientSecret`, `BOOK_AUTH_CLIENT_SECRET_<PROFILE>`) are supported for
+  self-hosted authorization servers that issue no public clients.
 
   Which credential a run spends is resolved once, at config load. An explicit `BOOK_AUTH_PROFILE` or
   `auth.profile` wins (`api-key` pins the run to key auth); otherwise a stored credential is used
@@ -48,11 +67,23 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **`book config set`, the `/config` slash command, and the TUI's local persistence share one list
+  of settings a workspace file may not carry.** The `experimental.*` guard existed in all three;
+  the `auth.*` guard was added to only one, so `/config auth.profile=codex` wrote a value the
+  loader strips and reported success. Both now come from `blockedWorkspaceSettingPath`.
+
 - **`book doctor` names the credential that will actually be used.** It reported
   `Credentials: resolved` whenever an API key was present, which points at the wrong credential once
   an auth profile is active - the transports replace the key headers outright. It now reports the
-  active profile, its account label, and its token expiry, or tells the user to run
-  `book auth login <profile>` when the selected profile has nothing stored.
+  active profile, its account label, and its token expiry - through the same renderer
+  `book auth status` uses, so the two commands cannot disagree about whether a credential is still
+  good - or tells the user to run `book auth login <profile>` when the selected profile has nothing
+  stored. An unreadable credential store is reported as such rather than as "nothing is logged in",
+  which was a dead end: `book auth login` also refuses to write a store it cannot parse.
+
+- **The 401 message names commands that exist.** It said "Check BOOK_API_KEY or run `/login`" -
+  `/login` was never a Book slash command, and BOOK_API_KEY is the wrong thing to look at once a
+  subscription profile is active.
 
 ### Fixed
 

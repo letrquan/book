@@ -626,6 +626,11 @@ describe('loadConfig subscription auth', () => {
     writeCredential(profile, { kind: 'oauth', tokens: { accessToken: 'at' } }, { home });
   }
 
+  /** Auth settings are trusted-source only; BOOK_HOME is that source here. */
+  function writeUserSettings(document: unknown): void {
+    writeFileSync(join(home, 'settings.json'), JSON.stringify(document));
+  }
+
   it('leaves an API-key run completely untouched', () => {
     login('anthropic');
     const config = loadConfig(workspace, { noSettings: true });
@@ -655,6 +660,24 @@ describe('loadConfig subscription auth', () => {
     expect(() => loadConfig(workspace, { noSettings: true })).toThrow(/book auth login/);
   });
 
+  /**
+   * The guard used to read the pre-resolution selection, so a model resolving
+   * to a keyless provider entry - which clears the profile - slipped past it
+   * and failed later as an opaque 401 instead of a startup error.
+   */
+  it('still demands a credential when the model switch cleared the profile', () => {
+    delete process.env.BOOK_API_KEY;
+    login('anthropic');
+    writeUserSettings({
+      auth: { profile: 'anthropic' },
+      provider: { proxy: { type: 'openai', apiKey: '{env:BOOK_TEST_UNSET_KEY}', models: {} } },
+    });
+
+    expect(() => loadConfig(workspace, { modelOverride: 'proxy/gpt-5' })).toThrow(
+      /BOOK_API_KEY or provider\.<id>\.apiKey not set/,
+    );
+  });
+
   it('names the selected profile when it has no stored credential', () => {
     delete process.env.BOOK_API_KEY;
     process.env.BOOK_AUTH_PROFILE = 'anthropic';
@@ -671,13 +694,31 @@ describe('loadConfig subscription auth', () => {
     const config = loadConfig(workspace, { noSettings: true });
     expect(config.baseUrl).toBe('https://gateway.example.com/v1');
     expect(config.model).toBe('claude-opus-5');
+    // The profile stays selected, but `resolveAuthHeaders` refuses to spend it
+    // against an origin the profile did not issue it for - see
+    // `auth/resolve.test.ts`. Config records the selection; the header path
+    // enforces where it may go.
     expect(config.authProfile).toBe('anthropic');
   });
 
-  /** Auth settings are trusted-source only; BOOK_HOME is that source here. */
-  function writeUserSettings(document: unknown): void {
-    writeFileSync(join(home, 'settings.json'), JSON.stringify(document));
-  }
+  /**
+   * A named provider entry that declares no baseURL used to inherit whatever
+   * `defaultBaseUrl` held. Once a profile supplied that value, the entry's own
+   * API key was posted to the subscription vendor's host.
+   */
+  it('does not let a keyed provider entry inherit the profile endpoint', () => {
+    delete process.env.BOOK_API_KEY;
+    login('anthropic');
+    writeUserSettings({
+      provider: { byok: { type: 'openai', apiKey: 'sk-byok', models: {} } },
+    });
+
+    const config = loadConfig(workspace, { modelOverride: 'byok/some-model' });
+
+    expect(config.apiKey).toBe('sk-byok');
+    expect(config.baseUrl).toBe('https://api.openai.com/v1');
+    expect(config.authProfile).toBeUndefined();
+  });
 
   it('honours auth.profile from user-global settings even when a key is present', () => {
     login('codex');

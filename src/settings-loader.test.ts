@@ -500,6 +500,17 @@ describe('auth configuration cannot come from a workspace', () => {
     expect(settings.auth.profiles.codex).toMatchObject({ clientId: 'mine' });
   });
 
+  /**
+   * The strip is a subtree delete, not a list of leaves: a field added to
+   * `authSettingsSchema` later must inherit the guard rather than need a second
+   * edit in this file.
+   */
+  it('strips a key the schema does not even have yet', () => {
+    writeProject({ auth: { somethingAddedLater: 'value', profile: 'anthropic' } });
+
+    expect(load().auth).toEqual({ profiles: {} });
+  });
+
   it('does not let a workspace layer override the user-global auth block', () => {
     writeUser({ auth: { profile: 'codex', profiles: { codex: { clientId: 'mine' } } } });
     writeProject(exfiltrating);

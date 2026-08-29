@@ -3,6 +3,7 @@ import {
   accountLabelFromIdToken,
   buildAuthorizeUrl,
   exchangeAuthorizationCode,
+  mergeRefreshedTokens,
   missingClientIdMessage,
   OAuthError,
   refreshAccessToken,
@@ -49,7 +50,7 @@ describe('buildAuthorizeUrl', () => {
     expect(url.searchParams.get('scope')).toBe('user:inference user:profile');
   });
 
-  it('refuses to build a URL with no client id, naming both ways to set one', () => {
+  it('refuses to build a URL with no client id, naming remedies that work', () => {
     expect(() =>
       buildAuthorizeUrl({
         profile: profile({ clientId: '' }),
@@ -60,7 +61,10 @@ describe('buildAuthorizeUrl', () => {
     ).toThrow(OAuthError);
     const message = missingClientIdMessage(profile({ clientId: '' }));
     expect(message).toContain('BOOK_AUTH_CLIENT_ID_ANTHROPIC');
-    expect(message).toContain('auth.profiles.anthropic.clientId');
+    // Not `book config set`: that writes the workspace layer, where the whole
+    // auth block is stripped, so the CLI refuses it outright.
+    expect(message).not.toContain('book config set');
+    expect(message).toContain('<BOOK_HOME>/settings.json');
   });
 });
 
@@ -151,7 +155,7 @@ describe('exchangeAuthorizationCode', () => {
 });
 
 describe('refreshAccessToken', () => {
-  it('keeps the old refresh token when the server rotates none', async () => {
+  it('posts the refresh grant', async () => {
     const { fetchImpl, calls } = stubFetch(200, { access_token: 'new-at', expires_in: 60 });
     const tokens = await refreshAccessToken({
       profile: profile(),
@@ -159,18 +163,29 @@ describe('refreshAccessToken', () => {
       fetchImpl,
       now: 0,
     });
-    expect(Object.fromEntries(calls[0].form)).toMatchObject({ grant_type: 'refresh_token' });
-    expect(tokens).toMatchObject({ accessToken: 'new-at', refreshToken: 'old-rt' });
+    expect(Object.fromEntries(calls[0].form)).toMatchObject({
+      grant_type: 'refresh_token',
+      refresh_token: 'old-rt',
+    });
+    expect(tokens.accessToken).toBe('new-at');
   });
 
-  it('takes the rotated refresh token when one is returned', async () => {
-    const { fetchImpl } = stubFetch(200, { access_token: 'new-at', refresh_token: 'new-rt' });
-    const tokens = await refreshAccessToken({
+  it('omits client_secret for a public client, and sends it for a confidential one', async () => {
+    const publicClient = stubFetch(200, { access_token: 'a' });
+    await refreshAccessToken({
       profile: profile(),
-      refreshToken: 'old-rt',
-      fetchImpl,
+      refreshToken: 'rt',
+      fetchImpl: publicClient.fetchImpl,
     });
-    expect(tokens.refreshToken).toBe('new-rt');
+    expect(publicClient.calls[0].form.has('client_secret')).toBe(false);
+
+    const confidential = stubFetch(200, { access_token: 'a' });
+    await refreshAccessToken({
+      profile: profile({ clientSecret: 'shh' }),
+      refreshToken: 'rt',
+      fetchImpl: confidential.fetchImpl,
+    });
+    expect(confidential.calls[0].form.get('client_secret')).toBe('shh');
   });
 });
 
@@ -189,5 +204,76 @@ describe('accountLabelFromIdToken', () => {
     expect(accountLabelFromIdToken('a.!!!!.c')).toBeUndefined();
     expect(accountLabelFromIdToken(undefined)).toBeUndefined();
     expect(accountLabelFromIdToken(42)).toBeUndefined();
+  });
+});
+
+/**
+ * RFC 6749 §5.1: omitted fields mean "unchanged". Overwriting them with
+ * undefined poisons the credential — an undefined expiry reads as "never
+ * expires", so the refresh token is never spent again and the session 401s
+ * forever with no recovery but a browser round trip.
+ */
+describe('mergeRefreshedTokens', () => {
+  const previous = {
+    accessToken: 'old',
+    refreshToken: 'rt',
+    expiresAt: 5_000,
+    scope: 'user:inference',
+    tokenType: 'Bearer',
+    account: 'a@b.c',
+  };
+
+  it('keeps every field the refresh response omitted', () => {
+    expect(mergeRefreshedTokens(previous, { accessToken: 'new' })).toEqual({
+      ...previous,
+      accessToken: 'new',
+    });
+  });
+
+  it('takes each field the response did supply', () => {
+    expect(
+      mergeRefreshedTokens(previous, {
+        accessToken: 'new',
+        refreshToken: 'rt2',
+        expiresAt: 9_000,
+        scope: 'user:profile',
+      }),
+    ).toMatchObject({ refreshToken: 'rt2', expiresAt: 9_000, scope: 'user:profile' });
+  });
+});
+
+/**
+ * `expires_in` arrives as a JSON string from plenty of servers. Dropping it
+ * stores a credential that never refreshes and 401s once the token really dies.
+ */
+describe('expires_in tolerance', () => {
+  async function exchange(expiresIn: unknown, now = 0): Promise<number | undefined> {
+    const { fetchImpl } = stubFetch(200, { access_token: 'at', expires_in: expiresIn });
+    const tokens = await exchangeAuthorizationCode({
+      profile: profile(),
+      code: 'c',
+      codeVerifier: 'v',
+      redirectUri: 'http://127.0.0.1:54545/callback',
+      fetchImpl,
+      now,
+    });
+    return tokens.expiresAt;
+  }
+
+  it.each([
+    ['a number', 3600, 3_600_000],
+    ['a numeric string', '3600', 3_600_000],
+    // Rounded: the store requires an integer timestamp, and a ZodError here
+    // would land after the single-use authorization code was already redeemed.
+    ['a fractional value', 1.5, 1_500],
+  ])('accepts %s', async (_label, expiresIn, expected) => {
+    const expiresAt = await exchange(expiresIn);
+    expect(expiresAt).toBe(expected);
+    expect(Number.isInteger(expiresAt)).toBe(true);
+  });
+
+  it('leaves the expiry unset for a value that is not a number at all', async () => {
+    await expect(exchange('soon')).resolves.toBeUndefined();
+    await expect(exchange(null)).resolves.toBeUndefined();
   });
 });

@@ -46,6 +46,10 @@ export function selectAuthProfile(input: AuthSelectionInput): AuthSelection | un
   const requested = env.BOOK_AUTH_PROFILE?.trim() || input.settings.auth?.profile?.trim();
 
   if (isApiKeySelection(requested)) return undefined;
+  // Before the store read: a run with a working API key and no stated
+  // preference cannot select a profile, so parsing auth.json would be wasted
+  // on every `loadConfig` such a user performs.
+  if (!requested && input.hasApiKey) return undefined;
 
   const credentials = readAuthStore(input.store).store.credentials;
 
@@ -57,11 +61,12 @@ export function selectAuthProfile(input: AuthSelectionInput): AuthSelection | un
           'in settings, or set auth.profile to "api-key" to use an API key.',
       );
     }
-    return { profile, explicit: true, credentialPresent: Boolean(credentials[requested]) };
+    return {
+      profile,
+      explicit: true,
+      credentialPresent: Object.hasOwn(credentials, requested),
+    };
   }
-
-  // Inference: only when there is no key to fall back on.
-  if (input.hasApiKey) return undefined;
 
   const candidates = Object.values(credentials)
     .map((credential) => resolveAuthProfile(credential.profile, input.settings, env))

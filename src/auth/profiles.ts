@@ -55,6 +55,12 @@ export interface AuthProfile {
   defaultModel?: string;
   /** Empty until the user supplies one. See the module comment. */
   clientId: string;
+  /**
+   * Only for a *confidential* client, which a corporate authorization server
+   * often issues by default. A loopback CLI is normally a public client and
+   * needs none; PKCE, not a secret, is what binds the code to this process.
+   */
+  clientSecret?: string;
 }
 
 /**
@@ -98,9 +104,21 @@ export const BUILT_IN_PROFILE_IDS: readonly string[] = Object.freeze(Object.keys
 /** Reserved selection meaning "ignore any stored credential and use the API key". */
 export const API_KEY_PROFILE = 'api-key';
 
-function envClientId(profileId: string, env: NodeJS.ProcessEnv): string | undefined {
-  const key = `BOOK_AUTH_CLIENT_ID_${profileId.replace(/[^A-Za-z0-9]+/g, '_').toUpperCase()}`;
-  return env[key]?.trim() || undefined;
+/**
+ * Environment variable carrying a profile's client id.
+ *
+ * Exported because `missingClientIdMessage` prints this name and must derive it
+ * from the same expression that reads it — otherwise the error can name a
+ * variable Book never looks at. The slug matters for custom ids:
+ * `my-corp-sso` becomes `BOOK_AUTH_CLIENT_ID_MY_CORP_SSO`.
+ */
+export function authClientIdEnvVar(profileId: string): string {
+  return `BOOK_AUTH_CLIENT_ID_${profileId.replace(/[^A-Za-z0-9]+/g, '_').toUpperCase()}`;
+}
+
+/** Environment variable carrying a confidential client's secret, if it has one. */
+export function authClientSecretEnvVar(profileId: string): string {
+  return `BOOK_AUTH_CLIENT_SECRET_${profileId.replace(/[^A-Za-z0-9]+/g, '_').toUpperCase()}`;
 }
 
 /**
@@ -115,8 +133,11 @@ export function resolveAuthProfile(
   settings?: Pick<BookSettings, 'auth'>,
   env: NodeJS.ProcessEnv = process.env,
 ): AuthProfile | undefined {
-  const override = settings?.auth?.profiles?.[profileId];
-  const base = BUILT_IN[profileId];
+  const profiles = settings?.auth?.profiles;
+  // `Object.hasOwn`, not a bare index: `resolveAuthProfile('constructor')`
+  // would otherwise return a prototype member typed as a profile.
+  const override = profiles && Object.hasOwn(profiles, profileId) ? profiles[profileId] : undefined;
+  const base = Object.hasOwn(BUILT_IN, profileId) ? BUILT_IN[profileId] : undefined;
   if (!base && !override) return undefined;
 
   // A wholly user-declared profile has to supply the endpoints itself.
@@ -140,7 +161,8 @@ export function resolveAuthProfile(
 
   return {
     ...merged,
-    clientId: envClientId(profileId, env) ?? override?.clientId ?? '',
+    clientId: env[authClientIdEnvVar(profileId)]?.trim() || override?.clientId || '',
+    clientSecret: env[authClientSecretEnvVar(profileId)]?.trim() || override?.clientSecret,
   };
 }
 
@@ -156,7 +178,31 @@ export function listAuthProfiles(
     .filter((profile): profile is AuthProfile => profile !== undefined);
 }
 
-/** The loopback redirect URI registered with the authorization server. */
+/**
+ * The loopback redirect URI registered with the authorization server.
+ *
+ * The literal `127.0.0.1`, never `localhost`, per RFC 8252 §7.3 and for two
+ * concrete reasons. `localhost` resolves to `::1` first on many hosts, where
+ * the IPv4-only listener is not reachable and the login dies at the timeout
+ * with a message blaming the browser. And `localhost` is subject to the system
+ * proxy configuration, so an enterprise setup that does not bypass the proxy
+ * for local names would route the authorization code through it.
+ */
 export function redirectUri(profile: AuthProfile, port = profile.redirectPort): string {
-  return `http://localhost:${port}${profile.redirectPath}`;
+  return `http://127.0.0.1:${port}${profile.redirectPath}`;
+}
+
+/**
+ * The origin a profile's credential may be presented to.
+ *
+ * `resolveAuthHeaders` compares this against the request's base URL, which is
+ * what actually binds the token to a host. Returns undefined for a base URL
+ * that will not parse, which fails the comparison closed.
+ */
+export function profileOrigin(baseUrl: string): string | undefined {
+  try {
+    return new URL(baseUrl).origin;
+  } catch {
+    return undefined;
+  }
 }

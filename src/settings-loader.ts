@@ -118,15 +118,6 @@ const WORKSPACE_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
   // explicit --settings document, or a process environment opt-in. A clone
   // and even a force-added settings.local.json must not enable them.
   ['experimental', 'zeroMem'],
-  // The whole `auth` block - both of its keys. A subscription token is an
-  // account-wide bearer credential, and every field here decides where one is
-  // obtained or sent: `profiles.<id>.baseUrl` is the host that receives the
-  // Authorization header on every inference request, `tokenUrl` receives the
-  // authorization code, `headers` rides along with the token, and `profile`
-  // picks which credential is spent at all. A clone that could set any of them
-  // could harvest the user's subscription token by opening the workspace.
-  ['auth', 'profile'],
-  ['auth', 'profiles'],
 ];
 
 function stripPaths(
@@ -149,6 +140,16 @@ function sanitizeLayer(
   const sanitized = structuredClone(settings);
   // Project/local settings cannot opt a session into the most permissive mode.
   if (sanitized.defaultMode === 'bypassPermissions') delete sanitized.defaultMode;
+  // The whole `auth` block, deleted as a subtree rather than key by key: a
+  // subscription token is an account-wide bearer credential, and every field
+  // under `auth` decides where one is obtained or sent - `profiles.<id>.baseUrl`
+  // is the host that receives the Authorization header on every inference
+  // request, `tokenUrl` receives the authorization code, `headers` rides along
+  // with the token, and `profile` picks which credential is spent at all. A
+  // clone that could set any of them could harvest the token by being opened,
+  // so a field added to the schema later must inherit the guard rather than
+  // need a second edit here.
+  delete sanitized.auth;
   stripPaths(sanitized, WORKSPACE_FORBIDDEN_PATHS);
   return sanitized;
 }

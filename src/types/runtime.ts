@@ -145,6 +145,14 @@ export interface AgentConfig {
   /** Plain-model fallback values used after provider/model switches. */
   defaultApiKey?: string;
   defaultBaseUrl?: string;
+  /**
+   * Base URL to restore for a plain model selection while an auth profile is
+   * active. Kept apart from `defaultBaseUrl` because that value is what a named
+   * `provider.<id>` entry inherits when it declares none, and such an entry
+   * must not inherit the subscription vendor's endpoint - it would post its own
+   * API key there.
+   */
+  defaultProfileBaseUrl?: string;
   defaultProvider?: 'anthropic' | 'openai' | 'auto';
   autoCompactEnabled: boolean;
   workspace: string;

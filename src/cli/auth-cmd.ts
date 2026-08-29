@@ -10,16 +10,16 @@ import { createInterface } from 'node:readline/promises';
 import { resolveSettings } from '../settings-loader.js';
 import { DEFAULT_SETTINGS } from '../settings.js';
 import type { BookSettings } from '../settings.js';
-import { runOAuthLogin } from '../auth/login.js';
 import { missingClientIdMessage } from '../auth/oauth.js';
 import {
-  API_KEY_PROFILE,
+  authClientIdEnvVar,
   listAuthProfiles,
   redirectUri,
   resolveAuthProfile,
   type AuthProfile,
 } from '../auth/profiles.js';
-import { selectAuthProfile } from '../auth/selection.js';
+import { describeExpiry } from '../auth/resolve.js';
+import { isApiKeySelection, selectAuthProfile } from '../auth/selection.js';
 import {
   clearCredentials,
   defaultAuthStorePath,
@@ -65,18 +65,10 @@ function loadSettings(workspace: string): BookSettings {
   }
 }
 
-function formatTimestamp(value: number | undefined): string {
-  return value === undefined ? 'unknown' : new Date(value).toISOString();
-}
-
-function expiryLabel(expiresAt: number | undefined, now: number): string {
-  if (expiresAt === undefined) return 'no stated expiry';
-  const deltaMs = expiresAt - now;
-  if (deltaMs <= 0) return `expired ${formatTimestamp(expiresAt)}`;
-  const minutes = Math.round(deltaMs / 60_000);
-  return minutes < 60
-    ? `expires in ${minutes}m`
-    : `expires in ${Math.round(minutes / 60)}h (${formatTimestamp(expiresAt)})`;
+/** BOOK_PROVIDER as loadConfig reads it, so status and the run agree. */
+function providerOverride(): 'anthropic' | 'openai' | 'auto' {
+  const raw = process.env.BOOK_PROVIDER?.trim().toLowerCase();
+  return raw === 'anthropic' || raw === 'openai' ? raw : 'auto';
 }
 
 export function runAuthStatusCommand(options: AuthCommandOptions, now = Date.now()): void {
@@ -91,7 +83,10 @@ export function runAuthStatusCommand(options: AuthCommandOptions, now = Date.now
   try {
     selection = selectAuthProfile({
       settings,
-      providerType: 'auto',
+      // The same provider filter loadConfig applies. Hardcoding 'auto' made
+      // status report "API key" for a run that would in fact spend a
+      // subscription, which is the one question this command answers.
+      providerType: providerOverride(),
       hasApiKey: Boolean(process.env.BOOK_API_KEY),
       store,
     });
@@ -158,13 +153,18 @@ export function runAuthStatusCommand(options: AuthCommandOptions, now = Date.now
     console.log('  (none)');
   } else {
     for (const credential of credentials) {
-      const parts = [
-        credential.kind === 'oauth' ? expiryLabel(credential.expiresAt, now) : 'API key',
-        credential.refreshable ? 'refreshable' : 'not refreshable',
-      ];
       console.log(
         `  ${credential.profile}${credential.account ? ` (${credential.account})` : ''}: ` +
-          parts.join(', '),
+          (credential.kind === 'oauth'
+            ? describeExpiry(
+                {
+                  accessToken: '',
+                  expiresAt: credential.expiresAt,
+                  refreshToken: credential.refreshable ? 'x' : undefined,
+                },
+                now,
+              )
+            : 'API key'),
       );
     }
   }
@@ -176,7 +176,7 @@ export function runAuthStatusCommand(options: AuthCommandOptions, now = Date.now
       profile.providerType,
       profile.clientId
         ? 'client id configured'
-        : 'no client id — see `book auth login ' + profile.id + '`',
+        : `no client id — set ${authClientIdEnvVar(profile.id)}`,
     ];
     console.log(`  ${profile.id}: ${profile.label} [${flags.join(', ')}]`);
   }
@@ -193,7 +193,7 @@ function resolveProfileOrExit(
     exit(1);
     return undefined;
   }
-  if (profileId === API_KEY_PROFILE) {
+  if (isApiKeySelection(profileId)) {
     console.error(
       '"api-key" is not a login profile — it is the value of auth.profile that turns ' +
         'subscription auth off. Set BOOK_API_KEY instead.',
@@ -239,17 +239,34 @@ export async function runAuthLoginCommand(
     return;
   }
 
-  const timeoutMs = options.timeout ? Number(options.timeout) * 1000 : undefined;
-  if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
-    console.error('--timeout must be a positive number of seconds.');
-    exit(1);
-    return;
+  // Integer seconds only, and capped at what setTimeout can represent: a
+  // larger delay silently collapses to 1ms, so "--timeout 3000000" would fail
+  // the login instantly rather than waiting longer.
+  const MAX_TIMEOUT_SECONDS = Math.floor((2 ** 31 - 1) / 1000);
+  let timeoutMs: number | undefined;
+  if (options.timeout !== undefined) {
+    const seconds = Number(options.timeout);
+    if (!Number.isInteger(seconds) || seconds <= 0 || seconds > MAX_TIMEOUT_SECONDS) {
+      console.error(
+        `--timeout must be a whole number of seconds between 1 and ${MAX_TIMEOUT_SECONDS}.`,
+      );
+      exit(1);
+      return;
+    }
+    timeoutMs = seconds * 1000;
   }
 
   console.log(`Signing in to ${profile.label}.`);
   if (!options.manual) {
     console.log(`Listening on ${redirectUri(profile)} for the redirect.`);
   }
+
+  // Imported here rather than at module scope: this pulls in the loopback
+  // listener and with it `node:http`, which nothing else in Book loads. A
+  // static import would evaluate it on every `book` invocation - every TUI
+  // launch, every `--print`, every `book config get` - to serve a command
+  // almost nobody runs. `cli/doctor.ts` defers its own imports the same way.
+  const { runOAuthLogin } = await import('../auth/login.js');
 
   try {
     const { credential } = await runOAuthLogin({
@@ -272,8 +289,9 @@ export async function runAuthLoginCommand(
     console.log(`Signed in to ${profile.id}${account ? ` as ${account}` : ''}.`);
     if (!settings.auth?.profile) {
       console.log(
-        'Book will use this credential when no API key is configured. To pin it, run: ' +
-          `book config set auth.profile ${profile.id}`,
+        'Book will use this credential when no API key is configured. To pin it, set ' +
+          `BOOK_AUTH_PROFILE=${profile.id}, or add {"auth":{"profile":"${profile.id}"}} to ` +
+          '<BOOK_HOME>/settings.json.',
       );
     }
   } catch (error) {
@@ -288,8 +306,20 @@ export function runAuthLogoutCommand(
 ): void {
   const store = { home: options.home };
 
+  // `book auth logout codex --all` reads as "all sessions for codex" but would
+  // wipe every profile, costing a browser round trip to restore. Refuse rather
+  // than silently ignoring the argument.
+  if (options.all && profileId) {
+    console.error('Pass a profile or --all, not both.');
+    exit(1);
+    return;
+  }
+
   if (options.all) {
-    const removed = clearCredentials(store);
+    // A corrupt store is exactly what someone runs logout to recover from, so
+    // the writer's refusal has to arrive as a message, not a stack trace.
+    const removed = withStoreErrors(() => clearCredentials(store));
+    if (removed === undefined) return;
     console.log(
       removed === 0 ? 'No stored credentials to remove.' : `Removed ${removed} credential(s).`,
     );
@@ -307,9 +337,27 @@ export function runAuthLogoutCommand(
     return;
   }
 
+  const removed = withStoreErrors(() => deleteCredential(profileId, store));
+  if (removed === undefined) return;
   console.log(
-    deleteCredential(profileId, store)
+    removed
       ? `Removed the stored "${profileId}" credential.`
       : `No stored credential for "${profileId}".`,
   );
+}
+
+/**
+ * Report a store the writer refuses to touch, and say how to get out of it.
+ *
+ * Returns undefined when the operation was refused, after exiting non-zero.
+ */
+function withStoreErrors<T>(operation: () => T): T | undefined {
+  try {
+    return operation();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    console.error('Delete the file to start over: it holds only credentials you can re-obtain.');
+    exit(1);
+    return undefined;
+  }
 }

@@ -113,7 +113,16 @@ export function readCredential(
   profile: string,
   options?: AuthStoreOptions,
 ): StoredCredential | undefined {
-  return readAuthStore(options).store.credentials[profile];
+  return credentialFrom(readAuthStore(options).store, profile);
+}
+
+/**
+ * `Object.hasOwn`, not a bare index: the profile id reaches this from a CLI
+ * argument, and `readCredential('constructor')` would otherwise return a
+ * prototype member typed as a credential.
+ */
+function credentialFrom(store: AuthStore, profile: string): StoredCredential | undefined {
+  return Object.hasOwn(store.credentials, profile) ? store.credentials[profile] : undefined;
 }
 
 function writeStore(store: AuthStore, path: string): void {
@@ -146,7 +155,7 @@ export function writeCredential(
 ): StoredCredential {
   const { store, path } = loadForWrite(options);
   const now = options?.now ?? Date.now();
-  const existing = store.credentials[profile];
+  const existing = credentialFrom(store, profile);
   const record: StoredCredential = {
     ...credential,
     profile,
@@ -161,7 +170,7 @@ export function writeCredential(
 /** Returns true when a credential was actually removed. */
 export function deleteCredential(profile: string, options?: AuthStoreOptions): boolean {
   const { store, path } = loadForWrite(options);
-  if (!(profile in store.credentials)) return false;
+  if (!Object.hasOwn(store.credentials, profile)) return false;
   const remaining = Object.fromEntries(
     Object.entries(store.credentials).filter(([id]) => id !== profile),
   );
@@ -177,7 +186,7 @@ export function clearCredentials(options?: AuthStoreOptions): number {
   return count;
 }
 
-export function redactCredential(credential: StoredCredential): RedactedCredential {
+function redactCredential(credential: StoredCredential): RedactedCredential {
   return {
     profile: credential.profile,
     kind: credential.kind,

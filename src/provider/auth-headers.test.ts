@@ -16,9 +16,15 @@ import { chatCompletionStream as anthropicStream } from './anthropic.js';
 import { chatCompletionStream as openaiStream } from './openai-compatible.js';
 
 let home: string;
+const previousEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'book-provider-auth-'));
+  // Snapshot rather than delete: a developer with BOOK_HOME exported would
+  // otherwise have every later test in this worker read their real ~/.book.
+  for (const key of ['BOOK_HOME', 'BOOK_AUTH_CLIENT_ID_ANTHROPIC']) {
+    previousEnv[key] = process.env[key];
+  }
   process.env.BOOK_HOME = home;
   process.env.BOOK_AUTH_CLIENT_ID_ANTHROPIC = 'client-123';
   resetRefreshState();
@@ -26,8 +32,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  delete process.env.BOOK_HOME;
-  delete process.env.BOOK_AUTH_CLIENT_ID_ANTHROPIC;
+  for (const [key, value] of Object.entries(previousEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -75,6 +83,41 @@ describe('API-key requests are unchanged', () => {
   });
 });
 
+describe('the credential is bound to its own origin', () => {
+  /**
+   * `BOOK_BASE_URL`, a repository-shipped legacy `.bookrc.json`, or a provider
+   * entry can all retarget a request after the profile was selected. The
+   * transport must refuse rather than post an account-wide bearer token to
+   * whatever host ended up in the config.
+   */
+  it('refuses to send a subscription token to a retargeted host', async () => {
+    writeCredential(
+      'anthropic',
+      { kind: 'oauth', tokens: { accessToken: 'oauth-at', expiresAt: Date.now() + 3_600_000 } },
+      { home },
+    );
+    const { calls } = captureHeaders();
+
+    const events = (await drain(
+      anthropicStream(
+        defaultConfig({
+          apiKey: '',
+          baseUrl: 'https://collector.evil.example/v1',
+          provider: 'anthropic',
+          authProfile: 'anthropic',
+        }),
+        [],
+        [],
+      ),
+    )) as Array<{ type: string; error?: string; errorCode?: string }>;
+
+    expect(events[0]).toMatchObject({ type: 'error', errorCode: 'auth' });
+    expect(events[0].error).toMatch(/Refusing to send/);
+    // Nothing left the machine.
+    expect(calls).toEqual([]);
+  });
+});
+
 describe('subscription requests', () => {
   it('replaces x-api-key with the bearer token and the profile headers', async () => {
     writeCredential(
@@ -113,7 +156,12 @@ describe('subscription requests', () => {
     const { calls } = captureHeaders();
     await drain(
       openaiStream(
-        defaultConfig({ apiKey: 'sk-leftover-key', provider: 'openai', authProfile: 'codex' }),
+        defaultConfig({
+          apiKey: 'sk-leftover-key',
+          baseUrl: 'https://chatgpt.com/backend-api/codex',
+          provider: 'openai',
+          authProfile: 'codex',
+        }),
         [],
         [],
       ),
@@ -146,9 +194,23 @@ describe('subscription requests', () => {
     expect(calls).toEqual([]);
   });
 
+  /**
+   * Both transports must behave identically on a credential failure: the
+   * `errorCode` is what downstream retry classification keys off, so a
+   * divergence would show up as "expired token retries forever on one provider".
+   */
   it('yields an auth error event on the openai transport too', async () => {
     const events = (await drain(
-      openaiStream(defaultConfig({ apiKey: '', provider: 'openai', authProfile: 'codex' }), [], []),
+      openaiStream(
+        defaultConfig({
+          apiKey: '',
+          baseUrl: 'https://chatgpt.com/backend-api/codex',
+          provider: 'openai',
+          authProfile: 'codex',
+        }),
+        [],
+        [],
+      ),
     )) as Array<{ type: string; errorCode?: string }>;
     expect(events[0]).toMatchObject({ type: 'error', errorCode: 'auth' });
   });

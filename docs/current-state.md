@@ -19,6 +19,17 @@ capability boundary, providers, MCP, other settings and sandbox behavior, manage
 
 ## Shipped Surfaces
 
+- Subscription authentication over OAuth 2.0 (`book auth login | logout | status`), as an
+  alternative to an API key. Authorization-code with PKCE (S256) and a CSRF `state`, against a
+  listener bound to `127.0.0.1` only that serves exactly one callback whose state matches;
+  `--manual` skips the listener for a browser on another machine. Two built-in profiles —
+  `anthropic` and `codex` — plus fully user-declarable ones. **Book bundles no vendor client
+  ids**: the id is `BOOK_AUTH_CLIENT_ID_<PROFILE>` or `auth.profiles.<id>.clientId`, read only
+  from a trusted layer. Tokens live in `<BOOK_HOME>/auth.json` at mode 0600, refresh roughly two
+  minutes before expiry (once per profile even across parallel subagents), and are bound to their
+  profile's origin at the point the header is built, so no base-URL override can send one
+  elsewhere. Model discovery still covers configured `provider.<id>` entries only, so a
+  subscription-only setup has no catalog to refresh.
 - Interactive Ink/React TUI, print/headless mode, JSON and stream-JSON output, session resume,
   fork, rewind, production summary compaction, structured JSON-schema output, and prompt
   suggestions. Zero-Mem retrieval remains available only as the explicitly named, default-off
@@ -89,9 +100,10 @@ capability boundary, providers, MCP, other settings and sandbox behavior, manage
   so nothing a repository ships can approve its own MCP servers, allow rules, hook entries, or
   shell-substituting slash commands — a force-added `.book/settings.local.json` reaches a clone the
   same way a checked-in file does, and `book config set` refuses those four paths rather than
-  writing a value nothing reads. Experimental capability opt-ins are likewise ignored from both
-  workspace layers and must come from the user-global file, an explicit `--settings` document, or
-  the process environment. Other settings include hooks, the optional bubblewrap sandbox, themes,
+  writing a value nothing reads. Experimental capability opt-ins and the whole `auth` block are
+  likewise ignored from both workspace layers and must come from the user-global file, an explicit
+  `--settings` document, or the process environment; all three writers (`book config set`, the
+  `/config` slash command, and the TUI's local persistence) refuse them through one shared list. Other settings include hooks, the optional bubblewrap sandbox, themes,
   auto-memory, rewind snapshots, telemetry, and diagnostics. Every declared sandbox key is now read
   by an execution or permission path: `sandbox.allowUnsandboxedCommands` can refuse any command that
   would leave the
@@ -183,6 +195,16 @@ Work aimed at running an objective unattended for days rather than hours. All of
 
 ## Known Boundaries
 
+- A subscription credential is bound to its profile's origin when the request header is built, not
+  when the profile is selected. That is deliberate: `BOOK_BASE_URL`, a repository-shipped legacy
+  `.bookrc.json`, and a named `provider.<id>` entry can each change the destination after
+  selection, and `.bookrc.json` bypasses the settings trust layers entirely. Guarding the settings
+  keys alone left every one of those routes open. A mismatch is refused with a message naming the
+  overrides that could have caused it.
+- The credential store is a whole-document read-modify-write with no lock, so two `book` processes
+  writing different profiles at the same moment can lose one update. A same-profile refresh race is
+  recovered from — the loser re-reads the store and uses the token the winner wrote — but a
+  cross-profile race is not yet.
 - Four classes of repository-controlled input carry an explicit trust boundary, each
   fingerprinted and requiring a one-time approval: project MCP declarations, project-declared
   allow rules, project-declared hook entries, and shell substitution in a project
@@ -190,8 +212,8 @@ Work aimed at running an objective unattended for days rather than hours. All of
   `~/.book/trust.json` and stripped from **both** workspace settings layers, so no file inside the
   working tree can answer for any of them, and a repository that force-adds
   `.book/settings.local.json` supplies nothing. `book trust hook|rule|command` records a decision
-  one at a time; `book config set` refuses all four paths rather than writing a value nothing
-  reads. Command decisions are keyed by command name and validated by a fingerprint over the
+  one at a time; `book config set` refuses all four paths — plus `experimental.*` and `auth.*` —
+  rather than writing a value nothing reads. Command decisions are keyed by command name and validated by a fingerprint over the
   shell the body runs rather than its prose, so editing what runs re-asks under the same name.
 - Approvals recorded under `commands.projectCommands` before the move are not migrated: reading
   them back out of the workspace to convert them would extend exactly the trust the move

@@ -6,11 +6,19 @@
  * successful callback and then stops — a listener that outlives the flow is a
  * standing target for a replayed code.
  *
- * A callback whose `state` does not match is answered 400 and ignored rather
- * than resolving the promise, so a stray or forged request cannot end the flow
- * the user actually started.
+ * The `state` check runs before anything else is honoured — including an
+ * `error` parameter. Otherwise any page the user happens to visit during the
+ * login window could kill the flow with a bare
+ * `<img src="http://127.0.0.1:54545/callback?error=x">`, which needs no CORS
+ * permission and no knowledge of the request. A callback without the matching
+ * state is answered 400 and ignored, and the listener keeps waiting.
+ *
+ * Everything reflected into the response page is HTML-escaped. `error` and
+ * `error_description` are request input, and the page is served as text/html
+ * from an origin that is about to receive an authorization code.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { onAbort } from '../async.js';
 import { statesMatch } from './pkce.js';
 
 export interface LoopbackResult {
@@ -29,20 +37,47 @@ export interface LoopbackOptions {
 export interface LoopbackListener {
   /** Actual bound port, which differs from the requested one when it was 0. */
   port: number;
+  /**
+   * Actual bound address. Exposed so a test can assert the loopback-only bind
+   * directly: a successful fetch to 127.0.0.1 succeeds on any bind address and
+   * proves nothing about the one property that matters here.
+   */
+  address: string;
   /** Resolves on the first callback carrying a matching state. */
   result: Promise<LoopbackResult>;
   close(): void;
 }
 
+const ESCAPES: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ESCAPES[character]);
+}
+
 const PAGE = (title: string, detail: string): string =>
-  `<!doctype html><meta charset="utf-8"><title>${title}</title>` +
+  `<!doctype html><meta charset="utf-8"><title>${escapeHtml(title)}</title>` +
   `<body style="font:16px system-ui;margin:4rem auto;max-width:34rem;text-align:center">` +
-  `<h1 style="font-size:1.25rem">${title}</h1><p>${detail}</p></body>`;
+  `<h1 style="font-size:1.25rem">${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p></body>`;
 
 function send(response: ServerResponse, status: number, title: string, detail: string): void {
-  response.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' });
+  response.writeHead(status, {
+    'Content-Type': 'text/html; charset=utf-8',
+    // Nothing on this page needs to load or run anything.
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
+    'Referrer-Policy': 'no-referrer',
+    'Cache-Control': 'no-store',
+  });
   response.end(PAGE(title, detail));
 }
+
+/** IPv4 loopback only; see `redirectUri` for why the redirect names it literally. */
+const LOOPBACK_ADDRESS = '127.0.0.1';
 
 export class LoopbackError extends Error {
   constructor(message: string) {
@@ -61,50 +96,46 @@ export async function startLoopbackListener(options: LoopbackOptions): Promise<L
 
   let closed = false;
   let timer: NodeJS.Timeout | undefined;
+  let unsubscribeAbort: () => void = () => {};
 
-  // Declared as hoisted functions so `handler` may call them while `server`
-  // below is still being constructed; neither runs before it is assigned.
+  // A hoisted function so `handler` may call it while `server` below is still
+  // being constructed; it never runs before that assignment.
   function close(): void {
     if (closed) return;
     closed = true;
     if (timer) clearTimeout(timer);
-    options.signal?.removeEventListener('abort', onAbort);
+    unsubscribeAbort();
     server.close();
   }
 
-  function onAbort(): void {
-    fail(new LoopbackError('Login cancelled'));
-    close();
-  }
-
   const handler = (request: IncomingMessage, response: ServerResponse): void => {
-    const url = new URL(request.url ?? '/', `http://127.0.0.1:${options.port}`);
+    const url = new URL(request.url ?? '/', `http://${LOOPBACK_ADDRESS}:${options.port}`);
     if (url.pathname !== options.path) {
       send(response, 404, 'Not found', 'This is not the Book login callback.');
       return;
     }
 
-    const error = url.searchParams.get('error');
-    if (error) {
-      const description = url.searchParams.get('error_description') ?? '';
-      send(response, 400, 'Login failed', `${error}${description ? `: ${description}` : ''}`);
-      fail(
-        new LoopbackError(
-          `Authorization denied (${error}${description ? `: ${description}` : ''})`,
-        ),
-      );
-      close();
-      return;
-    }
-
+    // Before anything else is honoured, `error` included: a request that cannot
+    // prove it belongs to this flow may not end it. Otherwise a bare
+    // `<img src=".../callback?error=x">` on any page the user visits during the
+    // login window is enough to kill the login.
     if (!statesMatch(options.expectedState, url.searchParams.get('state'))) {
-      // Not this flow's callback. Refuse it, keep waiting for the real one.
       send(
         response,
         400,
         'Unexpected callback',
         'This response does not match a login in progress.',
       );
+      return;
+    }
+
+    const error = url.searchParams.get('error');
+    if (error) {
+      const description = url.searchParams.get('error_description') ?? '';
+      const detail = `${error}${description ? `: ${description}` : ''}`;
+      send(response, 400, 'Login failed', detail);
+      fail(new LoopbackError(`Authorization denied (${detail})`));
+      close();
       return;
     }
 
@@ -123,7 +154,7 @@ export async function startLoopbackListener(options: LoopbackOptions): Promise<L
 
   const server: Server = createServer(handler);
 
-  const port = await new Promise<number>((resolve, reject) => {
+  const bound = await new Promise<{ port: number; address: string }>((resolve, reject) => {
     server.once('error', (error: NodeJS.ErrnoException) => {
       reject(
         error.code === 'EADDRINUSE'
@@ -134,9 +165,13 @@ export async function startLoopbackListener(options: LoopbackOptions): Promise<L
           : error,
       );
     });
-    server.listen(options.port, '127.0.0.1', () => {
+    server.listen(options.port, LOOPBACK_ADDRESS, () => {
       const address = server.address();
-      resolve(typeof address === 'object' && address ? address.port : options.port);
+      resolve(
+        typeof address === 'object' && address
+          ? { port: address.port, address: address.address }
+          : { port: options.port, address: LOOPBACK_ADDRESS },
+      );
     });
   });
 
@@ -152,12 +187,16 @@ export async function startLoopbackListener(options: LoopbackOptions): Promise<L
     timer.unref?.();
   }
 
-  if (options.signal?.aborted) onAbort();
-  else options.signal?.addEventListener('abort', onAbort, { once: true });
+  // `onAbort` fires immediately for an already-aborted signal, so a login
+  // cancelled before the listener bound still tears it down.
+  unsubscribeAbort = onAbort(options.signal, () => {
+    fail(new LoopbackError('Login cancelled'));
+    close();
+  });
 
   // Nothing consumes a rejection until the caller awaits `result`; without this
   // an abort before the await surfaces as an unhandled rejection.
   result.catch(() => {});
 
-  return { port, result, close };
+  return { ...bound, result, close };
 }

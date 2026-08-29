@@ -11,7 +11,7 @@
  * call.
  */
 import type { OAuthTokens } from '../types/auth.js';
-import type { AuthProfile } from './profiles.js';
+import { authClientIdEnvVar, type AuthProfile } from './profiles.js';
 
 export class OAuthError extends Error {
   constructor(
@@ -46,13 +46,20 @@ export function buildAuthorizeUrl(input: AuthorizeUrlInput): string {
   return url.toString();
 }
 
+/**
+ * The first thing a new user sees, so it must name a remedy that works.
+ *
+ * Not `book config set`: that writes the workspace-local layer, and the whole
+ * `auth` block is read only from a trusted source, so the command refuses. The
+ * two routes below are the ones that actually take effect.
+ */
 export function missingClientIdMessage(profile: AuthProfile): string {
-  const envKey = `BOOK_AUTH_CLIENT_ID_${profile.id.replace(/[^A-Za-z0-9]+/g, '_').toUpperCase()}`;
   return (
     `No OAuth client id configured for the "${profile.id}" profile. Book does not bundle ` +
-    `vendor client ids — supply the one issued to you:\n` +
-    `  ${envKey}=<client-id>\n` +
-    `  or book config set auth.profiles.${profile.id}.clientId <client-id>`
+    `vendor client ids — supply the one issued to you, either:\n` +
+    `  ${authClientIdEnvVar(profile.id)}=<client-id>\n` +
+    `  or add it to <BOOK_HOME>/settings.json (normally ~/.book/settings.json):\n` +
+    `    { "auth": { "profiles": { "${profile.id}": { "clientId": "<client-id>" } } } }`
   );
 }
 
@@ -94,6 +101,13 @@ export function accountLabelFromIdToken(idToken: unknown): string | undefined {
   return undefined;
 }
 
+/** Accept a number or a numeric string; reject anything else, including NaN. */
+function finiteSeconds(raw: unknown): number | undefined {
+  if (typeof raw !== 'number' && typeof raw !== 'string') return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? Math.max(0, value) : undefined;
+}
+
 function parseTokenBody(body: TokenResponseBody, now: number): OAuthTokens {
   if (typeof body.error === 'string') {
     const detail = typeof body.error_description === 'string' ? `: ${body.error_description}` : '';
@@ -107,11 +121,17 @@ function parseTokenBody(body: TokenResponseBody, now: number): OAuthTokens {
     throw new OAuthError(`Unsupported token_type "${tokenType}"; Book only presents bearer tokens`);
   }
 
-  const expiresIn = typeof body.expires_in === 'number' ? body.expires_in : undefined;
+  // Coerced, not type-checked: `expires_in` is frequently serialized as a
+  // string, and silently dropping it stores a credential that `isExpired`
+  // treats as never expiring - so the refresh token is never spent and the
+  // session hard-401s the moment the access token really dies. Rounded because
+  // the store requires an integer timestamp, and a ZodError here would land
+  // after the single-use authorization code has already been redeemed.
+  const expiresIn = finiteSeconds(body.expires_in);
   return {
     accessToken: body.access_token,
     refreshToken: typeof body.refresh_token === 'string' ? body.refresh_token : undefined,
-    expiresAt: expiresIn !== undefined ? now + Math.max(0, expiresIn) * 1000 : undefined,
+    expiresAt: expiresIn !== undefined ? Math.round(now + expiresIn * 1000) : undefined,
     scope: typeof body.scope === 'string' ? body.scope : undefined,
     tokenType,
     account:
@@ -187,9 +207,22 @@ export async function exchangeAuthorizationCode(input: ExchangeInput): Promise<O
       code: input.code,
       code_verifier: input.codeVerifier,
       redirect_uri: input.redirectUri,
+      ...clientSecretField(input.profile),
     },
     input,
   );
+}
+
+/**
+ * `client_secret_post` for a confidential client, omitted entirely otherwise.
+ *
+ * A loopback CLI is normally a public client, where PKCE is the binding and no
+ * secret exists. But a corporate authorization server - exactly what the
+ * per-profile endpoint overrides exist to support - often issues confidential
+ * clients only, and rejects a token request that carries no client credential.
+ */
+function clientSecretField(profile: AuthProfile): Record<string, string> {
+  return profile.clientSecret ? { client_secret: profile.clientSecret } : {};
 }
 
 export interface RefreshInput {
@@ -200,18 +233,38 @@ export interface RefreshInput {
   now?: number;
 }
 
+/**
+ * Fold a refresh response onto the tokens it replaces.
+ *
+ * RFC 6749 §5.1 makes `expires_in` merely RECOMMENDED and `scope` OPTIONAL —
+ * a conformant server omits them to mean "unchanged". Taking the response
+ * wholesale would overwrite them with undefined, and an undefined `expiresAt`
+ * reads as "never expires": the stored refresh token would then never be spent
+ * again and the credential would 401 forever with no recovery but a browser
+ * round trip. Rotation is likewise optional, so an absent `refresh_token`
+ * means the existing one still works.
+ */
+export function mergeRefreshedTokens(previous: OAuthTokens, refreshed: OAuthTokens): OAuthTokens {
+  return {
+    accessToken: refreshed.accessToken,
+    refreshToken: refreshed.refreshToken ?? previous.refreshToken,
+    expiresAt: refreshed.expiresAt ?? previous.expiresAt,
+    scope: refreshed.scope ?? previous.scope,
+    tokenType: refreshed.tokenType ?? previous.tokenType,
+    account: refreshed.account ?? previous.account,
+  };
+}
+
 export async function refreshAccessToken(input: RefreshInput): Promise<OAuthTokens> {
   if (!input.profile.clientId) throw new OAuthError(missingClientIdMessage(input.profile));
-  const refreshed = await postForm(
+  return postForm(
     input.profile.tokenUrl,
     {
       grant_type: 'refresh_token',
       client_id: input.profile.clientId,
       refresh_token: input.refreshToken,
+      ...clientSecretField(input.profile),
     },
     input,
   );
-  // Rotation is optional: a server that returns no new refresh token expects
-  // the old one to keep working. Dropping it would strand the credential.
-  return { ...refreshed, refreshToken: refreshed.refreshToken ?? input.refreshToken };
 }

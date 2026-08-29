@@ -7,7 +7,7 @@ import type {
 import type { ToolDefinition } from '../types/tools.js';
 import type { Usage } from '../types/messages.js';
 import { createDebugLogger } from '../debug-log.js';
-import { resolveAuthHeaders } from '../auth/resolve.js';
+import { tryResolveAuthHeaders } from '../auth/resolve.js';
 import {
   classifyApiError,
   classifyProviderError,
@@ -145,20 +145,14 @@ export async function* chatCompletionStream(
   // Resolved per request, not per run: a subscription token can expire (and be
   // refreshed) partway through a long session. With no auth profile active this
   // returns the same bearer header the API-key path always sent.
-  let authHeaders: Record<string, string>;
-  try {
-    authHeaders = await resolveAuthHeaders(
-      config,
-      { Authorization: `Bearer ${config.apiKey}` },
-      { signal },
-    );
-  } catch (e) {
+  const auth = await tryResolveAuthHeaders(
+    config,
+    { Authorization: `Bearer ${config.apiKey}` },
+    { signal },
+  );
+  if (!auth.ok) {
     if (signal?.aborted) return;
-    yield {
-      type: 'error',
-      error: e instanceof Error ? e.message : String(e),
-      errorCode: 'auth',
-    };
+    yield { type: 'error', error: auth.message, errorCode: 'auth' };
     return;
   }
 
@@ -170,7 +164,7 @@ export async function* chatCompletionStream(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...authHeaders,
+          ...auth.headers,
         },
         body: JSON.stringify(body),
       },

@@ -62,7 +62,8 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
   refuses those four paths outright, and `book doctor` prints what is withheld. What remains here
   is provider blocks and agent definitions, and an interactive surface for any of it: the MCP gate
   is the only one with a TUI prompt, so in the primary mode a withheld declaration is silent until
-  `book doctor` is run.
+  `book doctor` is run. The `auth` block joined the stripped set when subscription auth shipped,
+  as a subtree delete rather than an enumeration of leaves.
 - [x] Rebuild shell sandbox execution around structured argv instead of a wrapped command string.
 - [x] Enforce declared filesystem sandbox policy, and fail closed on network domain rules that
   bubblewrap cannot express.
@@ -74,6 +75,12 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
   reports the effective policy — but at its `true` default a model-chosen command that happens to
   match an operator's exclusion pattern still runs on the host with no separate approval step.
 - [ ] Bind provider credentials to approved origins and restrict lower-trust secret resolution.
+  Subscription credentials are bound: `auth/resolve.ts` refuses to present a profile's token to
+  any origin but the profile's own, checked where the request header is built rather than at any
+  of the several places a base URL can change (`BOOK_BASE_URL`, a repository-shipped legacy
+  `.bookrc.json`, a `provider.<id>` entry). The whole `auth` settings block is stripped from both
+  workspace layers. What remains here is the same binding for BYOK API keys, which still follow
+  whatever base URL the resolved configuration carries.
 
 See [plans/security-assessment.md](plans/security-assessment.md) for the current risk register.
 

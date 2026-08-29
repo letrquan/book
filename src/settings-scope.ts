@@ -25,3 +25,22 @@ export function isAuthSettingPath(path: string): boolean {
   const normalized = path.trim().toLowerCase();
   return normalized === 'auth' || normalized.startsWith('auth.');
 }
+
+/**
+ * Every settings path a workspace file may not supply, with the guidance to
+ * print when someone tries to write one there.
+ *
+ * One list because there are three writers - `book config set`, the `/config`
+ * slash command, and `persistSettingsLocal` - and a scope added to only some of
+ * them writes a value the loader silently strips, which is worse than a
+ * refusal: the user believes they configured something that is being ignored.
+ */
+const WORKSPACE_FORBIDDEN_SCOPES: ReadonlyArray<readonly [(path: string) => boolean, string]> = [
+  [isExperimentalSettingPath, WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE],
+  [isAuthSettingPath, WORKSPACE_AUTH_SETTINGS_MESSAGE],
+];
+
+/** The guidance for a path no workspace layer may carry, or undefined if it may. */
+export function blockedWorkspaceSettingPath(path: string): string | undefined {
+  return WORKSPACE_FORBIDDEN_SCOPES.find(([matches]) => matches(path))?.[1];
+}
