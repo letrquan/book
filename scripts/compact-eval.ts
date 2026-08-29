@@ -26,6 +26,7 @@ import {
   runCompact,
 } from '../src/agent/compact.js';
 import { runAgentLoop } from '../src/agent/loop.js';
+import { buildCompactFixtureHistory } from '../src/agent/compact-fixture.js';
 import { createProvider, isAnthropicProvider, type Provider } from '../src/provider/index.js';
 import {
   evaluationControlsFromResult,
@@ -247,108 +248,27 @@ function usageTotals(usage: Usage | null | undefined): UsageTotals {
     : { ...EMPTY_USAGE };
 }
 
-function makeMessage(role: Message['role'], content: string, index: number): Message {
-  return {
-    id: `compact-eval-${index}`,
-    role,
-    content,
-    includeInContext: true,
-    kind: 'conversation',
-    timestamp: index,
-  };
-}
-
 export function buildCompactEvalFixture(): CompactEvalFixture {
-  const history: Message[] = [];
-  let index = 0;
-  const addTurn = (user: string, assistant: string): { userId: string; assistantId: string } => {
-    const userMessage = makeMessage('user', user, index++);
-    const assistantMessage = makeMessage('assistant', assistant, index++);
-    history.push(userMessage, assistantMessage);
-    return { userId: userMessage.id, assistantId: assistantMessage.id };
-  };
-
-  const runtime = addTurn(
-    'Record the project constraints for the handoff. The runtime must remain Node.js 20 or newer. Do not change the public query() function signature.',
-    'Recorded constraints: runtime is Node.js 20 or newer; the public query() function signature must remain unchanged.',
-  );
-  const cache = addTurn(
-    'The accepted cache key is workspaceHash:modelId:v3. We rejected Redis because the benchmark must work offline and without a service dependency.',
-    'Accepted decision: use workspaceHash:modelId:v3. Rejected decision: Redis, because offline execution is required.',
-  );
-  const openThread = addTurn(
-    'There is one unresolved issue from the last run: the Windows CRLF fixture still fails and must remain an open thread until verified.',
-    'Open thread recorded: the Windows CRLF fixture still fails and needs verification.',
-  );
-  const oldRegion = addTurn(
-    'Initial deployment note: the staging region is us-east-1. This value may change after the migration.',
-    'The initial staging region is recorded as us-east-1, pending migration.',
-  );
-  const wrongPackageManager = addTurn(
-    'For now, assume npm is the package manager until the maintainer confirms the repository convention.',
-    'Temporary assumption recorded: npm, awaiting an authoritative maintainer correction.',
-  );
-
-  const filler =
-    'We inspected an unrelated implementation detail and found no change required. Keep the discussion scoped to the handoff, preserve existing behavior, and report evidence before claiming completion. ';
-  const addFiller = (turn: number): void => {
-    addTurn(
-      `Unrelated investigation ${turn}: ${filler.repeat(3)}The result was informational only.`,
-      `Investigation ${turn} is complete. No constraint, accepted decision, current value, or open thread changed. ${filler.repeat(3)}`,
-    );
-  };
-  for (let turn = 1; turn <= 8; turn++) addFiller(turn);
-
-  const currentRegion = addTurn(
-    'Migration update: staging has moved successfully. The current deployment region is now eu-west-1; us-east-1 is historical only.',
-    'Current state updated: staging region is eu-west-1. The earlier us-east-1 value is superseded.',
-  );
-  const packageCorrection = addTurn(
-    'Maintainer correction: this repository requires pnpm 9. The earlier npm assumption was wrong and must not be used.',
-    'Authoritative convention updated: use pnpm 9. The npm assumption is rejected.',
-  );
-  const mondayFailure = addTurn(
-    'Monday verification event: the integration suite failed before the adapter patch was applied.',
-    'Timeline recorded: integration failed on Monday.',
-  );
-  const tuesdayPatch = addTurn(
-    'Tuesday verification event: the adapter patch was applied, but the suite was not run yet.',
-    'Timeline recorded: adapter patch applied Tuesday; verification still pending.',
-  );
-  const apiUnits = addTurn(
-    'Interface fact: the upstream API returns duration values in milliseconds.',
-    'Recorded: upstream durations use milliseconds.',
-  );
-
-  for (let turn = 9; turn <= 16; turn++) addFiller(turn);
-
-  const wednesdayPass = addTurn(
-    'Wednesday verification event: the integration suite passed for the first time with the adapter patch.',
-    'Timeline recorded: first passing integration run was Wednesday.',
-  );
-  const databaseUnits = addTurn(
-    'Storage fact: the database persists duration values in whole seconds.',
-    'Recorded: stored durations use seconds.',
-  );
-  const adapterRule = addTurn(
-    'Implementation decision: the adapter converts API milliseconds to database seconds by dividing by 1000.',
-    'Accepted conversion: milliseconds to seconds, divide by 1000 in the adapter.',
-  );
-  const thursdayRevert = addTurn(
-    'Thursday verification event: the adapter patch was reverted after a separate regression. It is not active now.',
-    'Current timeline state: the adapter patch was reverted Thursday and is no longer active.',
-  );
-
-  for (let turn = 17; turn <= 20; turn++) addFiller(turn);
-
-  addTurn(
-    'Continue the handoff from the established record. Summarize only new evidence from this latest inspection.',
-    'The latest inspection found no new evidence and did not modify the established record.',
-  );
-  addTurn(
-    'Before the next check, keep current values, accepted conventions, and unresolved verification items in view.',
-    'Current values and unresolved verification state remain in view; no historical value became current again.',
-  );
+  // The corpus itself lives in `src/agent/compact-fixture.ts` so the
+  // deterministic fidelity harness can score the same conversation this
+  // provider-backed benchmark probes. Only the probes are eval-specific.
+  const { history, turns } = buildCompactFixtureHistory();
+  const {
+    runtime,
+    cache,
+    openThread,
+    oldRegion,
+    wrongPackageManager,
+    currentRegion,
+    packageCorrection,
+    mondayFailure,
+    tuesdayPatch,
+    apiUnits,
+    wednesdayPass,
+    adapterRule,
+    databaseUnits,
+    thursdayRevert,
+  } = turns;
 
   const probes: Probe[] = [
     {
