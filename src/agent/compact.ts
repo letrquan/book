@@ -503,7 +503,6 @@ export async function runCompact(
         statistics,
         rawValidationHistory,
         rollingCheckpoint,
-        checkpointBudget,
       );
       // A truncated reply is not malformed reasoning, it is an unfinished
       // sentence: re-asking with a strictly longer repair prompt would truncate
@@ -536,7 +535,6 @@ export async function runCompact(
           statistics,
           rawValidationHistory,
           rollingCheckpoint,
-          checkpointBudget,
         );
       }
 
@@ -1129,7 +1127,6 @@ function parseAndValidateCheckpoint(
   statistics: ConversationCheckpointV2['statistics'],
   history: readonly Message[],
   inherited: ConversationCheckpointV2 | undefined,
-  checkpointBudget: number,
 ): { ok: true; checkpoint: ConversationCheckpointV2 } | { ok: false; error: string } {
   const parsed = conversationCheckpointV2Schema.safeParse(parseJsonObject(text));
   if (!parsed.success) return { ok: false, error: parsed.error.message };
@@ -1156,12 +1153,12 @@ function parseAndValidateCheckpoint(
   }));
   hydrateCheckpointFileObservations(checkpoint, history, inherited);
   const validationError = validateCheckpoint(checkpoint, history, inherited);
-  if (validationError) return { ok: false, error: validationError };
-  checkpoint = fitCheckpoint(checkpoint, checkpointBudget, history, inherited);
-  const fittedValidationError = validateCheckpoint(checkpoint, history, inherited);
-  return fittedValidationError
-    ? { ok: false, error: fittedValidationError }
-    : { ok: true, checkpoint };
+  // No fit here. Fitting is lossy and its ladder restarts at 512 characters every
+  // time, so fitting per chunk truncated chunk 1's span once per chunk and again
+  // at every future generation -- compounding into the paraphrase-of-a-paraphrase
+  // decay that makes a week-old checkpoint useless. The single fit at the end of
+  // `runCompact` is followed by its own validation and deterministic fallback.
+  return validationError ? { ok: false, error: validationError } : { ok: true, checkpoint };
 }
 
 function parseJsonObject(text: string): unknown {

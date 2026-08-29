@@ -44,6 +44,15 @@ All notable changes to this project are documented in this file.
   rather than malformed, so it no longer spends the single repair attempt on a longer prompt that
   could only overrun again.
 
+- **Compaction no longer compresses the same text once per chunk.** `fitCheckpoint` ran inside
+  `parseAndValidateCheckpoint`, which runs once per chunk of a multi-pass reduction -- so in a
+  K-chunk plan the first chunk's checkpoint was fitted K times, again in the post-budget loop, and
+  again at every future generation. The ladder is lossy and restarts at 512 characters each time,
+  so a constraint stated once in full was truncated, then the truncation truncated, until it was
+  dropped outright: a regression test shows a verbatim constraint disappearing from the second
+  chunk's prompt entirely under the old order. Fitting now happens once, at the end, where it is
+  already followed by validation and a deterministic fallback.
+
 ### Added
 
 - **A run says what it is doing while it does it (`<BOOK_HOME>/runs/<session>.json`).** Rewritten at

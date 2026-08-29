@@ -1197,6 +1197,55 @@ ${JSON.stringify(prior)}`,
     expect(cap).toBeLessThanOrEqual(Math.floor(8_192 * 0.35));
   });
 
+  it('does not re-compress an earlier chunk before the next chunk sees it', async () => {
+    // A constraint stated once, in full. Long enough that a checkpoint carrying it
+    // exceeds the 3,200-token budget at this window, so the old per-chunk fit had
+    // to truncate it -- and then truncate the truncation at every later chunk.
+    const constraint = `Never touch the vendored parser under third_party/parser. ${'Rationale sentence. '.repeat(900)}`;
+    mockedStream.mockImplementation(async function* () {
+      yield {
+        type: 'text',
+        content: JSON.stringify({
+          version: 2,
+          generation: 1,
+          state: { summary: constraint, status: 'active' },
+          constraints: [],
+          files: [],
+          episodes: [],
+          openThreads: [],
+          statistics: {
+            summarizedMessages: 2,
+            retainedMessages: 2,
+            preTokens: 1,
+            postTokens: 1,
+          },
+        }),
+      };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'oversized evidence '.repeat(7_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    const result = await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    expect(result.status).toBe('compacted');
+    expect(mockedStream.mock.calls.length).toBeGreaterThan(1);
+    // The second chunk is seeded with what the first chunk actually produced, not
+    // with a fitted-down version of it.
+    const secondPrompt = mockedStream.mock.calls[1][1][1].content as string;
+    expect(secondPrompt).toContain(constraint);
+  });
+
   it('does not spend the repair attempt on a reply cut off at the output cap', async () => {
     // Truncated JSON: unparseable, but the cause is the cap, not the model.
     mockedStream.mockImplementation(async function* () {
