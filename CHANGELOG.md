@@ -71,6 +71,16 @@ All notable changes to this project are documented in this file.
   checkpoint version stays `2` and no reason enum gained a member, so an older binary reading one
   of these checkpoints still sees a valid v2 document.
 
+- **Compaction fidelity is measurable, and the first measurement is bad.** There was no fidelity
+  metric at all, so every quality claim about compaction -- including the ones in this changelog --
+  was unfalsifiable. `src/agent/compact-fidelity.ts` scores a completed multi-generation run
+  (retention, generational loss order, supersession correctness, source grounding, retention
+  precision, reducer calls, post-request utilization) with no provider in the loop, against the
+  tagged planted-fact corpus now shared with `npm run eval:compact`. The recorded v2 baseline over
+  eight generations: **only the newest third of planted facts survive, the oldest go first, and
+  retention of the user's own opening constraints is zero.** Those thresholds are now asserted in
+  the unit tier and move upward only.
+
 ### Added
 
 - **A run says what it is doing while it does it (`<BOOK_HOME>/runs/<session>.json`).** Rewritten at
