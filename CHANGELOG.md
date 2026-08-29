@@ -6,6 +6,27 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **A brake that a spinning run cannot forge (`continuation.blockedToolTurnLimit`).** A run whose
+  every tool call is refused now stops as `all_tools_blocked`, naming the tools to unblock. This
+  spin was invisible to everything: it never produces a tool-free turn, so the turn-end gate and
+  every brake behind it never fire; `noteRepeatedFailure` ignores anything that is not an `error`;
+  and `toolCallStats.failures` excludes `blocked` by construction. Headless answers every unresolved
+  prompt `deny`, so in the default permission mode an unattended run would re-issue refused calls
+  until the budget died. Enforced even with `continuation.enabled` false, because the spin predates
+  continuation and needs none of it. `0` disables.
+
+- **The no-progress witness no longer counts refused calls as progress.** It drew its tool-call leg
+  from `toolCallStats`, which increments for *every* attempted call including refusals — so in a
+  denial or policy-block stall the single leg meant to prove nothing had moved was guaranteed to
+  move, while the todos, the file ledger, and the done-check all stayed frozen. The witness now
+  counts only calls that actually ran. Until now this was masked by the run ending at the model's
+  first tool-free turn; the continuation driver removes exactly that mask.
+
+- **A deliberate stop is distinguishable from success.** Terminal reasons gain `plan_stop` and
+  `handoff_requested`; both previously exited `completed / normal_completion`, byte-identical to a
+  finished objective, and the approver's message explaining a plan stop was discarded. The status
+  stays `completed` — neither is a failure — so only the vocabulary changes.
+
 - **A restart re-drives the agents that died with it (`agents.resumeInterrupted`).** `AgentManager`
   already hydrated agents, plans, evidence, and snapshots on start — it just never pushed anything
   onto its queue, which is a bare array written only at spawn and retry. So a reboot mid-fan-out

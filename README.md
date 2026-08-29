@@ -444,6 +444,7 @@ work left.
     "enabled": true,
     "maxConsecutive": 50,
     "noProgressLimit": 3,
+    "blockedToolTurnLimit": 3,
     "planRefreshTurns": 25,
     "maxWallClockMs": 0
   },
@@ -454,11 +455,22 @@ work left.
 Continuation never overrides an abort, an approved plan handoff, a spent budget, or a policy
 refusal. `noProgressLimit` is the brake: when the todo list, the observed-file hashes, and the
 tool-call count are all unchanged across that many boundaries, the run ends as `no_progress` instead
-of spinning. `planRefreshTurns` restates the open plan periodically, which also keeps compaction from
+of spinning. Only tool calls that actually *ran* count toward that witness: a refused call is a
+policy decision, not work, and counting it would move the one signal meant to prove nothing moved.
+
+`blockedToolTurnLimit` is a second, independent brake, and it is enforced **even when `enabled` is
+false**. It stops a run whose every tool call was refused on that many consecutive turns, ending it
+as `all_tools_blocked` and naming the tools to unblock. It is separate because a refusal spin never
+produces a tool-free turn, so the turn-end gate — and therefore every brake behind it — never fires:
+a headless run in the default permission mode answers each prompt `deny` and would otherwise
+re-issue refused calls until the budget ran out. Set it to `0` to disable. `planRefreshTurns` restates the open plan periodically, which also keeps compaction from
 retaining an empty tail in a run that never stops on its own. Terminal outcomes gain
-`objective_complete`, `continuation_limit`, `blocked_plan`, and `no_progress` so a supervisor can
-tell them apart — `blocked_plan` specifically means every remaining task is waiting on unfinished
-work, which is a stall, not a success.
+`objective_complete`, `continuation_limit`, `blocked_plan`, `no_progress`, and `all_tools_blocked`
+so a supervisor can tell them apart — `blocked_plan` specifically means every remaining task is waiting on unfinished
+work, which is a stall, not a success. A deliberate stop is also no longer indistinguishable from
+success: handing an approved plan back reports `handoff_requested`, and a plan stop reports
+`plan_stop` and carries the approver's own message. Both keep the `completed` status, because
+neither is a failure.
 
 Thinking models get their own stall ceiling. `retry.streamStallTimeoutMs` (20 s) is tuned for a chat,
 where that much silence means something broke; adaptive thinking is on by default for Opus and Sonnet

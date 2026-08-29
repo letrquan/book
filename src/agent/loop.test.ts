@@ -3305,9 +3305,14 @@ describe('runAgentLoop plan mode', () => {
     expect(results[0].structuredError?.message).toContain('No changes were applied');
     expect(results[0].structuredError?.details).toEqual({ reason: 'approval_unavailable' });
     expect(results[0].structuredError?.message).not.toContain('SKIPPED');
-    expect(terminalOutcomes).toEqual([
-      { status: 'completed', reason: 'normal_completion', partialOutput: false },
-    ]);
+    // `plan_stop`, not `normal_completion`: stopping to hand a plan back is an
+    // honest end but it is not the same end as finishing the objective, and a
+    // supervisor keying on the reason has to be able to tell them apart. The
+    // status stays `completed` because this is not a failure, so exit codes and
+    // every status-keyed consumer are unchanged.
+    expect(terminalOutcomes).toMatchObject([{ status: 'completed', reason: 'plan_stop' }]);
+    // The approver's own explanation used to be discarded on the floor.
+    expect(terminalOutcomes[0].message).toBeTruthy();
     expect(errors).toEqual([]);
   });
 
@@ -3361,7 +3366,7 @@ describe('runAgentLoop plan mode', () => {
     );
 
     expect(errors).toEqual([]);
-    expect(terminalOutcomes.map((outcome) => outcome.reason)).toEqual(['normal_completion']);
+    expect(terminalOutcomes.map((outcome) => outcome.reason)).toEqual(['plan_stop']);
   });
 });
 

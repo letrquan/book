@@ -227,6 +227,20 @@ export const continuationSettingsSchema = z.object({
    * exists, and label a run that never got a chance to spin as spinning.
    */
   noProgressLimit: z.number().int().min(1).max(20).default(3),
+  /**
+   * Consecutive turns in which EVERY tool call was refused before the run stops.
+   *
+   * Enforced even when `enabled` is false, deliberately. The spin it catches
+   * predates continuation and needs no continuation to happen: a headless run in
+   * the default permission mode answers every prompt `deny`, so the model can
+   * re-issue a refused call forever while `toolCalls.length > 0` keeps the
+   * turn-end gate from ever firing. None of the existing anti-loop signals see it
+   * either — the repeated-failure breaker ignores anything that is not `error`,
+   * and `toolCallStats.failures` excludes `blocked` by construction.
+   *
+   * 0 disables the guard.
+   */
+  blockedToolTurnLimit: z.number().int().min(0).max(100).default(3),
   /** Turns between host-authored work-state messages; 0 disables them. */
   planRefreshTurns: z.number().int().min(0).max(500).default(25),
   /** Wall-clock ceiling for one continued run; 0 means no ceiling. */
@@ -565,6 +579,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
     enabled: false,
     maxConsecutive: 50,
     noProgressLimit: 3,
+    blockedToolTurnLimit: 3,
     planRefreshTurns: 25,
     maxWallClockMs: 0,
   },

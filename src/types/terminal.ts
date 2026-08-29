@@ -24,6 +24,9 @@ export type AgentTerminalReason =
   | 'continuation_limit'
   | 'blocked_plan'
   | 'no_progress'
+  | 'all_tools_blocked'
+  | 'plan_stop'
+  | 'handoff_requested'
   | 'missing_terminal';
 
 /**

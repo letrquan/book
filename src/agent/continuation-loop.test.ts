@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { runAgentLoop } from './loop.js';
-import { createRegistry } from '../tools/registry.js';
+import { createRegistry, createDefaultRegistry } from '../tools/registry.js';
 import { todoTools } from '../tools/todo.js';
 import { defaultConfig } from '../test/fixtures.js';
 import { SessionRuntime } from '../session/runtime.js';
@@ -315,5 +315,141 @@ describe('completion gate', () => {
     const { outcome, appended } = await run(config, provider);
     expect(appended.filter((m) => m.content.includes('completion gate'))).toHaveLength(0);
     expect(outcome).toMatchObject({ status: 'completed', reason: 'objective_complete' });
+  });
+});
+
+/** A provider that keeps issuing the same mutating tool call, forever. */
+function refusedToolProvider(): Provider {
+  let call = 0;
+  return {
+    id: 'scripted',
+    stream: async function* () {
+      call++;
+      yield {
+        type: 'tool_call',
+        toolCall: {
+          id: `write-${call}`,
+          name: 'Write',
+          arguments: { file_path: 'generated.txt', content: 'work' },
+        },
+      };
+      yield { type: 'done' };
+    },
+  } as unknown as Provider;
+}
+
+async function runDenied(
+  config: ReturnType<typeof configWith>,
+  provider: Provider,
+): Promise<{ outcome?: AgentTerminalOutcome; denials: number }> {
+  let outcome: AgentTerminalOutcome | undefined;
+  let denials = 0;
+  const callbacks = {
+    onText: () => {},
+    onToolCall: () => {},
+    onToolResult: () => {},
+    onError: () => {},
+    onTurnStart: () => {},
+    onDone: () => {},
+    onTerminal: (value: AgentTerminalOutcome) => (outcome = value),
+    // Refuse the mutation only. Denying the planning tool too would leave the run
+    // with no plan at all, which stops for an entirely different reason.
+    onPermissionRequired: async (call: { name: string }) => {
+      if (call.name !== 'Write') return 'allow' as const;
+      denials++;
+      return 'deny' as const;
+    },
+  } as unknown as AgentLoopCallbacks;
+
+  await runAgentLoop(config, createDefaultRegistry(), 'do the work', [], callbacks, 'default', {
+    provider,
+    isNewSession: false,
+    runtime: new SessionRuntime(),
+  });
+  return { outcome, denials };
+}
+
+describe('a run whose every tool call is refused', () => {
+  it('stops instead of spinning, even with continuation disabled', async () => {
+    // The failure this exists for: a refusal spin never produces an empty turn, so
+    // the turn-end gate never fires and neither brake downstream of it is ever
+    // consulted. Continuation is OFF here on purpose — this spin predates it and
+    // happens today in headless, which answers every unresolved prompt `deny`.
+    const config = configWith({ enabled: false });
+    config.settings.continuation.blockedToolTurnLimit = 3;
+    // A ceiling so a broken brake fails the assertion instead of hanging the suite.
+    config.maxTurns = 25;
+
+    const { outcome, denials } = await runDenied(config, refusedToolProvider());
+
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'all_tools_blocked' });
+    // The operator has to be told which tool to unblock, or the exit is not actionable.
+    expect(outcome?.message).toContain('Write');
+    expect(denials).toBe(3);
+  });
+
+  it('is disabled by a zero limit', async () => {
+    const config = configWith({ enabled: false });
+    config.settings.continuation.blockedToolTurnLimit = 0;
+    config.maxTurns = 4;
+
+    const { outcome } = await runDenied(config, refusedToolProvider());
+
+    expect(outcome?.reason).not.toBe('all_tools_blocked');
+  });
+});
+
+describe('the no-progress witness', () => {
+  it('does not accept a refused tool call as progress', async () => {
+    // `toolCallStats` increments for every attempted call, refusals included, so a
+    // witness drawn from it changes on every turn of a denial spin — the one leg
+    // that is supposed to prove nothing moved is guaranteed to move. The witness
+    // must count only calls that actually ran.
+    //
+    // The blocked-turn brake is off here so that the ONLY thing able to stop this
+    // run is the witness itself.
+    const config = configWith({ enabled: true, noProgressLimit: 2 });
+    config.settings.continuation.blockedToolTurnLimit = 0;
+    config.maxTurns = 30;
+
+    let turn = 0;
+    const provider = {
+      id: 'scripted',
+      stream: async function* () {
+        turn++;
+        if (turn === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: {
+              id: 'todo-1',
+              name: 'TodoWrite',
+              arguments: { todos: [{ content: 'migrate call sites', status: 'pending' }] },
+            },
+          };
+          yield { type: 'done' };
+          return;
+        }
+        // Alternate: a refused mutation, then a text-only turn that hands control
+        // to the continuation decision — which is where the witness is compared.
+        if (turn % 2 === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: {
+              id: `write-${turn}`,
+              name: 'Write',
+              arguments: { file_path: 'generated.txt', content: 'work' },
+            },
+          };
+          yield { type: 'done' };
+          return;
+        }
+        yield { type: 'text', content: 'Still working on it.' };
+        yield { type: 'done' };
+      },
+    } as unknown as Provider;
+
+    const { outcome } = await runDenied(config, provider);
+
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'no_progress' });
   });
 });

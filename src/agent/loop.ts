@@ -530,6 +530,17 @@ export async function runAgentLoop(
     let continuationCount = 0;
     const continuationWitnesses: string[] = [];
     let continuationStop: ContinuationStopReason | undefined;
+    /**
+     * Tool calls that actually ran. The no-progress witness counts THIS, not every
+     * attempted call: `toolCallStats` increments unconditionally, including for
+     * refusals, so a denial spin would move the one leg of the witness that is
+     * supposed to prove nothing is moving.
+     */
+    let executedToolCalls = 0;
+    /** Consecutive turns whose every tool call was refused. */
+    let blockedTurnStreak = 0;
+    /** The tools refused on the streak's most recent turn, for the terminal message. */
+    let blockedTurnTools: string[] = [];
     const runStartedAt = Date.now();
     /** Guards the periodic work-state message against a same-turn re-issue. */
     let lastWorkStateTurn = -1;
@@ -1976,6 +1987,27 @@ export async function runAgentLoop(
       const orderedToolResults = toolResults.map((_result, index) => resultAt(index));
       flushSkillEvents();
 
+      // Two counters the brakes depend on, kept here because this is the only place
+      // a turn's calls and their settled results are both in scope.
+      //
+      // A refused call is not progress and must not read as progress. `blocked` is a
+      // policy or user decision and `cancelled` is an abort; neither ran, so neither
+      // counts toward the witness. Everything that did run counts, including errors —
+      // an error-spin is caught by the witness freezing on identical file hashes.
+      let refusedThisTurn = 0;
+      for (let index = 0; index < toolCalls.length; index++) {
+        const status = orderedToolResults[index]?.status;
+        if (status === 'blocked' || status === 'cancelled') refusedThisTurn++;
+        else executedToolCalls++;
+      }
+      if (toolCalls.length > 0 && refusedThisTurn === toolCalls.length) {
+        blockedTurnStreak++;
+        blockedTurnTools = toolCalls.map((call) => canonicalToolName(call.name));
+      } else {
+        blockedTurnStreak = 0;
+        blockedTurnTools = [];
+      }
+
       const toolStats = toolContext.runtime?.toolCallStats;
       if (toolStats) {
         for (let index = 0; index < toolCalls.length; index++) {
@@ -2048,6 +2080,38 @@ export async function runAgentLoop(
         toolResultCount: toolResults.length,
       });
 
+      // Every tool call refused, N turns running.
+      //
+      // This is checked BEFORE the turn-end gate below, and that placement is the
+      // whole point: a refusal spin never has an empty turn, so the gate never
+      // fires and the continuation brake never gets to look at it. The run simply
+      // bills forever with a plan that cannot move. Nothing else catches it either
+      // — `noteRepeatedFailure` returns early unless the status is `error`, and
+      // `toolCallStats.failures` excludes `blocked` by construction.
+      //
+      // Not gated on `continuation.enabled`: this spin predates continuation and
+      // happens today in headless, which answers every unresolved prompt `deny`.
+      const blockedTurnLimit = config.settings.continuation.blockedToolTurnLimit;
+      if (blockedTurnLimit > 0 && blockedTurnStreak >= blockedTurnLimit) {
+        const refused = [...new Set(blockedTurnTools)].sort().join(', ');
+        log.warn('every tool call refused on consecutive turns; stopping', {
+          turn,
+          turns: blockedTurnStreak,
+          tools: refused,
+        });
+        const detail =
+          `Every tool call was refused on ${blockedTurnStreak} consecutive turns (${refused}). ` +
+          'Nothing can proceed: grant the permission, add an allow rule, or change the permission mode.';
+        callbacks.onError(detail);
+        finishTerminal(
+          createTerminalOutcome('failed', 'all_tools_blocked', {
+            partialOutput: hasPartialOutput(),
+            message: detail,
+          }),
+        );
+        return newHistory;
+      }
+
       if (toolCalls.length === 0 || signal?.aborted || handoffRequested || planStopRequested) {
         // The turn produced no tool calls. Historically that ended the run, making
         // one user message the whole run — a model that says "I've finished"
@@ -2058,10 +2122,7 @@ export async function runAgentLoop(
         const witness = buildProgressWitness({
           todos: toolContext.todos ?? [],
           fileObservations: runtime.fileObservationLedger,
-          toolCallCount: [...runtime.toolCallStats.values()].reduce(
-            (sum, entry) => sum + entry.calls,
-            0,
-          ),
+          toolCallCount: executedToolCalls,
         });
         const decision = decideContinuation({
           settings: config.settings.continuation,
@@ -2145,6 +2206,14 @@ export async function runAgentLoop(
       }
     }
 
+    // Both are assigned inside `finalizeToolCall`, a nested async arrow. TypeScript's
+    // control-flow analysis does not follow assignments made in a nested function, so
+    // out here it still believes each holds its initialiser and narrows the truthy
+    // branch to `never` — reading `.message` off it is a compile error without this.
+    // The existing truthiness tests above survive only because they never dereference.
+    const planStopOutcome = planStopRequested as { plan: string; message: string } | null;
+    const handoffOutcome = handoffRequested as { plan: string; mode: PermissionMode } | null;
+
     const finalMessage = newHistory.at(-1);
     if (
       config.maxTurns != null &&
@@ -2199,10 +2268,28 @@ export async function runAgentLoop(
                     partialOutput: false,
                   })
                 : undefined;
+      // A plan stop and a handoff are both honest ends, but they are not the same
+      // end as "the model finished". They used to be byte-identical to real
+      // success, so a supervisor could not tell an objective that completed from
+      // one that stopped to hand the plan back — and the operator's own message
+      // explaining the stop was dropped on the floor. Status stays `completed`,
+      // because neither is a failure; only the vocabulary gets more precise.
+      const handoverOutcome = planStopOutcome
+        ? createTerminalOutcome('completed', 'plan_stop', {
+            partialOutput: false,
+            message: planStopOutcome.message,
+          })
+        : handoffOutcome
+          ? createTerminalOutcome('completed', 'handoff_requested', {
+              partialOutput: false,
+              message: 'The approved plan was handed back to the host to execute.',
+            })
+          : undefined;
       finishTerminal(
         signal?.aborted
           ? classifyAbortReason(signal.reason, hasPartialOutput())
           : (continuationOutcome ??
+              handoverOutcome ??
               createTerminalOutcome('completed', 'normal_completion', {
                 partialOutput: false,
               })),
