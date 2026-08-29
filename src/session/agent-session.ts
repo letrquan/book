@@ -602,6 +602,10 @@ export class AgentSession {
       compactBoundaries: loaded.compactBoundaries,
       rewindTargets: loaded.rewindTargets,
       activeEventIds: loaded.activeEventIds,
+      // Both launch-time paths carry this; in-TUI `/resume` silently did not, so a
+      // user who wrote a plan, switched away and came back resumed a half-finished
+      // objective with an empty task list and no notice that it had been dropped.
+      plan: loaded.plan,
       source: 'resume',
       persisted: true,
       created: false,

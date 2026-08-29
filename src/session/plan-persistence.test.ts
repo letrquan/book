@@ -5,7 +5,7 @@ import { join } from 'path';
 import { SessionStore } from './store.js';
 import { resolveSessionBootstrap } from './resolve.js';
 import { normalizePersistedTodos } from '../tools/todo.js';
-import { renderSessionState } from '../agent/session-state.js';
+import { planWasLost, renderSessionState } from '../agent/session-state.js';
 import { SessionRuntime } from './runtime.js';
 import { RunAccounting } from './run-accounting.js';
 import type { PlanRecordData, SessionRecord } from '../types/sessions.js';
@@ -239,5 +239,38 @@ describe('carried spend across a restart', () => {
     const accounting = new RunAccounting();
     accounting.seedRoot('root-2', { usage: null, costUsd: null });
     expect(accounting.snapshotRoot('root-2')).toMatchObject({ costStatus: 'unknown' });
+  });
+});
+
+describe('telling a lost plan from one that never existed', () => {
+  it('says nothing when the session simply never had a plan', () => {
+    // The false positive: `plan === undefined` means no record was ever written —
+    // an ordinary conversation that never called TodoWrite. Reporting that as "your
+    // plan did not survive" made every such resumed chat rebuild a plan it never
+    // had, and pushed the model to invent one.
+    expect(planWasLost({ planRecordExisted: false, priorMessages: 40, todos: 0, tasks: 0 })).toBe(
+      false,
+    );
+  });
+
+  it('reports a loss when a record existed but came back empty', () => {
+    expect(planWasLost({ planRecordExisted: true, priorMessages: 40, todos: 0, tasks: 0 })).toBe(
+      true,
+    );
+  });
+
+  it('says nothing when the plan did restore', () => {
+    expect(planWasLost({ planRecordExisted: true, priorMessages: 40, todos: 3, tasks: 0 })).toBe(
+      false,
+    );
+    expect(planWasLost({ planRecordExisted: true, priorMessages: 40, todos: 0, tasks: 2 })).toBe(
+      false,
+    );
+  });
+
+  it('says nothing on a fresh session with no prior work', () => {
+    expect(planWasLost({ planRecordExisted: true, priorMessages: 0, todos: 0, tasks: 0 })).toBe(
+      false,
+    );
   });
 });

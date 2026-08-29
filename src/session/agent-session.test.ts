@@ -1214,6 +1214,52 @@ describe('AgentSession', () => {
     }
   });
 
+  it('carries the persisted plan through an in-TUI resume', async () => {
+    // Both launch-time paths pass `plan: loaded.plan`; the in-TUI `/resume`
+    // bootstrap silently did not. A user who wrote a 12-item plan, switched away
+    // and came back resumed a half-finished multi-hour objective with an empty
+    // task list — and, because `planUnrestored` also stayed false, with no notice
+    // that anything had been dropped.
+    const fixture = createSessionFixture('book-agent-session-resume-plan-');
+    try {
+      const currentSessionId = fixture.store.create({ cwd: '/proj' });
+      const selectedSessionId = fixture.store.create({ cwd: '/proj', name: 'planned' });
+      const config = { ...defaultConfig(), workspace: '/proj' };
+      fixture.store.append(selectedSessionId, {
+        type: 'user',
+        eventId: 'user-1',
+        timestamp: 1,
+        data: { id: 'user-1', content: 'migrate the call sites', kind: 'conversation' },
+      });
+      fixture.store.append(selectedSessionId, {
+        type: 'plan',
+        eventId: 'plan-1',
+        timestamp: 2,
+        data: {
+          version: 1,
+          todos: [{ content: 'migrate the call sites', status: 'in_progress' }],
+          tasks: [],
+        },
+      });
+
+      const session = new AgentSession();
+      await session.startLifecycle(config, currentSessionId, 'startup');
+      const result = await session.resumeSession({
+        config,
+        currentSessionId,
+        store: fixture.store,
+        selector: 'planned',
+      });
+
+      expect(result.status).toBe('transitioned');
+      expect(result.status === 'transitioned' && result.bootstrap.plan).toMatchObject({
+        todos: [{ content: 'migrate the call sites', status: 'in_progress' }],
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('owns resume selection and returns the persisted session projection', async () => {
     const fixture = createSessionFixture('book-agent-session-resume-');
     try {

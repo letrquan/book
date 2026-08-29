@@ -53,6 +53,28 @@ function todoLines(todos: NonNullable<SessionStateInput['todos']>): string[] {
   ];
 }
 
+/**
+ * Did this session lose a plan it used to have?
+ *
+ * The distinction the `plan` record type is built around: ABSENT means no plan was
+ * ever written, PRESENT-BUT-EMPTY means one existed and came back with nothing.
+ * Only the second is a loss. Testing emptiness alone told every resumed ordinary
+ * conversation — one that simply never called TodoWrite — that its plan had not
+ * survived, which pushes the model to invent a plan for a chat that never had one.
+ *
+ * Shared because both hosts compute it and they must not drift.
+ */
+export function planWasLost(input: {
+  planRecordExisted: boolean;
+  priorMessages: number;
+  todos: number;
+  tasks: number;
+}): boolean {
+  return (
+    input.planRecordExisted && input.priorMessages > 0 && input.todos === 0 && input.tasks === 0
+  );
+}
+
 export function renderSessionState(input: SessionStateInput): string {
   const stale = (input.staleFiles ?? []).map((path) => normalizePromptPath(path, input.workspace));
   const elapsed = input.runElapsedMs === undefined ? undefined : promptElapsed(input.runElapsedMs);

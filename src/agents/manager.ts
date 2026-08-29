@@ -454,6 +454,16 @@ export class AgentManager {
           )
             continue;
           if (!this.store?.isOwnedByCurrent(record.id)) continue;
+          // Record what this agent was doing BEFORE overwriting it. `resumable` is
+          // the only thing the next start's re-drive consults, and this handler is
+          // the ordinary way a fan-out dies — Ctrl-C, or the process simply
+          // finishing while children are still queued. Without these two fields
+          // `recoverAbandonedAgents` never sees them either, because it walks only
+          // ACTIVE_STATUSES and `interrupted` is terminal: `agents.resumeInterrupted`
+          // then fired solely after a SIGKILL that skipped this handler, which is
+          // the one case it was least needed.
+          record.resumable = true;
+          record.resumedFromStatus = record.status;
           record.status = 'interrupted';
           record.stopReason = 'process_exit';
           record.pendingPermission = undefined;
@@ -1362,11 +1372,23 @@ export class AgentManager {
         if (!capacity.ok) {
           // Escalate rather than only failing the child: this is the failure that
           // takes the whole run down, so it is worth waking someone for.
-          this.hookEventSink?.('Notification', {
-            severity: 'alarm',
-            kind: `agent_${capacity.reason}`,
-            message: capacity.message,
-          });
+          // `hookEventSink` is the callback runHooks invokes to REPORT that a hook
+          // ran; calling it directly notifies nobody and is undefined outside
+          // headless with --include-hook-events. Both limits are on by default in
+          // every host, so the ntfy/Slack hook the README tells the user to wire
+          // has never fired for either of them.
+          void runHooks(
+            this.config.settings.hooks.Notification,
+            'Notification',
+            {
+              workspace: this.config.workspace,
+              event: 'Notification',
+              severity: 'alarm',
+              kind: `agent_${capacity.reason}`,
+              message: capacity.message,
+            },
+            { onHookEvent: this.hookEventSink },
+          ).catch(() => {});
           throw new Error(capacity.message);
         }
         const worktree = await (this.options.createWorktree ?? createAgentWorktree)(

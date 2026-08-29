@@ -215,6 +215,17 @@ export async function runAgentLoop(
   };
   let terminalHooksFired = false;
   /**
+   * Set when the completion gate has just run `Stop` for the completion the run is
+   * about to report, so the terminal fire does not run the same hooks again.
+   *
+   * Deliberately NOT `terminalHooksFired`. Reusing that latch meant one blocked
+   * completion at turn 40 permanently suppressed both the terminal `Stop` and
+   * `SessionEnd` for the rest of the run — the exact paths a supervisor needs —
+   * and it is cleared again the moment the gate lets the run continue, because a
+   * later terminal is a different event that must report for itself.
+   */
+  let stopGateSatisfied = false;
+  /**
    * Stop and SessionEnd, fired once when the agent has actually stopped.
    *
    * Both carry the settled outcome so a hook can distinguish an honest completion
@@ -233,7 +244,9 @@ export async function runAgentLoop(
       stopReason: settledOutcome?.reason,
       status: settledOutcome?.status,
     };
-    if (!options?.isSubagent) {
+    // `stopGateSatisfied` suppresses only Stop, and only when the gate just ran it
+    // for this same completion. SessionEnd below is never suppressed by it.
+    if (!options?.isSubagent && !stopGateSatisfied) {
       runHooks(
         config.settings.hooks.Stop,
         'Stop',
@@ -2243,10 +2256,13 @@ export async function runAgentLoop(
             { onHookEvent: callbacks.onHookEvent },
           ).catch(() => []);
           const blocked = gate.find((result) => result.action === 'block');
+          // Either way the gate has just run `Stop` for this completion. If it
+          // blocked, the run continues and a later terminal is a fresh event, so
+          // this is cleared below; if it passed, the terminal fire must not run the
+          // same check a second time.
+          stopGateSatisfied = true;
           if (blocked) {
-            // The gate already ran and reported; firing Stop again from `finally`
-            // would re-run the check and double-report it.
-            terminalHooksFired = true;
+            stopGateSatisfied = false;
             continuationCount++;
             continuationWitnesses.push(witnessSignature(witness));
             const message: Message = {

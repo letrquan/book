@@ -1,4 +1,5 @@
 import type { AgentConfig } from './types/runtime.js';
+import { planWasLost } from './agent/session-state.js';
 import { RunStatusWriter } from './run-status.js';
 import type { CompactResult, CompactBoundary } from './types/sessions.js';
 import type { ImageAttachment, Message, Usage } from './types/messages.js';
@@ -87,8 +88,16 @@ export async function runHeadless(
   // Resuming prior work with nothing to show for it is the case worth naming: an
   // empty list renders as no list at all, so without this the model cannot tell a
   // dropped plan from a task that never had one.
-  runtime.planUnrestored =
-    opts.history.length > 0 && runtime.todos.length === 0 && runtime.tasks.length === 0;
+  // `plan === undefined` means no plan record was ever written — an ordinary
+  // conversation that never called TodoWrite. Reporting that as "your plan did not
+  // survive" told every such resumed session to rebuild a plan it never had, and
+  // pushed the model to invent one. Only a record that came back empty is a loss.
+  runtime.planUnrestored = planWasLost({
+    planRecordExisted: opts.plan !== undefined,
+    priorMessages: opts.history.length,
+    todos: runtime.todos.length,
+    tasks: runtime.tasks.length,
+  });
   const harnessCoordinator =
     harnessMode === 'off'
       ? undefined
