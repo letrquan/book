@@ -714,7 +714,13 @@ export class AgentSession {
 
   async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {
     const runtime = request.runtime ?? this.runtime;
-    if (request.config.experimentalZeroMem) {
+    // Zero-Mem replaces routine compaction, not the loop's last-resort recovery.
+    // An `auto` attempt reaching here has already been through the loop's own
+    // gate, which under Zero-Mem leaves exactly one caller: the context-overflow
+    // path, where replacing history with a checkpoint is the only way the run
+    // continues at all. Warming an index there returns `skipped` and the turn
+    // fails with the same overflow it started with.
+    if (request.config.experimentalZeroMem && request.options.trigger !== 'auto') {
       const warmed = await runtime.zeroMemRuntime.warm(
         request.sourceHistory ?? request.history,
         request.sessionId ?? 'session',
@@ -1127,7 +1133,11 @@ export class AgentSession {
         getMode: callbacks.getMode,
         onModeChange: callbacks.onModeChange,
         onPlanHandoff: callbacks.onPlanHandoff,
-        onCompact: usesZeroMem ? undefined : callbacks.onCompact,
+        // Kept under Zero-Mem: `loopConfig` already sets `autoCompactEnabled:
+        // false`, which gates the loop's two routine compaction paths, and the
+        // context-overflow path at the bottom of the turn is deliberately not
+        // gated by it. Nulling the callback disabled that recovery too.
+        onCompact: callbacks.onCompact,
         onAssistantMessageComplete: (message) => {
           if (request.isCurrent?.() === false) return;
           request.timelineStore?.append(request.sessionId, {

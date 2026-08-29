@@ -87,11 +87,16 @@ describe('AgentSession', () => {
       semanticModel: 'test-zero-mem',
     });
     const runtime = new SessionRuntime({ zeroMemRuntime });
+    const hostOnCompact = vi.fn();
     const runLoop = vi.fn<AgentLoopRunner>(
       async (config, _registry, _prompt, history, callbacks) => {
+        // Routine compaction stays off under Zero-Mem ...
         expect(config.autoCompactEnabled).toBe(false);
         expect(history).toEqual([evidence]);
-        expect(callbacks.onCompact).toBeUndefined();
+        // ... but the callback survives, because the loop's context-overflow
+        // recovery is not gated by `autoCompactEnabled` and is the only thing
+        // standing between an overflowed turn and a dead run.
+        expect(callbacks.onCompact).toBeDefined();
         return history;
       },
     );
@@ -112,7 +117,7 @@ describe('AgentSession', () => {
         },
       ],
       sessionId: 'session-zero',
-      callbacks: { onEvent: () => {}, onTurnStart: () => {} },
+      callbacks: { onEvent: () => {}, onTurnStart: () => {}, onCompact: hostOnCompact },
     });
 
     expect(zeroMemRuntime.prepare).toHaveBeenCalledWith(
@@ -230,6 +235,31 @@ describe('AgentSession', () => {
       status: 'skipped',
       message: expect.stringContaining('3 trace messages'),
     });
+  });
+
+  it('runs the real compactor for an automatic compact under Zero-Mem', async () => {
+    // Under Zero-Mem the loop's routine compaction is already off, so the only
+    // caller that reaches here with `auto` is the context-overflow recovery.
+    // Warming an index cannot recover an overflowed turn; replacing history can.
+    const zeroMemRuntime = new ZeroMemRuntime();
+    const warm = vi.spyOn(zeroMemRuntime, 'warm');
+    const compactRunner = vi.fn().mockResolvedValue({ status: 'skipped', reason: 'too-short' });
+    const session = new AgentSession({
+      compactRunner,
+      runtime: new SessionRuntime({ zeroMemRuntime }),
+    });
+
+    const outcome = await session.compact({
+      config: defaultConfig({ experimentalZeroMem: true }),
+      history: [],
+      sessionId: 'session-zero',
+      transcriptOrdinal: 1,
+      options: { trigger: 'auto' },
+    });
+
+    expect(compactRunner).toHaveBeenCalledTimes(1);
+    expect(warm).not.toHaveBeenCalled();
+    expect(outcome.result).toMatchObject({ status: 'skipped', reason: 'too-short' });
   });
 
   it('owns and replaces session runtime resources during reset', () => {

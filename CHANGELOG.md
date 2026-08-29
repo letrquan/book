@@ -53,6 +53,14 @@ All notable changes to this project are documented in this file.
   chunk's prompt entirely under the old order. Fitting now happens once, at the end, where it is
   already followed by validation and a deterministic fallback.
 
+- **A context overflow under Zero-Mem is recoverable again.** The experiment disabled routine
+  auto-compaction, which is intended -- but it also nulled the loop's `onCompact` callback
+  entirely, and the loop's context-overflow recovery is deliberately *not* gated on the
+  auto-compaction setting. So the one path that exists to rescue a turn the provider has already
+  refused for size could never run, and `AgentSession.compact` would have answered it by warming a
+  search index in any case. An automatic attempt now runs the real compactor; `/compact` still only
+  warms the index.
+
 ### Added
 
 - **A run says what it is doing while it does it (`<BOOK_HOME>/runs/<session>.json`).** Rewritten at

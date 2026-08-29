@@ -211,7 +211,9 @@ capability boundary, providers, MCP, other settings and sandbox behavior, manage
   `BOOK_HOME/models/zero-mem`; downloads are refused unless
   `BOOK_ZERO_MEM_LOCAL_FILES_ONLY=false` is set once, and an unavailable model fails the turn with
   that instruction. When enabled, auto-compaction is off for the main agent, `/compact` only warms
-  the index and reports that history was not replaced, and subagents keep the summary path. Legacy
+  the index and reports that history was not replaced, and subagents keep the summary path. The
+  loop's context-overflow recovery is the one exception: a turn the provider refuses for size still
+  falls back to summary compaction, because warming an index cannot shrink that request. Legacy
   `compactStrategy: zero-mem` and `BOOK_COMPACT_STRATEGY=zero-mem` selectors fail with migration
   guidance rather than silently enabling the experiment.
 - Managed-agent planning-task linkage, rerun, and task-aware cleanup from the background-job plan

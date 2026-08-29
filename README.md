@@ -556,7 +556,9 @@ When enabled, Zero-Mem keeps the original session transcript authoritative, buil
 BGE-M3/NER index, incrementally indexes completed turns, and retrieves query-specific evidence
 before each main-agent run. It does not persist retrieved evidence as a checkpoint. Manual
 `/compact` initializes or refreshes the index and reports readiness without replacing conversation
-history; managed subagents continue to use summary compaction.
+history; managed subagents continue to use summary compaction. Routine auto-compaction stays off,
+but if the provider reports a context overflow the loop still falls back to summary compaction for
+that turn -- warming an index cannot shrink a request the provider has already refused.
 
 Migration: remove `compactStrategy: "zero-mem"` and replace it with the trusted
 `experimental.zeroMem` opt-in above. `BOOK_COMPACT_STRATEGY=zero-mem` is also rejected; use
