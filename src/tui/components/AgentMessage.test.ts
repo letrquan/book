@@ -215,6 +215,17 @@ describe('splitThinkBlocks reasoning tags', () => {
     ]);
   });
 
+  it('recovers a concluded answer the provider left inside an unclosed tag', () => {
+    // A finished turn whose whole report sat behind an opening tag the model
+    // never closed rendered as one collapsed `thought` row and nothing else,
+    // which reads as an agent that stopped mid-task.
+    const parts = splitThinkBlocks('<reasoning_context>ranking, then the answer', {
+      concluded: true,
+    });
+
+    expect(parts).toEqual([{ kind: 'markdown', text: 'ranking, then the answer' }]);
+  });
+
   it('does not restart matching mid-transcript when reused', () => {
     // The pattern is a module-level /g regex; a stale lastIndex would drop the
     // first block of the next message.

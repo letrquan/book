@@ -473,7 +473,14 @@ export function AgentMessageInner({
   const grid = useMemo(() => transcriptGrid(terminalWidth ?? 80), [terminalWidth]);
   const contentWidth = terminalWidth ? grid.content : undefined;
   const mdWidth = contentWidth;
-  const contentParts = useMemo(() => splitThinkBlocks(displayContent), [displayContent]);
+  // Once a turn has spoken its last — settled, and holding no tool call to
+  // continue through — a reasoning tag the provider never closed must not be
+  // allowed to swallow the answer into a collapsed thought. A turn that did call
+  // a tool keeps the strict reading; see `splitReasoningParts`.
+  const contentParts = useMemo(
+    () => splitThinkBlocks(displayContent, { concluded: !isStreaming && toolCalls.length === 0 }),
+    [displayContent, isStreaming, toolCalls.length],
+  );
   const renderAsUnifiedDiff = useMemo(
     () => displayContent.length > 0 && isUnifiedDiffLike(displayContent),
     [displayContent],
