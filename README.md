@@ -175,6 +175,12 @@ checkout. Pass `--project` to write the checked-in `.book/settings.json`, or `--
 gitignored `.book/settings.local.json`. `-g`/`--global` states the default explicitly; passing more
 than one scope is an error.
 
+A write is checked against the *merged* configuration, not just the file it lands in. A value can be
+valid on its own and still leave a configuration nothing can load — `harness.workflow` is rejected
+against an effective `harness.mode` of `off` — so such a write is refused before it lands rather
+than bricking every later command. A configuration that is already broken stays writable, since
+repairing one is what the command is for.
+
 `book config get` and `book config list` report the *resolved* merge of all layers by default.
 Given a scope they read that one file verbatim instead, which is how you find the stray value
 overriding you — the local layer resolves last, so anything left there outranks a later global

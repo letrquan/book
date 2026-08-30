@@ -32,6 +32,19 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **`book config set` can no longer write a settings pairing that makes every command fail at
+  load.** It validated the single layer it was writing, which does not determine the effective
+  configuration -- so it accepted `harness.workflow` while the effective `harness.mode` was the
+  `off` default, a combination the loader then rejects. The write succeeded and every subsequent
+  invocation, including the `book config` that would undo it, failed before it started; recovery
+  meant hand-editing JSON. The candidate layer is now resolved through the real merge and put
+  through the loader's own assertions, so the check cannot drift from what actually rejects a
+  configuration, and it sees pairings that span layers in both directions -- a workflow is accepted
+  when the enabling mode lives in another layer, and a mode is refused when it would disable a
+  workflow another layer selects. A configuration that was *already* broken stays writable: only a
+  write that introduces the failure is refused, because repairing one is the reason to run the
+  command.
+
 - **`book config` no longer fails on the configuration it exists to repair.** It resolved the merged
   settings on every invocation, so one malformed layer made every subcommand throw -- including the
   read that would have identified the broken file and the write that would have replaced the bad
