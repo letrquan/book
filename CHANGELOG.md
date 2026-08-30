@@ -49,6 +49,20 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **`/context` reported max output tokens as the context window.** For any model without a
+  metadata entry -- which behind an OpenAI-compatible router is every model -- the panel fell back
+  to `runtimeConfig.maxTokens`, a max *output* budget, and printed it as "Window" and as the
+  denominator of "N estimated / X tokens". The TUI status bar directly above it already used
+  `resolveContextLimit()`, so the two surfaces disagreed about the same number in the same
+  session: the bar read `ctx 5%` while the panel claimed a 64.0k window. `/context` is the surface
+  a person checks to decide whether to compact, and it understated the real 272k default 4.25x.
+
+  It now reports `resolveContextLimit()` -- the window compaction actually acts on. The same
+  resolver replaced two `?? 100_000` literals in the skill-catalog budget
+  (`agent/loop.ts`, `agent/context.ts`) so one concept has one fallback; that pair is
+  behaviour-neutral, since the budget saturates at its `min(8000, ...)` cap for any window
+  at or above 100k.
+
 - **`--effort` is no longer inert on an OpenAI-compatible provider.** `effortExplicit` -- the flag
   that decides whether `reasoning_effort` is sent at all -- read `BOOK_EFFORT` and `settings.effort`
   but not the CLI option, so `book --effort max` against a router was accepted, reported, and

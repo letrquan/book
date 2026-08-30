@@ -24,6 +24,7 @@ import { withBuiltInAgents } from '../agents/profiles.js';
 import { resolveBookHome } from '../book-home.js';
 import { resolveAgentProfile } from '../agents/profile-resolver.js';
 import { toolResultModelContent } from '../tools/result.js';
+import { resolveContextLimit } from './compact.js';
 import { resolveEditFormat, type EditFormat } from '../models.js';
 
 interface StaticDiscovery {
@@ -483,10 +484,7 @@ export async function buildSystemPromptZones(
     sessionContext(
       generateSkillListing(
         skills,
-        Math.min(
-          8000,
-          Math.max(512, Math.floor((config.modelInfo?.contextWindow ?? 100_000) * 0.08)),
-        ),
+        Math.min(8000, Math.max(512, Math.floor(resolveContextLimit(config) * 0.08))),
       ),
     ),
     sessionContext(generateCommandListing(cmdList, 1536)),

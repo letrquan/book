@@ -337,7 +337,7 @@ export async function runAgentLoop(
   const skillRegistry = ownsRuntime
     ? runtime.skills(config.workspace, config.settings.skills)
     : runtime.consumeSkillChanges(config.workspace, config.settings.skills);
-  skillRegistry.recordPromptCatalog(config.modelInfo?.contextWindow ?? 100_000);
+  skillRegistry.recordPromptCatalog(resolveContextLimit(config));
   const hasUsableSkills = skillRegistry
     .list()
     .some((skill) => skill.valid && skill.activation !== 'off');

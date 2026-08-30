@@ -9,6 +9,7 @@ import {
   type BuiltinCommandContext,
 } from './builtins.js';
 import { defaultConfig } from '../test/fixtures.js';
+import { DEFAULT_CONTEXT_WINDOW } from '../agent/compact.js';
 
 function context(overrides: Partial<BuiltinCommandContext> = {}): BuiltinCommandContext {
   return {
@@ -155,6 +156,33 @@ describe('built-in command contract', () => {
       expect.objectContaining({
         type: 'local-message',
         display: expect.objectContaining({ kind: 'context' }),
+      }),
+    );
+  });
+
+  it('reports the context window compaction acts on, not max output tokens', () => {
+    const registry = createBuiltinCommandRegistry();
+
+    // No modelInfo: the window must be the compaction default, not runtimeConfig.maxTokens.
+    // maxTokens (128k here) is a max *output* budget; reporting it as the window understated
+    // the real 272k default and disagreed with the TUI status bar, which already used
+    // resolveContextLimit.
+    const unknownModel = registry.execute('context', '', context());
+    expect(unknownModel).toEqual(
+      expect.objectContaining({
+        display: expect.objectContaining({ kind: 'context', maxTokens: DEFAULT_CONTEXT_WINDOW }),
+      }),
+    );
+
+    // A model that declares a window still wins.
+    const known = registry.execute(
+      'context',
+      '',
+      context({ runtimeConfig: defaultConfig({ modelInfo: { contextWindow: 1_048_576 } }) }),
+    );
+    expect(known).toEqual(
+      expect.objectContaining({
+        display: expect.objectContaining({ kind: 'context', maxTokens: 1_048_576 }),
       }),
     );
   });

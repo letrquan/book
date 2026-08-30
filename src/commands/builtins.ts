@@ -27,6 +27,7 @@ import {
 } from '../memory-store.js';
 import { costReport, failureTotal, PRICING, usageReport } from '../pricing.js';
 import { buildContextBreakdown, buildContextReport } from '../context-report.js';
+import { resolveContextLimit } from '../agent/compact.js';
 import type { SkillRegistrySnapshot } from '../skill-registry.js';
 import { buildSkillReport } from '../skill-report.js';
 import { buildMcpStatusReport } from '../mcp-report.js';
@@ -348,7 +349,9 @@ function contextCommandEffect(context: BuiltinCommandContext): BuiltinCommandEff
   const dynamic = context.resolveAmbientContext();
   const ambient = {
     model: context.runtimeConfig.model,
-    maxTokens: context.runtimeConfig.modelInfo?.contextWindow ?? context.runtimeConfig.maxTokens,
+    // The window compaction actually acts on. Falling back to runtimeConfig.maxTokens
+    // reported max *output* tokens as the context window (64k vs the real 272k default).
+    maxTokens: resolveContextLimit(context.runtimeConfig),
     contextHistory: context.contextHistory,
     compactBoundaries: context.compactBoundaries,
     skillCount: context.skillCount,
