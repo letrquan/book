@@ -6,6 +6,7 @@ import type { AgentConfig, RetryConfig } from './types/runtime.js';
 import { resolveSettings, migrateLegacyPermissions } from './settings-loader.js';
 import { DEFAULT_SETTINGS, type CompactStrategy, type ResolvedSettings } from './settings.js';
 import { loadMemoryContext } from './memory-store.js';
+import { isEffortLevel } from './commands/effort.js';
 import { assertHarnessModeAvailable, assertSelectableWorkflow } from './harness/coordinator.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
@@ -352,12 +353,10 @@ export function resolveSecret(raw: string | undefined, workspace: string): strin
   }
 }
 
-const VALID_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
-
 function validateEffort(raw: string | undefined): AgentConfig['effort'] {
   if (!raw) return undefined;
   const normalized = raw.trim().toLowerCase();
-  return VALID_EFFORT_LEVELS.has(normalized) ? (normalized as AgentConfig['effort']) : undefined;
+  return isEffortLevel(normalized) ? normalized : undefined;
 }
 
 const VALID_PROVIDERS = new Set(['anthropic', 'openai', 'auto']);
