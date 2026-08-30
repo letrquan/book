@@ -32,6 +32,13 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **`--effort` is validated like every other effort input.** `BOOK_EFFORT` was checked against the
+  level list and `settings.effort` against its schema, but the flag was a bare cast — so a typo was
+  forwarded to the provider as `reasoning_effort` / `output_config.effort` and came back as an
+  opaque HTTP 400 for a mistake the CLI could name exactly. It is now rejected at parse time, with
+  the valid levels listed, and the list itself is derived from the settings schema rather than
+  restated a third time.
+
 - **`book config` no longer fails on the configuration it exists to repair.** It resolved the merged
   settings on every invocation, so one malformed layer made every subcommand throw -- including the
   read that would have identified the broken file and the write that would have replaced the bad
