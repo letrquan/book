@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import './runtime-env.js';
-import { program } from 'commander';
+import { InvalidArgumentError, program } from 'commander';
+import { EFFORT_LEVELS, isEffortLevel } from './commands/effort.js';
 import { runStatusCommand } from './cli/status-cmd.js';
 import { exit } from './cli/exit.js';
 import { runDoctorCommand } from './cli/doctor.js';
@@ -19,6 +20,19 @@ import {
 
 function collectOption(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+/**
+ * Reject a bad effort level at parse time, where commander can name the option.
+ * Reaching the provider with an unchecked level costs a round trip and returns
+ * an opaque HTTP 400 for a mistake stated precisely here.
+ */
+function parseEffortOption(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!isEffortLevel(normalized)) {
+    throw new InvalidArgumentError(`Valid levels: ${EFFORT_LEVELS.join(', ')}.`);
+  }
+  return normalized;
 }
 
 /**
@@ -86,6 +100,7 @@ program
   .option(
     '--effort <level>',
     'Thinking effort: low, medium, high, xhigh, max (default: high)',
+    parseEffortOption,
     'high',
   )
   .option('--provider <type>', 'Provider: anthropic, openai, auto (default: auto-detect)');
