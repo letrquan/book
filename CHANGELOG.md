@@ -32,6 +32,16 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **An unresolvable provider prefix in a model id is reported instead of silently falling back.**
+  `model: "qc/qwen3.7-max"` with no `qc` provider configured resolved against
+  `https://api.openai.com/v1` -- an endpoint the user never chose, for a vendor that has never
+  heard of the model -- and said nothing. The only symptom was a separate `Credentials: not
+  resolved` line, which sends the user looking for a missing key rather than a misspelled provider
+  id. It still resolves rather than throwing, because `meta-llama/llama-3-70b` is the same spelling
+  and a legitimate model name; the warning is raised only once providers are configured and the
+  prefix matches none of them. Surfaced on stderr at startup and inline in `book doctor`, above the
+  credentials line it used to be mistaken for.
+
 - **`book config` no longer fails on the configuration it exists to repair.** It resolved the merged
   settings on every invocation, so one malformed layer made every subcommand throw -- including the
   read that would have identified the broken file and the write that would have replaced the bad

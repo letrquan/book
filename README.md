@@ -188,6 +188,18 @@ Two groups of keys are refused in every scope. Trust decisions
 Experimental capability flags (`experimental.*`) are not writable by `book config` at all — edit the
 user-global file directly, pass `--settings`, or use the environment opt-in.
 
+#### Model ids and provider prefixes
+
+A `model` written as `<provider>/<model>` is resolved through the `provider` registry: the prefix
+selects the base URL, credential, and model catalog. The same spelling is also how many endpoints
+name a single model (`meta-llama/llama-3-70b`), so a prefix that matches nothing is not an error —
+Book passes the whole id through to the default endpoint.
+
+That fallback is silent by design for the second form, but wrong for a typo. So when you have
+configured providers and the prefix matches none of them, Book says so — on stderr at startup and
+inline in `book doctor` — instead of leaving `Credentials: not resolved` as the only symptom of a
+misspelled provider id.
+
 Set `BOOK_HOME` to replace the default `~/.book` user-state root. This relocates user settings,
 sessions, memory, managed-agent state and worktrees, jobs, rewind snapshots, telemetry, tool output,
 MCP configuration, and user-level skills, commands, agents, and `AGENTS.md` discovery. Project-local

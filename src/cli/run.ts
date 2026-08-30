@@ -152,6 +152,8 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       modelOverride: options.model as string | undefined,
       allowMissingApiKey: options.print === undefined && !options.scrollback,
     }) as AgentConfig;
+    // Stderr, so it cannot corrupt --output-format json on stdout.
+    if (config.modelProviderWarning) console.warn('⚠  ' + config.modelProviderWarning);
     if (options.effort) config.effort = options.effort as AgentConfig['effort'];
     const interactiveMaxTurns = parseNumericFlag(options.maxTurns, '--max-turns', {
       integer: true,

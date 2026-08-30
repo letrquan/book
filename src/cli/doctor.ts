@@ -112,6 +112,9 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   console.log('Platform:', process.platform, process.arch);
   console.log('Workspace:', config.workspace);
   console.log('Model:', config.model, '(' + config.baseUrl + ')');
+  // Printed before Credentials on purpose: an unresolved provider prefix makes
+  // the credential line read as a missing key, which is the wrong hunt.
+  if (config.modelProviderWarning) console.log('  ⚠ ' + config.modelProviderWarning);
   console.log(
     'Credentials:',
     config.apiKey
