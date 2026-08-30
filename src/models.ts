@@ -8,6 +8,8 @@
  * `effort` marks models that accept an effort level (Anthropic adaptive
  * thinking); others ignore it.
  */
+import type { AgentConfig } from './types/runtime.js';
+
 export interface ModelOption {
   id: string;
   /** Short label shown in the picker. */
@@ -67,4 +69,26 @@ export function editFormatFor(model: string): EditFormat {
 /** Settings override wins; otherwise the family prior. */
 export function resolveEditFormat(model: string, override?: EditFormat): EditFormat {
   return override ?? editFormatFor(model);
+}
+
+/**
+ * Context window assumed for a model that declares none.
+ *
+ * Every consumer of "how big is this model's window" must resolve it through
+ * resolveContextLimit() below. Three sites once carried three different
+ * fallbacks (272k, 100k, and a max-*output*-token budget), so /context, the
+ * status bar, and compaction disagreed about the same number in one session.
+ */
+export const DEFAULT_CONTEXT_WINDOW = 272_000;
+
+/** The context window to act on: what the model declares, else the default. */
+export function resolveContextLimit(config: Pick<AgentConfig, 'modelInfo'>): number {
+  const window = config.modelInfo?.contextWindow;
+  return typeof window === 'number' && window > 0 ? window : DEFAULT_CONTEXT_WINDOW;
+}
+
+/** True when the window above came from the model rather than the default. */
+export function hasDeclaredContextWindow(config: Pick<AgentConfig, 'modelInfo'>): boolean {
+  const window = config.modelInfo?.contextWindow;
+  return typeof window === 'number' && window > 0;
 }

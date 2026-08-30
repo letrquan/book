@@ -12,6 +12,7 @@ import { defaultConfig } from './test/fixtures.js';
 import { tmpdir } from 'os';
 
 let workspace: string;
+let isolatedHome: string;
 const origEnv = { ...process.env };
 
 beforeEach(() => {
@@ -26,15 +27,32 @@ beforeEach(() => {
   }
   // Set required API key.
   process.env.BOOK_API_KEY = 'test-key';
+  // Pin the user-global layer at an empty directory. Without this, clearing BOOK_HOME
+  // above sends resolveBookHome() to the developer's real ~/.book, so their own
+  // settings.json leaks into these assertions -- a second configured provider is enough
+  // to fail this suite on one machine and pass it on another.
+  // Pin the user-global layer at an empty directory of this file's own. Without it the
+  // BOOK_* wipe just above sends resolveBookHome() to the developer's real ~/.book and their
+  // settings.json merges into these assertions. It is per-test rather than shared because
+  // this file asserts on the *absence* of user settings, which a directory shared with every
+  // other suite under maxWorkers:1 cannot guarantee once another suite writes into it.
+  isolatedHome = mkdtempSync(join(tmpdir(), 'book-config-home-'));
+  process.env.BOOK_HOME = isolatedHome;
   delete process.env.OPENROUTER_API_KEY;
   delete process.env.ANTHROPIC_PROXY_KEY;
 });
 
 afterEach(() => {
-  rmSync(workspace, { recursive: true, force: true });
-  // Restore env.
-  for (const key of Object.keys(process.env)) delete process.env[key];
-  Object.assign(process.env, origEnv);
+  // Restore env in `finally`: a throwing rmSync (EPERM/EBUSY on Windows, which force:true
+  // does not suppress) would otherwise leave BOOK_HOME pointing at a deleted directory for
+  // every later file in the worker -- the unit tier shares one process (maxWorkers: 1).
+  try {
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    rmSync(isolatedHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  } finally {
+    for (const key of Object.keys(process.env)) delete process.env[key];
+    Object.assign(process.env, origEnv);
+  }
 });
 
 describe('loadConfig retry defaults', () => {

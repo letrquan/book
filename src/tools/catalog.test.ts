@@ -274,6 +274,42 @@ describe('tool surface discovery', () => {
     expect(surface.activeDefinitions().map((tool) => tool.name)).toContain('SmallTool');
   });
 
+  it('caps the schema budget by the assumed window when a model declares none', () => {
+    // A tool between the two caps: ~20k schema tokens. Under the old code an undeclared
+    // model skipped the window cap entirely and used the raw configured budget, so this
+    // activated; it must now be refused against 5% of the 272k default (13,600).
+    const bulky = definition('BulkyTool');
+    bulky.parameters = {
+      type: 'object',
+      properties: { value: { type: 'string', description: 'x'.repeat(80_000) } },
+    };
+
+    const undeclared = config();
+    undeclared.settings.toolDiscovery.mode = 'deferred';
+    undeclared.settings.toolDiscovery.schemaTokenBudget = 100_000;
+    expect(
+      createToolSurface({
+        config: undeclared,
+        context: context(),
+        definitions: [definition('Read'), bulky],
+      }).activate(['BulkyTool']),
+    ).toEqual([]);
+
+    // And declaring the window no longer costs you catalog room relative to staying
+    // silent: a declared 1M window admits what the assumed 272k default refuses.
+    const declared = config();
+    declared.settings.toolDiscovery.mode = 'deferred';
+    declared.settings.toolDiscovery.schemaTokenBudget = 100_000;
+    declared.modelInfo = { contextWindow: 1_048_576 };
+    expect(
+      createToolSurface({
+        config: declared,
+        context: context(),
+        definitions: [definition('Read'), bulky],
+      }).activate(['BulkyTool']),
+    ).toEqual(['BulkyTool']);
+  });
+
   it('does not evict an existing activation when a new schema cannot fit the budget', () => {
     const runtimeConfig = config();
     runtimeConfig.settings.toolDiscovery.mode = 'deferred';

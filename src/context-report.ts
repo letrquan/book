@@ -78,6 +78,7 @@ export function buildContextReport(
   ambient: {
     model: string;
     maxTokens: number;
+    windowDeclared?: boolean;
     contextHistory?: Message[];
     compactBoundaries?: CompactBoundary[];
     skillCount?: number;
@@ -119,8 +120,15 @@ export function buildContextReport(
     lines.push('');
   }
   lines.push(
-    `Model context budget: ${ambient.maxTokens.toLocaleString()} tokens (${ambient.model})`,
+    `Model context budget: ${ambient.maxTokens.toLocaleString()} tokens (${ambient.model})` +
+      (ambient.windowDeclared === false ? ' — assumed default' : ''),
   );
+  if (ambient.windowDeclared === false) {
+    lines.push('This model declares no context window, so the default above is a guess. Set');
+    lines.push(
+      `settings.provider.<id>.models["${ambient.model}"].contextWindow to the real value.`,
+    );
+  }
   const pct =
     ambient.maxTokens > 0
       ? Math.min(100, Math.round((b.estimatedTokens / ambient.maxTokens) * 100))

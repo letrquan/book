@@ -89,7 +89,7 @@ import { getTranscriptShortcutAction, type TranscriptMode } from './tool-present
 import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
 import type { InteractiveAssets } from './interactive-assets.js';
-import { resolveContextLimit } from '../agent/compact.js';
+import { resolveContextLimit } from '../models.js';
 import { wordWrap } from './components/word-wrap.js';
 import {
   createQueuedInput,

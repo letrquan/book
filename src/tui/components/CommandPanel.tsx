@@ -404,7 +404,14 @@ function ContextPanelBody({
   const roleTotal = Math.max(1, data.userTokens + data.assistantTokens);
   const meterWidth = Math.max(8, contentWidth - (narrow ? 18 : 24));
   const metrics: Metric[] = [
-    { label: 'Window', value: compactNumber(data.maxTokens), color: theme.brand },
+    {
+      label: 'Window',
+      value:
+        data.windowDeclared === false
+          ? `${compactNumber(data.maxTokens)} (default)`
+          : compactNumber(data.maxTokens),
+      color: theme.brand,
+    },
     { label: 'Estimate', value: compactNumber(data.estimatedTokens) },
     { label: 'Messages', value: String(data.totalMessages) },
     { label: 'Tools', value: `${data.toolCalls}/${data.toolResults}` },

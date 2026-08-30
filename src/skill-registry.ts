@@ -12,6 +12,7 @@ import {
   type LoadedSkillBody,
   type Skill,
   type SkillListingResult,
+  skillListingBudgetChars,
 } from './skills.js';
 
 export type SkillActivationReason = 'model' | 'user' | 'workflow' | 'subagent-preload';
@@ -431,8 +432,10 @@ export class SkillRegistry {
     };
   }
 
-  recordPromptCatalog(contextWindow = 100_000): void {
-    const budgetChars = Math.min(8000, Math.max(512, Math.floor(contextWindow * 0.08)));
+  // Required: the sole production caller passes the resolved window, and a default
+  // here was a third fallback for a concept that must have exactly one.
+  recordPromptCatalog(contextWindow: number): void {
+    const budgetChars = skillListingBudgetChars(contextWindow);
     const listing = buildSkillListing(this.descriptors, budgetChars);
     this.promptCatalog = {
       budgetChars: listing.budgetChars,

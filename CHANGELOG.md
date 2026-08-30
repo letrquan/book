@@ -49,6 +49,36 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **`/context` reported max output tokens as the context window.** For any model without a
+  metadata entry -- which behind an OpenAI-compatible router is every model -- the panel fell back
+  to `runtimeConfig.maxTokens`, a max *output* budget, and printed it as "Window" and as the
+  denominator of "N estimated / X tokens". The TUI status bar directly above it already used
+  `resolveContextLimit()`, so the two surfaces disagreed about the same number in the same
+  session: the bar read `ctx 5%` while the panel claimed a 64.0k window. `/context` is the surface
+  a person checks to decide whether to compact, and it understated the real 272k default 4.25x.
+
+  It now reports `resolveContextLimit()` -- the window compaction actually acts on -- and says
+  when that number is the assumed default rather than something the model declared, since an 8k
+  local model behind a router would otherwise be reported as having 272k of headroom on the
+  exact surface people use to decide whether to compact. The panel renders `272k (default)` and
+  the text report points at `settings.provider.<id>.models.<model>.contextWindow`.
+
+  `resolveContextLimit()` and `DEFAULT_CONTEXT_WINDOW` moved to `models.ts`, next to the other
+  model-id helpers, so the command catalog and the system-prompt builder no longer reach into
+  the compaction module (and through it the provider clients) to ask how big a window is. Every
+  site that answers that question now routes through them: the skill-catalog budget in
+  `agent/loop.ts` and `agent/context.ts` (two `?? 100_000` literals), `skill-registry.ts`
+  (a third, now a required parameter), and the tool-schema budget in `tools/catalog.ts`. The
+  shared `min(8000, ...)` skill-listing formula, previously written out twice, is now
+  `skillListingBudgetChars()` in `skills.ts`.
+
+  Two of those are behaviour-neutral: the skill-catalog budget saturates at its cap for any
+  window at or above 100k, and the tool-schema budget is unchanged at the default
+  `schemaTokenBudget` of 8000. The tool-schema budget does change for anyone who raised that
+  setting above 13,600: an undeclared model is now capped by the assumed window like every
+  declared one, which removes an inversion where declaring `contextWindow: 32000` shrank the
+  catalog to 1600 tokens while saying nothing about the same model kept the full budget.
+
 - **`--effort` is no longer inert on an OpenAI-compatible provider.** `effortExplicit` -- the flag
   that decides whether `reasoning_effort` is sent at all -- read `BOOK_EFFORT` and `settings.effort`
   but not the CLI option, so `book --effort max` against a router was accepted, reported, and

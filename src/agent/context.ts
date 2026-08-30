@@ -13,6 +13,7 @@ import {
   applySkillOverrides,
   discoverSkills,
   generateSkillListing,
+  skillListingBudgetChars,
   skillRoots,
 } from '../skills.js';
 import { discoverCommands, generateCommandListing } from '../commands/loader.js';
@@ -24,7 +25,7 @@ import { withBuiltInAgents } from '../agents/profiles.js';
 import { resolveBookHome } from '../book-home.js';
 import { resolveAgentProfile } from '../agents/profile-resolver.js';
 import { toolResultModelContent } from '../tools/result.js';
-import { resolveEditFormat, type EditFormat } from '../models.js';
+import { resolveContextLimit, resolveEditFormat, type EditFormat } from '../models.js';
 
 interface StaticDiscovery {
   fingerprint: string;
@@ -481,13 +482,7 @@ export async function buildSystemPromptZones(
       ].join('\n'),
     ),
     sessionContext(
-      generateSkillListing(
-        skills,
-        Math.min(
-          8000,
-          Math.max(512, Math.floor((config.modelInfo?.contextWindow ?? 100_000) * 0.08)),
-        ),
-      ),
+      generateSkillListing(skills, skillListingBudgetChars(resolveContextLimit(config))),
     ),
     sessionContext(generateCommandListing(cmdList, 1536)),
     sessionContext(
