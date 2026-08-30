@@ -71,6 +71,87 @@ function readScopeDocument(scope: SettingsScope, workspace: string): ScopeDocume
   return { scope, path, status: 'unreadable', error: result.error, document: {} };
 }
 
+/** Which `SettingsResolutionPaths` entry a scope occupies in the merge. */
+const SCOPE_RESOLUTION_PATH = {
+  user: 'userSettingsPath',
+  project: 'projectSettingsPath',
+  local: 'localSettingsPath',
+} as const satisfies Record<SettingsScope, string>;
+
+/**
+ * Would this write leave a merged configuration that no command can load?
+ *
+ * `config set` validated the single layer it was writing, which does not
+ * determine the effective configuration. `harness.workflow` is valid on its own
+ * and rejected against an effective `harness.mode` of `off` — so the write
+ * succeeded and every subsequent invocation, including `book config` itself,
+ * failed before it started. The recovery was hand-editing JSON.
+ *
+ * The candidate layer is resolved in place of the real one, through the same
+ * merge and the same assertions the loader runs, so this cannot drift from what
+ * actually rejects the configuration. Returns the loader's own message, which
+ * already says what to change.
+ */
+async function describeEffectiveBreak(
+  workspace: string,
+  scope: SettingsScope,
+  key: string,
+  value: unknown,
+  settingsOptions: ConfigCommandSettingsOptions,
+): Promise<string | undefined> {
+  // With every layer skipped there is no merge to predict, and the write is
+  // aimed at a file this invocation is deliberately not reading.
+  if (settingsOptions.noSettings) return undefined;
+
+  const { mkdtempSync, rmSync, writeFileSync } = await import('fs');
+  const { join } = await import('path');
+  const { tmpdir } = await import('os');
+  const { resolveSettings } = await import('../settings-loader.js');
+  const { setNestedValue } = await import('./utils.js');
+  const { assertHarnessModeAvailable, assertSelectableWorkflow } =
+    await import('../harness/coordinator.js');
+
+  const layer = readScopeDocument(scope, workspace);
+  // An unreadable layer is about to be reported by the write itself, and a
+  // candidate built on a document we could not read would be a guess.
+  if (layer.status === 'unreadable') return undefined;
+
+  const loads = (paths?: Record<string, string>): boolean => {
+    try {
+      const resolved = resolveSettings(workspace, settingsOptions.settingsOverridePath, paths);
+      assertHarnessModeAvailable(resolved.harness.mode);
+      assertSelectableWorkflow(resolved.harness.mode, resolved.harness.workflow);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // A configuration that was already broken must not make this refuse the write
+  // that would repair it. `config set` is the tool a user reaches for when a
+  // layer is wrong, so only a write that *introduces* the failure is refused.
+  if (!loads()) return undefined;
+
+  const candidate = structuredClone(layer.document);
+  setNestedValue(candidate, key, value);
+
+  const directory = mkdtempSync(join(tmpdir(), 'book-config-preflight-'));
+  try {
+    const candidatePath = join(directory, 'settings.json');
+    writeFileSync(candidatePath, JSON.stringify(candidate));
+    const resolved = resolveSettings(workspace, settingsOptions.settingsOverridePath, {
+      [SCOPE_RESOLUTION_PATH[scope]]: candidatePath,
+    });
+    assertHarnessModeAvailable(resolved.harness.mode);
+    assertSelectableWorkflow(resolved.harness.mode, resolved.harness.workflow);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 /**
  * The scopes that define `key` and are resolved *after* the user layer.
  *
@@ -233,6 +314,26 @@ export async function runConfigCommand(
         'compactStrategy "zero-mem" is no longer supported. Set ' +
           'experimental.zeroMem=true in <BOOK_HOME>/settings.json, pass an explicit ' +
           '--settings file, or use BOOK_EXPERIMENTAL_ZERO_MEM=true.',
+      );
+      exit(1);
+    }
+
+    // Checked before the write, not after: a value that bricks the merge would
+    // otherwise have to be removed by hand, since every command that could
+    // remove it fails at load.
+    const effectiveBreak = await describeEffectiveBreak(
+      workspace,
+      scope,
+      key,
+      parsedValue,
+      settingsOptions,
+    );
+    if (effectiveBreak) {
+      console.error(
+        `Refusing to write ${key}: the resulting configuration would not load.\n` +
+          `  ${effectiveBreak}\n` +
+          `  ${key} is valid on its own, but a settings layer does not decide the effective\n` +
+          `  configuration -- the merge of every layer does. Nothing was written.`,
       );
       exit(1);
     }

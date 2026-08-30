@@ -23,6 +23,23 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **`book status` reports whether a run is alive, and how it ended.** Book has been writing a
+  liveness record to `<BOOK_HOME>/runs/<session-id>.json` at every turn boundary -- pid, turn,
+  elapsed, spend against budget, current todo, last tool, free disk, and a terminal or crash outcome
+  -- and nothing outside its own test read it. `book status` reported objective, history, tokens,
+  cost, and todos from the session JSONL, and so could not answer whether the process was alive,
+  which turn it was on, or whether it finished cleanly. A 20-minute print run that completed its work
+  correctly and one that died at turn 16 on a stalled stream looked identical from outside; the only
+  way to tell them apart was `jq` on a file with no documented reader.
+
+  The record is now folded into `book status`, which already existed, needs no credentials, and is
+  the surface a person looks at. The headline is one of four: `running` when the pid answers,
+  `finished` with the terminal status and reason, `crashed` when the process died recording no
+  outcome, and -- the case the record exists for -- *no longer running, and recorded no outcome*. A
+  live process that has not reached a turn boundary in fifteen minutes is named as possibly wedged,
+  since a transcript's mtime advances at the same rate for a healthy run and one stuck on a
+  permission prompt. `--json` carries the same fields under `run`.
+
 - **`book config unset <key>`** removes a key from one layer, so a shadowing value can be cleared
   with the tool that reported it rather than by hand.
 
@@ -51,6 +68,65 @@ All notable changes to this project are documented in this file.
   opaque HTTP 400 for a mistake the CLI could name exactly. It is now rejected at parse time, with
   the valid levels listed, and the list itself is derived from the settings schema rather than
   restated a third time.
+
+- **The repository no longer pins a model for its contributors.** The checked-in
+  `.book/settings.json` set `model: "qc/qwen3.7-max"` -- a bare model id whose `qc/` prefix names
+  no provider this repository configures. Project scalars outrank the user layer, so every clone
+  had a working `~/.book/settings.json` model overridden by the checked-in one, resolved against
+  the default OpenAI base URL, and reported the mismatch as a missing credential. Choosing a model
+  belongs to the user layer or `--model`, so the file is gone.
+
+- **A reasoning model on an OpenAI-compatible endpoint no longer dies at the 20-second chat stall
+  ceiling.** `retry.thinkingStallTimeoutMs` (15 minutes) was applied on the Anthropic path only, so
+  the same high-effort run that survives against Anthropic was cancelled mid-thought against a
+  router and reported as `stream_stall` — and `BOOK_STREAM_STALL_TIMEOUT_MS` is clamped to 120 s, so
+  no workaround could reach the ceiling the other path gets by default. Endpoints that buffer a
+  whole thinking block send nothing until it is done, which is exactly the shape the chat ceiling
+  reads as a dead stream. A request now gets the thinking ceiling when it sends `reasoning_effort`
+  or when the model's catalog entry declares an effort range; `effort: false` and models with no
+  entry keep the chat ceiling.
+
+- **`book -p` reads the prompt from stdin, as its help has always said it does.** Stdin was consumed
+  only for `--input-format stream-json`, so `book -p < prompt.txt` failed with `text input format
+  requires a prompt` on a prompt it had just been handed -- and the error never mentioned
+  `--input-format`, so it read as "you passed no prompt". The obvious way to drive Book from a
+  script now works, and long prompts no longer have to be interpolated into argv. The flag still
+  wins when both are given, a terminal is never read from (an interactive `book -p` would have hung
+  instead of reporting the usage error), and the error now names all three ways to supply a prompt.
+
+- **An unresolvable provider prefix in a model id is reported instead of silently falling back.**
+  `model: "qc/qwen3.7-max"` with no `qc` provider configured resolved against
+  `https://api.openai.com/v1` -- an endpoint the user never chose, for a vendor that has never
+  heard of the model -- and said nothing. The only symptom was a separate `Credentials: not
+  resolved` line, which sends the user looking for a missing key rather than a misspelled provider
+  id. It still resolves rather than throwing, because `meta-llama/llama-3-70b` is the same spelling
+  and a legitimate model name; the warning is raised only once providers are configured and the
+  prefix matches none of them. Surfaced on stderr at startup and inline in `book doctor`, above the
+  credentials line it used to be mistaken for.
+
+- **`book doctor` can now get past, and point at, the settings layer that breaks it.** It listed all
+  three layers as present and marked none of them as the source of the offending value, so finding
+  it meant `jq`-ing all three by hand -- and `--no-settings`, declared on the root command and on
+  `book config`, was not declared on `doctor`, so there was no way around the layer either. Doctor
+  now resolves cumulative prefixes of the layer stack and marks the layer the failure first appears
+  with, or says plainly that no single layer accounts for it when the cause is an environment
+  variable. `book doctor --no-settings` reports the rest of the diagnostic with every layer skipped,
+  and marks them `[-]` rather than `[ ]`, which would claim the files do not exist. The closing
+  advice is the flag rather than repointing `BOOK_HOME`, which was heavier and did not help when the
+  bad layer was in the workspace.
+
+- **`book config set` can no longer write a settings pairing that makes every command fail at
+  load.** It validated the single layer it was writing, which does not determine the effective
+  configuration -- so it accepted `harness.workflow` while the effective `harness.mode` was the
+  `off` default, a combination the loader then rejects. The write succeeded and every subsequent
+  invocation, including the `book config` that would undo it, failed before it started; recovery
+  meant hand-editing JSON. The candidate layer is now resolved through the real merge and put
+  through the loader's own assertions, so the check cannot drift from what actually rejects a
+  configuration, and it sees pairings that span layers in both directions -- a workflow is accepted
+  when the enabling mode lives in another layer, and a mode is refused when it would disable a
+  workflow another layer selects. A configuration that was *already* broken stays writable: only a
+  write that introduces the failure is refused, because repairing one is the reason to run the
+  command.
 
 - **`book config` no longer fails on the configuration it exists to repair.** It resolved the merged
   settings on every invocation, so one malformed layer made every subcommand throw -- including the

@@ -835,6 +835,108 @@ describe('runHeadless — stream-json input', () => {
   });
 });
 
+describe('runHeadless — text input from stdin', () => {
+  // `-p` has always documented "reads prompt from the flag or stdin", but stdin
+  // was consumed only for --input-format stream-json, so `book -p < prompt.txt`
+  // failed with "text input format requires a prompt" on a prompt it had been
+  // handed — and the error never mentioned --input-format.
+  function collector(): { writes: string[]; stdout: { write: (s: string) => boolean } } {
+    const writes: string[] = [];
+    return {
+      writes,
+      stdout: {
+        write: (s: string) => {
+          writes.push(s);
+          return true;
+        },
+      },
+    };
+  }
+
+  it('reads a piped prompt when the flag carries none', async () => {
+    const { Readable } = await import('stream');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sse([textDelta('ok')])),
+    );
+    const { writes, stdout } = collector();
+
+    await runHeadless(config, createDefaultRegistry(), {
+      inputFormat: 'text',
+      outputFormat: 'json',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+      stdin: Readable.from(['summarize ', 'the diff\n']),
+    });
+
+    const parsed = JSON.parse(writes.join('').trim());
+    const user = parsed.result.messages.find((m: { role: string }) => m.role === 'user');
+    // Joined across chunks, with the trailing newline a file or heredoc adds trimmed.
+    expect(user.content).toBe('summarize the diff');
+  });
+
+  it('prefers the flag over stdin when both are present', async () => {
+    const { Readable } = await import('stream');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sse([textDelta('ok')])),
+    );
+    const { writes, stdout } = collector();
+
+    await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'from the flag',
+      inputFormat: 'text',
+      outputFormat: 'json',
+      history: [],
+      mode: 'bypassPermissions',
+      stdout,
+      stdin: Readable.from(['from stdin\n']),
+    });
+
+    const parsed = JSON.parse(writes.join('').trim());
+    const user = parsed.result.messages.find((m: { role: string }) => m.role === 'user');
+    expect(user.content).toBe('from the flag');
+  });
+
+  it('names every way to supply a prompt when stdin is empty', async () => {
+    const { Readable } = await import('stream');
+    await expect(
+      runHeadless(config, createDefaultRegistry(), {
+        inputFormat: 'text',
+        outputFormat: 'json',
+        history: [],
+        mode: 'bypassPermissions',
+        stdout: collector().stdout,
+        stdin: Readable.from([]),
+      }),
+    ).rejects.toThrow(/pass one to -p, pipe one on stdin, or use --input-format stream-json/);
+  });
+
+  it('does not block on a terminal, which has nothing piped to read', async () => {
+    // A real read here would never return, so an interactive `book -p` with no
+    // argument would look like a hang rather than the usage error it is. This
+    // double fails loudly if anything iterates it.
+    const tty = {
+      isTTY: true,
+      [Symbol.asyncIterator]() {
+        throw new Error('read from a terminal');
+      },
+    };
+
+    await expect(
+      runHeadless(config, createDefaultRegistry(), {
+        inputFormat: 'text',
+        outputFormat: 'json',
+        history: [],
+        mode: 'bypassPermissions',
+        stdout: collector().stdout,
+        stdin: tty as unknown as NodeJS.ReadableStream,
+      }),
+    ).rejects.toThrow(/print mode requires a prompt/);
+  });
+});
+
 describe('runHeadless — json-schema', () => {
   it('returns validated JSON matching the schema', async () => {
     // Provider yields JSON content.
