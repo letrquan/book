@@ -91,6 +91,17 @@ All notable changes to this project are documented in this file.
   prefix matches none of them. Surfaced on stderr at startup and inline in `book doctor`, above the
   credentials line it used to be mistaken for.
 
+- **`book doctor` can now get past, and point at, the settings layer that breaks it.** It listed all
+  three layers as present and marked none of them as the source of the offending value, so finding
+  it meant `jq`-ing all three by hand -- and `--no-settings`, declared on the root command and on
+  `book config`, was not declared on `doctor`, so there was no way around the layer either. Doctor
+  now resolves cumulative prefixes of the layer stack and marks the layer the failure first appears
+  with, or says plainly that no single layer accounts for it when the cause is an environment
+  variable. `book doctor --no-settings` reports the rest of the diagnostic with every layer skipped,
+  and marks them `[-]` rather than `[ ]`, which would claim the files do not exist. The closing
+  advice is the flag rather than repointing `BOOK_HOME`, which was heavier and did not help when the
+  bad layer was in the workspace.
+
 - **`book config` no longer fails on the configuration it exists to repair.** It resolved the merged
   settings on every invocation, so one malformed layer made every subcommand throw -- including the
   read that would have identified the broken file and the write that would have replaced the bad

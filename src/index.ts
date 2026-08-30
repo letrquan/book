@@ -110,8 +110,14 @@ program
   .command('doctor')
   .description('Diagnose configuration and environment')
   .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
-  .action(async (options: { workspace?: string }) => {
-    await runDoctorCommand(resolveWorkspace(options.workspace));
+  // Doctor exists for a configuration that does not work, so it needs the way
+  // past one that will not even load. Positional option parsing means a root
+  // option written after a subcommand is an error, so it is re-declared here.
+  .option('--no-settings', 'Skip all settings.json layers (use defaults + legacy .bookrc.json)')
+  .action(async (options: { workspace?: string; settings?: boolean }) => {
+    await runDoctorCommand(resolveWorkspace(options.workspace), {
+      noSettings: options.settings === false,
+    });
   });
 
 // ---- book status ----

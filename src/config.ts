@@ -4,6 +4,7 @@ import { isAbsolute, join, relative, resolve } from 'path';
 import { homedir } from 'os';
 import type { AgentConfig, RetryConfig } from './types/runtime.js';
 import { resolveSettings, migrateLegacyPermissions } from './settings-loader.js';
+import type { SettingsResolutionPaths } from './settings-loader.js';
 import { DEFAULT_SETTINGS, type CompactStrategy, type ResolvedSettings } from './settings.js';
 import { loadMemoryContext } from './memory-store.js';
 import { isEffortLevel } from './commands/effort.js';
@@ -74,6 +75,12 @@ export interface LoadConfigOptions {
   runMigrations?: boolean;
   /** CLI -m/--model override, applied before provider registry resolution. */
   modelOverride?: string;
+  /**
+   * Redirect individual settings layers. Pointing one at a path that does not
+   * exist drops it from the merge, which is how `book doctor` finds the layer a
+   * failure first appears in.
+   */
+  settingsPaths?: SettingsResolutionPaths;
   /** Let the interactive TUI start before a BYOK credential has been added. */
   allowMissingApiKey?: boolean;
 }
@@ -87,13 +94,15 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   // entirely when --no-settings is set (useful for scripted/isolated runs).
   let settings = noSettings
     ? structuredClone(DEFAULT_SETTINGS)
-    : resolveSettings(resolvedWorkspace, settingsOverridePath);
+    : resolveSettings(resolvedWorkspace, settingsOverridePath, options?.settingsPaths);
   assertHarnessModeAvailable(settings.harness.mode);
   assertSelectableWorkflow(settings.harness.mode, settings.harness.workflow);
 
   if (!noSettings && options?.runMigrations) {
     const migrated = migrateLegacyPermissions(resolvedWorkspace, undefined, settings);
-    if (migrated) settings = resolveSettings(resolvedWorkspace, settingsOverridePath);
+    if (migrated) {
+      settings = resolveSettings(resolvedWorkspace, settingsOverridePath, options?.settingsPaths);
+    }
   }
 
   // Load legacy .bookrc.json (deprecated) only after settings availability is accepted.
