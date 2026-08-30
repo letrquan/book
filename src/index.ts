@@ -97,11 +97,14 @@ program
   .option('--scrollback', 'Use terminal-native scrollback instead of the full-screen TUI')
   .option('--settings <path>', 'Path to an ad-hoc settings file (overrides all scopes)')
   .option('--no-settings', 'Skip all settings.json layers (use defaults + legacy .bookrc.json)')
+  // No commander default: "the user passed --effort" has to stay observable, or
+  // the flag cannot be told apart from the fallback and can never count as an
+  // explicit choice. `high` is still the fallback, resolved in loadConfig after
+  // BOOK_EFFORT, settings.effort, and model metadata have had their turn.
   .option(
     '--effort <level>',
     'Thinking effort: low, medium, high, xhigh, max (default: high)',
     parseEffortOption,
-    'high',
   )
   .option('--provider <type>', 'Provider: anthropic, openai, auto (default: auto-detect)');
 

@@ -479,6 +479,51 @@ describe('loadConfig provider registry', () => {
     expect(config.effort).toBe('medium');
   });
 
+  it('treats --effort as an explicit choice, not just a value', () => {
+    // effortExplicit read only BOOK_EFFORT and settings.effort, so on an
+    // OpenAI-compatible provider -- which sends reasoning_effort only for an
+    // explicit level -- `--effort max` was accepted, reported, and discarded.
+    const config = loadConfig(workspace, { effortOverride: 'max' });
+    expect(config.effort).toBe('max');
+    expect(config.effortExplicit).toBe(true);
+  });
+
+  it('outranks BOOK_EFFORT, settings.effort, and model metadata', () => {
+    process.env.BOOK_EFFORT = 'low';
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({
+        model: 'router/some-model',
+        effort: 'medium',
+        provider: {
+          router: {
+            baseURL: 'https://router.example',
+            apiKey: 'k',
+            models: { 'some-model': { effort: { default: 'low' } } },
+          },
+        },
+      }),
+    );
+
+    expect(loadConfig(workspace, { effortOverride: 'xhigh' }).effort).toBe('xhigh');
+  });
+
+  it('leaves effort resolution alone when the flag is absent', () => {
+    // The flag carried a commander default of 'high', so it was never absent and
+    // overwrote every other source. Without an override the lower-priority
+    // sources must still decide.
+    process.env.BOOK_EFFORT = 'low';
+    const config = loadConfig(workspace, { effortOverride: undefined });
+    expect(config.effort).toBe('low');
+    expect(config.effortExplicit).toBe(true);
+  });
+
+  it('reports effort as inexplicit when nothing chose it', () => {
+    const config = loadConfig(workspace);
+    expect(config.effort).toBe('high');
+    expect(config.effortExplicit).toBe(false);
+  });
+
   it('errors clearly when provider api key env var is missing', () => {
     writeFileSync(
       join(workspace, '.book', 'settings.local.json'),

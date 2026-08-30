@@ -49,6 +49,19 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **`--effort` is no longer inert on an OpenAI-compatible provider.** `effortExplicit` -- the flag
+  that decides whether `reasoning_effort` is sent at all -- read `BOOK_EFFORT` and `settings.effort`
+  but not the CLI option, so `book --effort max` against a router was accepted, reported, and
+  discarded. The option is now passed into `loadConfig` as an override rather than assigned to the
+  resolved config afterwards, so it counts as the explicit choice it plainly is and outranks the
+  env var, the settings value, and model metadata. `effortExplicit` now means exactly one thing:
+  a human chose this level.
+
+  The option's commander default of `high` is removed as part of this: with it in place the flag was
+  never absent, so an explicit choice could not be told apart from the fallback -- and the fallback
+  overwrote effort already resolved from env, settings, and model metadata. `high` remains the
+  fallback, applied in `loadConfig` after the other sources have had their turn.
+
 - **`--effort` is validated like every other effort input.** `BOOK_EFFORT` was checked against the
   level list and `settings.effort` against its schema, but the flag was a bare cast — so a typo was
   forwarded to the provider as `reasoning_effort` / `output_config.effort` and came back as an
