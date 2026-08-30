@@ -4,8 +4,10 @@ import { isAbsolute, join, relative, resolve } from 'path';
 import { homedir } from 'os';
 import type { AgentConfig, RetryConfig } from './types/runtime.js';
 import { resolveSettings, migrateLegacyPermissions } from './settings-loader.js';
-import { DEFAULT_SETTINGS, type CompactStrategy } from './settings.js';
+import type { SettingsResolutionPaths } from './settings-loader.js';
+import { DEFAULT_SETTINGS, type CompactStrategy, type ResolvedSettings } from './settings.js';
 import { loadMemoryContext } from './memory-store.js';
+import { isEffortLevel } from './commands/effort.js';
 import { assertHarnessModeAvailable, assertSelectableWorkflow } from './harness/coordinator.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
@@ -73,6 +75,12 @@ export interface LoadConfigOptions {
   runMigrations?: boolean;
   /** CLI -m/--model override, applied before provider registry resolution. */
   modelOverride?: string;
+  /**
+   * Redirect individual settings layers. Pointing one at a path that does not
+   * exist drops it from the merge, which is how `book doctor` finds the layer a
+   * failure first appears in.
+   */
+  settingsPaths?: SettingsResolutionPaths;
   /** Let the interactive TUI start before a BYOK credential has been added. */
   allowMissingApiKey?: boolean;
 }
@@ -86,13 +94,15 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   // entirely when --no-settings is set (useful for scripted/isolated runs).
   let settings = noSettings
     ? structuredClone(DEFAULT_SETTINGS)
-    : resolveSettings(resolvedWorkspace, settingsOverridePath);
+    : resolveSettings(resolvedWorkspace, settingsOverridePath, options?.settingsPaths);
   assertHarnessModeAvailable(settings.harness.mode);
   assertSelectableWorkflow(settings.harness.mode, settings.harness.workflow);
 
   if (!noSettings && options?.runMigrations) {
     const migrated = migrateLegacyPermissions(resolvedWorkspace, undefined, settings);
-    if (migrated) settings = resolveSettings(resolvedWorkspace, settingsOverridePath);
+    if (migrated) {
+      settings = resolveSettings(resolvedWorkspace, settingsOverridePath, options?.settingsPaths);
+    }
   }
 
   // Load legacy .bookrc.json (deprecated) only after settings availability is accepted.
@@ -196,6 +206,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   };
 
   config = applyModelDefaults(resolveModelProviderConfig(config, rawModel));
+  config.modelProviderWarning = describeUnresolvedProviderPrefix(settings.provider, rawModel);
 
   if (!config.apiKey && !options?.allowMissingApiKey) {
     throw new Error(
@@ -247,6 +258,42 @@ function deepFreeze<T>(value: T): T {
   Object.freeze(value);
   for (const child of Object.values(value)) deepFreeze(child);
   return value;
+}
+
+/**
+ * Describe a `<prefix>/` in a model id that matches no configured provider.
+ *
+ * The two forms are spelled identically: `9router/qc/qwen3.7-max` names a
+ * configured provider, while `meta-llama/llama-3-70b` is one vendor-namespaced
+ * model id that an OpenAI-compatible endpoint expects verbatim. An unmatched
+ * prefix therefore cannot be rejected -- falling back to the plain id is right
+ * for the second form, and that fallback is why nothing was ever said about the
+ * first.
+ *
+ * Once the user has configured providers at all, though, a prefix matching none
+ * of them is far more likely a typo than a namespace, and the fallback quietly
+ * substitutes `https://api.openai.com/v1` -- an endpoint they never chose, for a
+ * vendor that has never heard of the model. The only symptom is a separate
+ * "credentials not resolved" line, which sends them looking for a missing key
+ * rather than a misspelled provider id.
+ */
+export function describeUnresolvedProviderPrefix(
+  providers: ResolvedSettings['provider'],
+  rawModel: string,
+): string | undefined {
+  const slash = rawModel.indexOf('/');
+  if (slash <= 0 || slash === rawModel.length - 1) return undefined;
+
+  const prefix = rawModel.slice(0, slash);
+  const configured = Object.keys(providers);
+  if (configured.length === 0 || configured.includes(prefix)) return undefined;
+
+  return (
+    `Model "${rawModel}" names provider "${prefix}", which is not configured ` +
+    `(configured: ${[...configured].sort().join(', ')}). ` +
+    `Treating the whole id as a model name against the default endpoint. ` +
+    `Add provider.${prefix} to settings, or use one of the configured ids.`
+  );
 }
 
 /** Resolve "provider/model" strings through settings.provider, OpenCode-style. */
@@ -315,12 +362,10 @@ export function resolveSecret(raw: string | undefined, workspace: string): strin
   }
 }
 
-const VALID_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
-
 function validateEffort(raw: string | undefined): AgentConfig['effort'] {
   if (!raw) return undefined;
   const normalized = raw.trim().toLowerCase();
-  return VALID_EFFORT_LEVELS.has(normalized) ? (normalized as AgentConfig['effort']) : undefined;
+  return isEffortLevel(normalized) ? normalized : undefined;
 }
 
 const VALID_PROVIDERS = new Set(['anthropic', 'openai', 'auto']);

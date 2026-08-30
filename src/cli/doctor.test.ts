@@ -33,14 +33,17 @@ function writeSettings(
   );
 }
 
-async function doctorOutput(target = workspace): Promise<string> {
+async function doctorOutput(
+  target = workspace,
+  options: { noSettings?: boolean } = {},
+): Promise<string> {
   const lines: string[] = [];
   const log = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
     lines.push(args.map(String).join(' '));
   });
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   try {
-    await runDoctorCommand(target);
+    await runDoctorCommand(target, options);
   } finally {
     log.mockRestore();
     warn.mockRestore();
@@ -147,6 +150,134 @@ describe('runDoctorCommand credentials', () => {
 
     expect(output).toContain('Credentials: resolved');
     expect(output).not.toContain('test-key');
+  });
+});
+describe('runDoctorCommand unloadable configuration', () => {
+  // The pairing from #120: a workflow selected while the effective harness mode
+  // is the `off` default. No single file is invalid, so nothing named one, and
+  // finding it meant jq-ing all three layers by hand.
+  function writeBrokenPairing(path: string): void {
+    writeFileSync(path, JSON.stringify({ harness: { workflow: 'safe-edit' } }));
+  }
+
+  it('marks the layer the failure appears with', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeBrokenPairing(join(workspace, '.book', 'settings.local.json'));
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('Configuration: FAILED TO LOAD');
+    expect(output).toMatch(
+      /Local: .*settings\.local\.json {2}<- the failure appears with this layer/,
+    );
+    expect(output).toContain('The Local layer is where the configuration stops loading.');
+    // The other two are present-and-fine, not accused.
+    expect(output).not.toMatch(/Project: .*<- the failure/);
+  });
+
+  it('attributes the same failure to the project layer when that is where it lives', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeBrokenPairing(join(workspace, '.book', 'settings.json'));
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('The Project layer is where the configuration stops loading.');
+  });
+
+  it('blames no layer when the cause is outside them', async () => {
+    // Rejected in loadConfig from the environment, so every layer prefix fails
+    // including the empty one. Accusing `User` there would be a wrong lead.
+    process.env.BOOK_COMPACT_STRATEGY = 'zero-mem';
+    try {
+      const output = await doctorOutput();
+
+      expect(output).toContain('Configuration: FAILED TO LOAD');
+      expect(output).toContain('No single layer accounts for it');
+      expect(output).not.toContain('<- the failure appears with this layer');
+    } finally {
+      delete process.env.BOOK_COMPACT_STRATEGY;
+    }
+  });
+
+  it('points at the flag that gets past the layer', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeBrokenPairing(join(workspace, '.book', 'settings.local.json'));
+
+    // The old advice was to repoint BOOK_HOME, which is heavier than the flag
+    // declared two lines away and useless when the bad layer is in the workspace.
+    expect(await doctorOutput()).toContain('book doctor --no-settings');
+  });
+});
+
+describe('runDoctorCommand --no-settings', () => {
+  it('reports a full diagnostic past a layer that will not load', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({ harness: { workflow: 'safe-edit' } }),
+    );
+
+    const output = await doctorOutput(workspace, { noSettings: true });
+
+    expect(output).not.toContain('FAILED TO LOAD');
+    expect(output).toContain('(--no-settings: every layer skipped, defaults reported below)');
+    // Reaching the environment section proves the report ran end to end.
+    expect(output).toContain('BOOK_API_KEY: (not set)');
+  });
+
+  it('marks the layers as skipped rather than as absent', async () => {
+    // `[ ]` means "no such file", which would be a lie about a file that exists
+    // and is simply not being read.
+    writeSettings({ enabled: false });
+
+    const output = await doctorOutput(workspace, { noSettings: true });
+
+    expect(output).toMatch(/\[-\] Project: .*settings\.json/);
+    expect(output).not.toMatch(/\[x\] Project:/);
+  });
+});
+describe('runDoctorCommand model resolution', () => {
+  it('names a provider prefix that matches no configured provider', async () => {
+    // Reported before Credentials on purpose. Without it the only symptom of a
+    // typo'd provider id was "not resolved", which sends the user looking for a
+    // missing key instead of a misspelled prefix -- against a default endpoint
+    // they never chose, for a vendor that has never heard of the model.
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({
+        model: 'qc/qwen3.7-max',
+        sandbox: { enabled: false },
+        provider: {
+          '9router': { baseURL: 'https://9router.example/v1', apiKey: 'k', models: {} },
+        },
+      }),
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).toContain('names provider "qc", which is not configured');
+    expect(output).toContain('configured: 9router');
+    expect(output).toContain('Model: qc/qwen3.7-max (https://api.openai.com/v1)');
+  });
+
+  it('says nothing when the prefix resolves', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({
+        model: '9router/qc/qwen3.7-max',
+        sandbox: { enabled: false },
+        provider: {
+          '9router': { baseURL: 'https://9router.example/v1', apiKey: 'k', models: {} },
+        },
+      }),
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).not.toContain('is not configured');
+    expect(output).toContain('Model: qc/qwen3.7-max (https://9router.example/v1)');
   });
 });
 describe('runDoctorCommand project-declared hooks', () => {
