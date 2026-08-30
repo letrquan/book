@@ -14,6 +14,13 @@ const telemetryRoot = join(tmpdir(), 'book-vitest-tool-telemetry', `${process.pi
 
 process.env.BOOK_TOOL_TELEMETRY_DIR = telemetryRoot;
 
+// BOOK_HOME is deliberately NOT pinned here, unlike the telemetry root above. Its being
+// unset is an observable production state rather than an accident: createRunAmbientSnapshot
+// attributes `isolation: 'shared'` and reports `book_home_isolation` as a missing source from
+// exactly that, and tui/persist.test.ts exercises the homedir() fallback a global pin would
+// make unreachable. Suites that must not see the developer's ~/.book pin their own (see
+// config.test.ts).
+
 afterAll(() => {
   rmSync(telemetryRoot, { recursive: true, force: true });
 });
