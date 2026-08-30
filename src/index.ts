@@ -279,7 +279,13 @@ program
   // flag is passed, letting an unset one fall through to the root's value.
   .option('--settings <path>', 'Path to an ad-hoc settings file (overrides all scopes)')
   .option('--no-settings', 'Skip all settings.json layers (use defaults + legacy .bookrc.json)')
-  .argument('[action]', 'get <key>, set <key> <value>, or list')
+  // Writes default to the user layer so a setting follows the person, not the
+  // directory. The two workspace layers stay reachable, but have to be asked
+  // for -- the shortest command is the one that stays consistent everywhere.
+  .option('-g, --global', 'Act on user-global settings (<BOOK_HOME>/settings.json) [default]')
+  .option('--project', 'Act on checked-in project settings (.book/settings.json)')
+  .option('--local', 'Act on gitignored project-local settings (.book/settings.local.json)')
+  .argument('[action]', 'get <key>, set <key> <value>, unset <key>, or list')
   .argument('[key]', 'Dot-separated key path (e.g. permissions.deny)')
   .argument('[value]', 'Value to set (JSON-parsed)')
   .addHelpText('after', `\n${formatSettingsKeyHelp()}`)
@@ -288,13 +294,34 @@ program
       action: string | undefined,
       key: string | undefined,
       value: string | undefined,
-      options: { workspace?: string; settings?: string | false },
+      options: {
+        workspace?: string;
+        settings?: string | false;
+        global?: boolean;
+        project?: boolean;
+        local?: boolean;
+      },
     ) => {
       const rootSettings = program.opts().settings as string | false | undefined;
       const settings = options.settings ?? rootSettings;
+      const selected = (
+        [
+          ['user', options.global],
+          ['project', options.project],
+          ['local', options.local],
+        ] as const
+      ).filter(([, on]) => on === true);
+      if (selected.length > 1) {
+        console.error(
+          'Pass at most one of --global, --project, --local. ' +
+            'Writes default to --global; reads without one report the resolved merge.',
+        );
+        exit(1);
+      }
       await runConfigCommand(resolveWorkspace(options.workspace), action, key, value, {
         settingsOverridePath: typeof settings === 'string' ? settings : undefined,
         noSettings: settings === false,
+        scope: selected[0]?.[0],
       });
     },
   );
