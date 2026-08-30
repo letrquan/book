@@ -12,6 +12,7 @@ import { defaultConfig } from './test/fixtures.js';
 import { tmpdir } from 'os';
 
 let workspace: string;
+let isolatedHome: string;
 const origEnv = { ...process.env };
 
 beforeEach(() => {
@@ -26,12 +27,19 @@ beforeEach(() => {
   }
   // Set required API key.
   process.env.BOOK_API_KEY = 'test-key';
+  // Pin the user-global layer at an empty directory. Without this, clearing BOOK_HOME
+  // above sends resolveBookHome() to the developer's real ~/.book, so their own
+  // settings.json leaks into these assertions -- a second configured provider is enough
+  // to fail this suite on one machine and pass it on another.
+  isolatedHome = mkdtempSync(join(tmpdir(), 'book-config-home-'));
+  process.env.BOOK_HOME = isolatedHome;
   delete process.env.OPENROUTER_API_KEY;
   delete process.env.ANTHROPIC_PROXY_KEY;
 });
 
 afterEach(() => {
   rmSync(workspace, { recursive: true, force: true });
+  rmSync(isolatedHome, { recursive: true, force: true });
   // Restore env.
   for (const key of Object.keys(process.env)) delete process.env[key];
   Object.assign(process.env, origEnv);
