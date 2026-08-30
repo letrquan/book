@@ -73,6 +73,14 @@ All notable changes to this project are documented in this file.
   or when the model's catalog entry declares an effort range; `effort: false` and models with no
   entry keep the chat ceiling.
 
+- **`book -p` reads the prompt from stdin, as its help has always said it does.** Stdin was consumed
+  only for `--input-format stream-json`, so `book -p < prompt.txt` failed with `text input format
+  requires a prompt` on a prompt it had just been handed -- and the error never mentioned
+  `--input-format`, so it read as "you passed no prompt". The obvious way to drive Book from a
+  script now works, and long prompts no longer have to be interpolated into argv. The flag still
+  wins when both are given, a terminal is never read from (an interactive `book -p` would have hung
+  instead of reporting the usage error), and the error now names all three ways to supply a prompt.
+
 - **`book config` no longer fails on the configuration it exists to repair.** It resolved the merged
   settings on every invocation, so one malformed layer made every subcommand throw -- including the
   read that would have identified the broken file and the write that would have replaced the bad

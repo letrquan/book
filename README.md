@@ -117,8 +117,20 @@ book tool-stats --since 7       # only the last 7 days
 
 ### Print mode
 
-`-p/--print` runs one or more prompts with no terminal attached, for CI and scripting. Three
-things behave differently there, because there is nobody to ask.
+`-p/--print` runs one or more prompts with no terminal attached, for CI and scripting. The prompt
+comes from the flag or from stdin, so a long one need not be interpolated into argv:
+
+```sh
+book -p "explain this repo"
+book -p < prompt.txt
+git diff | book -p            # the diff is the prompt
+```
+
+The flag wins when both are given. `--input-format stream-json` reads stdin as newline-delimited
+`{type:'user', content}` records instead, which is how you submit more than one prompt to a single
+process.
+
+Three things behave differently in print mode, because there is nobody to ask.
 
 **Slash commands.** A prompt beginning with `/name` is resolved through the same command
 registries the TUI uses instead of being sent to the model as literal text. See
