@@ -1303,6 +1303,38 @@ ${JSON.stringify(prior)}`,
     expect(secondPrompt).toContain(constraint);
   });
 
+  it('keeps the reducer cap small enough that a seeded chunk still fits', async () => {
+    // Fitting once at the end means the rolling checkpoint seeding the next
+    // chunk can exceed what `planReduction` reserved for it. The cap has to
+    // absorb that overshoot AND its own output within the window, or the
+    // enlarged cap and the relocated fit combine into a context overflow.
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'oversized evidence '.repeat(7_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      { id: '4', role: 'assistant', content: 'working', includeInContext: true, timestamp: 0 },
+    ];
+
+    await runCompact(makeConfig(), history, { trigger: 'manual' });
+
+    const cap = (mockedStream.mock.calls[0][3] as { maxOutputTokens: number }).maxOutputTokens;
+    const checkpointBudget = Math.floor(Math.min(4_096, 32_000 * 0.1));
+    const worstRequest = Math.floor(32_000 * 0.65) + (cap - checkpointBudget);
+    expect(worstRequest + cap).toBeLessThanOrEqual(32_000);
+    // ... while still leaving the reducer real headroom over the content budget.
+    expect(cap).toBeGreaterThan(checkpointBudget);
+  });
+
   it('does not spend the repair attempt on a reply cut off at the output cap', async () => {
     // Truncated JSON: unparseable, but the cause is the cap, not the model.
     mockedStream.mockImplementation(async function* () {

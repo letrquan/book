@@ -398,9 +398,10 @@ export async function runCompact(
   // provider cap; otherwise the cap is derived so the envelope and any thinking
   // tokens fit around a checkpoint of `checkpointBudget`.
   const reducerOutputCap =
-    options.checkpointMaxTokens !== undefined
-      ? checkpointBudget
-      : resolveReducerOutputCap(checkpointBudget, contextWindow, reducerConfig);
+    options.checkpointMaxTokens ??
+    // F7: the reducer may be a different model with its own window, so the cap
+    // is derived from the reducer's limits, never the primary model's.
+    resolveReducerOutputCap(checkpointBudget, resolveContextLimit(reducerConfig), reducerConfig);
   const preTokens = options.preContextTokens ?? estimateHistoryTokens(contextHistory);
 
   const generation = nextGeneration(contextHistory);
@@ -512,7 +513,11 @@ export async function runCompact(
       // A truncated reply is not malformed reasoning, it is an unfinished
       // sentence: re-asking with a strictly longer repair prompt would truncate
       // again, so the one repair attempt is kept for a reply that could use it.
-      if (generated.truncated) attemptReasons.add('invalid-checkpoint');
+      // Truncation only counts against coverage when it actually cost us the
+      // checkpoint -- a reply cut off after a complete JSON object still parses,
+      // and marking that degraded would saturate the lifetime record for the
+      // rest of the conversation.
+      if (generated.truncated && !candidate.ok) attemptReasons.add('invalid-checkpoint');
       if (!candidate.ok && !generated.truncated && !repairUsed && modelCalls < MAX_MODEL_CALLS) {
         repairUsed = true;
         const repairPrompt = buildRepairPrompt(prompt, generated.text, candidate.error);
@@ -541,6 +546,7 @@ export async function runCompact(
           rawValidationHistory,
           rollingCheckpoint,
         );
+        if (generated.truncated && !candidate.ok) attemptReasons.add('invalid-checkpoint');
       }
 
       if (restartForOverflow) break;
@@ -878,7 +884,14 @@ function planReduction(
   bundles: readonly Message[][],
   priorCheckpoint: ConversationCheckpointV2 | undefined,
   effectiveContextWindow: number,
-  checkpointBudget: number,
+  /**
+   * Room reserved for the inherited checkpoint embedded in each chunk's prompt.
+   * Since fitting moved to the end of the run the rolling seed can exceed this,
+   * which is why `resolveReducerOutputCap` bounds the overshoot rather than the
+   * plan absorbing it -- reserving the whole output cap here would starve the
+   * history budget instead.
+   */
+  seedBudget: number,
   options: RunCompactOptions,
   generation: number,
   statistics: ConversationCheckpointV2['statistics'],
@@ -920,7 +933,7 @@ function planReduction(
     statistics,
   );
   const framingTokens =
-    estimateTextTokens(CHECKPOINT_SYSTEM) + estimateTextTokens(framingPrompt) + checkpointBudget;
+    estimateTextTokens(CHECKPOINT_SYSTEM) + estimateTextTokens(framingPrompt) + seedBudget;
   const historyBudget = Math.max(MIN_FRAGMENT_TEXT_TOKENS, maxInputTokens - framingTokens);
   const units: InputUnit[] = [];
   const allTotals = new Map<string, number>();
@@ -1188,8 +1201,17 @@ function parseJsonObject(text: string): unknown {
 }
 
 function parseCheckpointMessage(message: Message): ConversationCheckpointV2 | undefined {
+  // Note: the file cap is applied on the way out of this function too. Dropping
+  // `.max()` from the schema is what stops an over-long checkpoint from failing
+  // to parse at all; trimming here is what keeps the cap true for the inherited
+  // document that seeds the next generation.
   const parsed = conversationCheckpointV2Schema.safeParse(parseJsonObject(message.content));
-  return parsed.success ? (parsed.data as ConversationCheckpointV2) : undefined;
+  if (!parsed.success) return undefined;
+  const checkpoint = parsed.data as ConversationCheckpointV2;
+  if (checkpoint.files.length > MAX_CHECKPOINT_FILES) {
+    checkpoint.files = checkpoint.files.slice(-MAX_CHECKPOINT_FILES);
+  }
+  return checkpoint;
 }
 
 function validateCheckpoint(
@@ -1366,9 +1388,16 @@ function makeDeterministicFallback(
       };
   const sanitized = sanitizeModelText(modelText);
   const limit = Math.max(256, checkpointBudget * 3);
-  const note = sanitized
-    ? `${sanitized} ${RETRIEVAL_WARNING}`
-    : `The summarizer returned no usable structured checkpoint. ${RETRIEVAL_WARNING}`;
+  // `sanitizeModelText` strips fences and control characters but never shortens,
+  // so the raw reply -- now capped far above the checkpoint budget -- would
+  // otherwise be appended whole and blow the summary's bound. Half the limit is
+  // reserved for the note so the inherited summary can always take the rest.
+  const note = truncateText(
+    sanitized
+      ? `${sanitized} ${RETRIEVAL_WARNING}`
+      : `The summarizer returned no usable structured checkpoint. ${RETRIEVAL_WARNING}`,
+    Math.max(160, Math.floor(limit / 2)),
+  );
   // A rejected generation is a failure to ADD, not a reason to forget. The
   // inherited summary is the accumulated narrative of every generation before
   // this one, and overwriting it with this notice discarded all of it because a
@@ -1410,7 +1439,20 @@ function resolveReducerOutputCap(
     checkpointBudget * REDUCER_OUTPUT_HEADROOM,
     checkpointBudget + REDUCER_OUTPUT_MIN_MARGIN_TOKENS,
   );
-  const windowCeiling = Math.floor(contextWindow * (1 - SUMMARIZER_INPUT_FRACTION));
+  // Fitting now happens once at the end, so the rolling checkpoint that seeds
+  // the next chunk's prompt is bounded by this cap rather than by the content
+  // budget `planReduction` reserved for it. The worst-case chunk request is
+  // therefore `maxInput + (cap - checkpointBudget)` with `cap` more still to
+  // come back as output, and all of it has to fit the window:
+  //
+  //   SUMMARIZER_INPUT_FRACTION * w + (cap - budget) + cap <= w
+  //   =>  cap <= (w * (1 - SUMMARIZER_INPUT_FRACTION) + budget) / 2
+  //
+  // Without this the enlarged cap and the relocated fit combine into a context
+  // overflow on exactly the multi-chunk reductions that need the headroom most.
+  const windowCeiling = Math.floor(
+    (contextWindow * (1 - SUMMARIZER_INPUT_FRACTION) + checkpointBudget) / 2,
+  );
   const modelCeiling = config.modelInfo?.maxOutputTokens ?? Number.POSITIVE_INFINITY;
   return Math.max(checkpointBudget, Math.min(wanted, windowCeiling, modelCeiling));
 }
