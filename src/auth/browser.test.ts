@@ -3,12 +3,20 @@ import { spawn } from 'node:child_process';
 import { openInBrowser } from './browser.js';
 
 /**
- * A launcher that does not exist on any platform, so the suite never actually
- * opens a browser tab on a developer machine or a CI image with xdg-utils.
- * `openInBrowser` picks its command from the platform, so this is spelled as an
- * unsupported platform value rather than by stubbing spawn.
+ * A command name no PATH resolves, used to reach the real ENOENT path.
+ *
+ * This cannot be spelled as an unsupported *platform* value: `launcher()` maps
+ * every platform that is not darwin or win32 to `xdg-open`, so an unknown
+ * platform selects a launcher that genuinely exists on a Linux CI image. Doing
+ * it that way both failed there and spawned the real launcher against the test
+ * URL, which is the one thing this file must never do. The command is injected
+ * instead, through the seam the success-path tests already use.
  */
-const NO_LAUNCHER = 'book-test-nonexistent-platform' as unknown as NodeJS.Platform;
+const NO_LAUNCHER = 'book-test-nonexistent-launcher';
+
+/** Forwards to the real `spawn`, so ENOENT arrives the way production sees it. */
+const spawnMissing = ((_command: string, args: string[], options: object) =>
+  spawn(NO_LAUNCHER, args, options as never)) as unknown as typeof spawn;
 
 describe('openInBrowser', () => {
   /**
@@ -30,9 +38,9 @@ describe('openInBrowser', () => {
    * the login then sat waiting for a redirect nothing would produce.
    */
   it('reports false when the launcher binary does not exist', async () => {
-    await expect(openInBrowser('https://example.com/authorize?a=1&b=2', NO_LAUNCHER)).resolves.toBe(
-      false,
-    );
+    await expect(
+      openInBrowser('https://example.com/authorize?a=1&b=2', 'linux', spawnMissing),
+    ).resolves.toBe(false);
   });
 
   it('reports true once the child actually spawns', async () => {
