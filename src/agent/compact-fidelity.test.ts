@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { runCompact, resolveContextLimit } from './compact.js';
+import { runCompact } from './compact.js';
+import { resolveContextLimit } from '../models.js';
 import {
   scoreFidelity,
   factRetained,

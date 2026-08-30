@@ -662,6 +662,17 @@ export interface SkillListingResult {
   charCount: number;
 }
 
+/**
+ * Characters the skill listing may occupy in the system prompt.
+ *
+ * Lives here so the listing shipped to the model and the /skills diagnostics
+ * that describe it cannot drift: both call this, neither re-derives the share
+ * or the cap.
+ */
+export function skillListingBudgetChars(contextWindow: number): number {
+  return Math.min(8000, Math.max(512, Math.floor(contextWindow * 0.08)));
+}
+
 export function buildSkillListing(
   skills: readonly Skill[],
   budgetChars = 8000,

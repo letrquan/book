@@ -20,6 +20,7 @@ import { resolveCompactModelConfig } from '../config.js';
 import { isContextOverflowError } from '../provider/reliability.js';
 import { runHooks } from '../hooks.js';
 import { getPrimaryArg } from '../tools/primary-arg.js';
+import { resolveContextLimit } from '../models.js';
 import {
   toolResultErrorMessage,
   toolResultModelContent,
@@ -30,7 +31,6 @@ import { createDebugLogger } from '../debug-log.js';
 const log = createDebugLogger('compact');
 
 export const DEFAULT_COMPACT_THRESHOLD = 0.8;
-export const DEFAULT_CONTEXT_WINDOW = 272_000;
 export const IMAGE_TOKEN_ESTIMATE = 1_000;
 const DESIRED_CONTEXT_FRACTION = 0.5;
 const RECENT_TAIL_MAX_TOKENS = 20_000;
@@ -185,11 +185,6 @@ type GenerateResult =
       contextOverflow: boolean;
       result: Extract<CompactResult, { status: 'failed' }>;
     };
-
-export function resolveContextLimit(config: AgentConfig): number {
-  const window = config.modelInfo?.contextWindow;
-  return typeof window === 'number' && window > 0 ? window : DEFAULT_CONTEXT_WINDOW;
-}
 
 export function usagePressureTokens(usage: Usage | null | undefined): number {
   if (!usage) return 0;

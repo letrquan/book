@@ -12,6 +12,7 @@ import type {
   ToolSearchMatch,
 } from '../types/tools.js';
 import { estimateTokens } from '../context-report.js';
+import { resolveContextLimit } from '../models.js';
 import { canonicalToolName, TOOL_ALIASES } from './aliases.js';
 import {
   isToolCallAllowed,
@@ -177,10 +178,11 @@ function isModeAvailable(definition: ToolDefinition, context: ToolContext): bool
 
 function effectiveBudget(config: AgentConfig): number {
   const configured = config.settings.toolDiscovery.schemaTokenBudget;
-  const contextWindow = config.modelInfo?.contextWindow;
-  return contextWindow
-    ? Math.min(configured, Math.max(1000, Math.floor(contextWindow * 0.05)))
-    : configured;
+  // Resolve through the shared window rather than skipping the cap when the model
+  // declares nothing: leaving it uncapped inverted the incentive, so declaring
+  // contextWindow: 32_000 shrank the catalog to 1600 while staying silent about the
+  // same model kept the full budget.
+  return Math.min(configured, Math.max(1000, Math.floor(resolveContextLimit(config) * 0.05)));
 }
 
 interface SurfaceOptions {

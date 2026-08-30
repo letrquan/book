@@ -27,7 +27,8 @@ import type {
   RewindTarget,
   PlanRecordData,
 } from '../../types/sessions.js';
-import { resolveContextLimit, shouldCompact, usagePressureTokens } from '../../agent/compact.js';
+import { shouldCompact, usagePressureTokens } from '../../agent/compact.js';
+import { resolveContextLimit } from '../../models.js';
 import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types/runtime.js';

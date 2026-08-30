@@ -4,13 +4,12 @@ import {
   compactHistory,
   buildCompactPrompt,
   serializeHistoryForCompact,
-  resolveContextLimit,
   usagePressureTokens,
   runCompact,
-  DEFAULT_CONTEXT_WINDOW,
   IMAGE_TOKEN_ESTIMATE,
   estimateProviderRequestTokens,
 } from './compact.js';
+import { DEFAULT_CONTEXT_WINDOW, resolveContextLimit } from '../models.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message, Usage } from '../types/messages.js';
 import { defaultConfig, toolResult } from '../test/fixtures.js';

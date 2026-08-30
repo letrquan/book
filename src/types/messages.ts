@@ -49,6 +49,8 @@ export interface ContextCommandDisplay {
   kind: 'context';
   model: string;
   maxTokens: number;
+  /** False/absent when maxTokens is the assumed default, not a declared window. */
+  windowDeclared?: boolean;
   estimatedTokens: number;
   totalMessages: number;
   userMessages: number;

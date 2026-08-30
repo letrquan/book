@@ -3,6 +3,7 @@ import { useMemo } from 'react';
 import { usePulse, useTimedFlash } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import type { PermissionMode } from '../../types/runtime.js';
+import { DEFAULT_CONTEXT_WINDOW } from '../../models.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
 import { modeColorToken, modeLabel } from '../mode-style.js';
@@ -81,7 +82,7 @@ export function buildColoredSegments(
 export function StatusLine({
   model,
   tokenCount,
-  maxTokens = 272_000,
+  maxTokens = DEFAULT_CONTEXT_WINDOW,
   mode,
   taskCount,
   activeTaskCount,

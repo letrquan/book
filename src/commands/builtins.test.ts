@@ -9,7 +9,7 @@ import {
   type BuiltinCommandContext,
 } from './builtins.js';
 import { defaultConfig } from '../test/fixtures.js';
-import { DEFAULT_CONTEXT_WINDOW } from '../agent/compact.js';
+import { DEFAULT_CONTEXT_WINDOW } from '../models.js';
 
 function context(overrides: Partial<BuiltinCommandContext> = {}): BuiltinCommandContext {
   return {
@@ -174,6 +174,14 @@ describe('built-in command contract', () => {
       }),
     );
 
+    // ...and it is labelled as an assumption, so an 8k local model behind a router is
+    // not silently reported as having 272k of headroom.
+    expect(unknownModel).toEqual(
+      expect.objectContaining({
+        display: expect.objectContaining({ windowDeclared: false }),
+      }),
+    );
+
     // A model that declares a window still wins.
     const known = registry.execute(
       'context',
@@ -182,7 +190,11 @@ describe('built-in command contract', () => {
     );
     expect(known).toEqual(
       expect.objectContaining({
-        display: expect.objectContaining({ kind: 'context', maxTokens: 1_048_576 }),
+        display: expect.objectContaining({
+          kind: 'context',
+          maxTokens: 1_048_576,
+          windowDeclared: true,
+        }),
       }),
     );
   });

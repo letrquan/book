@@ -26,10 +26,10 @@ import {
   clipHistoryToolResults,
   estimateHistoryTokens,
   estimateProviderRequestTokens,
-  resolveContextLimit,
   shouldCompact,
   usagePressureTokens,
 } from './compact.js';
+import { resolveContextLimit } from '../models.js';
 import {
   evaluatePermissionDetail,
   permissionRuleForToolCall,

@@ -1,11 +1,7 @@
 import type { AgentRuntimeEvent } from '../agents/types.js';
 import { runAgentLoop } from '../agent/loop.js';
-import {
-  resolveContextLimit,
-  runCompact,
-  runPostCompactHooks,
-  type RunCompactOptions,
-} from '../agent/compact.js';
+import { runCompact, runPostCompactHooks, type RunCompactOptions } from '../agent/compact.js';
+import { resolveContextLimit } from '../models.js';
 import { runSessionEnd, runSessionStart } from './lifecycle.js';
 import type { SessionLifecycleOptions } from './lifecycle.js';
 import type { ToolRegistry } from '../tools/registry.js';
