@@ -130,6 +130,13 @@ export async function* chatCompletionStream(
   }
   if (config.effortExplicit && config.effort) body.reasoning_effort = config.effort;
 
+  // Whether this request expects the model to reason before answering: either we
+  // asked it to, or the model's catalog entry declares an effort range. An entry
+  // of `false` means the model does not reason at all; an absent entry is unknown,
+  // and stays on the chat regime rather than guessing.
+  const reasoningEnabled =
+    body.reasoning_effort !== undefined || typeof config.modelInfo?.effort === 'object';
+
   if (tools.length > 0) {
     body.tools = convertTools(tools);
   }
@@ -317,7 +324,15 @@ export async function* chatCompletionStream(
   // Stream stall detection: if no data arrives for streamStallTimeoutMs,
   // call the onStreamStall callback and yield a visible error instead of
   // leaving the TUI stuck in a pending read forever.
-  const stallTimeoutMs = retry.streamStallTimeoutMs;
+  //
+  // A reasoning model goes quiet on purpose, and many OpenAI-compatible endpoints
+  // buffer the whole thinking block before emitting anything. The chat-tuned 20s
+  // ceiling cancels a healthy request mid-thought and reports it as a stalled
+  // stream, which is the single most common way a high-effort run "just stops".
+  const stallTimeoutMs =
+    reasoningEnabled && retry.thinkingStallTimeoutMs
+      ? Math.max(retry.streamStallTimeoutMs, retry.thinkingStallTimeoutMs)
+      : retry.streamStallTimeoutMs;
 
   try {
     while (true) {

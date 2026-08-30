@@ -565,6 +565,92 @@ describe('chatCompletionStream retry — callbacks', () => {
   });
 });
 
+describe('stall tolerance while reasoning', () => {
+  // A stream whose first byte arrives after `delayMs` — an endpoint that buffers
+  // the whole thinking block before emitting anything.
+  function quietThenAnswer(delayMs: number): ReadableStream {
+    return new ReadableStream({
+      start(c) {
+        const enc = new TextEncoder();
+        setTimeout(() => {
+          c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"answer"}}]}\n\n'));
+          c.enqueue(enc.encode('data: [DONE]\n\n'));
+          c.close();
+        }, delayMs);
+      },
+    });
+  }
+
+  const stallRetry = {
+    maxAttempts: 1,
+    baseDelayMs: 0,
+    maxDelayMs: 10,
+    totalBudgetMs: 0,
+    requestTimeoutMs: 0,
+    streamStallTimeoutMs: 50,
+    thinkingStallTimeoutMs: 30_000,
+    toolRetries: 0,
+    watchdog: false,
+    streamReissueAttempts: 0,
+    outputCapContinuations: 0,
+  };
+
+  async function collect(cfg: Parameters<typeof chatCompletionStream>[0]) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(quietThenAnswer(200), { status: 200 })),
+    );
+    const events = [];
+    for await (const e of chatCompletionStream(cfg, [{ role: 'user', content: 'hi' }], [])) {
+      events.push(e);
+    }
+    return events;
+  }
+
+  it('gives a requested-reasoning stream the thinking ceiling, not the chat one', async () => {
+    // The chat-tuned ceiling cancels a healthy high-effort request mid-thought and
+    // reports stream_stall — the most common way a high-effort run "just stops".
+    const events = await collect(
+      defaultConfig({ retry: stallRetry, effortExplicit: true, effort: 'high' }),
+    );
+
+    expect(
+      events.find((e) => e.type === 'error' && e.errorCode === 'stream_stall'),
+    ).toBeUndefined();
+    expect(events.some((e) => e.type === 'text')).toBe(true);
+  });
+
+  it('gives a model whose catalog entry declares an effort range the thinking ceiling', async () => {
+    // No reasoning_effort is sent here; the declaration is the only evidence
+    // available before the silence starts.
+    const events = await collect(
+      defaultConfig({ retry: stallRetry, modelInfo: { effort: { default: 'high' } } }),
+    );
+
+    expect(
+      events.find((e) => e.type === 'error' && e.errorCode === 'stream_stall'),
+    ).toBeUndefined();
+  });
+
+  it('keeps the chat ceiling for a model that does not reason', async () => {
+    const events = await collect(
+      defaultConfig({ retry: stallRetry, modelInfo: { effort: false } }),
+    );
+
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'error', errorCode: 'stream_stall' }),
+    );
+  });
+
+  it('keeps the chat ceiling for an unknown model with no effort requested', async () => {
+    const events = await collect(defaultConfig({ retry: stallRetry }));
+
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'error', errorCode: 'stream_stall' }),
+    );
+  });
+});
+
 describe('chatCompletionStream retry — edge cases', () => {
   it('stops retrying when user aborts via signal', async () => {
     let calls = 0;

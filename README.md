@@ -516,12 +516,20 @@ success: handing an approved plan back reports `handoff_requested`, and a plan s
 `plan_stop` and carries the approver's own message. Both keep the `completed` status, because
 neither is a failure.
 
-Thinking models get their own stall ceiling. `retry.streamStallTimeoutMs` (20 s) is tuned for a chat,
-where that much silence means something broke; adaptive thinking is on by default for Opus and Sonnet
-at `high` effort, and a long quiet stretch before the first token is the model working. While thinking
-is enabled Book uses `retry.thinkingStallTimeoutMs` instead (default 15 minutes,
-`BOOK_THINKING_STALL_TIMEOUT_MS`). Raise it if a very high-effort Opus run still reports
-`stream_stall`.
+Thinking models get their own stall ceiling, on both provider paths. `retry.streamStallTimeoutMs`
+(20 s) is tuned for a chat, where that much silence means something broke; a long quiet stretch
+before the first token from a reasoning model is the model working. When a request enables reasoning
+Book uses `retry.thinkingStallTimeoutMs` instead (default 15 minutes,
+`BOOK_THINKING_STALL_TIMEOUT_MS`). Raise it if a very high-effort run still reports `stream_stall`.
+
+What counts as "enables reasoning" differs by path, because the two carry different evidence. On the
+Anthropic path it is adaptive thinking, which is on by default for Opus and Sonnet at `high` effort.
+On an OpenAI-compatible endpoint it is a request that sends `reasoning_effort`, or a model whose
+`provider.<id>.models.<model>.effort` entry declares an effort range — an endpoint that buffers a
+whole thinking block sends nothing at all until it is done, so the declaration is the only signal
+available before the silence starts. A model with `effort: false` stays on the chat ceiling, and so
+does a model with no catalog entry, since an unknown model is more likely a chat model than a
+reasoning one.
 
 `retry.streamReissueAttempts` re-sends a turn after a transport fault — a stalled stream, a dropped
 socket — onto the history already committed. Set it to 0 to end the run on any stream error, as

@@ -32,6 +32,16 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A reasoning model on an OpenAI-compatible endpoint no longer dies at the 20-second chat stall
+  ceiling.** `retry.thinkingStallTimeoutMs` (15 minutes) was applied on the Anthropic path only, so
+  the same high-effort run that survives against Anthropic was cancelled mid-thought against a
+  router and reported as `stream_stall` — and `BOOK_STREAM_STALL_TIMEOUT_MS` is clamped to 120 s, so
+  no workaround could reach the ceiling the other path gets by default. Endpoints that buffer a
+  whole thinking block send nothing until it is done, which is exactly the shape the chat ceiling
+  reads as a dead stream. A request now gets the thinking ceiling when it sends `reasoning_effort`
+  or when the model's catalog entry declares an effort range; `effort: false` and models with no
+  entry keep the chat ceiling.
+
 - **`book config` no longer fails on the configuration it exists to repair.** It resolved the merged
   settings on every invocation, so one malformed layer made every subcommand throw -- including the
   read that would have identified the broken file and the write that would have replaced the bad
