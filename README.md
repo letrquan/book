@@ -558,6 +558,32 @@ book status <id|name> --json
 It reports the byte-exact original objective, how much history has been compacted away, cumulative
 tokens with an upper-bound USD figure, and the plan as last persisted.
 
+It also reports **liveness**, which is the half the session transcript cannot answer. Book writes a
+per-run record to `<BOOK_HOME>/runs/<session-id>.json` at every turn boundary; `book status` reads it
+and leads with it:
+
+```
+Run: finished — timed_out (stream_stall)
+  Stream stalled: no data received for 20000ms
+  turn 16  •  elapsed 3m 44s
+  last update: 20m ago
+  last tool: Bash
+  in progress: run npm check
+  open todos: 3
+  spend: ~$2.4000 of $10.00 budget
+  free disk: 50.0 GiB
+```
+
+The headline is one of four: `running` (the pid answers), `finished` with the terminal status and
+reason, `crashed` when the process died without recording an outcome, or *no longer running, and
+recorded no outcome* — the case that otherwise looks exactly like a run that had done nothing. A
+live process that has not reached a turn boundary in fifteen minutes is called out as possibly
+wedged, since a transcript's mtime advances at the same rate for a productive run and one stuck on a
+permission prompt. `--json` carries the same fields under `run` for a supervisor script.
+
+This matters most for `book -p`, which under the default `text` output format writes nothing at all
+until it terminates.
+
 To be told when something needs a person, configure a `Notification` hook. Only `severity: "alarm"`
 is meant to wake anyone — everything else is a line to tail:
 

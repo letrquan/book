@@ -215,6 +215,16 @@ npm run bench:runtime      # runtime benchmarks
 
 `npm run check` is the fast gate (no integration tests, no build). Run `npm test` before a release-grade change. Release tooling: `npm run release:check` (version + audit + package smoke).
 
+## Building Book with Book
+
+New Book features are built by **running Book**, not by editing these files directly. Drive it with `npm run dev` or a built/linked `book` binary; `--print` mode is convenient for driving it non-interactively.
+
+**Print mode alone does not finish the job — watch the change in the TUI.** The TUI is the primary mode and shares almost none of the print path: rendering, the transcript grid (`src/tui/layout.ts`), streaming updates, status, overlays, and key handling are exercised nowhere else. A change can pass `npm run check` and behave correctly under `--print` while the interactive surface it touches is misaligned, silent, or throwing. So open the feature in the TUI and watch it run before calling it done, and treat what you see there as first-class evidence. A print-only session has established nothing about the TUI.
+
+Defects Book shows during that work are in scope. Fix them, or file them, before the feature counts as done; a feature branch is expected to carry both the feature and the incidental fixes found while building it. A blocker that stops Book from doing the job at all outranks the feature that exposed it.
+
+The reason is that this project's north star is whether Book is good enough to use instead of Claude Code, and that cannot be answered from outside. The failures that decide it only surface in real multi-turn use — a settings layer that bricks startup, a stall ceiling tuned for chat rather than for a thinking model, a flag that is parsed and then discarded — and none of them are visible to code review.
+
 ## Configuration
 
 Settings are loaded in priority order (last wins):
