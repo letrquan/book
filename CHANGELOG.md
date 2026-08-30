@@ -56,6 +56,13 @@ All notable changes to this project are documented in this file.
   the valid levels listed, and the list itself is derived from the settings schema rather than
   restated a third time.
 
+- **The repository no longer pins a model for its contributors.** The checked-in
+  `.book/settings.json` set `model: "qc/qwen3.7-max"` -- a bare model id whose `qc/` prefix names
+  no provider this repository configures. Project scalars outrank the user layer, so every clone
+  had a working `~/.book/settings.json` model overridden by the checked-in one, resolved against
+  the default OpenAI base URL, and reported the mismatch as a missing credential. Choosing a model
+  belongs to the user layer or `--model`, so the file is gone.
+
 - **`book config` no longer fails on the configuration it exists to repair.** It resolved the merged
   settings on every invocation, so one malformed layer made every subcommand throw -- including the
   read that would have identified the broken file and the write that would have replaced the bad
