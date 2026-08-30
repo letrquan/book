@@ -236,7 +236,50 @@ describe('runDoctorCommand --no-settings', () => {
     expect(output).not.toMatch(/\[x\] Project:/);
   });
 });
+describe('runDoctorCommand model resolution', () => {
+  it('names a provider prefix that matches no configured provider', async () => {
+    // Reported before Credentials on purpose. Without it the only symptom of a
+    // typo'd provider id was "not resolved", which sends the user looking for a
+    // missing key instead of a misspelled prefix -- against a default endpoint
+    // they never chose, for a vendor that has never heard of the model.
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({
+        model: 'qc/qwen3.7-max',
+        sandbox: { enabled: false },
+        provider: {
+          '9router': { baseURL: 'https://9router.example/v1', apiKey: 'k', models: {} },
+        },
+      }),
+    );
 
+    const output = await doctorOutput();
+
+    expect(output).toContain('names provider "qc", which is not configured');
+    expect(output).toContain('configured: 9router');
+    expect(output).toContain('Model: qc/qwen3.7-max (https://api.openai.com/v1)');
+  });
+
+  it('says nothing when the prefix resolves', async () => {
+    mkdirSync(join(workspace, '.book'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({
+        model: '9router/qc/qwen3.7-max',
+        sandbox: { enabled: false },
+        provider: {
+          '9router': { baseURL: 'https://9router.example/v1', apiKey: 'k', models: {} },
+        },
+      }),
+    );
+
+    const output = await doctorOutput();
+
+    expect(output).not.toContain('is not configured');
+    expect(output).toContain('Model: qc/qwen3.7-max (https://9router.example/v1)');
+  });
+});
 describe('runDoctorCommand project-declared hooks', () => {
   function writeProjectHooks(hooks: Record<string, unknown>, root = workspace): void {
     mkdirSync(join(root, '.book'), { recursive: true });

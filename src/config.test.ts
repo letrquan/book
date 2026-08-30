@@ -376,6 +376,59 @@ describe('loadConfig provider registry', () => {
     expect(config.modelInfo?.contextWindow).toBe(128000);
   });
 
+  it('reports a provider prefix that matches no configured provider', () => {
+    // The failure this exists for: one provider `9router` configured, a layer
+    // pinning `qc/qwen3.7-max`, and no `qc` anywhere. Book fell back to
+    // https://api.openai.com/v1 and said nothing, so the only symptom was a
+    // credentials line that sent the user hunting for a missing key.
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({
+        model: 'qc/qwen3.7-max',
+        provider: {
+          '9router': { baseURL: 'https://9router.example/v1', apiKey: 'k', models: {} },
+        },
+      }),
+    );
+
+    const config = loadConfig(workspace);
+    expect(config.modelProviderWarning).toMatch(
+      /Model "qc\/qwen3\.7-max" names provider "qc", which is not configured \(configured: 9router\)/,
+    );
+    // Still resolved, not thrown: the fallback is right for a namespaced id.
+    expect(config.model).toBe('qc/qwen3.7-max');
+  });
+
+  it('says nothing about a prefix that does resolve', () => {
+    process.env.OPENROUTER_API_KEY = 'or-key';
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({
+        model: 'openrouter/deepseek-chat',
+        provider: {
+          openrouter: {
+            baseURL: 'https://openrouter.ai/api/v1',
+            apiKey: '{env:OPENROUTER_API_KEY}',
+            models: {},
+          },
+        },
+      }),
+    );
+
+    expect(loadConfig(workspace).modelProviderWarning).toBeUndefined();
+  });
+
+  it('says nothing about a namespaced model id when no providers are configured', () => {
+    // `meta-llama/llama-3-70b` is one model name an OpenAI-compatible endpoint
+    // expects verbatim, not a provider reference. Warning here would fire on
+    // every ordinary BOOK_BASE_URL setup.
+    process.env.BOOK_MODEL = 'meta-llama/llama-3-70b';
+
+    const config = loadConfig(workspace, { noSettings: true });
+    expect(config.modelProviderWarning).toBeUndefined();
+    expect(config.model).toBe('meta-llama/llama-3-70b');
+  });
+
   it('lets explicit max tokens override model metadata', () => {
     process.env.OPENROUTER_API_KEY = 'or-key';
     process.env.BOOK_MAX_TOKENS = '12345';
