@@ -74,6 +74,12 @@ export interface LoadConfigOptions {
   runMigrations?: boolean;
   /** CLI -m/--model override, applied before provider registry resolution. */
   modelOverride?: string;
+  /**
+   * CLI --effort override. Passed in rather than assigned after the fact so it
+   * counts as an explicit choice: model metadata must not override a level the
+   * user typed, and providers that gate on `effortExplicit` must see it.
+   */
+  effortOverride?: AgentConfig['effort'];
   /** Let the interactive TUI start before a BYOK credential has been added. */
   allowMissingApiKey?: boolean;
 }
@@ -140,7 +146,15 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     envMaxTokens !== undefined ||
     settings.maxTokens !== undefined ||
     legacy?.maxTokens !== undefined;
-  const effortExplicit = Boolean(process.env.BOOK_EFFORT || settings.effort);
+  // "Explicit" means a human chose this level -- by flag, env var, or settings --
+  // as opposed to a default or a value inferred from model metadata. Both
+  // consumers depend on that one meaning: applyModelDefaults declines to override
+  // an explicit level, and the OpenAI-compatible path sends `reasoning_effort`
+  // only for one. Omitting the flag left `--effort` accepted, reported, and
+  // discarded on that path.
+  const effortExplicit = Boolean(
+    options?.effortOverride || process.env.BOOK_EFFORT || settings.effort,
+  );
   const rawModel =
     options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
@@ -158,7 +172,8 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const defaultBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl || DEFAULT_OPENAI_BASE_URL;
   const defaultMaxTokens =
     envMaxTokens ?? settings.maxTokens ?? legacy?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
-  const defaultEffort = validateEffort(process.env.BOOK_EFFORT) || settings.effort || 'high';
+  const defaultEffort =
+    options?.effortOverride || validateEffort(process.env.BOOK_EFFORT) || settings.effort || 'high';
   const defaultProvider = validateProvider(process.env.BOOK_PROVIDER) || 'auto';
 
   let config: AgentConfig = {

@@ -146,16 +146,19 @@ export function enterInteractiveScreen(
 export async function runMainAction(options: Record<string, unknown>): Promise<void> {
   try {
     const requestedWorkspace = options.workspace as string | undefined;
+    // Validated again here rather than trusted from commander: the option parser
+    // covers the CLI, this covers every other caller of runMainAction.
+    const effortOverride = options.effort
+      ? parseEffortLevel(String(options.effort), '--effort')
+      : undefined;
     const config = loadConfig(requestedWorkspace, {
       settingsOverridePath: options.settings as string | undefined,
       noSettings: options.settings === false,
       runMigrations: options.settings !== false,
       modelOverride: options.model as string | undefined,
+      effortOverride,
       allowMissingApiKey: options.print === undefined && !options.scrollback,
     }) as AgentConfig;
-    // Validated again here rather than trusted from commander: the option parser
-    // covers the CLI, this covers every other caller of runMainAction.
-    if (options.effort) config.effort = parseEffortLevel(String(options.effort), '--effort');
     const interactiveMaxTurns = parseNumericFlag(options.maxTurns, '--max-turns', {
       integer: true,
     });
