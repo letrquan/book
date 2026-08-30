@@ -23,6 +23,23 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **`book status` reports whether a run is alive, and how it ended.** Book has been writing a
+  liveness record to `<BOOK_HOME>/runs/<session-id>.json` at every turn boundary -- pid, turn,
+  elapsed, spend against budget, current todo, last tool, free disk, and a terminal or crash outcome
+  -- and nothing outside its own test read it. `book status` reported objective, history, tokens,
+  cost, and todos from the session JSONL, and so could not answer whether the process was alive,
+  which turn it was on, or whether it finished cleanly. A 20-minute print run that completed its work
+  correctly and one that died at turn 16 on a stalled stream looked identical from outside; the only
+  way to tell them apart was `jq` on a file with no documented reader.
+
+  The record is now folded into `book status`, which already existed, needs no credentials, and is
+  the surface a person looks at. The headline is one of four: `running` when the pid answers,
+  `finished` with the terminal status and reason, `crashed` when the process died recording no
+  outcome, and -- the case the record exists for -- *no longer running, and recorded no outcome*. A
+  live process that has not reached a turn boundary in fifteen minutes is named as possibly wedged,
+  since a transcript's mtime advances at the same rate for a healthy run and one stuck on a
+  permission prompt. `--json` carries the same fields under `run`.
+
 - **`book config unset <key>`** removes a key from one layer, so a shadowing value can be cleared
   with the tool that reported it rather than by hand.
 
@@ -31,6 +48,30 @@ All notable changes to this project are documented in this file.
   answers "why is this not the value I set".
 
 ### Fixed
+
+- **`--effort` is validated like every other effort input.** `BOOK_EFFORT` was checked against the
+  level list and `settings.effort` against its schema, but the flag was a bare cast — so a typo was
+  forwarded to the provider as `reasoning_effort` / `output_config.effort` and came back as an
+  opaque HTTP 400 for a mistake the CLI could name exactly. It is now rejected at parse time, with
+  the valid levels listed, and the list itself is derived from the settings schema rather than
+  restated a third time.
+
+- **The repository no longer pins a model for its contributors.** The checked-in
+  `.book/settings.json` set `model: "qc/qwen3.7-max"` -- a bare model id whose `qc/` prefix names
+  no provider this repository configures. Project scalars outrank the user layer, so every clone
+  had a working `~/.book/settings.json` model overridden by the checked-in one, resolved against
+  the default OpenAI base URL, and reported the mismatch as a missing credential. Choosing a model
+  belongs to the user layer or `--model`, so the file is gone.
+
+- **A reasoning model on an OpenAI-compatible endpoint no longer dies at the 20-second chat stall
+  ceiling.** `retry.thinkingStallTimeoutMs` (15 minutes) was applied on the Anthropic path only, so
+  the same high-effort run that survives against Anthropic was cancelled mid-thought against a
+  router and reported as `stream_stall` — and `BOOK_STREAM_STALL_TIMEOUT_MS` is clamped to 120 s, so
+  no workaround could reach the ceiling the other path gets by default. Endpoints that buffer a
+  whole thinking block send nothing until it is done, which is exactly the shape the chat ceiling
+  reads as a dead stream. A request now gets the thinking ceiling when it sends `reasoning_effort`
+  or when the model's catalog entry declares an effort range; `effort: false` and models with no
+  entry keep the chat ceiling.
 
 - **`book -p` reads the prompt from stdin, as its help has always said it does.** Stdin was consumed
   only for `--input-format stream-json`, so `book -p < prompt.txt` failed with `text input format
