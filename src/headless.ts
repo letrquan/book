@@ -58,6 +58,27 @@ function carriedCostUsd(usage: Usage, models: readonly string[]): number | null 
   return worst;
 }
 
+/**
+ * Read a whole piped prompt for the `text` input format.
+ *
+ * `-p` has always documented "reads prompt from the flag or stdin", but stdin was
+ * only consumed for `--input-format stream-json`, so `book -p < prompt.txt` failed
+ * on a prompt it had been handed. A long prompt had to be interpolated into argv.
+ *
+ * A TTY is left alone and reported as no prompt: an interactive `book -p` with no
+ * argument would otherwise block on a read the user has no reason to expect,
+ * looking like a hang rather than the usage error it is.
+ */
+async function readPipedPrompt(stream: NodeJS.ReadableStream): Promise<string | undefined> {
+  if ((stream as NodeJS.ReadStream).isTTY) return undefined;
+  const chunks: string[] = [];
+  for await (const chunk of stream) {
+    chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+  }
+  const prompt = chunks.join('').trim();
+  return prompt || undefined;
+}
+
 export async function runHeadless(
   config: AgentConfig,
   registry: ToolRegistry,
@@ -537,11 +558,17 @@ export async function runHeadless(
      */
     let commandUsage: Usage | null = null;
 
-    // Collect prompts: text input -> single prompt; stream-json -> read stdin.
+    // Collect prompts: text input -> single prompt, from the flag or stdin;
+    // stream-json -> read stdin.
     const prompts: string[] = [];
     if (opts.inputFormat === 'text') {
-      if (!opts.prompt) throw new Error('text input format requires a prompt');
-      prompts.push(opts.prompt);
+      const prompt = opts.prompt ?? (await readPipedPrompt(opts.stdin ?? process.stdin));
+      if (!prompt) {
+        throw new Error(
+          'print mode requires a prompt: pass one to -p, pipe one on stdin, or use --input-format stream-json',
+        );
+      }
+      prompts.push(prompt);
     } else {
       // stream-json input: newline-delimited {type:'user', content} from stdin.
       const stream = opts.stdin ?? process.stdin;

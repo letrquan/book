@@ -1,11 +1,33 @@
+import { effortLevelSchema } from '../settings.js';
 import type { AgentConfig } from '../types/runtime.js';
 
 export type EffortLevel = NonNullable<AgentConfig['effort']>;
 export type EffortResult = { ok: boolean; error?: string };
 
-export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+/**
+ * Derived from the settings schema rather than restated, so the CLI flag, the
+ * env var, `settings.effort`, and `/effort` cannot come to disagree about which
+ * levels exist.
+ */
+export const EFFORT_LEVELS: readonly EffortLevel[] = effortLevelSchema.options;
 
 export const EFFORT_USAGE = 'Usage: /effort [low|medium|high|xhigh|max]';
+
+/**
+ * Normalize and validate one effort level, or throw naming the valid ones.
+ *
+ * Every other source of an effort level is checked -- `BOOK_EFFORT` against this
+ * list, `settings.effort` against the schema it comes from. Without this the CLI
+ * flag was the one input that reached the provider unchecked, turning a typo
+ * into an opaque HTTP 400 instead of a CLI error.
+ */
+export function parseEffortLevel(raw: string, source: string): EffortLevel {
+  const normalized = raw.trim().toLowerCase();
+  if (!isEffortLevel(normalized)) {
+    throw new Error(`${source} must be one of: ${EFFORT_LEVELS.join(', ')} (got "${raw}")`);
+  }
+  return normalized;
+}
 
 type EffortConfig = Pick<AgentConfig, 'model' | 'modelSelection' | 'modelInfo'>;
 

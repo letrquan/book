@@ -8,7 +8,7 @@ This repository is proprietary and is currently distributed from source/GitHub r
 ## Features
 
 - **Interactive TUI** (Ink/React) plus **print mode** (`-p`) with `text` / `json` / `stream-json` output for CI.
-- **Providers**: Anthropic Messages API (prompt caching, adaptive thinking, `--effort`) and any OpenAI-compatible endpoint, auto-detected from `baseUrl` / `--provider`.
+- **Providers**: Anthropic Messages API (prompt caching, adaptive thinking) and any OpenAI-compatible endpoint, auto-detected from `baseUrl` / `--provider`. `--effort` reaches both, as `output_config.effort` and as `reasoning_effort`.
 - **Project context**: walks the tree to load Codex-style `AGENTS.md` and Claude-style `CLAUDE.md` instructions (user-global → broad project → specific project → local/rules) into a fenced, trust-labeled block, alongside platform info and discovered skills, slash commands, and subagents. Content is split by how often it changes: a cached static prefix, an uncached suffix for activation-class policy, and a per-turn `<session-state>` block carrying date, git status, and mode on the newest user turn — so an edit or a mode toggle costs one turn of cache, not the whole conversation.
 - **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
 - **Sessions**: append-only JSONL persistence with automatic titles from the first prompt plus `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, reference-aware `/compact`, and Claude-style `/rewind` for conversation, code, or both. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, and remembered file facts are freshness-checked before reuse.
@@ -20,7 +20,7 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **MCP**: interoperable MCP tool client with stdio, Streamable HTTP, and legacy SSE transports;
   interactive project-server approval, secret-safe diagnostics, dynamic tool discovery, and
   server-scoped permissions.
-- **CLI helpers**: `book doctor` (diagnose env/config), `book config` (get/set/list settings), `book trust` (approve or reject configuration a repository declared), and `book tool-stats` (measure tool use across sessions — fail counts, rates, durations). None of them require a working credential — they exist to help when the provider is not yet configured, so `book doctor` reports an unresolved key as a finding rather than failing on it.
+- **CLI helpers**: `book doctor` (diagnose env/config), `book config` (get/set/list settings), `book trust` (approve or reject configuration a repository declared), and `book tool-stats` (measure tool use across sessions — fail counts, rates, durations). None of them require a working credential — they exist to help when the provider is not yet configured, so `book doctor` reports an unresolved key as a finding rather than failing on it. When a settings layer is what is broken, `book doctor` names the layer the failure first appears with, and `book doctor --no-settings` reports everything else with all of them skipped.
 
 See [`docs/current-state.md`](./docs/current-state.md) for the verified product snapshot, [`MILESTONES.md`](./MILESTONES.md) for the current roadmap, and [`CHANGELOG.md`](./CHANGELOG.md) for release notes.
 
@@ -64,9 +64,13 @@ book --continue  # most recent session in current directory
 
 # Diagnose setup / edit settings from the shell (these run without a configured credential)
 book doctor
+book doctor --no-settings  # skip every settings layer, when one of them is what is broken
 book config list
 book config get permissions.deny
-book config set permissions.allow '["Read(*)","Glob(*)","Grep(*)"]'
+book config set permissions.allow '["Read(*)","Glob(*)","Grep(*)"]'  # user-global by default
+book config set --local permissions.allow '["Read(*)"]'              # just this checkout
+book config list --local                                             # what this checkout overrides
+book config unset --local permissions.allow                          # drop the override
 
 # Sign in with a provider subscription instead of an API key
 book auth status
@@ -98,7 +102,7 @@ book tool-stats --since 7       # only the last 7 days
 | `--output-format <fmt>`               | `text` \| `json` \| `stream-json`                                                  |
 | `--input-format <fmt>`                | `text` \| `stream-json` (print mode input)                                         |
 | `--permission-mode <mode>`            | `default` \| `acceptEdits` \| `plan` \| `auto` \| `dontAsk` \| `bypassPermissions` |
-| `--effort <level>`                    | Thinking effort: `low` \| `medium` \| `high` \| `xhigh` \| `max`                   |
+| `--effort <level>`                    | Thinking effort: `low` \| `medium` \| `high` \| `xhigh` \| `max`; outranks `BOOK_EFFORT`, `settings.effort`, and model metadata |
 | `--provider <type>`                   | `anthropic` \| `openai` \| `auto`                                                  |
 | `--max-turns <n>`                     | Cap agent turns (print mode)                                                       |
 | `--max-budget-usd <amount>`           | Cap spend (print mode)                                                             |
@@ -119,8 +123,20 @@ book tool-stats --since 7       # only the last 7 days
 
 ### Print mode
 
-`-p/--print` runs one or more prompts with no terminal attached, for CI and scripting. Three
-things behave differently there, because there is nobody to ask.
+`-p/--print` runs one or more prompts with no terminal attached, for CI and scripting. The prompt
+comes from the flag or from stdin, so a long one need not be interpolated into argv:
+
+```sh
+book -p "explain this repo"
+book -p < prompt.txt
+git diff | book -p            # the diff is the prompt
+```
+
+The flag wins when both are given. `--input-format stream-json` reads stdin as newline-delimited
+`{type:'user', content}` records instead, which is how you submit more than one prompt to a single
+process.
+
+Three things behave differently in print mode, because there is nobody to ask.
 
 **Slash commands.** A prompt beginning with `/name` is resolved through the same command
 registries the TUI uses instead of being sent to the model as literal text. See
@@ -168,6 +184,45 @@ Settings are loaded in priority order (later wins):
 2. `.book/settings.json` (project)
 3. `.book/settings.local.json` (local, should be gitignored)
 4. `--settings <path>` CLI flag
+
+#### Scopes
+
+`book config set` writes the **user-global** layer (`<BOOK_HOME>/settings.json`, normally
+`~/.book/settings.json`) unless told otherwise, so a preference you set once applies in every
+checkout. Pass `--project` to write the checked-in `.book/settings.json`, or `--local` to write the
+gitignored `.book/settings.local.json`. `-g`/`--global` states the default explicitly; passing more
+than one scope is an error.
+
+A write is checked against the *merged* configuration, not just the file it lands in. A value can be
+valid on its own and still leave a configuration nothing can load — `harness.workflow` is rejected
+against an effective `harness.mode` of `off` — so such a write is refused before it lands rather
+than bricking every later command. A configuration that is already broken stays writable, since
+repairing one is what the command is for.
+
+`book config get` and `book config list` report the *resolved* merge of all layers by default.
+Given a scope they read that one file verbatim instead, which is how you find the stray value
+overriding you — the local layer resolves last, so anything left there outranks a later global
+write. `book config unset <key>` removes a key from a scope (also user-global by default). A
+user-global write that a workspace layer still shadows says so, and names the `unset` that clears
+it.
+
+Two groups of keys are refused in every scope. Trust decisions
+(`mcp.projectServers`, `permissions.projectAllowRules`, `hooks.projectEntries`,
+`commands.projectCommands`) live in `<BOOK_HOME>/trust.json` and are recorded with `book trust`.
+Experimental capability flags (`experimental.*`) are not writable by `book config` at all — edit the
+user-global file directly, pass `--settings`, or use the environment opt-in.
+
+#### Model ids and provider prefixes
+
+A `model` written as `<provider>/<model>` is resolved through the `provider` registry: the prefix
+selects the base URL, credential, and model catalog. The same spelling is also how many endpoints
+name a single model (`meta-llama/llama-3-70b`), so a prefix that matches nothing is not an error —
+Book passes the whole id through to the default endpoint.
+
+That fallback is silent by design for the second form, but wrong for a typo. So when you have
+configured providers and the prefix matches none of them, Book says so — on stderr at startup and
+inline in `book doctor` — instead of leaving `Credentials: not resolved` as the only symptom of a
+misspelled provider id.
 
 Set `BOOK_HOME` to replace the default `~/.book` user-state root. This relocates user settings,
 sessions, memory, managed-agent state and worktrees, jobs, rewind snapshots, telemetry, tool output,
@@ -394,8 +449,16 @@ Inside the TUI, `/config` opens a visual settings menu. Use it to change the mai
 strategy, compact model, effort, theme, memory auto-capture, startup fire, or the model assigned to
 each managed-agent profile.
 The startup fire plays only for a new, empty launch session and is skipped automatically for
-screen-reader or reduced-motion mode. Press Esc to skip it. TUI preference changes are saved in
-`.book/settings.local.json`; set `ui.startupAnimation` to `false` there to disable the effect.
+screen-reader or reduced-motion mode. Press Esc to skip it.
+
+TUI preference changes are saved by whose choice they are. Preferences about how Book behaves for
+*you* — model, effort, compact model, permission default mode, provider registries and API keys,
+thinking display, startup animation, memory auto-capture — are written to the user-global
+`~/.book/settings.json` and follow you across projects. What is genuinely about *this* repository
+stays in `.book/settings.local.json`: skill overrides, approved permission rules, per-profile agent
+models, and the theme (a theme name can come from a project's `.book/themes`, so it would not
+resolve elsewhere). Set `ui.startupAnimation` to `false` in `~/.book/settings.json` to disable the
+effect everywhere.
 
 ### File mutations
 
@@ -620,12 +683,20 @@ success: handing an approved plan back reports `handoff_requested`, and a plan s
 `plan_stop` and carries the approver's own message. Both keep the `completed` status, because
 neither is a failure.
 
-Thinking models get their own stall ceiling. `retry.streamStallTimeoutMs` (20 s) is tuned for a chat,
-where that much silence means something broke; adaptive thinking is on by default for Opus and Sonnet
-at `high` effort, and a long quiet stretch before the first token is the model working. While thinking
-is enabled Book uses `retry.thinkingStallTimeoutMs` instead (default 15 minutes,
-`BOOK_THINKING_STALL_TIMEOUT_MS`). Raise it if a very high-effort Opus run still reports
-`stream_stall`.
+Thinking models get their own stall ceiling, on both provider paths. `retry.streamStallTimeoutMs`
+(20 s) is tuned for a chat, where that much silence means something broke; a long quiet stretch
+before the first token from a reasoning model is the model working. When a request enables reasoning
+Book uses `retry.thinkingStallTimeoutMs` instead (default 15 minutes,
+`BOOK_THINKING_STALL_TIMEOUT_MS`). Raise it if a very high-effort run still reports `stream_stall`.
+
+What counts as "enables reasoning" differs by path, because the two carry different evidence. On the
+Anthropic path it is adaptive thinking, which is on by default for Opus and Sonnet at `high` effort.
+On an OpenAI-compatible endpoint it is a request that sends `reasoning_effort`, or a model whose
+`provider.<id>.models.<model>.effort` entry declares an effort range — an endpoint that buffers a
+whole thinking block sends nothing at all until it is done, so the declaration is the only signal
+available before the silence starts. A model with `effort: false` stays on the chat ceiling, and so
+does a model with no catalog entry, since an unknown model is more likely a chat model than a
+reasoning one.
 
 `retry.streamReissueAttempts` re-sends a turn after a transport fault — a stalled stream, a dropped
 socket — onto the history already committed. Set it to 0 to end the run on any stream error, as
@@ -653,6 +724,32 @@ book status <id|name> --json
 
 It reports the byte-exact original objective, how much history has been compacted away, cumulative
 tokens with an upper-bound USD figure, and the plan as last persisted.
+
+It also reports **liveness**, which is the half the session transcript cannot answer. Book writes a
+per-run record to `<BOOK_HOME>/runs/<session-id>.json` at every turn boundary; `book status` reads it
+and leads with it:
+
+```
+Run: finished — timed_out (stream_stall)
+  Stream stalled: no data received for 20000ms
+  turn 16  •  elapsed 3m 44s
+  last update: 20m ago
+  last tool: Bash
+  in progress: run npm check
+  open todos: 3
+  spend: ~$2.4000 of $10.00 budget
+  free disk: 50.0 GiB
+```
+
+The headline is one of four: `running` (the pid answers), `finished` with the terminal status and
+reason, `crashed` when the process died without recording an outcome, or *no longer running, and
+recorded no outcome* — the case that otherwise looks exactly like a run that had done nothing. A
+live process that has not reached a turn boundary in fifteen minutes is called out as possibly
+wedged, since a transcript's mtime advances at the same rate for a productive run and one stuck on a
+permission prompt. `--json` carries the same fields under `run` for a supervisor script.
+
+This matters most for `book -p`, which under the default `text` output format writes nothing at all
+until it terminates.
 
 To be told when something needs a person, configure a `Notification` hook. Only `severity: "alarm"`
 is meant to wake anyone — everything else is a line to tail:

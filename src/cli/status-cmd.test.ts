@@ -3,8 +3,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../session/store.js';
-import { buildSessionStatus, renderSessionStatus, runStatusCommand } from './status-cmd.js';
-import type { SessionRecord } from '../types/sessions.js';
+import {
+  buildRunStatus,
+  buildSessionStatus,
+  renderSessionStatus,
+  runStatusCommand,
+} from './status-cmd.js';
+import { RUN_STATUS_VERSION, writeRunStatus, type RunStatusRecord } from '../run-status.js';
+import type { LoadedSession, SessionMeta, SessionRecord } from '../types/sessions.js';
 
 const dirs: string[] = [];
 
@@ -152,5 +158,135 @@ describe('book status', () => {
     });
     expect(code).toBe(0);
     expect(JSON.parse(out.text())).toMatchObject({ sessionId: id, objective: 'an objective' });
+  });
+});
+
+/**
+ * The liveness half. `src/run-status.ts` wrote a per-turn record to
+ * `<BOOK_HOME>/runs/<session-id>.json` that nothing read, so a print run that
+ * finished the work and one that died at turn 16 were indistinguishable from
+ * outside — 32 such records on disk with no way to view them.
+ */
+describe('book status run record', () => {
+  function record(overrides: Partial<RunStatusRecord> = {}): RunStatusRecord {
+    return {
+      version: RUN_STATUS_VERSION,
+      sessionId: 'sess',
+      runId: 'run-1',
+      pid: process.pid,
+      startedAt: Date.now() - 60_000,
+      updatedAt: Date.now(),
+      turn: 16,
+      elapsedMs: 224_000,
+      openTodos: 2,
+      costUsd: 1.25,
+      ...overrides,
+    } as RunStatusRecord;
+  }
+
+  it('reports a live process as running, on the turn it reached', () => {
+    // process.pid is alive by definition, which is what makes this assertable.
+    const status = buildRunStatus(record({ lastTool: 'Edit', currentTodo: 'wire the loader' }));
+
+    expect(status.liveness).toBe('running');
+    expect(status.processAlive).toBe(true);
+    expect(status.turn).toBe(16);
+    expect(status.lastTool).toBe('Edit');
+  });
+
+  it('distinguishes a clean finish from a death with no outcome', () => {
+    const finished = buildRunStatus(
+      record({ terminal: { status: 'completed', reason: 'objective_complete' } }),
+    );
+    expect(finished.liveness).toBe('completed');
+
+    // A pid that cannot exist: no outcome and no process is the case the record
+    // exists for, and the one that used to look identical to silence.
+    const dead = buildRunStatus(record({ pid: 2 ** 31 - 1 }));
+    expect(dead.liveness).toBe('died');
+    expect(dead.processAlive).toBe(false);
+  });
+
+  it('reports a crash separately from a terminal outcome', () => {
+    const status = buildRunStatus(
+      record({ pid: 2 ** 31 - 1, crash: { message: 'socket hang up', at: Date.now() } }),
+    );
+
+    expect(status.liveness).toBe('crashed');
+  });
+
+  it('renders the stall the issue was filed about', () => {
+    const now = Date.now();
+    const status = buildSessionStatus(
+      { id: 'sess', cwd: '/w', createdAt: now, updatedAt: now } as SessionMeta,
+      { transcript: [], contextHistory: [], compactBoundaries: [] } as unknown as LoadedSession,
+      record({
+        terminal: {
+          status: 'timed_out',
+          reason: 'stream_stall',
+          message: 'Stream stalled: no data received for 20000ms',
+        },
+      }),
+    );
+
+    const output = renderSessionStatus(status, now);
+    expect(output).toContain('Run: finished — timed_out (stream_stall)');
+    expect(output).toContain('Stream stalled: no data received for 20000ms');
+    expect(output).toContain('turn 16');
+  });
+
+  it('names a live process that has stopped reaching turn boundaries', () => {
+    const now = Date.now();
+    const status = buildSessionStatus(
+      { id: 'sess', cwd: '/w', createdAt: now, updatedAt: now } as SessionMeta,
+      { transcript: [], contextHistory: [], compactBoundaries: [] } as unknown as LoadedSession,
+      record({ updatedAt: now - 60 * 60_000 }),
+    );
+
+    // Alive but silent for an hour is the wedged case: the transcript mtime
+    // advances the same way for a healthy run and one stuck on a prompt.
+    expect(renderSessionStatus(status, now)).toContain('may be wedged');
+  });
+
+  it('says nothing about a run when no session ever wrote a record', () => {
+    const s = store();
+    const id = s.create({ cwd: process.cwd() });
+    s.append(id, userRecord('do the thing'));
+
+    const status = buildSessionStatus(s.findById(id)!, s.load(id));
+
+    expect(status.run).toBeUndefined();
+    expect(renderSessionStatus(status)).not.toContain('Run:');
+  });
+
+  it('reads the record from BOOK_HOME through the command itself', () => {
+    const home = mkdtempSync(join(tmpdir(), 'book-status-home-'));
+    dirs.push(home);
+    const s = new SessionStore(join(home, 'sessions'));
+    const id = s.create({ cwd: process.cwd() });
+    s.append(id, userRecord('do the thing'));
+    writeRunStatus({ ...record({ sessionId: id }), sessionId: id }, home);
+
+    const out = capture();
+    const code = runStatusCommand({ workspace: process.cwd(), store: s, home, stdout: out });
+
+    expect(code).toBe(0);
+    expect(out.text()).toContain('Run: running');
+    expect(out.text()).toContain('turn 16');
+  });
+
+  it('carries the record into --json for a supervisor script', () => {
+    const home = mkdtempSync(join(tmpdir(), 'book-status-home-'));
+    dirs.push(home);
+    const s = new SessionStore(join(home, 'sessions'));
+    const id = s.create({ cwd: process.cwd() });
+    s.append(id, userRecord('do the thing'));
+    writeRunStatus({ ...record({ sessionId: id }), sessionId: id }, home);
+
+    const out = capture();
+    runStatusCommand({ workspace: process.cwd(), store: s, home, json: true, stdout: out });
+
+    const parsed = JSON.parse(out.text());
+    expect(parsed.run).toMatchObject({ liveness: 'running', turn: 16, pid: process.pid });
   });
 });

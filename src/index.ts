@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import './runtime-env.js';
-import { program } from 'commander';
+import { InvalidArgumentError, program } from 'commander';
+import { EFFORT_LEVELS, isEffortLevel } from './commands/effort.js';
 import { runStatusCommand } from './cli/status-cmd.js';
 import { exit } from './cli/exit.js';
 import { runDoctorCommand } from './cli/doctor.js';
@@ -20,6 +21,19 @@ import {
 
 function collectOption(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+/**
+ * Reject a bad effort level at parse time, where commander can name the option.
+ * Reaching the provider with an unchecked level costs a round trip and returns
+ * an opaque HTTP 400 for a mistake stated precisely here.
+ */
+function parseEffortOption(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!isEffortLevel(normalized)) {
+    throw new InvalidArgumentError(`Valid levels: ${EFFORT_LEVELS.join(', ')}.`);
+  }
+  return normalized;
 }
 
 /**
@@ -84,10 +98,14 @@ program
   .option('--scrollback', 'Use terminal-native scrollback instead of the full-screen TUI')
   .option('--settings <path>', 'Path to an ad-hoc settings file (overrides all scopes)')
   .option('--no-settings', 'Skip all settings.json layers (use defaults + legacy .bookrc.json)')
+  // No commander default: "the user passed --effort" has to stay observable, or
+  // the flag cannot be told apart from the fallback and can never count as an
+  // explicit choice. `high` is still the fallback, resolved in loadConfig after
+  // BOOK_EFFORT, settings.effort, and model metadata have had their turn.
   .option(
     '--effort <level>',
     'Thinking effort: low, medium, high, xhigh, max (default: high)',
-    'high',
+    parseEffortOption,
   )
   .option('--provider <type>', 'Provider: anthropic, openai, auto (default: auto-detect)');
 
@@ -96,8 +114,14 @@ program
   .command('doctor')
   .description('Diagnose configuration and environment')
   .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
-  .action(async (options: { workspace?: string }) => {
-    await runDoctorCommand(resolveWorkspace(options.workspace));
+  // Doctor exists for a configuration that does not work, so it needs the way
+  // past one that will not even load. Positional option parsing means a root
+  // option written after a subcommand is an error, so it is re-declared here.
+  .option('--no-settings', 'Skip all settings.json layers (use defaults + legacy .bookrc.json)')
+  .action(async (options: { workspace?: string; settings?: boolean }) => {
+    await runDoctorCommand(resolveWorkspace(options.workspace), {
+      noSettings: options.settings === false,
+    });
   });
 
 // ---- book status ----
@@ -334,7 +358,13 @@ program
   // flag is passed, letting an unset one fall through to the root's value.
   .option('--settings <path>', 'Path to an ad-hoc settings file (overrides all scopes)')
   .option('--no-settings', 'Skip all settings.json layers (use defaults + legacy .bookrc.json)')
-  .argument('[action]', 'get <key>, set <key> <value>, or list')
+  // Writes default to the user layer so a setting follows the person, not the
+  // directory. The two workspace layers stay reachable, but have to be asked
+  // for -- the shortest command is the one that stays consistent everywhere.
+  .option('-g, --global', 'Act on user-global settings (<BOOK_HOME>/settings.json) [default]')
+  .option('--project', 'Act on checked-in project settings (.book/settings.json)')
+  .option('--local', 'Act on gitignored project-local settings (.book/settings.local.json)')
+  .argument('[action]', 'get <key>, set <key> <value>, unset <key>, or list')
   .argument('[key]', 'Dot-separated key path (e.g. permissions.deny)')
   .argument('[value]', 'Value to set (JSON-parsed)')
   .addHelpText('after', `\n${formatSettingsKeyHelp()}`)
@@ -343,13 +373,34 @@ program
       action: string | undefined,
       key: string | undefined,
       value: string | undefined,
-      options: { workspace?: string; settings?: string | false },
+      options: {
+        workspace?: string;
+        settings?: string | false;
+        global?: boolean;
+        project?: boolean;
+        local?: boolean;
+      },
     ) => {
       const rootSettings = program.opts().settings as string | false | undefined;
       const settings = options.settings ?? rootSettings;
+      const selected = (
+        [
+          ['user', options.global],
+          ['project', options.project],
+          ['local', options.local],
+        ] as const
+      ).filter(([, on]) => on === true);
+      if (selected.length > 1) {
+        console.error(
+          'Pass at most one of --global, --project, --local. ' +
+            'Writes default to --global; reads without one report the resolved merge.',
+        );
+        exit(1);
+      }
       await runConfigCommand(resolveWorkspace(options.workspace), action, key, value, {
         settingsOverridePath: typeof settings === 'string' ? settings : undefined,
         noSettings: settings === false,
+        scope: selected[0]?.[0],
       });
     },
   );

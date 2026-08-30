@@ -377,6 +377,59 @@ describe('loadConfig provider registry', () => {
     expect(config.modelInfo?.contextWindow).toBe(128000);
   });
 
+  it('reports a provider prefix that matches no configured provider', () => {
+    // The failure this exists for: one provider `9router` configured, a layer
+    // pinning `qc/qwen3.7-max`, and no `qc` anywhere. Book fell back to
+    // https://api.openai.com/v1 and said nothing, so the only symptom was a
+    // credentials line that sent the user hunting for a missing key.
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({
+        model: 'qc/qwen3.7-max',
+        provider: {
+          '9router': { baseURL: 'https://9router.example/v1', apiKey: 'k', models: {} },
+        },
+      }),
+    );
+
+    const config = loadConfig(workspace);
+    expect(config.modelProviderWarning).toMatch(
+      /Model "qc\/qwen3\.7-max" names provider "qc", which is not configured \(configured: 9router\)/,
+    );
+    // Still resolved, not thrown: the fallback is right for a namespaced id.
+    expect(config.model).toBe('qc/qwen3.7-max');
+  });
+
+  it('says nothing about a prefix that does resolve', () => {
+    process.env.OPENROUTER_API_KEY = 'or-key';
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({
+        model: 'openrouter/deepseek-chat',
+        provider: {
+          openrouter: {
+            baseURL: 'https://openrouter.ai/api/v1',
+            apiKey: '{env:OPENROUTER_API_KEY}',
+            models: {},
+          },
+        },
+      }),
+    );
+
+    expect(loadConfig(workspace).modelProviderWarning).toBeUndefined();
+  });
+
+  it('says nothing about a namespaced model id when no providers are configured', () => {
+    // `meta-llama/llama-3-70b` is one model name an OpenAI-compatible endpoint
+    // expects verbatim, not a provider reference. Warning here would fire on
+    // every ordinary BOOK_BASE_URL setup.
+    process.env.BOOK_MODEL = 'meta-llama/llama-3-70b';
+
+    const config = loadConfig(workspace, { noSettings: true });
+    expect(config.modelProviderWarning).toBeUndefined();
+    expect(config.model).toBe('meta-llama/llama-3-70b');
+  });
+
   it('lets explicit max tokens override model metadata', () => {
     process.env.OPENROUTER_API_KEY = 'or-key';
     process.env.BOOK_MAX_TOKENS = '12345';
@@ -425,6 +478,51 @@ describe('loadConfig provider registry', () => {
     expect(config.provider).toBe('anthropic');
     expect(config.model).toBe('claude-sonnet-5');
     expect(config.effort).toBe('medium');
+  });
+
+  it('treats --effort as an explicit choice, not just a value', () => {
+    // effortExplicit read only BOOK_EFFORT and settings.effort, so on an
+    // OpenAI-compatible provider -- which sends reasoning_effort only for an
+    // explicit level -- `--effort max` was accepted, reported, and discarded.
+    const config = loadConfig(workspace, { effortOverride: 'max' });
+    expect(config.effort).toBe('max');
+    expect(config.effortExplicit).toBe(true);
+  });
+
+  it('outranks BOOK_EFFORT, settings.effort, and model metadata', () => {
+    process.env.BOOK_EFFORT = 'low';
+    writeFileSync(
+      join(workspace, '.book', 'settings.local.json'),
+      JSON.stringify({
+        model: 'router/some-model',
+        effort: 'medium',
+        provider: {
+          router: {
+            baseURL: 'https://router.example',
+            apiKey: 'k',
+            models: { 'some-model': { effort: { default: 'low' } } },
+          },
+        },
+      }),
+    );
+
+    expect(loadConfig(workspace, { effortOverride: 'xhigh' }).effort).toBe('xhigh');
+  });
+
+  it('leaves effort resolution alone when the flag is absent', () => {
+    // The flag carried a commander default of 'high', so it was never absent and
+    // overwrote every other source. Without an override the lower-priority
+    // sources must still decide.
+    process.env.BOOK_EFFORT = 'low';
+    const config = loadConfig(workspace, { effortOverride: undefined });
+    expect(config.effort).toBe('low');
+    expect(config.effortExplicit).toBe(true);
+  });
+
+  it('reports effort as inexplicit when nothing chose it', () => {
+    const config = loadConfig(workspace);
+    expect(config.effort).toBe('high');
+    expect(config.effortExplicit).toBe(false);
   });
 
   it('errors clearly when provider api key env var is missing', () => {

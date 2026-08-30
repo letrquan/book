@@ -205,10 +205,21 @@ describe('subcommand --workspace targeting', () => {
     expect(runCli(['config', 'get', 'model'])).not.toContain('flagged-workspace-model');
   }, 20000);
 
+  // `--local` is explicit because this test is about *where the flag lands*, and
+  // only a workspace-scoped write can observe that: `config set` now defaults to
+  // the user-global layer, which is the same file whatever `--workspace` says.
   it('writes into the named workspace, in every placement', () => {
     newTempDirs();
     const subcommandSide = workspaceWith({ harness: { mode: 'observe' } });
-    runCli(['config', '--workspace', subcommandSide, 'set', 'harness.workflow', 'safe-edit']);
+    runCli([
+      'config',
+      '--workspace',
+      subcommandSide,
+      '--local',
+      'set',
+      'harness.workflow',
+      'safe-edit',
+    ]);
     expect(existsSync(join(subcommandSide, '.book', 'settings.local.json'))).toBe(true);
 
     const rootSide = join(dir, 'root-side');
@@ -217,7 +228,7 @@ describe('subcommand --workspace targeting', () => {
       join(rootSide, '.book', 'settings.json'),
       JSON.stringify({ harness: { mode: 'observe' } }),
     );
-    runCli(['--workspace', rootSide, 'config', 'set', 'harness.workflow', 'safe-edit']);
+    runCli(['--workspace', rootSide, 'config', '--local', 'set', 'harness.workflow', 'safe-edit']);
     expect(existsSync(join(rootSide, '.book', 'settings.local.json'))).toBe(true);
 
     // The child ran from `scratch`, so a placement the CLI silently dropped

@@ -82,6 +82,15 @@ function describeCredentials(config: AgentConfig): string {
     : 'not resolved - set BOOK_API_KEY, run `book auth login <profile>`, or set provider.<id>.apiKey in settings';
 }
 
+/**
+ * A path that cannot exist, used to drop one layer from a probe resolution.
+ *
+ * `loadSettingsFile` returns null for a missing file, so redirecting a layer at
+ * a name nothing can occupy is how a subset of the stack gets resolved without
+ * touching the user's files.
+ */
+const ABSENT_LAYER = '\0absent-settings-layer';
+
 /** The settings files doctor reads, in the order they are layered. */
 async function settingsLayers(workspace: string): Promise<Array<[string, string]>> {
   const { join, resolve } = await import('path');
@@ -91,6 +100,42 @@ async function settingsLayers(workspace: string): Promise<Array<[string, string]
     ['Project', join(root, '.book', 'settings.json')],
     ['Local', join(root, '.book', 'settings.local.json')],
   ];
+}
+
+/**
+ * Which layer a configuration failure first appears in.
+ *
+ * Some rejections name their own file: malformed JSON and schema violations both
+ * carry a path. The ones that do not are precisely the ones about the *merged*
+ * value -- `harness.workflow` is validated against the effective `harness.mode`,
+ * so no single file is wrong on its own and none of them says so. Finding it
+ * meant reading all three by hand.
+ *
+ * Resolving cumulative prefixes of the stack answers it directly: the first
+ * prefix that fails ends at the layer that turned a working configuration into a
+ * broken one. Undefined means no prefix loads, so the cause is outside the
+ * layers -- an environment variable, or a legacy `.bookrc.json`.
+ */
+async function attributeFailingLayer(workspace: string): Promise<string | undefined> {
+  const layers = await settingsLayers(workspace);
+
+  for (let included = 0; included <= layers.length; included++) {
+    const [userSettingsPath, projectSettingsPath, localSettingsPath] = layers.map(
+      ([, path], index) => (index < included ? path : ABSENT_LAYER),
+    );
+    try {
+      loadConfig(workspace, {
+        allowMissingApiKey: true,
+        // A probe must not write: migrations are the real load's business.
+        runMigrations: false,
+        settingsPaths: { userSettingsPath, projectSettingsPath, localSettingsPath },
+      });
+    } catch {
+      // included === 0 is the no-layer probe; failing there blames nothing.
+      return included === 0 ? undefined : layers[included - 1][0];
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -118,21 +163,39 @@ async function reportUnloadableConfig(workspace: string, error: unknown): Promis
   console.log('  ' + (error instanceof Error ? error.message : String(error)));
   console.log();
   console.log('  No other check can run until the configuration loads.');
+
+  const culprit = await attributeFailingLayer(workspace);
   console.log('  Settings layers, in the order they are applied:');
   for (const [label, path] of await settingsLayers(workspace)) {
-    console.log('    ' + (existsSync(path) ? '[x]' : '[ ]') + ' ' + label + ': ' + path);
+    const marker = existsSync(path) ? '[x]' : '[ ]';
+    const blame = label === culprit ? '  <- the failure appears with this layer' : '';
+    console.log('    ' + marker + ' ' + label + ': ' + path + blame);
   }
   console.log();
-  console.log('  Fix the offending file above, or point BOOK_HOME at a clean one.');
+  if (culprit) {
+    console.log(`  The ${culprit} layer is where the configuration stops loading.`);
+  } else {
+    console.log('  No single layer accounts for it: check the environment and .bookrc.json.');
+  }
+  console.log('  Run `book doctor --no-settings` to report the rest with every layer skipped.');
 }
 
-export async function runDoctorCommand(workspace: string): Promise<void> {
+export async function runDoctorCommand(
+  workspace: string,
+  options: { noSettings?: boolean } = {},
+): Promise<void> {
   // Doctor must diagnose a broken environment, so it cannot require a working one:
   // a missing credential is a finding to report, not a reason to abort, and
   // neither is a settings file that fails to load.
   let config: ReturnType<typeof loadConfig>;
   try {
-    config = loadConfig(workspace, { runMigrations: true, allowMissingApiKey: true });
+    config = loadConfig(workspace, {
+      // --no-settings is the way past a layer doctor cannot otherwise get around;
+      // migrations would rewrite settings this run has been told to ignore.
+      noSettings: options.noSettings,
+      runMigrations: !options.noSettings,
+      allowMissingApiKey: true,
+    });
   } catch (error) {
     await reportUnloadableConfig(workspace, error);
     return;
@@ -147,6 +210,9 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   console.log('Platform:', process.platform, process.arch);
   console.log('Workspace:', config.workspace);
   console.log('Model:', config.model, '(' + config.baseUrl + ')');
+  // Printed before Credentials on purpose: an unresolved provider prefix makes
+  // the credential line read as a missing key, which is the wrong hunt.
+  if (config.modelProviderWarning) console.log('  ⚠ ' + config.modelProviderWarning);
   console.log('Credentials:', describeCredentials(config));
   console.log();
 
@@ -155,7 +221,13 @@ export async function runDoctorCommand(workspace: string): Promise<void> {
   const { existsSync } = await import('fs');
   const { join } = await import('path');
   for (const [label, path] of await settingsLayers(config.workspace)) {
-    console.log('  ' + (existsSync(path) ? '[x]' : '[ ]') + ' ' + label + ': ' + path);
+    const marker = options.noSettings ? '[-]' : existsSync(path) ? '[x]' : '[ ]';
+    console.log('  ' + marker + ' ' + label + ': ' + path);
+  }
+  // Everything below is resolved from defaults in this mode. Saying so once
+  // stops the report reading as a description of the user's configuration.
+  if (options.noSettings) {
+    console.log('  (--no-settings: every layer skipped, defaults reported below)');
   }
   console.log();
 

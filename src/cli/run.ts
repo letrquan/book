@@ -11,6 +11,7 @@ import { resolveMcpServerList } from '../mcp-config.js';
 import { collectWithheldProjectNotices } from '../project-approval-notices.js';
 import { exit } from './exit.js';
 import { parseNumericFlag } from './utils.js';
+import { parseEffortLevel } from '../commands/effort.js';
 import { join } from 'path';
 import type { AgentConfig } from '../types/runtime.js';
 import type { RewindSnapshotStoreInterface } from '../types/sessions.js';
@@ -145,14 +146,21 @@ export function enterInteractiveScreen(
 export async function runMainAction(options: Record<string, unknown>): Promise<void> {
   try {
     const requestedWorkspace = options.workspace as string | undefined;
+    // Validated again here rather than trusted from commander: the option parser
+    // covers the CLI, this covers every other caller of runMainAction.
+    const effortOverride = options.effort
+      ? parseEffortLevel(String(options.effort), '--effort')
+      : undefined;
     const config = loadConfig(requestedWorkspace, {
       settingsOverridePath: options.settings as string | undefined,
       noSettings: options.settings === false,
       runMigrations: options.settings !== false,
       modelOverride: options.model as string | undefined,
+      effortOverride,
       allowMissingApiKey: options.print === undefined && !options.scrollback,
     }) as AgentConfig;
-    if (options.effort) config.effort = options.effort as AgentConfig['effort'];
+    // Stderr, so it cannot corrupt --output-format json on stdout.
+    if (config.modelProviderWarning) console.warn('⚠  ' + config.modelProviderWarning);
     const interactiveMaxTurns = parseNumericFlag(options.maxTurns, '--max-turns', {
       integer: true,
     });

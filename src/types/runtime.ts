@@ -125,6 +125,12 @@ export interface AgentConfig {
   model: string;
   /** Raw picker/settings reference, including provider prefix when configured. */
   modelSelection?: string;
+  /**
+   * Set when the model id carries a `<prefix>/` matching no configured provider,
+   * so the run fell back to the default endpoint. Reported rather than thrown:
+   * the same spelling is a legitimate vendor-namespaced model id.
+   */
+  modelProviderWarning?: string;
   /** Optional provider/model used only for historical conversation compaction. */
   compactModel?: string;
   /** Supported production context-reduction strategy. */
