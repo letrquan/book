@@ -329,8 +329,11 @@ Work aimed at running an objective unattended for days rather than hours. All of
   rendered as an instruction. Each run records the requested and effective workflow, source, reason,
   registry and definition digests, override scope, and declared complexity. Selection fails closed at
   config load, at the CLI flag, and at the session run boundary when the harness is `off` or the ID
-  is unknown or path-like; `book config set` rejects an unknown or path-like ID but not the `off`
-  pairing, because it validates one settings layer, which does not determine the effective mode.
+  is unknown or path-like. `book config set` rejects an unknown or path-like ID, and also the `off`
+  pairing: it now resolves the candidate layer through the real merge and runs the loader's own
+  assertions, so a write that would leave an unloadable configuration is refused before it lands. A
+  configuration that was *already* broken is still writable, since repairing one is the reason to
+  run the command.
   Project-defined workflow files are not loaded, and there is still no automatic or learned
   selection.
 

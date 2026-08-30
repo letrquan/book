@@ -320,3 +320,69 @@ describe('book config unset', () => {
     expect(result.out).toContain('nothing to remove');
   });
 });
+
+/**
+ * A settings layer does not determine the effective configuration, so
+ * validating one cannot tell whether a write leaves a loadable one.
+ *
+ * `harness.workflow` is valid on its own and rejected against an effective
+ * `harness.mode` of `off`. The write therefore succeeded and every subsequent
+ * command — including the `book config` that would undo it — failed before it
+ * started, leaving hand-editing JSON as the only recovery.
+ */
+describe('book config set validates against the merged configuration', () => {
+  it('refuses a workflow the effective harness mode cannot enable', async () => {
+    const result = await set('harness.workflow', '"safe-edit"', 'local');
+
+    expect(result.exitCode).toBe(1);
+    expect(result.err).toContain('Refusing to write harness.workflow');
+    expect(result.err).toContain('requires an enabled harness mode');
+    expect(result.err).toContain('Nothing was written.');
+    expect(existsSync(localSettings())).toBe(false);
+  });
+
+  it('accepts the workflow once a mode in any layer enables it', async () => {
+    // The point of merging rather than checking one file: the mode that makes
+    // this legal lives in a different layer than the workflow.
+    await set('harness.mode', '"observe"', 'user');
+
+    const result = await set('harness.workflow', '"safe-edit"', 'local');
+
+    expect(result.exitCode).toBeUndefined();
+    expect(readJson(localSettings())).toEqual({ harness: { workflow: 'safe-edit' } });
+  });
+
+  it('refuses a mode that would disable a workflow another layer selects', async () => {
+    // The same invariant from the other side. A single-layer check cannot see
+    // this at all: `harness.mode: off` is the default and valid everywhere.
+    await set('harness.mode', '"observe"', 'user');
+    await set('harness.workflow', '"safe-edit"', 'local');
+
+    const result = await set('harness.mode', '"off"', 'local');
+
+    expect(result.exitCode).toBe(1);
+    expect(result.err).toContain('Refusing to write harness.mode');
+    expect(readJson(localSettings())).toEqual({ harness: { workflow: 'safe-edit' } });
+  });
+
+  it('leaves unrelated writes untouched', async () => {
+    const result = await set('model', '"router/some-model"', 'local');
+
+    expect(result.exitCode).toBeUndefined();
+    expect(readJson(localSettings())).toEqual({ model: 'router/some-model' });
+  });
+
+  it('still writes when the configuration was already broken', async () => {
+    // The check must never turn `config set` into the second thing that stops
+    // working: repairing an existing break is the reason to run it. Only a write
+    // that *introduces* a failure is refused.
+    writeSettings(localSettings(), { harness: { workflow: 'safe-edit' } });
+
+    const result = await set('harness.mode', '"observe"', 'local');
+
+    expect(result.exitCode).toBeUndefined();
+    expect(readJson(localSettings())).toEqual({
+      harness: { workflow: 'safe-edit', mode: 'observe' },
+    });
+  });
+});
