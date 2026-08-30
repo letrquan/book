@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { SessionStore } from '../session/store.js';
 import { resolveBookHome } from '../book-home.js';
 import { estimateUsageCost } from '../pricing.js';
+import { readRunStatus, type RunStatusRecord } from '../run-status.js';
 import type { LoadedSession, SessionMeta } from '../types/sessions.js';
 import type { Message } from '../types/messages.js';
 
@@ -21,7 +22,91 @@ import type { Message } from '../types/messages.js';
  * transcript is never rewritten by compaction — `SessionStore.load` truncates it
  * only for a rewind record — so the user's first words survive verbatim however
  * many generations have passed.
+ *
+ * The session JSONL answers "what was this asked to do and what has it spent".
+ * What it cannot answer is *liveness*, which is the half a supervisor actually
+ * needs mid-run: whether the process is alive, which turn it is on, what tool it
+ * last called, and whether it finished cleanly or died. `src/run-status.ts` has
+ * been writing exactly that to `<BOOK_HOME>/runs/<session-id>.json` at every turn
+ * boundary, and nothing read it — a 20-minute print run that had done the work
+ * correctly and one that died at turn 16 looked identical from outside, and the
+ * only way to tell them apart was `jq` on a file with no documented reader. That
+ * record is folded in here rather than into a new command: this is the surface
+ * someone looks at, and it already runs without a credential.
  */
+
+/**
+ * What the liveness record says about the process, once the pid is tested.
+ *
+ * `died` is the case the record exists for: no terminal outcome and no crash
+ * note, and the process is gone. Silence and a clean finish are indistinguishable
+ * without it, which is the whole complaint.
+ */
+export type RunLiveness = 'running' | 'completed' | 'crashed' | 'died';
+
+export interface RunStatus {
+  liveness: RunLiveness;
+  pid: number;
+  /** True when the pid answers a signal-0 probe right now. */
+  processAlive: boolean;
+  runId: string;
+  turn: number;
+  elapsedMs: number;
+  /** When the record was last rewritten — a running record that is old is wedged. */
+  updatedAt: number;
+  lastTool?: string;
+  currentTodo?: string;
+  openTodos: number;
+  costUsd: number | null;
+  budgetUsd?: number;
+  freeDiskBytes?: number;
+  terminal?: { status: string; reason: string; message?: string };
+  crash?: { message: string; at: number };
+}
+
+/**
+ * Does this pid still answer? Signal 0 performs the permission and existence
+ * checks without delivering anything. `EPERM` means it exists under another
+ * user, which is still alive; only `ESRCH` means gone.
+ */
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+export function buildRunStatus(record: RunStatusRecord): RunStatus {
+  const processAlive = isProcessAlive(record.pid);
+  const liveness: RunLiveness = record.terminal
+    ? 'completed'
+    : record.crash
+      ? 'crashed'
+      : processAlive
+        ? 'running'
+        : 'died';
+
+  return {
+    liveness,
+    pid: record.pid,
+    processAlive,
+    runId: record.runId,
+    turn: record.turn,
+    elapsedMs: record.elapsedMs,
+    updatedAt: record.updatedAt,
+    lastTool: record.lastTool,
+    currentTodo: record.currentTodo,
+    openTodos: record.openTodos,
+    costUsd: record.costUsd,
+    budgetUsd: record.budgetUsd,
+    freeDiskBytes: record.freeDiskBytes,
+    terminal: record.terminal ? { ...record.terminal } : undefined,
+    crash: record.crash ? { ...record.crash } : undefined,
+  };
+}
 
 export interface SessionStatus {
   sessionId: string;
@@ -48,6 +133,8 @@ export interface SessionStatus {
     todos: Array<{ content: string; status: string }>;
     tasks: Array<{ id: string; subject: string; status: string; blockedBy: string[] }>;
   };
+  /** Absent when no run of this session ever wrote a liveness record. */
+  run?: RunStatus;
 }
 
 function firstUserTurn(transcript: readonly Message[]): string | undefined {
@@ -64,7 +151,11 @@ function firstUserTurn(transcript: readonly Message[]): string | undefined {
   return undefined;
 }
 
-export function buildSessionStatus(meta: SessionMeta, loaded: LoadedSession): SessionStatus {
+export function buildSessionStatus(
+  meta: SessionMeta,
+  loaded: LoadedSession,
+  runRecord?: RunStatusRecord,
+): SessionStatus {
   const usage = loaded.carriedUsage;
   const models = loaded.carriedModels ?? [];
   // Price at the most expensive model involved: the records do not attribute
@@ -122,6 +213,7 @@ export function buildSessionStatus(meta: SessionMeta, loaded: LoadedSession): Se
           })),
         }
       : undefined,
+    run: runRecord ? buildRunStatus(runRecord) : undefined,
   };
 }
 
@@ -137,6 +229,65 @@ function since(timestamp: number, now: number): string {
   return hours < 48 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
 }
 
+function duration(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function gibibytes(bytes: number): string {
+  return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+}
+
+/**
+ * The liveness half of the report.
+ *
+ * Led by the one fact the session JSONL cannot supply — whether the process is
+ * still there — because that is the question being asked when someone runs this
+ * mid-run. A `running` record whose last write is old is the wedged case, and is
+ * called out rather than left for the reader to compute from two timestamps.
+ */
+function renderRunStatus(run: RunStatus, now: number): string[] {
+  const lines: string[] = [];
+  const headline: Record<RunLiveness, string> = {
+    running: `running (pid ${run.pid})`,
+    completed: `finished — ${run.terminal?.status ?? 'unknown'} (${run.terminal?.reason ?? 'no reason recorded'})`,
+    crashed: 'crashed without a terminal outcome',
+    died: `no longer running, and recorded no outcome (pid ${run.pid} is gone)`,
+  };
+  lines.push(`Run: ${headline[run.liveness]}`);
+
+  if (run.terminal?.message) lines.push(`  ${run.terminal.message}`);
+  if (run.crash) lines.push(`  ${run.crash.message}`);
+
+  lines.push(`  turn ${run.turn}  •  elapsed ${duration(run.elapsedMs)}`);
+  lines.push(`  last update: ${since(run.updatedAt, now)}`);
+  if (run.liveness === 'running' && now - run.updatedAt > STALE_RUN_MS) {
+    lines.push(
+      `  ⚠ the process is alive but has not written a turn boundary in ${duration(now - run.updatedAt)} —` +
+        ' it may be wedged on a long tool call or a permission prompt.',
+    );
+  }
+  if (run.lastTool) lines.push(`  last tool: ${run.lastTool}`);
+  if (run.currentTodo) lines.push(`  in progress: ${truncate(run.currentTodo, 120)}`);
+  if (run.openTodos > 0) lines.push(`  open todos: ${run.openTodos}`);
+
+  if (run.costUsd !== null) {
+    lines.push(
+      `  spend: ~$${run.costUsd.toFixed(4)}` +
+        (run.budgetUsd !== undefined ? ` of $${run.budgetUsd.toFixed(2)} budget` : ''),
+    );
+  }
+  if (run.freeDiskBytes !== undefined) lines.push(`  free disk: ${gibibytes(run.freeDiskBytes)}`);
+
+  return lines;
+}
+
+/** How long a live process may go without a turn boundary before it is worth naming. */
+const STALE_RUN_MS = 15 * 60_000;
+
 export function renderSessionStatus(status: SessionStatus, now = Date.now()): string {
   const lines: string[] = [];
   lines.push(`Session: ${status.sessionName ?? status.sessionId}`);
@@ -144,6 +295,14 @@ export function renderSessionStatus(status: SessionStatus, now = Date.now()): st
   lines.push(`  workspace: ${status.workspace}`);
   lines.push(`  last activity: ${since(status.updatedAt, now)}`);
   lines.push('');
+
+  // Before the objective: someone running this mid-run wants liveness first, and
+  // someone reading it afterwards wants to know how the run ended before they
+  // read what it was for.
+  if (status.run) {
+    lines.push(...renderRunStatus(status.run, now));
+    lines.push('');
+  }
   lines.push(
     status.objective
       ? `Objective: ${truncate(status.objective, 300)}`
@@ -198,12 +357,15 @@ export interface StatusCommandOptions {
   json?: boolean;
   /** Injectable so the contract test can run without touching a real BOOK_HOME. */
   store?: SessionStore;
+  /** Where `runs/<session-id>.json` lives; injectable for the same reason. */
+  home?: string;
   stdout?: { write: (text: string) => unknown };
 }
 
 export function runStatusCommand(options: StatusCommandOptions): number {
   const stdout = options.stdout ?? process.stdout;
-  const store = options.store ?? new SessionStore(join(resolveBookHome(), 'sessions'));
+  const home = options.home ?? resolveBookHome();
+  const store = options.store ?? new SessionStore(join(home, 'sessions'));
 
   const meta = options.session
     ? (store.findById(options.session) ?? store.findByName(options.session))
@@ -218,7 +380,7 @@ export function runStatusCommand(options: StatusCommandOptions): number {
     return 1;
   }
 
-  const status = buildSessionStatus(meta, store.load(meta.id));
+  const status = buildSessionStatus(meta, store.load(meta.id), readRunStatus(meta.id, home));
   stdout.write(
     options.json ? `${JSON.stringify(status, null, 2)}\n` : `${renderSessionStatus(status)}\n`,
   );

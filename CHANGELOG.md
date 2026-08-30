@@ -23,6 +23,23 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **`book status` reports whether a run is alive, and how it ended.** Book has been writing a
+  liveness record to `<BOOK_HOME>/runs/<session-id>.json` at every turn boundary -- pid, turn,
+  elapsed, spend against budget, current todo, last tool, free disk, and a terminal or crash outcome
+  -- and nothing outside its own test read it. `book status` reported objective, history, tokens,
+  cost, and todos from the session JSONL, and so could not answer whether the process was alive,
+  which turn it was on, or whether it finished cleanly. A 20-minute print run that completed its work
+  correctly and one that died at turn 16 on a stalled stream looked identical from outside; the only
+  way to tell them apart was `jq` on a file with no documented reader.
+
+  The record is now folded into `book status`, which already existed, needs no credentials, and is
+  the surface a person looks at. The headline is one of four: `running` when the pid answers,
+  `finished` with the terminal status and reason, `crashed` when the process died recording no
+  outcome, and -- the case the record exists for -- *no longer running, and recorded no outcome*. A
+  live process that has not reached a turn boundary in fifteen minutes is named as possibly wedged,
+  since a transcript's mtime advances at the same rate for a healthy run and one stuck on a
+  permission prompt. `--json` carries the same fields under `run`.
+
 - **`book config unset <key>`** removes a key from one layer, so a shadowing value can be cleared
   with the tool that reported it rather than by hand.
 
