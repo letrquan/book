@@ -20,7 +20,7 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **MCP**: interoperable MCP tool client with stdio, Streamable HTTP, and legacy SSE transports;
   interactive project-server approval, secret-safe diagnostics, dynamic tool discovery, and
   server-scoped permissions.
-- **CLI helpers**: `book doctor` (diagnose env/config), `book config` (get/set/list settings), `book trust` (approve or reject configuration a repository declared), and `book tool-stats` (measure tool use across sessions — fail counts, rates, durations). None of them require a working credential — they exist to help when the provider is not yet configured, so `book doctor` reports an unresolved key as a finding rather than failing on it.
+- **CLI helpers**: `book doctor` (diagnose env/config), `book config` (get/set/list settings), `book trust` (approve or reject configuration a repository declared), and `book tool-stats` (measure tool use across sessions — fail counts, rates, durations). None of them require a working credential — they exist to help when the provider is not yet configured, so `book doctor` reports an unresolved key as a finding rather than failing on it. When a settings layer is what is broken, `book doctor` names the layer the failure first appears with, and `book doctor --no-settings` reports everything else with all of them skipped.
 
 See [`docs/current-state.md`](./docs/current-state.md) for the verified product snapshot, [`MILESTONES.md`](./MILESTONES.md) for the current roadmap, and [`CHANGELOG.md`](./CHANGELOG.md) for release notes.
 
@@ -64,6 +64,7 @@ book --continue  # most recent session in current directory
 
 # Diagnose setup / edit settings from the shell (these run without a configured credential)
 book doctor
+book doctor --no-settings  # skip every settings layer, when one of them is what is broken
 book config list
 book config get permissions.deny
 book config set permissions.allow '["Read(*)","Glob(*)","Grep(*)"]'  # user-global by default
