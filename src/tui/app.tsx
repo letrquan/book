@@ -43,6 +43,7 @@ import { SubagentPanel } from './components/SubagentPanel.js';
 import { SubagentDetail } from './components/SubagentDetail.js';
 import { BackgroundShellDetail } from './components/BackgroundShellDetail.js';
 import { projectManagedAgentTraces } from './managed-agent-transcript.js';
+import { inlineCode } from './markdown-inline.js';
 import {
   ThemeContext,
   listCustomThemes,
@@ -972,8 +973,12 @@ export function App({
     const completed = backgroundShells.lastCompletion;
     if (!completed) return;
     const exit = completed.exitCode !== undefined ? ` (exit ${completed.exitCode ?? 'none'})` : '';
+    // The title defaults to the whole command, and this row is what a user
+    // reads to confirm *which* command finished — so it has to survive the
+    // prose renderer that the rest of this sentence is written for. Inline
+    // code also matches the `ToolCallBlock` that started the job.
     addLocalMessage(
-      `${completed.status === 'exited' ? '✓' : '✕'} Background shell ${completed.title || completed.id} ${completed.status}${exit}.`,
+      `${completed.status === 'exited' ? '✓' : '✕'} Background shell ${inlineCode(completed.title || completed.id)} ${completed.status}${exit}.`,
     );
     backgroundShells.acknowledge(completed.id);
     if (selectedShellId === completed.id) returnToMain();
