@@ -11,7 +11,7 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **Providers**: Anthropic Messages API (prompt caching, adaptive thinking) and any OpenAI-compatible endpoint, auto-detected from `baseUrl` / `--provider`. `--effort` reaches both, as `output_config.effort` and as `reasoning_effort`.
 - **Project context**: walks the tree to load Codex-style `AGENTS.md` and Claude-style `CLAUDE.md` instructions (user-global → broad project → specific project → local/rules) into a fenced, trust-labeled block, alongside platform info and discovered skills, slash commands, and subagents. Content is split by how often it changes: a cached static prefix, an uncached suffix for activation-class policy, and a per-turn `<session-state>` block carrying date, git status, and mode on the newest user turn — so an edit or a mode toggle costs one turn of cache, not the whole conversation.
 - **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
-- **Sessions**: append-only JSONL persistence with automatic titles from the first prompt plus `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, reference-aware `/compact`, and Claude-style `/rewind` for conversation, code, or both. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, and remembered file facts are freshness-checked before reuse.
+- **Sessions**: append-only JSONL persistence with automatic titles from the first prompt plus `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, reference-aware `/compact`, and Claude-style `/rewind` for conversation, code, or both. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, remembered file facts are freshness-checked before reuse, and constraints you stated in your own words are carried verbatim in a host-owned ledger the summarizer can read but never rewrite (see "Carried constraints").
 - **Tools**: a provider-neutral capability catalog keeps a practical core loaded and uses `ToolSearch` to activate up to five authorized git, web, session, skill, agent, notebook, or MCP definitions on the next model turn. File, shell, task, clarification, and plan tools stay immediately available when permitted. Existing names such as `Read`, `Bash`, and `AgentSpawn` remain stable.
 - **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`. Print mode resolves commands through the same registries: `/init`, `/security-review`, `/review`, and custom commands run headlessly, and the interactive-only ones fail loudly instead of reaching the model as text.
 - **Permissions**: allow/ask/deny rule matching with six modes — `default`, `acceptEdits` (`accept-edits`), `plan`, `auto`, `dontAsk`, `bypassPermissions` — see `/permissions` or `--permission-mode`.
@@ -673,6 +673,37 @@ open `/config` and choose **Compact model** (shortcut `C`), or run
 `toolDiscovery.mode` accepts `auto`, `eager`, or `deferred`. Auto mode sends all authorized definitions only when there are at most ten and their schemas fit the configured budget; otherwise the provider receives the practical core plus `ToolSearch`. Search never returns tools outside the current command, skill, agent-role, permission-mode, or runtime-state capability intersection.
 
 Tool execution is serial by default. Consecutive calls explicitly reviewed as parallel-safe (`Read`, `Glob`, `Grep`, `GitStatus`, `GitDiff`, `GitLog`, and `GitBranch`) run as bounded ordered waves; every other call is a barrier. Preparation, hooks, mode checks, and permission prompts remain sequential, while wave results are published in provider order without discarding successful siblings when another fails. `toolExecution.maxConcurrent` sets the session-wide limit shared by the root and managed children (default `4`, maximum `8`).
+
+### Carried constraints
+
+Compaction replaces older turns with a generated checkpoint, and everything in that checkpoint used
+to be written by the summarizer model and re-fitted under budget pressure at every generation. The
+fitter drops the oldest entries first, which in a coding session means the brief: Book's own
+fidelity harness measured **zero** retention of the constraints a user opened the conversation
+with, one generation in.
+
+Book now splits authorship. Directive sentences from your own turns -- "the runtime must remain
+Node 20", "never touch the vendored parser", "only use pnpm" -- are copied verbatim into a
+host-owned **carried ledger** on the checkpoint. The summarizer sees it and is told to honour it,
+but cannot write to it: a `carried` field in a model reply is discarded. The fitter cannot evict
+from it. It accumulates across generations and is never reordered, and the checkpoint states the
+rule for reading it: where two entries conflict, the later one wins.
+
+The ledger is bounded rather than unlimited -- at most 32 entries, 1024 tokens, and 35% of the
+checkpoint budget. When the cap binds it evicts restatements first, then softer steers ("prefer",
+"avoid"), then explicit rules, never the newest entry, and the checkpoint discloses how many
+entries were dropped. The exact turns stay retrievable with `SessionHistorySearch` and
+`SessionHistoryRead`.
+
+Two things are deliberately excluded. Only the text you typed is read -- never `@file` expansions
+or `!`-shell output -- so a repository cannot plant a rule in a record Book is bound to keep. And
+anything matching the secret detector is refused, because a ledger that never forgets is the last
+place to write a credential.
+
+Extraction is a cue-based scan, not a model call: it costs no extra tokens and no extra latency,
+and it will miss a constraint phrased without a directive word. It is a floor under retention, not
+a replacement for the summarizer's own record. The design is documented in
+`plans/carried-ledger-plan.md`.
 
 ### Permission rules and modes
 

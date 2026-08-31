@@ -71,8 +71,9 @@ export interface FidelityMetrics {
 export const PREFLIGHT_FRACTION = 0.8;
 
 /**
- * The recorded v2 fidelity baseline, measured 2026-08-29 after Carried Ledger
- * phase 0 (items 0.1-0.5, 0.7) and audit item I landed.
+ * The recorded v2 fidelity baseline, re-measured 2026-08-30 after the Carried
+ * Ledger landed (`agent/carried-ledger.ts`); the pre-ledger numbers it replaces
+ * were measured 2026-08-29 after phase 0 (items 0.1-0.5, 0.7) and audit item I.
  *
  * Floors, not targets, and they move in one direction only -- upward for
  * retention and grounding, downward for reducer calls. A change that lowers one
@@ -81,25 +82,28 @@ export const PREFLIGHT_FRACTION = 0.8;
  * They live beside the scorer, not in the test, so the provider-backed
  * benchmark can grade against the same numbers instead of duplicating them.
  *
- * Read them before trusting compaction with a long run. Under this corpus's
- * budget pressure v2 keeps only the newest third of what it was told, it drops
- * the oldest facts first, and `minVerbatimUserRetention` is **zero**: neither
- * constraint the user opened the conversation with is still in the checkpoint
- * after a single generation. That is the decay the Carried Ledger's
- * author-split exists to stop, and it is why the design puts user text in a
- * host-owned ledger the fitter may not rewrite.
+ * What changed. Before the ledger, `minVerbatimUserRetention` was **zero**:
+ * neither constraint the user opened the conversation with was still in the
+ * checkpoint after a single generation, because both lived in model-authored
+ * episodes and the fitter evicts completed episodes oldest-first. The ledger's
+ * author split moved user-written text into a host-owned field the fitter may
+ * not evict, and the measured value is now 1.0 across all eight generations.
+ * Overall retention rose with it -- from 0.333 to 0.667 -- because the same
+ * sentences also carry facts the episodes were losing.
  */
 export const FIDELITY_BASELINE = {
-  /** Measured 0.333 -- only the newest third of the planted facts survive. */
-  minFinalRetention: 0.33,
-  /** Measured 0.333 across the eight generations. */
-  minMeanRetention: 0.33,
+  /** Measured 0.667. Was 0.333 before the Carried Ledger. */
+  minFinalRetention: 0.66,
+  /** Measured 0.677 across the eight generations. Was 0.333. */
+  minMeanRetention: 0.67,
   /**
-   * Measured 0.0. Both user constraints are gone by generation 1: they are the
-   * oldest episodes, and the fitter evicts completed episodes oldest-first.
-   * Phase 2 is what changes this; recording the zero is the point.
+   * Measured 1.0, and the reason the Carried Ledger exists. Was 0.0.
+   *
+   * This floor is the load-bearing one: a change that drops it means Book has
+   * gone back to forgetting the rule it was given on turn 3, which is exactly
+   * the failure the ledger was built to make impossible.
    */
-  minVerbatimUserRetention: 0,
+  minVerbatimUserRetention: 1,
   minSupersessionCorrectness: 1,
   minGroundedSourceRecall: 1,
   /** Measured 0.898: most of the retained tail carries something. */
@@ -107,7 +111,7 @@ export const FIDELITY_BASELINE = {
   /** Measured 8 -- one reducer call per generation, no repairs spent. */
   maxReducerCalls: 8,
   /**
-   * Measured 0.144, and a ceiling rather than a floor. This is the design's
+   * Measured 0.145, and a ceiling rather than a floor. This is the design's
    * "dead budget": compaction targets half the window, but the retention and
    * checkpoint caps pin the real post-compaction history far below it, and the
    * difference is headroom the agent is entitled to keep and instead pays to
