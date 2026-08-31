@@ -32,10 +32,7 @@ import type { SkillRegistrySnapshot } from '../skill-registry.js';
 import { buildSkillReport } from '../skill-report.js';
 import { buildMcpStatusReport } from '../mcp-report.js';
 import type { McpHostSnapshot } from '../mcp-host.js';
-import {
-  isExperimentalSettingPath,
-  WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE,
-} from '../settings-scope.js';
+import { blockedWorkspaceSettingPath } from '../settings-scope.js';
 
 export interface BuiltinCommand {
   name: string;
@@ -182,11 +179,9 @@ function configCommandEffect(
   } catch {
     // Unquoted values are stored as strings.
   }
-  if (isExperimentalSettingPath(rawKey)) {
-    return {
-      type: 'local-message',
-      content: WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE,
-    };
+  const blocked = blockedWorkspaceSettingPath(rawKey);
+  if (blocked) {
+    return { type: 'local-message', content: blocked };
   }
   const result = new SettingsRepository(
     join(context.workspace, '.book', 'settings.local.json'),

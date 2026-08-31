@@ -197,6 +197,47 @@ export const providerModelSchema = z.object({
     .optional(),
 });
 
+/**
+ * Per-profile overrides for subscription auth.
+ *
+ * `clientId` is the field that matters: Book ships none (see
+ * `src/auth/profiles.ts`), so a subscription login only works once the user
+ * supplies the client id their vendor issued them. The rest exists so a
+ * self-hosted or proxied authorization server needs configuration, not a fork.
+ */
+export const authProfileOverrideSchema = z.object({
+  label: z.string().min(1).optional(),
+  clientId: z.string().min(1).optional(),
+  /**
+   * Only for a confidential client. Supports `{env:VAR}` / `{file:path}`
+   * indirection like every other secret in settings, and is read exclusively
+   * from a trusted layer - the whole `auth` block is stripped from any
+   * workspace file.
+   */
+  clientSecret: z.string().min(1).optional(),
+  providerType: z.enum(['anthropic', 'openai']).optional(),
+  authorizeUrl: z.string().url().optional(),
+  tokenUrl: z.string().url().optional(),
+  scopes: z.array(z.string().min(1)).optional(),
+  redirectPort: z.number().int().min(0).max(65535).optional(),
+  redirectPath: z.string().startsWith('/').optional(),
+  baseUrl: z.string().min(1).optional(),
+  headers: z.record(z.string()).optional(),
+  defaultModel: z.string().min(1).optional(),
+});
+
+export const authSettingsSchema = z.object({
+  /**
+   * Which stored credential to spend: a profile id, or `api-key` to ignore
+   * stored credentials entirely. Left unset, Book uses a stored credential
+   * only when no API key resolved and exactly one credential matches the
+   * active provider — so adding a login never silently retargets a workspace
+   * that already had a working key.
+   */
+  profile: z.string().min(1).optional(),
+  profiles: z.record(authProfileOverrideSchema).default({}),
+});
+
 export const providerConfigSchema = z.object({
   type: z.enum(['openai', 'anthropic']).default('openai'),
   baseURL: z.string().min(1).optional(),
@@ -439,6 +480,8 @@ export type SkillSettings = z.infer<typeof skillSettingsSchema>;
 
 export type ProviderModelConfig = z.infer<typeof providerModelSchema>;
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;
+export type AuthProfileOverride = z.infer<typeof authProfileOverrideSchema>;
+export type AuthSettings = z.infer<typeof authSettingsSchema>;
 
 /** The supported production strategy; Zero-Mem is gated separately as experimental. */
 export const compactStrategySchema = z.literal('summary');
@@ -480,6 +523,7 @@ export const bookSettingsSchema = z.object({
   additionalDirectories: z.array(z.string()).default([]),
   env: z.record(z.string()).default({}),
   provider: z.record(providerConfigSchema).default({}),
+  auth: authSettingsSchema.default({}),
   permissions: permissionsSchema.default({}),
   sandbox: sandboxSchema.default({}),
   hooks: hooksSchema.default({}),
@@ -560,6 +604,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   additionalDirectories: [],
   env: {},
   provider: {},
+  auth: { profiles: {} },
   ui: { showThinking: true, startupAnimation: true },
   skills: { enabled: true, overrides: {}, execution: {} },
   retry: {

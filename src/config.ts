@@ -9,6 +9,7 @@ import { DEFAULT_SETTINGS, type CompactStrategy, type ResolvedSettings } from '.
 import { loadMemoryContext } from './memory-store.js';
 import { isEffortLevel } from './commands/effort.js';
 import { assertHarnessModeAvailable, assertSelectableWorkflow } from './harness/coordinator.js';
+import { selectAuthProfile, type AuthSelection } from './auth/selection.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
@@ -164,8 +165,11 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const effortExplicit = Boolean(
     options?.effortOverride || process.env.BOOK_EFFORT || settings.effort,
   );
-  const rawModel =
-    options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
+  // Deliberately without the 'gpt-4o' fallback: an active auth profile supplies
+  // a default model, and it has to rank below every explicit source but above
+  // the built-in fallback. `rawModel` applies both, once the profile resolves.
+  const explicitModel =
+    options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model;
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
   validateLegacyCompactStrategy(process.env.BOOK_COMPACT_STRATEGY);
   const experimentalZeroMem =
@@ -178,16 +182,38 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   };
   const compactStrategy: CompactStrategy = 'summary';
   const defaultApiKey = process.env.BOOK_API_KEY || '';
-  const defaultBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl || DEFAULT_OPENAI_BASE_URL;
+  const explicitBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl;
+  const defaultProviderOverride = validateProvider(process.env.BOOK_PROVIDER) || 'auto';
+
+  // Selection is resolved before the config is assembled so that an active
+  // subscription profile can supply the endpoint and model the run would
+  // otherwise inherit from Book's OpenAI-shaped defaults. Redemption of the
+  // credential (refresh, headers) happens per request in `auth/resolve.ts`.
+  const auth: AuthSelection | undefined = selectAuthProfile({
+    settings,
+    providerType: defaultProviderOverride,
+    hasApiKey: Boolean(defaultApiKey),
+  });
+
+  // Deliberately *not* the profile's endpoint: `defaultBaseUrl` is the value a
+  // named `provider.<id>` entry inherits when it declares none, and a provider
+  // entry inheriting the subscription vendor's host would post that entry's own
+  // API key there. The profile supplies the live base URL below instead.
+  const defaultBaseUrl = explicitBaseUrl || DEFAULT_OPENAI_BASE_URL;
+  const profileBaseUrl = explicitBaseUrl || auth?.profile.baseUrl || DEFAULT_OPENAI_BASE_URL;
+  const rawModel = explicitModel || auth?.profile.defaultModel || 'gpt-4o';
   const defaultMaxTokens =
     envMaxTokens ?? settings.maxTokens ?? legacy?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const defaultEffort =
     options?.effortOverride || validateEffort(process.env.BOOK_EFFORT) || settings.effort || 'high';
-  const defaultProvider = validateProvider(process.env.BOOK_PROVIDER) || 'auto';
+  const defaultProvider =
+    defaultProviderOverride !== 'auto'
+      ? defaultProviderOverride
+      : (auth?.profile.providerType ?? 'auto');
 
   let config: AgentConfig = {
     apiKey: defaultApiKey,
-    baseUrl: defaultBaseUrl,
+    baseUrl: profileBaseUrl,
     model: rawModel,
     modelSelection: rawModel,
     compactModel,
@@ -204,6 +230,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     defaultEffort,
     defaultApiKey,
     defaultBaseUrl,
+    defaultProfileBaseUrl: auth ? profileBaseUrl : undefined,
     defaultProvider,
     autoCompactEnabled: settings.autoCompactEnabled ?? legacy?.autoCompactEnabled ?? true,
     workspace: resolvedWorkspace,
@@ -218,14 +245,30 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     memoryContext,
     effort: defaultEffort,
     provider: defaultProvider,
+    authProfile: auth?.profile.id,
   };
 
   config = applyModelDefaults(resolveModelProviderConfig(config, rawModel));
   config.modelProviderWarning = describeUnresolvedProviderPrefix(settings.provider, rawModel);
 
-  if (!config.apiKey && !options?.allowMissingApiKey) {
+  // Read off the *resolved* config: `resolveModelProviderConfig` may have
+  // cleared `authProfile` for a named provider entry, and a guard keyed on the
+  // pre-resolution selection would then wave through a run with no credential
+  // at all - the failure the guard exists to name, deferred to an opaque 401.
+  const activeProfile = config.authProfile
+    ? auth?.profile.id === config.authProfile
+      ? auth
+      : undefined
+    : undefined;
+  const credentialPresent = config.authProfile ? Boolean(activeProfile?.credentialPresent) : false;
+
+  if (!config.apiKey && !options?.allowMissingApiKey && !credentialPresent) {
     throw new Error(
-      'BOOK_API_KEY or provider.<id>.apiKey not set. Set BOOK_API_KEY or use {env:VAR} in settings.',
+      config.authProfile
+        ? `Auth profile "${config.authProfile}" is selected but nothing is logged in. ` +
+            `Run: book auth login ${config.authProfile}`
+        : 'BOOK_API_KEY or provider.<id>.apiKey not set. Set BOOK_API_KEY, run ' +
+            '`book auth login <profile>`, or use {env:VAR} in settings.',
     );
   }
 
@@ -236,7 +279,10 @@ function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
   return {
     ...config,
     apiKey: config.defaultApiKey ?? config.apiKey,
-    baseUrl: config.defaultBaseUrl ?? config.baseUrl,
+    // An active auth profile keeps its own endpoint across a plain model
+    // switch; `defaultBaseUrl` is the profile-free fallback a named provider
+    // entry inherits instead.
+    baseUrl: config.defaultProfileBaseUrl ?? config.defaultBaseUrl ?? config.baseUrl,
     model,
     modelSelection: model,
     modelInfo: undefined,
@@ -337,6 +383,11 @@ export function resolveModelProviderConfig(
     modelSelection: rawModel,
     modelInfo: provider.models[model],
     provider: provider.type,
+    // A named provider entry brings its own endpoint and key, so the
+    // subscription credential does not follow the model switch. Carrying it
+    // would send an account-wide bearer token to whatever host that entry
+    // names - a different vendor, a proxy, a gateway.
+    authProfile: undefined,
   };
 }
 

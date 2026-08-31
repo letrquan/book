@@ -9,8 +9,7 @@ import {
   SettingsRepository,
 } from '../settings-repository.js';
 import {
-  CONFIG_COMMAND_EXPERIMENTAL_SETTINGS_MESSAGE,
-  isExperimentalSettingPath,
+  blockedWorkspaceSettingPath,
   settingsScopeLabel,
   settingsScopePath,
   type SettingsScope,
@@ -259,8 +258,9 @@ export async function runConfigCommand(
       console.error('Invalid key. Use dot-separated path: e.g. permissions.deny');
       exit(1);
     }
-    if (isExperimentalSettingPath(key)) {
-      console.error(CONFIG_COMMAND_EXPERIMENTAL_SETTINGS_MESSAGE);
+    const blocked = blockedWorkspaceSettingPath(key);
+    if (blocked) {
+      console.error(blocked);
       exit(1);
     }
     const topKey = parts[0];

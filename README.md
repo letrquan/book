@@ -72,6 +72,11 @@ book config set --local permissions.allow '["Read(*)"]'              # just this
 book config list --local                                             # what this checkout overrides
 book config unset --local permissions.allow                          # drop the override
 
+# Sign in with a provider subscription instead of an API key
+book auth status
+book auth login anthropic
+book auth logout anthropic
+
 # Manage MCP servers (JSON shape is compatible with the wider MCP ecosystem)
 book mcp list
 book mcp add github npx -- -y @modelcontextprotocol/server-github
@@ -223,6 +228,137 @@ Set `BOOK_HOME` to replace the default `~/.book` user-state root. This relocates
 sessions, memory, managed-agent state and worktrees, jobs, rewind snapshots, telemetry, tool output,
 MCP configuration, and user-level skills, commands, agents, and `AGENTS.md` discovery. Project-local
 `.book/` directories are unchanged.
+
+### Subscription authentication
+
+Book can authenticate with a provider **subscription** over OAuth instead of an API key. Tokens
+live in `~/.book/auth.json` (or `$BOOK_HOME/auth.json`), mode `0600` — never in a workspace, for
+the same reason trust decisions do not live there: a repository can force-add a tracked
+`.book/settings.local.json` into a clone, and nothing a repository controls may reach an account
+credential.
+
+```bash
+book auth login anthropic   # Claude subscription (Anthropic transport)
+book auth login codex       # ChatGPT subscription (OpenAI-compatible transport)
+book auth status            # what Book will use, with no secrets in the output
+book auth status --json
+book auth logout anthropic
+book auth logout --all
+```
+
+#### You must supply the OAuth client id
+
+**Book ships no vendor client ids.** A client id identifies *which application* an authorization
+server is releasing a subscription token to, so bundling a vendor's first-party id would make every
+Book user appear to that vendor as that vendor's own official CLI. Book will not do that. Supply the
+id issued to you, per profile:
+
+```bash
+export BOOK_AUTH_CLIENT_ID_ANTHROPIC=<client-id>
+```
+
+The `<PROFILE>` suffix is the profile id upper-cased with every run of non-alphanumeric characters
+replaced by `_` — so a profile named `my-corp-sso` reads `BOOK_AUTH_CLIENT_ID_MY_CORP_SSO`. A
+confidential client (common on a corporate authorization server, unusual for a CLI) also reads
+`BOOK_AUTH_CLIENT_SECRET_<PROFILE>`, or `auth.profiles.<id>.clientSecret`.
+
+or in `~/.book/settings.json`:
+
+```json
+{ "auth": { "profiles": { "anthropic": { "clientId": "<client-id>" } } } }
+```
+
+The `auth` block is read **only** from a trusted source — `<BOOK_HOME>/settings.json`, an explicit
+`--settings` file, or the environment. It is stripped from `.book/settings.json` and
+`.book/settings.local.json` alike, and `book config set auth.…` refuses rather than writing where it
+would be ignored. Every field in the block decides where an account-wide token is obtained or sent,
+so a repository that could set one could harvest it by being cloned.
+
+`book auth login` stops with both of these lines before it opens a browser or binds a port when no
+id is configured. Check that your provider's terms permit third-party clients to spend a
+subscription before enabling this.
+
+#### The login flow
+
+Authorization code with PKCE (S256) and a CSRF `state`, against a listener bound to `127.0.0.1`
+only. The listener serves exactly one matching callback and then stops; a callback whose `state`
+does not match is answered `400` and ignored, and the flow keeps waiting for the real one.
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--no-browser` | Print the authorization URL instead of launching a browser |
+| `--manual` | Bind no listener; paste back the URL the browser landed on (use this when the browser is on a different machine — SSH, containers) |
+| `--timeout <seconds>` | How long to wait for the redirect (default 300) |
+
+#### Which credential a run spends
+
+Resolved once, at config load:
+
+1. `BOOK_AUTH_PROFILE`, then `auth.profile` in settings. `auth.profile: "api-key"` pins the run to
+   API-key auth and ignores everything stored.
+2. Otherwise, a stored credential is used **only** when no API key resolved *and* exactly one stored
+   credential matches the active provider. Adding a login never silently retargets a workspace that
+   already had a working key, and two logins with no stated preference resolve to nothing rather
+   than a guess.
+
+When a profile is active it supplies the API base and a default model, and the transports send
+`Authorization: Bearer <token>` *instead of* the API-key header — never alongside it. Selecting a
+model through a configured `provider/<id>` entry drops the profile, since that entry brings its own
+endpoint and key.
+
+**A credential is bound to its profile's origin**, checked where the request header is built. Several
+things can change a request's destination after the profile was chosen — `BOOK_BASE_URL`, a legacy
+`.bookrc.json` (which a repository ships, and which no settings trust layer covers), a
+`provider.<id>` entry — so the rule is enforced once, at the only place that knows both the
+credential and where it is about to go. A mismatch is refused with a message naming the override
+that caused it; point `auth.profiles.<id>.baseUrl` at the host you mean if the redirect is
+deliberate.
+
+#### Known limits
+
+- Model discovery (`/model`, the BYOK wizard) lists models for configured `provider.<id>` entries
+  only. A subscription profile creates no such entry, so there is no catalog to refresh for it —
+  set the model with `-m` or `auth.profiles.<id>.defaultModel`.
+- The OpenAI-compatible transport speaks Chat Completions. A profile whose endpoint expects a
+  different protocol needs a transport Book does not have, whatever its OAuth flow does.
+- The credential store is rewritten whole with no lock. A same-profile refresh race between two
+  `book` processes recovers (the loser re-reads and uses the winner's token); two processes writing
+  *different* profiles at the same instant can still lose one update. Access tokens
+are refreshed roughly two minutes before expiry, once per profile even across parallel subagents, and
+the refreshed token is written back so other `book` processes see it.
+
+#### Profiles
+
+Built-in: `anthropic` (Anthropic transport) and `codex` (OpenAI-compatible transport). Every field is
+overridable, and a wholly new profile only needs `authorizeUrl`, `tokenUrl`, and `baseUrl` — enough
+to point Book at a self-hosted or proxied authorization server without a fork. In
+`~/.book/settings.json` (never a workspace file):
+
+```json
+{
+  "auth": {
+    "profile": "internal",
+    "profiles": {
+      "internal": {
+        "label": "Internal gateway",
+        "providerType": "anthropic",
+        "clientId": "book-cli",
+        "authorizeUrl": "https://sso.example.com/authorize",
+        "tokenUrl": "https://sso.example.com/token",
+        "baseUrl": "https://gateway.example.com/v1",
+        "scopes": ["inference"],
+        "redirectPort": 54545,
+        "redirectPath": "/callback",
+        "defaultModel": "claude-sonnet-5",
+        "headers": { "x-org": "acme" }
+      }
+    }
+  }
+}
+```
+
+`book auth status` and `book doctor` report the active credential, its account label, and its
+expiry, and never print a token.
 
 ### MCP servers
 
@@ -933,6 +1069,9 @@ Project themes can override any token in `.book/themes/<name>.json`. They appear
 | `BOOK_BASE_URL`                                                                                   | Default OpenAI-compatible base URL                                |
 | `BOOK_MODEL`                                                                                      | Default model                                                     |
 | `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                                 |
+| `BOOK_AUTH_PROFILE`                                                                               | Subscription profile to spend, or `api-key` to force key auth     |
+| `BOOK_AUTH_CLIENT_ID_<PROFILE>`                                                                   | OAuth client id for that profile (see slug rule below)            |
+| `BOOK_AUTH_CLIENT_SECRET_<PROFILE>`                                                               | Client secret, only for a confidential client                     |
 | `BOOK_EFFORT`                                                                                     | Thinking effort level                                             |
 | `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                               |
 | `BOOK_WORKSPACE`                                                                                  | Default workspace                                                 |
@@ -1282,7 +1421,7 @@ for await (const event of query('Explain this code', {
 
 `AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop` — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK.
 
-Auth and model selection come from settings / env (`BOOK_API_KEY`, `BOOK_MODEL`, provider blocks), not from `query()` options. See `src/sdk.ts` for the full `QueryEvent` / `QueryOptions` surface.
+Auth and model selection come from settings / env (`BOOK_API_KEY`, `BOOK_MODEL`, provider blocks, and the `auth` block described under [Subscription authentication](#subscription-authentication) — an active profile supplies the base URL, a default model, and the request headers), not from `query()` options. See `src/sdk.ts` for the full `QueryEvent` / `QueryOptions` surface.
 
 For direct lifecycle control, create a manager with `createAgentManager(loadConfig(workspace))`; its public operations cover planning, spawning, listing, inspection, sending/resuming, waiting, stopping, evidence publishing/review, and validated application.
 

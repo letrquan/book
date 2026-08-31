@@ -35,3 +35,52 @@ describe('settings redaction', () => {
     expect(redactSettingValue('harness.mode', 'off')).toBe('off');
   });
 });
+
+/**
+ * `book config list` dumps the resolved document into terminal scrollback and
+ * pasted bug reports. `clientId` is a public identifier by design and stays
+ * visible - that is what makes "no client id configured" diagnosable - but a
+ * client secret and the free-form headers that ride along with the bearer token
+ * are not.
+ */
+describe('auth settings redaction', () => {
+  const auth = {
+    profile: 'gateway',
+    profiles: {
+      gateway: {
+        clientId: 'public-client-id',
+        clientSecret: 'sk-confidential',
+        headers: { 'X-Gateway-Key': 'sk-gateway' },
+        baseUrl: 'https://gateway.example.com/v1',
+      },
+    },
+  };
+
+  it('hides the secret and headers in a whole-document dump', () => {
+    const serialized = JSON.stringify(redactSettingsForDisplay({ auth }));
+
+    expect(serialized).not.toContain('sk-confidential');
+    expect(serialized).not.toContain('sk-gateway');
+    // Still diagnosable.
+    expect(serialized).toContain('public-client-id');
+    expect(serialized).toContain('https://gateway.example.com/v1');
+  });
+
+  it.each([
+    ['auth', auth],
+    ['auth.profiles', auth.profiles],
+    ['auth.profiles.gateway', auth.profiles.gateway],
+    ['auth.profiles.gateway.clientSecret', auth.profiles.gateway.clientSecret],
+    ['auth.profiles.gateway.headers', auth.profiles.gateway.headers],
+  ])('hides them for a targeted `book config get %s`', (path, value) => {
+    const serialized = JSON.stringify(redactSettingValue(path, value));
+    expect(serialized).not.toContain('sk-confidential');
+    expect(serialized).not.toContain('sk-gateway');
+  });
+
+  it('leaves the client id readable for a targeted get', () => {
+    expect(redactSettingValue('auth.profiles.gateway.clientId', 'public-client-id')).toBe(
+      'public-client-id',
+    );
+  });
+});

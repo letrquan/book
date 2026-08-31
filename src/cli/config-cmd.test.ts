@@ -187,6 +187,27 @@ describe('book config set refuses trust-owned keys', () => {
     },
   );
 
+  /**
+   * Writing here would be worse than a no-op: the value lands in a file the
+   * loader strips, so the user believes they configured a credential source
+   * that is in fact ignored.
+   */
+  it('refuses to write auth settings to workspace-local settings', async () => {
+    const result = await set('auth.profiles.anthropic.clientId', '"client-123"');
+
+    expect(result.exitCode).toBe(1);
+    expect(result.err).toContain('cannot be written');
+    expect(result.err).toContain('BOOK_AUTH_CLIENT_ID_<PROFILE>');
+    expect(existsSync(localSettings())).toBe(false);
+  });
+
+  it('refuses the whole auth section, not just a nested key', async () => {
+    const result = await set('auth', '{"profile":"anthropic"}');
+
+    expect(result.exitCode).toBe(1);
+    expect(existsSync(localSettings())).toBe(false);
+  });
+
   it('rejects the legacy Zero-Mem strategy with migration guidance', async () => {
     const result = await set('compactStrategy', '"zero-mem"');
 

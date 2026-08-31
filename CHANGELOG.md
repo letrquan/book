@@ -21,6 +21,24 @@ All notable changes to this project are documented in this file.
   those are about the repository, and a theme name can come from a project's `.book/themes`, where
   it would not resolve elsewhere.
 
+- **`book config set`, the `/config` slash command, and the TUI's local persistence share one list
+  of settings a workspace file may not carry.** The `experimental.*` guard existed in all three;
+  the `auth.*` guard was added to only one, so `/config auth.profile=codex` wrote a value the
+  loader strips and reported success. Both now come from `blockedWorkspaceSettingPath`.
+
+- **`book doctor` names the credential that will actually be used.** It reported
+  `Credentials: resolved` whenever an API key was present, which points at the wrong credential once
+  an auth profile is active - the transports replace the key headers outright. It now reports the
+  active profile, its account label, and its token expiry - through the same renderer
+  `book auth status` uses, so the two commands cannot disagree about whether a credential is still
+  good - or tells the user to run `book auth login <profile>` when the selected profile has nothing
+  stored. An unreadable credential store is reported as such rather than as "nothing is logged in",
+  which was a dead end: `book auth login` also refuses to write a store it cannot parse.
+
+- **The 401 message names commands that exist.** It said "Check BOOK_API_KEY or run `/login`" -
+  `/login` was never a Book slash command, and BOOK_API_KEY is the wrong thing to look at once a
+  subscription profile is active.
+
 ### Added
 
 - **`book status` reports whether a run is alive, and how it ended.** Book has been writing a
@@ -46,6 +64,65 @@ All notable changes to this project are documented in this file.
 - **`book config get`/`list` take a scope.** Without one they still report the resolved merge;
   with `--global`, `--project`, or `--local` they read that single file verbatim, which is what
   answers "why is this not the value I set".
+
+- **Subscription authentication (`book auth login | logout | status`).** Book can now authenticate
+  with a provider subscription over OAuth instead of an API key, through two built-in profiles:
+  `anthropic` (Anthropic transport) and `codex` (OpenAI-compatible transport). The flow is
+  authorization-code with PKCE (S256) and a CSRF `state`, against a listener bound to `127.0.0.1`
+  only that serves exactly one matching callback; a mismatched callback is refused and the flow
+  keeps waiting for the real one. `--manual` skips the listener entirely and takes the redirect URL
+  pasted back, which is the flow that works when the browser is on a different machine from the CLI.
+
+  **Book bundles no vendor client ids.** A client id identifies which application an authorization
+  server releases a subscription token to, so shipping a vendor's first-party id would make every
+  Book user appear to that vendor as that vendor's own official CLI. The id is configuration -
+  `BOOK_AUTH_CLIENT_ID_<PROFILE>` or `auth.profiles.<id>.clientId` - and `book auth login` stops
+  with both of those lines, before it opens a browser or binds a port, when none is set.
+
+  Tokens live in `<BOOK_HOME>/auth.json` at mode `0600`, never in a workspace: a repository can
+  force-add a tracked `.book/settings.local.json` into a clone, so nothing a repository controls may
+  reach an account credential. The `auth` settings block is held to the same rule and read only from
+  a trusted source - `<BOOK_HOME>/settings.json`, an explicit `--settings` file, or the environment.
+  Every field in it decides where an account-wide token is obtained or sent (`profiles.<id>.baseUrl`
+  is the host that receives the Authorization header on every request), so both workspace layers are
+  stripped and `book config set auth.…` refuses rather than writing where it would be ignored. Reads fail closed and writes refuse a store they could not parse,
+  rather than silently discarding a refresh token. Endpoints, scopes, redirect, base URL, default
+  model, and headers are all overridable per profile, and a wholly new profile needs only
+  `authorizeUrl`, `tokenUrl`, and `baseUrl` - enough to point Book at a self-hosted authorization
+  server without a fork.
+
+  **The credential is bound to its profile's origin**, enforced where the request header is built
+  rather than at each place a base URL can change. `BOOK_BASE_URL`, a `provider.<id>` entry, and a
+  legacy `.bookrc.json` can all retarget a request after the profile was selected - and
+  `.bookrc.json` is repository-controlled and covered by no settings trust layer - so guarding the
+  settings keys alone left the token reachable by a cloned repository. A mismatch is refused with a
+  message naming the override that caused it. Selecting a model through a configured
+  `provider/<id>` entry additionally drops the profile, since that entry brings its own endpoint
+  and key; such an entry no longer inherits the profile's endpoint either, which would have posted
+  the entry's own API key to the subscription vendor.
+
+  The login listener refuses any callback that cannot prove it belongs to the flow *before* it
+  honours an `error` parameter, so a bare `<img src=".../callback?error=x">` on a page the user
+  happens to visit can no longer kill a login in progress; reflected error text is HTML-escaped and
+  the page carries a `default-src 'none'` CSP. The redirect names `127.0.0.1` rather than
+  `localhost` (RFC 8252 §7.3), matching the address the listener actually binds. A shared token
+  refresh carries no caller's AbortSignal, so cancelling one turn no longer fails the parallel
+  subagents awaiting the same refresh; a refresh response that omits `expires_in` or `scope` keeps
+  the stored values rather than overwriting them with undefined, and `expires_in` is accepted as a
+  numeric string. Losing a cross-process refresh race re-reads the store and uses the token the
+  other process wrote instead of demanding a fresh login. Confidential clients
+  (`auth.profiles.<id>.clientSecret`, `BOOK_AUTH_CLIENT_SECRET_<PROFILE>`) are supported for
+  self-hosted authorization servers that issue no public clients.
+
+  Which credential a run spends is resolved once, at config load. An explicit `BOOK_AUTH_PROFILE` or
+  `auth.profile` wins (`api-key` pins the run to key auth); otherwise a stored credential is used
+  only when no API key resolved *and* exactly one credential matches the active provider - so adding
+  a login never silently retargets a workspace that already had a working key. An active profile
+  supplies the API base and a default model, and the transports send `Authorization: Bearer <token>`
+  *instead of* the API-key header rather than alongside it, which Anthropic rejects. Access tokens
+  refresh roughly two minutes before expiry, once per profile even across parallel subagents, and are
+  written back so concurrent `book` processes see them. With no profile active, both transports send
+  byte-identical headers to what they sent before.
 
 ### Fixed
 

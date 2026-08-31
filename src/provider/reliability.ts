@@ -62,7 +62,10 @@ export function formatApiError(status: number, body: string): string {
     case 'timeout':
       return 'Request timed out. Check your network connection and try again.';
     case 'auth':
-      return `${base} ${detail}. Check BOOK_API_KEY or run /login.`;
+      // Names both credential kinds, and only commands that exist: `/login` was
+      // never a Book slash command, and BOOK_API_KEY is the wrong thing to look
+      // at once a subscription profile is active.
+      return `${base} ${detail}. Check BOOK_API_KEY, or run \`book auth status\` if you signed in with a subscription.`;
     case 'quota':
       return `${base} ${detail}. Check your usage/credits.`;
     default:
