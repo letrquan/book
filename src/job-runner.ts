@@ -15,11 +15,8 @@ import {
   type PersistentShellSpec,
   type PersistentShellState,
 } from './jobs/persistent-store.js';
-import {
-  signalProcessGroup,
-  waitForProcessGroupExit,
-  windowsTaskkillPath,
-} from './jobs/process-tree.js';
+import { signalProcessGroup, waitForProcessGroupExit } from './jobs/process-tree.js';
+import { system32Executable } from './system32.js';
 
 const specPath = process.argv[2];
 if (!specPath) {
@@ -146,35 +143,32 @@ async function terminateTree(): Promise<boolean> {
     signalProcessGroup(child, pid, 'SIGKILL');
     return waitForProcessGroupExit(pid, TERMINATE_GRACE_MS);
   }
-  // `taskkill /T /F` already covers the tree, so the direct child's close is authoritative here.
-  await new Promise<void>((resolve) => {
-    let settled = false;
-    const complete = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(fallback);
-      resolve();
-    };
-    const fallback = setTimeout(complete, 1_500);
-    fallback.unref();
-    execFile(windowsTaskkillPath(), ['/PID', String(pid), '/T', '/F'], (error) => {
-      if (error) {
-        try {
-          child?.kill('SIGTERM');
-        } catch {
-          // The process may have exited between taskkill and the fallback.
-        }
-      }
-      complete();
-    });
+  // `taskkill /T /F` covers the tree, so the direct child's close speaks for the tree only when
+  // taskkill actually ran.
+  const alreadyExited = child.exitCode !== null || child.signalCode !== null;
+  if (alreadyExited) return true;
+  const confirmed = await new Promise<boolean>((resolve) => {
+    execFile(
+      system32Executable('taskkill'),
+      ['/PID', String(pid), '/T', '/F'],
+      { windowsHide: true, timeout: TERMINATE_GRACE_MS },
+      (error) => resolve(!error),
+    );
   });
-  if (await waitForChildClose(TERMINATE_GRACE_MS)) return true;
+  if (!confirmed) {
+    try {
+      child.kill('SIGTERM');
+    } catch {
+      // The process may have exited between taskkill and the fallback.
+    }
+  }
+  if (await waitForChildClose(TERMINATE_GRACE_MS)) return confirmed;
   try {
     child.kill('SIGKILL');
   } catch {
     return false;
   }
-  return waitForChildClose(TERMINATE_GRACE_MS);
+  return (await waitForChildClose(TERMINATE_GRACE_MS)) && confirmed;
 }
 
 function finish(

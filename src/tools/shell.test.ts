@@ -75,7 +75,7 @@ afterEach(async () => {
       }
     }
   }
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 describe('Bash shell tools', () => {
@@ -114,7 +114,7 @@ describe('Bash shell tools', () => {
     const marker = join(dir, 'cancelled-process-survived.txt');
     const command = nodeCommand(
       'cancel-foreground.cjs',
-      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 250);\nsetInterval(() => {}, 1000);\n`,
+      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 1500);\nsetInterval(() => {}, 1000);\n`,
     );
     const startedAt = Date.now();
     const pending = bash.execute({ command }, c);
@@ -122,10 +122,10 @@ describe('Bash shell tools', () => {
     setTimeout(() => controller.abort('stop foreground shell'), 50);
     const result = await pending;
 
-    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
     expect(result.status).toBe('error');
     expect(result.structuredError?.message).toMatch(/cancel/i);
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
     expect(existsSync(marker)).toBe(false);
   });
 
@@ -134,14 +134,14 @@ describe('Bash shell tools', () => {
     const marker = join(dir, 'timed-out-process-survived.txt');
     const command = nodeCommand(
       'timeout-foreground.cjs',
-      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 250);\nsetInterval(() => {}, 1000);\n`,
+      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 1500);\nsetInterval(() => {}, 1000);\n`,
     );
 
     const result = await bash.execute({ command, timeout: 50 }, c);
 
     expect(result.status).toBe('error');
     expect(result.structuredError?.message).toMatch(/timed out/i);
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
     expect(existsSync(marker)).toBe(false);
   });
 

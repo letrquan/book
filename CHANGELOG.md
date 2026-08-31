@@ -143,9 +143,24 @@ All notable changes to this project are documented in this file.
   That is the failure mode an unattended run cannot afford: every background command a long
   session starts and stops leaves a live process behind, holding directories the run may later
   try to remove, with nothing in the transcript indicating it. `taskkill` is now resolved through
-  `windowsTaskkillPath()` against `%SystemRoot%` at all three sites that spawn it — the shell
+  `system32Executable()` against `%SystemRoot%` at all three sites that spawn it — the shell
   manager, the detached job runner, and the harness evaluation runner. The POSIX branch is
   untouched; the helper returns the bare name off Windows.
+
+  Resolving the path removes the trigger; the structure that hid it is fixed separately. A failed
+  `taskkill` has other causes — a child running elevated or as another user refuses one — and in
+  every such case the old code still fell back to the direct child and then read the wrapper's
+  close as proof the tree was gone. `terminateWindowsProcessTree` now reports whether the tree kill
+  was actually confirmed, and neither the shell manager nor the job runner will record a shell as
+  `killed` on the strength of the wrapper's close alone. An unconfirmed kill is reported as
+  unconfirmed — `KillShell` already had the honest message for it — rather than as success over a
+  live worker. A process that had already exited before the attempt still counts as stopped, so
+  refusing to trust an unconfirmed kill does not invent a failure where the work was simply done.
+
+  `%SystemRoot%\System32` resolution is now a general `system32Executable()` helper rather than a
+  taskkill special case, because the same bug had a second instance: `src/auth/browser.ts` spawned
+  `rundll32` by bare name with `shell: false`, so on any machine whose `PATH` lacks System32,
+  `book auth login` could not open a browser and silently fell back to printing the URL.
 
   Two foreground process-tree tests in `src/tools/shell.test.ts` were skipped on win32 because
   they failed there. They assert that a marker file the grandchild would write is never written,

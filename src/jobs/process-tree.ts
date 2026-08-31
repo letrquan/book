@@ -1,6 +1,3 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-
 /**
  * Process-liveness helpers shared by the shell manager and the detached job runner.
  *
@@ -12,13 +9,6 @@ import { join } from 'node:path';
  */
 
 const GROUP_POLL_INTERVAL_MS = 25;
-
-export function windowsTaskkillPath(): string {
-  if (process.platform !== 'win32') return 'taskkill';
-  const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
-  const system32Taskkill = join(systemRoot, 'System32', 'taskkill.exe');
-  return existsSync(system32Taskkill) ? system32Taskkill : 'taskkill';
-}
 
 /** A signal target exists when it accepts signal 0, or rejects it as another user's. */
 function signalTargetExists(target: number): boolean {
