@@ -145,6 +145,23 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The background-shell completion row shows the command that ran, not a markdown reading of
+  it.** The row was built by interpolating the command into a local transcript message, and local
+  messages are prose: `node -e "setInterval(()=>{},1000)/*KILLPROBE*/"` came back as
+  `node -e "setInterval(()=>{},1000)/KILLPROBE/"`, both asterisks eaten as emphasis. The `Bash`
+  tool row directly above it renders the same string verbatim, so the two rows on one screen
+  disagreed about which command had just finished — and the completion row is the only surface
+  that reports it. Asterisks were the visible half of the class: `#`, `[x](y)`, `~~` and `_` are
+  all live in prose, so a recursive delete of `build/*`, a `grep` for a literal asterisk, or any
+  glob rendered wrong.
+
+  The command is now quoted as inline code, which also matches the tool row's styling. Quoting has
+  to survive the command: the fence is one backtick longer than the longest run inside it (so
+  ``echo `date` `` cannot close its own span), padded when the content's edge would fuse with the
+  fence, and line breaks are flattened first — block parsing runs before inline parsing, so a `#`
+  opening an embedded line would split the paragraph and strand the fence. Display only; execution
+  was never affected.
+
 - **A killed background shell really dies now, instead of reporting success and leaking its
   worker.** On Windows the process tree is torn down with `taskkill /T /F`, invoked by bare name
   through `execFile`. `execFile` performs no shell path lookup, so whenever `System32` is missing
