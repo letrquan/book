@@ -126,6 +126,32 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A killed background shell really dies now, instead of reporting success and leaking its
+  worker.** On Windows the process tree is torn down with `taskkill /T /F`, invoked by bare name
+  through `execFile`. `execFile` performs no shell path lookup, so whenever `System32` is missing
+  from the inherited `PATH` — the normal case for a Book launched from Git Bash or MSYS, and for
+  any sanitized subprocess environment — that call failed with `ENOENT` before it killed anything.
+
+  The fallback is what made the failure invisible. `proc.kill()` on Windows calls
+  `TerminateProcess` on the direct child handle only, and the direct child is the `cmd.exe`
+  wrapper rather than the worker it spawned. So `cmd.exe` exited, `waitForShellClose` saw its
+  `close` event, and `stop()` / `KillShell` reported `Killed shell <id>` — while the grandchild
+  kept running with its working directory still inside the workspace. The comment above
+  `terminateProcessTree` asserted that on Windows the direct child closing is authoritative for
+  the whole tree; it was authoritative only in the case where `taskkill` had actually run.
+
+  That is the failure mode an unattended run cannot afford: every background command a long
+  session starts and stops leaves a live process behind, holding directories the run may later
+  try to remove, with nothing in the transcript indicating it. `taskkill` is now resolved through
+  `windowsTaskkillPath()` against `%SystemRoot%` at all three sites that spawn it — the shell
+  manager, the detached job runner, and the harness evaluation runner. The POSIX branch is
+  untouched; the helper returns the bare name off Windows.
+
+  Two foreground process-tree tests in `src/tools/shell.test.ts` were skipped on win32 because
+  they failed there. They assert that a marker file the grandchild would write is never written,
+  which is precisely this leak, so they are unskipped rather than rewritten — they now cover the
+  contract on the platform where it was broken.
+
 - **`/context` reported max output tokens as the context window.** For any model without a
   metadata entry -- which behind an OpenAI-compatible router is every model -- the panel fell back
   to `runtimeConfig.maxTokens`, a max *output* budget, and printed it as "Window" and as the
