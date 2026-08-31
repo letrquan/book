@@ -126,6 +126,46 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Book can run its own gate.** A foreground `Bash` command was killed at 120s with no way for the
+  model to ask for more, so `npm run check` — the gate `CLAUDE.md` tells Book to run before calling
+  work done — could never finish. It takes over 200s here; `npm run test:unit` alone takes 158s.
+  The default is now 300s, the model can raise it per call up to 600s with `timeout`, and
+  `BOOK_TOOL_TIMEOUT_MS` reaches `Bash` as the README always claimed it did.
+
+  Three things had to change together. `timeout` was read by both the registry and the shell but
+  published in neither's schema — it was classed as a host control and hidden — so a model reading
+  the `Bash` schema could not know it existed. Across one 49-call print run the model sent
+  `["command"]` 48 times and once reached for `max_runtime_ms`, the only runtime knob on offer,
+  which applies to background commands only. `timeout` is now declared on `Bash`, with its default
+  and ceiling in the description; it stays hidden everywhere else.
+
+  `src/tools/shell.ts` also never consulted `ctx.env`, so raising `BOOK_TOOL_TIMEOUT_MS` lifted the
+  registry's budget while `Bash` still self-killed at its own module constant. Both now resolve one
+  deadline from one place, in one order: the call's `timeout`, then the operator's
+  `BOOK_TOOL_TIMEOUT_MS`, then the tool's own default. Only the model's argument is capped — the
+  ceiling exists so a model cannot stall its turn, not to tell an operator how long their build may
+  take — and non-finite values no longer reach `setTimeout`.
+
+  The reason nothing came back was a race, not a buffering accident. Both deadlines were 120000ms,
+  and the registry arms its timer before `tool.execute` is reached, so at equal values it always
+  fired first and answered with its own contentless `tool_timeout`. The shell's partial-output path
+  had been unreachable in practice. A tool that enforces its own deadline now declares `timeoutMs`
+  and the registry adds a grace margin on top, leaving the tool's report — which carries what the
+  command actually printed — the one that wins.
+
+  What the model receives is now a killed command rather than a failed one, on both streams:
+  stderr was being dropped, and for a build that dies mid-run that is usually where the only clue
+  is. The result is built after the process tree is torn down, since that teardown flushes what a
+  batching runner like npm or vitest had buffered. The distinction is not cosmetic — retrying a
+  killed command identically is pointless, retrying with a larger `timeout` is not — so the message
+  names the deadline it hit and the two ways past it.
+
+  This mattered beyond ergonomics. Handed eight bare timeouts with zero bytes each, the model in
+  that run reported a detailed gate pass it had never observed, naming per-step results and
+  `207 test files passed (2467 tests)` for commands that returned nothing; the real numbers were
+  264 and 3148. The change was correct and the fabrication was caught by re-running the gate by
+  hand, but a supervisor who trusted the report would have committed unverified work as verified.
+
 - **A killed background shell really dies now, instead of reporting success and leaking its
   worker.** On Windows the process tree is torn down with `taskkill /T /F`, invoked by bare name
   through `execFile`. `execFile` performs no shell path lookup, so whenever `System32` is missing

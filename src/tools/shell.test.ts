@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { persistentEnvironmentOverrides, shellTools } from './shell.js';
+import { createDefaultRegistry } from './registry.js';
 import { getPrimaryArg } from './primary-arg.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from '../settings.js';
@@ -139,10 +140,70 @@ describe('Bash shell tools', () => {
 
     const result = await bash.execute({ command, timeout: 50 }, c);
 
-    expect(result.status).toBe('error');
-    expect(result.structuredError?.message).toMatch(/timed out/i);
+    expect(result.status).toBe('timed_out');
+    expect(result.structuredError?.code).toBe('tool_timeout');
+    expect(result.structuredError?.message).toMatch(/killed after 50ms/i);
     await new Promise((resolve) => setTimeout(resolve, 1_600));
     expect(existsSync(marker)).toBe(false);
+  });
+
+  it('hands back what a killed command printed, and says it was killed not failed', async () => {
+    const c = { ...ctx(), workspaceRoot: process.cwd() };
+    // Prints on both streams and then hangs forever. The 2s deadline is
+    // generous on purpose: the point is the output that survives the kill, so
+    // the child must have finished starting up well before the timer fires.
+    const command = nodeCommand(
+      'timeout-output.cjs',
+      `console.log('ran-3-of-9-suites');\nconsole.error('still-compiling');\nsetInterval(() => {}, 1000);\n`,
+    );
+
+    const result = await bash.execute({ command, timeout: 2_000 }, c);
+
+    expect(result.status).toBe('timed_out');
+    expect(result.content).toContain('ran-3-of-9-suites');
+    expect(result.content).toContain('still-compiling');
+    // A killed command and a failed one call for different next moves, so the
+    // message has to distinguish them and name the way out.
+    expect(result.structuredError?.message).toMatch(/still running, it did not fail/i);
+    expect(result.structuredError?.message).toMatch(/run_in_background/);
+  });
+
+  it('honors the operator BOOK_TOOL_TIMEOUT_MS override', async () => {
+    const c = {
+      ...ctx(),
+      workspaceRoot: process.cwd(),
+      env: { BOOK_TOOL_TIMEOUT_MS: '50' },
+    };
+    const command = nodeCommand('env-timeout.cjs', `setInterval(() => {}, 1000);\n`);
+
+    const startedAt = Date.now();
+    const result = await bash.execute({ command }, c);
+
+    expect(result.status).toBe('timed_out');
+    expect(result.structuredError?.message).toMatch(/killed after 50ms/i);
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+  });
+
+  it('reports its own timeout through the registry instead of the contentless one', async () => {
+    // The registry runs a deadline of its own over every call. Both used to be
+    // 120s, and the registry arms its timer first, so its contentless
+    // `tool_timeout` always replaced the shell's report — output and all.
+    const registry = createDefaultRegistry();
+    const c = { ...ctx(), workspaceRoot: process.cwd(), env: { BOOK_TOOL_TIMEOUT_MS: '2000' } };
+    const command = nodeCommand(
+      'registry-timeout.cjs',
+      `console.log('progress-before-the-kill');\nsetInterval(() => {}, 1000);\n`,
+    );
+
+    const result = await registry.execute(
+      { id: 'bash-1', name: 'Bash', arguments: { command } },
+      c,
+    );
+
+    expect(result.status).toBe('timed_out');
+    expect(result.content).toContain('progress-before-the-kill');
+    expect(result.structuredError?.message).toMatch(/killed after 2000ms/i);
+    expect(result.structuredError?.message).not.toMatch(/Tool timeout/);
   });
 
   it('starts a background shell and returns a shell ID quickly', async () => {

@@ -4,6 +4,7 @@ import { TOOL_ALIASES } from './aliases.js';
 import { normalizeToolDefinition } from './catalog.js';
 import { validateToolArguments } from './schema.js';
 import { enrichToolResultPresentation, normalizeToolResult, toolFailure } from './result.js';
+import { resolveToolTimeoutMs, SELF_TIMEOUT_GRACE_MS } from './timeouts.js';
 
 const TOOL_ABORT_GRACE_MS = 250;
 const REPEATED_FAILURE_MEMORY_CAP = 32;
@@ -343,9 +344,17 @@ export function createRegistry() {
         };
       }
 
+      const resolvedTimeoutMs = resolveToolTimeoutMs({
+        requested: normalizedCall.arguments.timeout,
+        env: context.env,
+        fallback: tool.timeoutMs,
+      });
+      // A tool that enforces its own deadline reports the timeout itself, with
+      // whatever output it captured. The registry stays a backstop behind it.
       const toolTimeoutMs =
-        (normalizedCall.arguments.timeout as number) ??
-        (context.env?.BOOK_TOOL_TIMEOUT_MS ? Number(context.env.BOOK_TOOL_TIMEOUT_MS) : 120_000);
+        tool.timeoutMs === undefined
+          ? resolvedTimeoutMs
+          : resolvedTimeoutMs + SELF_TIMEOUT_GRACE_MS;
       return {
         status: 'ready',
         prepared: { call: normalizedCall, tool, timeoutMs: toolTimeoutMs },

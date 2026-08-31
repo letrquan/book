@@ -10,8 +10,15 @@ import {
 import { ShellJobManager, terminateForegroundProcess } from '../jobs/shell-manager.js';
 import { resolveWorkspacePath } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
+import { MAX_TOOL_TIMEOUT_MS, resolveToolTimeoutMs } from './timeouts.js';
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+/**
+ * Five minutes, not the registry's two. A coding agent's most common long
+ * command is its own gate, and this repository's `npm run check` runs past 200s
+ * — under a 120s default Book could never verify its own work, and got back a
+ * bare timeout with nothing to reason about.
+ */
+const DEFAULT_BASH_TIMEOUT_MS = 300_000;
 const MAX_FOREGROUND_BUFFER = 1024 * 1024 * 10;
 const SENSITIVE_ENV_NAME =
   /(^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASS(?:WORD)?|CREDENTIALS?|AUTH|COOKIE|SESSION|PRIVATE_?KEY|DATABASE_URL|CONNECTION_STRING)(_|$)/i;
@@ -150,7 +157,11 @@ async function bashForeground(
   const built = buildEffectiveCommand(args, ctx);
   if (!built) return fail('command must be a non-empty string');
   if (built.error) return fail(built.error);
-  const timeout = readNumber(args, 'timeout') ?? DEFAULT_TIMEOUT_MS;
+  const timeout = resolveToolTimeoutMs({
+    requested: args.timeout,
+    env: ctx.env,
+    fallback: DEFAULT_BASH_TIMEOUT_MS,
+  });
 
   return new Promise((resolve) => {
     let proc: ChildProcess;
@@ -172,10 +183,24 @@ async function bashForeground(
     let timedOut = false;
     let bufferExceeded = false;
     let termination: Promise<void> | undefined;
+    // A killed command is judged on whatever it managed to say. Both streams
+    // count: a build that dies mid-run usually leaves its only clue on stderr.
+    const capturedOutput = () =>
+      stdout + stderr || '(no output was captured before the command was killed)';
     const timer = setTimeout(() => {
       timedOut = true;
       termination ??= terminateForegroundProcess(proc);
-      void finish(fail(`Command timed out after ${timeout}ms`, stdout));
+      // Built after termination settles, not at kill time: tearing the tree down
+      // flushes what the child had buffered, and for a batching runner like npm
+      // or vitest that tail is the only progress the model ever sees.
+      void finish(() =>
+        toolFailure(
+          `Command was killed after ${timeout}ms; it was still running, it did not fail. ` +
+            `Re-run with a larger timeout (up to ${MAX_TOOL_TIMEOUT_MS}ms), or with ` +
+            `run_in_background: true and poll BashOutput.`,
+          { status: 'timed_out', code: 'tool_timeout', content: capturedOutput() },
+        ),
+      );
     }, timeout);
 
     const cleanup = () => {
@@ -183,7 +208,7 @@ async function bashForeground(
       ctx.signal?.removeEventListener('abort', onAbort);
       ctx.runtime?.releaseChildProcess(proc);
     };
-    const finish = async (result: ToolResult) => {
+    const finish = async (result: ToolResult | (() => ToolResult)) => {
       if (settled) return;
       settled = true;
       try {
@@ -192,7 +217,7 @@ async function bashForeground(
         // Cancellation remains the authoritative result if teardown races with exit.
       }
       cleanup();
-      resolve(result);
+      resolve(typeof result === 'function' ? result() : result);
     };
     const onAbort = () => {
       if (cancelled) return;
@@ -207,7 +232,9 @@ async function bashForeground(
       if (stdout.length + stderr.length <= MAX_FOREGROUND_BUFFER || bufferExceeded) return;
       bufferExceeded = true;
       termination ??= terminateForegroundProcess(proc);
-      void finish(fail(`Command output exceeded ${MAX_FOREGROUND_BUFFER} characters`, stdout));
+      void finish(
+        fail(`Command output exceeded ${MAX_FOREGROUND_BUFFER} characters`, capturedOutput()),
+      );
     };
 
     proc.stdout?.on('data', (data) => append('stdout', data));
@@ -325,11 +352,18 @@ export const shellTools: ToolDefinition[] = [
     name: 'Bash',
     argumentAliases: { runInBackground: 'run_in_background' },
     description: 'Execute a shell command in the workspace',
+    timeoutMs: DEFAULT_BASH_TIMEOUT_MS,
     parameters: {
       type: 'object',
       properties: {
         command: { type: 'string', description: 'The command to execute' },
         workdir: { type: 'string', description: 'Working directory for the command' },
+        timeout: {
+          type: 'number',
+          minimum: 1,
+          maximum: MAX_TOOL_TIMEOUT_MS,
+          description: `How long a foreground command may run, in milliseconds (default ${DEFAULT_BASH_TIMEOUT_MS}, maximum ${MAX_TOOL_TIMEOUT_MS}). Raise it for a known-slow command such as a full build or test suite. Background commands use max_runtime_ms instead.`,
+        },
         run_in_background: {
           type: 'boolean',
           description: 'Start the command in the background and return a shell_id immediately',
