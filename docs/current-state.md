@@ -152,7 +152,14 @@ capability boundary, providers, MCP, other settings and sandbox behavior, manage
   unavailable by default and requires `experimental.zeroMem: true` in the user-global
   `<BOOK_HOME>/settings.json`, an explicit `--settings` document, or strict
   `BOOK_EXPERIMENTAL_ZERO_MEM=true`; workspace settings and normal configuration UI/commands cannot
-  enable it.
+  enable it. Every summary checkpoint now also carries a host-owned Carried Ledger
+  (`src/agent/carried-ledger.ts`) of user-authored constraints, extracted deterministically from
+  the user's own typed turns, readable but not writable by the reducer, not evictable by the
+  fitter, capped at 32 entries / 1024 tokens / 35% of the checkpoint budget, and disclosed in the
+  checkpoint header. It has no setting: it is always on and costs no extra model call. Measured
+  `verbatimUserRetention` over the eight-generation fidelity corpus went from 0.0 to 1.0 and
+  overall retention from 0.333 to 0.667; the floors are ratcheted in `FIDELITY_BASELINE`. Design:
+  `plans/carried-ledger-plan.md`.
 - Adaptive harness: `harness.mode` is `off`, which has no filesystem effect; `--harness-workflow`
   fails closed while it stays off.
 - Tool discovery: `auto`; the practical core stays loaded and `ToolSearch` activates deferred
