@@ -75,7 +75,7 @@ afterEach(async () => {
       }
     }
   }
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 describe('Bash shell tools', () => {
@@ -108,48 +108,42 @@ describe('Bash shell tools', () => {
     expect(c.backgroundShells).toBeUndefined();
   });
 
-  it.skipIf(process.platform === 'win32')(
-    'cancels a foreground Bash process through the tool signal',
-    async () => {
-      const controller = new AbortController();
-      const c = { ...ctx(), workspaceRoot: process.cwd(), signal: controller.signal };
-      const marker = join(dir, 'cancelled-process-survived.txt');
-      const command = nodeCommand(
-        'cancel-foreground.cjs',
-        `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 250);\nsetInterval(() => {}, 1000);\n`,
-      );
-      const startedAt = Date.now();
-      const pending = bash.execute({ command }, c);
+  it('cancels a foreground Bash process through the tool signal', async () => {
+    const controller = new AbortController();
+    const c = { ...ctx(), workspaceRoot: process.cwd(), signal: controller.signal };
+    const marker = join(dir, 'cancelled-process-survived.txt');
+    const command = nodeCommand(
+      'cancel-foreground.cjs',
+      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 1500);\nsetInterval(() => {}, 1000);\n`,
+    );
+    const startedAt = Date.now();
+    const pending = bash.execute({ command }, c);
 
-      setTimeout(() => controller.abort('stop foreground shell'), 50);
-      const result = await pending;
+    setTimeout(() => controller.abort('stop foreground shell'), 50);
+    const result = await pending;
 
-      expect(Date.now() - startedAt).toBeLessThan(2_000);
-      expect(result.status).toBe('error');
-      expect(result.structuredError?.message).toMatch(/cancel/i);
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      expect(existsSync(marker)).toBe(false);
-    },
-  );
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toMatch(/cancel/i);
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    expect(existsSync(marker)).toBe(false);
+  });
 
-  it.skipIf(process.platform === 'win32')(
-    'terminates the foreground process tree after a timeout',
-    async () => {
-      const c = { ...ctx(), workspaceRoot: process.cwd() };
-      const marker = join(dir, 'timed-out-process-survived.txt');
-      const command = nodeCommand(
-        'timeout-foreground.cjs',
-        `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 250);\nsetInterval(() => {}, 1000);\n`,
-      );
+  it('terminates the foreground process tree after a timeout', async () => {
+    const c = { ...ctx(), workspaceRoot: process.cwd() };
+    const marker = join(dir, 'timed-out-process-survived.txt');
+    const command = nodeCommand(
+      'timeout-foreground.cjs',
+      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 1500);\nsetInterval(() => {}, 1000);\n`,
+    );
 
-      const result = await bash.execute({ command, timeout: 50 }, c);
+    const result = await bash.execute({ command, timeout: 50 }, c);
 
-      expect(result.status).toBe('error');
-      expect(result.structuredError?.message).toMatch(/timed out/i);
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      expect(existsSync(marker)).toBe(false);
-    },
-  );
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toMatch(/timed out/i);
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    expect(existsSync(marker)).toBe(false);
+  });
 
   it('starts a background shell and returns a shell ID quickly', async () => {
     const c = ctx();

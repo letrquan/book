@@ -24,6 +24,7 @@ import {
   type PersistentShellState,
 } from './persistent-store.js';
 import { isProcessAlive, signalProcessGroup, waitForProcessGroupExit } from './process-tree.js';
+import { system32Executable } from '../system32.js';
 
 const MAX_BACKGROUND_BUFFER = 1024 * 1024 * 5;
 const MAX_OUTPUT_RESULT = 32_000;
@@ -146,7 +147,12 @@ type WindowsTreeKill = (pid: number) => Promise<boolean>;
 
 async function runTaskkill(pid: number): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], (error) => resolve(!error));
+    execFile(
+      system32Executable('taskkill'),
+      ['/PID', String(pid), '/T', '/F'],
+      { windowsHide: true, timeout: TERMINATE_GRACE_MS },
+      (error) => resolve(!error),
+    );
   });
 }
 
@@ -155,13 +161,16 @@ export async function terminateWindowsProcessTree(
   pid: number,
   signal: NodeJS.Signals,
   treeKill: WindowsTreeKill = runTaskkill,
-): Promise<void> {
-  if (await treeKill(pid)) return;
+): Promise<boolean> {
+  const alreadyExited = proc.exitCode !== null || proc.signalCode !== null;
+  if (alreadyExited) return true;
+  if (await treeKill(pid)) return true;
   try {
     proc.kill(signal);
   } catch {
     // The process may have exited between taskkill and the direct-child fallback.
   }
+  return false;
 }
 
 /**
@@ -169,8 +178,8 @@ export async function terminateWindowsProcessTree(
  *
  * On POSIX the direct child is the `sh -c` wrapper, which dies from SIGTERM even when the worker
  * it forked ignores it, so its exit says nothing about the tree — success is judged on whether
- * the process group still holds anything. On Windows `taskkill /T /F` already covers the tree,
- * so the direct child closing is authoritative there.
+ * the process group still holds anything. On Windows `taskkill /T /F` covers the tree, so the
+ * direct child's close speaks for the tree only when taskkill actually ran.
  */
 async function terminateProcessTree(
   proc: ChildProcess | undefined,
@@ -184,14 +193,14 @@ async function terminateProcessTree(
     signalProcessGroup(proc, pid, 'SIGKILL');
     return waitForProcessGroupExit(pid, TERMINATE_GRACE_MS);
   }
-  await terminateWindowsProcessTree(proc, pid, 'SIGTERM');
-  if (await hasClosed(TERMINATE_GRACE_MS)) return true;
+  const confirmed = await terminateWindowsProcessTree(proc, pid, 'SIGTERM');
+  if (await hasClosed(TERMINATE_GRACE_MS)) return confirmed;
   try {
     proc.kill('SIGKILL');
   } catch {
     return false;
   }
-  return hasClosed(TERMINATE_GRACE_MS);
+  return (await hasClosed(TERMINATE_GRACE_MS)) && confirmed;
 }
 
 export async function terminateForegroundProcess(proc: ChildProcess): Promise<void> {

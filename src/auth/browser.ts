@@ -15,6 +15,7 @@
  * blocking child-process APIs the architecture check forbids.
  */
 import { spawn } from 'node:child_process';
+import { system32Executable } from '../system32.js';
 
 function launcher(platform: NodeJS.Platform): { command: string; args: string[] } {
   if (platform === 'darwin') return { command: 'open', args: [] };
@@ -22,7 +23,10 @@ function launcher(platform: NodeJS.Platform): { command: string; args: string[] 
   // treats as a command separator no matter how Node quotes the argument.
   // rundll32 is an ordinary executable, so the URL reaches it intact.
   if (platform === 'win32') {
-    return { command: 'rundll32', args: ['url.dll,FileProtocolHandler'] };
+    return {
+      command: system32Executable('rundll32', platform),
+      args: ['url.dll,FileProtocolHandler'],
+    };
   }
   return { command: 'xdg-open', args: [] };
 }

@@ -3,6 +3,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, mkdtemp, open, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
+import { system32Executable } from '../../system32.js';
 
 const DEFAULT_OUTPUT_LIMIT_BYTES = 1024 * 1024;
 const DEFAULT_TERMINATION_GRACE_MS = 1_000;
@@ -372,7 +373,7 @@ function requestWindowsTreeTermination(
 ): Promise<boolean> {
   return new Promise((resolveTermination) => {
     execFile(
-      'taskkill',
+      system32Executable('taskkill'),
       ['/PID', String(pid), '/T', ...(force ? ['/F'] : [])],
       { windowsHide: true, timeout: timeoutMs },
       (error) => resolveTermination(!error),

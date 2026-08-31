@@ -167,10 +167,39 @@ describe('ShellJobManager persistent state recovery', () => {
     manager.dispose();
   });
 
-  it('falls back to killing the direct child when taskkill fails', async () => {
+  it('returns false and falls back to killing the direct child when tree kill fails on a live process', async () => {
     const kill = vi.fn();
-    const processLike = { kill } as never;
-    await terminateWindowsProcessTree(processLike, 123, 'SIGTERM', async () => false);
+    const processLike = { kill, exitCode: null, signalCode: null } as never;
+    const confirmed = await terminateWindowsProcessTree(
+      processLike,
+      123,
+      'SIGTERM',
+      async () => false,
+    );
+    expect(confirmed).toBe(false);
     expect(kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  it('confirms tree kill and skips direct child fallback when tree kill succeeds', async () => {
+    const kill = vi.fn();
+    const processLike = { kill, exitCode: null, signalCode: null } as never;
+    const confirmed = await terminateWindowsProcessTree(
+      processLike,
+      123,
+      'SIGTERM',
+      async () => true,
+    );
+    expect(confirmed).toBe(true);
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('reports success without tree kill when the process has already exited', async () => {
+    const kill = vi.fn();
+    const processLike = { kill, exitCode: 0, signalCode: null } as never;
+    const treeKill = vi.fn().mockResolvedValue(false);
+    const confirmed = await terminateWindowsProcessTree(processLike, 123, 'SIGTERM', treeKill);
+    expect(confirmed).toBe(true);
+    expect(treeKill).not.toHaveBeenCalled();
+    expect(kill).not.toHaveBeenCalled();
   });
 });
