@@ -9,6 +9,7 @@ import {
   type PersistentShellSpec,
   type PersistentShellState,
 } from './persistent-store.js';
+import { windowsTaskkillPath } from './process-tree.js';
 import { ShellJobManager, terminateWindowsProcessTree } from './shell-manager.js';
 
 let directory: string;
@@ -172,5 +173,15 @@ describe('ShellJobManager persistent state recovery', () => {
     const processLike = { kill } as never;
     await terminateWindowsProcessTree(processLike, 123, 'SIGTERM', async () => false);
     expect(kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  it('resolves taskkill executable path for Windows process tree termination', () => {
+    const resolved = windowsTaskkillPath();
+    if (process.platform === 'win32') {
+      expect(resolved).toMatch(/System32[\\/]taskkill\.exe$/i);
+      expect(existsSync(resolved)).toBe(true);
+    } else {
+      expect(resolved).toBe('taskkill');
+    }
   });
 });

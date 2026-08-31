@@ -23,7 +23,12 @@ import {
   type PersistentShellSpec,
   type PersistentShellState,
 } from './persistent-store.js';
-import { isProcessAlive, signalProcessGroup, waitForProcessGroupExit } from './process-tree.js';
+import {
+  isProcessAlive,
+  signalProcessGroup,
+  waitForProcessGroupExit,
+  windowsTaskkillPath,
+} from './process-tree.js';
 
 const MAX_BACKGROUND_BUFFER = 1024 * 1024 * 5;
 const MAX_OUTPUT_RESULT = 32_000;
@@ -146,7 +151,7 @@ type WindowsTreeKill = (pid: number) => Promise<boolean>;
 
 async function runTaskkill(pid: number): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], (error) => resolve(!error));
+    execFile(windowsTaskkillPath(), ['/PID', String(pid), '/T', '/F'], (error) => resolve(!error));
   });
 }
 

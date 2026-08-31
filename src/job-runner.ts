@@ -15,7 +15,11 @@ import {
   type PersistentShellSpec,
   type PersistentShellState,
 } from './jobs/persistent-store.js';
-import { signalProcessGroup, waitForProcessGroupExit } from './jobs/process-tree.js';
+import {
+  signalProcessGroup,
+  waitForProcessGroupExit,
+  windowsTaskkillPath,
+} from './jobs/process-tree.js';
 
 const specPath = process.argv[2];
 if (!specPath) {
@@ -153,7 +157,7 @@ async function terminateTree(): Promise<boolean> {
     };
     const fallback = setTimeout(complete, 1_500);
     fallback.unref();
-    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], (error) => {
+    execFile(windowsTaskkillPath(), ['/PID', String(pid), '/T', '/F'], (error) => {
       if (error) {
         try {
           child?.kill('SIGTERM');
