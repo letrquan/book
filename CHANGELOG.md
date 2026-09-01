@@ -161,9 +161,23 @@ All notable changes to this project are documented in this file.
   `src/tools/shell.ts` also never consulted `ctx.env`, so raising `BOOK_TOOL_TIMEOUT_MS` lifted the
   registry's budget while `Bash` still self-killed at its own module constant. Both now resolve one
   deadline from one place, in one order: the call's `timeout`, then the operator's
-  `BOOK_TOOL_TIMEOUT_MS`, then the tool's own default. Only the model's argument is capped — the
-  ceiling exists so a model cannot stall its turn, not to tell an operator how long their build may
-  take — and non-finite values no longer reach `setTimeout`.
+  `BOOK_TOOL_TIMEOUT_MS`, then the tool's own default. Where an operator has set that variable it is
+  also the ceiling on what a call may ask for, in both directions — lowering it to 30s caps a model
+  that asks for ten minutes, raising it past the built-in 600000ms lets a build that needs longer
+  run — and the 600000ms ceiling applies only when they have said nothing. Non-finite values no
+  longer reach `setTimeout`, and because `Bash` now publishes `timeout` it is validated like any
+  other argument instead of being dropped: `timeout: "10 minutes"` is an error rather than a
+  silently ignored value the model believes it set.
+
+  Two neighbours had the same race and are fixed with the same mechanism. `Check` builds a
+  deliberate `check_timed_out` result saying the suite was killed rather than failed — the
+  distinction a completion gate depends on — and its 120s deadline sat exactly on the registry's,
+  so that result was being discarded; its deadline comes from `agents.checkTimeoutMs`, so the
+  declaration is resolved per call rather than fixed. `WebFetch` self-clamps at 120s and collided
+  at the same point. `Bash` no longer treats `timeout` as a legacy alias for `max_runtime_ms` on a
+  background call, which was harmless only while the argument was invisible: now that the schema
+  advertises it, honouring it there would put a kill timer on the very job the model backgrounded
+  to escape one.
 
   The reason nothing came back was a race, not a buffering accident. Both deadlines were 120000ms,
   and the registry arms its timer before `tool.execute` is reached, so at equal values it always
@@ -174,10 +188,17 @@ All notable changes to this project are documented in this file.
 
   What the model receives is now a killed command rather than a failed one, on both streams:
   stderr was being dropped, and for a build that dies mid-run that is usually where the only clue
-  is. The result is built after the process tree is torn down, since that teardown flushes what a
-  batching runner like npm or vitest had buffered. The distinction is not cosmetic — retrying a
+  is. The two are labelled rather than concatenated, since they are written on independent
+  schedules and gluing them together presents a sequence that never happened. The result is built
+  after the process tree is torn down *and* the pipes have drained — on POSIX the teardown only
+  confirms the process group is gone, so without the second wait the last chunk a batching runner
+  flushed on its way out could still be in flight. The distinction is not cosmetic — retrying a
   killed command identically is pointless, retrying with a larger `timeout` is not — so the message
-  names the deadline it hit and the two ways past it.
+  names the deadline it hit and the remediation names the ways past it, naming the effective
+  ceiling rather than a number the operator's own limit has already ruled out. When such a result
+  is too large for the model-facing budget it is clipped from the **head**, keeping the tail: a
+  killed build is judged on the step it was on when the deadline hit, and head-clipping returned
+  install noise while dropping exactly the progress the report exists to deliver.
 
   This mattered beyond ergonomics. Handed eight bare timeouts with zero bytes each, the model in
   that run reported a detailed gate pass it had never observed, naming per-step results and

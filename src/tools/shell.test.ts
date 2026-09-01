@@ -160,12 +160,15 @@ describe('Bash shell tools', () => {
     const result = await bash.execute({ command, timeout: 2_000 }, c);
 
     expect(result.status).toBe('timed_out');
-    expect(result.content).toContain('ran-3-of-9-suites');
-    expect(result.content).toContain('still-compiling');
+    // Labelled, not concatenated: the two streams are written on independent
+    // schedules, so gluing them together invents a sequence.
+    expect(result.content).toMatch(/--- stdout ---[\s\S]*ran-3-of-9-suites/);
+    expect(result.content).toMatch(/--- stderr ---[\s\S]*still-compiling/);
     // A killed command and a failed one call for different next moves, so the
-    // message has to distinguish them and name the way out.
+    // message has to distinguish them and the remediation channel names the
+    // way out -- that is the field the model-facing `Fix:` line renders from.
     expect(result.structuredError?.message).toMatch(/still running, it did not fail/i);
-    expect(result.structuredError?.message).toMatch(/run_in_background/);
+    expect(result.structuredError?.remediation).toMatch(/run_in_background/);
   });
 
   it('honors the operator BOOK_TOOL_TIMEOUT_MS override', async () => {
@@ -336,7 +339,7 @@ describe('Bash shell tools', () => {
     expect(output.content).toContain('shared-ready');
   });
 
-  it('times out background shells only when timeout is explicitly supplied', async () => {
+  it('times out background shells only when max_runtime_ms is explicitly supplied', async () => {
     const c = ctx();
     // The interval keeps the process alive forever, so reaching `timed_out`
     // proves the explicit deadline fired — a natural exit would read
@@ -345,13 +348,29 @@ describe('Bash shell tools', () => {
     // before node finishes starting up, so any output-before-timeout gate
     // races the very deadline under test.
     const command = nodeCommand('timeout.cjs', `setInterval(() => {}, 1000);\n`);
-    const start = await bash.execute({ command, run_in_background: true, timeout: 50 }, c);
+    const start = await bash.execute({ command, run_in_background: true, max_runtime_ms: 50 }, c);
     const shellId = shellIdFrom(start);
 
     const terminal = await waitForOutput(c, shellId, /Shell shell_\d+: timed_out/);
 
     expect(terminal.status).toBe('success');
     expect(c.backgroundShells?.shells.get(shellId)?.status).toBe('timed_out');
+  });
+
+  // `timeout` is the foreground deadline the Bash schema publishes, and the
+  // schema says so. It used to double as a legacy alias for max_runtime_ms,
+  // which was harmless only while the model could not see the argument: now
+  // that it can, honouring it here would put a kill timer on the very job the
+  // model backgrounded to escape one.
+  it('does not let the foreground timeout become a background deadline', async () => {
+    const c = ctx();
+    const command = nodeCommand('bg-no-timeout.cjs', `setInterval(() => {}, 1000);\n`);
+
+    const start = await bash.execute({ command, run_in_background: true, timeout: 50 }, c);
+    const shellId = shellIdFrom(start);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(c.backgroundShells?.shells.get(shellId)?.status).toBe('running');
   });
 
   it('returns spawn failures instead of a usable shell ID', async () => {

@@ -926,13 +926,20 @@ or a provider stream error.
 
 A foreground `Bash` command is killed after **300000 ms** (five minutes) by default. The model can
 raise that per call with the `timeout` argument, up to **600000 ms** — reach for it before a full
-build or test suite rather than after the kill. Background commands ignore `timeout` and take
-`max_runtime_ms` instead.
+build or test suite rather than after the kill. It is validated like any other argument, so a value
+outside the declared range is rejected rather than quietly ignored. Background commands ignore
+`timeout` entirely and take `max_runtime_ms` instead.
 
-`BOOK_TOOL_TIMEOUT_MS` overrides the default for every tool, `Bash` included, and is deliberately
-not capped: a build that legitimately needs half an hour is the operator's call, while the 600000 ms
-ceiling exists so a model cannot stall its own turn. Precedence is the call's `timeout`, then
+`BOOK_TOOL_TIMEOUT_MS` overrides the default for every tool, `Bash` included, and where it is set it
+is also the **ceiling** on what a call may ask for: lowering it to 30000 caps a model that asks for
+ten minutes, and raising it past 600000 lets a build that genuinely needs longer run. The built-in
+600000 ms ceiling applies only when the variable is unset, so that a model cannot stall its own turn
+by default. Precedence is the call's `timeout` (bounded by that ceiling), then
 `BOOK_TOOL_TIMEOUT_MS`, then the tool's default.
+
+The same resolution governs every tool that enforces a deadline of its own — `Bash`, `Check`, and
+`WebFetch`. Each declares its budget so the host's backstop outlasts it; when the two are equal the
+backstop fires first and replaces the tool's report, including its output, with a bare timeout.
 
 A killed command reports itself as killed rather than failed, and returns whatever it printed on
 stdout and stderr before the kill. The two outcomes call for different next moves — retrying a

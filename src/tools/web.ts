@@ -1007,6 +1007,10 @@ export function createWebTools(dependencies: WebToolDependencies = {}): ToolDefi
       policy: { concurrency: 'parallel' },
       description:
         'Fetch a public HTTP(S) URL and return bounded text, Markdown, or sanitized HTML. HTTPS is required unless the host opts into HTTP. Private-network destinations and cross-origin redirects are blocked. The network timeout defaults to 30 seconds. The deprecated `prompt` value is retained only as metadata and does not perform extraction.',
+      // WebFetch enforces its own deadline and self-clamps at this value, so the
+      // registry must outlast it; at an equal budget the registry fires first and
+      // replaces `fetch_timeout` with a contentless `tool_timeout`.
+      timeoutMs: WEB_FETCH_MAX_TIMEOUT_MS,
       parameters: {
         type: 'object',
         properties: {

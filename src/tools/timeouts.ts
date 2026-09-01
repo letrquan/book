@@ -27,7 +27,7 @@ function positiveMs(value: unknown): number | undefined {
 }
 
 export interface ToolTimeoutSources {
-  /** Model-supplied `timeout` argument. Clamped to `MAX_TOOL_TIMEOUT_MS`. */
+  /** Model-supplied `timeout` argument. Clamped to `toolTimeoutCeilingMs`. */
   requested?: unknown;
   /** Environment carrying the operator's `BOOK_TOOL_TIMEOUT_MS` override. */
   env?: Record<string, string | undefined>;
@@ -36,16 +36,27 @@ export interface ToolTimeoutSources {
 }
 
 /**
+ * The largest deadline a model may ask for: the operator's
+ * `BOOK_TOOL_TIMEOUT_MS` when they set one, otherwise `MAX_TOOL_TIMEOUT_MS`.
+ *
+ * An operator who sets the variable has stated a bound, and it binds in both
+ * directions — lowering it to 30s must actually cap a model that asks for ten
+ * minutes, and raising it to half an hour must let a build that needs half an
+ * hour run. The built-in ceiling applies only when they have said nothing, so
+ * that a model cannot stall its own turn by default.
+ */
+export function toolTimeoutCeilingMs(env?: Record<string, string | undefined>): number {
+  return positiveMs(env?.BOOK_TOOL_TIMEOUT_MS) ?? MAX_TOOL_TIMEOUT_MS;
+}
+
+/**
  * Resolve one deadline in milliseconds: model argument, then the operator's
  * `BOOK_TOOL_TIMEOUT_MS`, then the tool's default, then the registry default.
- *
- * Only the model argument is capped. The operator override is deliberately
- * uncapped — a build that legitimately needs half an hour is the operator's
- * call, while the ceiling exists so a model cannot stall its own turn.
+ * A model argument is clamped to `toolTimeoutCeilingMs`.
  */
 export function resolveToolTimeoutMs(sources: ToolTimeoutSources): number {
   const requested = positiveMs(sources.requested);
-  if (requested !== undefined) return Math.min(requested, MAX_TOOL_TIMEOUT_MS);
+  if (requested !== undefined) return Math.min(requested, toolTimeoutCeilingMs(sources.env));
   const operator = positiveMs(sources.env?.BOOK_TOOL_TIMEOUT_MS);
   if (operator !== undefined) return operator;
   return positiveMs(sources.fallback) ?? DEFAULT_TOOL_TIMEOUT_MS;

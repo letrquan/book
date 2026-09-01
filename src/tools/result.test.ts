@@ -72,6 +72,29 @@ describe('ToolResult V2', () => {
     }
   });
 
+  // A killed command is judged on the step it was on when the deadline hit.
+  // Head-clipping hands back install and compile noise and drops exactly the
+  // progress a timeout report exists to deliver.
+  it('keeps the tail, not the head, when clipping a timed-out result', () => {
+    const output = `START-OF-BUILD\n${'filler line\n'.repeat(6_000)}suite 41 of 42 passed\n`;
+    expect(Buffer.byteLength(output)).toBeGreaterThan(50 * 1024);
+    const killed = toolFailure('Command was killed after 300000ms; it did not fail.', {
+      status: 'timed_out',
+      code: 'tool_timeout',
+      remediation: 'Re-run with a larger timeout.',
+      content: output,
+    });
+
+    const content = toolResultModelContent(killed);
+
+    expect(Buffer.byteLength(content)).toBeLessThanOrEqual(50 * 1024);
+    expect(content).toContain('ERROR [tool_timeout]: Command was killed after 300000ms');
+    expect(content).toContain('Fix: Re-run with a larger timeout.');
+    expect(content).toContain('suite 41 of 42 passed');
+    expect(content).not.toContain('START-OF-BUILD');
+    expect(content).toContain('Earlier output truncated');
+  });
+
   it('keeps model content independent from structured data', () => {
     const result = toolSuccess('2 matches', { data: { matches: ['a', 'b'] } });
     expect(toolResultModelContent(result)).toBe('2 matches');

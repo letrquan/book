@@ -10,7 +10,7 @@ import {
 import { ShellJobManager, terminateForegroundProcess } from '../jobs/shell-manager.js';
 import { resolveWorkspacePath } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
-import { MAX_TOOL_TIMEOUT_MS, resolveToolTimeoutMs } from './timeouts.js';
+import { MAX_TOOL_TIMEOUT_MS, resolveToolTimeoutMs, toolTimeoutCeilingMs } from './timeouts.js';
 
 /**
  * Five minutes, not the registry's two. A coding agent's most common long
@@ -20,6 +20,8 @@ import { MAX_TOOL_TIMEOUT_MS, resolveToolTimeoutMs } from './timeouts.js';
  */
 const DEFAULT_BASH_TIMEOUT_MS = 300_000;
 const MAX_FOREGROUND_BUFFER = 1024 * 1024 * 10;
+/** How long a killed command's pipes are given to deliver their final chunk. */
+const STDIO_DRAIN_GRACE_MS = 500;
 const SENSITIVE_ENV_NAME =
   /(^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASS(?:WORD)?|CREDENTIALS?|AUTH|COOKIE|SESSION|PRIVATE_?KEY|DATABASE_URL|CONNECTION_STRING)(_|$)/i;
 
@@ -182,25 +184,58 @@ async function bashForeground(
     let cancelled = false;
     let timedOut = false;
     let bufferExceeded = false;
+    let closed = false;
     let termination: Promise<void> | undefined;
+    /** Resolve once the child's stdio is closed, or after a bounded wait. */
+    const drainStdio = () =>
+      new Promise<void>((resolveDrain) => {
+        if (closed) {
+          resolveDrain();
+          return;
+        }
+        const done = () => {
+          clearTimeout(drainTimer);
+          proc.off('close', done);
+          resolveDrain();
+        };
+        const drainTimer = setTimeout(done, STDIO_DRAIN_GRACE_MS);
+        proc.on('close', done);
+      });
     // A killed command is judged on whatever it managed to say. Both streams
     // count: a build that dies mid-run usually leaves its only clue on stderr.
-    const capturedOutput = () =>
-      stdout + stderr || '(no output was captured before the command was killed)';
+    // They are labelled rather than concatenated, because the two are written
+    // on independent schedules and gluing them together presents the model with
+    // a timeline that never happened.
+    const capturedOutput = () => {
+      if (!stdout && !stderr) return '(no output was captured before the command was killed)';
+      if (!stderr) return stdout;
+      if (!stdout) return stderr;
+      return `--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`;
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      termination ??= terminateForegroundProcess(proc);
-      // Built after termination settles, not at kill time: tearing the tree down
-      // flushes what the child had buffered, and for a batching runner like npm
-      // or vitest that tail is the only progress the model ever sees.
-      void finish(() =>
-        toolFailure(
-          `Command was killed after ${timeout}ms; it was still running, it did not fail. ` +
-            `Re-run with a larger timeout (up to ${MAX_TOOL_TIMEOUT_MS}ms), or with ` +
-            `run_in_background: true and poll BashOutput.`,
-          { status: 'timed_out', code: 'tool_timeout', content: capturedOutput() },
-        ),
-      );
+      // Wait for the pipes as well as the process. On POSIX the tree teardown
+      // only confirms the process group is gone, so without this the last chunk
+      // a batching runner flushed on the way out can still be in flight — and
+      // that tail is the only progress the model ever sees.
+      termination ??= terminateForegroundProcess(proc).then(() => drainStdio());
+      // Built after termination settles rather than at kill time, so the result
+      // carries that flush.
+      void finish(() => {
+        const ceiling = toolTimeoutCeilingMs(ctx.env);
+        return toolFailure(
+          `Command was killed after ${timeout}ms; it was still running, it did not fail.`,
+          {
+            status: 'timed_out',
+            code: 'tool_timeout',
+            remediation:
+              timeout < ceiling
+                ? `Re-run with a larger timeout (up to ${ceiling}ms), or with run_in_background: true and poll BashOutput.`
+                : `${timeout}ms is the maximum here, so re-run with run_in_background: true and poll BashOutput instead.`,
+            content: capturedOutput(),
+          },
+        );
+      });
     }, timeout);
 
     const cleanup = () => {
@@ -240,6 +275,7 @@ async function bashForeground(
     proc.stdout?.on('data', (data) => append('stdout', data));
     proc.stderr?.on('data', (data) => append('stderr', data));
     proc.on('close', (code) => {
+      closed = true;
       if (cancelled || timedOut || bufferExceeded) return;
       void finish(
         code === 0
@@ -262,10 +298,12 @@ async function bashBackground(
   const built = buildEffectiveCommand(args, ctx);
   if (!built) return fail('command must be a non-empty string');
   if (built.error) return fail(built.error);
+  // `timeout` is deliberately not read here. It used to double as a legacy
+  // alias for max_runtime_ms, which was harmless only while the argument was
+  // hidden from the model. Now that Bash publishes it as the foreground
+  // deadline, honouring it here would silently put a kill timer on a job the
+  // model backgrounded precisely so it could outlive one.
   const requestedRuntime = readNumber(args, 'max_runtime_ms');
-  const legacyTimeout = Object.prototype.hasOwnProperty.call(args, 'timeout')
-    ? readNumber(args, 'timeout')
-    : undefined;
   try {
     const shell = await manager(ctx).start({
       command: built.command,
@@ -277,7 +315,7 @@ async function bashBackground(
       title: readString(args, 'title'),
       notify: readNotify(args),
       lifetime: readString(args, 'lifetime') === 'persistent' ? 'persistent' : 'session',
-      timeoutMs: requestedRuntime ?? legacyTimeout,
+      timeoutMs: requestedRuntime,
       workspace: ctx.workspaceRoot,
       envOverrides: persistentEnvironmentOverrides(ctx),
       parentSessionId: ctx.parentSessionId,

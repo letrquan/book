@@ -133,6 +133,7 @@ function rawToolResultModelContent(result: ToolResult): string {
 export function toolResultModelContent(result: ToolResult): string {
   const raw = rawToolResultModelContent(result);
   if (Buffer.byteLength(raw) <= TOOL_RESULT_MAX_BYTES) return raw;
+  if (result.status === 'timed_out') return clippedTailPreview(result, TOOL_RESULT_MAX_BYTES);
   return clippedOutputPreview(raw, result.artifacts?.outputPath, TOOL_RESULT_MAX_BYTES);
 }
 
@@ -144,6 +145,33 @@ function utf8Prefix(text: string, maxBytes: number): string {
     .subarray(0, maxBytes)
     .toString('utf8')
     .replace(/\uFFFD$/u, '');
+}
+
+function utf8Suffix(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
+  const bytes = Buffer.from(text);
+  if (bytes.byteLength <= maxBytes) return text;
+  return bytes
+    .subarray(bytes.byteLength - maxBytes)
+    .toString('utf8')
+    .replace(/^�/u, '');
+}
+
+/**
+ * A killed command is judged on its most recent output — the step it was on
+ * when the deadline hit — so truncation keeps the tail rather than the head.
+ * Head-clipping a timed-out build returns install and compile noise and drops
+ * the progress the timeout report exists to deliver. The error line and its
+ * remediation are composed first so they always survive.
+ */
+function clippedTailPreview(result: ToolResult, maxBytes: number): string {
+  const header = rawToolResultModelContent({ ...result, content: '' });
+  const outputPath = result.artifacts?.outputPath;
+  const notice = outputPath
+    ? `\n[Earlier output truncated at ${maxBytes} bytes. Full output: ${outputPath}]\n`
+    : `\n[Earlier output truncated at ${maxBytes} bytes. Full output unavailable.]\n`;
+  const budget = Math.max(0, maxBytes - Buffer.byteLength(header) - Buffer.byteLength(notice));
+  return `${header}${notice}${utf8Suffix(result.content, budget).trimStart()}`;
 }
 
 function clippedOutputPreview(

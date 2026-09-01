@@ -320,7 +320,9 @@ export function createRegistry() {
       }
 
       const providerArguments = { ...normalizedCall.arguments };
-      delete providerArguments.timeout;
+      // Hide the host control from validation only while the tool keeps it
+      // hidden from the model; a tool that publishes `timeout` gets it checked.
+      if (!tool.inputSchema?.properties?.timeout) delete providerArguments.timeout;
       const validationErrors = validateToolArguments(providerArguments, tool.inputSchema!);
       if (validationErrors.length > 0) {
         const allowedKeys = Object.keys(tool.inputSchema?.properties ?? {});
@@ -344,15 +346,17 @@ export function createRegistry() {
         };
       }
 
+      const declaredTimeoutMs =
+        typeof tool.timeoutMs === 'function' ? tool.timeoutMs(context) : tool.timeoutMs;
       const resolvedTimeoutMs = resolveToolTimeoutMs({
         requested: normalizedCall.arguments.timeout,
         env: context.env,
-        fallback: tool.timeoutMs,
+        fallback: declaredTimeoutMs,
       });
       // A tool that enforces its own deadline reports the timeout itself, with
       // whatever output it captured. The registry stays a backstop behind it.
       const toolTimeoutMs =
-        tool.timeoutMs === undefined
+        declaredTimeoutMs === undefined
           ? resolvedTimeoutMs
           : resolvedTimeoutMs + SELF_TIMEOUT_GRACE_MS;
       return {

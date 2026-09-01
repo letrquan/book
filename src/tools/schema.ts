@@ -103,7 +103,11 @@ export function validateToolArguments(
   args: Record<string, unknown>,
   schema: JsonSchemaObject,
 ): string[] {
-  // Timeout is a host execution control, not part of the model-facing schema.
+  // Timeout is a host execution control unless the tool publishes it. A tool
+  // that does (Bash) needs its declared type and range enforced like any other
+  // argument: silently dropping a bad value leaves the model believing it
+  // raised a deadline it did not.
+  if (schema.properties?.timeout) return validateValue(args, schema, 'arguments');
   const modelArgs = { ...args };
   delete modelArgs.timeout;
   return validateValue(modelArgs, schema, 'arguments');
