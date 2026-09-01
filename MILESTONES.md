@@ -45,7 +45,10 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
 - [x] Stream re-issue that survives a dropped connection, and never re-sends assistant prefill.
 - [x] A liveness file and a crash record, so a run in flight is legible from outside.
 - [x] Plan persistence across restarts, and an honest "the plan did not survive" signal.
-- [ ] Compaction fidelity: the Carried Ledger's Phase 0.8 baseline, recorded after Phase 0 lands.
+- [x] Compaction fidelity: the Carried Ledger's Phase 0.8 baseline, recorded after Phase 0 landed,
+      and Phase 2 -- the host-owned constraint ledger itself, with its cap and supersession rule.
+      `verbatimUserRetention` went from 0.0 to 1.0 and overall retention from 0.333 to 0.667. The
+      design is `plans/carried-ledger-plan.md`; Phase 1 (budget rework) remains open.
 - [ ] A control surface for a run in flight - at hour 30 the only interventions are `kill` and wait.
 - [ ] Monotonic clock for liveness/lease/TTL decisions; every one is on the settable wall clock.
 

@@ -6,6 +6,25 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **User constraints now survive compaction.** Book's own fidelity harness measured
+  `verbatimUserRetention` at **0.0**: both constraints a user opened the conversation with were gone
+  from the checkpoint after a single generation. They lived in model-authored episodes, and the
+  fitter evicts completed episodes oldest-first -- so the oldest thing in a coding session, the
+  brief, was the first thing dropped. A new host-owned **Carried Ledger**
+  (`src/agent/carried-ledger.ts`) splits authorship: directive sentences from the user's own turns
+  are extracted verbatim into a `carried` field on `ConversationCheckpointV2` that the reducer may
+  read but never write (a model-supplied `carried` is discarded) and that `fitCheckpoint` may not
+  evict. It grows monotonically and never reorders, so ledger position is chronology, and the
+  checkpoint message now states the reading rule: later entries win where two conflict. Because an
+  un-evictable field is just the overflow moved one level down, it carries its own cap -- 32
+  entries, 1024 tokens, at most 35% of the checkpoint budget, evicting superseded entries first,
+  then weak steers, then strong rules, never the newest, and disclosing anything dropped.
+  Extraction reads only what the user typed, never `@file` expansions or shell output, so nothing a
+  repository controls can plant a rule there, and text that looks like a secret is refused. Measured
+  over the same eight generations: `verbatimUserRetention` 0.0 -> 1.0, overall retention 0.333 ->
+  0.667, for no extra reducer calls. The design is written down in `plans/carried-ledger-plan.md`,
+  which previously existed only as references in code comments.
+
 - **`book config set` now writes the user-global layer by default, so a setting follows you instead
   of the directory you happened to be in.** It previously wrote `<workspace>/.book/settings.local.json`
   unconditionally, with no way to ask for another layer: the same preference had to be re-set in
@@ -165,6 +184,23 @@ All notable changes to this project are documented in this file.
   `207 test files passed (2467 tests)` for commands that returned nothing; the real numbers were
   264 and 3148. The change was correct and the fabrication was caught by re-running the gate by
   hand, but a supervisor who trusted the report would have committed unverified work as verified.
+
+- **The background-shell completion row shows the command that ran, not a markdown reading of
+  it.** The row was built by interpolating the command into a local transcript message, and local
+  messages are prose: `node -e "setInterval(()=>{},1000)/*KILLPROBE*/"` came back as
+  `node -e "setInterval(()=>{},1000)/KILLPROBE/"`, both asterisks eaten as emphasis. The `Bash`
+  tool row directly above it renders the same string verbatim, so the two rows on one screen
+  disagreed about which command had just finished — and the completion row is the only surface
+  that reports it. Asterisks were the visible half of the class: `#`, `[x](y)`, `~~` and `_` are
+  all live in prose, so a recursive delete of `build/*`, a `grep` for a literal asterisk, or any
+  glob rendered wrong.
+
+  The command is now quoted as inline code, which also matches the tool row's styling. Quoting has
+  to survive the command: the fence is one backtick longer than the longest run inside it (so
+  ``echo `date` `` cannot close its own span), padded when the content's edge would fuse with the
+  fence, and line breaks are flattened first — block parsing runs before inline parsing, so a `#`
+  opening an embedded line would split the paragraph and strand the fence. Display only; execution
+  was never affected.
 
 - **A killed background shell really dies now, instead of reporting success and leaking its
   worker.** On Windows the process tree is torn down with `taskkill /T /F`, invoked by bare name

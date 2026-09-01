@@ -238,6 +238,51 @@ export interface ConversationCheckpointCoverage {
   lastProcessedEventRef?: string;
 }
 
+/**
+ * One user-authored constraint, recorded verbatim by the host.
+ *
+ * Host-owned: the reducer never writes this. It is extracted from the user's
+ * own turns by `agent/carried-ledger.ts` and re-attached after every
+ * generation, which is what lets it outlive the model-authored narrative that
+ * `fitCheckpoint` is free to rewrite.
+ */
+export interface CarriedConstraint {
+  /** Stable across generations: derived from the normalized text. */
+  id: string;
+  /** The user's sentence, unrewritten. Truncated only past `CARRIED_ENTRY_MAX_CHARS`. */
+  text: string;
+  /**
+   * How explicit the user was. `strong` is an unambiguous directive ("must",
+   * "never", "do not"); `weak` is a softer steer ("only", "avoid", "prefer").
+   * The cap evicts `weak` before `strong`.
+   */
+  strength: 'strong' | 'weak';
+  /** The user turn the text came from. Never minimized away by the fitter. */
+  source: CheckpointSourceRef;
+  /** Generation at which the entry was first recorded. */
+  firstSeenGeneration: number;
+  /** Generation at which the user last restated it. */
+  lastSeenGeneration: number;
+  /** Id of the later entry that restates this one, when the host detected one. */
+  supersededBy?: string;
+}
+
+/**
+ * The Carried Ledger: a monotonic, host-owned record of what the user asked
+ * for, ordered oldest to newest and never reordered.
+ *
+ * `fitCheckpoint` may not evict from it. Its growth is bounded by its own cap
+ * (`capCarriedLedger`) instead, so "the fitter cannot touch it" does not turn
+ * into "it eats the checkpoint budget".
+ */
+export interface CarriedLedger {
+  version: 1;
+  /** Oldest first. Later entries win over earlier ones on conflict. */
+  constraints: CarriedConstraint[];
+  /** Entries the cap had to drop. Non-zero means the ledger is lossy. */
+  droppedCount?: number;
+}
+
 export interface ConversationCheckpointV2 {
   version: 2;
   generation: number;
@@ -274,6 +319,11 @@ export interface ConversationCheckpointV2 {
   };
   /** Missing on older V2 checkpoints, which are treated as complete. */
   coverage?: ConversationCheckpointCoverage;
+  /**
+   * Host-owned verbatim user constraints. Absent on checkpoints written before
+   * the Carried Ledger, and absent when the conversation stated no constraint.
+   */
+  carried?: CarriedLedger;
 }
 
 export interface CompactRecordDataV2 {
