@@ -160,6 +160,33 @@ export function isBlockedIpAddress(address: string): boolean {
 }
 
 /**
+ * Brands the connect-time refusal so a caller can tell it from an unrelated `EACCES`.
+ *
+ * undici reports a lookup failure by wrapping it as the `cause` of a generic `TypeError: fetch
+ * failed`, which on its own says nothing about why the connection was refused. The brand rides on
+ * the original error object through that wrapping.
+ */
+const CONNECTION_BLOCKED = Symbol.for('book.web.connectionBlocked');
+
+/**
+ * The policy's reason for refusing a connection, or `undefined` if this is any other failure.
+ * Reads through one layer of `cause` because that is where undici puts it.
+ */
+export function connectionBlockedReason(error: unknown): string | undefined {
+  const candidates = [error, (error as { cause?: unknown } | undefined)?.cause];
+  for (const candidate of candidates) {
+    if (
+      typeof candidate === 'object' &&
+      candidate !== null &&
+      (candidate as Record<symbol, unknown>)[CONNECTION_BLOCKED] === true
+    ) {
+      return (candidate as Error).message;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Validate every address returned to the HTTP connector to close the DNS-rebinding gap.
  *
  * A dispatcher is only consulted by the undici that created it, so this hook guards a request
@@ -173,7 +200,12 @@ export const safeNetworkLookup: LookupFunction = (hostname, options, callback) =
     else callback(error, '', 0);
   };
   const refuse = (reason: string): void =>
-    fail(Object.assign(new Error(reason), { code: 'EACCES' }) as NodeJS.ErrnoException);
+    fail(
+      Object.assign(new Error(reason), {
+        code: 'EACCES',
+        [CONNECTION_BLOCKED]: true,
+      }) as NodeJS.ErrnoException,
+    );
 
   lookupCallback(hostname, { ...options, all: true }, (error, addresses) => {
     if (error) {
