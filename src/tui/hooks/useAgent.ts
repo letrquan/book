@@ -1960,31 +1960,73 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     persistSettingGlobal('memory.autoSave', enabled);
   }, []);
 
-  const setShowThinking = useCallback((enabled: boolean) => {
-    const result = persistSettingGlobal('ui.showThinking', enabled);
-    if (!result.ok) return result;
-    setLiveConfig((current) => ({
-      ...current,
-      settings: {
-        ...current.settings,
-        ui: { ...current.settings.ui, showThinking: enabled },
-      },
-    }));
-    return { ok: true };
-  }, []);
+  /**
+   * Flip a boolean setting, reading the value that is actually current.
+   *
+   * The callers used to compute `!liveConfig.settings…` from the value captured
+   * at render. Two flips inside one React batch — which is what an accelerator
+   * that acts on a row followed by Enter on the same row produces — then both
+   * read the pre-batch value and both persist the same absolute result, so two
+   * presses moved the setting once and wrote the wrong value to disk.
+   *
+   * Reading `liveConfigRef` is not enough on its own: it is mirrored in an
+   * effect, so inside a batch it is exactly as stale as the render value. The
+   * ref is therefore written here, synchronously, next to the state update.
+   */
+  const toggleSetting = useCallback(
+    (
+      read: (config: AgentConfig) => boolean,
+      write: (config: AgentConfig, value: boolean) => AgentConfig,
+      persist: (value: boolean) => { ok: boolean; error?: string },
+    ) => {
+      const next = !read(liveConfigRef.current);
+      const result = persist(next);
+      if (!result.ok) return result;
+      liveConfigRef.current = write(liveConfigRef.current, next);
+      setLiveConfig(liveConfigRef.current);
+      return { ok: true } as const;
+    },
+    [],
+  );
 
-  const setStartupAnimation = useCallback((enabled: boolean) => {
-    const result = persistSettingGlobal('ui.startupAnimation', enabled);
-    if (!result.ok) return result;
-    setLiveConfig((current) => ({
-      ...current,
-      settings: {
-        ...current.settings,
-        ui: { ...current.settings.ui, startupAnimation: enabled },
-      },
-    }));
-    return { ok: true };
-  }, []);
+  const toggleShowThinking = useCallback(
+    () =>
+      toggleSetting(
+        (c) => c.settings.ui.showThinking === true,
+        (c, value) => ({
+          ...c,
+          settings: { ...c.settings, ui: { ...c.settings.ui, showThinking: value } },
+        }),
+        (value) => persistSettingGlobal('ui.showThinking', value),
+      ),
+    [toggleSetting],
+  );
+
+  const toggleStartupAnimation = useCallback(
+    () =>
+      toggleSetting(
+        (c) => c.settings.ui.startupAnimation !== false,
+        (c, value) => ({
+          ...c,
+          settings: { ...c.settings, ui: { ...c.settings.ui, startupAnimation: value } },
+        }),
+        (value) => persistSettingGlobal('ui.startupAnimation', value),
+      ),
+    [toggleSetting],
+  );
+
+  const toggleMemoryAutoSave = useCallback(
+    () =>
+      toggleSetting(
+        (c) => c.settings.memory.autoSave === true,
+        (c, value) => ({
+          ...c,
+          settings: { ...c.settings, memory: { ...c.settings.memory, autoSave: value } },
+        }),
+        (value) => persistSettingGlobal('memory.autoSave', value),
+      ),
+    [toggleSetting],
+  );
 
   // Add an allow rule from the "Always allow" approval flow (CC-aligned) and
   // surface it live in settings so the next call is auto-allowed.
@@ -2108,8 +2150,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     setSkillExecution,
     setSkillsEnabled,
     setMemoryAutoSave,
-    setShowThinking,
-    setStartupAnimation,
+    toggleMemoryAutoSave,
+    toggleShowThinking,
+    toggleStartupAnimation,
 
     /** Reload the memory snapshot after approve/discard so the next agent turn picks up changes. */
     refreshMemoryContext: () => {

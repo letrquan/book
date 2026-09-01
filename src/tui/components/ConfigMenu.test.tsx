@@ -292,6 +292,35 @@ describe('ConfigMenu', () => {
     expect(onOpen).not.toHaveBeenCalled();
   });
 
+  it('walks back up the list on Shift+Tab', () => {
+    const onOpen = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          themeName="dark"
+          memoryAutoSave={false}
+          showThinking
+          agentCount={3}
+          skillCount={4}
+          defaultPermissionMode="default"
+          onOpen={onOpen}
+          onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    // Tab down twice to Effort, then back-tab once. Reading `key.tab` without
+    // `key.shift` sent Shift+Tab forward instead, one row past the target.
+    view.stdin.write('\t');
+    view.stdin.write('\t');
+    view.stdin.write('\u001b[Z');
+    view.stdin.write('\r');
+    expect(onOpen).toHaveBeenCalledWith('compact-model');
+  });
+
   it('stops the footer from advertising a subset of the shortcuts', () => {
     const view = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>

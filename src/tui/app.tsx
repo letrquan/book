@@ -355,8 +355,9 @@ export function App({
     setSkillExecution,
     setSkillsEnabled,
     setMemoryAutoSave,
-    setShowThinking,
-    setStartupAnimation,
+    toggleMemoryAutoSave,
+    toggleShowThinking,
+    toggleStartupAnimation,
     refreshMemoryContext,
     persistPermissionRule,
     removePermissionRule,
@@ -2072,13 +2073,25 @@ export function App({
 
   // A render crash replaces the whole UI, so the error box is the only thing
   // left to say whether the conversation survived. It did — the session file is
-  // appended synchronously — but only when there is a store to have written it.
-  const resumeCommand = session.store ? `book --resume ${sessionId}` : undefined;
+  // appended synchronously — but only when there is a store to have written it,
+  // and only worth reopening once it holds more than its own header. A crash
+  // during startup would otherwise promise a conversation and hand back an
+  // empty one.
+  const resumeCommand =
+    session.store && messages.length > 0 ? `book --resume ${sessionId}` : undefined;
+  // The boundary cannot lean on the global handler below: that handler is still
+  // mounted with whatever state it held when the render blew up, so it swallows
+  // Ctrl+C behind `ownsModalInput` if a picker was open and spends it on
+  // `interrupt()` if a turn was streaming. It gets the same exit path either
+  // way, so the session still ends cleanly.
+  const exitFromCrash = () => {
+    void endCurrentSession('exit').finally(exitApp);
+  };
 
   if (startupFireActive) {
     return (
       <AppProviders theme={currentTheme.tokens} density={density}>
-        <ErrorBoundary resumeCommand={resumeCommand}>
+        <ErrorBoundary resumeCommand={resumeCommand} onExit={exitFromCrash}>
           <StartupFire
             width={termWidth}
             height={Math.max(1, termHeight - 1)}
@@ -2091,7 +2104,7 @@ export function App({
 
   return (
     <AppProviders theme={currentTheme.tokens} density={density}>
-      <ErrorBoundary resumeCommand={resumeCommand}>
+      <ErrorBoundary resumeCommand={resumeCommand} onExit={exitFromCrash}>
         <Box
           flexDirection="column"
           width={termWidth}
@@ -2712,14 +2725,14 @@ export function App({
                     setShowAgentProfilePicker(true);
                   }
                 }}
-                onToggleMemory={() => setMemoryAutoSave(!liveConfig.settings.memory.autoSave)}
+                onToggleMemory={() => toggleMemoryAutoSave()}
                 onToggleThinking={() => {
-                  const result = setShowThinking(!liveConfig.settings.ui.showThinking);
+                  const result = toggleShowThinking();
                   if (!result.ok)
                     addLocalMessage(`✕ ${result.error ?? 'Could not save thinking setting.'}`);
                 }}
                 onToggleStartupAnimation={() => {
-                  const result = setStartupAnimation(!liveConfig.settings.ui.startupAnimation);
+                  const result = toggleStartupAnimation();
                   if (!result.ok) {
                     addLocalMessage(
                       `✕ ${result.error ?? 'Could not save startup animation setting.'}`,

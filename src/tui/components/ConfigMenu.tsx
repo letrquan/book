@@ -2,7 +2,7 @@ import { Box, Text, useInput } from 'ink';
 import { useRef, useState } from 'react';
 import { useTheme } from '../theme.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
-import { truncateDisplay } from './word-wrap.js';
+import { displayWidth, truncateDisplay } from './word-wrap.js';
 
 export type ConfigSection =
   'model' | 'compact-model' | 'effort' | 'theme' | 'agents' | 'skills' | 'permission-mode';
@@ -53,8 +53,14 @@ const ROWS = [
 ] as const satisfies ReadonlyArray<{ row: string; key?: string }>;
 type Row = (typeof ROWS)[number]['row'];
 
-/** Columns the accelerator gutter costs: marker, gap, letter, gap. */
-const GUTTER_WIDTH = 5;
+/**
+ * The cursor marker, the accelerator, and the gaps around them, as the string
+ * the row actually prints. Measuring it beats a hand-kept column count: the
+ * budget then cannot drift away from the prefix it is supposed to describe.
+ */
+function rowPrefix(selected: boolean, key?: string): string {
+  return `${selected ? '›' : ' '} ${key ? key.toUpperCase() : ' '}  `;
+}
 
 export function ConfigMenu({
   model,
@@ -96,7 +102,10 @@ export function ConfigMenu({
 
   useInput((input, key) => {
     if (key.escape) return onCancel();
-    if (key.upArrow) {
+    // Shift+Tab is back-tab everywhere else it appears; treating a bare
+    // `key.tab` as "next" sent it forward, one row past whatever the user was
+    // aiming at.
+    if (key.upArrow || (key.tab && key.shift)) {
       moveSelection((selectedRef.current - 1 + ROWS.length) % ROWS.length);
       return;
     }
@@ -173,14 +182,13 @@ export function ConfigMenu({
       <Box flexDirection="column" marginTop={1}>
         {ROWS.map((entry, index) => {
           const item = details[entry.row];
-          const accelerator = 'key' in entry ? entry.key.toUpperCase() : ' ';
+          const prefix = rowPrefix(index === selected, 'key' in entry ? entry.key : undefined);
           return (
             <SelectionRow key={entry.row} selected={index === selected} width={contentWidth}>
-              {index === selected ? '›' : ' '} {accelerator}
-              {'  '}
+              {prefix}
               {truncateDisplay(
                 `${item.label.padEnd(22)} ${item.value} — ${item.description}`,
-                contentWidth - GUTTER_WIDTH,
+                contentWidth - displayWidth(prefix),
               )}
             </SelectionRow>
           );
