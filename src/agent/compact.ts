@@ -26,7 +26,7 @@ import {
   toolResultModelContent,
   toolResultSucceeded,
 } from '../tools/result.js';
-import { buildCarriedLedger, carriedLedgerNotice } from './carried-ledger.js';
+import { buildCarriedLedger, carriedLedgerNotice, carriedLedgerTokens } from './carried-ledger.js';
 import { createDebugLogger } from '../debug-log.js';
 
 const log = createDebugLogger('compact');
@@ -744,13 +744,20 @@ export async function runCompact(
   if (finalValidationError) {
     baseReasons.add('invalid-checkpoint');
     fallbackUsed = true;
+    // The ledger's bytes are reserved from the budget here because this is the one
+    // path that never re-fits: every other site hands `fitCheckpoint` a checkpoint
+    // that already carries the ledger, but the fallback is built fresh and the
+    // ledger is bolted on afterwards. Sizing the fallback against the full budget
+    // made the degraded generation systematically larger than a healthy one --
+    // on exactly the path where context pressure is already the problem.
+    const ledgerReserve = carriedLedger ? carriedLedgerTokens(carriedLedger) : 0;
     checkpoint = attachLedger(
       makeDeterministicFallback(
         selection.priorCheckpoint,
         finalValidationError,
         generation,
         checkpoint.statistics,
-        checkpointBudget,
+        Math.max(1, checkpointBudget - ledgerReserve),
       ),
     );
     checkpoint.coverage = mergeCoverage(
