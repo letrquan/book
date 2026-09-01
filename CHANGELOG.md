@@ -189,6 +189,17 @@ All notable changes to this project are documented in this file.
   The shortcut reference also said Esc only cancels a permission or aborts the stream. It closes
   the open panel too.
 
+- **A command in the `/` menu says what it does before how it is spelled.** Three things competed
+  for one line. The argument syntax sat between the name and the description, so at 80 columns
+  `/agent` read ``/agent <id>|send <id> <message>|stop <id> [Built-in] — Inspec…`` — the grammar of
+  the command in full, and then its meaning truncated away. `[Built-in]` repeated down every row of
+  a list that was entirely built-ins. And the whole row was one colour, so a name did not stand out
+  from its own description. Now the description always follows the name, the syntax appears only on
+  the selected row (the list is for finding a command; the syntax matters once you have found it),
+  the badge appears only when the list actually mixes categories, and the name, syntax, badge and
+  description each carry their own colour. The syntax is dropped rather than allowed to starve the
+  description on a narrow terminal.
+
 - **"Always allow" is worth pressing, and a rule can be taken back.** For a shell command the rule
   it wrote was the exact command string, so `Bash(npm run check)` matched that byte sequence and
   nothing else: a user who pressed it to stop being asked was asked again on the very next call.
