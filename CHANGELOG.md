@@ -28,6 +28,16 @@ All notable changes to this project are documented in this file.
   now refuses an empty resolution instead of reporting success: the single-address form previously
   fell back to `''`, handing the connector a destination it had never validated.
 
+  Driving that rebinding case through the real tool surfaced a second defect and it is fixed here
+  too: the refusal was invisible. undici reports a lookup failure as the `cause` of a generic
+  `TypeError: fetch failed`, and `WebFetch` was passing that through as `fetch_failed` with
+  `retryable: true` -- so a connection refused on policy grounds was indistinguishable from a flaky
+  network, and the model was invited to retry something that can never succeed. The refusal is now
+  branded on the error itself, survives undici's wrapping, and comes back as
+  `private_network_forbidden`, `status: blocked`, `retryable: false`, carrying the policy's own
+  sentence: `Connection blocked because <host> resolved to private or special-use address <ip>`.
+  An `EACCES` from anything else is deliberately not claimed as a policy refusal.
+
 - **User constraints now survive compaction.** Book's own fidelity harness measured
   `verbatimUserRetention` at **0.0**: both constraints a user opened the conversation with were gone
   from the checkpoint after a single generation. They lived in model-authored episodes, and the

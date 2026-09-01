@@ -3,6 +3,7 @@ import type { ToolContext, ToolDefinition } from '../types/tools.js';
 import { createRegistry } from './registry.js';
 import { TOOL_RESULT_MAX_BYTES, toolResultModelContent } from './result.js';
 import { createWebTools } from './web.js';
+import { safeNetworkLookup } from './web-policy.js';
 
 const publicResolver = vi.fn(async () => ['93.184.216.34']);
 
@@ -32,6 +33,25 @@ function toolsFor(
 }
 
 describe('WebFetch', () => {
+  it('reports a connect-time policy refusal as blocked, not as a retryable fetch failure', async () => {
+    // A real refusal from the connector guard, wrapped the way undici wraps it. This is the
+    // rebinding case: pre-flight validation passed, and only the connect-time lookup caught it.
+    const refused = await new Promise<unknown>((resolve) => {
+      safeNetworkLookup('127.0.0.1', { all: true }, (error) => resolve(error));
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw Object.assign(new TypeError('fetch failed'), { cause: refused });
+    });
+
+    const { fetchTool } = toolsFor(fetchImpl);
+    const result = await fetchTool.execute({ url: 'https://example.com/' }, context());
+
+    expect(result.status).toBe('blocked');
+    expect(result.structuredError?.code).toBe('private_network_forbidden');
+    expect(result.structuredError?.retryable).toBe(false);
+    expect(result.structuredError?.message).toContain('127.0.0.1');
+  });
+
   it('converts HTML to markdown, strips active content, and returns provenance', async () => {
     const fetchImpl = vi.fn(async () => {
       const html =

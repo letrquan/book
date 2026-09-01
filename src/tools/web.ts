@@ -7,6 +7,7 @@ import { toolFailure, toolSuccess } from './result.js';
 import {
   type HostResolver,
   WebPolicyError,
+  connectionBlockedReason,
   resolveHostname,
   safeNetworkLookup,
   validateWebUrl,
@@ -464,6 +465,17 @@ async function fetchWithPolicy(
 function webPolicyFailure(error: unknown): ToolResult | undefined {
   if (error instanceof WebPolicyError) {
     return toolFailure(error.message, { code: error.code });
+  }
+  // The connect-time guard refuses after pre-flight validation has already passed -- a rebinding
+  // answer, or a redirect target that resolves privately. Report the policy's own reason instead
+  // of the `fetch failed` undici wraps it in, and do not invite a retry that cannot succeed.
+  const blockedReason = connectionBlockedReason(error);
+  if (blockedReason) {
+    return toolFailure(blockedReason, {
+      code: 'private_network_forbidden',
+      status: 'blocked',
+      retryable: false,
+    });
   }
   if (error instanceof CrossOriginRedirectError) {
     return toolFailure(error.message, {

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LookupAddress } from 'node:dns';
 import { Agent, fetch as undiciFetch } from 'undici';
 import {
+  connectionBlockedReason,
   isBlockedIpAddress,
   safeNetworkLookup,
   validateWebUrl,
@@ -165,6 +166,28 @@ describe('web URL policy', () => {
       expect(result.error).toBeFalsy();
       expect(result.address).toBe('8.8.8.8');
       expect(result.family).toBe(4);
+    });
+
+    it('brands the refusal so the reason survives undici wrapping', async () => {
+      const refused = (await runSafeLookup('127.0.0.1', { all: true })).error;
+      // undici reports a lookup failure as the `cause` of a generic TypeError.
+      const wrapped = Object.assign(new TypeError('fetch failed'), { cause: refused });
+
+      expect(connectionBlockedReason(refused)).toContain('127.0.0.1');
+      expect(connectionBlockedReason(wrapped)).toContain('127.0.0.1');
+    });
+
+    it('does not claim an unrelated failure was a policy refusal', () => {
+      const unrelated = Object.assign(new Error('connect EACCES 93.184.216.34:443'), {
+        code: 'EACCES',
+      });
+
+      expect(connectionBlockedReason(new Error('boom'))).toBeUndefined();
+      expect(connectionBlockedReason(unrelated)).toBeUndefined();
+      expect(
+        connectionBlockedReason(Object.assign(new TypeError('fetch failed'), { cause: unrelated })),
+      ).toBeUndefined();
+      expect(connectionBlockedReason(undefined)).toBeUndefined();
     });
 
     it('passes a public IPv6 address through', async () => {
