@@ -13,7 +13,7 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
 - **Sessions**: append-only JSONL persistence with automatic titles from the first prompt plus `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, reference-aware `/compact`, and Claude-style `/rewind` for conversation, code, or both. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, remembered file facts are freshness-checked before reuse, and constraints you stated in your own words are carried verbatim in a host-owned ledger the summarizer can read but never rewrite (see "Carried constraints").
 - **Tools**: a provider-neutral capability catalog keeps a practical core loaded and uses `ToolSearch` to activate up to five authorized git, web, session, skill, agent, notebook, or MCP definitions on the next model turn. File, shell, task, clarification, and plan tools stay immediately available when permitted. Existing names such as `Read`, `Bash`, and `AgentSpawn` remain stable.
-- **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`. Print mode resolves commands through the same registries: `/init`, `/security-review`, `/review`, and custom commands run headlessly, and the interactive-only ones fail loudly instead of reaching the model as text.
+- **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/login`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`. Print mode resolves commands through the same registries: `/init`, `/security-review`, `/review`, and custom commands run headlessly, and the interactive-only ones fail loudly instead of reaching the model as text.
 - **Permissions**: allow/ask/deny rule matching with six modes — `default`, `acceptEdits` (`accept-edits`), `plan`, `auto`, `dontAsk`, `bypassPermissions` — see `/permissions` or `--permission-mode`. At a tool prompt, `A` arms **Always allow** and presses again to widen the rule it will write (`Bash(npm run check)` → `Bash(npm run *)` → `Bash(npm *)`); the pattern is always shown before Enter commits it. `/permissions` lists the rules in force and removes the selected one with `x`.
 - **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events. Project-declared hooks require one-time approval per workspace; review provider/MCP settings and custom-command substitutions before opening an untrusted workspace.
 - **Verified managed agents**: adaptive model-directed routing, purpose-named runs, compact parent-facing results, live TUI monitoring, profile model overrides, read-only non-Git exploration, resumable isolated worktrees, strict capabilities, typed evidence, independent validation, and explicit patch application. Built-in `explorer`, `patcher`, and `validator` profiles can be overridden under `.book/agents/`.
@@ -246,6 +246,12 @@ book auth logout anthropic
 book auth logout --all
 ```
 
+Inside the TUI, `/login` runs the same flow without leaving the session: it lists the configured
+profiles with their credential state, opens the browser, waits on the loopback redirect, and shows
+the outcome. `/login <profile>` preselects one. Esc cancels a login in flight, releasing the
+redirect port. `/status` names the credential the session is spending. Logging out, and the
+`--manual` paste-back flow for a browser on another machine, remain CLI-only.
+
 #### You must supply the OAuth client id
 
 **Book ships no vendor client ids.** A client id identifies *which application* an authorization
@@ -300,6 +306,25 @@ Resolved once, at config load:
    credential matches the active provider. Adding a login never silently retargets a workspace that
    already had a working key, and two logins with no stated preference resolve to nothing rather
    than a guess.
+
+Because of rule 2, a session that is already authenticated will not start spending a new login on
+its own. `/login` therefore asks, once the credential is stored, whether to use it for future turns;
+accepting writes `auth.profile` to `~/.book/settings.json` and re-points the running session.
+Declining keeps the current credential and says how to switch later.
+
+The prompt names the model and endpoint the session will *actually* use, which is not always the
+profile's own — an explicit `BOOK_MODEL`, a `-m` flag, or a model chosen with `/model` outranks the
+profile's default, exactly as it would at startup. Activation is refused outright, before anything
+is persisted, when it could not work:
+
+- a base-URL override (`BOOK_BASE_URL`, a legacy `.bookrc.json`) points somewhere other than the
+  profile's origin, where the credential would be refused on every request;
+- the selected model belongs to a `provider/<id>` entry, which brings its own endpoint and key;
+- `BOOK_AUTH_PROFILE` names a different profile, and outranks the settings file.
+
+These refusals matter because activation is global and permanent: persisting `auth.profile` for a
+combination that cannot work would break every later session in every project. A configured compact
+model that would be posted to the new vendor is reported as a warning rather than a refusal.
 
 When a profile is active it supplies the API base and a default model, and the transports send
 `Authorization: Bearer <token>` *instead of* the API-key header — never alongside it. Selecting a
@@ -1202,7 +1227,7 @@ that substitutes no shell has nothing to approve.
 
 Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, `/exit`,
 `/help`), task and job controls (`/task`, `/jobs`, with `/tasks` as an alias), managed-agent
-controls (`/agents`, `/agent`), config (`/model`, `/providers`,
+controls (`/agents`, `/agent`), config (`/model`, `/providers`, `/login [profile]`,
 `/effort [low|medium|high|xhigh|max]`, `/config`, `/permissions`, `/theme`), inspection
 (`/status`, `/mcp`, `/cost`, `/usage` with `/stats` as an alias, `/context`, `/diff`, `/skills`,
 `/memory`), local output and reload (`/export`, `/reload-skills`), release/support

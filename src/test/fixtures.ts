@@ -10,6 +10,7 @@ export function defaultConfig(overrides: Partial<AgentConfig> = {}): AgentConfig
   settings.observability.toolTelemetry = false;
   return {
     apiKey: 'k',
+    authInputs: { providerOverride: 'auto' },
     baseUrl: 'http://x/v1',
     model: 'm',
     maxTurns: 5,

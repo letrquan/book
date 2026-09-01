@@ -25,6 +25,9 @@ import { ThemePicker } from './components/ThemePicker.js';
 import { ConfigMenu, type ConfigSection } from './components/ConfigMenu.js';
 import { SkillManager } from './components/SkillManager.js';
 import { AgentProfilePicker } from './components/AgentProfilePicker.js';
+import { LoginPicker } from './components/LoginPicker.js';
+import { listAuthProfiles, type AuthProfile } from '../auth/profiles.js';
+import { listCredentials } from '../auth/store.js';
 import { SessionPicker } from './components/SessionPicker.js';
 import { RewindPicker } from './components/RewindPicker.js';
 import { TranscriptView } from './components/TranscriptView.js';
@@ -113,6 +116,8 @@ import { stripSgrMouseSequences } from './mouse.js';
 const uiLog = createUiDebugLogger('tui:app');
 const MAIN_TRANSCRIPT_SCOPE = 'main';
 const EMPTY_TOOL_EXPANSION_OVERRIDES = new Map<string, boolean>();
+const EMPTY_AUTH_PROFILES: AuthProfile[] = [];
+const EMPTY_PROFILE_IDS: readonly string[] = Object.freeze([]);
 const EMPTY_SHOW_ALL_TOOL_OUTPUT_IDS = new Set<string>();
 
 export function ownsModalInput(
@@ -130,6 +135,7 @@ export function ownsModalInput(
   showSkills = false,
   pendingMcpApproval: unknown = undefined,
   pendingElicitation: unknown = undefined,
+  showLoginPicker = false,
 ): boolean {
   return Boolean(
     pendingPermission ||
@@ -145,6 +151,7 @@ export function ownsModalInput(
     showConfigPicker ||
     showAgentProfilePicker ||
     showSkills ||
+    showLoginPicker ||
     pendingMcpApproval,
   );
 }
@@ -337,6 +344,8 @@ export function App({
     cycleMode,
     addLocalMessage,
     setModel,
+    applyAuthLogin,
+    previewAuthLogin,
     upsertProviderAndSelect,
     removeProvider,
     setEffort,
@@ -419,6 +428,11 @@ export function App({
   const [showThemePicker, setShowThemePicker] = useState(false);
   const [showConfigPicker, setShowConfigPicker] = useState(false);
   const [showAgentProfilePicker, setShowAgentProfilePicker] = useState(false);
+  const [showLoginPicker, setShowLoginPicker] = useState(false);
+  const [loginProfileHint, setLoginProfileHint] = useState<string | undefined>(undefined);
+  // Bumped when a login stores a credential, so the list below re-reads the
+  // store exactly then rather than on every render of the app.
+  const [authStoreRevision, setAuthStoreRevision] = useState(0);
   const [agentProfileForModel, setAgentProfileForModel] = useState<string>();
   const [selectingCompactModel, setSelectingCompactModel] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
@@ -865,6 +879,7 @@ export function App({
       showSkills,
       undefined,
       pendingElicitation,
+      showLoginPicker,
     );
 
   // Surface connection outcomes as transcript notices once the turn is idle;
@@ -1192,6 +1207,7 @@ export function App({
         showSkills,
         showMcpApproval,
         pendingElicitation,
+        showLoginPicker,
       )
     ) {
       if (key.escape) {
@@ -1639,7 +1655,10 @@ export function App({
         }
         if (effect?.type === 'show-modal') {
           if (effect.modal === 'config') setShowConfigPicker(true);
-          else if (effect.modal === 'model') {
+          else if (effect.modal === 'login') {
+            setLoginProfileHint(effect.profile);
+            setShowLoginPicker(true);
+          } else if (effect.modal === 'model') {
             setSelectingCompactModel(false);
             setShowModelPicker(true);
           } else if (effect.modal === 'rewind') setShowRewindPicker(true);
@@ -2022,6 +2041,21 @@ export function App({
     showSkills,
     showMcpApproval,
     pendingElicitation,
+    showLoginPicker,
+  );
+
+  // Both read files, so they are computed only while the overlay is open —
+  // this is App's render body, which re-runs on every streaming tick.
+  const loginProfiles = useMemo(
+    () => (showLoginPicker ? listAuthProfiles(liveConfig.settings) : EMPTY_AUTH_PROFILES),
+    [showLoginPicker, liveConfig.settings],
+  );
+  const signedInProfiles = useMemo(
+    () =>
+      showLoginPicker
+        ? listCredentials().map((credential) => credential.profile)
+        : EMPTY_PROFILE_IDS,
+    [showLoginPicker, authStoreRevision],
   );
 
   const pickerOwnsTranscript =
@@ -2033,6 +2067,7 @@ export function App({
     showRewindPicker ||
     showConfigPicker ||
     showAgentProfilePicker ||
+    showLoginPicker ||
     showSkills;
 
   if (startupFireActive) {
@@ -2200,6 +2235,11 @@ export function App({
                       theme={theme}
                     />
                     <HelpRow
+                      label="/login [profile]"
+                      description="Sign in with a provider subscription (OAuth)"
+                      theme={theme}
+                    />
+                    <HelpRow
                       label="/effort [low|medium|high|xhigh|max]"
                       description="Set thinking effort"
                       theme={theme}
@@ -2282,6 +2322,17 @@ export function App({
                     <HelpRow
                       label="Model"
                       description={liveConfig.modelSelection ?? liveConfig.model}
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="Auth"
+                      description={
+                        liveConfig.authProfile
+                          ? `subscription · ${liveConfig.authProfile}`
+                          : liveConfig.apiKey
+                            ? 'API key'
+                            : 'none'
+                      }
                       theme={theme}
                     />
                     <HelpRow
@@ -2781,6 +2832,29 @@ export function App({
                   setShowModelPicker(false);
                   if (returnToConfig) setShowConfigPicker(true);
                   else if (returnToAgents) setShowAgentProfilePicker(true);
+                }}
+              />
+            ) : null}
+            {showLoginPicker ? (
+              <LoginPicker
+                profiles={loginProfiles}
+                signedIn={signedInProfiles}
+                activeProfile={liveConfig.authProfile}
+                initialProfileId={loginProfileHint}
+                previewActivation={previewAuthLogin}
+                onSignedIn={() => setAuthStoreRevision((revision) => revision + 1)}
+                onActivate={(profile) => {
+                  const result = applyAuthLogin(profile);
+                  if (result.ok) {
+                    addLocalMessage(
+                      `Signed in to ${profile.label}. This session now spends that subscription.`,
+                    );
+                  }
+                  return result;
+                }}
+                onClose={() => {
+                  setShowLoginPicker(false);
+                  setLoginProfileHint(undefined);
                 }}
               />
             ) : null}

@@ -4,6 +4,49 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`/login` — subscription sign-in from inside the TUI.** Subscription auth shipped as
+  `book auth login` and nothing else: no slash command, no import from `src/auth/` anywhere under
+  `src/tui/`, and no credential row in `/status`. A user who never left the TUI had no way to
+  discover the feature existed, and no way to see which credential a session was spending.
+
+  `/login` now lists the configured profiles with their credential and client-id state, opens the
+  browser, waits on the loopback redirect, and reports the outcome — driving the same
+  `runOAuthLogin` the CLI drives, which was written host-agnostically for this. `/login <profile>`
+  preselects one rather than auto-starting, so a flow that opens a browser and binds a registered
+  port always begins on a keystroke the user aimed. Esc aborts in flight, and the overlay's effect
+  cleanup aborts on unmount, so a closed overlay cannot leave the listener holding the port.
+  Selecting a profile with no client id shows the same guidance the CLI prints without binding
+  anything. `/status` gained an `Auth` row naming the active profile, or `API key`.
+
+  **Storing a credential does not spend it.** `selectAuthProfile` deliberately refuses to retarget
+  a workspace that already has a working key, and the TUI only started because something
+  authenticated — so inferred activation would have left the new login doing nothing visible,
+  reproducing inside the feature the invisibility that motivated it. The success step asks; accepting
+  persists `auth.profile` to the user-global layer (the only layer `auth.*` is read from) and
+  re-points the live config, so the next turn spends the subscription without a restart. Declining
+  says how to switch later.
+
+  **Activation is resolved before it is offered.** Because it persists `auth.profile` globally, a
+  combination that cannot work would not just fail this session — it would fail every later session
+  in every project, from a single keystroke, with no way back through the overlay. So
+  `activateAuthProfile` computes the outcome first and refuses with a reason when a base-URL
+  override points away from the profile's origin (where `assertOriginAllowed` would reject every
+  request), when the selected model resolves to a `provider/<id>` entry that carries its own
+  endpoint and key, or when `BOOK_AUTH_PROFILE` names something else. Nothing is written in those
+  cases. A compact model configured for the previous vendor is reported as a warning instead. The
+  consent prompt names the model and endpoint the session will really use, which differs from the
+  profile's own whenever an explicit override wins — and `/model` now records its choice as
+  explicit, so a later login cannot quietly undo it.
+
+  The endpoint/model/transport precedence an active profile contributes now lives in one exported
+  function (`authProfileContribution`), called by both `loadConfig` and the mid-session path.
+  Two copies would drift, and drift here is silent: a session spending a subscription against the
+  wrong endpoint, or keeping a model the new vendor does not serve.
+
+  Logout and the `--manual` paste-back flow remain CLI-only.
+
 ### Changed
 
 - **A repository can no longer plant a rule the carried ledger treats as the user's own.** The

@@ -5,7 +5,11 @@ import {
   loadConfig,
   resolveCompactModelConfig,
   resolveModelProviderConfig,
+  authProfileContribution,
+  activateAuthProfile,
+  withExplicitModel,
 } from './config.js';
+import type { AuthProfile } from './auth/profiles.js';
 import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { defaultConfig } from './test/fixtures.js';
@@ -911,5 +915,149 @@ describe('resolveModelProviderConfig and subscription credentials', () => {
     });
 
     expect(resolveModelProviderConfig(base, 'claude-opus-5').authProfile).toBe('anthropic');
+  });
+});
+
+describe('authProfileContribution', () => {
+  const profile: AuthProfile = {
+    id: 'anthropic',
+    label: 'Anthropic (Claude subscription)',
+    providerType: 'anthropic',
+    authorizeUrl: 'https://example.test/authorize',
+    tokenUrl: 'https://example.test/token',
+    scopes: [],
+    redirectPort: 54545,
+    redirectPath: '/callback',
+    baseUrl: 'https://api.anthropic.com/v1',
+    headers: {},
+    defaultModel: 'claude-sonnet-5',
+    clientId: 'c-1',
+  };
+
+  it('supplies the endpoint, model, and transport when nothing is explicit', () => {
+    expect(authProfileContribution(profile, { providerOverride: 'auto' })).toEqual({
+      baseUrl: 'https://api.anthropic.com/v1',
+      defaultProfileBaseUrl: 'https://api.anthropic.com/v1',
+      model: 'claude-sonnet-5',
+      provider: 'anthropic',
+    });
+  });
+
+  it('lets explicit overrides outrank the profile', () => {
+    expect(
+      authProfileContribution(profile, {
+        explicitBaseUrl: 'https://proxy.test/v1',
+        explicitModel: 'gpt-4o',
+        providerOverride: 'openai',
+      }),
+    ).toEqual({
+      baseUrl: 'https://proxy.test/v1',
+      defaultProfileBaseUrl: 'https://proxy.test/v1',
+      model: 'gpt-4o',
+      provider: 'openai',
+    });
+  });
+
+  it('leaves defaultProfileBaseUrl unset with no profile active', () => {
+    const contribution = authProfileContribution(undefined, { providerOverride: 'auto' });
+    expect(contribution.defaultProfileBaseUrl).toBeUndefined();
+    expect(contribution.model).toBe('gpt-4o');
+    expect(contribution.provider).toBe('auto');
+  });
+
+  it('re-points a live config at a profile the way loadConfig would have', () => {
+    const activation = activateAuthProfile(
+      defaultConfig({
+        workspace,
+        model: 'gpt-4o',
+        baseUrl: 'https://api.openai.com/v1',
+        authInputs: { providerOverride: 'auto' },
+      }),
+      profile,
+    );
+
+    expect(activation.ok).toBe(true);
+    if (!activation.ok) return;
+    expect(activation.config.authProfile).toBe('anthropic');
+    expect(activation.config.baseUrl).toBe('https://api.anthropic.com/v1');
+    expect(activation.config.defaultProfileBaseUrl).toBe('https://api.anthropic.com/v1');
+    expect(activation.model).toBe('claude-sonnet-5');
+    expect(activation.config.provider).toBe('anthropic');
+  });
+
+  it('keeps an explicit model across a mid-session login, as loadConfig does', () => {
+    const activation = activateAuthProfile(
+      defaultConfig({
+        workspace,
+        authInputs: { explicitModel: 'gpt-4o', providerOverride: 'auto' },
+      }),
+      profile,
+    );
+
+    expect(activation.ok).toBe(true);
+    if (!activation.ok) return;
+    expect(activation.model).toBe('gpt-4o');
+    expect(activation.baseUrl).toBe('https://api.anthropic.com/v1');
+  });
+
+  it('refuses activation when a base-URL override points somewhere else', () => {
+    // Activating here would persist auth.profile globally and then fail
+    // assertOriginAllowed on every subsequent request, in every project.
+    const activation = activateAuthProfile(
+      defaultConfig({
+        workspace,
+        authInputs: { explicitBaseUrl: 'https://proxy.corp/v1', providerOverride: 'auto' },
+      }),
+      profile,
+    );
+
+    expect(activation.ok).toBe(false);
+    if (activation.ok) return;
+    expect(activation.error).toContain('proxy.corp');
+    expect(activation.error).toContain('api.anthropic.com');
+  });
+
+  it('refuses activation when the selected model belongs to a provider entry', () => {
+    const config = defaultConfig({
+      workspace,
+      authInputs: { explicitModel: 'myprov/qwen3-max', providerOverride: 'auto' },
+    });
+    config.settings.provider = {
+      myprov: { type: 'openai', baseURL: 'https://myprov.test/v1', apiKey: 'k', models: {} },
+    } as never;
+
+    const activation = activateAuthProfile(config, profile);
+
+    expect(activation.ok).toBe(false);
+    if (activation.ok) return;
+    expect(activation.error).toContain('myprov');
+  });
+
+  it('warns when a compact model would be posted to the new vendor', () => {
+    const activation = activateAuthProfile(
+      defaultConfig({
+        workspace,
+        compactModel: 'gpt-4o-mini',
+        authInputs: { providerOverride: 'auto' },
+      }),
+      profile,
+    );
+
+    expect(activation.ok).toBe(true);
+    if (!activation.ok) return;
+    expect(activation.warning).toContain('gpt-4o-mini');
+    expect(activation.warning).toContain('api.anthropic.com');
+  });
+
+  it('records a session model choice so a later login does not overwrite it', () => {
+    const chosen = withExplicitModel(
+      defaultConfig({ workspace, authInputs: { providerOverride: 'auto' } }),
+      'o3',
+    );
+    const activation = activateAuthProfile(chosen, profile);
+
+    expect(activation.ok).toBe(true);
+    if (!activation.ok) return;
+    expect(activation.model).toBe('o3');
   });
 });
