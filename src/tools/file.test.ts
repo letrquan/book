@@ -11,6 +11,7 @@ import {
   writeFileSync,
   rmSync,
 } from 'fs';
+import { writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 
@@ -461,17 +462,22 @@ describe('edit_file', () => {
 });
 
 describe('glob', () => {
+  // The 1005 count is load-bearing — it is what exceeds GLOB_OUTPUT_LIMIT — so the setup
+  // cost cannot come down by creating fewer files. Creating them concurrently pipelines the
+  // syscalls through the libuv threadpool instead of serializing them, and the raised ceiling
+  // covers a cold Windows runner, where every creation crosses a filter driver: 376 ms locally
+  // against a >20 s timeout in CI (#144).
   it('caps broad output and reports truncation', async () => {
-    for (let i = 0; i < 1005; i++) {
-      writeFileSync(join(dir, `file-${i}.txt`), String(i));
-    }
+    await Promise.all(
+      Array.from({ length: 1005 }, (_, i) => writeFile(join(dir, `file-${i}.txt`), String(i))),
+    );
 
     const r = await glob.execute({ pattern: '**/*' }, ctx);
 
     expect(r.status).toBe('success');
     expect(r.content).toContain('truncated at 1000 files');
     expect(r.content.split('\n')).toHaveLength(1001);
-  });
+  }, 60_000);
 
   it('does not return out-of-workspace paths', async () => {
     writeFileSync(join(dir, 'inside.txt'), 'inside');
