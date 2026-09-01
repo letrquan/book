@@ -574,7 +574,11 @@ function renderBlockToken(
       return (
         <Box key={`code-${index}`} flexDirection="column">
           {layout.langLabel ? (
-            <Box>
+            // On the rail, not floating above it. A bare dim word at the prose
+            // indent with nothing joining it to the block below reads as a
+            // one-word paragraph — `js` sitting in the answer as if the model
+            // had said it. Sharing the rail makes it a caption on the block.
+            <Box {...(layout.showRail ? railCaptionProps(theme) : {})}>
               <Text color={theme.mdCodeBorder} dimColor>
                 {layout.langLabel}
               </Text>
@@ -831,6 +835,19 @@ const MarkdownRenderer = React.memo(function MarkdownRenderer({
     </Box>
   );
 });
+
+/** The rail a code block draws down its left edge, for its caption to share. */
+function railCaptionProps(theme: ReturnType<typeof useTheme>) {
+  return {
+    paddingLeft: 1 as const,
+    borderLeft: true,
+    borderTop: false,
+    borderRight: false,
+    borderBottom: false,
+    borderStyle: 'single' as const,
+    borderColor: theme.mdCodeBorder,
+  };
+}
 
 export function MarkdownBlock({ content, terminalWidth, isStreaming = false }: MarkdownBlockProps) {
   const theme = useTheme();

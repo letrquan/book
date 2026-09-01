@@ -200,6 +200,19 @@ All notable changes to this project are documented in this file.
   description each carry their own colour. The syntax is dropped rather than allowed to starve the
   description on a narrow terminal.
 
+- **A narrow status line shortens the branch last, not first.** At 56 columns it cut
+  `research/next-task` to `research/ne…` and left `scripted/scripted` whole. Both are identity, but
+  the branch is the one that changes under you — a rebase or a checkout in a sibling worktree moves
+  it without asking, while the model stays where you put it. The branch now gets the wider budget.
+  Both shrink together rather than one taking the row: packing is first-fit and skips what will not
+  fit, so a branch budget generous enough to crowd the model drops the model entirely instead of
+  shortening it.
+
+- **A code block's language label sits on the block's rail.** It rendered as a bare dim word at the
+  prose indent with nothing joining it to the code below, so `js` read as a one-word paragraph in
+  the answer — as if the model had said it. It now shares the left rail the block already draws, so
+  it reads as a caption on the block.
+
 - **"Always allow" is worth pressing, and a rule can be taken back.** For a shell command the rule
   it wrote was the exact command string, so `Bash(npm run check)` matched that byte sequence and
   nothing else: a user who pressed it to stop being asked was asked again on the very next call.

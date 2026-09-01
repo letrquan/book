@@ -138,7 +138,18 @@ export function StatusLine({
           : theme.usageMeter;
 
   const coloredRuns = useMemo(() => {
-    const modelBudget = width < 44 ? 10 : width < 72 ? 18 : 30;
+    // The branch outranks the model when the row gets tight. Both are identity,
+    // but the branch is the one that changes under you — you chose the model and
+    // it stays chosen, while a rebase or a checkout in another worktree moves
+    // the branch without asking. At 56 columns the old budgets cut
+    // `research/next-task` to `research/ne…` and left `scripted/scripted` whole,
+    // which is the wrong thing to be sure about.
+    //
+    // Both shrink together rather than one taking the row: packing is first-fit
+    // and skips what will not fit, so a branch budget generous enough to crowd
+    // the model drops the model entirely instead of shortening it.
+    const modelBudget = width < 44 ? 8 : width < 72 ? 12 : 30;
+    const branchBudget = width < 44 ? 10 : width < 72 ? 16 : 24;
     // Ordered by what the reader needs first. Packing is first-fit, not
     // truncating: a segment too wide for the remaining space is skipped and
     // later, shorter ones still get their turn.
@@ -156,7 +167,7 @@ export function StatusLine({
     if (gitBranch && gitBranch !== '?') {
       const dirty = Boolean(gitStatus && gitStatus !== CLEAN_TREE);
       segments.push({
-        text: `${truncateDisplay(gitBranch, width < 72 ? 12 : 24)}${dirty ? '*' : ''}`,
+        text: `${truncateDisplay(gitBranch, branchBudget)}${dirty ? '*' : ''}`,
         color: dirty ? theme.warning : theme.subtle,
       });
     }
