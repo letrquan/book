@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Agent } from 'undici';
+import type { LookupAddress } from 'node:dns';
+import { Agent, fetch as undiciFetch } from 'undici';
 import {
+  connectionBlockedReason,
   isBlockedIpAddress,
   safeNetworkLookup,
   validateWebUrl,
@@ -13,6 +15,20 @@ const strictPolicy: WebUrlPolicy = {
   allowPrivateNetwork: false,
   maxRedirects: 5,
 };
+
+interface SafeLookupResult {
+  error: NodeJS.ErrnoException | null;
+  address: string | LookupAddress[];
+  family?: number;
+}
+
+function runSafeLookup(hostname: string, options: { all: boolean }): Promise<SafeLookupResult> {
+  return new Promise((resolve) => {
+    safeNetworkLookup(hostname, options, (error, address, family) =>
+      resolve({ error: error as NodeJS.ErrnoException | null, address, family }),
+    );
+  });
+}
 
 describe('web URL policy', () => {
   it.each([
@@ -93,13 +109,14 @@ describe('web URL policy', () => {
     expect(webUrlPolicyFromEnv({ BOOK_WEB_MAX_REDIRECTS: '99' }).maxRedirects).toBe(10);
   });
 
-  it('enforces the connection-time lookup through Node fetch dispatchers', async () => {
+  it('enforces the connection-time lookup through an undici dispatcher', async () => {
+    // The dispatcher carries the guard, and only the undici that created it consults that
+    // dispatcher -- so the request has to be issued by undici's own fetch, exactly as
+    // `undiciWebFetch` does in web.ts. Node's global fetch is a different, bundled undici.
     const dispatcher = new Agent({ connect: { lookup: safeNetworkLookup } });
     let caught: unknown;
     try {
-      await fetch('http://localhost:49152', {
-        dispatcher,
-      } as RequestInit & { dispatcher: Agent });
+      await undiciFetch('http://localhost:49152', { dispatcher });
     } catch (error) {
       caught = error;
     } finally {
@@ -108,5 +125,82 @@ describe('web URL policy', () => {
 
     expect(caught).toBeInstanceOf(TypeError);
     expect((caught as { cause?: { code?: string } }).cause?.code).toBe('EACCES');
+    // Pin brand survival through the real undici path, not just a hand-built wrapping:
+    // Node mutates the lookup error before undici wraps it, so any layer that copied
+    // rather than forwarded the object would drop the symbol and silently return the
+    // refusal to reporting itself as a retryable `fetch failed`.
+    expect(connectionBlockedReason(caught)).toContain('private or special-use address');
+  });
+
+  describe('safeNetworkLookup callback contract', () => {
+    // A literal address short-circuits dns.lookup, so these cases need no network.
+    it('refuses a private address on the options.all path', async () => {
+      const result = await runSafeLookup('127.0.0.1', { all: true });
+
+      expect(result.error?.code).toBe('EACCES');
+      expect(result.error?.message).toContain('127.0.0.1');
+      expect(result.address).toEqual([]);
+    });
+
+    it('refuses a private address on the single-address path', async () => {
+      const result = await runSafeLookup('127.0.0.1', { all: false });
+
+      expect(result.error?.code).toBe('EACCES');
+      expect(result.address).toBe('');
+      expect(result.family).toBe(0);
+    });
+
+    it('refuses a private hostname on both paths', async () => {
+      const all = await runSafeLookup('localhost', { all: true });
+      const single = await runSafeLookup('localhost', { all: false });
+
+      expect(all.error?.code).toBe('EACCES');
+      expect(single.error?.code).toBe('EACCES');
+    });
+
+    it('passes a public address through on the options.all path', async () => {
+      const result = await runSafeLookup('8.8.8.8', { all: true });
+
+      expect(result.error).toBeFalsy();
+      expect(result.address).toEqual([{ address: '8.8.8.8', family: 4 }]);
+    });
+
+    it('passes a public address through on the single-address path', async () => {
+      const result = await runSafeLookup('8.8.8.8', { all: false });
+
+      expect(result.error).toBeFalsy();
+      expect(result.address).toBe('8.8.8.8');
+      expect(result.family).toBe(4);
+    });
+
+    it('brands the refusal so the reason survives undici wrapping', async () => {
+      const refused = (await runSafeLookup('127.0.0.1', { all: true })).error;
+      // undici reports a lookup failure as the `cause` of a generic TypeError.
+      const wrapped = Object.assign(new TypeError('fetch failed'), { cause: refused });
+
+      expect(connectionBlockedReason(refused)).toContain('127.0.0.1');
+      expect(connectionBlockedReason(wrapped)).toContain('127.0.0.1');
+    });
+
+    it('does not claim an unrelated failure was a policy refusal', () => {
+      const unrelated = Object.assign(new Error('connect EACCES 93.184.216.34:443'), {
+        code: 'EACCES',
+      });
+
+      expect(connectionBlockedReason(new Error('boom'))).toBeUndefined();
+      expect(connectionBlockedReason(unrelated)).toBeUndefined();
+      expect(
+        connectionBlockedReason(Object.assign(new TypeError('fetch failed'), { cause: unrelated })),
+      ).toBeUndefined();
+      expect(connectionBlockedReason(undefined)).toBeUndefined();
+    });
+
+    it('passes a public IPv6 address through', async () => {
+      const result = await runSafeLookup('2606:4700:4700::1111', { all: false });
+
+      expect(result.error).toBeFalsy();
+      expect(result.address).toBe('2606:4700:4700::1111');
+      expect(result.family).toBe(6);
+    });
   });
 });

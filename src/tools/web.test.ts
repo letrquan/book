@@ -3,6 +3,7 @@ import type { ToolContext, ToolDefinition } from '../types/tools.js';
 import { createRegistry } from './registry.js';
 import { TOOL_RESULT_MAX_BYTES, toolResultModelContent } from './result.js';
 import { createWebTools } from './web.js';
+import { safeNetworkLookup } from './web-policy.js';
 
 const publicResolver = vi.fn(async () => ['93.184.216.34']);
 
@@ -32,6 +33,25 @@ function toolsFor(
 }
 
 describe('WebFetch', () => {
+  it('reports a connect-time policy refusal as blocked, not as a retryable fetch failure', async () => {
+    // A real refusal from the connector guard, wrapped the way undici wraps it. This is the
+    // rebinding case: pre-flight validation passed, and only the connect-time lookup caught it.
+    const refused = await new Promise<unknown>((resolve) => {
+      safeNetworkLookup('127.0.0.1', { all: true }, (error) => resolve(error));
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw Object.assign(new TypeError('fetch failed'), { cause: refused });
+    });
+
+    const { fetchTool } = toolsFor(fetchImpl);
+    const result = await fetchTool.execute({ url: 'https://example.com/' }, context());
+
+    expect(result.status).toBe('blocked');
+    expect(result.structuredError?.code).toBe('private_network_forbidden');
+    expect(result.structuredError?.retryable).toBe(false);
+    expect(result.structuredError?.message).toContain('127.0.0.1');
+  });
+
   it('converts HTML to markdown, strips active content, and returns provenance', async () => {
     const fetchImpl = vi.fn(async () => {
       const html =
@@ -277,6 +297,34 @@ describe('WebFetch', () => {
 });
 
 describe('WebSearch', () => {
+  it('reports a refused search provider as blocked, not as a retryable request failure', async () => {
+    // Search always dispatches through the strict dispatcher, so a provider endpoint that
+    // resolves privately is refused by the same connect-time guard WebFetch uses.
+    const refused = await new Promise<unknown>((resolve) => {
+      safeNetworkLookup('127.0.0.1', { all: true }, (error) => resolve(error));
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw Object.assign(new TypeError('fetch failed'), { cause: refused });
+    });
+
+    const { searchTool } = toolsFor(fetchImpl);
+    const result = await searchTool.execute({ query: 'anything' }, context());
+
+    // Every provider is refused, so the aggregate must not invite a retry and must carry the
+    // policy's reason -- it previously reported `retryable: true` and the opaque 'fetch failed'.
+    expect(result.structuredError?.code).toBe('search_all_providers_failed');
+    expect(result.structuredError?.retryable).toBe(false);
+    expect(result.structuredError?.message).toContain('private or special-use address');
+
+    const attempts = result.structuredError?.details?.attempts as Array<{
+      code?: string;
+      retryable?: boolean;
+    }>;
+    expect(attempts.length).toBeGreaterThan(0);
+    expect(attempts.every((attempt) => attempt.code === 'private_network_forbidden')).toBe(true);
+    expect(attempts.every((attempt) => attempt.retryable === false)).toBe(true);
+  });
+
   it('uses the built-in Exa MCP search first without configuration', async () => {
     const fetchImpl = vi
       .fn<(input: string, init?: RequestInit) => Promise<Response>>()

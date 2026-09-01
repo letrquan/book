@@ -6,6 +6,48 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **undici 6 -> 8, with the DNS-rebinding guard re-proven rather than re-asserted.** The major had
+  been pinned since dependabot #84 because `web-policy.test.ts` failed on it, and the failure looked
+  like undici had changed the lookup contract the SSRF defense is built on: the policy's `EACCES`
+  never surfaced and `UND_ERR_INVALID_ARG` came back instead. It had not. The contract is unchanged
+  -- undici 8 still calls the hook, still with `all: true`, and still honours an `EACCES` from it.
+  What broke is interop: `strictWebDispatcher` is an `Agent` from the *npm* undici, and it was being
+  handed to Node's **global** `fetch`, which is Node's own bundled undici. undici 8 requires the new
+  request-handler interface (`onRequestStart`), the bundled one still builds the legacy shape, and
+  the dispatcher rejected the request outright -- `invalid onRequestStart method`, thrown before the
+  lookup hook was ever called. A dispatcher is only consulted by the undici that created it, so
+  `WebFetch`/`WebSearch` now issue their requests through undici's own `fetch` (`undiciWebFetch`),
+  which puts the guard back on the connect path.
+
+  Because the diagnosis says the guard was skipped rather than loosened, the fix is only trustworthy
+  if the guard is shown working: `safeNetworkLookup` now has direct tests for **both** callback
+  shapes -- the `options.all` list form and the single-address `(address, family)` form -- proving a
+  private or special-use address is refused on each and a public one passes through, and the
+  end-to-end test drives a real `Agent` so it fails if undici ever stops consulting the hook. Every
+  one of those tests was confirmed to fail with the address check disabled. `safeNetworkLookup` also
+  now refuses an empty resolution instead of reporting success: the single-address form previously
+  fell back to `''`, handing the connector a destination it had never validated.
+
+  Driving that rebinding case through the real tool surfaced a second defect and it is fixed here
+  too: the refusal was invisible. undici reports a lookup failure as the `cause` of a generic
+  `TypeError: fetch failed`, and `WebFetch` was passing that through as `fetch_failed` with
+  `retryable: true` -- so a connection refused on policy grounds was indistinguishable from a flaky
+  network, and the model was invited to retry something that can never succeed. The refusal is now
+  branded on the error itself, survives undici's wrapping, and comes back as
+  `private_network_forbidden`, `status: blocked`, `retryable: false`, carrying the policy's own
+  sentence: `Connection blocked because <host> resolved to private or special-use address <ip>`.
+  An `EACCES` from anything else is deliberately not claimed as a policy refusal.
+
+  `WebSearch` gets the same treatment, because `postMcp` dispatches through the strict dispatcher
+  unconditionally: a refused provider endpoint no longer aggregates as a retryable
+  `Built-in web search providers are unavailable. exa: fetch failed`. A refused provider still
+  enters the normal provider cooldown -- being blocked on policy grounds is not a free retry.
+
+- **Node.js 22.19 or newer is now required** (previously 22.13). undici 8 declares
+  `engines.node: >=22.19.0`, so the package floor moves with it. CI's low leg is pinned to that
+  exact floor rather than `22.x`: `22.x` resolves to the newest 22, which is why a dependency
+  raising the real floor above the declared one went unnoticed until now.
+
 - **User constraints now survive compaction.** Book's own fidelity harness measured
   `verbatimUserRetention` at **0.0**: both constraints a user opened the conversation with were gone
   from the checkpoint after a single generation. They lived in model-authored episodes, and the

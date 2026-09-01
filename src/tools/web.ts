@@ -1,6 +1,6 @@
 import { DomUtils, parseDocument } from 'htmlparser2';
 import TurndownService from 'turndown';
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { toolFailure, toolSuccess } from './result.js';
@@ -8,6 +8,7 @@ import { resolveToolTimeoutMs } from './timeouts.js';
 import {
   type HostResolver,
   WebPolicyError,
+  connectionBlockedReason,
   resolveHostname,
   safeNetworkLookup,
   validateWebUrl,
@@ -29,6 +30,18 @@ const strictWebDispatcher = new Agent({ connect: { lookup: safeNetworkLookup } }
 type WebFetchFormat = 'markdown' | 'text' | 'html';
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 type BuiltinSearchProviderId = 'exa' | 'parallel';
+
+/**
+ * Fetch through the same undici the dispatcher comes from.
+ *
+ * `strictWebDispatcher` carries the DNS-rebinding guard, and a dispatcher is only consulted by
+ * the undici that created it. Node's global `fetch` is its own bundled undici, which builds
+ * request handlers this package's `Agent` rejects outright (`invalid onRequestStart method`) —
+ * so handing the guard to `globalThis.fetch` fails the request before the lookup hook is ever
+ * called. Routing through undici's own `fetch` keeps the guard on the connect path.
+ */
+const undiciWebFetch: FetchLike = (input, init) =>
+  undiciFetch(input, init as Parameters<typeof undiciFetch>[1]) as unknown as Promise<Response>;
 
 interface BuiltinSearchProvider {
   id: BuiltinSearchProviderId;
@@ -454,6 +467,17 @@ function webPolicyFailure(error: unknown): ToolResult | undefined {
   if (error instanceof WebPolicyError) {
     return toolFailure(error.message, { code: error.code });
   }
+  // The connect-time guard refuses after pre-flight validation has already passed -- a rebinding
+  // answer, or a redirect target that resolves privately. Report the policy's own reason instead
+  // of the `fetch failed` undici wraps it in, and do not invite a retry that cannot succeed.
+  const blockedReason = connectionBlockedReason(error);
+  if (blockedReason) {
+    return toolFailure(blockedReason, {
+      code: 'private_network_forbidden',
+      status: 'blocked',
+      retryable: false,
+    });
+  }
   if (error instanceof CrossOriginRedirectError) {
     return toolFailure(error.message, {
       code: 'cross_origin_redirect',
@@ -702,6 +726,18 @@ function providerRequestFailure(
       details: { provider: provider.id, phase },
     });
   }
+  // `postMcp` always dispatches through `strictWebDispatcher`, so a provider endpoint that
+  // resolves to a private address is refused by the connect-time guard. Report that the same
+  // way WebFetch does: it is a policy decision, not a transient network fault.
+  const blockedReason = connectionBlockedReason(error);
+  if (blockedReason) {
+    return toolFailure(blockedReason, {
+      code: 'private_network_forbidden',
+      status: 'blocked',
+      retryable: false,
+      details: { provider: provider.id, phase },
+    });
+  }
   return toolFailure(
     `${provider.label} ${phase} failed: ${error instanceof Error ? error.message : String(error)}`,
     {
@@ -903,7 +939,9 @@ async function runBuiltinSearchProvider(
 }
 
 function providerCooldownMs(result: ToolResult): number | undefined {
-  if (result.status !== 'error') return undefined;
+  // `blocked` counts: a provider refused on policy grounds will be refused again, so it
+  // earns the same cooldown rather than being retried on every search. `cancelled` does not.
+  if (result.status !== 'error' && result.status !== 'blocked') return undefined;
   const details = result.structuredError?.details;
   if (details?.status === 429) {
     return typeof details.retryAfterMs === 'number'
@@ -1003,8 +1041,7 @@ async function webSearch(
 }
 
 export function createWebTools(dependencies: WebToolDependencies = {}): ToolDefinition[] {
-  const fetchImpl: FetchLike =
-    dependencies.fetch ?? ((input, init) => globalThis.fetch(input, init));
+  const fetchImpl: FetchLike = dependencies.fetch ?? undiciWebFetch;
   const resolver = dependencies.resolveHostname ?? resolveHostname;
   const searchProviderCooldowns = new Map<BuiltinSearchProviderId, number>();
 
