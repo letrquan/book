@@ -718,6 +718,18 @@ function providerRequestFailure(
       details: { provider: provider.id, phase },
     });
   }
+  // `postMcp` always dispatches through `strictWebDispatcher`, so a provider endpoint that
+  // resolves to a private address is refused by the connect-time guard. Report that the same
+  // way WebFetch does: it is a policy decision, not a transient network fault.
+  const blockedReason = connectionBlockedReason(error);
+  if (blockedReason) {
+    return toolFailure(blockedReason, {
+      code: 'private_network_forbidden',
+      status: 'blocked',
+      retryable: false,
+      details: { provider: provider.id, phase },
+    });
+  }
   return toolFailure(
     `${provider.label} ${phase} failed: ${error instanceof Error ? error.message : String(error)}`,
     {
@@ -919,7 +931,9 @@ async function runBuiltinSearchProvider(
 }
 
 function providerCooldownMs(result: ToolResult): number | undefined {
-  if (result.status !== 'error') return undefined;
+  // `blocked` counts: a provider refused on policy grounds will be refused again, so it
+  // earns the same cooldown rather than being retried on every search. `cancelled` does not.
+  if (result.status !== 'error' && result.status !== 'blocked') return undefined;
   const details = result.structuredError?.details;
   if (details?.status === 429) {
     return typeof details.retryAfterMs === 'number'

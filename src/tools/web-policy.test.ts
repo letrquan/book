@@ -125,6 +125,11 @@ describe('web URL policy', () => {
 
     expect(caught).toBeInstanceOf(TypeError);
     expect((caught as { cause?: { code?: string } }).cause?.code).toBe('EACCES');
+    // Pin brand survival through the real undici path, not just a hand-built wrapping:
+    // Node mutates the lookup error before undici wraps it, so any layer that copied
+    // rather than forwarded the object would drop the symbol and silently return the
+    // refusal to reporting itself as a retryable `fetch failed`.
+    expect(connectionBlockedReason(caught)).toContain('private or special-use address');
   });
 
   describe('safeNetworkLookup callback contract', () => {

@@ -38,6 +38,16 @@ All notable changes to this project are documented in this file.
   sentence: `Connection blocked because <host> resolved to private or special-use address <ip>`.
   An `EACCES` from anything else is deliberately not claimed as a policy refusal.
 
+  `WebSearch` gets the same treatment, because `postMcp` dispatches through the strict dispatcher
+  unconditionally: a refused provider endpoint no longer aggregates as a retryable
+  `Built-in web search providers are unavailable. exa: fetch failed`. A refused provider still
+  enters the normal provider cooldown -- being blocked on policy grounds is not a free retry.
+
+- **Node.js 22.19 or newer is now required** (previously 22.13). undici 8 declares
+  `engines.node: >=22.19.0`, so the package floor moves with it. CI's low leg is pinned to that
+  exact floor rather than `22.x`: `22.x` resolves to the newest 22, which is why a dependency
+  raising the real floor above the declared one went unnoticed until now.
+
 - **User constraints now survive compaction.** Book's own fidelity harness measured
   `verbatimUserRetention` at **0.0**: both constraints a user opened the conversation with were gone
   from the checkpoint after a single generation. They lived in model-authored episodes, and the

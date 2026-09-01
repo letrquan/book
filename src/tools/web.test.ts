@@ -297,6 +297,34 @@ describe('WebFetch', () => {
 });
 
 describe('WebSearch', () => {
+  it('reports a refused search provider as blocked, not as a retryable request failure', async () => {
+    // Search always dispatches through the strict dispatcher, so a provider endpoint that
+    // resolves privately is refused by the same connect-time guard WebFetch uses.
+    const refused = await new Promise<unknown>((resolve) => {
+      safeNetworkLookup('127.0.0.1', { all: true }, (error) => resolve(error));
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw Object.assign(new TypeError('fetch failed'), { cause: refused });
+    });
+
+    const { searchTool } = toolsFor(fetchImpl);
+    const result = await searchTool.execute({ query: 'anything' }, context());
+
+    // Every provider is refused, so the aggregate must not invite a retry and must carry the
+    // policy's reason -- it previously reported `retryable: true` and the opaque 'fetch failed'.
+    expect(result.structuredError?.code).toBe('search_all_providers_failed');
+    expect(result.structuredError?.retryable).toBe(false);
+    expect(result.structuredError?.message).toContain('private or special-use address');
+
+    const attempts = result.structuredError?.details?.attempts as Array<{
+      code?: string;
+      retryable?: boolean;
+    }>;
+    expect(attempts.length).toBeGreaterThan(0);
+    expect(attempts.every((attempt) => attempt.code === 'private_network_forbidden')).toBe(true);
+    expect(attempts.every((attempt) => attempt.retryable === false)).toBe(true);
+  });
+
   it('uses the built-in Exa MCP search first without configuration', async () => {
     const fetchImpl = vi
       .fn<(input: string, init?: RequestInit) => Promise<Response>>()
