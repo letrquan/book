@@ -1,6 +1,7 @@
 import { setImmediate as waitForImmediate } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
+import stripAnsi from 'strip-ansi';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { PermissionButtons, toolRiskLevel } from './PermissionButtons.js';
 
@@ -87,7 +88,56 @@ describe('PermissionButtons', () => {
 
     view.stdin.write('\r');
     expect(onResolve).toHaveBeenCalledOnce();
-    expect(onResolve).toHaveBeenCalledWith('always');
+    // `always` carries the rule, because the ladder means it is not always the
+    // exact command.
+    expect(onResolve).toHaveBeenCalledWith({ result: 'always', rule: 'Bash(echo one)' });
+  });
+
+  // The exact rule matches that byte sequence and nothing else, so a user who
+  // pressed "Always allow" to stop being asked was asked again next call.
+  it('steps the Always allow scope on repeated A and writes the chosen rule', async () => {
+    const onResolve = vi.fn();
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-3', name: 'Bash', arguments: { command: 'npm run check' } }}
+          onResolve={onResolve}
+        />,
+      ),
+    );
+
+    view.stdin.write('a'); // arm
+    await waitForImmediate();
+    view.stdin.write('a'); // widen once
+    await waitForImmediate();
+    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Bash(npm run *)');
+    expect(onResolve).not.toHaveBeenCalled();
+
+    view.stdin.write('\r');
+    expect(onResolve).toHaveBeenCalledExactlyOnceWith({
+      result: 'always',
+      rule: 'Bash(npm run *)',
+    });
+  });
+
+  it('wraps back to the exact rule rather than committing one', async () => {
+    const onResolve = vi.fn();
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-4', name: 'Bash', arguments: { command: 'npm run check' } }}
+          onResolve={onResolve}
+        />,
+      ),
+    );
+
+    // Arm, then a full cycle back round to the exact rule.
+    for (let i = 0; i < 4; i++) {
+      view.stdin.write('a');
+      await waitForImmediate();
+    }
+    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Bash(npm run check)');
+    expect(onResolve).not.toHaveBeenCalled();
   });
 
   it('keeps R and S as single-key shortcuts', () => {

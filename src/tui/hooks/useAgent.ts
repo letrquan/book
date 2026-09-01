@@ -7,6 +7,7 @@ import type {
   NestedToolInvocation,
   ToolDefinition,
   ToolResult,
+  PermissionDecision,
   PermissionResult,
   PlanApprovalResult,
   UserQuestionResponse,
@@ -46,6 +47,7 @@ import {
   persistSettingGlobal,
   persistSettingsGlobal,
   persistPermissionRuleLocal,
+  removePermissionRuleLocal,
   persistSkillActivationLocal,
   persistSkillExecutionLocal,
   persistSkillsEnabledLocal,
@@ -355,8 +357,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   }, [ownedProviders]);
 
   const settlePermission = useCallback(
-    (result: PermissionResult, via: string) => {
-      return interactions.settlePermission(result, via);
+    (decision: PermissionResult | PermissionDecision, via: string) => {
+      return interactions.settlePermission(decision, via);
     },
     [interactions],
   );
@@ -1221,8 +1223,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   );
 
   const resolvePermission = useCallback(
-    (result: PermissionResult) => {
-      settlePermission(result, 'resolve');
+    (decision: PermissionResult | PermissionDecision) => {
+      settlePermission(decision, 'resolve');
     },
     [settlePermission],
   );
@@ -1923,6 +1925,27 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [config.workspace],
   );
 
+  // The counterpart to the above, for the /permissions sheet. Without it a rule
+  // was one keystroke to add and a hand-edited JSON file to remove.
+  const removePermissionRule = useCallback(
+    (entry: { list: 'allow' | 'ask' | 'deny'; rule: string }) => {
+      const result = removePermissionRuleLocal(config.workspace, entry.list, entry.rule);
+      if (!result.ok) return result;
+      setLiveConfig((c) => ({
+        ...c,
+        settings: {
+          ...c.settings,
+          permissions: {
+            ...c.settings.permissions,
+            [entry.list]: c.settings.permissions[entry.list].filter((r) => r !== entry.rule),
+          },
+        },
+      }));
+      return result;
+    },
+    [config.workspace],
+  );
+
   const setDefaultPermissionMode = useCallback(
     (nextMode: PermissionMode) => {
       const storedMode = nextMode === 'accept-edits' ? 'acceptEdits' : nextMode;
@@ -2013,6 +2036,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     },
 
     persistPermissionRule,
+    removePermissionRule,
     setDefaultPermissionMode,
   };
 }

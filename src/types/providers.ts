@@ -3,7 +3,14 @@ import type { Message, ProviderMessageMetadata, Usage } from './messages.js';
 import type { AgentTask, PermissionMode, RetryPhase } from './runtime.js';
 import type { CompactResult } from './sessions.js';
 import type { AgentTerminalOutcome } from './terminal.js';
-import type { PlanApprovalResult, ToolCall, ToolResult, UserQuestionHandler } from './tools.js';
+import type {
+  PermissionDecision,
+  PermissionResult,
+  PlanApprovalResult,
+  ToolCall,
+  ToolResult,
+  UserQuestionHandler,
+} from './tools.js';
 
 export type ProviderContentPart =
   | { type: 'text'; text: string }
@@ -88,7 +95,7 @@ export interface AgentLoopCallbacks {
   onDone: () => void;
   /** Final runtime outcome. Emitted once; onError remains diagnostic only. */
   onTerminal?: (outcome: AgentTerminalOutcome) => void;
-  onPermissionRequired: (toolCall: ToolCall) => Promise<'allow' | 'deny' | 'always'>;
+  onPermissionRequired: (toolCall: ToolCall) => Promise<PermissionResult | PermissionDecision>;
   /** Reads the host's current permission mode while an agent loop is active. */
   getMode?: () => PermissionMode;
   /** @deprecated use onUsage for real token counts from the API. */

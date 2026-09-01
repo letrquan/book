@@ -338,3 +338,28 @@ export function persistPermissionRuleLocal(
   perms[list] = arr;
   return persistSettingLocal(workspace, 'permissions', perms);
 }
+
+/**
+ * Remove one permission rule from the local layer.
+ *
+ * The counterpart to {@link persistPermissionRuleLocal}, which had none: a rule
+ * went in on one keystroke at a tool prompt and came out only by hand-editing
+ * `.book/settings.local.json`, since `book config unset permissions.allow`
+ * drops the whole list. A rule the user cannot see themselves removing is a
+ * rule they cannot safely grant.
+ *
+ * Only the local layer is writable here, so a rule inherited from the project
+ * or user-global layer reports `notLocal` rather than silently doing nothing.
+ */
+export function removePermissionRuleLocal(
+  workspace: string,
+  list: 'allow' | 'ask' | 'deny',
+  rule: string,
+): { ok: boolean; error?: string; notLocal?: boolean } {
+  const existing = readSettingsLocal(workspace);
+  const perms = (existing.permissions ?? {}) as Record<string, unknown[]>;
+  const arr = Array.isArray(perms[list]) ? [...(perms[list] as unknown[])] : [];
+  if (!arr.includes(rule)) return { ok: false, notLocal: true };
+  perms[list] = arr.filter((entry) => entry !== rule);
+  return persistSettingLocal(workspace, 'permissions', perms);
+}

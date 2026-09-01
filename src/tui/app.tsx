@@ -91,6 +91,8 @@ import {
   isShortcutsToggleKey,
   type TranscriptMode,
 } from './tool-presentation.js';
+import { permissionResultOf } from '../permissions.js';
+import { PermissionsPanel } from './components/PermissionsPanel.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
 import type { InteractiveAssets } from './interactive-assets.js';
@@ -348,6 +350,7 @@ export function App({
     setStartupAnimation,
     refreshMemoryContext,
     persistPermissionRule,
+    removePermissionRule,
     setDefaultPermissionMode,
     turnDurationMs,
     retryPhase,
@@ -2002,6 +2005,25 @@ export function App({
   // Track input changes for command menu filtering — now handled inside InputBar.
   // handleGlobalShortcut remains for Ctrl+/ keyboard shortcut reference.
 
+  // Hoisted so the composer and the interactive /permissions sheet agree on who
+  // holds the keyboard, instead of restating the same fifteen flags twice.
+  const modalOwnsInput = ownsModalInput(
+    pendingPermission ?? childPermission ?? childQuestion,
+    pendingPlanApproval,
+    showModelPicker,
+    showSessionPicker,
+    pendingUserQuestion,
+    showEffortPicker,
+    showThemePicker,
+    showRewindPicker,
+    showConfigPicker,
+    showAgentProfilePicker,
+    showPermissionModePicker,
+    showSkills,
+    showMcpApproval,
+    pendingElicitation,
+  );
+
   const pickerOwnsTranscript =
     showModelPicker ||
     showEffortPicker ||
@@ -2301,71 +2323,14 @@ export function App({
                   paddingX={1}
                 >
                   <PanelHeading title="Permission Mode" theme={theme} />
-                  <Box flexDirection="column">
-                    <HelpRow label="Current Mode" description={mode} theme={theme} />
-                    <HelpRow
-                      label="Modes"
-                      description="default, auto, plan, accept-edits, dontAsk, bypassPermissions"
-                      theme={theme}
-                    />
-                    <HelpRow label="Switch" description="Alt+M or Shift+Tab" theme={theme} />
-                  </Box>
-                  <Box flexDirection="column">
-                    <Text color={theme.subtle} dimColor>
-                      Permission rules (add via the "Always allow" option at tool prompts):
-                    </Text>
-                    <Text color={theme.subtle} dimColor>
-                      {' '}
-                      allow:
-                    </Text>
-                    {liveConfig.settings.permissions.allow.length === 0 ? (
-                      <Text color={theme.subtle} dimColor>
-                        {' '}
-                        (none)
-                      </Text>
-                    ) : (
-                      liveConfig.settings.permissions.allow.map((r) => (
-                        <Text key={r} color={theme.subtle} dimColor>
-                          {' '}
-                          {r}
-                        </Text>
-                      ))
-                    )}
-                    <Text color={theme.subtle} dimColor>
-                      {' '}
-                      ask:
-                    </Text>
-                    {liveConfig.settings.permissions.ask.length === 0 ? (
-                      <Text color={theme.subtle} dimColor>
-                        {' '}
-                        (none)
-                      </Text>
-                    ) : (
-                      liveConfig.settings.permissions.ask.map((r) => (
-                        <Text key={r} color={theme.subtle} dimColor>
-                          {' '}
-                          {r}
-                        </Text>
-                      ))
-                    )}
-                    <Text color={theme.subtle} dimColor>
-                      {' '}
-                      deny:
-                    </Text>
-                    {liveConfig.settings.permissions.deny.length === 0 ? (
-                      <Text color={theme.subtle} dimColor>
-                        {' '}
-                        (none)
-                      </Text>
-                    ) : (
-                      liveConfig.settings.permissions.deny.map((r) => (
-                        <Text key={r} color={theme.subtle} dimColor>
-                          {' '}
-                          {r}
-                        </Text>
-                      ))
-                    )}
-                  </Box>
+                  <PermissionsPanel
+                    mode={mode}
+                    permissions={liveConfig.settings.permissions}
+                    onRemove={removePermissionRule}
+                    active={!modalOwnsInput}
+                    terminalWidth={termWidth}
+                    screenReader={screenReader}
+                  />
                 </Box>
               )}
               {pendingPlanApproval ? (
@@ -2494,8 +2459,13 @@ export function App({
                 <PermissionButtons
                   key={childPermission.request.id}
                   toolCall={childPermission.request.toolCall}
-                  onResolve={(result) =>
-                    void managedAgents.resolvePermission(childPermission.request.id, result)
+                  onResolve={(decision) =>
+                    void managedAgents.resolvePermission(
+                      childPermission.request.id,
+                      // A managed agent persists rules through its own manager,
+                      // which has no scope ladder, so only the result travels.
+                      permissionResultOf(decision),
+                    )
                   }
                   screenReader={screenReader}
                 />
@@ -2975,22 +2945,11 @@ export function App({
                 return true;
               }}
               inputSuppressed={
-                ownsModalInput(
-                  pendingPermission ?? childPermission ?? childQuestion,
-                  pendingPlanApproval,
-                  showModelPicker,
-                  showSessionPicker,
-                  pendingUserQuestion,
-                  showEffortPicker,
-                  showThemePicker,
-                  showRewindPicker,
-                  showConfigPicker,
-                  showAgentProfilePicker,
-                  showPermissionModePicker,
-                  showSkills,
-                  showMcpApproval,
-                  pendingElicitation,
-                ) ||
+                modalOwnsInput ||
+                // The rules sheet is a list, not a page of text: while it is up
+                // it takes the arrows, so the composer must not also read them
+                // as history navigation. Esc closes it, as it does every panel.
+                showPermissions ||
                 transcriptMode === 'detailed' ||
                 managedAgents.surface === 'tasks' ||
                 detailTaskPickerOpen

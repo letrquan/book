@@ -1,3 +1,4 @@
+import { permissionResultOf } from '../permissions.js';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -1043,7 +1044,9 @@ describe('AgentManager lifecycle', () => {
           name: 'Read',
           arguments: { file_path: `${prompt}.txt` },
         });
-        decisions.set(prompt, decision);
+        // A managed agent's approver never widens a scope, so the answer is
+        // still the bare result; read it through the same accessor the loop uses.
+        decisions.set(prompt, permissionResultOf(decision));
         return history;
       },
     });

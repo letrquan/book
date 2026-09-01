@@ -145,6 +145,25 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **"Always allow" is worth pressing, and a rule can be taken back.** For a shell command the rule
+  it wrote was the exact command string, so `Bash(npm run check)` matched that byte sequence and
+  nothing else: a user who pressed it to stop being asked was asked again on the very next call.
+  `A` now arms the button and each further `A` widens the rule it will write — `Bash(npm run *)`,
+  then `Bash(npm *)` — wrapping back to the exact one, with the pattern on the button and a caption
+  when the scope is broader than the command. Nothing is committed until Enter. Book declines to
+  offer a widening for a command that already chains or redirects (`&&`, `|`, `>`, backticks, `$`),
+  because `*` crosses those and the user would be generalizing from an example whose shape they
+  cannot see repeated. The chosen rule travels with the decision (`PermissionDecision`), so the
+  loop persists what the user picked instead of re-deriving the exact one; approvers that cannot
+  widen a scope keep returning the bare result.
+
+  `/permissions` was a static list captioned "add via the Always allow option at tool prompts" —
+  accurate, and the whole problem: a rule went in on one keystroke and came out only by
+  hand-editing `.book/settings.local.json`, since `book config unset permissions.allow` drops the
+  whole list. It now selects with the arrows and removes with `x`, reports when a rule comes from a
+  layer it cannot write, and takes the keyboard while it is open so the arrows do not also scrub
+  input history.
+
 - **The composer has terminal editing keys again.** It dropped every Ctrl chord, so Ctrl+A, Ctrl+E,
   Ctrl+W, Ctrl+K and Alt+Backspace all did nothing and fixing a typo halfway through a long prompt
   meant holding Backspace — slower still in a language where one character takes several keystrokes

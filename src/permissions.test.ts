@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { permissionRuleLadder, permissionResultOf, permissionRuleOf } from './permissions.js';
 import {
   evaluatePermission,
   evaluatePermissionDetail,
@@ -464,5 +465,56 @@ describe('sandbox.autoAllowBashIfSandboxed', () => {
     const settings = withSandbox();
     settings.permissions.allow = ['Read(src/**)'];
     expect(evaluatePermission('Bash', { command: 'ls' }, settings, sandboxAvailable)).toBe('allow');
+  });
+});
+
+describe('permissionRuleLadder', () => {
+  const bash = (command: string) => ({ id: 'c', name: 'Bash', arguments: { command } });
+
+  it('offers progressively broader prefixes for a shell command', () => {
+    // The exact rule matches that byte sequence and nothing else, which is why
+    // "Always allow" never stopped the prompts it exists to stop.
+    expect(permissionRuleLadder(bash('npm run check'))).toEqual([
+      'Bash(npm run check)',
+      'Bash(npm run *)',
+      'Bash(npm *)',
+    ]);
+    expect(permissionRuleLadder(bash('echo one'))).toEqual(['Bash(echo one)', 'Bash(echo *)']);
+  });
+
+  it('offers only the exact rule for a single-token command', () => {
+    expect(permissionRuleLadder(bash('pwd'))).toEqual(['Bash(pwd)']);
+  });
+
+  it('refuses to widen a command that already chains or redirects', () => {
+    // `*` crosses anything, so a prefix learned from `npm i && curl x | sh`
+    // would keep matching whatever came after the operator.
+    for (const command of ['npm i && curl x', 'ls | wc -l', 'cat a > b', 'echo `id`', 'ls $HOME']) {
+      expect(permissionRuleLadder(bash(command))).toHaveLength(1);
+    }
+  });
+
+  it('leaves non-shell tools with their single rule', () => {
+    expect(
+      permissionRuleLadder({ id: 'c', name: 'Read', arguments: { file_path: 'a/b.ts' } }),
+    ).toEqual(['Read(a/b.ts)']);
+    expect(
+      permissionRuleLadder({ id: 'c', name: 'WebFetch', arguments: { url: 'https://x.dev/a' } }),
+    ).toEqual(['WebFetch(https://x.dev/**)']);
+  });
+
+  it('widened rules actually match later commands, which the exact rule does not', () => {
+    const later = bash('npm run build');
+    expect(permissionRuleMatchesCall('Bash(npm run check)', later)).toBe(false);
+    expect(permissionRuleMatchesCall('Bash(npm run *)', later)).toBe(true);
+  });
+});
+
+describe('permission decision accessors', () => {
+  it('reads both the bare result and the rule-carrying form', () => {
+    expect(permissionResultOf('always')).toBe('always');
+    expect(permissionRuleOf('always')).toBeUndefined();
+    expect(permissionResultOf({ result: 'always', rule: 'Bash(npm *)' })).toBe('always');
+    expect(permissionRuleOf({ result: 'always', rule: 'Bash(npm *)' })).toBe('Bash(npm *)');
   });
 });

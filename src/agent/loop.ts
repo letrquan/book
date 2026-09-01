@@ -32,8 +32,10 @@ import {
 import { resolveContextLimit } from '../models.js';
 import {
   evaluatePermissionDetail,
+  permissionResultOf,
   permissionRuleForToolCall,
   permissionRuleMatchesCall,
+  permissionRuleOf,
 } from '../permissions.js';
 import { runHooks } from '../hooks.js';
 import { canonicalToolName } from '../tools/aliases.js';
@@ -363,12 +365,17 @@ export async function runAgentLoop(
       skillRegistry.requestConsent(skillName, 'user');
       const verdict = evaluatePermissionDetail(call.name, call.arguments, config.settings);
       let permission: 'allow' | 'deny' | 'always' | undefined;
+      let chosenRule: string | undefined;
       if (verdict.decision === 'allow') permission = 'allow';
       else if (verdict.decision === 'deny') permission = 'deny';
-      else if (mode !== 'dontAsk') permission = await callbacks.onPermissionRequired(call);
+      else if (mode !== 'dontAsk') {
+        const decision = await callbacks.onPermissionRequired(call);
+        permission = permissionResultOf(decision);
+        chosenRule = permissionRuleOf(decision);
+      }
       approved = permission === 'allow' || permission === 'always';
       if (permission === 'always' && callbacks.onPersistPermissionRule) {
-        callbacks.onPersistPermissionRule(permissionRuleForToolCall(call));
+        callbacks.onPersistPermissionRule(chosenRule ?? permissionRuleForToolCall(call));
       }
     }
     if (!approved) {
@@ -1613,6 +1620,7 @@ export async function runAgentLoop(
           const autoApproved = effectiveMode === 'accept-edits' && isFileMutatingTool(canonName);
           if (!autoApproved) {
             let permission: 'allow' | 'deny' | 'always' | undefined;
+            let chosenRule: string | undefined;
             if (
               (forceSkillPermission || effectiveMode !== 'dontAsk') &&
               !persistentBackgroundShell
@@ -1622,7 +1630,9 @@ export async function runAgentLoop(
               else if (verdict.decision === 'deny') permission = 'deny';
             }
             if (permission === undefined && effectiveMode !== 'dontAsk') {
-              permission = await callbacks.onPermissionRequired(call);
+              const decision = await callbacks.onPermissionRequired(call);
+              permission = permissionResultOf(decision);
+              chosenRule = permissionRuleOf(decision);
             }
             permission ??= 'deny';
             emitHarnessRuntimeEvent('permission_resolved', {
@@ -1650,7 +1660,7 @@ export async function runAgentLoop(
             }
             if (permission === 'always' && !persistentBackgroundShell) {
               log.debug('permission always', { tool: canonName });
-              const rule = permissionRuleForToolCall(call);
+              const rule = chosenRule ?? permissionRuleForToolCall(call);
               approveAllRules.push(rule);
               if (callbacks.onPersistPermissionRule) {
                 callbacks.onPersistPermissionRule(rule);

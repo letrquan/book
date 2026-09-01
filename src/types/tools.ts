@@ -7,6 +7,20 @@ import type { AgentRunContext } from './runs.js';
 
 export type PermissionResult = 'allow' | 'deny' | 'always';
 
+/**
+ * An `always` answer that names the rule to persist.
+ *
+ * The rule was previously derived from the call alone, which meant a shell
+ * approval could only ever be written as the exact command string. An approver
+ * that lets the user widen the scope has to be able to say which rule they
+ * picked; approvers that do not simply keep returning the bare result.
+ */
+export interface PermissionDecision {
+  result: PermissionResult;
+  /** Overrides the derived rule when the result is `always`. */
+  rule?: string;
+}
+
 /** Why a submitted plan was never applied when the host could not approve it. */
 export type PlanNotAppliedReason =
   'approval_unavailable' | 'approval_declined' | 'approval_cancelled' | 'invalid_approval_response';
