@@ -127,8 +127,12 @@ function cuePattern(cue: string): RegExp {
  * they share every word that is not the polarity.
  */
 const TOPIC_STOPWORDS = new Set([
-  ...STRONG_CUES.flatMap((cue) => cue.split(/\s+/)),
-  ...WEAK_CUES.flatMap((cue) => cue.split(/\s+/)),
+  // Normalized exactly as `topicTokens` normalizes what it compares against.
+  // Splitting the raw cue leaves "don't" in the set while a token is "don" plus
+  // "t", so the polarity stem leaks into the topic and depresses overlap below
+  // the supersession threshold for every contraction cue.
+  ...STRONG_CUES.flatMap((cue) => normalizeForId(cue).split(' ')),
+  ...WEAK_CUES.flatMap((cue) => normalizeForId(cue).split(' ')),
   'only',
   'required',
   'the',
@@ -184,6 +188,12 @@ const TOPIC_STOPWORDS = new Set([
 /** A user turn whose prose the user actually wrote. */
 function isUserAuthored(message: Message): boolean {
   if (message.role !== 'user') return false;
+  // A resolved slash-command body and a delegated agent's task prompt both arrive
+  // as `role: 'user'` prose. Neither is the user's own words: the first is
+  // repository- or Book-authored, the second was written by the delegating model.
+  // Admitting them let a checked-in `.book/commands/*.md` plant a rule this ledger
+  // then quoted back as verbatim user intent and the fitter was forbidden to evict.
+  if (message.derivedContent) return false;
   if (message.kind && message.kind !== 'conversation') return false;
   // A user-role message carrying tool traffic or a delivered agent notification
   // is transport, not authorship.
@@ -200,11 +210,16 @@ function isUserAuthored(message: Message): boolean {
  * that still reads as a rule on its own.
  */
 function splitSentences(text: string): string[] {
-  return text
-    .split(/\r?\n+/)
-    .flatMap((line) => line.split(/(?<=[.!?])\s+/))
-    .map((piece) => piece.replace(/^\s*(?:[-*+]|\d+[.)])\s*/, '').trim())
-    .filter(Boolean);
+  return (
+    text
+      .split(/\r?\n+/)
+      .flatMap((line) => line.split(/(?<=[.!?])\s+/))
+      // The trailing `\s+` is load-bearing: without it `\d+[.)]` eats the `3.` of
+      // "3.11 is required" and `[-*+]` eats the `-` of "-Wall must be passed",
+      // silently rewriting text this module then quotes back as the user's verbatim words.
+      .map((piece) => piece.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '').trim())
+      .filter(Boolean)
+  );
 }
 
 function classify(sentence: string): CarriedConstraint['strength'] | undefined {
@@ -367,6 +382,11 @@ function markSupersessions(constraints: CarriedConstraint[]): void {
   }
 }
 
+/** Serialized cost of a ledger, for callers that must budget around it. */
+export function carriedLedgerTokens(ledger: CarriedLedger): number {
+  return ledgerTokens(ledger);
+}
+
 function ledgerTokens(ledger: CarriedLedger): number {
   return Math.ceil(JSON.stringify(ledger).length / 4);
 }
@@ -379,11 +399,14 @@ function ledgerTokens(ledger: CarriedLedger): number {
  * from letting the ledger crowd out the rest of the checkpoint.
  */
 export function carriedLedgerBudget(checkpointBudget: number): number {
-  return Math.max(
-    64,
-    Math.floor(
-      Math.min(CARRIED_LEDGER_MAX_TOKENS, checkpointBudget * CARRIED_LEDGER_BUDGET_FRACTION),
-    ),
+  // There is deliberately no absolute floor. One used to raise the result to 64
+  // tokens, which on a small checkpoint budget out-ranked the fractional ceiling
+  // it is paired with -- a budget of 100 yielded 64, two thirds of the whole
+  // checkpoint, in a field `fitCheckpoint` may not evict from. A ledger squeezed
+  // to a few tokens is not a failure mode: `capCarriedLedger` shortens a lone
+  // over-budget entry rather than returning nothing.
+  return Math.floor(
+    Math.min(CARRIED_LEDGER_MAX_TOKENS, checkpointBudget * CARRIED_LEDGER_BUDGET_FRACTION),
   );
 }
 
@@ -402,17 +425,24 @@ export function carriedLedgerBudget(checkpointBudget: number): number {
  */
 export function capCarriedLedger(ledger: CarriedLedger, budgetTokens: number): CarriedLedger {
   let constraints = ledger.constraints.map((entry) => ({ ...entry }));
-  let dropped = ledger.droppedCount ?? 0;
+  // Counts what this capping dropped, not what every previous one did. Seeding
+  // from `ledger.droppedCount` compounded: each generation re-extracts the rules
+  // whose turns are still in the window, merge restores the ones the last cap
+  // evicted, and this cap evicts them again -- so the same handful of lost rules
+  // was re-counted every generation and the disclosure grew without bound.
+  let dropped = 0;
 
   const fits = (): boolean => {
+    // Length alone settles it, and settling it here matters: `ledgerTokens`
+    // serializes the whole ledger, so consulting it once per eviction is
+    // quadratic in bytes when extraction produced hundreds of candidates.
+    if (constraints.length > CARRIED_LEDGER_MAX_ENTRIES) return false;
     const candidate: CarriedLedger = {
       version: 1,
       constraints,
       ...(dropped ? { droppedCount: dropped } : {}),
     };
-    return (
-      constraints.length <= CARRIED_LEDGER_MAX_ENTRIES && ledgerTokens(candidate) <= budgetTokens
-    );
+    return ledgerTokens(candidate) <= budgetTokens;
   };
 
   const tiers: Array<(entry: CarriedConstraint) => boolean> = [

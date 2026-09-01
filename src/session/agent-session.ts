@@ -462,6 +462,7 @@ export class AgentSession {
             userFileObservations: userMessage.fileObservations,
             userAttachments: userMessage.attachments,
             userMessageKind: userMessage.kind,
+            userMessageDerived: userMessage.derivedContent,
             resolveAttachment: request.timelineStore?.readImageAttachment
               ? (attachment) =>
                   request.timelineStore!.readImageAttachment!(request.sessionId, attachment)
@@ -715,6 +716,10 @@ export class AgentSession {
         id: request.userMessage.id,
         content: request.displayMessage,
         contextContent: request.userMessage.contextContent,
+        // Persisted explicitly: this record is written field by field, so without
+        // it a resumed session forgets that the turn was a resolved command body
+        // and the carried ledger would start treating it as the user's own words.
+        derivedContent: request.userMessage.derivedContent,
         kind: request.userMessage.kind ?? 'conversation',
         agentNotifications: request.userMessage.agentNotifications,
         attachments: request.userMessage.attachments,

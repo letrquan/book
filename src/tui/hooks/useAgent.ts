@@ -755,6 +755,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       const createUserMessage = () => {
         const message = makeMessage('user', userMessage, messageOptions?.contextMessage, true);
         message.kind = messageOptions?.kind ?? 'conversation';
+        // A command context means `userMessage` is a resolved command body -- which for a
+        // project command is repository-authored text, and for a builtin is Book's own.
+        message.derivedContent = commandContext ? true : undefined;
         message.agentNotifications = messageOptions?.agentNotifications;
         message.attachments = messageOptions?.attachments;
         activeUserMessage = message;

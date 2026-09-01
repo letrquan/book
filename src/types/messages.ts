@@ -119,6 +119,13 @@ export interface Message {
   /** Whether this message is included in provider and compaction context. */
   includeInContext: boolean;
   kind?: 'conversation' | 'checkpoint' | 'local' | 'agent-notification';
+  /**
+   * The content was produced by resolving something -- a slash command's body, a
+   * delegated task prompt -- rather than typed by the user. The role still reads
+   * `user` because that is the turn's position in the conversation, so anything
+   * that means "the user's own words" must check this too.
+   */
+  derivedContent?: boolean;
   /** Structured display data for automatically delivered child completions. */
   agentNotifications?: AgentNotificationDisplay[];
   toolCalls?: ToolCall[];

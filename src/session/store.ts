@@ -491,6 +491,7 @@ export class SessionStore {
         reasoningContent?: string;
         providerMetadata?: Message['providerMetadata'];
         contextContent?: string;
+        derivedContent?: boolean;
         complete?: boolean;
         toolCalls?: Message['toolCalls'];
         toolResults?: PersistedToolResult[];
@@ -669,6 +670,7 @@ export class SessionStore {
           role: 'user',
           content: data.content ?? '',
           contextContent: data.contextContent,
+          derivedContent: data.derivedContent,
           includeInContext: data.includeInContext ?? true,
           kind: (data.kind as Message['kind']) ?? 'conversation',
           agentNotifications: data.agentNotifications,

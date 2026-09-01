@@ -126,6 +126,8 @@ export async function runAgentLoop(
     userAttachments?: Message['attachments'];
     resolveAttachment?: (attachment: ImageAttachment) => Promise<Uint8Array> | Uint8Array;
     userMessageKind?: Message['kind'];
+    /** The prompt was resolved from a command or delegated, not typed by the user. */
+    userMessageDerived?: boolean;
     /** Synthetic host notifications bypass user-authored prompt hooks and memory capture. */
     skipUserPromptHooks?: boolean;
     /** Host identity for each streamed assistant turn. */
@@ -436,6 +438,7 @@ export async function runAgentLoop(
     contextContent: effectivePrompt === displayPrompt ? undefined : effectivePrompt,
     includeInContext: true,
     kind: options?.userMessageKind ?? 'conversation',
+    derivedContent: options?.userMessageDerived ? true : undefined,
     fileObservations: options?.userFileObservations,
     attachments: options?.userAttachments,
     timestamp: options?.userMessageTimestamp ?? Date.now(),

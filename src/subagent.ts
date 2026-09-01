@@ -122,6 +122,8 @@ export async function runSubagent(
         : baseCallbacks,
       'bypassPermissions', // subagents run with bypass to avoid interactive prompts
       {
+        // The task prompt came from the delegating model, not from a person.
+        userMessageDerived: true,
         signal: options?.signal,
         isNewSession: true,
         isSubagent: true,

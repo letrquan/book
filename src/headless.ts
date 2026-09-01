@@ -682,6 +682,10 @@ export async function runHeadless(
         id: runId,
         role: 'user',
         content: prompt,
+        // With a command context, `prompt` is a resolved command body, not typed
+        // input -- repository-authored for a project command. Marking it keeps
+        // print and SDK runs on the same footing as the TUI.
+        derivedContent: commandContext ? true : undefined,
         includeInContext: true,
         kind: 'conversation',
         timestamp: Date.now(),
