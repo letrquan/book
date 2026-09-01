@@ -387,9 +387,16 @@ describe('tool cancellation and timeout', () => {
       },
     });
 
+    // The deadline comes from the operator override rather than a `timeout`
+    // argument: only a tool that publishes `timeout` lets a caller set the
+    // budget that way, and this double does not.
     const result = await registry.execute(
-      { id: 'wait-1', name: 'Wait', arguments: { timeout: 5 } },
-      { workspaceRoot: dir, env: {}, signal: parent.signal },
+      { id: 'wait-1', name: 'Wait', arguments: {} },
+      {
+        workspaceRoot: dir,
+        env: { BOOK_TOOL_TIMEOUT_MS: '5' },
+        signal: parent.signal,
+      },
     );
 
     expect(result.structuredError?.message).toMatch(/Tool timeout/);
@@ -449,10 +456,10 @@ describe('tool cancellation and timeout', () => {
     });
 
     const result = await registry.execute(
-      { id: 'parent', name: 'NestedWait', arguments: { timeout: 5 } },
+      { id: 'parent', name: 'NestedWait', arguments: {} },
       {
         workspaceRoot: dir,
-        env: {},
+        env: { BOOK_TOOL_TIMEOUT_MS: '5' },
         nestedToolObserver: {
           onToolCall: (invocation) => events.push(`call:${invocation.traceId}`),
           onToolResult: (traceId, nestedResult) =>

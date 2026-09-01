@@ -10,7 +10,12 @@ import {
 import { ShellJobManager, terminateForegroundProcess } from '../jobs/shell-manager.js';
 import { resolveWorkspacePath } from './path-utils.js';
 import { toolFailure, toolSuccess } from './result.js';
-import { MAX_TOOL_TIMEOUT_MS, resolveToolTimeoutMs, toolTimeoutCeilingMs } from './timeouts.js';
+import {
+  MAX_SAFE_TIMEOUT_MS,
+  MAX_TOOL_TIMEOUT_MS,
+  resolveToolTimeoutMs,
+  toolTimeoutCeilingMs,
+} from './timeouts.js';
 
 /**
  * Five minutes, not the registry's two. A coding agent's most common long
@@ -22,6 +27,26 @@ const DEFAULT_BASH_TIMEOUT_MS = 300_000;
 const MAX_FOREGROUND_BUFFER = 1024 * 1024 * 10;
 /** How long a killed command's pipes are given to deliver their final chunk. */
 const STDIO_DRAIN_GRACE_MS = 500;
+/** Per-stream cap when reporting output that already blew the buffer limit. */
+const OVERFLOW_STREAM_TAIL = 64 * 1024;
+
+function tail(stream: string): string {
+  return stream.length <= OVERFLOW_STREAM_TAIL ? stream : stream.slice(-OVERFLOW_STREAM_TAIL);
+}
+
+/**
+ * A killed command is judged on whatever it managed to say, and both streams
+ * count: a build that dies mid-run usually leaves its only clue on stderr. They
+ * are labelled rather than concatenated, because the two are written on
+ * independent schedules and gluing them together presents a timeline that never
+ * happened.
+ */
+function labelStreams(stdout: string, stderr: string): string {
+  if (!stdout && !stderr) return '(no output was captured before the command was killed)';
+  if (!stderr) return stdout;
+  if (!stdout) return stderr;
+  return `--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`;
+}
 const SENSITIVE_ENV_NAME =
   /(^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASS(?:WORD)?|CREDENTIALS?|AUTH|COOKIE|SESSION|PRIVATE_?KEY|DATABASE_URL|CONNECTION_STRING)(_|$)/i;
 
@@ -159,8 +184,21 @@ async function bashForeground(
   const built = buildEffectiveCommand(args, ctx);
   if (!built) return fail('command must be a non-empty string');
   if (built.error) return fail(built.error);
+  // Refused rather than clamped. The schema's static maximum is validated, but
+  // an operator's lower BOOK_TOOL_TIMEOUT_MS is not in the schema, so a value
+  // inside the published range can still be over the limit in force here.
+  // Quietly shrinking it is the failure this change set out to remove: the
+  // model would believe it had raised a deadline it had not.
+  const requestedTimeout = readNumber(args, 'timeout');
+  const ceiling = toolTimeoutCeilingMs(ctx.env);
+  if (requestedTimeout !== undefined && requestedTimeout > ceiling) {
+    return fail(
+      `timeout ${requestedTimeout}ms exceeds the ${ceiling}ms limit in force here (BOOK_TOOL_TIMEOUT_MS). ` +
+        `Re-run with a timeout at or below ${ceiling}ms, or with run_in_background: true and poll BashOutput.`,
+    );
+  }
   const timeout = resolveToolTimeoutMs({
-    requested: args.timeout,
+    requested: requestedTimeout,
     env: ctx.env,
     fallback: DEFAULT_BASH_TIMEOUT_MS,
   });
@@ -206,12 +244,7 @@ async function bashForeground(
     // They are labelled rather than concatenated, because the two are written
     // on independent schedules and gluing them together presents the model with
     // a timeline that never happened.
-    const capturedOutput = () => {
-      if (!stdout && !stderr) return '(no output was captured before the command was killed)';
-      if (!stderr) return stdout;
-      if (!stdout) return stderr;
-      return `--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`;
-    };
+    const capturedOutput = () => labelStreams(stdout, stderr);
     const timer = setTimeout(() => {
       timedOut = true;
       // Wait for the pipes as well as the process. On POSIX the tree teardown
@@ -222,7 +255,6 @@ async function bashForeground(
       // Built after termination settles rather than at kill time, so the result
       // carries that flush.
       void finish(() => {
-        const ceiling = toolTimeoutCeilingMs(ctx.env);
         return toolFailure(
           `Command was killed after ${timeout}ms; it was still running, it did not fail.`,
           {
@@ -267,8 +299,15 @@ async function bashForeground(
       if (stdout.length + stderr.length <= MAX_FOREGROUND_BUFFER || bufferExceeded) return;
       bufferExceeded = true;
       termination ??= terminateForegroundProcess(proc);
+      // Bounded tails, not the whole buffer. This path fires at the 10MB cap,
+      // and composing both streams in full would allocate a second copy of it
+      // exactly when the process is already at its output ceiling — and then
+      // write that copy to the artifact file.
       void finish(
-        fail(`Command output exceeded ${MAX_FOREGROUND_BUFFER} characters`, capturedOutput()),
+        fail(
+          `Command output exceeded ${MAX_FOREGROUND_BUFFER} characters`,
+          labelStreams(tail(stdout), tail(stderr)),
+        ),
       );
     };
 
@@ -303,7 +342,12 @@ async function bashBackground(
   // hidden from the model. Now that Bash publishes it as the foreground
   // deadline, honouring it here would silently put a kill timer on a job the
   // model backgrounded precisely so it could outlive one.
-  const requestedRuntime = readNumber(args, 'max_runtime_ms');
+  // Clamped as well as validated: `setTimeout` rewrites anything past the
+  // 32-bit ceiling to 1ms, so an unguarded 30-day runtime would kill a
+  // long-horizon job moments after it started and report its deadline as fired.
+  const requested = readNumber(args, 'max_runtime_ms');
+  const requestedRuntime =
+    requested === undefined ? undefined : Math.min(requested, MAX_SAFE_TIMEOUT_MS);
   try {
     const shell = await manager(ctx).start({
       command: built.command,
@@ -421,7 +465,8 @@ export const shellTools: ToolDefinition[] = [
         max_runtime_ms: {
           type: 'number',
           minimum: 1,
-          description: 'Optional maximum runtime for a background command.',
+          maximum: MAX_SAFE_TIMEOUT_MS,
+          description: `Optional maximum runtime for a background command, in milliseconds (maximum ${MAX_SAFE_TIMEOUT_MS}, about 24 days). Omit it to let the job run until it exits or is killed.`,
         },
         title: { type: 'string', description: 'Short label shown in the background job panel.' },
       },

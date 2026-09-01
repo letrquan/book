@@ -171,6 +171,21 @@ describe('Bash shell tools', () => {
     expect(result.structuredError?.remediation).toMatch(/run_in_background/);
   });
 
+  // The schema's static maximum is validated upstream, but an operator's lower
+  // BOOK_TOOL_TIMEOUT_MS is not in the schema, so a value inside the published
+  // range can still be over the limit in force. Shrinking it quietly is the
+  // failure this whole change set out to remove.
+  it('refuses a timeout over the operator limit instead of quietly shrinking it', async () => {
+    const c = { ...ctx(), workspaceRoot: process.cwd(), env: { BOOK_TOOL_TIMEOUT_MS: '30000' } };
+    const command = nodeCommand('over-ceiling.cjs', `console.log('never-runs');\n`);
+
+    const result = await bash.execute({ command, timeout: 600_000 }, c);
+
+    expect(result.status).toBe('error');
+    expect(result.structuredError?.message).toMatch(/exceeds the 30000ms limit/);
+    expect(result.content).not.toContain('never-runs');
+  });
+
   it('honors the operator BOOK_TOOL_TIMEOUT_MS override', async () => {
     const c = {
       ...ctx(),
@@ -362,6 +377,23 @@ describe('Bash shell tools', () => {
   // which was harmless only while the model could not see the argument: now
   // that it can, honouring it here would put a kill timer on the very job the
   // model backgrounded to escape one.
+  // setTimeout rewrites anything past the 32-bit ceiling to 1ms, so an
+  // unguarded 30-day runtime killed the job moments after it started and told
+  // the model its deadline had fired.
+  it('clamps a background runtime that a timer could not hold', async () => {
+    const c = ctx();
+    const command = nodeCommand('bg-overflow.cjs', `setInterval(() => {}, 1000);\n`);
+
+    const start = await bash.execute(
+      { command, run_in_background: true, max_runtime_ms: 30 * 24 * 60 * 60 * 1000 },
+      c,
+    );
+    const shellId = shellIdFrom(start);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(c.backgroundShells?.shells.get(shellId)?.status).toBe('running');
+  });
+
   it('does not let the foreground timeout become a background deadline', async () => {
     const c = ctx();
     const command = nodeCommand('bg-no-timeout.cjs', `setInterval(() => {}, 1000);\n`);

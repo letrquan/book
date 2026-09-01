@@ -133,7 +133,17 @@ function rawToolResultModelContent(result: ToolResult): string {
 export function toolResultModelContent(result: ToolResult): string {
   const raw = rawToolResultModelContent(result);
   if (Buffer.byteLength(raw) <= TOOL_RESULT_MAX_BYTES) return raw;
-  if (result.status === 'timed_out') return clippedTailPreview(result, TOOL_RESULT_MAX_BYTES);
+  // Reached only by callers that skipped `boundToolResultOutput`, which is
+  // where an agent-loop result is clipped. Both places keep the tail for a
+  // killed command, through the same helper.
+  if (result.status === 'timed_out') {
+    return tailPreview(
+      rawToolResultModelContent({ ...result, content: '' }),
+      result.content,
+      result.artifacts?.outputPath,
+      TOOL_RESULT_MAX_BYTES,
+    );
+  }
   return clippedOutputPreview(raw, result.artifacts?.outputPath, TOOL_RESULT_MAX_BYTES);
 }
 
@@ -151,27 +161,38 @@ function utf8Suffix(text: string, maxBytes: number): string {
   if (maxBytes <= 0) return '';
   const bytes = Buffer.from(text);
   if (bytes.byteLength <= maxBytes) return text;
-  return bytes
-    .subarray(bytes.byteLength - maxBytes)
-    .toString('utf8')
-    .replace(/^�/u, '');
+  // Advance past any continuation bytes so the tail starts on a character
+  // boundary. Cutting inside a 4-byte sequence otherwise strands three
+  // continuation bytes, each of which decodes to its own replacement char.
+  let start = bytes.byteLength - maxBytes;
+  while (start < bytes.byteLength && (bytes[start] & 0xc0) === 0x80) start++;
+  return bytes.subarray(start).toString('utf8');
 }
 
 /**
  * A killed command is judged on its most recent output — the step it was on
  * when the deadline hit — so truncation keeps the tail rather than the head.
  * Head-clipping a timed-out build returns install and compile noise and drops
- * the progress the timeout report exists to deliver. The error line and its
- * remediation are composed first so they always survive.
+ * the progress the timeout report exists to deliver. `head` is composed first
+ * so the error line and its remediation always survive.
  */
-function clippedTailPreview(result: ToolResult, maxBytes: number): string {
-  const header = rawToolResultModelContent({ ...result, content: '' });
-  const outputPath = result.artifacts?.outputPath;
+function tailPreview(
+  head: string,
+  content: string,
+  outputPath: string | undefined,
+  maxBytes: number,
+): string {
   const notice = outputPath
     ? `\n[Earlier output truncated at ${maxBytes} bytes. Full output: ${outputPath}]\n`
     : `\n[Earlier output truncated at ${maxBytes} bytes. Full output unavailable.]\n`;
-  const budget = Math.max(0, maxBytes - Buffer.byteLength(header) - Buffer.byteLength(notice));
-  return `${header}${notice}${utf8Suffix(result.content, budget).trimStart()}`;
+  const noticeBytes = Buffer.byteLength(notice);
+  // A head longer than the whole budget still has to be bounded; the caller
+  // treats this return value as final and does no further clipping.
+  if (Buffer.byteLength(head) + noticeBytes >= maxBytes) {
+    return `${utf8Prefix(head, Math.max(0, maxBytes - noticeBytes)).trimEnd()}${notice}`;
+  }
+  const budget = maxBytes - Buffer.byteLength(head) - noticeBytes;
+  return `${head}${notice}${utf8Suffix(content, budget).trimStart()}`;
 }
 
 function clippedOutputPreview(
@@ -235,21 +256,28 @@ export async function boundToolResultOutput(
   const fixReserve = result.structuredError?.remediation
     ? Buffer.byteLength(`\nFix: ${result.structuredError.remediation}`)
     : 0;
+  const errorBudget = Math.max(1, maxBytes - Buffer.byteLength(errorPrefix) - fixReserve);
   const structuredError = result.structuredError
     ? {
         ...result.structuredError,
         message: modelOverflow
-          ? clippedOutputPreview(
-              errorSource,
-              outputPath,
-              Math.max(1, maxBytes - Buffer.byteLength(errorPrefix) - fixReserve),
-            )
+          ? // A killed command's output is folded into the message here, so this
+            // is the clip that decides what the model reads. Keeping the head
+            // hands back install and compile noise and drops the step the
+            // command died on, which is the whole point of the report.
+            result.status === 'timed_out'
+            ? tailPreview(result.structuredError.message, result.content, outputPath, errorBudget)
+            : clippedOutputPreview(errorSource, outputPath, errorBudget)
           : result.structuredError.message,
       }
     : result.structuredError;
   const clippedDetails = details
     ? detailsBytes > maxBytes
-      ? clippedOutputPreview(details, outputPath, maxBytes)
+      ? // The transcript row reads the same way the model does: for a killed
+        // command that means the tail it died on, not the head it started with.
+        result.status === 'timed_out'
+        ? tailPreview('', details, outputPath, maxBytes)
+        : clippedOutputPreview(details, outputPath, maxBytes)
       : details
     : toolResultSucceeded(result)
       ? content

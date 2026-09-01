@@ -5,6 +5,9 @@ import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js'
 import { toolFailure, toolSuccess } from '../tools/result.js';
 import { resolveToolTimeoutMs } from '../tools/timeouts.js';
 
+/** Used only when `agents.checkTimeoutMs` is absent, which the schema defaults. */
+const DEFAULT_CHECK_TIMEOUT_MS = 120_000;
+
 /**
  * One deadline, read by both `check` and the registry through the definition's
  * `timeoutMs`. If they disagree the registry's backstop fires first and answers
@@ -13,8 +16,13 @@ import { resolveToolTimeoutMs } from '../tools/timeouts.js';
  */
 export function checkTimeoutMs(ctx: ToolContext): number {
   return resolveToolTimeoutMs({
+    // `agents.checkTimeoutMs` is a deliberate statement about this suite, so it
+    // outranks the blanket BOOK_TOOL_TIMEOUT_MS: someone who set it to 40
+    // minutes for a slow suite should not have it cut to 2 by an unrelated
+    // environment variable exported for other tool tuning.
+    configured: ctx.agentConfig?.settings.agents.checkTimeoutMs,
     env: ctx.env,
-    fallback: ctx.agentConfig?.settings.agents.checkTimeoutMs,
+    fallback: DEFAULT_CHECK_TIMEOUT_MS,
   });
 }
 

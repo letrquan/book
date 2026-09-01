@@ -162,12 +162,25 @@ All notable changes to this project are documented in this file.
   registry's budget while `Bash` still self-killed at its own module constant. Both now resolve one
   deadline from one place, in one order: the call's `timeout`, then the operator's
   `BOOK_TOOL_TIMEOUT_MS`, then the tool's own default. Where an operator has set that variable it is
-  also the ceiling on what a call may ask for, in both directions — lowering it to 30s caps a model
-  that asks for ten minutes, raising it past the built-in 600000ms lets a build that needs longer
-  run — and the 600000ms ceiling applies only when they have said nothing. Non-finite values no
-  longer reach `setTimeout`, and because `Bash` now publishes `timeout` it is validated like any
-  other argument instead of being dropped: `timeout: "10 minutes"` is an error rather than a
-  silently ignored value the model believes it set.
+  also the ceiling on what a single call may ask for: lowering it to 30s caps a model that asks for
+  ten minutes, and a request above the limit in force is refused rather than quietly shrunk, since
+  a silent clamp is the same "believed it raised a deadline it did not" failure in another place.
+  Raising the variable raises the *default*, which needs no argument to reach; it cannot lift the
+  per-call reach above the 600000ms the schema publishes, because a ceiling the model is told about
+  and then rejected for using is a guaranteed retry loop. Values that a timer cannot hold no longer
+  reach `setTimeout` from any source — Node rewrites a delay past 2^31-1 to **1ms**, so an operator
+  writing 3000000000 for "effectively no limit" would have had every command killed instantly, and
+  `max_runtime_ms` had no guard at all, turning a 30-day background job into one killed at startup.
+  Because `Bash` now publishes `timeout` it is also validated like any other argument instead of
+  being dropped: `timeout: "10 minutes"` is an error, not a silently ignored value.
+
+  A tool's `timeout` argument only sets the host budget when the tool publishes one. Honouring a
+  stray value everywhere let it shrink the backstop under a tool that times itself — a `Check` call
+  carrying `timeout: 5000` got a 15s budget against its own 600s deadline, reinstating the race
+  this resolver exists to prevent — and turned an MCP tool whose own `timeout` means seconds into a
+  30ms deadline. Relatedly, `agents.checkTimeoutMs` now outranks `BOOK_TOOL_TIMEOUT_MS`: it is a
+  deliberate statement about one suite, and a blanket variable exported for unrelated tuning should
+  not cut a 40-minute suite to two minutes.
 
   Two neighbours had the same race and are fixed with the same mechanism. `Check` builds a
   deliberate `check_timed_out` result saying the suite was killed rather than failed — the
@@ -198,7 +211,10 @@ All notable changes to this project are documented in this file.
   ceiling rather than a number the operator's own limit has already ruled out. When such a result
   is too large for the model-facing budget it is clipped from the **head**, keeping the tail: a
   killed build is judged on the step it was on when the deadline hit, and head-clipping returned
-  install noise while dropping exactly the progress the report exists to deliver.
+  install noise while dropping exactly the progress the report exists to deliver. That clip happens
+  in `boundToolResultOutput`, which is where every result the agent loop produces is bounded and
+  where the output of an oversized failure is folded into the error message — the transcript row is
+  clipped the same way, so what the model reads and what the user sees agree.
 
   This mattered beyond ergonomics. Handed eight bare timeouts with zero bytes each, the model in
   that run reported a detailed gate pass it had never observed, naming per-step results and

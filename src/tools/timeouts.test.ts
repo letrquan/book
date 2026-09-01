@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createDefaultRegistry } from './registry.js';
 import {
   DEFAULT_TOOL_TIMEOUT_MS,
+  MAX_SAFE_TIMEOUT_MS,
   MAX_TOOL_TIMEOUT_MS,
   resolveToolTimeoutMs,
   toolTimeoutCeilingMs,
@@ -32,11 +33,41 @@ describe('resolveToolTimeoutMs', () => {
     expect(resolveToolTimeoutMs({ requested: 5_000, env: lowered })).toBe(5_000);
     expect(toolTimeoutCeilingMs(lowered)).toBe(30_000);
 
+    // Raising it raises the *default*, which needs no argument to reach. It
+    // cannot raise the per-call reach past the maximum the Bash schema
+    // publishes and validates: advertising a ceiling the model is then rejected
+    // for using turns the kill message's advice into a guaranteed retry loop.
     const raised = { BOOK_TOOL_TIMEOUT_MS: String(MAX_TOOL_TIMEOUT_MS * 3) };
     expect(resolveToolTimeoutMs({ env: raised })).toBe(MAX_TOOL_TIMEOUT_MS * 3);
+    expect(toolTimeoutCeilingMs(raised)).toBe(MAX_TOOL_TIMEOUT_MS);
     expect(resolveToolTimeoutMs({ requested: MAX_TOOL_TIMEOUT_MS * 2, env: raised })).toBe(
-      MAX_TOOL_TIMEOUT_MS * 2,
+      MAX_TOOL_TIMEOUT_MS,
     );
+  });
+
+  // setTimeout takes a 32-bit signed delay and Node rewrites anything larger to
+  // 1ms, so "effectively no limit" expressed as 3000000000 would kill every
+  // command instantly rather than never.
+  it('bounds every source at the largest delay a timer can hold', () => {
+    const overflowing = 3_000_000_000;
+    expect(resolveToolTimeoutMs({ env: { BOOK_TOOL_TIMEOUT_MS: String(overflowing) } })).toBe(
+      MAX_SAFE_TIMEOUT_MS,
+    );
+    expect(resolveToolTimeoutMs({ configured: overflowing })).toBe(MAX_SAFE_TIMEOUT_MS);
+    expect(resolveToolTimeoutMs({ fallback: overflowing })).toBe(MAX_SAFE_TIMEOUT_MS);
+    expect(MAX_SAFE_TIMEOUT_MS).toBeLessThanOrEqual(2 ** 31 - 1);
+  });
+
+  // `agents.checkTimeoutMs` is about one suite; BOOK_TOOL_TIMEOUT_MS is a
+  // blanket default exported for unrelated tuning. The specific one wins.
+  it('ranks a deliberate per-tool setting above the blanket override', () => {
+    expect(
+      resolveToolTimeoutMs({
+        configured: 3_600_000,
+        env: { BOOK_TOOL_TIMEOUT_MS: '120000' },
+        fallback: 120_000,
+      }),
+    ).toBe(3_600_000);
   });
 
   it('ignores values that would arm a timer with nonsense', () => {
@@ -100,9 +131,26 @@ describe('registry budget for a tool that enforces its own deadline', () => {
     expect(prepared.prepared.timeoutMs).toBeGreaterThan(600_000);
   });
 
-  it('leaves a tool without its own deadline on the budget as resolved', () => {
-    expect(budgetFor({ filePath: 'a.txt', timeout: 5 }, {}, 'Read')).toBe(5);
+  // Only a tool that publishes `timeout` lets the model set the budget.
+  // Honouring a stray value everywhere let one shrink the backstop under a tool
+  // that times itself -- `Check` with `timeout: 5000` got a 15s budget against
+  // its own 600s deadline -- and turned an MCP tool's seconds-valued `timeout:
+  // 30` into a 30ms deadline.
+  it('ignores a timeout argument from a tool that does not publish one', () => {
+    expect(budgetFor({ filePath: 'a.txt', timeout: 5 }, {}, 'Read')).toBe(DEFAULT_TOOL_TIMEOUT_MS);
     expect(budgetFor({ filePath: 'a.txt' }, {}, 'Read')).toBe(DEFAULT_TOOL_TIMEOUT_MS);
+
+    const context = {
+      workspaceRoot: process.cwd(),
+      env: {},
+      agentConfig: { settings: { agents: { checkTimeoutMs: 600_000 } } },
+    } as unknown as ToolContext;
+    const prepared = createDefaultRegistry().prepare(
+      { id: 'check-2', name: 'Check', arguments: { name: 'test', timeout: 5_000 } },
+      context,
+    );
+    if (prepared.status !== 'ready') throw new Error('Check call was rejected');
+    expect(prepared.prepared.timeoutMs).toBeGreaterThan(600_000);
   });
 
   it('publishes the timeout knob it honors', () => {

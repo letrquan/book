@@ -349,7 +349,15 @@ export function createRegistry() {
       const declaredTimeoutMs =
         typeof tool.timeoutMs === 'function' ? tool.timeoutMs(context) : tool.timeoutMs;
       const resolvedTimeoutMs = resolveToolTimeoutMs({
-        requested: normalizedCall.arguments.timeout,
+        // Only a tool that publishes `timeout` lets the model set the budget.
+        // Honouring a stray value everywhere shrank the backstop under tools
+        // that time themselves — a `Check` call carrying `timeout: 5000` got a
+        // 15s budget against its own 600s deadline, reinstating the very race
+        // this resolver exists to prevent — and an MCP tool whose own `timeout`
+        // means seconds turned `timeout: 30` into a 30ms deadline.
+        requested: tool.inputSchema?.properties?.timeout
+          ? normalizedCall.arguments.timeout
+          : undefined,
         env: context.env,
         fallback: declaredTimeoutMs,
       });

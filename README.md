@@ -931,15 +931,20 @@ outside the declared range is rejected rather than quietly ignored. Background c
 `timeout` entirely and take `max_runtime_ms` instead.
 
 `BOOK_TOOL_TIMEOUT_MS` overrides the default for every tool, `Bash` included, and where it is set it
-is also the **ceiling** on what a call may ask for: lowering it to 30000 caps a model that asks for
-ten minutes, and raising it past 600000 lets a build that genuinely needs longer run. The built-in
-600000 ms ceiling applies only when the variable is unset, so that a model cannot stall its own turn
-by default. Precedence is the call's `timeout` (bounded by that ceiling), then
-`BOOK_TOOL_TIMEOUT_MS`, then the tool's default.
+is also the **ceiling** on what a single call may ask for: lowering it to 30000 caps a model that
+asks for ten minutes, and a request above the limit in force is refused rather than quietly shrunk.
+Raising it above 600000 raises the *default* — which needs no argument to reach — but not the
+per-call reach, since the schema publishes and validates 600000 as the maximum. Precedence is the
+call's `timeout` (bounded by that ceiling), then a deliberate per-tool setting such as
+`agents.checkTimeoutMs`, then `BOOK_TOOL_TIMEOUT_MS`, then the tool's default. No source can resolve
+past 2147483647 ms (~24 days), the largest delay a timer can hold; beyond it Node silently fires
+after 1 ms.
 
 The same resolution governs every tool that enforces a deadline of its own — `Bash`, `Check`, and
 `WebFetch`. Each declares its budget so the host's backstop outlasts it; when the two are equal the
-backstop fires first and replaces the tool's report, including its output, with a bare timeout.
+backstop fires first and replaces the tool's report, including its output, with a bare timeout. A
+`timeout` argument sets the host budget only for a tool that publishes one, so a stray value cannot
+pull the backstop underneath a tool that times itself.
 
 A killed command reports itself as killed rather than failed, and returns whatever it printed on
 stdout and stderr before the kill. The two outcomes call for different next moves — retrying a
