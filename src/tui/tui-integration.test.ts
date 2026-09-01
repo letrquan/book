@@ -467,15 +467,17 @@ describe('TUI keyboard input', () => {
 
       session.sendKey('INPUT_FOOTER_SENTINEL');
       await session.waitFor('INPUT_FOOTER_SENTINEL');
-      // Pace the scroll steps instead of writing them in one tick. Ctrl+U is a
-      // bare \x15 with no escape byte, and Ink's parser splits a chunk only at
-      // escape bytes: when the child is descheduled (routine on loaded CI
-      // runners) the whole burst lands in a single stdin read and parses as one
-      // unknown 24-character keypress, so *no* scroll step happens and the
-      // wait below expires with nothing to find. This is the same coalescing
-      // the submit() helper above guards against.
+      // PgUp, not Ctrl+U: the sentinel above is a draft, and a draft claims the
+      // readline chords, so Ctrl+U here clears the prompt instead of scrolling.
+      // PgUp scrolls whether or not the composer holds text, which is what this
+      // test is actually about.
+      //
+      // Pace the steps rather than writing them in one tick: when the child is
+      // descheduled (routine on a loaded CI runner) a burst lands in a single
+      // stdin read, and the repeats can be swallowed as one keypress — the same
+      // coalescing the submit() helper above guards against.
       for (let index = 0; index < 24; index++) {
-        session.sendKey(keys.ctrlU);
+        session.sendKey(keys.pageUp);
         await sleep(20);
       }
       // Wait bound only — this test asserts frame correctness below, not latency.

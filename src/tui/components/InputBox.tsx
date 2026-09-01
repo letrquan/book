@@ -32,6 +32,28 @@ function nextGraphemeBoundary(value: string, offset: number): number {
   return value.length;
 }
 
+/**
+ * Offset of the start of the word before `offset`.
+ *
+ * Skips the whitespace immediately behind the cursor, then the run of
+ * non-whitespace before that — readline's `unix-word-rubout`, which is what
+ * Ctrl+W and Alt+Backspace both mean to a terminal user.
+ */
+function previousWordBoundary(value: string, offset: number): number {
+  let index = offset;
+  while (index > 0 && /\s/.test(value[index - 1]!)) index -= 1;
+  while (index > 0 && !/\s/.test(value[index - 1]!)) index -= 1;
+  return index;
+}
+
+/** Remove `[start, end)` and leave the cursor where the text was. */
+function cut(value: string, start: number, end: number): { edit: EditState; killed: string } {
+  return {
+    edit: { value: value.slice(0, start) + value.slice(end), cursorOffset: start },
+    killed: value.slice(start, end),
+  };
+}
+
 function normalizeEdit(value: string, cursorOffset: number): EditState {
   return {
     value: value.normalize('NFC'),
@@ -84,6 +106,10 @@ export function InputBox({
 }: InputBoxProps) {
   const valueRef = useRef(value);
   const cursorOffsetRef = useRef(value.length);
+  // Kill ring. The three kill keys are the only edits here that can destroy a
+  // long prompt in one keystroke, and Ctrl+U in particular used to scroll the
+  // transcript instead — so the recovery key ships with them, not after them.
+  const killRingRef = useRef('');
   const [, rerender] = useReducer((version: number) => version + 1, 0);
 
   // Parent-driven changes such as history navigation and autocomplete own the cursor.
@@ -100,8 +126,60 @@ export function InputBox({
     if (changed) onChange(edit.value);
   };
 
+  const killTo = (start: number, end: number) => {
+    const { edit, killed } = cut(valueRef.current, start, end);
+    if (!killed) return;
+    killRingRef.current = killed;
+    commit(edit);
+  };
+
   useInput(
     (input, key) => {
+      // Alt+Backspace deletes the previous word, as it does in every other
+      // terminal composer.
+      if (key.meta && (key.backspace || key.delete)) {
+        const cursor = cursorOffsetRef.current;
+        killTo(previousWordBoundary(valueRef.current, cursor), cursor);
+        return;
+      }
+
+      // Readline motions. The composer dropped every Ctrl chord, so fixing a
+      // typo halfway through a long prompt meant holding Backspace — slower
+      // still in a language where one character can take several keystrokes to
+      // compose.
+      if (key.ctrl && !key.meta) {
+        const cursor = cursorOffsetRef.current;
+        const current = valueRef.current;
+        switch (input.toLowerCase()) {
+          case 'a':
+            commit({ value: current, cursorOffset: 0 });
+            return;
+          case 'e':
+            commit({ value: current, cursorOffset: current.length });
+            return;
+          case 'w':
+            killTo(previousWordBoundary(current, cursor), cursor);
+            return;
+          case 'u':
+            killTo(0, cursor);
+            return;
+          case 'k':
+            killTo(cursor, current.length);
+            return;
+          case 'y': {
+            const yanked = killRingRef.current;
+            if (!yanked) return;
+            commit({
+              value: current.slice(0, cursor) + yanked + current.slice(cursor),
+              cursorOffset: cursor + yanked.length,
+            });
+            return;
+          }
+          default:
+            return;
+        }
+      }
+
       if (key.upArrow || key.downArrow || key.tab || key.ctrl || key.meta || key.escape) {
         return;
       }

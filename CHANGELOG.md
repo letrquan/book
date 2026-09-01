@@ -145,6 +145,15 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The composer has terminal editing keys again.** It dropped every Ctrl chord, so Ctrl+A, Ctrl+E,
+  Ctrl+W, Ctrl+K and Alt+Backspace all did nothing and fixing a typo halfway through a long prompt
+  meant holding Backspace — slower still in a language where one character takes several keystrokes
+  to compose. Ctrl+U, which reads as "clear the line" in every shell, scrolled the transcript
+  instead. All of them now edit the prompt, and Ctrl+Y puts back the last deletion, so the three
+  kill keys arrive with their undo rather than after it. Ctrl+E and Ctrl+U keep their transcript
+  meanings when the prompt is empty — expanding a tool and scrolling are things you do while
+  reading, not while composing — and the shortcut reference says so.
+
 - **A single stray letter no longer grants a permanent shell permission.** While a permission
   prompt was open the composer still read `Type a follow-up; Enter queues it`, but the prompt owned
   the keyboard and `A` resolved it as *Always allow*. Typing one `a` therefore ran the command and
