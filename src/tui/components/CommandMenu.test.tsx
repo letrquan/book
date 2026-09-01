@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
-import { CommandMenu, getCommandMenuWindow } from './CommandMenu.js';
+import { CommandMenu, composeCommandRow, getCommandMenuWindow } from './CommandMenu.js';
 import { displayWidth } from './word-wrap.js';
 import type { CommandItem } from '../../commands/filter.js';
 
@@ -74,5 +74,63 @@ describe('CommandMenu', () => {
     for (const line of stripAnsi(view.lastFrame()).split('\n').filter(Boolean)) {
       expect(displayWidth(line)).toBeLessThanOrEqual(width);
     }
+  });
+});
+
+describe('composeCommandRow', () => {
+  const item = {
+    name: 'agent',
+    hint: '<id>|send <id> <message>|stop <id>',
+    desc: 'Inspect or steer a managed agent',
+    category: 'builtin' as const,
+  };
+  const base = {
+    selected: false,
+    width: 76,
+    compact: false,
+    shimmer: false,
+    screenReader: false,
+    showBadge: false,
+  };
+
+  it('puts what the command does ahead of how it is spelled', () => {
+    // The syntax used to sit between the name and the description, so an
+    // 80-column row showed the grammar and then truncated the meaning away.
+    const row = composeCommandRow(item, base);
+    expect(row.name).toBe('/agent');
+    expect(row.hint).toBe('');
+    expect(row.desc).toBe(' — Inspect or steer a managed agent');
+  });
+
+  it('shows the syntax only on the row the user has landed on', () => {
+    const row = composeCommandRow(item, { ...base, selected: true, width: 120 });
+    expect(row.hint).toBe(' <id>|send <id> <message>|stop <id>');
+  });
+
+  it('drops the syntax rather than starving the description', () => {
+    const row = composeCommandRow(item, { ...base, selected: true, width: 46 });
+    expect(row.hint).toBe('');
+    expect(row.desc.length).toBeGreaterThan(0);
+  });
+
+  it('omits the badge unless the visible rows actually differ', () => {
+    expect(composeCommandRow(item, base).badge).toBe('');
+    expect(composeCommandRow(item, { ...base, showBadge: true }).badge).toBe(' [Built-in]');
+  });
+
+  it('keeps the whole row inside its width', () => {
+    for (const width of [24, 32, 48, 64, 80, 120]) {
+      for (const selected of [false, true]) {
+        const row = composeCommandRow(item, { ...base, selected, width });
+        const rendered = `${row.marker}${row.name}${row.hint}${row.badge}${row.desc}`;
+        expect(displayWidth(rendered)).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+
+  it('marks the selected row and indents the rest to the same column', () => {
+    expect(composeCommandRow(item, { ...base, selected: true }).marker).toBe('› ');
+    expect(composeCommandRow(item, { ...base, selected: true, shimmer: true }).marker).toBe('▸ ');
+    expect(composeCommandRow(item, base).marker).toBe('  ');
   });
 });
