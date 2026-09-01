@@ -191,6 +191,136 @@ describe('ConfigMenu', () => {
     expect(onToggleStartupAnimation).toHaveBeenCalledOnce();
   });
 
+  it('prints every accelerator beside the row it acts on', () => {
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          themeName="dark"
+          memoryAutoSave={false}
+          showThinking
+          agentCount={3}
+          skillCount={4}
+          defaultPermissionMode="default"
+          onOpen={() => {}}
+          onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    const frame = stripAnsi(view.lastFrame());
+    for (const [letter, label] of [
+      ['M', 'Model'],
+      ['C', 'Compact model'],
+      ['E', 'Effort'],
+      ['I', 'Show thinking'],
+      ['F', 'Startup fire'],
+      ['T', 'Theme'],
+      ['P', 'Default permissions'],
+      ['A', 'Subagent profiles'],
+      ['S', 'Skills'],
+    ]) {
+      expect(frame).toContain(`${letter}  ${label}`);
+    }
+    // The row with no accelerator advertises none rather than a contrived one.
+    expect(frame).toContain('   Memory auto-capture');
+    expect(frame).not.toMatch(/\S {2}Memory auto-capture/);
+  });
+
+  it('moves the cursor onto the row an accelerator acts on', () => {
+    const onToggleStartupAnimation = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          themeName="dark"
+          memoryAutoSave={false}
+          showThinking
+          startupAnimation={false}
+          agentCount={3}
+          skillCount={4}
+          defaultPermissionMode="default"
+          onOpen={() => {}}
+          onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
+          onToggleStartupAnimation={onToggleStartupAnimation}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    // `f` acts on "Startup fire", five rows below the cursor's start. Enter must
+    // then repeat that row rather than opening the model picker the cursor
+    // began on — otherwise the change happened somewhere the user was not
+    // looking.
+    view.stdin.write('f');
+    view.stdin.write('\r');
+    expect(onToggleStartupAnimation).toHaveBeenCalledTimes(2);
+  });
+
+  it('reaches the unlettered row with the arrows and ignores unbound letters', () => {
+    const onOpen = vi.fn();
+    const onToggleMemory = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          themeName="dark"
+          memoryAutoSave={false}
+          showThinking
+          agentCount={3}
+          skillCount={4}
+          defaultPermissionMode="default"
+          onOpen={onOpen}
+          onToggleMemory={onToggleMemory}
+          onToggleThinking={() => {}}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    view.stdin.write('z');
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onToggleMemory).not.toHaveBeenCalled();
+
+    // Memory is the last row, so one step up from the top wraps onto it.
+    view.stdin.write('\u001b[A');
+    view.stdin.write('\r');
+    expect(onToggleMemory).toHaveBeenCalledOnce();
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('stops the footer from advertising a subset of the shortcuts', () => {
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          themeName="dark"
+          memoryAutoSave={false}
+          showThinking
+          agentCount={3}
+          skillCount={4}
+          defaultPermissionMode="default"
+          onOpen={() => {}}
+          onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    // The old footer named four of the nine letters, so the other five were
+    // reachable but undocumented. The rows carry them now.
+    const footer = stripAnsi(view.lastFrame())
+      .split('\n')
+      .find((line) => line.includes('↑↓ select'));
+    expect(footer).toContain('press the letter');
+    expect(footer).not.toContain('M model');
+    expect(footer).not.toContain('C compact');
+  });
+
   it('fits narrow terminals', () => {
     const view = render(
       <ThemeContext.Provider value={DEFAULT_THEME}>
