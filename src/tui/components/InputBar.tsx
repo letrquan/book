@@ -40,6 +40,14 @@ import { InputBox } from './InputBox.js';
 const uiLog = createUiDebugLogger('tui:inputbar');
 const FILE_MENTION_DEBOUNCE_MS = 40;
 
+/**
+ * Ctrl chords InputBox handles as text edits while the composer holds a draft.
+ *
+ * Kept here rather than imported from InputBox so the two lists cannot drift
+ * apart silently: this is the routing half of the same decision.
+ */
+const COMPOSER_EDIT_KEYS = new Set(['a', 'e', 'w', 'u', 'k', 'y']);
+
 interface InputBarProps {
   onSubmit: (value: string, attachments?: ImageAttachment[]) => void;
   onPasteImage?: () => Promise<ImageAttachment | null>;
@@ -377,6 +385,9 @@ export function InputBar({
       pasteImage();
       return;
     }
+    // Alt+Backspace is a composer edit, not a shortcut: InputBox deletes the
+    // previous word, and restoring the pre-event value here would undo it.
+    if (key.meta && (key.backspace || key.delete)) return;
     // Filter out Alt/Meta-modified keys — they're shortcuts, not text input.
     // Preserve the editor value while the parent handles Alt/Meta shortcuts.
     if (key.meta) {
@@ -540,6 +551,12 @@ export function InputBar({
       uiLog.event(key.ctrl ? 'input:Ctrl+J' : 'input:Shift+Enter', { action: 'insert-newline' });
       return;
     }
+    // A draft in the composer claims the readline chords for editing; an empty
+    // one leaves them to the transcript, where Ctrl+E expands a tool and
+    // Ctrl+U scrolls. Forwarding them while there is text to edit would let the
+    // parent consume the key and then restore the pre-event value, undoing the
+    // edit InputBox just made.
+    if (key.ctrl && value.length > 0 && COMPOSER_EDIT_KEYS.has(_input.toLowerCase())) return;
     // Forward Ctrl-based shortcuts to the parent App. As with Alt chords,
     // restore the pre-event value when consumed to keep shortcut routing defensive.
     // Ctrl+/ arrives as a bare US byte with no `ctrl` flag (see

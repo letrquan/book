@@ -2407,7 +2407,7 @@ export function App({
                     />
                     <HelpRow
                       label="Ctrl+E"
-                      description="Expand current tool output"
+                      description="Expand current tool output (empty prompt)"
                       theme={theme}
                     />
                     <HelpRow
@@ -2434,7 +2434,7 @@ export function App({
                     <HelpRow label="PgUp/PgDn" description="Scroll transcript" theme={theme} />
                     <HelpRow
                       label="Ctrl+U/Ctrl+D"
-                      description="Scroll transcript half a page"
+                      description="Scroll transcript half a page (empty prompt)"
                       theme={theme}
                     />
                     <HelpRow
@@ -2445,6 +2445,26 @@ export function App({
                     <HelpRow
                       label="Ctrl+J / Shift+Enter"
                       description="Insert newline (multiline)"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="Ctrl+A / Ctrl+E"
+                      description="Move to start / end of the prompt"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="Ctrl+W / Alt+Bksp"
+                      description="Delete the previous word"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="Ctrl+U / Ctrl+K"
+                      description="Delete to start / end of the prompt"
+                      theme={theme}
+                    />
+                    <HelpRow
+                      label="Ctrl+Y"
+                      description="Put back the last deletion"
                       theme={theme}
                     />
                     <HelpRow label="Ctrl+/" description="Toggle this reference" theme={theme} />

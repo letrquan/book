@@ -147,6 +147,124 @@ describe('InputBar editor box', () => {
   });
 });
 
+describe('composer readline keys', () => {
+  // The composer dropped every Ctrl chord, so fixing a typo halfway through a
+  // long prompt meant holding Backspace. Ctrl+U in particular scrolled the
+  // transcript, which is why the kill keys ship with Ctrl+Y beside them.
+  const prompt = (view: ReturnType<typeof render>) =>
+    stripAnsi(view.lastFrame())
+      .split('\n')
+      .find((line) => line.includes('\u203a'))!;
+
+  async function typed(text: string) {
+    const view = render(inputBar(() => {}));
+    await tick();
+    view.stdin.write(text);
+    await tick(20);
+    return view;
+  }
+
+  it('deletes the previous word on Ctrl+W and puts it back on Ctrl+Y', async () => {
+    const view = await typed('sua loi giao dien');
+
+    view.stdin.write('\u0017');
+    await tick(20);
+    expect(prompt(view)).toContain('sua loi giao');
+    expect(prompt(view)).not.toContain('dien');
+
+    view.stdin.write('\u0019');
+    await tick(20);
+    expect(prompt(view)).toContain('sua loi giao dien');
+  });
+
+  it('kills to the start of the prompt on Ctrl+U and restores it on Ctrl+Y', async () => {
+    const view = await typed('sua loi giao dien');
+
+    view.stdin.write('\u0015');
+    await tick(20);
+    expect(prompt(view)).not.toContain('sua');
+
+    view.stdin.write('\u0019');
+    await tick(20);
+    expect(prompt(view)).toContain('sua loi giao dien');
+  });
+
+  it('moves to the start of the prompt on Ctrl+A so typing lands there', async () => {
+    const view = await typed('loi giao dien');
+
+    view.stdin.write('\u0001');
+    await tick(20);
+    view.stdin.write('sua ');
+    await tick(20);
+
+    expect(prompt(view)).toContain('sua loi giao dien');
+  });
+
+  it('kills to the end of the prompt on Ctrl+K after Ctrl+A', async () => {
+    const view = await typed('sua loi');
+
+    view.stdin.write('\u0001');
+    await tick(20);
+    view.stdin.write('\u000b');
+    await tick(20);
+
+    expect(prompt(view)).not.toContain('sua');
+  });
+
+  it('deletes a whole Vietnamese word, diacritics and all', async () => {
+    const view = await typed('sua loi giao diện');
+
+    view.stdin.write('\u0017');
+    await tick(20);
+
+    const line = prompt(view);
+    expect(line).not.toContain('diện');
+    expect(line).not.toContain('ệ');
+    expect(line).toContain('sua loi giao');
+  });
+
+  it('yanks once after Ctrl+A then Ctrl+K empties the prompt', async () => {
+    const view = await typed('sua loi giao dien');
+
+    view.stdin.write('\u0001');
+    await tick(20);
+    view.stdin.write('\u000b');
+    await tick(20);
+    view.stdin.write('\u0019');
+    await tick(20);
+
+    expect(prompt(view)).toContain('sua loi giao dien');
+    expect(prompt(view)).not.toContain('diensua');
+  });
+
+  it('leaves the transcript chords alone when the prompt is empty', async () => {
+    const consumed: string[] = [];
+    const view = render(
+      inputBar(() => {}, {
+        onGlobalShortcut: (input, key) => {
+          if (key.ctrl) consumed.push(input);
+          return true;
+        },
+      }),
+    );
+    await tick();
+
+    // Empty prompt: Ctrl+E and Ctrl+U belong to the transcript.
+    view.stdin.write('\u0005');
+    view.stdin.write('\u0015');
+    await tick(20);
+    expect(consumed).toEqual(['e', 'u']);
+
+    // With a draft they are edits, so the parent never sees them.
+    view.stdin.write('sua loi');
+    await tick(20);
+    view.stdin.write('\u0005');
+    view.stdin.write('\u0015');
+    await tick(20);
+    expect(consumed).toEqual(['e', 'u']);
+  });
+});
+
 describe('InputBar mode border colors', () => {
   it('maps each permission mode to its production theme token', () => {
     expect(MODE_COLOR_TOKENS).toEqual({
