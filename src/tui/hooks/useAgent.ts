@@ -30,7 +30,13 @@ import type {
 } from '../../types/sessions.js';
 import { shouldCompact, usagePressureTokens } from '../../agent/compact.js';
 import { resolveContextLimit } from '../../models.js';
-import { applyModelDefaults, resolveModelProviderConfig } from '../../config.js';
+import {
+  activateAuthProfile,
+  applyModelDefaults,
+  resolveModelProviderConfig,
+  withExplicitModel,
+} from '../../config.js';
+import type { AuthProfile } from '../../auth/profiles.js';
 import type { Todo } from '../../tools/todo.js';
 import type { AgentConfig } from '../../types/runtime.js';
 import {
@@ -1633,7 +1639,11 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     (name: string, options: { persist?: boolean } = {}) => {
       let next: AgentConfig;
       try {
-        next = applyModelDefaults(resolveModelProviderConfig(liveConfigRef.current, name));
+        // `withExplicitModel` so a later /login treats this as the user's own
+        // choice and does not overwrite it with the profile's default model.
+        next = applyModelDefaults(
+          resolveModelProviderConfig(withExplicitModel(liveConfigRef.current, name), name),
+        );
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
@@ -1648,6 +1658,73 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       return { ok: true };
     },
     [config.workspace],
+  );
+
+  /**
+   * Everything that decides whether this session *can* spend a profile.
+   *
+   * Shared by the preview the overlay shows before asking and by the apply that
+   * follows, so the consent prompt describes the state the user will actually
+   * get. Asking "use this subscription?" and then producing a different model,
+   * a different endpoint, or no change at all is worse than refusing: the
+   * refusals here are permanent once `auth.profile` is on disk.
+   */
+  const checkAuthLogin = useCallback((profile: AuthProfile) => {
+    // `BOOK_AUTH_PROFILE` outranks the settings file, so a conflicting env
+    // value is refused by name instead of writing a setting that is ignored.
+    const pinned = process.env.BOOK_AUTH_PROFILE?.trim();
+    if (pinned && pinned !== profile.id) {
+      return {
+        ok: false as const,
+        error:
+          `BOOK_AUTH_PROFILE is set to "${pinned}", which overrides settings. ` +
+          `Unset it, or set it to "${profile.id}", to spend this login.`,
+      };
+    }
+    return activateAuthProfile(liveConfigRef.current, profile);
+  }, []);
+
+  /** What activation would do, for the consent prompt. No side effects. */
+  const previewAuthLogin = useCallback(
+    (profile: AuthProfile) => {
+      const activation = checkAuthLogin(profile);
+      return activation.ok
+        ? {
+            ok: true as const,
+            model: activation.model,
+            baseUrl: activation.baseUrl,
+            warning: activation.warning,
+          }
+        : activation;
+    },
+    [checkAuthLogin],
+  );
+
+  /**
+   * Spend a just-logged-in subscription profile from this session onward.
+   *
+   * Activation is explicit rather than inferred because inference would almost
+   * never fire here: `selectAuthProfile` deliberately declines to retarget a
+   * workspace that already has a working API key, and the TUI only started
+   * because *something* authenticated. A login that silently changed nothing
+   * would reproduce, inside the new feature, the invisibility that motivated
+   * it. So the overlay asks, and the answer is persisted to the user-global
+   * layer — the only layer `auth.*` may be read from.
+   *
+   * The settings write happens only after the activation is known to be
+   * possible; a refusal that had already persisted `auth.profile` would break
+   * every future session in every project.
+   */
+  const applyAuthLogin = useCallback(
+    (profile: AuthProfile) => {
+      const activation = checkAuthLogin(profile);
+      if (!activation.ok) return activation;
+      const result = persistSettingGlobal('auth.profile', profile.id);
+      if (!result.ok) return result;
+      setLiveConfig(activation.config);
+      return { ok: true };
+    },
+    [checkAuthLogin],
   );
 
   const upsertProviderAndSelect = useCallback(
@@ -1691,7 +1768,9 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
           },
         };
         return activate
-          ? applyModelDefaults(resolveModelProviderConfig(withProvider, selection))
+          ? applyModelDefaults(
+              resolveModelProviderConfig(withExplicitModel(withProvider, selection), selection),
+            )
           : withProvider;
       });
       const nextOwnedProviders = {
@@ -2018,6 +2097,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     cycleMode,
     addLocalMessage,
     setModel,
+    applyAuthLogin,
+    previewAuthLogin,
     upsertProviderAndSelect,
     removeProvider,
     setEffort,

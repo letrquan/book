@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'child_process';
 import type { CompactStrategy, ProviderModelConfig, ResolvedSettings } from '../settings.js';
 import type { LoadedMemoryContext } from '../memory-store.js';
+import type { AuthProfileInputs } from './auth.js';
 
 export type PermissionMode =
   'default' | 'auto' | 'plan' | 'accept-edits' | 'dontAsk' | 'bypassPermissions';
@@ -196,6 +197,18 @@ export interface AgentConfig {
    * means API-key auth; see `src/auth/selection.ts`.
    */
   authProfile?: string;
+  /**
+   * Inputs that decided the auth-derived endpoint/model, retained so a login
+   * performed *during* a session can re-run the same precedence rather than
+   * re-deriving it from values the resolved config has already flattened.
+   *
+   * Required, not optional: the obvious fallback for an absent value is
+   * `defaultProvider`, which is the *resolved* transport rather than the
+   * `BOOK_PROVIDER` override — substituting one for the other would let an
+   * Anthropic subscription token be spent through the OpenAI-compatible
+   * transport. Every constructor must say what the inputs were.
+   */
+  authInputs: AuthProfileInputs;
   /** Approved memory snapshot loaded once at session start. */
   memoryContext?: LoadedMemoryContext;
 }

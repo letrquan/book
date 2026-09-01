@@ -51,3 +51,23 @@ export interface RedactedCredential {
   createdAt: number;
   updatedAt: number;
 }
+
+/**
+ * The env/settings inputs that decided what an active auth profile contributes
+ * to a config: the endpoint, the model, and the provider transport.
+ *
+ * Captured on the config at load time because a *mid-session* login has to
+ * re-run the same precedence and cannot recover these from the resolved config
+ * — `defaultBaseUrl` conflates an explicit `BOOK_BASE_URL` with the built-in
+ * fallback, and a resolved `model` cannot be told apart from an explicit one
+ * that happens to match a default. See `authProfileContribution` in
+ * `src/config.ts`, the single place this precedence is expressed.
+ */
+export interface AuthProfileInputs {
+  /** `BOOK_BASE_URL`, or a legacy `.bookrc.json` baseUrl. */
+  explicitBaseUrl?: string;
+  /** `-m` / `BOOK_MODEL` / `settings.model` — an explicit model always wins. */
+  explicitModel?: string;
+  /** `BOOK_PROVIDER`; `auto` means the profile's transport decides. */
+  providerOverride: 'anthropic' | 'openai' | 'auto';
+}

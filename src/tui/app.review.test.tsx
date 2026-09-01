@@ -62,6 +62,7 @@ vi.mock('../review/host.js', async (importOriginal) => {
 function config(): AgentConfig {
   return {
     apiKey: 'test-key',
+    authInputs: { providerOverride: 'auto' },
     baseUrl: 'http://localhost',
     model: 'model-x',
     maxTurns: 4,

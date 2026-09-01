@@ -10,6 +10,7 @@ import { SessionRuntime } from '../session/runtime.js';
 function config(): AgentConfig {
   return {
     apiKey: 'test',
+    authInputs: { providerOverride: 'auto' },
     baseUrl: 'http://localhost',
     model: 'test',
     maxTokens: 128_000,
