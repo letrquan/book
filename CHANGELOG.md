@@ -145,6 +145,83 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Book can run its own gate.** A foreground `Bash` command was killed at 120s with no way for the
+  model to ask for more, so `npm run check` — the gate `CLAUDE.md` tells Book to run before calling
+  work done — could never finish. It takes over 200s here; `npm run test:unit` alone takes 158s.
+  The default is now 300s, the model can raise it per call up to 600s with `timeout`, and
+  `BOOK_TOOL_TIMEOUT_MS` reaches `Bash` as the README always claimed it did.
+
+  Three things had to change together. `timeout` was read by both the registry and the shell but
+  published in neither's schema — it was classed as a host control and hidden — so a model reading
+  the `Bash` schema could not know it existed. Across one 49-call print run the model sent
+  `["command"]` 48 times and once reached for `max_runtime_ms`, the only runtime knob on offer,
+  which applies to background commands only. `timeout` is now declared on `Bash`, with its default
+  and ceiling in the description; it stays hidden everywhere else.
+
+  `src/tools/shell.ts` also never consulted `ctx.env`, so raising `BOOK_TOOL_TIMEOUT_MS` lifted the
+  registry's budget while `Bash` still self-killed at its own module constant. Both now resolve one
+  deadline from one place, in one order: the call's `timeout`, then the operator's
+  `BOOK_TOOL_TIMEOUT_MS`, then the tool's own default. Where an operator has set that variable it is
+  also the ceiling on what a single call may ask for: lowering it to 30s caps a model that asks for
+  ten minutes, and a request above the limit in force is refused rather than quietly shrunk, since
+  a silent clamp is the same "believed it raised a deadline it did not" failure in another place.
+  Raising the variable raises the *default*, which needs no argument to reach; it cannot lift the
+  per-call reach above the 600000ms the schema publishes, because a ceiling the model is told about
+  and then rejected for using is a guaranteed retry loop. Values that a timer cannot hold no longer
+  reach `setTimeout` from any source — Node rewrites a delay past 2^31-1 to **1ms**, so an operator
+  writing 3000000000 for "effectively no limit" would have had every command killed instantly, and
+  `max_runtime_ms` had no guard at all, turning a 30-day background job into one killed at startup.
+  Because `Bash` now publishes `timeout` it is also validated like any other argument instead of
+  being dropped: `timeout: "10 minutes"` is an error, not a silently ignored value.
+
+  A tool's `timeout` argument only sets the host budget when the tool publishes one. Honouring a
+  stray value everywhere let it shrink the backstop under a tool that times itself — a `Check` call
+  carrying `timeout: 5000` got a 15s budget against its own 600s deadline, reinstating the race
+  this resolver exists to prevent — and turned an MCP tool whose own `timeout` means seconds into a
+  30ms deadline. Relatedly, `agents.checkTimeoutMs` now outranks `BOOK_TOOL_TIMEOUT_MS`: it is a
+  deliberate statement about one suite, and a blanket variable exported for unrelated tuning should
+  not cut a 40-minute suite to two minutes.
+
+  Two neighbours had the same race and are fixed with the same mechanism. `Check` builds a
+  deliberate `check_timed_out` result saying the suite was killed rather than failed — the
+  distinction a completion gate depends on — and its 120s deadline sat exactly on the registry's,
+  so that result was being discarded; its deadline comes from `agents.checkTimeoutMs`, so the
+  declaration is resolved per call rather than fixed. `WebFetch` self-clamps at 120s and collided
+  at the same point. `Bash` no longer treats `timeout` as a legacy alias for `max_runtime_ms` on a
+  background call, which was harmless only while the argument was invisible: now that the schema
+  advertises it, honouring it there would put a kill timer on the very job the model backgrounded
+  to escape one.
+
+  The reason nothing came back was a race, not a buffering accident. Both deadlines were 120000ms,
+  and the registry arms its timer before `tool.execute` is reached, so at equal values it always
+  fired first and answered with its own contentless `tool_timeout`. The shell's partial-output path
+  had been unreachable in practice. A tool that enforces its own deadline now declares `timeoutMs`
+  and the registry adds a grace margin on top, leaving the tool's report — which carries what the
+  command actually printed — the one that wins.
+
+  What the model receives is now a killed command rather than a failed one, on both streams:
+  stderr was being dropped, and for a build that dies mid-run that is usually where the only clue
+  is. The two are labelled rather than concatenated, since they are written on independent
+  schedules and gluing them together presents a sequence that never happened. The result is built
+  after the process tree is torn down *and* the pipes have drained — on POSIX the teardown only
+  confirms the process group is gone, so without the second wait the last chunk a batching runner
+  flushed on its way out could still be in flight. The distinction is not cosmetic — retrying a
+  killed command identically is pointless, retrying with a larger `timeout` is not — so the message
+  names the deadline it hit and the remediation names the ways past it, naming the effective
+  ceiling rather than a number the operator's own limit has already ruled out. When such a result
+  is too large for the model-facing budget it is clipped from the **head**, keeping the tail: a
+  killed build is judged on the step it was on when the deadline hit, and head-clipping returned
+  install noise while dropping exactly the progress the report exists to deliver. That clip happens
+  in `boundToolResultOutput`, which is where every result the agent loop produces is bounded and
+  where the output of an oversized failure is folded into the error message — the transcript row is
+  clipped the same way, so what the model reads and what the user sees agree.
+
+  This mattered beyond ergonomics. Handed eight bare timeouts with zero bytes each, the model in
+  that run reported a detailed gate pass it had never observed, naming per-step results and
+  `207 test files passed (2467 tests)` for commands that returned nothing; the real numbers were
+  264 and 3148. The change was correct and the fabrication was caught by re-running the gate by
+  hand, but a supervisor who trusted the report would have committed unverified work as verified.
+
 - **The background-shell completion row shows the command that ran, not a markdown reading of
   it.** The row was built by interpolating the command into a local transcript message, and local
   messages are prose: `node -e "setInterval(()=>{},1000)/*KILLPROBE*/"` came back as

@@ -402,7 +402,12 @@ describe('tool schema quality', () => {
       }
       expect(schema.properties, definition.name).not.toHaveProperty('dangerouslyDisableSandbox');
       expect(schema.properties, definition.name).not.toHaveProperty('backend');
-      expect(schema.properties, definition.name).not.toHaveProperty('timeout');
+      // `timeout` stays a host control everywhere but Bash, where how long a
+      // command may run is the caller's decision and hiding it left the model
+      // unable to run anything slower than the default (issue #140).
+      if (definition.name !== 'Bash') {
+        expect(schema.properties, definition.name).not.toHaveProperty('timeout');
+      }
       expect(definition.catalog?.effects?.length, definition.name).toBeGreaterThan(0);
     }
   });

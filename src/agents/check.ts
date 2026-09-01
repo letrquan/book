@@ -3,6 +3,28 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 import { toolFailure, toolSuccess } from '../tools/result.js';
+import { resolveToolTimeoutMs } from '../tools/timeouts.js';
+
+/** Used only when `agents.checkTimeoutMs` is absent, which the schema defaults. */
+const DEFAULT_CHECK_TIMEOUT_MS = 120_000;
+
+/**
+ * One deadline, read by both `check` and the registry through the definition's
+ * `timeoutMs`. If they disagree the registry's backstop fires first and answers
+ * with a contentless `tool_timeout`, discarding the deliberate `check_timed_out`
+ * result below -- which is the distinction a completion gate depends on.
+ */
+export function checkTimeoutMs(ctx: ToolContext): number {
+  return resolveToolTimeoutMs({
+    // `agents.checkTimeoutMs` is a deliberate statement about this suite, so it
+    // outranks the blanket BOOK_TOOL_TIMEOUT_MS: someone who set it to 40
+    // minutes for a slow suite should not have it cut to 2 by an unrelated
+    // environment variable exported for other tool tuning.
+    configured: ctx.agentConfig?.settings.agents.checkTimeoutMs,
+    env: ctx.env,
+    fallback: DEFAULT_CHECK_TIMEOUT_MS,
+  });
+}
 
 function configuredChecks(ctx: ToolContext): Record<string, string> {
   const result: Record<string, string> = {};
@@ -60,7 +82,7 @@ async function check(args: Record<string, unknown>, ctx: ToolContext): Promise<T
     return fail(`Unknown check "${name}". Available checks: ${available.join(', ') || '(none)'}`);
   }
 
-  const timeoutMs = ctx.agentConfig?.settings.agents.checkTimeoutMs ?? 120_000;
+  const timeoutMs = checkTimeoutMs(ctx);
 
   return new Promise((resolve) => {
     exec(
@@ -102,6 +124,7 @@ export const checkTools: ToolDefinition[] = [
       },
       required: ['name'],
     },
+    timeoutMs: checkTimeoutMs,
     execute: check,
   },
 ];

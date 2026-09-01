@@ -4,6 +4,7 @@ import { Agent } from 'undici';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { toolFailure, toolSuccess } from './result.js';
+import { resolveToolTimeoutMs } from './timeouts.js';
 import {
   type HostResolver,
   WebPolicyError,
@@ -479,11 +480,18 @@ async function webFetch(
   const url = args.url as string;
   const prompt = args.prompt as string | undefined;
   const format = (args.format as WebFetchFormat | undefined) ?? 'markdown';
-  const requestedTimeout = args.timeout;
-  const timeoutMs =
-    typeof requestedTimeout === 'number' && Number.isFinite(requestedTimeout)
-      ? Math.max(1, Math.min(WEB_FETCH_MAX_TIMEOUT_MS, requestedTimeout))
-      : WEB_FETCH_DEFAULT_TIMEOUT_MS;
+  // Resolved through the shared helper so the operator's BOOK_TOOL_TIMEOUT_MS
+  // reaches this deadline too. Reading only the argument left a lowered value
+  // moving the registry's backstop under this timer, so a slow fetch died on
+  // the contentless `tool_timeout` instead of reporting `fetch_timeout`.
+  const timeoutMs = Math.min(
+    WEB_FETCH_MAX_TIMEOUT_MS,
+    resolveToolTimeoutMs({
+      requested: args.timeout,
+      env: ctx.env,
+      fallback: WEB_FETCH_DEFAULT_TIMEOUT_MS,
+    }),
+  );
 
   let fetched: FetchedResponse;
   try {
@@ -1007,6 +1015,10 @@ export function createWebTools(dependencies: WebToolDependencies = {}): ToolDefi
       policy: { concurrency: 'parallel' },
       description:
         'Fetch a public HTTP(S) URL and return bounded text, Markdown, or sanitized HTML. HTTPS is required unless the host opts into HTTP. Private-network destinations and cross-origin redirects are blocked. The network timeout defaults to 30 seconds. The deprecated `prompt` value is retained only as metadata and does not perform extraction.',
+      // WebFetch enforces its own deadline and self-clamps at this value, so the
+      // registry must outlast it; at an equal budget the registry fires first and
+      // replaces `fetch_timeout` with a contentless `tool_timeout`.
+      timeoutMs: WEB_FETCH_MAX_TIMEOUT_MS,
       parameters: {
         type: 'object',
         properties: {

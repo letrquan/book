@@ -922,6 +922,35 @@ config, and managed agents already report through `SubagentStop`. Like `SessionE
 skipped when a run ends early through a blocked prompt, context overflow, an exhausted run budget,
 or a provider stream error.
 
+### Shell command timeouts
+
+A foreground `Bash` command is killed after **300000 ms** (five minutes) by default. The model can
+raise that per call with the `timeout` argument, up to **600000 ms** — reach for it before a full
+build or test suite rather than after the kill. It is validated like any other argument, so a value
+outside the declared range is rejected rather than quietly ignored. Background commands ignore
+`timeout` entirely and take `max_runtime_ms` instead.
+
+`BOOK_TOOL_TIMEOUT_MS` overrides the default for every tool, `Bash` included, and where it is set it
+is also the **ceiling** on what a single call may ask for: lowering it to 30000 caps a model that
+asks for ten minutes, and a request above the limit in force is refused rather than quietly shrunk.
+Raising it above 600000 raises the *default* — which needs no argument to reach — but not the
+per-call reach, since the schema publishes and validates 600000 as the maximum. Precedence is the
+call's `timeout` (bounded by that ceiling), then a deliberate per-tool setting such as
+`agents.checkTimeoutMs`, then `BOOK_TOOL_TIMEOUT_MS`, then the tool's default. No source can resolve
+past 2147483647 ms (~24 days), the largest delay a timer can hold; beyond it Node silently fires
+after 1 ms.
+
+The same resolution governs every tool that enforces a deadline of its own — `Bash`, `Check`, and
+`WebFetch`. Each declares its budget so the host's backstop outlasts it; when the two are equal the
+backstop fires first and replaces the tool's report, including its output, with a bare timeout. A
+`timeout` argument sets the host budget only for a tool that publishes one, so a stray value cannot
+pull the backstop underneath a tool that times itself.
+
+A killed command reports itself as killed rather than failed, and returns whatever it printed on
+stdout and stderr before the kill. The two outcomes call for different next moves — retrying a
+killed command identically is pointless; retrying with a larger `timeout` is not — so the failure
+message names the deadline it hit and the ways past it.
+
 ### Bash sandbox
 
 `sandbox.enabled` runs `Bash` commands inside [bubblewrap](https://github.com/containers/bubblewrap), which must be installed and is Linux-oriented; the sandbox is unavailable on Windows. When it cannot be created, `sandbox.failIfUnavailable` decides whether the command fails or runs unsandboxed. `sandbox.excludedCommands` skips the sandbox for matching commands, and sandboxed output is prefixed with `[sandboxed]`.
@@ -1111,7 +1140,7 @@ Project themes can override any token in `.book/themes/<name>.json`. They appear
 | `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                        |
 | `BOOK_ZERO_MEM_MODEL_CACHE` / `BOOK_ZERO_MEM_LOCAL_FILES_ONLY`                                    | Zero-Mem model cache and download policy                          |
 | `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                          |
-| `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout and telemetry location                               |
+| `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout (`Bash` included) and telemetry location             |
 | `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)          |
 | `BOOK_WEB_ALLOW_PRIVATE_NETWORK`                                                                  | Opt into local/private web destinations (disabled by default)     |
 | `BOOK_WEB_MAX_REDIRECTS`                                                                          | Same-origin redirect limit for `WebFetch` (default 5, maximum 10) |

@@ -4,6 +4,7 @@ import { TOOL_ALIASES } from './aliases.js';
 import { normalizeToolDefinition } from './catalog.js';
 import { validateToolArguments } from './schema.js';
 import { enrichToolResultPresentation, normalizeToolResult, toolFailure } from './result.js';
+import { resolveToolTimeoutMs, SELF_TIMEOUT_GRACE_MS } from './timeouts.js';
 
 const TOOL_ABORT_GRACE_MS = 250;
 const REPEATED_FAILURE_MEMORY_CAP = 32;
@@ -319,7 +320,9 @@ export function createRegistry() {
       }
 
       const providerArguments = { ...normalizedCall.arguments };
-      delete providerArguments.timeout;
+      // Hide the host control from validation only while the tool keeps it
+      // hidden from the model; a tool that publishes `timeout` gets it checked.
+      if (!tool.inputSchema?.properties?.timeout) delete providerArguments.timeout;
       const validationErrors = validateToolArguments(providerArguments, tool.inputSchema!);
       if (validationErrors.length > 0) {
         const allowedKeys = Object.keys(tool.inputSchema?.properties ?? {});
@@ -343,9 +346,27 @@ export function createRegistry() {
         };
       }
 
+      const declaredTimeoutMs =
+        typeof tool.timeoutMs === 'function' ? tool.timeoutMs(context) : tool.timeoutMs;
+      const resolvedTimeoutMs = resolveToolTimeoutMs({
+        // Only a tool that publishes `timeout` lets the model set the budget.
+        // Honouring a stray value everywhere shrank the backstop under tools
+        // that time themselves — a `Check` call carrying `timeout: 5000` got a
+        // 15s budget against its own 600s deadline, reinstating the very race
+        // this resolver exists to prevent — and an MCP tool whose own `timeout`
+        // means seconds turned `timeout: 30` into a 30ms deadline.
+        requested: tool.inputSchema?.properties?.timeout
+          ? normalizedCall.arguments.timeout
+          : undefined,
+        env: context.env,
+        fallback: declaredTimeoutMs,
+      });
+      // A tool that enforces its own deadline reports the timeout itself, with
+      // whatever output it captured. The registry stays a backstop behind it.
       const toolTimeoutMs =
-        (normalizedCall.arguments.timeout as number) ??
-        (context.env?.BOOK_TOOL_TIMEOUT_MS ? Number(context.env.BOOK_TOOL_TIMEOUT_MS) : 120_000);
+        declaredTimeoutMs === undefined
+          ? resolvedTimeoutMs
+          : resolvedTimeoutMs + SELF_TIMEOUT_GRACE_MS;
       return {
         status: 'ready',
         prepared: { call: normalizedCall, tool, timeoutMs: toolTimeoutMs },

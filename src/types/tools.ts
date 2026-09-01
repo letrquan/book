@@ -263,6 +263,14 @@ export interface ToolDefinition {
   policy?: ToolPolicy;
   /** When true, the tool is safe to retry once on transient failure (Read, Grep, WebFetch, etc.). */
   idempotent?: boolean;
+  /**
+   * Default deadline in milliseconds, and a declaration that the tool enforces
+   * its own. The registry gives such a tool a grace margin on top so the tool's
+   * report — which carries whatever output it captured — is the one that wins.
+   * A function form lets a tool whose deadline comes from settings (Check) keep
+   * both sides reading the same number.
+   */
+  timeoutMs?: number | ((context: ToolContext) => number | undefined);
   execute: (args: Record<string, unknown>, context: ToolContext) => Promise<ToolResult>;
 }
 

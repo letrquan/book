@@ -138,6 +138,15 @@ async function startAndWait(extraEnv: Record<string, string> = {}): Promise<TuiS
     readScreen() {
       return replayTerminalOutput(output, { cols: terminalColumns, rows: terminalRows });
     },
+    /**
+     * A render wait, not a latency budget: it polls and returns the moment the
+     * pattern appears, so a generous ceiling costs nothing on the green path
+     * and only decides how long to wait before calling a render lost. Callers
+     * used to pass 5000 here, which is the figure `vitest.config.ts` raised the
+     * global timeout away from — contended windows-latest runners push an
+     * ordinary render past it, and `/theme dark` duly failed CI at 5000ms on a
+     * run where its identical `/theme light` neighbour took 2512ms.
+     */
     async waitFor(pattern: string | RegExp, timeoutMs = 15_000) {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
@@ -269,7 +278,7 @@ describe('TUI slash commands', () => {
     await submitInteractive(session, '/help');
     await sleep(300);
     session.sendKey(keys.ctrlHome);
-    const output = await session.waitFor('Slash Commands', 5000);
+    const output = await session.waitFor('Slash Commands');
     expect(output).toContain('Slash Commands');
     expect(output).toContain('/help');
     expect(output).toContain('/clear');
@@ -296,7 +305,7 @@ describe('TUI slash commands', () => {
     // Full-frame rendering makes the post-toggle terminal state directly assertable.
     session = await startAndWait({ BOOK_TUI_RENDERER: 'safe' });
     await submitInteractive(session, '/help');
-    await session.waitFor('Slash Commands', 5000);
+    await session.waitFor('Slash Commands');
     const beforeToggle = session.readRaw().length;
     await submitInteractive(session, '/help');
     await sleep(500);
@@ -319,14 +328,14 @@ describe('TUI slash commands', () => {
   it('/theme dark shows dark theme', async () => {
     session = await startAndWait();
     await submitInteractive(session, '/theme dark');
-    const output = await session.waitFor('Switched to dark theme', 5000);
+    const output = await session.waitFor('Switched to dark theme');
     expect(output).toContain('saved as default');
   }, 20_000);
 
   it('/theme light shows light theme', async () => {
     session = await startAndWait();
     await submitInteractive(session, '/theme light');
-    const output = await session.waitFor('Switched to light theme', 5000);
+    const output = await session.waitFor('Switched to light theme');
     expect(output).toContain('saved as default');
   }, 20_000);
 
@@ -433,7 +442,7 @@ describe('TUI keyboard input', () => {
     async () => {
       session = await startAndWait();
       await submitInteractive(session, '/help');
-      await session.waitFor('Slash Commands', 5000);
+      await session.waitFor('Slash Commands');
 
       const startedAt = performance.now();
       session.sendKey(keys.ctrlU);
@@ -454,7 +463,7 @@ describe('TUI keyboard input', () => {
     async () => {
       session = await startAndWait({ BOOK_TUI_RENDERER: 'safe' });
       await submitInteractive(session, '/help');
-      await session.waitFor('Slash Commands', 5000);
+      await session.waitFor('Slash Commands');
 
       session.sendKey('INPUT_FOOTER_SENTINEL');
       await session.waitFor('INPUT_FOOTER_SENTINEL');

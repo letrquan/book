@@ -72,6 +72,72 @@ describe('ToolResult V2', () => {
     }
   });
 
+  // A killed command is judged on the step it was on when the deadline hit.
+  // Head-clipping hands back install and compile noise and drops exactly the
+  // progress a timeout report exists to deliver.
+  //
+  // Asserted through `boundToolResultOutput`, which is what the agent loop
+  // applies to every tool result and where the clipping actually happens. An
+  // earlier version of this test called the renderer directly and passed while
+  // production still head-clipped, because bounding empties `content` and folds
+  // the output into the message before the renderer ever sees it.
+  const killedResult = () => {
+    const output = `START-OF-BUILD\n${'filler line\n'.repeat(6_000)}suite 41 of 42 passed\n`;
+    expect(Buffer.byteLength(output)).toBeGreaterThan(50 * 1024);
+    return toolFailure('Command was killed after 300000ms; it did not fail.', {
+      status: 'timed_out',
+      code: 'tool_timeout',
+      remediation: 'Re-run with a larger timeout.',
+      content: output,
+      presentation: { details: output },
+    });
+  };
+
+  const expectTailKept = (content: string) => {
+    expect(Buffer.byteLength(content)).toBeLessThanOrEqual(50 * 1024);
+    expect(content).toContain('suite 41 of 42 passed');
+    expect(content).not.toContain('START-OF-BUILD');
+    expect(content).toContain('Earlier output truncated');
+  };
+
+  it('keeps the tail of a timed-out result through the bounding step', async () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'book-timeout-tail-'));
+    try {
+      const bounded = await boundToolResultOutput(
+        killedResult(),
+        process.cwd(),
+        undefined,
+        artifactRoot,
+      );
+      const content = toolResultModelContent(bounded);
+
+      expectTailKept(content);
+      expect(content).toContain('ERROR [tool_timeout]: Command was killed after 300000ms');
+      expect(content).toContain('Fix: Re-run with a larger timeout.');
+      // The transcript row reads the same way the model does.
+      expectTailKept(bounded.presentation!.details!);
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the tail for a caller that renders without bounding', () => {
+    const content = toolResultModelContent(killedResult());
+
+    expectTailKept(content);
+    expect(content).toContain('ERROR [tool_timeout]: Command was killed after 300000ms');
+  });
+
+  it('still bounds a timed-out result whose message alone exceeds the budget', () => {
+    const huge = toolFailure('x'.repeat(80_000), {
+      status: 'timed_out',
+      code: 'tool_timeout',
+      content: 'tail content',
+    });
+
+    expect(Buffer.byteLength(toolResultModelContent(huge))).toBeLessThanOrEqual(50 * 1024);
+  });
+
   it('keeps model content independent from structured data', () => {
     const result = toolSuccess('2 matches', { data: { matches: ['a', 'b'] } });
     expect(toolResultModelContent(result)).toBe('2 matches');
