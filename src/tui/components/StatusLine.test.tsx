@@ -117,6 +117,35 @@ describe('StatusLine', () => {
     }
   });
 
+  // Both are identity, but the branch is the one that changes under you: a
+  // rebase or a checkout in a sibling worktree moves it without asking, while
+  // the model stays where you put it. The old budgets cut `research/next-task`
+  // to `research/ne…` at 56 columns and left `scripted/scripted` whole.
+  it('spends a tight row on the branch before the model, without losing either', () => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="scripted/scripted"
+          tokenCount={0}
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          gitBranch="research/next-task"
+          gitStatus="✓"
+          terminalWidth={56}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain('research/next-t');
+    // The model is shortened rather than skipped: first-fit packing drops a
+    // segment whole, so a branch budget that crowds it loses it entirely.
+    expect(output).toContain('scripted/');
+    expect(displayWidth(output.split('\n')[0])).toBeLessThanOrEqual(56);
+  });
+
   it('folds context warning into compact status', () => {
     const view = render(
       withTheme(
