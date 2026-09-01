@@ -1058,7 +1058,7 @@ describe('App effort command', () => {
     const frame = stripAnsi(view.lastFrame());
 
     expect(frame).toContain('Set effort level');
-    expect(frame).toContain('❯ high');
+    expect(frame).toContain('› high');
     expect(frame).not.toContain('Maximum reasoning depth');
   });
 

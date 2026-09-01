@@ -2351,7 +2351,7 @@ export function App({
                   <Box flexDirection="column">
                     <HelpRow
                       label="Esc"
-                      description="Cancel permission / abort stream"
+                      description="Deny a prompt, cancel the turn, or close this panel"
                       theme={theme}
                     />
                     <HelpRow label="Ctrl+C" description="Cancel current turn" theme={theme} />

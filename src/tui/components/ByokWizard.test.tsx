@@ -162,7 +162,7 @@ describe('ByokWizard', () => {
     await advanceToModelSource(view);
 
     const frame = stripAnsi(view.lastFrame());
-    expect(frame).toContain('❯ Discover models automatically');
+    expect(frame).toContain('› Discover models automatically');
     expect(frame).toContain('Enter model IDs manually');
     expect(discover).not.toHaveBeenCalled();
   });

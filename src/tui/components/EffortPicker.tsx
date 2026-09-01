@@ -86,7 +86,7 @@ export function EffortPicker({ current, availableLevels, onSelect, onCancel }: E
               color={isSelected ? theme.selectionText : isCurrent ? theme.brand : theme.text}
               bold={isSelected || isCurrent}
             >
-              {isSelected ? '❯' : ' '} {level.padEnd(6)} {DESCRIPTIONS[level]}
+              {isSelected ? '›' : ' '} {level.padEnd(6)} {DESCRIPTIONS[level]}
               {isCurrent ? '  (current)' : ''}
             </Text>
           );

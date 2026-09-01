@@ -14,6 +14,21 @@ import { useDebugMount } from '../debug.js';
 const uiLog = createUiDebugLogger('tui:permbtn');
 const PERMISSION_PATTERN_DISPLAY_MAX_LENGTH = 40;
 
+/**
+ * Marks the armed button, the same way {@link PlanApprovalActions} marks its own.
+ *
+ * The armed choice used to be carried by background colour and bold alone: the
+ * only selection surface in the TUI without a glyph, while every menu, picker
+ * and wizard has one. That was already an accessibility problem — a low-contrast
+ * theme or a colour-blind reader has nothing left — and it got worse when `A`
+ * became the way to *arm* "Always allow" and then step its scope rather than
+ * fire it, because the whole interaction now depends on seeing which button is
+ * armed. The brackets went with it: a marker and a pair of brackets are two
+ * containers doing one job, and dropping them buys back columns the rule
+ * pattern needs.
+ */
+const SELECTION_MARKER = '▸';
+
 interface PermissionButtonsProps {
   toolCall: ToolCall;
   /**
@@ -289,13 +304,14 @@ export function PermissionButtons({
           const btnColor = theme[btn.colorKey];
           const label = btn.value === 'always' ? `${btn.label} ${alwaysPatternDisplay}` : btn.label;
           return (
-            <Box key={btn.label} marginRight={1}>
+            <Box key={btn.label} marginRight={2}>
               <Text
                 backgroundColor={isSelected ? theme.surfaceActive : undefined}
                 color={isSelected ? theme.selectionText : btnColor}
                 bold={isSelected}
               >
-                [{label}]
+                {isSelected ? `${SELECTION_MARKER} ` : '  '}
+                {label}
               </Text>
             </Box>
           );

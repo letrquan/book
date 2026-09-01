@@ -175,6 +175,20 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The armed permission button is marked, and one glyph means "selected" everywhere.** The
+  permission card carried its armed choice in background colour and bold alone — the only
+  selection surface in the TUI without a glyph, while every menu, picker and wizard has one. A
+  low-contrast theme or a colour-blind reader had nothing left to read, and the gap widened when
+  `A` became the key that *arms* "Always allow" and then steps its scope rather than firing it:
+  the whole interaction now depends on seeing which button is armed. It uses the same `▸` the plan
+  approval card uses, and drops its brackets — a marker and a pair of brackets are two containers
+  doing one job, and the columns go to the rule pattern instead. Elsewhere, three components spelled
+  the selection marker `❯` while nineteen spelled it `›`; they all say `›` now, including the two
+  text-input carets, which matches the composer's own prompt.
+
+  The shortcut reference also said Esc only cancels a permission or aborts the stream. It closes
+  the open panel too.
+
 - **"Always allow" is worth pressing, and a rule can be taken back.** For a shell command the rule
   it wrote was the exact command string, so `Bash(npm run check)` matched that byte sequence and
   nothing else: a user who pressed it to stop being asked was asked again on the very next call.

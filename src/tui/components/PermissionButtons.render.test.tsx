@@ -140,6 +140,36 @@ describe('PermissionButtons', () => {
     expect(onResolve).not.toHaveBeenCalled();
   });
 
+  // The armed choice used to be carried by background colour and bold alone —
+  // the only selection surface in the TUI without a glyph. `A` now arms the
+  // Always allow button rather than firing it, so seeing which one is armed is
+  // the whole interaction.
+  it('marks the armed button with the same glyph the plan card uses', async () => {
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-5', name: 'Bash', arguments: { command: 'npm run check' } }}
+          onResolve={vi.fn()}
+        />,
+      ),
+    );
+
+    const armed = (frame: string) =>
+      frame
+        .split('\n')
+        .find((line) => line.includes('▸'))
+        ?.trim();
+
+    expect(armed(stripAnsi(view.lastFrame() ?? ''))).toContain('▸ Run once');
+
+    view.stdin.write('\u001b[C');
+    await waitForImmediate();
+    const moved = armed(stripAnsi(view.lastFrame() ?? ''));
+    expect(moved).toContain('▸ Skip');
+    // Exactly one marker: two would read as two armed buttons.
+    expect((stripAnsi(view.lastFrame() ?? '').match(/▸/g) ?? []).length).toBe(1);
+  });
+
   it('keeps R and S as single-key shortcuts', () => {
     const onResolve = vi.fn();
     const view = render(
