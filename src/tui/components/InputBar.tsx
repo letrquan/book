@@ -10,6 +10,7 @@ import type { ImageAttachment } from '../../types/messages.js';
 import type { SlashCommand } from '../../types/commands.js';
 import type { Skill } from '../../skills.js';
 import { modeColorToken } from '../mode-style.js';
+import { isShortcutsToggleKey } from '../tool-presentation.js';
 import { floatingFrameMetrics } from './chrome.js';
 import {
   findActiveFileMention,
@@ -541,7 +542,9 @@ export function InputBar({
     }
     // Forward Ctrl-based shortcuts to the parent App. As with Alt chords,
     // restore the pre-event value when consumed to keep shortcut routing defensive.
-    if (key.ctrl && onGlobalShortcut) {
+    // Ctrl+/ arrives as a bare US byte with no `ctrl` flag (see
+    // `isShortcutsToggleKey`), so gating on `key.ctrl` alone would swallow it here.
+    if ((key.ctrl || isShortcutsToggleKey(_input, key)) && onGlobalShortcut) {
       if (onGlobalShortcut(_input, key)) {
         const preservedValue = value;
         queueMicrotask(() => setValue(preservedValue));
@@ -783,8 +786,14 @@ export function InputBar({
   const editorWidth = Math.max(8, frame.width - 4);
   const inputWidth = Math.max(1, editorWidth - 2);
   const promptColor = baseBorderColor;
-  const placeholder =
-    submissionMode === 'queue'
+  // A modal owns the keyboard, so the composer accepts nothing — saying
+  // "Type a follow-up" here invited the user to type into a locked field while
+  // the prompt above was reading their keystrokes as answers.
+  const placeholder = inputSuppressed
+    ? compact
+      ? 'Answer above'
+      : 'Answer the prompt above'
+    : submissionMode === 'queue'
       ? compact
         ? 'Enter queues'
         : 'Type a follow-up; Enter queues it'

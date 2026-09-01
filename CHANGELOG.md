@@ -145,6 +145,31 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A single stray letter no longer grants a permanent shell permission.** While a permission
+  prompt was open the composer still read `Type a follow-up; Enter queues it`, but the prompt owned
+  the keyboard and `A` resolved it as *Always allow*. Typing one `a` therefore ran the command and
+  wrote a rule such as `Bash(echo one)` into `.book/settings.local.json` — the letter never appeared
+  in the composer, nothing was reported, and nothing in the UI removes a rule once written. The
+  composer now says `Answer the prompt above` whenever a modal owns the keyboard, `A` only *arms*
+  Always allow and takes a deliberate Enter to grant, and Space no longer activates the selection
+  (it left `always` two ordinary keystrokes away — `a` then a space). `R` and `S` keep their
+  single-key shortcuts. Enter now reads the armed button from a ref, so `A`-then-Enter in one React
+  batch can no longer resolve as the previously selected button.
+
+- **`Ctrl+/` opens the keyboard-shortcut reference again.** A terminal sends US (`0x1f`) for that
+  chord and Ink's `parseKeypress` reports it as `{ name: '', ctrl: false }`, so the
+  `key.ctrl && input === '/'` test never matched — while a unit test synthesizing `{ ctrl: true }`
+  passed. The one shortcut advertised on the welcome screen could not be pressed, and the README
+  documents no other keyboard reference. `isShortcutsToggleKey` now matches the raw byte and keeps
+  the flag form for terminals that do report it.
+
+- **Reference panels close, and only one opens at a time.** `/help`, `/status`, `/permissions` and
+  the shortcut overlay were four independent booleans that nothing but retyping the command could
+  clear, so `/help` then `/status` pinned 43 rows of chrome above the composer and pushed the
+  conversation off a 40-row terminal. They now share one slot, Esc closes the open one when nothing
+  is in flight (a running turn keeps Esc), and each title row states `Esc to close` — on the title
+  rather than a footer, because `/help` already runs taller than a short terminal.
+
 - **Book can run its own gate.** A foreground `Bash` command was killed at 120s with no way for the
   model to ask for more, so `npm run check` — the gate `CLAUDE.md` tells Book to run before calling
   work done — could never finish. It takes over 200s here; `npm run test:unit` alone takes 158s.

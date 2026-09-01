@@ -47,6 +47,25 @@ export function getTranscriptShortcutAction(
   return null;
 }
 
+/**
+ * True for the keypress that toggles the keyboard-shortcut reference.
+ *
+ * A terminal sends US (`0x1f`) for Ctrl+/, and Ink's `parseKeypress` reports
+ * that byte as `{ name: '', ctrl: false }` — the sequence reaches `useInput` as
+ * `input`, with no `ctrl` flag to gate on. Testing only `key.ctrl && input ===
+ * '/'` therefore never matched, so the one shortcut advertised on the welcome
+ * screen could not be pressed, while a unit test synthesizing `{ ctrl: true }`
+ * passed. Match the raw byte first and keep the flag form for terminals that do
+ * report it.
+ */
+export function isShortcutsToggleKey(
+  input: string,
+  key: { ctrl?: boolean; meta?: boolean },
+): boolean {
+  if (input.charCodeAt(0) === 31) return true;
+  return Boolean(key.ctrl) && !key.meta && (input === '/' || input === '_');
+}
+
 export interface PresentableToolInvocation<TCall = unknown> {
   id: string;
   name: string;

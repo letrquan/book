@@ -66,7 +66,7 @@ export function permissionPatternForDisplay(pattern: string): string {
  *
  * Navigation:
  *   ←/→ or Tab/Shift+Tab — cycle between buttons
- *   Enter or R/S/A keys — activate selected button
+ *   Enter, or R/S — activate; A selects "Always allow" without activating it
  *   Esc — deny
  */
 export function PermissionButtons({
@@ -77,6 +77,11 @@ export function PermissionButtons({
   const theme = useTheme();
   const density = useDensityMetrics();
   const [selected, setSelected] = useState(0);
+  // Enter reads the selection from a ref, not from render state. `A` now only
+  // arms "Always allow", so `A` then a quick Enter lands in one React batch and
+  // the Enter handler would still close over the previous index — resolving
+  // `allow` when the user asked for `always`.
+  const selectedRef = useRef(0);
   const resolvedToolCallIdRef = useRef<string | null>(null);
   const canonical = canonicalToolName(toolCall.name);
   const primaryArg = getPrimaryArg(toolCall.arguments);
@@ -93,6 +98,11 @@ export function PermissionButtons({
     risk,
     primaryArg: primaryArg ? primaryArg.slice(0, 40) : null,
   });
+
+  const moveSelection = useCallback((next: (current: number) => number) => {
+    selectedRef.current = next(selectedRef.current);
+    setSelected(selectedRef.current);
+  }, []);
 
   const handleResolve = useCallback(
     (value: PermissionResult) => {
@@ -118,27 +128,31 @@ export function PermissionButtons({
     (input, key) => {
       if (key.leftArrow) {
         const prev = selected;
-        setSelected((s) => (s - 1 + BUTTONS.length) % BUTTONS.length);
+        moveSelection((s) => (s - 1 + BUTTONS.length) % BUTTONS.length);
         uiLog.event('input:Left', { tool: canonical, selected: `${prev}->?` });
         return;
       }
       if (key.rightArrow) {
         const prev = selected;
-        setSelected((s) => (s + 1) % BUTTONS.length);
+        moveSelection((s) => (s + 1) % BUTTONS.length);
         uiLog.event('input:Right', { tool: canonical, selected: `${prev}->?` });
         return;
       }
       if (key.tab) {
         const prev = selected;
-        setSelected((s) =>
+        moveSelection((s) =>
           key.shift ? (s - 1 + BUTTONS.length) % BUTTONS.length : (s + 1) % BUTTONS.length,
         );
         uiLog.event('input:Tab', { tool: canonical, shift: key.shift, selected: `${prev}->?` });
         return;
       }
-      if (key.return || input === ' ') {
-        uiLog.event('input:Enter', { tool: canonical, selected });
-        handleResolve(BUTTONS[selected].value);
+      // Enter only. Space used to activate too, which put `always` two ordinary
+      // keystrokes away — `a` then a space, the opening of any sentence
+      // starting with "a " — and the card advertises Enter, never space.
+      if (key.return) {
+        const armed = selectedRef.current;
+        uiLog.event('input:Enter', { tool: canonical, selected: armed });
+        handleResolve(BUTTONS[armed].value);
         return;
       }
       if (key.escape) {
@@ -156,9 +170,14 @@ export function PermissionButtons({
         handleResolve('deny');
         return;
       }
+      // `A` deliberately has no single-key shortcut. `always` is the one choice
+      // here that writes a permission rule to disk, and rules can only be
+      // removed by hand, so it must not be reachable by one stray letter — a
+      // lone `a` used to grant a persistent shell allow with no visible trace.
+      // Select it and press Enter.
       if (input === 'a' || input === 'A') {
-        uiLog.event('input:shortcut', { tool: canonical, key: 'A', action: 'always' });
-        handleResolve('always');
+        uiLog.event('input:shortcut', { tool: canonical, key: 'A', action: 'select-always' });
+        moveSelection(() => BUTTONS.findIndex((button) => button.value === 'always'));
         return;
       }
     },
@@ -183,7 +202,8 @@ export function PermissionButtons({
         <Text>Permission required for: {canonical}</Text>
         <Text>Primary argument: {primaryArg || '(none)'}</Text>
         {hint ? <Text>Warning: {hint}</Text> : null}
-        <Text>Press: [R] Run once [S] Skip [A] Always allow [Esc] Deny</Text>
+        <Text>Press: [R] Run once, [S] Skip, [Esc] Deny.</Text>
+        <Text>Always allow: press [A] to select it, then Enter to confirm.</Text>
       </Box>
     );
   }
@@ -233,7 +253,7 @@ export function PermissionButtons({
       {density.showOptionalHelp ? (
         <Box>
           <Text color={theme.subtle} dimColor>
-            ← → select · Enter confirm · R/S/A shortcuts · Esc deny
+            ← → select · Enter confirm · R run · S skip · Esc deny
           </Text>
         </Box>
       ) : null}

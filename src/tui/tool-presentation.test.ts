@@ -3,6 +3,7 @@ import type { ToolResult } from '../types/tools.js';
 import {
   deriveToolPresentation,
   getTranscriptShortcutAction,
+  isShortcutsToggleKey,
   parseMcpToolName,
   shouldExpandTool,
 } from './tool-presentation.js';
@@ -215,6 +216,30 @@ describe('transcript shortcuts', () => {
     expect(getTranscriptShortcutAction('detailed', String.fromCharCode(5), { ctrl: true })).toBe(
       'expand-output',
     );
+  });
+});
+
+describe('isShortcutsToggleKey', () => {
+  // Ink's parseKeypress reports the byte a terminal sends for Ctrl+/ as
+  // `{ name: '', ctrl: false }`, so it reaches useInput as a bare US character
+  // with no modifier flag. Asserting only the synthesized `{ ctrl: true }` form
+  // is what let the shortcut die while its test stayed green: this case is the
+  // one that reflects a real keypress.
+  it('matches the raw US byte a terminal sends for Ctrl+/', () => {
+    expect(isShortcutsToggleKey('', {})).toBe(true);
+    expect(isShortcutsToggleKey(String.fromCharCode(31), { ctrl: false })).toBe(true);
+  });
+
+  it('still matches terminals that report the modifier', () => {
+    expect(isShortcutsToggleKey('/', { ctrl: true })).toBe(true);
+    expect(isShortcutsToggleKey('_', { ctrl: true })).toBe(true);
+  });
+
+  it('ignores an ordinary slash and Alt chords', () => {
+    expect(isShortcutsToggleKey('/', {})).toBe(false);
+    expect(isShortcutsToggleKey('/', { ctrl: true, meta: true })).toBe(false);
+    expect(isShortcutsToggleKey('', {})).toBe(false);
+    expect(isShortcutsToggleKey('o', { ctrl: true })).toBe(false);
   });
 });
 

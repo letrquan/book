@@ -86,7 +86,11 @@ import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewScope } from '../review/types.js';
 import { join } from 'path';
 import { selectExpandedToolId, selectLatestToolId } from './tool-traces.js';
-import { getTranscriptShortcutAction, type TranscriptMode } from './tool-presentation.js';
+import {
+  getTranscriptShortcutAction,
+  isShortcutsToggleKey,
+  type TranscriptMode,
+} from './tool-presentation.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
 import type { InteractiveAssets } from './interactive-assets.js';
@@ -162,6 +166,15 @@ function containsDraftInput(input: string): boolean {
 }
 
 type ApplyThemeResult = { ok: true; theme: ResolvedTheme } | { ok: false; error: string };
+
+/**
+ * The read-only reference sheets, at most one of which is open at a time.
+ *
+ * They are all the same kind of surface — a pinned block of text the user opened
+ * deliberately and expects Esc to close — so they share one slot rather than a
+ * boolean each.
+ */
+type ReferencePanel = 'help' | 'status' | 'permissions' | 'shortcuts';
 
 function themeAppliedMessage(theme: ResolvedTheme): string {
   if (theme.preference === 'auto') {
@@ -375,9 +388,15 @@ export function App({
   const [startupFireActive, setStartupFireActive] = useState(() =>
     shouldPlayStartupFire(config, session),
   );
-  const [showHelp, setShowHelp] = useState(false);
-  const [showShortcuts, setShowShortcuts] = useState(false);
-  const [showStatus, setShowStatus] = useState(false);
+  // The four reference sheets share one slot. They were four independent
+  // booleans, so `/help` then `/status` pinned 43 rows of chrome above the
+  // composer and pushed the conversation off a 40-row terminal entirely. One
+  // slot makes that impossible rather than merely discouraged, and gives Esc a
+  // single thing to close.
+  const [referencePanel, setReferencePanel] = useState<ReferencePanel | null>(null);
+  const showHelp = referencePanel === 'help';
+  const showShortcuts = referencePanel === 'shortcuts';
+  const showStatus = referencePanel === 'status';
   const [showAllDetailedOutput, setShowAllDetailedOutput] = useState(false);
   const [showAllToolOutputIdsByTranscript, setShowAllToolOutputIdsByTranscript] = useState<
     Map<string, Set<string>>
@@ -389,7 +408,7 @@ export function App({
   const [focusedToolIdsByTranscript, setFocusedToolIdsByTranscript] = useState<Map<string, string>>(
     () => new Map(),
   );
-  const [showPermissions, setShowPermissions] = useState(false);
+  const showPermissions = referencePanel === 'permissions';
   const [showSkills, setShowSkills] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showEffortPicker, setShowEffortPicker] = useState(false);
@@ -1235,6 +1254,14 @@ export function App({
         uiLog.event('input:Escape', { action: 'cancel-review' });
         return;
       }
+      // Nothing is in flight, so Esc falls through to the reference sheet the
+      // user opened. It ranks last deliberately: a panel is a static block of
+      // text, and Esc must never stop meaning "cancel the running turn".
+      if (referencePanel) {
+        uiLog.event('input:Escape', { action: 'close-panel', panel: referencePanel });
+        setReferencePanel(null);
+        return;
+      }
       uiLog.event('input:Escape', { action: 'noop-idle' });
     }
     // Ctrl+C — cancel in-flight work; otherwise preserve normal terminal exit.
@@ -1579,8 +1606,7 @@ export function App({
         }
         if (effect?.type === 'start-new-conversation') {
           clearTasks();
-          setShowHelp(false);
-          setShowStatus(false);
+          setReferencePanel(null);
           setShowSessionPicker(false);
           setShowRewindPicker(false);
           void startNewConversation(effect.previousName).catch((err) => {
@@ -1652,9 +1678,8 @@ export function App({
           return;
         }
         if (effect?.type === 'toggle-panel') {
-          if (effect.panel === 'help') setShowHelp((current) => !current);
-          else if (effect.panel === 'status') setShowStatus((current) => !current);
-          else setShowPermissions((current) => !current);
+          const panel = effect.panel;
+          setReferencePanel((current) => (current === panel ? null : panel));
           return;
         }
         if (effect?.type === 'add-task') {
@@ -1922,8 +1947,9 @@ export function App({
       ) {
         return true;
       }
-      if (key.ctrl && (input === '/' || input === '_')) {
-        setShowShortcuts((s) => !s);
+      if (isShortcutsToggleKey(input, key)) {
+        uiLog.event('input:Ctrl+/', { action: 'toggle-shortcuts' });
+        setReferencePanel((current) => (current === 'shortcuts' ? null : 'shortcuts'));
         return true; // consumed
       }
       const transcriptAction = getTranscriptShortcutAction(transcriptMode, input, key);
@@ -2101,9 +2127,7 @@ export function App({
                   borderColor={theme.border}
                   paddingX={1}
                 >
-                  <Text bold color={theme.brand}>
-                    Slash Commands
-                  </Text>
+                  <PanelHeading title="Slash Commands" theme={theme} />
                   <Box flexDirection="column">
                     <HelpRow label="/help" description="Toggle this help" theme={theme} />
                     <HelpRow label="/exit" description="Exit book" theme={theme} />
@@ -2231,9 +2255,7 @@ export function App({
                   borderColor={theme.border}
                   paddingX={1}
                 >
-                  <Text bold color={theme.brand}>
-                    Session Status
-                  </Text>
+                  <PanelHeading title="Session Status" theme={theme} />
                   <Box flexDirection="column">
                     <HelpRow
                       label="Model"
@@ -2278,9 +2300,7 @@ export function App({
                   borderColor={theme.border}
                   paddingX={1}
                 >
-                  <Text bold color={theme.brand}>
-                    Permission Mode
-                  </Text>
+                  <PanelHeading title="Permission Mode" theme={theme} />
                   <Box flexDirection="column">
                     <HelpRow label="Current Mode" description={mode} theme={theme} />
                     <HelpRow
@@ -2362,9 +2382,7 @@ export function App({
                   borderColor={theme.border}
                   paddingX={1}
                 >
-                  <Text bold color={theme.brand}>
-                    Keyboard Shortcuts
-                  </Text>
+                  <PanelHeading title="Keyboard Shortcuts" theme={theme} />
                   <Box flexDirection="column">
                     <HelpRow
                       label="Esc"
@@ -3084,6 +3102,35 @@ function AppProviders({
     <ThemeContext.Provider value={theme}>
       <DensityContext.Provider value={density}>{children}</DensityContext.Provider>
     </ThemeContext.Provider>
+  );
+}
+
+/**
+ * Title row for a reference sheet, carrying the way out.
+ *
+ * These panels are pinned above the composer until something dismisses them, so
+ * the exit has to be written on the panel itself — a reader who does not
+ * already know the toggle command has nothing else to go on. It rides the title
+ * rather than a footer line because `/help` already runs taller than a short
+ * terminal, and a panel that has to scroll to reveal how to close it is no
+ * better than one that never says.
+ */
+function PanelHeading({
+  title,
+  theme,
+}: {
+  title: string;
+  theme: { brand: string; subtle: string };
+}) {
+  return (
+    <Box>
+      <Text bold color={theme.brand}>
+        {title}
+      </Text>
+      <Text color={theme.subtle} dimColor>
+        {'  Esc to close'}
+      </Text>
+    </Box>
   );
 }
 

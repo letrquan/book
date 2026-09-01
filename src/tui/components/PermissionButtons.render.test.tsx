@@ -62,6 +62,48 @@ describe('PermissionButtons', () => {
     expect(onResolve).toHaveBeenCalledOnce();
     expect(onResolve).toHaveBeenCalledWith('allow');
   });
+
+  // `always` is the only choice here that writes a rule to disk, and nothing in
+  // the UI removes one. A lone `a` used to grant it outright: with the composer
+  // below still reading "Type a follow-up", one letter of an ordinary sentence
+  // persisted a shell allow with no visible trace.
+  it('arms "Always allow" on A but does not grant it without a deliberate Enter', () => {
+    const onResolve = vi.fn();
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-1', name: 'Bash', arguments: { command: 'echo one' } }}
+          onResolve={onResolve}
+        />,
+      ),
+    );
+
+    view.stdin.write('a');
+    expect(onResolve).not.toHaveBeenCalled();
+
+    // Space used to activate too, which left `always` reachable by "a ".
+    view.stdin.write(' ');
+    expect(onResolve).not.toHaveBeenCalled();
+
+    view.stdin.write('\r');
+    expect(onResolve).toHaveBeenCalledOnce();
+    expect(onResolve).toHaveBeenCalledWith('always');
+  });
+
+  it('keeps R and S as single-key shortcuts', () => {
+    const onResolve = vi.fn();
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-2', name: 'Bash', arguments: { command: 'echo two' } }}
+          onResolve={onResolve}
+        />,
+      ),
+    );
+
+    view.stdin.write('s');
+    expect(onResolve).toHaveBeenCalledExactlyOnceWith('deny');
+  });
 });
 
 describe('toolRiskLevel', () => {
