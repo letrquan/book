@@ -1,6 +1,7 @@
 import type {
   ElicitationRequest,
   ElicitationResponse,
+  PermissionDecision,
   PermissionResult,
   PlanApprovalResult,
   ToolCall,
@@ -35,7 +36,7 @@ export interface AgentInteractionSnapshot {
 }
 
 interface PendingPermission extends PendingPermissionRequest {
-  resolve: (result: PermissionResult) => void;
+  resolve: (decision: PermissionResult | PermissionDecision) => void;
 }
 
 interface PendingPlanApproval extends PendingPlanApprovalRequest {
@@ -96,7 +97,7 @@ export class AgentInteractionController {
     return () => this.listeners.delete(listener);
   }
 
-  requestPermission(toolCall: ToolCall): Promise<PermissionResult> {
+  requestPermission(toolCall: ToolCall): Promise<PermissionResult | PermissionDecision> {
     return new Promise((resolve) => {
       const request = { toolCall, resolve };
       if (this.pendingPermission) {
@@ -114,7 +115,7 @@ export class AgentInteractionController {
     });
   }
 
-  settlePermission(result: PermissionResult, via: string): boolean {
+  settlePermission(result: PermissionResult | PermissionDecision, via: string): boolean {
     const pending = this.pendingPermission;
     if (!pending) {
       log.event('permission:settled:noop', { reason: 'no-pending', result, via });

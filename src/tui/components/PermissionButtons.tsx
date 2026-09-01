@@ -1,13 +1,13 @@
 import { Box, Text, useInput } from 'ink';
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN } from '../layout.js';
 import { useDensityMetrics } from '../density.js';
 import { getPrimaryArg } from '../../tools/primary-arg.js';
 import { canonicalToolName } from '../../tools/aliases.js';
 import { isFileMutatingTool } from '../../tools/tool-capabilities.js';
-import { permissionRuleForToolCall } from '../../permissions.js';
-import type { PermissionResult, ToolCall } from '../../types/tools.js';
+import { permissionRuleForToolCall, permissionRuleLadder } from '../../permissions.js';
+import type { PermissionDecision, PermissionResult, ToolCall } from '../../types/tools.js';
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
 
@@ -16,7 +16,11 @@ const PERMISSION_PATTERN_DISPLAY_MAX_LENGTH = 40;
 
 interface PermissionButtonsProps {
   toolCall: ToolCall;
-  onResolve: (result: PermissionResult) => void;
+  /**
+   * Receives the decision. `always` carries the rule the user actually chose,
+   * which is not always the exact command: the scope ladder lets them widen it.
+   */
+  onResolve: (decision: PermissionResult | PermissionDecision) => void;
   /** When true, disables all animations/colors for screen readers. */
   screenReader?: boolean;
 }
@@ -56,6 +60,15 @@ export function permissionPatternForTool(toolCall: ToolCall, primaryArg: string)
   return permissionRuleForToolCall(toolCall);
 }
 
+/** Caption for a scope the user has widened past the exact command. */
+export function scopeCaption(ladder: readonly string[], index: number): string | null {
+  if (index === 0) return null;
+  const remaining = ladder.length - 1 - index;
+  return remaining > 0
+    ? `Covers every command matching this pattern. A again widens further.`
+    : `Covers every command matching this pattern. A again returns to the exact one.`;
+}
+
 export function permissionPatternForDisplay(pattern: string): string {
   if (pattern.length <= PERMISSION_PATTERN_DISPLAY_MAX_LENGTH) return pattern;
   return `${pattern.slice(0, PERMISSION_PATTERN_DISPLAY_MAX_LENGTH - 3)}...`;
@@ -87,8 +100,18 @@ export function PermissionButtons({
   const primaryArg = getPrimaryArg(toolCall.arguments);
   const risk = toolRiskLevel(toolCall);
   const hint = riskHint(risk);
-  const alwaysPattern = permissionPatternForTool(toolCall, primaryArg);
+  // The rules "Always allow" may write, narrowest first. For a shell command
+  // the exact rule matches that byte sequence and nothing else, so offering
+  // only that made the button a no-op for the case it exists to serve; the user
+  // steps the scope with `A` and always sees the pattern before Enter writes it.
+  const ladder = useMemo(() => permissionRuleLadder(toolCall), [toolCall]);
+  const ladderRef = useRef(ladder);
+  ladderRef.current = ladder;
+  const [scopeIndex, setScopeIndex] = useState(0);
+  const scopeIndexRef = useRef(0);
+  const alwaysPattern = ladder[scopeIndex] ?? ladder[0];
   const alwaysPatternDisplay = permissionPatternForDisplay(alwaysPattern);
+  const scopeHint = scopeCaption(ladder, scopeIndex);
 
   // Track previous selection for old→new logging without stale closure issues.
   const prevSelectedRef = useRef(0);
@@ -114,12 +137,14 @@ export function PermissionButtons({
         return;
       }
       resolvedToolCallIdRef.current = toolCall.id;
+      const rule = value === 'always' ? ladderRef.current[scopeIndexRef.current] : undefined;
       uiLog.event('resolve', {
         tool: canonical,
         result: value,
         selected,
+        rule: rule ?? '',
       });
-      onResolve(value);
+      onResolve(rule ? { result: value, rule } : value);
     },
     [canonical, onResolve, selected, toolCall.id],
   );
@@ -151,7 +176,11 @@ export function PermissionButtons({
       // starting with "a " — and the card advertises Enter, never space.
       if (key.return) {
         const armed = selectedRef.current;
-        uiLog.event('input:Enter', { tool: canonical, selected: armed });
+        uiLog.event('input:Enter', {
+          tool: canonical,
+          selected: armed,
+          rule: BUTTONS[armed].value === 'always' ? ladder[scopeIndexRef.current] : undefined,
+        });
         handleResolve(BUTTONS[armed].value);
         return;
       }
@@ -176,8 +205,23 @@ export function PermissionButtons({
       // lone `a` used to grant a persistent shell allow with no visible trace.
       // Select it and press Enter.
       if (input === 'a' || input === 'A') {
+        const alwaysIndex = BUTTONS.findIndex((button) => button.value === 'always');
+        // First `A` arms the button; each `A` after that widens the scope and
+        // wraps back to the exact rule, so the key can explore every option
+        // without ever committing one.
+        if (selectedRef.current === alwaysIndex && ladder.length > 1) {
+          scopeIndexRef.current = (scopeIndexRef.current + 1) % ladder.length;
+          setScopeIndex(scopeIndexRef.current);
+          uiLog.event('input:shortcut', {
+            tool: canonical,
+            key: 'A',
+            action: 'step-scope',
+            rule: ladder[scopeIndexRef.current],
+          });
+          return;
+        }
         uiLog.event('input:shortcut', { tool: canonical, key: 'A', action: 'select-always' });
-        moveSelection(() => BUTTONS.findIndex((button) => button.value === 'always'));
+        moveSelection(() => alwaysIndex);
         return;
       }
     },
@@ -204,6 +248,8 @@ export function PermissionButtons({
         {hint ? <Text>Warning: {hint}</Text> : null}
         <Text>Press: [R] Run once, [S] Skip, [Esc] Deny.</Text>
         <Text>Always allow: press [A] to select it, then Enter to confirm.</Text>
+        <Text>Rule to be saved: {alwaysPattern}</Text>
+        {ladder.length > 1 ? <Text>Press [A] again to widen or narrow that rule.</Text> : null}
       </Box>
     );
   }
@@ -232,6 +278,11 @@ export function PermissionButtons({
           <Text color={risk === 'shell' ? theme.error : theme.warning}>{hint}</Text>
         </Box>
       ) : null}
+      {scopeHint ? (
+        <Box>
+          <Text color={theme.warning}>{scopeHint}</Text>
+        </Box>
+      ) : null}
       <Box>
         {BUTTONS.map((btn, i) => {
           const isSelected = i === selected;
@@ -253,7 +304,9 @@ export function PermissionButtons({
       {density.showOptionalHelp ? (
         <Box>
           <Text color={theme.subtle} dimColor>
-            ← → select · Enter confirm · R run · S skip · Esc deny
+            {ladder.length > 1
+              ? '← → select · Enter confirm · A scope · R run · S skip · Esc deny'
+              : '← → select · Enter confirm · R run · S skip · Esc deny'}
           </Text>
         </Box>
       ) : null}
