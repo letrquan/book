@@ -191,8 +191,9 @@ type SqliteDatabaseCtor = new (path: string, options?: { readOnly?: boolean }) =
 
 /**
  * `node:sqlite` landed in Node 22.5.0 and stopped requiring
- * `--experimental-sqlite` in 22.13.0, which is why the package floor is
- * `>=22.13.0` rather than `>=22`. It is imported lazily so a host on an older
+ * `--experimental-sqlite` in 22.13.0, which is why the package floor is not
+ * simply `>=22`. The floor itself is now `>=22.19.0`, set higher still by
+ * undici 8. It is imported lazily so a host on an older
  * runtime fails when it selects this backend, not at module load, and the
  * failure names the required version instead of surfacing a bare module error.
  */
