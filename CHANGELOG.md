@@ -49,15 +49,34 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
-- **A crash no longer reads as lost work.** The TUI error boundary said "Restart Book to recover"
-  and nothing else, so a user whose render blew up mid-session could not tell whether an hour of
-  conversation was gone. It was never gone -- `SessionStore.create` appends the session header
-  synchronously at startup and every record after it lands the same way -- so the box now names
-  the command that reopens the session, and omits it only when persistence is off and there would
-  be nothing to reopen. It also states that Ctrl+C exits, which is the only way out once the
-  boundary owns the screen. The `console.warn` that printed the same message as raw text above the
-  alternate screen is gone: it duplicated the box and smeared the frame, and carried none of the
-  stack the structured debug record keeps.
+- **A crash no longer reads as lost work, and no longer traps the user.** The TUI error boundary
+  said "Restart Book to recover" and nothing else, so a user whose render blew up mid-session could
+  not tell whether an hour of conversation was gone. It was never gone -- `SessionStore.create`
+  appends the session header synchronously at startup and every record after it lands the same way
+  -- so the box now names the command that reopens the session. It omits that line when persistence
+  is off, and when the session holds nothing but its own header, because reopening an empty
+  conversation is not the reassurance it sounds like.
+
+  The box also owns its own keyboard. It could not borrow the app's: that handler stays mounted
+  with whatever state it held when the render blew up, so it swallowed Ctrl+C behind its modal
+  guard whenever a picker was open and spent it on `interrupt()` whenever a turn was streaming --
+  and with Ink's `exitOnCtrlC` disabled and no SIGINT handler behind it, nothing else would have
+  exited either. Ctrl+C now leaves through the normal session-end path from any crash, and R
+  retries the render, which recovers the many throws that are transient rather than costing the
+  user the whole process.
+
+  The `console.warn` that printed the same message as raw text above the alternate screen is gone:
+  it duplicated the box and smeared the frame. Its diagnostic value is replaced rather than
+  dropped -- the box now carries the throw site, since `uiLog` is a no-op unless `BOOK_DEBUG` is
+  set and so cannot be the only record a bug report is built from.
+
+- **Two flips of one setting in a single keypress batch no longer collapse into one.** `/config`'s
+  toggles computed `!liveConfig.settings…` from the value captured at render, so an accelerator
+  that acts on a row followed by Enter on that same row read the pre-batch value twice and
+  persisted the same absolute result twice: the setting moved once, and the value written to disk
+  was not the one the rows displayed. The toggles now live in `useAgent`, compute from
+  `liveConfigRef`, and write that ref synchronously beside the state update -- the ref is otherwise
+  mirrored in an effect, which inside a batch is exactly as stale as the render value.
 
 - **Every `/config` row says which letter opens it.** The menu bound nine letters in an `if` chain
   written separately from the rows, and the footer advertised four of them. The other five were
@@ -66,7 +85,8 @@ All notable changes to this project are documented in this file.
   the screen. One table now owns the order, the accelerators and the letter each row prints; an
   accelerator moves the cursor onto its row before acting, so the thing that changes is the thing
   you are looking at. `memory`, which had no letter at all, shows a blank rather than a contrived
-  one and is still reachable with the arrows.
+  one and is still reachable with the arrows. Shift+Tab walks back up the list instead of forward,
+  which is where reading a bare `key.tab` as "next" had been sending it.
 
 - **A repository can no longer plant a rule the carried ledger treats as the user's own.** The
   ledger reads a turn's `content` and never `contextContent`, and concluded from that it was safe
