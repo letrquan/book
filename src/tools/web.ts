@@ -1,6 +1,6 @@
 import { DomUtils, parseDocument } from 'htmlparser2';
 import TurndownService from 'turndown';
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import { toolFailure, toolSuccess } from './result.js';
@@ -28,6 +28,18 @@ const strictWebDispatcher = new Agent({ connect: { lookup: safeNetworkLookup } }
 type WebFetchFormat = 'markdown' | 'text' | 'html';
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 type BuiltinSearchProviderId = 'exa' | 'parallel';
+
+/**
+ * Fetch through the same undici the dispatcher comes from.
+ *
+ * `strictWebDispatcher` carries the DNS-rebinding guard, and a dispatcher is only consulted by
+ * the undici that created it. Node's global `fetch` is its own bundled undici, which builds
+ * request handlers this package's `Agent` rejects outright (`invalid onRequestStart method`) —
+ * so handing the guard to `globalThis.fetch` fails the request before the lookup hook is ever
+ * called. Routing through undici's own `fetch` keeps the guard on the connect path.
+ */
+const undiciWebFetch: FetchLike = (input, init) =>
+  undiciFetch(input, init as Parameters<typeof undiciFetch>[1]) as unknown as Promise<Response>;
 
 interface BuiltinSearchProvider {
   id: BuiltinSearchProviderId;
@@ -995,8 +1007,7 @@ async function webSearch(
 }
 
 export function createWebTools(dependencies: WebToolDependencies = {}): ToolDefinition[] {
-  const fetchImpl: FetchLike =
-    dependencies.fetch ?? ((input, init) => globalThis.fetch(input, init));
+  const fetchImpl: FetchLike = dependencies.fetch ?? undiciWebFetch;
   const resolver = dependencies.resolveHostname ?? resolveHostname;
   const searchProviderCooldowns = new Map<BuiltinSearchProviderId, number>();
 

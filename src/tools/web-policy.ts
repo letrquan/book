@@ -159,26 +159,42 @@ export function isBlockedIpAddress(address: string): boolean {
   return true;
 }
 
-/** Validate every address returned to the HTTP connector to close the DNS-rebinding gap. */
+/**
+ * Validate every address returned to the HTTP connector to close the DNS-rebinding gap.
+ *
+ * A dispatcher is only consulted by the undici that created it, so this hook guards a request
+ * only when that same undici issues it -- see `undiciWebFetch` in `web.ts`. Both callback shapes
+ * are supported because the contract allows either: `options.all` takes the address list, and the
+ * single-address form takes one address plus its family.
+ */
 export const safeNetworkLookup: LookupFunction = (hostname, options, callback) => {
+  const fail = (error: NodeJS.ErrnoException): void => {
+    if (options.all) callback(error, []);
+    else callback(error, '', 0);
+  };
+  const refuse = (reason: string): void =>
+    fail(Object.assign(new Error(reason), { code: 'EACCES' }) as NodeJS.ErrnoException);
+
   lookupCallback(hostname, { ...options, all: true }, (error, addresses) => {
     if (error) {
-      callback(error, options.all ? [] : '', options.all ? undefined : 0);
+      fail(error);
       return;
     }
     const blocked = addresses.find((address) => isBlockedIpAddress(address.address));
     if (blocked) {
-      const policyError = Object.assign(
-        new Error(
-          `Connection blocked because ${hostname} resolved to private or special-use address ${blocked.address}.`,
-        ),
-        { code: 'EACCES' },
-      ) as NodeJS.ErrnoException;
-      callback(policyError, options.all ? [] : '', options.all ? undefined : 0);
+      refuse(
+        `Connection blocked because ${hostname} resolved to private or special-use address ${blocked.address}.`,
+      );
+      return;
+    }
+    // Refuse an empty result rather than reporting success: the single-address form would
+    // otherwise hand the connector '' as a destination it never validated.
+    if (addresses.length === 0) {
+      refuse(`Connection blocked because ${hostname} resolved to no usable address.`);
       return;
     }
     if (options.all) callback(null, addresses);
-    else callback(null, addresses[0]?.address ?? '', addresses[0]?.family ?? 0);
+    else callback(null, addresses[0].address, addresses[0].family);
   });
 };
 
