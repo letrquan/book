@@ -11,6 +11,7 @@ import {
   writeFileSync,
   rmSync,
 } from 'fs';
+import { writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 
@@ -461,17 +462,25 @@ describe('edit_file', () => {
 });
 
 describe('glob', () => {
+  // Steady state on the Windows CI runner is ~1 s — 850 ms on run 33375504718 attempt 2 — so
+  // this setup is not routinely expensive, only twice the local cost. The flake was a degraded
+  // runner: attempt 1 of that same commit inflated per-op I/O latency across the whole file (the
+  // other 45 tests ran ~6x slow), and this test, with 1005 serial syscalls, absorbed the
+  // inflation multiplicatively into 22.3 s against the 20 s ceiling. Creating the files
+  // concurrently divides that inflation by the libuv threadpool width, and the raised ceiling
+  // covers the remainder. The 1005 count is load-bearing — it is what exceeds
+  // GLOB_OUTPUT_LIMIT — so it cannot come down without losing what the test checks (#144).
   it('caps broad output and reports truncation', async () => {
-    for (let i = 0; i < 1005; i++) {
-      writeFileSync(join(dir, `file-${i}.txt`), String(i));
-    }
+    await Promise.all(
+      Array.from({ length: 1005 }, (_, i) => writeFile(join(dir, `file-${i}.txt`), String(i))),
+    );
 
     const r = await glob.execute({ pattern: '**/*' }, ctx);
 
     expect(r.status).toBe('success');
     expect(r.content).toContain('truncated at 1000 files');
     expect(r.content.split('\n')).toHaveLength(1001);
-  });
+  }, 60_000);
 
   it('does not return out-of-workspace paths', async () => {
     writeFileSync(join(dir, 'inside.txt'), 'inside');
