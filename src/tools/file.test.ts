@@ -462,11 +462,14 @@ describe('edit_file', () => {
 });
 
 describe('glob', () => {
-  // The 1005 count is load-bearing — it is what exceeds GLOB_OUTPUT_LIMIT — so the setup
-  // cost cannot come down by creating fewer files. Creating them concurrently pipelines the
-  // syscalls through the libuv threadpool instead of serializing them, and the raised ceiling
-  // covers a cold Windows runner, where every creation crosses a filter driver: 376 ms locally
-  // against a >20 s timeout in CI (#144).
+  // Steady state on the Windows CI runner is ~1 s — 850 ms on run 33375504718 attempt 2 — so
+  // this setup is not routinely expensive, only twice the local cost. The flake was a degraded
+  // runner: attempt 1 of that same commit inflated per-op I/O latency across the whole file (the
+  // other 45 tests ran ~6x slow), and this test, with 1005 serial syscalls, absorbed the
+  // inflation multiplicatively into 22.3 s against the 20 s ceiling. Creating the files
+  // concurrently divides that inflation by the libuv threadpool width, and the raised ceiling
+  // covers the remainder. The 1005 count is load-bearing — it is what exceeds
+  // GLOB_OUTPUT_LIMIT — so it cannot come down without losing what the test checks (#144).
   it('caps broad output and reports truncation', async () => {
     await Promise.all(
       Array.from({ length: 1005 }, (_, i) => writeFile(join(dir, `file-${i}.txt`), String(i))),
