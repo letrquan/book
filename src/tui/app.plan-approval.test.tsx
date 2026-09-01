@@ -1139,6 +1139,37 @@ describe('App effort command', () => {
     await submit(view, '/help');
     expect(view.frames.map(stripAnsi).join('\n')).toContain('/effort [low|medium|high|xhigh|max]');
   });
+
+  // The reference sheets used to be four independent booleans, so two open
+  // panels pinned enough chrome above the composer to push the conversation off
+  // a short terminal, and nothing but retyping the command closed either one.
+  // `/status` stands in for the group here because `/help` runs taller than the
+  // test terminal, so its own title scrolls out of the last frame.
+  it('closes the open reference panel on Esc', async () => {
+    const { view } = renderIdle();
+    await submit(view, '/status');
+    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Session Status');
+
+    view.stdin.write('\u001b');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(stripAnsi(view.lastFrame() ?? '')).not.toContain('Session Status');
+  });
+
+  it('shows one reference panel at a time', async () => {
+    const { view } = renderIdle();
+    await submit(view, '/status');
+    await submit(view, '/permissions');
+
+    const frame = stripAnsi(view.lastFrame() ?? '');
+    expect(frame).toContain('Permission Mode');
+    expect(frame).not.toContain('Session Status');
+  });
+
+  it('states how to close on the panel itself', async () => {
+    const { view } = renderIdle();
+    await submit(view, '/status');
+    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Session Status  Esc to close');
+  });
 });
 
 describe('App theme command', () => {
