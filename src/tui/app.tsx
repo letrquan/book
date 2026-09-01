@@ -2070,10 +2070,15 @@ export function App({
     showLoginPicker ||
     showSkills;
 
+  // A render crash replaces the whole UI, so the error box is the only thing
+  // left to say whether the conversation survived. It did — the session file is
+  // appended synchronously — but only when there is a store to have written it.
+  const resumeCommand = session.store ? `book --resume ${sessionId}` : undefined;
+
   if (startupFireActive) {
     return (
       <AppProviders theme={currentTheme.tokens} density={density}>
-        <ErrorBoundary>
+        <ErrorBoundary resumeCommand={resumeCommand}>
           <StartupFire
             width={termWidth}
             height={Math.max(1, termHeight - 1)}
@@ -2086,7 +2091,7 @@ export function App({
 
   return (
     <AppProviders theme={currentTheme.tokens} density={density}>
-      <ErrorBoundary>
+      <ErrorBoundary resumeCommand={resumeCommand}>
         <Box
           flexDirection="column"
           width={termWidth}

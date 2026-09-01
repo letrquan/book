@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from 'ink';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useTheme } from '../theme.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
 import { truncateDisplay } from './word-wrap.js';
@@ -26,19 +26,35 @@ interface ConfigMenuProps {
   onCancel: () => void;
 }
 
+/**
+ * One table drives the cursor, the accelerator keys, and the letter each row
+ * prints. The letters used to live in a separate `if` chain: five of the nine
+ * were advertised nowhere, `memory` had no letter at all, and two of them (`i`,
+ * `f`) flipped a setting on a row the cursor was not sitting on — so the only
+ * feedback was a value changing somewhere else on the screen. Deriving the key
+ * and its label from the same row is what stops a shortcut from drifting away
+ * from the thing it acts on.
+ *
+ * `memory` keeps no accelerator rather than being given a contrived one; every
+ * other free letter reads as a worse lie than a blank does. It is still
+ * reachable with the arrows, and the blank column says so honestly.
+ */
 const ROWS = [
-  'model',
-  'compact-model',
-  'effort',
-  'thinking',
-  'startup-animation',
-  'theme',
-  'permission-mode',
-  'agents',
-  'skills',
-  'memory',
-] as const;
-type Row = (typeof ROWS)[number];
+  { row: 'model', key: 'm' },
+  { row: 'compact-model', key: 'c' },
+  { row: 'effort', key: 'e' },
+  { row: 'thinking', key: 'i' },
+  { row: 'startup-animation', key: 'f' },
+  { row: 'theme', key: 't' },
+  { row: 'permission-mode', key: 'p' },
+  { row: 'agents', key: 'a' },
+  { row: 'skills', key: 's' },
+  { row: 'memory' },
+] as const satisfies ReadonlyArray<{ row: string; key?: string }>;
+type Row = (typeof ROWS)[number]['row'];
+
+/** Columns the accelerator gutter costs: marker, gap, letter, gap. */
+const GUTTER_WIDTH = 5;
 
 export function ConfigMenu({
   model,
@@ -60,109 +76,118 @@ export function ConfigMenu({
 }: ConfigMenuProps) {
   const theme = useTheme();
   const [selected, setSelected] = useState(0);
+  // An accelerator sets the cursor and acts on it in the same keypress, so the
+  // handler cannot read `selected` back from state — React has not flushed it.
+  const selectedRef = useRef(0);
   const frame = floatingFrameMetrics(terminalWidth);
   const contentWidth = Math.max(16, frame.width - 4);
+
+  const activate = (row: Row) => {
+    if (row === 'memory') onToggleMemory();
+    else if (row === 'thinking') onToggleThinking();
+    else if (row === 'startup-animation') onToggleStartupAnimation();
+    else onOpen(row);
+  };
+
+  const moveSelection = (next: number) => {
+    selectedRef.current = next;
+    setSelected(next);
+  };
 
   useInput((input, key) => {
     if (key.escape) return onCancel();
     if (key.upArrow) {
-      setSelected((index) => (index - 1 + ROWS.length) % ROWS.length);
+      moveSelection((selectedRef.current - 1 + ROWS.length) % ROWS.length);
       return;
     }
     if (key.downArrow || key.tab) {
-      setSelected((index) => (index + 1) % ROWS.length);
+      moveSelection((selectedRef.current + 1) % ROWS.length);
       return;
     }
     if (key.return) {
-      const row = ROWS[selected];
-      if (row === 'memory') onToggleMemory();
-      else if (row === 'thinking') onToggleThinking();
-      else if (row === 'startup-animation') onToggleStartupAnimation();
-      else onOpen(row);
+      activate(ROWS[selectedRef.current].row);
       return;
     }
+    if (key.ctrl || key.meta) return;
+    // An accelerator moves the cursor before it acts, so the row that changes is
+    // the row you are looking at. Pressing `i` used to toggle "Show thinking"
+    // while the highlight sat on "Model" four rows above it.
     const shortcut = input.toLowerCase();
-    if (shortcut === 'm') onOpen('model');
-    else if (shortcut === 'c') onOpen('compact-model');
-    else if (shortcut === 'e') onOpen('effort');
-    else if (shortcut === 'i') onToggleThinking();
-    else if (shortcut === 'f') onToggleStartupAnimation();
-    else if (shortcut === 't') onOpen('theme');
-    else if (shortcut === 'a') onOpen('agents');
-    else if (shortcut === 's') onOpen('skills');
-    else if (shortcut === 'p') onOpen('permission-mode');
+    const index = ROWS.findIndex((entry) => 'key' in entry && entry.key === shortcut);
+    if (index < 0) return;
+    moveSelection(index);
+    activate(ROWS[index].row);
   });
 
-  const rows: Array<{ row: Row; label: string; value: string; description: string }> = [
-    { row: 'model', label: 'Model', value: model, description: 'Default model for the main agent' },
-    {
-      row: 'compact-model',
+  // Keyed rather than ordered: `ROWS` owns the order, so the two lists cannot
+  // fall out of step and leave the cursor pointing at a row it does not render.
+  const details: Record<Row, { label: string; value: string; description: string }> = {
+    model: { label: 'Model', value: model, description: 'Default model for the main agent' },
+    'compact-model': {
       label: 'Compact model',
       value: compactModel ?? 'same as main',
       description: 'Reducer used only for conversation checkpoints',
     },
-    {
-      row: 'effort',
+    effort: {
       label: 'Effort',
       value: effort ?? 'model default',
       description: 'Reasoning depth for supported models',
     },
-    {
-      row: 'thinking',
+    thinking: {
       label: 'Show thinking',
       value: showThinking ? 'on' : 'off',
       description: 'Display the model reasoning in the transcript',
     },
-    {
-      row: 'startup-animation',
+    'startup-animation': {
       label: 'Startup fire',
       value: startupAnimation ? 'on' : 'off',
       description: 'Burn the terminal into the Book welcome screen',
     },
-    { row: 'theme', label: 'Theme', value: themeName, description: 'Terminal color palette' },
-    {
-      row: 'permission-mode',
+    theme: { label: 'Theme', value: themeName, description: 'Terminal color palette' },
+    'permission-mode': {
       label: 'Default permissions',
       value: defaultPermissionMode,
       description: 'Mode for runs without an explicit override',
     },
-    {
-      row: 'agents',
+    agents: {
       label: 'Subagent profiles',
       value: `${agentCount} available`,
       description: 'Choose a model for explorer, patcher, or validator',
     },
-    {
-      row: 'skills',
+    skills: {
       label: 'Skills',
       value: `${skillCount} discovered`,
       description: 'Control automatic matching and explicit use',
     },
-    {
-      row: 'memory',
+    memory: {
       label: 'Memory auto-capture',
       value: memoryAutoSave ? 'on' : 'off',
       description: 'Capture useful corrections for approval later',
     },
-  ];
+  };
 
   return (
     <SoftPanel tone="brand" width={frame.width} marginX={frame.marginX}>
       <PanelTitle>Settings</PanelTitle>
       <Text color={theme.subtle}>Choose a setting to change.</Text>
       <Box flexDirection="column" marginTop={1}>
-        {rows.map((item, index) => (
-          <SelectionRow key={item.row} selected={index === selected} width={contentWidth}>
-            {index === selected ? '›' : ' '}{' '}
-            {truncateDisplay(
-              `${item.label.padEnd(22)} ${item.value} — ${item.description}`,
-              contentWidth - 2,
-            )}
-          </SelectionRow>
-        ))}
+        {ROWS.map((entry, index) => {
+          const item = details[entry.row];
+          const accelerator = 'key' in entry ? entry.key.toUpperCase() : ' ';
+          return (
+            <SelectionRow key={entry.row} selected={index === selected} width={contentWidth}>
+              {index === selected ? '›' : ' '} {accelerator}
+              {'  '}
+              {truncateDisplay(
+                `${item.label.padEnd(22)} ${item.value} — ${item.description}`,
+                contentWidth - GUTTER_WIDTH,
+              )}
+            </SelectionRow>
+          );
+        })}
       </Box>
       <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter · M model · C compact · S skills · P permissions · Esc close
+        ↑↓ select · Enter choose · or press the letter · Esc close
       </Text>
     </SoftPanel>
   );

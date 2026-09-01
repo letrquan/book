@@ -49,6 +49,25 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **A crash no longer reads as lost work.** The TUI error boundary said "Restart Book to recover"
+  and nothing else, so a user whose render blew up mid-session could not tell whether an hour of
+  conversation was gone. It was never gone -- `SessionStore.create` appends the session header
+  synchronously at startup and every record after it lands the same way -- so the box now names
+  the command that reopens the session, and omits it only when persistence is off and there would
+  be nothing to reopen. It also states that Ctrl+C exits, which is the only way out once the
+  boundary owns the screen. The `console.warn` that printed the same message as raw text above the
+  alternate screen is gone: it duplicated the box and smeared the frame, and carried none of the
+  stack the structured debug record keeps.
+
+- **Every `/config` row says which letter opens it.** The menu bound nine letters in an `if` chain
+  written separately from the rows, and the footer advertised four of them. The other five were
+  reachable but documented nowhere -- including `i` and `f`, which flipped a setting immediately,
+  on a row the cursor was not sitting on, so the only feedback was a value changing elsewhere on
+  the screen. One table now owns the order, the accelerators and the letter each row prints; an
+  accelerator moves the cursor onto its row before acting, so the thing that changes is the thing
+  you are looking at. `memory`, which had no letter at all, shows a blank rather than a contrived
+  one and is still reachable with the arrows.
+
 - **A repository can no longer plant a rule the carried ledger treats as the user's own.** The
   ledger reads a turn's `content` and never `contextContent`, and concluded from that it was safe
   from repository text. It was not: a resolved project slash command's body arrives *as*

@@ -7,6 +7,17 @@ const uiLog = createUiDebugLogger('tui:errorboundary');
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
+  /**
+   * The command that reopens this conversation, shown so a render crash does not
+   * read as lost work. The session file is durable by the time anything can
+   * crash — `SessionStore.create` appends the `session_meta` header
+   * synchronously at startup and every record after it lands the same way — so
+   * for a persisted session this is a promise the store can keep.
+   *
+   * Left undefined when persistence is off. There is nothing to reopen then, and
+   * a resume line that fails is worse than no resume line at all.
+   */
+  resumeCommand?: string;
 }
 
 interface ErrorBoundaryState {
@@ -30,7 +41,11 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
-    console.warn('TUI render error caught by ErrorBoundary:', error.message);
+    // Deliberately no `console.warn` here. It printed `error.message` — the same
+    // string the box below already shows — as raw text above the alternate
+    // screen, so the first thing a crashing user saw was a smeared frame with a
+    // duplicated message. The structured record below keeps the stack and the
+    // component stack, which the console line never carried.
     uiLog.warn('caught', {
       name: error.name,
       message: error.message,
@@ -46,6 +61,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   render() {
     if (this.state.hasError) {
+      const { resumeCommand } = this.props;
       return (
         <ThemeContext.Consumer>
           {(theme) => (
@@ -54,7 +70,17 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
                 Something went wrong
               </Text>
               <Text color={theme.subtle}>{this.state.error?.message ?? 'Unknown error'}</Text>
-              <Text color={theme.subtle}>Restart Book to recover.</Text>
+              {resumeCommand ? (
+                <Box flexDirection="column" marginTop={1}>
+                  <Text color={theme.text}>This conversation is saved. Reopen it with:</Text>
+                  <Text color={theme.brand}>{resumeCommand}</Text>
+                </Box>
+              ) : (
+                <Box marginTop={1}>
+                  <Text color={theme.subtle}>Restart Book to recover.</Text>
+                </Box>
+              )}
+              <Text color={theme.subtle}>Press Ctrl+C to exit.</Text>
             </Box>
           )}
         </ThemeContext.Consumer>
