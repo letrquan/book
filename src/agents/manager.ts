@@ -1678,6 +1678,9 @@ export class AgentManager {
           isNewSession: record.transcript.length === 0,
           manageSessionHooks: false,
           isSubagent: true,
+          // `record.prompt` is the task the delegating model wrote, not a person's
+          // words, even though it takes the `user` position in the child's history.
+          userMessageDerived: true,
           agentPath: [record.name],
           systemPromptAppend,
           hideAgents: true,
