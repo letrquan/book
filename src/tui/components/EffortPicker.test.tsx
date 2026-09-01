@@ -38,7 +38,7 @@ describe('EffortPicker', () => {
     const frame = stripAnsi(view.lastFrame());
 
     expect(frame).toContain('Set effort level');
-    expect(frame).toContain('❯ high');
+    expect(frame).toContain('› high');
     expect(frame).toContain('(current)');
     expect(frame).toContain('Maximum reasoning depth');
   });
@@ -47,7 +47,7 @@ describe('EffortPicker', () => {
     const { view, onSelect } = renderPicker();
 
     await write(view, '\x1b[B');
-    expect(stripAnsi(view.lastFrame())).toContain('❯ xhigh');
+    expect(stripAnsi(view.lastFrame())).toContain('› xhigh');
     await write(view, '\r');
 
     expect(onSelect).toHaveBeenCalledWith('xhigh');
@@ -71,7 +71,7 @@ describe('EffortPicker', () => {
 
     expect(stripAnsi(view.lastFrame())).not.toContain('medium');
     await write(view, '\x1b[B');
-    expect(stripAnsi(view.lastFrame())).toContain('❯ low');
+    expect(stripAnsi(view.lastFrame())).toContain('› low');
     await write(view, '\r');
 
     expect(onSelect).toHaveBeenCalledWith('low');

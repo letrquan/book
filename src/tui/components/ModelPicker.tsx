@@ -431,7 +431,7 @@ export function ModelPicker({
         </Text>
         <Text bold>Model IDs</Text>
         <Box>
-          <Text color={theme.brand}>❯ </Text>
+          <Text color={theme.brand}>› </Text>
           <TextInput
             value={manualEntry.value}
             onChange={(value) => setManualEntry({ providerId: manualEntry.providerId, value })}
@@ -514,7 +514,7 @@ export function ModelPicker({
                 color={isSelected ? theme.selectionText : theme.brand}
                 bold={isSelected}
               >
-                {isSelected ? '❯' : ' '} + Add BYOK provider…
+                {isSelected ? '›' : ' '} + Add BYOK provider…
               </Text>
             );
           }
@@ -527,7 +527,7 @@ export function ModelPicker({
               color={isSelected ? theme.selectionText : isCurrent ? theme.brand : theme.subtle}
               bold={isSelected || isCurrent}
             >
-              {isSelected ? '❯' : ' '} {option.label}
+              {isSelected ? '›' : ' '} {option.label}
               {option.providerId ? `  ${option.providerId}` : ''}
               {option.providerId && removableProviderIds.has(option.providerId) ? '  [BYOK]' : ''}
               {isCurrent ? '  (current)' : ''}

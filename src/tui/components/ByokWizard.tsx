@@ -406,7 +406,7 @@ export function ByokWizard({
             <Text bold>Protocol</Text>
             {(['openai', 'anthropic'] as const).map((value) => (
               <Text key={value} color={type === value ? theme.brand : theme.subtle}>
-                {type === value ? '❯' : ' '}{' '}
+                {type === value ? '›' : ' '}{' '}
                 {value === 'openai' ? 'OpenAI-compatible' : 'Anthropic'}
               </Text>
             ))}
@@ -450,7 +450,7 @@ export function ByokWizard({
                 key={source.value}
                 color={modelSource === source.value ? theme.brand : theme.subtle}
               >
-                {modelSource === source.value ? '❯' : ' '} {source.title}
+                {modelSource === source.value ? '›' : ' '} {source.title}
               </Text>
             ))}
             {showOptionalHelp && (
@@ -586,7 +586,7 @@ function Field({
     <>
       <Text bold>{label}</Text>
       <Box>
-        <Text color={theme.brand}>❯ </Text>
+        <Text color={theme.brand}>› </Text>
         <TextInput
           value={value}
           onChange={onChange}

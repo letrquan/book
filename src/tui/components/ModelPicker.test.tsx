@@ -278,7 +278,7 @@ describe('ModelPicker', () => {
     );
     await wait(20);
 
-    expect(view.lastFrame()).toContain('❯ Zeta  gateway');
+    expect(view.lastFrame()).toContain('› Zeta  gateway');
     await write(view, '\r');
     expect(onPick).toHaveBeenCalledWith('gateway/zeta', true);
   });
@@ -382,7 +382,7 @@ describe('ModelPicker', () => {
 
     const frame = view.lastFrame();
     expect(frame).toContain('Filter: gateway');
-    expect(frame).toContain('❯ Custom  gateway');
+    expect(frame).toContain('› Custom  gateway');
   });
 
   it('shows wide and compact removal shortcuts before selecting a provider row', () => {
