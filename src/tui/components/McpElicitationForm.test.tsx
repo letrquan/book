@@ -179,6 +179,39 @@ describe('McpElicitationForm', () => {
     await press(view, 'd');
     expect(onResolve).toHaveBeenCalledTimes(1);
   });
+
+  it('does not send the form when an arrow leaves the send row in the same batch', async () => {
+    // Both fields optional, so the old behaviour submits successfully rather
+    // than tripping a validation notice — the divergence is the send itself.
+    const { view, onResolve } = mount({
+      request: request({
+        fields: [
+          { name: 'note', title: 'Note', required: false, kind: 'string' },
+          {
+            name: 'project',
+            title: 'Project',
+            required: false,
+            kind: 'enum',
+            options: [
+              { value: 'alpha', label: 'Alpha' },
+              { value: 'beta', label: 'Beta' },
+            ],
+          },
+        ],
+      }),
+    });
+    await press(view, DOWN);
+    await press(view, DOWN); // now on the send row
+
+    // Ink splits a stdin chunk only at escape bytes, so this single write is
+    // genuinely two keypresses inside one React batch — a paste, or an arrow
+    // repeating faster than a frame. Reading the cursor back from render state
+    // meant Enter still saw the send row and sent the form under the user.
+    await press(view, '\u001b[A\r');
+
+    expect(onResolve).not.toHaveBeenCalled();
+    expect(stripAnsi(view.lastFrame())).toContain('Alpha');
+  });
 });
 
 describe('optionWindowStart', () => {

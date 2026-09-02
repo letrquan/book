@@ -1,5 +1,6 @@
 import { Box, Text, useInput } from 'ink';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import type { PermissionMode } from '../../types/runtime.js';
 import { SelectionRow } from './chrome.js';
@@ -58,14 +59,12 @@ export function PermissionsPanel({
 }: PermissionsPanelProps) {
   const theme = useTheme();
   const entries = useMemo(() => flattenPermissionRules(permissions), [permissions]);
-  const [selected, setSelected] = useState(0);
+  const [selected, setSelected, currentSelected] = useKeyState(0);
   // The keyed actions read the cursor from a ref: arrows and `x` arriving in
   // one React batch would otherwise remove the row the cursor was on before
   // the arrows moved it.
-  const selectedRef = useRef(0);
   const move = (next: (current: number) => number) => {
-    selectedRef.current = entries.length === 0 ? 0 : next(selectedRef.current);
-    setSelected(selectedRef.current);
+    setSelected(entries.length === 0 ? 0 : next(currentSelected()));
   };
   const [notice, setNotice] = useState<string | null>(null);
   const width = Math.max(24, Math.min(terminalWidth, 120) - 6);
@@ -73,8 +72,7 @@ export function PermissionsPanel({
   // Removing the last rule, or a reload shrinking the list, must not leave the
   // cursor pointing past the end.
   useEffect(() => {
-    selectedRef.current = Math.max(0, Math.min(selectedRef.current, entries.length - 1));
-    setSelected(selectedRef.current);
+    setSelected(Math.max(0, Math.min(currentSelected(), entries.length - 1)));
   }, [entries.length]);
 
   const canEdit = Boolean(onRemove) && entries.length > 0 && active && !screenReader;
@@ -92,7 +90,7 @@ export function PermissionsPanel({
         return;
       }
       if (input === 'x' || input === 'X') {
-        const entry = entries[selectedRef.current];
+        const entry = entries[currentSelected()];
         if (!entry) return;
         const result = onRemove!(entry);
         if (result.ok) setNotice(`Removed ${entry.rule}`);

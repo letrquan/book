@@ -1,5 +1,6 @@
 import { Box, Text, useInput } from 'ink';
 import { useEffect, useMemo, useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import type { Skill } from '../../skills.js';
 import type { SkillLifecycleEvent } from '../../skill-registry.js';
 import type { SkillActivation, SkillExecution } from '../../settings.js';
@@ -66,10 +67,15 @@ export function SkillManager({
   onCancel,
 }: SkillManagerProps) {
   const theme = useTheme();
-  const [selected, setSelected] = useState(0);
+  // Both of these are read back by the key handler, so they have to survive a
+  // React batch: Ink hands a whole stdin chunk over at once. With plain state a
+  // batched `↓`+Space wrote an activation change to the skill above the
+  // highlighted one, and a batched `/`+letter ran the letter as a command
+  // instead of typing it into the search field.
+  const [selected, setSelected, currentSelected] = useKeyState(0);
   const [error, setError] = useState<string>();
   const [query, setQuery] = useState('');
-  const [searching, setSearching] = useState(false);
+  const [searching, setSearching, isSearching] = useKeyState(false);
   const frame = floatingFrameMetrics(terminalWidth);
   const contentWidth = Math.max(16, frame.width - 4);
   const filteredSkills = useMemo(() => {
@@ -84,8 +90,8 @@ export function SkillManager({
   }, [query, skills]);
 
   useEffect(() => {
-    setSelected((index) => Math.max(0, Math.min(index, filteredSkills.length - 1)));
-  }, [filteredSkills.length]);
+    setSelected(Math.max(0, Math.min(currentSelected(), filteredSkills.length - 1)));
+  }, [filteredSkills.length, setSelected, currentSelected]);
 
   const window = useMemo(() => {
     if (filteredSkills.length <= maxVisible) return { start: 0, items: filteredSkills };
@@ -95,7 +101,7 @@ export function SkillManager({
   }, [filteredSkills, maxVisible, selected]);
 
   useInput((input, key) => {
-    if (searching) {
+    if (isSearching()) {
       if (key.escape || key.return) {
         setSearching(false);
         return;
@@ -132,17 +138,17 @@ export function SkillManager({
     }
     if (filteredSkills.length === 0) return;
     if (key.upArrow) {
-      setSelected((index) => (index - 1 + filteredSkills.length) % filteredSkills.length);
+      setSelected((currentSelected() - 1 + filteredSkills.length) % filteredSkills.length);
       setError(undefined);
       return;
     }
     if (key.downArrow || key.tab) {
-      setSelected((index) => (index + 1) % filteredSkills.length);
+      setSelected((currentSelected() + 1) % filteredSkills.length);
       setError(undefined);
       return;
     }
 
-    const skill = filteredSkills[selected];
+    const skill = filteredSkills[currentSelected()];
     if (!skill) return;
     if (input === ' ') {
       const activation = nextValue(ACTIVATIONS, skill.activation);

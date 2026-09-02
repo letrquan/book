@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import TextInput from './TextInputField.js';
 import { useCallback, useMemo, useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import {
   coerceElicitationValue,
   elicitationDefaults,
@@ -75,10 +76,19 @@ export function McpElicitationForm({
   const [values, setValues] = useState<Record<string, ElicitationValue>>(() =>
     elicitationDefaults(request.fields),
   );
-  const [cursor, setCursor] = useState(0);
+  // Read back by the key handler. Ink delivers a whole stdin chunk in one React
+  // batch, so with plain state a batched arrow+Enter opened the field the cursor
+  // had left — or submitted the form, when the arrow had moved off the submit
+  // row.
+  const [cursor, setCursor, currentCursor] = useKeyState(0);
+  // `editing` deliberately stays plain render state. The enum row's Enter
+  // belongs to the filter input's `onSubmit`, and the guard below relies on
+  // still reading `true` when Ink's handler sees the same keypress. Making it
+  // batch-safe let the handler fall through and advance a second time, which
+  // skipped the next field entirely.
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
-  const [optionCursor, setOptionCursor] = useState(0);
+  const [optionCursor, setOptionCursor, currentOption] = useKeyState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [resolved, setResolved] = useState(false);
 
@@ -117,25 +127,33 @@ export function McpElicitationForm({
     resolveOnce({ action: 'accept', content });
   }, [request.fields, resolveOnce, values]);
 
-  const beginEdit = useCallback(() => {
-    if (!field) return;
-    setNotice(null);
-    if (field.kind === 'boolean') {
-      setValues((current) => ({ ...current, [field.name]: !current[field.name] }));
-      return;
-    }
-    if (field.kind === 'enum') {
-      const current = values[field.name];
-      const index = field.options.findIndex((option) => option.value === current);
-      setOptionCursor(Math.max(0, index));
-      setDraft('');
+  // Takes the row rather than closing over `field`. The caller is a key handler
+  // that may have moved the cursor earlier in the same React batch, so the
+  // field this opens has to be resolved from the batch-safe cursor — otherwise
+  // an arrow off the send row left `field` undefined and opened nothing.
+  const beginEdit = useCallback(
+    (row: number) => {
+      const target = request.fields[row];
+      if (!target) return;
+      setNotice(null);
+      if (target.kind === 'boolean') {
+        setValues((current) => ({ ...current, [target.name]: !current[target.name] }));
+        return;
+      }
+      if (target.kind === 'enum') {
+        const current = values[target.name];
+        const index = target.options.findIndex((option) => option.value === current);
+        setOptionCursor(Math.max(0, index));
+        setDraft('');
+        setEditing(true);
+        return;
+      }
+      const current = values[target.name];
+      setDraft(current === undefined ? '' : String(current));
       setEditing(true);
-      return;
-    }
-    const current = values[field.name];
-    setDraft(current === undefined ? '' : String(current));
-    setEditing(true);
-  }, [field, values]);
+    },
+    [request.fields, values, setOptionCursor],
+  );
 
   const commitOption = useCallback(() => {
     if (field?.kind !== 'enum') return;
@@ -148,7 +166,7 @@ export function McpElicitationForm({
     setEditing(false);
     setDraft('');
     setNotice(null);
-    setCursor((value) => Math.min(value + 1, submitRow));
+    setCursor(Math.min(currentCursor() + 1, submitRow));
   }, [field, options, optionCursor, submitRow]);
 
   const commitText = useCallback(
@@ -173,7 +191,7 @@ export function McpElicitationForm({
       setEditing(false);
       setDraft('');
       setNotice(null);
-      setCursor((value) => Math.min(value + 1, submitRow));
+      setCursor(Math.min(currentCursor() + 1, submitRow));
     },
     [field, submitRow],
   );
@@ -189,9 +207,9 @@ export function McpElicitationForm({
       if (field?.kind === 'enum') {
         // Enter belongs to the filter input's onSubmit; handling it here too
         // would commit the choice twice and skip a field.
-        if (key.upArrow) setOptionCursor((value) => Math.max(0, value - 1));
+        if (key.upArrow) setOptionCursor(Math.max(0, currentOption() - 1));
         else if (key.downArrow) {
-          setOptionCursor((value) => Math.min(Math.max(0, options.length - 1), value + 1));
+          setOptionCursor(Math.min(Math.max(0, options.length - 1), currentOption() + 1));
         }
         return;
       }
@@ -199,14 +217,14 @@ export function McpElicitationForm({
     }
 
     if (key.upArrow || (key.shift && key.tab)) {
-      setCursor((value) => (value - 1 + rowCount) % rowCount);
+      setCursor((currentCursor() - 1 + rowCount) % rowCount);
       setNotice(null);
     } else if (key.downArrow || key.tab) {
-      setCursor((value) => (value + 1) % rowCount);
+      setCursor((currentCursor() + 1) % rowCount);
       setNotice(null);
     } else if (key.return || input === ' ') {
-      if (cursor === submitRow) submit();
-      else beginEdit();
+      if (currentCursor() === submitRow) submit();
+      else beginEdit(currentCursor());
     } else if (input.toLowerCase() === 'd') {
       resolveOnce({ action: 'decline' });
     } else if (key.escape) {

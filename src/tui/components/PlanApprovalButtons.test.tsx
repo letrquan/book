@@ -119,4 +119,20 @@ describe('PlanApprovalButtons', () => {
     expect(output).toContain('· 2 steps');
     expect(output).toContain('1. Nested');
   });
+
+  it('resolves the button armed by an arrow in the same batch', async () => {
+    const onResolve = vi.fn();
+    const view = render(
+      withTheme(<PlanApprovalButtons plan="Review the proposed changes." onResolve={onResolve} />),
+    );
+
+    // Ink splits a stdin chunk only at escape bytes, so this single write is
+    // genuinely two keypresses inside one React batch — a paste, or an arrow
+    // repeating faster than a frame. It is the case a per-keypress test cannot
+    // reach.
+    view.stdin.write('\u001b[C\r');
+    await waitForImmediate();
+
+    expect(onResolve).toHaveBeenCalledWith('approve-fresh');
+  });
 });

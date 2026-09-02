@@ -1,5 +1,6 @@
 import { Box, Text, useInput } from 'ink';
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useCallback, useMemo, useRef, useEffect } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import { CONTENT_COLUMN } from '../layout.js';
 import { useDensityMetrics } from '../density.js';
@@ -104,12 +105,12 @@ export function PermissionButtons({
 }: PermissionButtonsProps) {
   const theme = useTheme();
   const density = useDensityMetrics();
-  const [selected, setSelected] = useState(0);
-  // Enter reads the selection from a ref, not from render state. `A` now only
-  // arms "Always allow", so `A` then a quick Enter lands in one React batch and
-  // the Enter handler would still close over the previous index — resolving
-  // `allow` when the user asked for `always`.
-  const selectedRef = useRef(0);
+  // Enter reads the selection through `currentSelected()`, not from render
+  // state. `A` now only arms "Always allow", so `A` then a quick Enter lands in
+  // one React batch and an Enter handler closing over render state would still
+  // see the previous index — resolving `allow` when the user asked for
+  // `always`.
+  const [selected, setSelected, currentSelected] = useKeyState(0);
   const resolvedToolCallIdRef = useRef<string | null>(null);
   const canonical = canonicalToolName(toolCall.name);
   const primaryArg = getPrimaryArg(toolCall.arguments);
@@ -122,8 +123,7 @@ export function PermissionButtons({
   const ladder = useMemo(() => permissionRuleLadder(toolCall), [toolCall]);
   const ladderRef = useRef(ladder);
   ladderRef.current = ladder;
-  const [scopeIndex, setScopeIndex] = useState(0);
-  const scopeIndexRef = useRef(0);
+  const [scopeIndex, setScopeIndex, currentScope] = useKeyState(0);
   const alwaysPattern = ladder[scopeIndex] ?? ladder[0];
   const alwaysPatternDisplay = permissionPatternForDisplay(alwaysPattern);
   const scopeHint = scopeCaption(ladder, scopeIndex);
@@ -138,8 +138,7 @@ export function PermissionButtons({
   });
 
   const moveSelection = useCallback((next: (current: number) => number) => {
-    selectedRef.current = next(selectedRef.current);
-    setSelected(selectedRef.current);
+    setSelected(next(currentSelected()));
   }, []);
 
   const handleResolve = useCallback(
@@ -152,7 +151,7 @@ export function PermissionButtons({
         return;
       }
       resolvedToolCallIdRef.current = toolCall.id;
-      const rule = value === 'always' ? ladderRef.current[scopeIndexRef.current] : undefined;
+      const rule = value === 'always' ? ladderRef.current[currentScope()] : undefined;
       uiLog.event('resolve', {
         tool: canonical,
         result: value,
@@ -190,11 +189,11 @@ export function PermissionButtons({
       // keystrokes away — `a` then a space, the opening of any sentence
       // starting with "a " — and the card advertises Enter, never space.
       if (key.return) {
-        const armed = selectedRef.current;
+        const armed = currentSelected();
         uiLog.event('input:Enter', {
           tool: canonical,
           selected: armed,
-          rule: BUTTONS[armed].value === 'always' ? ladder[scopeIndexRef.current] : undefined,
+          rule: BUTTONS[armed].value === 'always' ? ladder[currentScope()] : undefined,
         });
         handleResolve(BUTTONS[armed].value);
         return;
@@ -224,14 +223,13 @@ export function PermissionButtons({
         // First `A` arms the button; each `A` after that widens the scope and
         // wraps back to the exact rule, so the key can explore every option
         // without ever committing one.
-        if (selectedRef.current === alwaysIndex && ladder.length > 1) {
-          scopeIndexRef.current = (scopeIndexRef.current + 1) % ladder.length;
-          setScopeIndex(scopeIndexRef.current);
+        if (currentSelected() === alwaysIndex && ladder.length > 1) {
+          setScopeIndex((currentScope() + 1) % ladder.length);
           uiLog.event('input:shortcut', {
             tool: canonical,
             key: 'A',
             action: 'step-scope',
-            rule: ladder[scopeIndexRef.current],
+            rule: ladder[currentScope()],
           });
           return;
         }

@@ -1,5 +1,6 @@
 import { Box, Text, useInput } from 'ink';
 import { useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import type { McpHostServerSnapshot } from '../../mcp-host.js';
 import { SelectionRow, SoftPanel, PanelTitle } from './chrome.js';
@@ -35,7 +36,7 @@ export function McpServerApprovalPrompt({
   onDefer,
 }: McpServerApprovalPromptProps) {
   const theme = useTheme();
-  const [selected, setSelected] = useState(0);
+  const [selected, setSelected, currentSelected] = useKeyState(0);
   const [error, setError] = useState<string>();
 
   const decide = (key: (typeof OPTIONS)[number]['key']) => {
@@ -46,11 +47,14 @@ export function McpServerApprovalPrompt({
   useInput((input, key) => {
     if (key.escape) return onDefer();
     if (key.upArrow || key.downArrow) {
-      setSelected((index) => (index + 1) % OPTIONS.length);
+      setSelected((currentSelected() + 1) % OPTIONS.length);
       setError(undefined);
       return;
     }
-    if (key.return) return decide(OPTIONS[selected].key);
+    // `currentSelected()`, not `selected`: a batched `↓`+Enter — one paste, one
+    // fast repeat — used to confirm the option armed before the arrow, which on
+    // a two-option trust gate means approving the server the user moved off.
+    if (key.return) return decide(OPTIONS[currentSelected()].key);
     if (input === 'y' || input === 'Y') return decide('approve');
     if (input === 'n' || input === 'N') return decide('reject');
   });

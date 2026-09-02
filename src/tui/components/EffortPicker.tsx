@@ -1,5 +1,6 @@
 import { Box, Text, useInput } from 'ink';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import type { EffortLevel, EffortResult } from '../../commands/effort.js';
 
@@ -20,22 +21,24 @@ interface EffortPickerProps {
 
 export function EffortPicker({ current, availableLevels, onSelect, onCancel }: EffortPickerProps) {
   const theme = useTheme();
-  const [selected, setSelected] = useState(() => {
+  // The ref used to be written *inside* a `setState` updater, which looks
+  // batch-safe and is not: React evaluates only the first update in a batch
+  // eagerly, so after two arrows in one chunk the ref still held the first
+  // index and Enter saved the level above the highlighted one.
+  const [selected, setSelected, currentSelected] = useKeyState(() => {
     const currentIndex = current ? availableLevels.indexOf(current) : -1;
     return currentIndex >= 0 ? currentIndex : 0;
   });
-  const selectedRef = useRef(selected);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
     const currentIndex = current ? availableLevels.indexOf(current) : -1;
-    setSelected((index) => {
-      const next =
-        currentIndex >= 0 ? currentIndex : Math.min(index, Math.max(0, availableLevels.length - 1));
-      selectedRef.current = next;
-      return next;
-    });
-  }, [availableLevels, current]);
+    setSelected(
+      currentIndex >= 0
+        ? currentIndex
+        : Math.min(currentSelected(), Math.max(0, availableLevels.length - 1)),
+    );
+  }, [availableLevels, current, setSelected, currentSelected]);
 
   useInput((_, key) => {
     if (key.escape) {
@@ -44,25 +47,17 @@ export function EffortPicker({ current, availableLevels, onSelect, onCancel }: E
     }
     if (availableLevels.length === 0) return;
     if (key.upArrow) {
-      setSelected((index) => {
-        const next = (index - 1 + availableLevels.length) % availableLevels.length;
-        selectedRef.current = next;
-        return next;
-      });
+      setSelected((currentSelected() - 1 + availableLevels.length) % availableLevels.length);
       setError(undefined);
       return;
     }
     if (key.downArrow) {
-      setSelected((index) => {
-        const next = (index + 1) % availableLevels.length;
-        selectedRef.current = next;
-        return next;
-      });
+      setSelected((currentSelected() + 1) % availableLevels.length);
       setError(undefined);
       return;
     }
     if (key.return) {
-      const level = availableLevels[selectedRef.current];
+      const level = availableLevels[currentSelected()];
       if (!level) return;
       const result = onSelect(level);
       if (!result.ok) setError(result.error ?? 'Could not save the selected effort level.');
