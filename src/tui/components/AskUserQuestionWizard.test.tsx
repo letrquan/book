@@ -157,4 +157,27 @@ describe('AskUserQuestionWizard', () => {
     expect(stripAnsi(view.lastFrame())).not.toContain('Your answer');
     expect(stripAnsi(view.lastFrame())).toContain('+ Other…');
   });
+
+  it('answers with the option the arrow moved to, batched in one write', async () => {
+    const onResolve = vi.fn();
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <AskUserQuestionWizard
+          request={{ ...request, questions: [request.questions[0]] }}
+          onResolve={onResolve}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    // Ink splits a stdin chunk only at escape bytes, so this single write is
+    // genuinely two keypresses inside one React batch — a paste, or an arrow
+    // repeating faster than a frame. It is the case a per-keypress test cannot
+    // reach.
+    await press(view, '\u001b[B\r');
+
+    expect(onResolve).toHaveBeenCalledWith({
+      action: 'answer',
+      answers: { 'Which format?': 'Detailed' },
+    });
+  });
 });

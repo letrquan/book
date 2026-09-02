@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import TextInput from './TextInputField.js';
 import { useCallback, useMemo, useRef, useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import type { RetryConfig } from '../../types/runtime.js';
 import {
   DEFAULT_PROVIDER_BASE_URLS,
@@ -99,7 +100,10 @@ export function ByokWizard({
   const [modelSource, setModelSource] = useState<ModelSource>('discover');
   const [models, setModels] = useState<DiscoveredModel[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [modelCursor, setModelCursor] = useState(0);
+  // Read back by the key handler, which Ink runs once per stdin chunk: with
+  // plain state a batched arrow+Space toggled the model above the highlighted
+  // one.
+  const [modelCursor, setModelCursor, currentModel] = useKeyState(0);
   const [modelFilter, setModelFilter] = useState('');
   const [manualModel, setManualModel] = useState('');
   const [label, setLabel] = useState('');
@@ -264,15 +268,15 @@ export function ByokWizard({
           return;
         }
         if (key.upArrow) {
-          setModelCursor((value) => (value - 1 + filteredModels.length) % filteredModels.length);
+          setModelCursor((currentModel() - 1 + filteredModels.length) % filteredModels.length);
           return;
         }
         if (key.downArrow) {
-          setModelCursor((value) => (value + 1) % filteredModels.length);
+          setModelCursor((currentModel() + 1) % filteredModels.length);
           return;
         }
         if (input === ' ') {
-          const id = filteredModels[modelCursor]?.id;
+          const id = filteredModels[currentModel()]?.id;
           if (!id) return;
           setSelectedIds((current) =>
             current.includes(id) ? current.filter((value) => value !== id) : [...current, id],

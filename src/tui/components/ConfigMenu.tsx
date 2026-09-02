@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from 'ink';
-import { useRef, useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
@@ -81,10 +81,9 @@ export function ConfigMenu({
   onCancel,
 }: ConfigMenuProps) {
   const theme = useTheme();
-  const [selected, setSelected] = useState(0);
   // An accelerator sets the cursor and acts on it in the same keypress, so the
   // handler cannot read `selected` back from state — React has not flushed it.
-  const selectedRef = useRef(0);
+  const [selected, moveSelection, currentSelected] = useKeyState(0);
   const frame = floatingFrameMetrics(terminalWidth);
   const contentWidth = Math.max(16, frame.width - 4);
 
@@ -95,26 +94,21 @@ export function ConfigMenu({
     else onOpen(row);
   };
 
-  const moveSelection = (next: number) => {
-    selectedRef.current = next;
-    setSelected(next);
-  };
-
   useInput((input, key) => {
     if (key.escape) return onCancel();
     // Shift+Tab is back-tab everywhere else it appears; treating a bare
     // `key.tab` as "next" sent it forward, one row past whatever the user was
     // aiming at.
     if (key.upArrow || (key.tab && key.shift)) {
-      moveSelection((selectedRef.current - 1 + ROWS.length) % ROWS.length);
+      moveSelection((currentSelected() - 1 + ROWS.length) % ROWS.length);
       return;
     }
     if (key.downArrow || key.tab) {
-      moveSelection((selectedRef.current + 1) % ROWS.length);
+      moveSelection((currentSelected() + 1) % ROWS.length);
       return;
     }
     if (key.return) {
-      activate(ROWS[selectedRef.current].row);
+      activate(ROWS[currentSelected()].row);
       return;
     }
     if (key.ctrl || key.meta) return;

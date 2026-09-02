@@ -179,4 +179,20 @@ describe('SkillManager', () => {
     const lines = stripAnsi(view.lastFrame()).split('\n');
     expect(Math.max(...lines.map((line) => line.length))).toBeLessThanOrEqual(42);
   });
+
+  it('changes activation on the skill the arrow moved to, batched in one write', async () => {
+    const { view, onChangeActivation } = renderManager();
+
+    // Ink splits a stdin chunk only at escape bytes, so this single write is
+    // genuinely two keypresses inside one React batch — a paste, or an arrow
+    // repeating faster than a frame. It is the case a per-keypress test cannot
+    // reach.
+    // Space writes a persisted setting, so acting on the pre-arrow row does not
+    // just look wrong — it saves the wrong skill.
+    view.stdin.write('\u001b[B ');
+    await wait(20);
+
+    expect(onChangeActivation).toHaveBeenCalledOnce();
+    expect(onChangeActivation).toHaveBeenCalledWith('deploy', 'off');
+  });
 });

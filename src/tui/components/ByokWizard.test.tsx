@@ -262,4 +262,24 @@ describe('ByokWizard', () => {
     await write(view, '\x1b');
     expect(onCancel).toHaveBeenCalledOnce();
   });
+
+  it('toggles the model the arrow moved to, batched in one write', async () => {
+    const { view, onSave } = createWizard();
+    await advanceToModelChoice(view);
+    expect(stripAnsi(view.lastFrame())).toContain('2 selected');
+
+    // Ink splits a stdin chunk only at escape bytes, so this single write is
+    // genuinely two keypresses inside one React batch — a paste, or an arrow
+    // repeating faster than a frame. It is the case a per-keypress test cannot
+    // reach.
+    await write(view, '\u001b[B ');
+    expect(stripAnsi(view.lastFrame())).toContain('1 selected');
+
+    await write(view, '\r');
+    await write(view, '\r');
+    await write(view, '\r');
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ models: [{ id: 'model-a', label: 'Model A' }] }),
+    );
+  });
 });

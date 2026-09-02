@@ -1,5 +1,6 @@
 import { Box, Text, useInput } from 'ink';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import type { AgentSummary } from '../../agents/types.js';
 import type { BackgroundShellRecord } from '../../types/runtime.js';
 import { useTheme } from '../theme.js';
@@ -37,8 +38,7 @@ export function SubagentPanel({
   screenReader?: boolean;
 }) {
   const theme = useTheme();
-  const [selectedIndex, setSelectedIndex] = useState(0);
-  const selectedIndexRef = useRef(0);
+  const [selectedIndex, setSelectedIndex, currentIndex] = useKeyState(0);
   const orderedAgents = useMemo(
     () =>
       [...agents].sort((left, right) => {
@@ -75,29 +75,26 @@ export function SubagentPanel({
     const selected = selectedJobId ?? selectedAgentId;
     const next = selected ? rows.indexOf(selected) : 0;
     const resolved = next >= 0 ? next : 0;
-    selectedIndexRef.current = resolved;
     setSelectedIndex(resolved);
-  }, [rows, selectedAgentId, selectedJobId]);
+  }, [rows, selectedAgentId, selectedJobId, setSelectedIndex]);
   useInput(
     (input, key) => {
       if (!isActive) return;
       if (key.escape) return onCancel?.();
       if (key.upArrow) {
-        const next = (selectedIndexRef.current - 1 + rows.length) % rows.length;
-        selectedIndexRef.current = next;
+        const next = (currentIndex() - 1 + rows.length) % rows.length;
         setSelectedIndex(next);
         onSelect?.(rows[next]);
       } else if (key.downArrow || key.tab) {
-        const next = (selectedIndexRef.current + 1) % rows.length;
-        selectedIndexRef.current = next;
+        const next = (currentIndex() + 1) % rows.length;
         setSelectedIndex(next);
         onSelect?.(rows[next]);
       } else if (key.return) {
-        const id = rows[selectedIndexRef.current];
+        const id = rows[currentIndex()];
         if (id) onOpen?.(id);
         else onClose?.();
       } else if (input === 'x') {
-        const id = rows[selectedIndexRef.current];
+        const id = rows[currentIndex()];
         if (id) onStopOrDismiss?.(id);
       }
     },

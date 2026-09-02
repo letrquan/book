@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import TextInput from './TextInputField.js';
 import { useCallback, useMemo, useRef, useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import type { UserQuestion, UserQuestionRequest, UserQuestionResponse } from '../../types/tools.js';
 import { useTheme } from '../theme.js';
 import { truncateDisplay } from './word-wrap.js';
@@ -48,11 +49,14 @@ export function AskUserQuestionWizard({
   const frame = floatingFrameMetrics(outerWidth);
   const contentWidth = Math.max(14, frame.width - 4);
   const compact = outerWidth < 60;
-  const [questionIndex, setQuestionIndex] = useState(0);
-  const [cursor, setCursor] = useState(0);
+  // Read back by the key handler, so plain state is not enough: Ink delivers a
+  // whole stdin chunk in one React batch, and a batched arrow+Enter answered
+  // with the option the cursor had left rather than the one highlighted.
+  const [questionIndex, setQuestionIndex, currentQuestion] = useKeyState(0);
+  const [cursor, setCursor, currentCursor] = useKeyState(0);
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({});
-  const [otherMode, setOtherMode] = useState(false);
+  const [otherMode, setOtherMode, inOtherMode] = useKeyState(false);
   const [otherValue, setOtherValue] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const resolvedRef = useRef(false);
@@ -72,7 +76,7 @@ export function AskUserQuestionWizard({
 
   const advance = useCallback(
     (nextAnswers: Record<string, string[]>) => {
-      if (questionIndex === request.questions.length - 1) {
+      if (currentQuestion() === request.questions.length - 1) {
         const normalized = normalizeAnswers(request.questions, nextAnswers);
         if (!normalized) {
           setNotice('Choose at least one answer to continue.');
@@ -81,11 +85,11 @@ export function AskUserQuestionWizard({
         resolveOnce({ action: 'answer', answers: normalized });
         return;
       }
-      setQuestionIndex((value) => value + 1);
+      setQuestionIndex(currentQuestion() + 1);
       setCursor(0);
       setNotice(null);
     },
-    [questionIndex, request.questions, resolveOnce],
+    [currentQuestion, setQuestionIndex, setCursor, request.questions, resolveOnce],
   );
 
   const saveAndAdvance = useCallback(
@@ -131,7 +135,7 @@ export function AskUserQuestionWizard({
   }, [customAnswer]);
 
   useInput((input, key) => {
-    if (otherMode) {
+    if (inOtherMode()) {
       if (key.escape) {
         setOtherMode(false);
         setNotice(null);
@@ -146,13 +150,13 @@ export function AskUserQuestionWizard({
       return;
     }
     if (key.upArrow || (key.shift && key.tab)) {
-      setCursor((value) => (value - 1 + rowCount) % rowCount);
+      setCursor((currentCursor() - 1 + rowCount) % rowCount);
       setNotice(null);
     } else if (key.downArrow || key.tab) {
-      setCursor((value) => (value + 1) % rowCount);
+      setCursor((currentCursor() + 1) % rowCount);
       setNotice(null);
     } else if (input === ' ' && question.multiSelect) {
-      if (cursor === question.options.length) {
+      if (currentCursor() === question.options.length) {
         if (customAnswer) {
           setAnswers((current) => ({
             ...current,
@@ -167,10 +171,10 @@ export function AskUserQuestionWizard({
           openOther();
         }
       } else {
-        chooseKnownOption(cursor);
+        chooseKnownOption(currentCursor());
       }
     } else if (key.return) {
-      if (cursor === question.options.length) {
+      if (currentCursor() === question.options.length) {
         openOther();
       } else if (question.multiSelect) {
         if (selected.length === 0) {
@@ -179,13 +183,13 @@ export function AskUserQuestionWizard({
           saveAndAdvance(selected);
         }
       } else {
-        chooseKnownOption(cursor);
+        chooseKnownOption(currentCursor());
       }
     } else if (input.toLowerCase() === 'o') {
       setCursor(question.options.length);
       openOther();
-    } else if ((input.toLowerCase() === 'b' || key.leftArrow) && questionIndex > 0) {
-      setQuestionIndex((value) => value - 1);
+    } else if ((input.toLowerCase() === 'b' || key.leftArrow) && currentQuestion() > 0) {
+      setQuestionIndex(currentQuestion() - 1);
       setCursor(0);
       setNotice(null);
     } else if (input.toLowerCase() === 'd') {

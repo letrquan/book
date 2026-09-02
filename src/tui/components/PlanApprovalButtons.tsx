@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import TextInput from './TextInputField.js';
 import { useCallback, useRef, useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import type { PlanApprovalResult } from '../../types/tools.js';
 import { createUiDebugLogger } from '../../debug-log.js';
@@ -100,11 +101,14 @@ export function PlanApprovalActions({
   terminalWidth,
 }: PlanApprovalActionsProps) {
   const theme = useTheme();
-  const [selected, setSelected] = useState(0);
-  const [feedbackMode, setFeedbackMode] = useState(false);
+  // `useKeyState` rather than `useState`: both of these are read back by the
+  // key handler, and Ink delivers a whole stdin chunk in one React batch. With
+  // plain state a batched `→`+Enter resolved the button that was armed before
+  // the arrow — approving a plan the user had moved off.
+  const [selected, setSelected, currentSelected] = useKeyState(0);
+  const [feedbackMode, setFeedbackMode, inFeedbackMode] = useKeyState(false);
   const [feedback, setFeedback] = useState('');
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
-  const feedbackModeRef = useRef(false);
   const resolvedRef = useRef(false);
   const lines = plan.split('\n');
   useDebugMount(uiLog, {
@@ -117,16 +121,15 @@ export function PlanApprovalActions({
     (value: PlanApprovalResult) => {
       if (resolvedRef.current) return;
       resolvedRef.current = true;
-      uiLog.event('resolve', { result: value, selected });
+      uiLog.event('resolve', { result: value, selected: currentSelected() });
       onResolve(value);
     },
-    [onResolve, selected],
+    [onResolve, currentSelected],
   );
 
   useInput((input, key) => {
-    if (feedbackModeRef.current) {
+    if (inFeedbackMode()) {
       if (key.escape) {
-        feedbackModeRef.current = false;
         setFeedbackMode(false);
         setFeedbackError(null);
       }
@@ -134,13 +137,12 @@ export function PlanApprovalActions({
     }
 
     if (key.leftArrow || (key.shift && key.tab)) {
-      setSelected((value) => (value - 1 + BUTTONS.length) % BUTTONS.length);
+      setSelected((currentSelected() - 1 + BUTTONS.length) % BUTTONS.length);
     } else if (key.rightArrow || key.tab) {
-      setSelected((value) => (value + 1) % BUTTONS.length);
+      setSelected((currentSelected() + 1) % BUTTONS.length);
     } else if (key.return || input === ' ') {
-      const value = BUTTONS[selected].value;
+      const value = BUTTONS[currentSelected()].value;
       if (value === 'revise') {
-        feedbackModeRef.current = true;
         setFeedbackMode(true);
         setFeedbackError(null);
       } else {
@@ -154,7 +156,6 @@ export function PlanApprovalActions({
       resolveOnce('approve-fresh');
     } else if (input.toLowerCase() === 'e') {
       setSelected(BUTTONS.findIndex((button) => button.value === 'revise'));
-      feedbackModeRef.current = true;
       setFeedbackMode(true);
       setFeedbackError(null);
     } else if (['r', 's'].includes(input.toLowerCase())) {

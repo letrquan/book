@@ -93,4 +93,20 @@ describe('EffortPicker', () => {
     expect(frame).toContain('Set effort level');
     expect(frame).toContain('settings.local.json is read-only');
   });
+
+  it('saves the level two arrows down when both arrive in one batch', async () => {
+    const { view, onSelect } = renderPicker({ current: 'low' });
+
+    // Ink splits a stdin chunk only at escape bytes, so this single write is
+    // genuinely two keypresses inside one React batch — a paste, or an arrow
+    // repeating faster than a frame. It is the case a per-keypress test cannot
+    // reach.
+    //
+    // Two arrows, not one: React evaluates the first update in a batch eagerly,
+    // so a single arrow leaves a ref-in-updater looking correct. Only the
+    // second update is deferred, which is where the old code lost the cursor.
+    await write(view, '\u001b[B\u001b[B\r');
+
+    expect(onSelect).toHaveBeenCalledWith('high');
+  });
 });
