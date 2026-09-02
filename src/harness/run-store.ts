@@ -1049,6 +1049,16 @@ export class RunEvidenceStore {
     return true;
   }
 
+  /**
+   * Wall clock throughout, by necessity: `startedAt` and a pin's `expiresAt`
+   * were written by earlier processes, and a monotonic reading means nothing
+   * outside the process that took it.
+   *
+   * The exposure is that a forwards clock correction can age a run past its
+   * window early and delete sealed evidence. Pins are the guard — they are
+   * retention authority on their own — so anything that must outlive a clock
+   * adjustment should be pinned rather than trusted to its age.
+   */
   async cleanupRetention(
     options: { maxAgeMs?: number; now?: number; pinnedRunIds?: readonly string[] } = {},
   ): Promise<readonly string[]> {
