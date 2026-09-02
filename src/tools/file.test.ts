@@ -1,4 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+/**
+ * Wraps the real yield so behaviour is unchanged and only the call becomes
+ * observable. The large-read test needs to assert that formatting hands the
+ * event loop back, and it cannot do that by racing a timer against it.
+ */
+vi.mock('../async.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../async.js')>();
+  return { ...actual, yieldToEventLoop: vi.fn(actual.yieldToEventLoop) };
+});
 import { fileTools } from './file.js';
 import type { ToolContext } from '../types/tools.js';
 import {
@@ -77,23 +87,34 @@ describe('read_file', () => {
     }
   });
 
+  /**
+   * This used to schedule `setTimeout(..., 0)` and assert it had fired by the
+   * time the read finished. `yieldToEventLoop` yields with `setImmediate`, so
+   * the two live in different event-loop phases with no defined order between
+   * them -- the timer only got through because `readFile`'s own I/O happens to
+   * pass the poll phase. Measured over 300 rounds, a bare sequence of yields
+   * let the timer fire 1, 4 and 1 times out of 300 after one, two and three
+   * yields. On a loaded CI runner that margin is what turned red. (#155)
+   *
+   * The behaviour worth protecting is that formatting hands the loop back at
+   * all, so the test counts the handoffs instead of racing them.
+   */
   it('yields while formatting large reads', async () => {
+    const lines = 5_000;
     writeFileSync(
       join(dir, 'large.txt'),
-      Array.from({ length: 5_000 }, (_, index) => `line ${index}`).join('\n'),
+      Array.from({ length: lines }, (_, index) => `line ${index}`).join('\n'),
     );
-    let timerFired = false;
-    const timer = setTimeout(() => {
-      timerFired = true;
-    }, 0);
+    const { yieldToEventLoop } = await import('../async.js');
+    vi.mocked(yieldToEventLoop).mockClear();
 
-    try {
-      const result = await read.execute({ filePath: 'large.txt', limit: 5_000 }, ctx);
-      expect(result.status).toBe('success');
-      expect(timerFired).toBe(true);
-    } finally {
-      clearTimeout(timer);
-    }
+    const result = await read.execute({ filePath: 'large.txt', limit: lines }, ctx);
+
+    expect(result.status).toBe('success');
+    // 5 000 lines against a 2 048-line interval: at least two handoffs. Raising
+    // LINE_YIELD_INTERVAL past the line count drives this to zero, which is what
+    // makes the assertion worth having.
+    expect(vi.mocked(yieldToEventLoop).mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });
 
