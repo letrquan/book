@@ -20,8 +20,8 @@
  *   declining means.
  */
 import { Box, Text, useInput } from 'ink';
-import { useCallback, useEffect, useState } from 'react';
-import { useKeyState } from '../hooks/useKeyState.js';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ListPicker } from './ListPicker.js';
 import { useTheme } from '../theme.js';
 import { runOAuthLogin, DEFAULT_LOGIN_TIMEOUT_MS, type LoginOptions } from '../../auth/login.js';
 import { missingClientIdMessage } from '../../auth/oauth.js';
@@ -92,14 +92,20 @@ export function LoginPicker({
   timeoutMs = DEFAULT_LOGIN_TIMEOUT_MS,
 }: LoginPickerProps) {
   const theme = useTheme();
-  const [selected, setSelected, currentSelected] = useKeyState(() => {
-    const preferred = [initialProfileId, activeProfile].filter(Boolean);
-    for (const id of preferred) {
+  // The cursor itself now lives in `ListPicker`; this only decides where it
+  // starts. `/login <profile>` wins over the active profile, because naming one
+  // explicitly is the stronger signal.
+  //
+  // Returning from a login re-homes the cursor here rather than restoring where
+  // it was. That is deliberate: a completed sign-in changes which profile the
+  // list is about, and landing on the active one says so.
+  const initialIndex = useMemo(() => {
+    for (const id of [initialProfileId, activeProfile].filter(Boolean)) {
       const index = profiles.findIndex((profile) => profile.id === id);
       if (index >= 0) return index;
     }
     return 0;
-  });
+  }, [activeProfile, initialProfileId, profiles]);
   const [view, setView] = useState<View>({ kind: 'list' });
   const [progress, setProgress] = useState<Progress>({});
   // Separate from `view` on purpose: the effect that runs the login keys on
@@ -187,67 +193,57 @@ export function LoginPicker({
     setRun({ profile });
   }, []);
 
-  useInput((input, key) => {
-    if (view.kind === 'running') {
-      // Cancel only. Abort happens in the effect cleanup when `run` clears.
-      if (key.escape) {
-        setRun(undefined);
-        setView({ kind: 'list' });
-      }
-      return;
-    }
-
-    if (view.kind === 'activate') {
-      const answer = input.toLowerCase();
-      if (key.escape || answer === 'n') {
-        setView({
-          kind: 'message',
-          tone: 'success',
-          text: `Signed in to ${view.profile.label}, but this session still uses its previous credential.`,
-          hint: `Run /login again, or set auth.profile to "${view.profile.id}", to spend it.`,
-        });
+  useInput(
+    (input, key) => {
+      if (view.kind === 'running') {
+        // Cancel only. Abort happens in the effect cleanup when `run` clears.
+        if (key.escape) {
+          setRun(undefined);
+          setView({ kind: 'list' });
+        }
         return;
       }
-      if (key.return || answer === 'y') {
-        const result = onActivate(view.profile);
-        setView(
-          result.ok
-            ? {
-                kind: 'message',
-                tone: 'success',
-                text: `Now spending ${view.profile.label} on this and future sessions.`,
-                hint: `Model: ${view.model} · ${view.baseUrl}`,
-              }
-            : { kind: 'message', tone: 'error', text: result.error ?? 'Could not activate.' },
-        );
+
+      if (view.kind === 'activate') {
+        const answer = input.toLowerCase();
+        if (key.escape || answer === 'n') {
+          setView({
+            kind: 'message',
+            tone: 'success',
+            text: `Signed in to ${view.profile.label}, but this session still uses its previous credential.`,
+            hint: `Run /login again, or set auth.profile to "${view.profile.id}", to spend it.`,
+          });
+          return;
+        }
+        if (key.return || answer === 'y') {
+          const result = onActivate(view.profile);
+          setView(
+            result.ok
+              ? {
+                  kind: 'message',
+                  tone: 'success',
+                  text: `Now spending ${view.profile.label} on this and future sessions.`,
+                  hint: `Model: ${view.model} · ${view.baseUrl}`,
+                }
+              : { kind: 'message', tone: 'error', text: result.error ?? 'Could not activate.' },
+          );
+        }
+        return;
       }
-      return;
-    }
 
-    if (view.kind === 'message') {
+      if (view.kind === 'message') {
+        if (key.escape) onClose();
+        else setView({ kind: 'list' });
+        return;
+      }
+
       if (key.escape) onClose();
-      else setView({ kind: 'list' });
-      return;
-    }
-
-    if (key.escape) {
-      onClose();
-      return;
-    }
-    if (profiles.length === 0) return;
-    if (key.upArrow) {
-      setSelected((currentSelected() - 1 + profiles.length) % profiles.length);
-      return;
-    }
-    if (key.downArrow) {
-      setSelected((currentSelected() + 1) % profiles.length);
-      return;
-    }
-    if (key.return) {
-      const profile = profiles[currentSelected()];
-      if (profile) start(profile);
-    }
-  });
+      // The list stage is `ListPicker`'s; this handler is inactive there. Ink
+      // fans every keypress to every registered handler, so leaving both live
+      // would double-fire Enter and Esc.
+    },
+    { isActive: view.kind !== 'list' },
+  );
 
   if (view.kind === 'running') {
     const seconds = Math.round(timeoutMs / 1000);
@@ -328,42 +324,30 @@ export function LoginPicker({
   }
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
-      <Text bold color={theme.brand}>
-        Sign in with a subscription
-      </Text>
-      <Text color={theme.subtle}>
-        Authorizes Book against a provider subscription instead of an API key.
-      </Text>
-      <Box flexDirection="column" marginTop={1}>
-        {profiles.length === 0 ? (
-          <Text color={theme.subtle}>No auth profiles are configured.</Text>
-        ) : (
-          profiles.map((profile, index) => {
-            const isSelected = index === selected;
-            const isActive = profile.id === activeProfile;
-            const notes = [
-              signedIn.includes(profile.id) ? 'signed in' : undefined,
-              isActive ? 'active' : undefined,
-              profile.clientId ? undefined : 'no client id',
-            ].filter(Boolean);
-            return (
-              <Text
-                key={profile.id}
-                backgroundColor={isSelected ? theme.surfaceActive : undefined}
-                color={isSelected ? theme.selectionText : isActive ? theme.brand : theme.text}
-                bold={isSelected || isActive}
-              >
-                {isSelected ? '❯' : ' '} {profile.id.padEnd(10)} {profile.label}
-                {notes.length > 0 ? `  (${notes.join(', ')})` : ''}
-              </Text>
-            );
-          })
-        )}
-      </Box>
-      <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter sign in · Esc cancel
-      </Text>
-    </Box>
+    <ListPicker
+      title="Sign in with a subscription"
+      subtitle="Authorizes Book against a provider subscription instead of an API key."
+      items={profiles.map((profile) => {
+        const notes = [
+          signedIn.includes(profile.id) ? 'signed in' : undefined,
+          profile.id === activeProfile ? 'active' : undefined,
+          profile.clientId ? undefined : 'no client id',
+        ].filter(Boolean);
+        return {
+          key: profile.id,
+          label: `${profile.id.padEnd(10)} ${profile.label}`,
+          note: notes.length > 0 ? `(${notes.join(', ')})` : undefined,
+          accent: profile.id === activeProfile,
+        };
+      })}
+      initialIndex={initialIndex}
+      emptyText="No auth profiles are configured."
+      enterHint="sign in"
+      onSelect={(index) => {
+        const profile = profiles[index];
+        if (profile) start(profile);
+      }}
+      onCancel={onClose}
+    />
   );
 }

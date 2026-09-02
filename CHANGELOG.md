@@ -264,6 +264,24 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **`/resume` can reach every conversation, page, and be typed at.** It drew twelve rows while
+  its cursor wrapped over every session in the workspace, so in a workspace with more than twelve
+  the thirteenth arrow press moved the highlight onto a row that was not on screen — the list
+  showed no selection at all, and Enter resumed a conversation the user had never seen. It
+  windows now, pages with PgUp/PgDn, and filters as you type; it is the one list long enough to
+  need all three.
+
+  That fix came out of extracting the list dialog six pickers were each rebuilding — theme,
+  permission mode, effort, resume, subagent profiles and login. Along with the cut list, the copies
+  had drifted in two smaller ways: `/login` still marked its selection with `❯` after the rest of
+  the TUI had settled on `›`, and Esc was described four different ways depending on which dialog
+  was open. Paging is new to all six. The shared cursor is also batch-safe by construction, so a
+  picker cannot reacquire the defect fixed below by being written next.
+
+  `/model`, `/skills` and `/rewind` deliberately keep their own implementations — filtering with a
+  removal mode, search with multi-action rows, and a two-stage flow that has to complete from a
+  single input chunk.
+
 - **A trust gate no longer confirms the button you moved off.** Ink hands a whole chunk of stdin
   to its handlers in one go, and React batches every state update made while that runs — so two
   keys that arrive together (a paste, an arrow repeating faster than a frame, input buffered over

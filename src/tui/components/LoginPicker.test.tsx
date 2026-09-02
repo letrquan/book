@@ -104,7 +104,9 @@ describe('LoginPicker', () => {
 
   it('preselects the profile named by /login <profile>', () => {
     const { view } = renderPicker({ initialProfileId: 'codex' });
-    expect(stripAnsi(view.lastFrame())).toContain('❯ codex');
+    // `›`, not `❯`. This picker was the last component still spelling the
+    // selection marker its own way; moving it onto ListPicker settles it.
+    expect(stripAnsi(view.lastFrame())).toContain('› codex');
   });
 
   it('refuses a profile with no client id without starting a flow', async () => {
