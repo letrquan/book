@@ -8,6 +8,8 @@
  * group membership; the direct child's own exit proves nothing about the tree behind it.
  */
 
+import { systemClock, type Clock } from '../clock.js';
+
 const GROUP_POLL_INTERVAL_MS = 25;
 
 /** A signal target exists when it accepts signal 0, or rejects it as another user's. */
@@ -55,10 +57,16 @@ export function signalProcessGroup(
  * file handles, or CPU, and reporting "not stopped" for the moments before it is reaped is
  * honest, where trusting the direct child's exit is not.
  */
-export async function waitForProcessGroupExit(pgid: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
+export async function waitForProcessGroupExit(
+  pgid: number,
+  timeoutMs: number,
+  // A kill bound is a duration: on the wall clock, a backwards step here waits
+  // past the bound and a forwards one abandons a group that was about to exit.
+  clock: Clock = systemClock,
+): Promise<boolean> {
+  const deadline = clock.monotonicNowMs() + timeoutMs;
   while (isProcessGroupAlive(pgid)) {
-    if (Date.now() >= deadline) return false;
+    if (clock.monotonicNowMs() >= deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, GROUP_POLL_INTERVAL_MS));
   }
   return true;

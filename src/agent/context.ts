@@ -399,10 +399,15 @@ export interface SystemPromptOverrides {
    */
   planUnrestored?: boolean;
   /**
-   * When this run began, so the session-state block can say how long it has been
-   * going. Task state like `planMode`: it must not reach the cached prefix.
+   * How long this run has been going, so the session-state block can say so.
+   * Task state like `planMode`: it must not reach the cached prefix.
+   *
+   * The elapsed value, not a start stamp, because the caller owns the clock.
+   * It measures with a monotonic one — a run lasting days would otherwise have
+   * this rewritten under it by any wall-clock correction — and a monotonic
+   * reading means nothing to anyone who did not take it.
    */
-  runStartedAt?: number;
+  runElapsedMs?: number;
 }
 
 /**
@@ -536,7 +541,7 @@ async function ensureSessionState(
   todos: Array<{ content: string; status: string; activeForm?: string }>,
   planMode: boolean,
   planUnrestored: boolean,
-  runStartedAt: number | undefined,
+  runElapsedMs: number | undefined,
   signal?: AbortSignal,
   cache?: AgentContextCache,
 ): Promise<void> {
@@ -552,7 +557,7 @@ async function ensureSessionState(
 
   newest.sessionState = renderSessionState({
     workspace: config.workspace,
-    runElapsedMs: runStartedAt === undefined ? undefined : Date.now() - runStartedAt,
+    runElapsedMs,
     git: await (cache?.git(config.workspace, signal) ?? gitContext(config.workspace, signal)),
     planMode,
     planUnrestored,
@@ -584,7 +589,7 @@ export async function buildMessages(
     todos ?? [],
     systemOverrides?.planMode ?? false,
     systemOverrides?.planUnrestored ?? false,
-    systemOverrides?.runStartedAt,
+    systemOverrides?.runElapsedMs,
     signal,
     cache,
   );

@@ -1,5 +1,6 @@
 import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { systemClock, type Clock } from '../clock.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -74,6 +75,12 @@ export interface ShellJobManagerOptions {
    */
   runnerStartBudgetMs?: number;
   runnerStopBudgetMs?: number;
+  /**
+   * Injected by tests. Only the two budgets above read it: every other time in
+   * this file is a stamp shared with the detached runner process, and those
+   * stay on the wall clock because two processes share no monotonic origin.
+   */
+  clock?: Clock;
 }
 
 function cloneRecord(shell: BackgroundShellRecord): BackgroundShellRecord {
@@ -217,7 +224,11 @@ export class ShellJobManager {
   constructor(
     private readonly store: BackgroundShellStore,
     private readonly options: ShellJobManagerOptions = {},
-  ) {}
+  ) {
+    this.clock = options.clock ?? systemClock;
+  }
+
+  private readonly clock: Clock;
 
   subscribe(listener: (event: ShellJobEvent) => void): () => void {
     this.subscribers.add(listener);
@@ -588,8 +599,9 @@ export class ShellJobManager {
     };
     this.store.shells.set(id, shell);
     const startBudgetMs = this.options.runnerStartBudgetMs ?? 3_000;
-    const deadline = Date.now() + startBudgetMs;
-    while (Date.now() < deadline) {
+    // Monotonic: this is "wait up to three seconds", not "wait until 12:04".
+    const deadline = this.clock.monotonicNowMs() + startBudgetMs;
+    while (this.clock.monotonicNowMs() < deadline) {
       const state = readJsonFile<PersistentShellState>(recordPath);
       if (state) {
         this.applyPersistentState(shell, state);
@@ -633,8 +645,8 @@ export class ShellJobManager {
       reason,
       requestedAt: Date.now(),
     });
-    const deadline = Date.now() + (this.options.runnerStopBudgetMs ?? 5_000);
-    while (Date.now() < deadline) {
+    const deadline = this.clock.monotonicNowMs() + (this.options.runnerStopBudgetMs ?? 5_000);
+    while (this.clock.monotonicNowMs() < deadline) {
       this.refreshPersistentRecord(shell);
       if (isTerminalShellStatus(shell.status)) return true;
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -668,6 +680,15 @@ export class ShellJobManager {
     state: PersistentShellState,
     recordPath: string,
   ): PersistentShellState {
+    // Wall clock by necessity: `heartbeatAt` was stamped by the detached runner,
+    // a different process, and two processes share no monotonic origin — a
+    // monotonic reading cannot cross that boundary at all.
+    //
+    // What makes that survivable is the third condition rather than the clock. A
+    // backwards correction reads as "unexpectedly fresh" and keeps the shell; a
+    // forwards one would call a live runner stale on its own, and `isProcessAlive`
+    // is what stops it, because the runner's pid does not care what time it is.
+    // Keep those two disjuncts together.
     if (
       isTerminalShellStatus(state.status) ||
       Date.now() - state.heartbeatAt < PERSISTENT_HEARTBEAT_STALE_MS ||

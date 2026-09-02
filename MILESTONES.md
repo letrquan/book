@@ -50,7 +50,16 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
       `verbatimUserRetention` went from 0.0 to 1.0 and overall retention from 0.333 to 0.667. The
       design is `plans/carried-ledger-plan.md`; Phase 1 (budget rework) remains open.
 - [ ] A control surface for a run in flight - at hour 30 the only interventions are `kill` and wait.
-- [ ] Monotonic clock for liveness/lease/TTL decisions; every one is on the settable wall clock.
+- [x] Monotonic clock for every duration decided **inside one process** — the provider retry
+      budget and model-discovery budget, the harness flush deadline and sync cadence, the
+      background-shell start/stop budgets, the process-group kill bound, and the run's own elapsed
+      time as the model is told it. `src/clock.ts`; injected, never a module global.
+- [ ] Cross-process liveness/TTL is **still on the wall clock, and monotonic time cannot fix it** —
+      two processes share no monotonic origin, so a reading cannot be persisted or compared across
+      that boundary. Affects the background-shell heartbeat, the run-status file `book status`
+      reads, and the two retention sweeps. Today the heartbeat is saved by its `isProcessAlive`
+      disjunct and the status warning is worded as a maybe; making them actually correct needs a
+      **sequence counter in the file**, not a better clock. Each site says so at the call.
 
 ### 1. Trust Boundary and Sandbox Hardening
 

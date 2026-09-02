@@ -264,6 +264,11 @@ function renderRunStatus(run: RunStatus, now: number): string[] {
 
   lines.push(`  turn ${run.turn}  •  elapsed ${duration(run.elapsedMs)}`);
   lines.push(`  last update: ${since(run.updatedAt, now)}`);
+  // Wall clock, and it has to be: `updatedAt` comes from the run's status file,
+  // written by another process. This is why the line hedges — "may be wedged" —
+  // rather than asserting. A wall-clock correction between the writer's stamp and
+  // this read can produce the warning on a healthy run, and the cost of that is
+  // one cautious sentence, which is the right trade for a diagnostic.
   if (run.liveness === 'running' && now - run.updatedAt > STALE_RUN_MS) {
     lines.push(
       `  ⚠ the process is alive but has not written a turn boundary in ${duration(now - run.updatedAt)} —` +

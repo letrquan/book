@@ -1,4 +1,5 @@
 import { generateKeyPairSync, sign as signBytes, verify as verifyBytes } from 'node:crypto';
+import { systemClock } from '../clock.js';
 import { canonicalJson, sha256Hex } from './canonical-json.js';
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
@@ -185,6 +186,13 @@ export interface RunStoreOptions {
   readonly bookHome?: string;
   readonly workspaceId?: string;
   readonly now?: () => number;
+  /**
+   * Monotonic source for the two *durations* here — the flush deadline and the
+   * sync cadence. `now` above stays wall clock: it stamps `occurredAt` into a
+   * sealed, hash-chained ledger that other processes and people read, and a
+   * monotonic reading there would be meaningless outside this process.
+   */
+  readonly monotonicNowMs?: () => number;
   readonly randomUUID?: () => string;
   readonly maxRecordBytes?: number;
   readonly maxQueueSize?: number;
@@ -358,6 +366,7 @@ export class RunLedgerWriter {
   private readonly backend: LedgerDurabilityBackend;
   private readonly options: RunLedgerWriterOptions;
   private readonly now: () => number;
+  private readonly monotonicNowMs: () => number;
   private readonly randomUUID: () => string;
   private readonly privateKey: KeyObject;
   private readonly publicKey: KeyObject;
@@ -392,6 +401,7 @@ export class RunLedgerWriter {
     this.options = options;
     this.identity = options.identity;
     this.now = options.now ?? Date.now;
+    this.monotonicNowMs = options.monotonicNowMs ?? systemClock.monotonicNowMs;
     this.randomUUID = options.randomUUID ?? (() => crypto.randomUUID());
     const keys = generateKeyPairSync('ed25519');
     this.privateKey = keys.privateKey;
@@ -505,17 +515,17 @@ export class RunLedgerWriter {
     if (this.seal) return this.flushResult('closed', !this.incomplete);
     if ((this.state as string) === 'closed')
       return this.flushResult('closed', false, 'closed-without-seal');
-    const deadline = Date.now() + this.policy.flushTimeoutMs;
+    const deadline = this.monotonicNowMs() + this.policy.flushTimeoutMs;
     // Re-await the barrier while new drains are scheduled so "flushed" cannot be
     // claimed with accepted records still queued.
     while (this.drainPromise || (this.queue.length > 0 && this.state === 'open')) {
-      if (Date.now() >= deadline) {
+      if (this.monotonicNowMs() >= deadline) {
         this.incomplete = true;
         return this.flushResult('timed-out', false, 'flush-timeout');
       }
       if (!this.drainPromise) this.scheduleDrain();
       const barrier = this.drainPromise ?? Promise.resolve();
-      const waited = await boundedWait(barrier, deadline - Date.now());
+      const waited = await boundedWait(barrier, deadline - this.monotonicNowMs());
       if (waited.timedOut) {
         this.incomplete = true;
         return this.flushResult('timed-out', false, 'flush-timeout');
@@ -726,7 +736,7 @@ export class RunLedgerWriter {
           data: item.event.data,
         });
         this.exported += 1;
-        const now = this.now();
+        const now = this.monotonicNowMs();
         const interval = this.options.syncIntervalMs ?? DEFAULT_SYNC_INTERVAL_MS;
         const threshold = this.options.syncEveryBytes ?? DEFAULT_SYNC_BYTES;
         if (this.unsyncedBytes >= threshold || now - this.lastSyncAt >= interval) await this.sync();
@@ -812,7 +822,7 @@ export class RunLedgerWriter {
 
   private async sync(): Promise<void> {
     await this.backend.sync();
-    this.lastSyncAt = this.now();
+    this.lastSyncAt = this.monotonicNowMs();
     this.unsyncedBytes = 0;
   }
 
@@ -1039,6 +1049,16 @@ export class RunEvidenceStore {
     return true;
   }
 
+  /**
+   * Wall clock throughout, by necessity: `startedAt` and a pin's `expiresAt`
+   * were written by earlier processes, and a monotonic reading means nothing
+   * outside the process that took it.
+   *
+   * The exposure is that a forwards clock correction can age a run past its
+   * window early and delete sealed evidence. Pins are the guard — they are
+   * retention authority on their own — so anything that must outlive a clock
+   * adjustment should be pinned rather than trusted to its age.
+   */
   async cleanupRetention(
     options: { maxAgeMs?: number; now?: number; pinnedRunIds?: readonly string[] } = {},
   ): Promise<readonly string[]> {
