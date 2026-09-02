@@ -49,6 +49,13 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **The composer stops telling you to answer a question nobody asked.** It read "Answer the prompt
+  above" whenever input was suppressed -- but that one flag covered two unrelated situations: a
+  permission prompt, plan approval, question or elicitation genuinely waiting on the user, and a
+  sheet such as `/config`, `/model` or the rules list merely holding the keyboard while it is open.
+  Only the first is a prompt. The two are now distinguished, and a sheet says what is true of every
+  sheet that suppresses input: Esc closes it. (#158)
+
 - **A crash no longer reads as lost work, and no longer traps the user.** The TUI error boundary
   said "Restart Book to recover" and nothing else, so a user whose render blew up mid-session could
   not tell whether an hour of conversation was gone. It was never gone -- `SessionStore.create`

@@ -67,6 +67,17 @@ interface InputBarProps {
    * the user confirming a permission accidentally interrupts the stream.
    */
   inputSuppressed?: boolean;
+  /**
+   * Whether the thing holding the keyboard is actually asking the user something
+   * — a permission prompt, a plan approval, a question, an elicitation.
+   *
+   * `inputSuppressed` covers that *and* the sheets that merely take the keys
+   * while they are open (`/config`, `/model`, the rules list, the task
+   * surface). Both silence the composer, but only the first is a prompt, and
+   * telling someone to "answer" a settings menu describes a question that is
+   * not being asked.
+   */
+  awaitingAnswer?: boolean;
   /** Allows immediate local commands such as /tasks while the parent is running. */
   canSubmitWhileBusy?: (value: string) => boolean;
   /** Allows conversational input to be queued while the parent is running. */
@@ -186,6 +197,7 @@ export function InputBar({
   onCycleAgentFocus,
   onGlobalShortcut,
   inputSuppressed = false,
+  awaitingAnswer = false,
   commands = [],
   skills = [],
   terminalWidth = 80,
@@ -805,11 +817,18 @@ export function InputBar({
   const promptColor = baseBorderColor;
   // A modal owns the keyboard, so the composer accepts nothing — saying
   // "Type a follow-up" here invited the user to type into a locked field while
-  // the prompt above was reading their keystrokes as answers.
+  // the prompt above was reading their keystrokes as answers. Which of the two
+  // things is holding the keys decides what to say instead: a prompt wants an
+  // answer, a sheet just wants closing, and every sheet that suppresses input
+  // closes on Esc.
   const placeholder = inputSuppressed
-    ? compact
-      ? 'Answer above'
-      : 'Answer the prompt above'
+    ? awaitingAnswer
+      ? compact
+        ? 'Answer above'
+        : 'Answer the prompt above'
+      : compact
+        ? 'Esc closes'
+        : 'Esc closes this'
     : submissionMode === 'queue'
       ? compact
         ? 'Enter queues'
