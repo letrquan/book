@@ -2045,6 +2045,19 @@ export function App({
     showLoginPicker,
   );
 
+  // The subset of `modalOwnsInput` that is genuinely a question. Everything else
+  // it covers is a sheet holding the keyboard while it is open, and telling
+  // someone to answer `/config` describes a prompt that is not there.
+  const awaitingAnswer =
+    Boolean(
+      pendingPermission ??
+      childPermission ??
+      childQuestion ??
+      pendingPlanApproval ??
+      pendingUserQuestion ??
+      pendingElicitation,
+    ) || showMcpApproval;
+
   // Both read files, so they are computed only while the overlay is open —
   // this is App's render body, which re-runs on every streaming tick.
   const loginProfiles = useMemo(
@@ -3046,6 +3059,7 @@ export function App({
                 managedAgents.surface === 'tasks' ||
                 detailTaskPickerOpen
               }
+              awaitingAnswer={awaitingAnswer}
               onGlobalShortcut={handleGlobalShortcut}
               commands={commands}
               skills={skills}

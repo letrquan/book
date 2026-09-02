@@ -953,6 +953,21 @@ describe('keyboard shortcut filtering', () => {
     expect(stripAnsi(view.lastFrame())).toContain('draft prompt');
   });
 
+  it('asks for an answer only when something is actually asking', async () => {
+    // Both states silence the composer, so both used to read "Answer the prompt
+    // above" — including over `/config`, which asks nothing.
+    const view = render(inputBar(() => {}, { inputSuppressed: true, awaitingAnswer: true }));
+    await tick(20);
+    expect(stripAnsi(view.lastFrame())).toContain('Answer the prompt above');
+
+    view.rerender(inputBar(() => {}, { inputSuppressed: true, awaitingAnswer: false }));
+    await tick(20);
+    const sheet = stripAnsi(view.lastFrame());
+    expect(sheet).not.toContain('Answer');
+    // Every sheet that suppresses input closes on Esc, so this one is true.
+    expect(sheet).toContain('Esc closes');
+  });
+
   it('Alt+M (meta+m) is consumed and does not write "m" into input', () => {
     expect(simulateInputHandler('m', { meta: true }, false)).toBe('consumed');
   });
