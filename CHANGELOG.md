@@ -264,6 +264,22 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A trust gate no longer confirms the button you moved off.** Ink hands a whole chunk of stdin
+  to its handlers in one go, and React batches every state update made while that runs — so two
+  keys that arrive together (a paste, an arrow repeating faster than a frame, input buffered over
+  a slow link) reached a handler that read its cursor back from render state and still saw the row
+  before the first key. The plan approval card approved a plan aimed at reject, and the MCP server
+  prompt connected a server aimed at reject. Both persist their answer, and both exist precisely
+  so the choice is deliberate.
+
+  Five more surfaces had the same read-back: the skill manager wrote activation and consent to the
+  wrong skill, the question wizard answered with the wrong option, the elicitation form sent itself
+  when an arrow left the send row, the effort picker saved the wrong level, and the BYOK wizard
+  toggled the wrong model. All of them now read the cursor through the batch-safe hook the pickers
+  already use. The effort picker is worth naming separately: it wrote its ref inside a state
+  updater, which looks safe and is not, because React evaluates only the *first* update in a batch
+  eagerly — so it went wrong from the second key onward while a one-key test passed.
+
 - **The armed permission button is marked, and one glyph means "selected" everywhere.** The
   permission card carried its armed choice in background colour and bold alone — the only
   selection surface in the TUI without a glyph, while every menu, picker and wizard has one. A
