@@ -7,6 +7,8 @@ export interface DiscoveredModel {
   label?: string;
 }
 
+import { systemClock, type Clock } from '../clock.js';
+
 export interface ModelDiscoveryOptions {
   type: ProviderProtocol;
   baseUrl: string;
@@ -15,6 +17,8 @@ export interface ModelDiscoveryOptions {
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
   onRetry?: (attempt: number, max: number, delayMs: number) => void;
+  /** Injected by tests; the retry budget below is a duration, not a stamp. */
+  clock?: Clock;
 }
 
 export const DEFAULT_PROVIDER_BASE_URLS: Record<ProviderProtocol, string> = {
@@ -111,7 +115,8 @@ async function fetchWithRetry(
   options: ModelDiscoveryOptions,
 ): Promise<Response> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const startedAt = Date.now();
+  const clock = options.clock ?? systemClock;
+  const startedAt = clock.monotonicNowMs();
   let lastNetworkError: unknown;
 
   for (let attempt = 0; attempt <= options.retry.maxAttempts; attempt++) {
@@ -148,7 +153,10 @@ async function fetchWithRetry(
       if (response) return response;
       throw new ModelDiscoveryError('Could not reach the model-list endpoint.', 'network');
     }
-    if (options.retry.totalBudgetMs > 0 && Date.now() - startedAt >= options.retry.totalBudgetMs) {
+    if (
+      options.retry.totalBudgetMs > 0 &&
+      clock.monotonicNowMs() - startedAt >= options.retry.totalBudgetMs
+    ) {
       if (response) return response;
       throw new ModelDiscoveryError('Could not reach the model-list endpoint.', 'network');
     }

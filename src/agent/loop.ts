@@ -1,4 +1,5 @@
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
+import { systemClock, type Clock } from '../clock.js';
 import type { HarnessRunContext } from '../harness/contracts.js';
 import { createHash } from 'node:crypto';
 import type {
@@ -153,6 +154,12 @@ export async function runAgentLoop(
     agentPath?: string[];
     /** Extra managed-agent identity and policy appended to the system prompt. */
     systemPromptAppend?: string;
+    /**
+     * Injected by tests. The loop reads it only for durations — how long this
+     * run has been going, how long a tool took — never for a stamp anything
+     * else will read.
+     */
+    clock?: Clock;
     /** Hide delegation discovery from child agents. */
     hideAgents?: boolean;
     /** Managed child identity and parent-session attribution. */
@@ -587,7 +594,11 @@ export async function runAgentLoop(
     let blockedTurnStreak = 0;
     /** The tools refused on the streak's most recent turn, for the terminal message. */
     let blockedTurnTools: string[] = [];
-    const runStartedAt = Date.now();
+    // Monotonic, and never leaves this function as a stamp. Over a run measured
+    // in days a wall-clock correction would silently rewrite how long the model
+    // is told it has been working, in either direction.
+    const clock = options?.clock ?? systemClock;
+    const runStartedAt = clock.monotonicNowMs();
     /** Guards the periodic work-state message against a same-turn re-issue. */
     let lastWorkStateTurn = -1;
     let emptyResponseRetryTurn: number | null = null;
@@ -718,7 +729,7 @@ export async function runAgentLoop(
           toolCatalogSummary: toolSurface.catalogSummary(),
           planMode: effectiveMode === 'plan',
           planUnrestored: runtime.planUnrestored,
-          runStartedAt,
+          runElapsedMs: clock.monotonicNowMs() - runStartedAt,
           workflowPolicy: options?.harnessContext?.workflowPolicySection,
         },
         runtime.agentContextCache,
@@ -772,7 +783,7 @@ export async function runAgentLoop(
                   toolCatalogSummary: toolSurface.catalogSummary(),
                   planMode: effectiveMode === 'plan',
                   planUnrestored: runtime.planUnrestored,
-                  runStartedAt,
+                  runElapsedMs: clock.monotonicNowMs() - runStartedAt,
                   workflowPolicy: options?.harnessContext?.workflowPolicySection,
                 },
                 runtime.agentContextCache,
@@ -804,7 +815,7 @@ export async function runAgentLoop(
               toolCatalogSummary: toolSurface.catalogSummary(),
               planMode: effectiveMode === 'plan',
               planUnrestored: runtime.planUnrestored,
-              runStartedAt,
+              runElapsedMs: clock.monotonicNowMs() - runStartedAt,
               workflowPolicy: options?.harnessContext?.workflowPolicySection,
             },
             runtime.agentContextCache,
@@ -1719,7 +1730,7 @@ export async function runAgentLoop(
       };
 
       const executeToolCall = async (entry: PreparedLoopCall): Promise<ToolResult> => {
-        const toolStartMs = Date.now();
+        const toolStartMs = clock.monotonicNowMs();
         emitHarnessRuntimeEvent('tool_started', {
           toolName: entry.canonName,
           toolCallId: entry.call.id,
@@ -1737,7 +1748,7 @@ export async function runAgentLoop(
             ? await runtime.toolExecutionScheduler.run(execute, signal)
             : await execute();
           result.toolCallId = entry.call.id;
-          result.metrics = { ...result.metrics, durationMs: Date.now() - toolStartMs };
+          result.metrics = { ...result.metrics, durationMs: clock.monotonicNowMs() - toolStartMs };
           return result;
         } catch (error) {
           return toolFailure(error instanceof Error ? error.message : String(error), {
@@ -2271,7 +2282,7 @@ export async function runAgentLoop(
           consecutive: continuationCount,
           priorWitnesses: continuationWitnesses,
           witness,
-          elapsedMs: Date.now() - runStartedAt,
+          elapsedMs: clock.monotonicNowMs() - runStartedAt,
           aborted: signal?.aborted,
           handoffRequested: Boolean(handoffRequested),
           planStopRequested: Boolean(planStopRequested),

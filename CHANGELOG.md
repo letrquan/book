@@ -264,6 +264,27 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A clock correction no longer breaks a run's timeouts in both directions.** Every duration Book
+  decided — how long to keep retrying a failing provider, how long to wait for a background shell
+  to start or stop, how long to let the evidence ledger flush, how long the run has been going as
+  the model is told it — was measured by subtracting two readings of `Date.now()`. That is the
+  settable wall clock. NTP steps it, a resumed VM corrects it, an operator fixes a drifted host,
+  and none of that matters over a five-minute chat.
+
+  Over the multi-day runs Book is built for it matters twice, in opposite directions. A backwards
+  correction makes elapsed time *negative*, so a retry budget can never be exhausted and a provider
+  outage becomes an unbounded retry storm — measured at 51 attempts against a budget that allowed
+  well under ten. A forwards correction exhausts the same budget instantly, abandoning a call that
+  was about to succeed. Both are now measured against a monotonic clock (`src/clock.ts`), which no
+  adjustment can move.
+
+  **Timestamps are unchanged, deliberately.** Anything written to a file, shown on screen, or
+  compared against a stamp another process wrote is still wall-clock — including `Retry-After`,
+  which is an HTTP date and could not be anything else. Cross-process liveness stays there too, and
+  not by oversight: two processes share no monotonic origin, so a monotonic reading cannot cross
+  that boundary at all. `MILESTONES.md` records what that leaves open and what would actually fix
+  it, and each such call site now says so where it reads the clock.
+
 - **Two dialogs now name the keys they actually accept.** `/model` binds six Alt-chords and
   described them with four hand-written sentences picked by two booleans, which left holes.
   `Alt+E` — set a model's effort — was advertised nowhere in the TUI at all: the row it opens

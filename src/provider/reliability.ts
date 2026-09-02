@@ -4,6 +4,8 @@ interface RetryLogger {
   warn(message: string, data?: Record<string, unknown>): void;
 }
 
+import { systemClock, type Clock, type MonotonicMs } from '../clock.js';
+
 export type ProviderErrorCode =
   | 'network'
   | 'timeout'
@@ -104,8 +106,13 @@ export async function fetchWithRetry(
   signal?: AbortSignal,
   onRetry?: (attempt: number, max: number, delayMs: number) => void,
   logger?: RetryLogger,
+  // The retry budget is a duration, so it reads the monotonic clock. On the
+  // wall clock an NTP step or a resumed VM could hand a week-long run either
+  // failure mode: a backwards correction makes the budget never expire and the
+  // call retries forever, a forwards one exhausts it on the first attempt.
+  clock: Clock = systemClock,
 ): Promise<Response> {
-  const startMs = Date.now();
+  const startMs = clock.monotonicNowMs();
   const maxAttempts = retry.watchdog ? Number.MAX_SAFE_INTEGER : retry.maxAttempts;
   let lastError: string | null = null;
 
@@ -118,8 +125,8 @@ export async function fetchWithRetry(
     } catch (error) {
       if (signal?.aborted) throw error;
       lastError = error instanceof Error ? error.message : String(error);
-      if (attempt >= maxAttempts || budgetExhausted(startMs, retry.totalBudgetMs)) break;
-      const delay = boundedDelay(backoffMs(attempt, retry), startMs, retry.totalBudgetMs);
+      if (attempt >= maxAttempts || budgetExhausted(clock, startMs, retry.totalBudgetMs)) break;
+      const delay = boundedDelay(clock, backoffMs(attempt, retry), startMs, retry.totalBudgetMs);
       logger?.warn('retry network error', {
         attempt: attempt + 1,
         delayMs: delay,
@@ -135,9 +142,11 @@ export async function fetchWithRetry(
     lastError = `API error ${response.status}`;
     const watchdogRetry = retry.watchdog && (response.status === 429 || response.status === 529);
     const effectiveMax = watchdogRetry ? Number.MAX_SAFE_INTEGER : maxAttempts;
-    if (attempt >= effectiveMax || budgetExhausted(startMs, retry.totalBudgetMs)) return response;
+    if (attempt >= effectiveMax || budgetExhausted(clock, startMs, retry.totalBudgetMs))
+      return response;
 
     const delay = boundedDelay(
+      clock,
       backoffMs(attempt, retry, response.headers.get('retry-after')),
       startMs,
       retry.totalBudgetMs,
@@ -258,14 +267,22 @@ function parseRetryAfter(value?: string | null): number | undefined {
   if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return undefined;
+  // Wall clock on purpose, and the one place in this file that should be: the
+  // server sent an HTTP date, which is a point on the wall clock by definition.
+  // Subtracting a monotonic reading from it would be meaningless.
   return Math.max(0, timestamp - Date.now());
 }
 
-function budgetExhausted(startMs: number, budgetMs: number): boolean {
-  return budgetMs > 0 && Date.now() - startMs >= budgetMs;
+function budgetExhausted(clock: Clock, startMs: MonotonicMs, budgetMs: number): boolean {
+  return budgetMs > 0 && clock.monotonicNowMs() - startMs >= budgetMs;
 }
 
-function boundedDelay(delayMs: number, startMs: number, budgetMs: number): number {
+function boundedDelay(
+  clock: Clock,
+  delayMs: number,
+  startMs: MonotonicMs,
+  budgetMs: number,
+): number {
   if (budgetMs <= 0) return delayMs;
-  return Math.min(delayMs, Math.max(0, budgetMs - (Date.now() - startMs)));
+  return Math.min(delayMs, Math.max(0, budgetMs - (clock.monotonicNowMs() - startMs)));
 }
