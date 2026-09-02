@@ -345,6 +345,19 @@ describe('ModelPicker', () => {
     expect(onRemoveProvider).toHaveBeenCalledWith('gateway');
   });
 
+  it('confirms a removal that arrives in the same chunk as the key that opened it', async () => {
+    // Alt+D opens the confirmation by setting state; the `y` that answers it was
+    // dispatched by whichever branch was live at the last render. In one chunk
+    // that is still the list branch, so the confirmation was never answered and
+    // nothing was removed.
+    const { view, onRemoveProvider } = renderPicker();
+    await write(view, '\x1b[B');
+    await write(view, '\x1bdy');
+
+    expect(onRemoveProvider).toHaveBeenCalledTimes(1);
+    expect(onRemoveProvider).toHaveBeenCalledWith('gateway');
+  });
+
   it('keeps confirmation open with an inline error after removal fails', async () => {
     const onRemoveProvider = vi.fn(() => ({ ok: false as const, error: 'settings are read-only' }));
     const { view } = renderPicker({ onRemoveProvider });

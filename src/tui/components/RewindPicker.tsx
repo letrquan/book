@@ -1,5 +1,6 @@
 import { Box, Text, useInput } from 'ink';
 import { useMemo, useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import type { RewindAction, RewindTarget } from '../../types/sessions.js';
 import { useDensityMetrics } from '../density.js';
 import { useTheme } from '../theme.js';
@@ -57,9 +58,11 @@ function promptPreview(prompt: string): string {
 export function RewindPicker({ targets, isRewinding, onAction, onCancel }: RewindPickerProps) {
   const theme = useTheme();
   const density = useDensityMetrics();
-  const [stage, setStage] = useState<'target' | 'action'>('target');
-  const [selectedTarget, setSelectedTarget] = useState(0);
-  const [selectedAction, setSelectedAction] = useState(0);
+  // Stage and both cursors are read back by the key handler, so Enter that
+  // advances the stage and Enter that acts on the new stage can arrive together.
+  const [stage, setStage, currentStage] = useKeyState<'target' | 'action'>('target');
+  const [selectedTarget, setSelectedTarget, currentTarget] = useKeyState(0);
+  const [selectedAction, setSelectedAction, currentAction] = useKeyState(0);
   const [error, setError] = useState<string | null>(null);
   const target = targets[selectedTarget];
   const visibleTargets = useMemo(() => {
@@ -68,12 +71,16 @@ export function RewindPicker({ targets, isRewinding, onAction, onCancel }: Rewin
   }, [selectedTarget, targets]);
 
   const chooseAction = async () => {
-    const choice = ACTIONS[selectedAction];
-    if (!target || !choice || isRewinding) return;
+    // Called from the key handler, so the target comes from the ref as well:
+    // an arrow, the Enter that picks a target and the Enter that acts on it can
+    // all land in one batch, and `target` would still be the render-time row.
+    const chosen = targets[currentTarget()];
+    const choice = ACTIONS[currentAction()];
+    if (!chosen || !choice || isRewinding) return;
     if (choice.action === 'cancel') return onCancel();
-    if ((choice.action === 'code' || choice.action === 'both') && !target.codeAvailable) return;
+    if ((choice.action === 'code' || choice.action === 'both') && !chosen.codeAvailable) return;
     setError(null);
-    const result = await onAction(target, choice.action);
+    const result = await onAction(chosen, choice.action);
     if (!result.ok) setError(result.error);
   };
 
@@ -81,7 +88,7 @@ export function RewindPicker({ targets, isRewinding, onAction, onCancel }: Rewin
     (_input, key) => {
       if (isRewinding) return;
       if (key.escape) {
-        if (stage === 'action') {
+        if (currentStage() === 'action') {
           setStage('target');
           setError(null);
         } else {
@@ -89,11 +96,10 @@ export function RewindPicker({ targets, isRewinding, onAction, onCancel }: Rewin
         }
         return;
       }
-      if (stage === 'target') {
+      if (currentStage() === 'target') {
         if (targets.length === 0) return;
-        if (key.upArrow)
-          setSelectedTarget((index) => (index - 1 + targets.length) % targets.length);
-        if (key.downArrow) setSelectedTarget((index) => (index + 1) % targets.length);
+        if (key.upArrow) setSelectedTarget((currentTarget() - 1 + targets.length) % targets.length);
+        if (key.downArrow) setSelectedTarget((currentTarget() + 1) % targets.length);
         if (key.return) {
           setSelectedAction(0);
           setError(null);
@@ -101,8 +107,8 @@ export function RewindPicker({ targets, isRewinding, onAction, onCancel }: Rewin
         }
         return;
       }
-      if (key.upArrow) setSelectedAction((index) => (index - 1 + ACTIONS.length) % ACTIONS.length);
-      if (key.downArrow) setSelectedAction((index) => (index + 1) % ACTIONS.length);
+      if (key.upArrow) setSelectedAction((currentAction() - 1 + ACTIONS.length) % ACTIONS.length);
+      if (key.downArrow) setSelectedAction((currentAction() + 1) % ACTIONS.length);
       if (key.return) void chooseAction();
     },
     { isActive: true },

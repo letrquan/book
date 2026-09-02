@@ -1,5 +1,6 @@
 import { Box, Text, useInput } from 'ink';
 import { useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import type { PermissionMode } from '../../types/runtime.js';
 import { SelectionRow, SoftPanel, PanelTitle } from './chrome.js';
@@ -32,23 +33,25 @@ export function PermissionModePicker({
   onCancel,
 }: PermissionModePickerProps) {
   const theme = useTheme();
-  const [selected, setSelected] = useState(() => Math.max(0, availableModes.indexOf(current)));
+  const [selected, setSelected, currentSelected] = useKeyState(() =>
+    Math.max(0, availableModes.indexOf(current)),
+  );
   const [error, setError] = useState<string>();
 
   useInput((_, key) => {
     if (key.escape) return onCancel();
     if (key.upArrow) {
-      setSelected((index) => (index - 1 + availableModes.length) % availableModes.length);
+      setSelected((currentSelected() - 1 + availableModes.length) % availableModes.length);
       setError(undefined);
       return;
     }
     if (key.downArrow) {
-      setSelected((index) => (index + 1) % availableModes.length);
+      setSelected((currentSelected() + 1) % availableModes.length);
       setError(undefined);
       return;
     }
     if (key.return) {
-      const mode = availableModes[selected];
+      const mode = availableModes[currentSelected()];
       if (!mode) return;
       const result = onSelect(mode);
       if (!result.ok) setError(result.error ?? 'Could not save the default permission mode.');

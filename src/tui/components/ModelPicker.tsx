@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import TextInput from './TextInputField.js';
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import type { AgentConfig } from '../../types/runtime.js';
 import type { ProviderConfig } from '../../settings.js';
@@ -87,17 +88,15 @@ export function ModelPicker({
 }: ModelPickerProps) {
   const theme = useTheme();
   const density = useDensityMetrics();
-  const [selected, setSelected] = useState(0);
+  const [selected, setSelected, currentSelected] = useKeyState(0);
   const [filter, setFilter] = useState('');
   const [onEffort, setOnEffort] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
   const [refreshing, setRefreshing] = useState<string>();
   const [manualEntry, setManualEntry] = useState<{ providerId: string; value: string }>();
-  const [removal, setRemoval] = useState<{
-    providerId: string;
-    modelCount: number;
-    active: boolean;
-  }>();
+  const [removal, setRemoval, currentRemoval] = useKeyState<
+    { providerId: string; modelCount: number; active: boolean } | undefined
+  >(undefined);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const pickedRef = useRef(false);
@@ -117,7 +116,7 @@ export function ModelPicker({
   const addIndex = filteredOptions.length;
 
   useEffect(() => {
-    setSelected((value) => Math.min(value, Math.max(0, itemCount - 1)));
+    setSelected(Math.min(currentSelected(), Math.max(0, itemCount - 1)));
   }, [filteredOptions.length, itemCount]);
 
   // Refreshing or extending a catalog re-sorts the list under the cursor, so a
@@ -257,7 +256,11 @@ export function ModelPicker({
         }
         return;
       }
-      if (removal) {
+      // Read back rather than closing over `removal`: Alt+D and the `y` that
+      // confirms it can arrive in one chunk, and the second key would then be
+      // dispatched by the branch that was live before the prompt opened.
+      const pendingRemoval = currentRemoval();
+      if (pendingRemoval) {
         if (key.escape || input.toLowerCase() === 'n') {
           removalInFlightRef.current = false;
           setRemoval(undefined);
@@ -269,7 +272,7 @@ export function ModelPicker({
           removalInFlightRef.current = true;
           let result: ProviderRemovalResult;
           try {
-            result = onRemoveProvider(removal.providerId);
+            result = onRemoveProvider(pendingRemoval.providerId);
           } catch (caught) {
             result = {
               ok: false,
@@ -312,9 +315,9 @@ export function ModelPicker({
         return;
       }
       if (key.return) {
-        if (allowProviderManagement && selected === addIndex) setShowWizard(true);
+        if (allowProviderManagement && currentSelected() === addIndex) setShowWizard(true);
         else {
-          const option = filteredOptions[selected];
+          const option = filteredOptions[currentSelected()];
           if (option) handlePick(option.id, true);
         }
         return;
@@ -327,12 +330,12 @@ export function ModelPicker({
         return;
       }
       if (key.upArrow) {
-        setSelected((value) => (value - 1 + itemCount) % itemCount);
+        setSelected((currentSelected() - 1 + itemCount) % itemCount);
         setNotice(undefined);
         return;
       }
       if (key.downArrow) {
-        setSelected((value) => (value + 1) % itemCount);
+        setSelected((currentSelected() + 1) % itemCount);
         setNotice(undefined);
         return;
       }
@@ -345,41 +348,41 @@ export function ModelPicker({
         key.meta &&
         input === 'e' &&
         effortLevels.length > 0 &&
-        selected !== addIndex &&
-        filteredOptions[selected]?.effort
+        currentSelected() !== addIndex &&
+        filteredOptions[currentSelected()]?.effort
       ) {
         setOnEffort(true);
         return;
       }
-      if (key.meta && input === 's' && selected !== addIndex) {
-        const option = filteredOptions[selected];
+      if (key.meta && input === 's' && currentSelected() !== addIndex) {
+        const option = filteredOptions[currentSelected()];
         if (option) handlePick(option.id, false);
         return;
       }
-      if (allowProviderManagement && key.meta && input === 'r' && selected !== addIndex) {
-        const providerId = filteredOptions[selected]?.providerId;
+      if (allowProviderManagement && key.meta && input === 'r' && currentSelected() !== addIndex) {
+        const providerId = filteredOptions[currentSelected()]?.providerId;
         if (!providerId || refreshing) return;
         if (!ownsProvider(providerId)) return;
-        reanchorRef.current = filteredOptions[selected]?.id;
+        reanchorRef.current = filteredOptions[currentSelected()]?.id;
         void refreshProvider(providerId);
         return;
       }
-      if (allowProviderManagement && key.meta && input === 'm' && selected !== addIndex) {
-        const providerId = filteredOptions[selected]?.providerId;
+      if (allowProviderManagement && key.meta && input === 'm' && currentSelected() !== addIndex) {
+        const providerId = filteredOptions[currentSelected()]?.providerId;
         if (!providerId) {
           setError('Only custom providers can take extra models.');
           return;
         }
         if (refreshing || !ownsProvider(providerId)) return;
         // The form swallows every key, so this row stays selected until it closes.
-        reanchorRef.current = filteredOptions[selected]?.id;
+        reanchorRef.current = filteredOptions[currentSelected()]?.id;
         setManualEntry({ providerId, value: '' });
         setError(undefined);
         setNotice(undefined);
         return;
       }
-      if (allowProviderManagement && key.meta && input === 'd' && selected !== addIndex) {
-        const option = filteredOptions[selected];
+      if (allowProviderManagement && key.meta && input === 'd' && currentSelected() !== addIndex) {
+        const option = filteredOptions[currentSelected()];
         const providerId = option?.providerId;
         if (!providerId) return;
         if (!removableProviderIds.has(providerId)) {
