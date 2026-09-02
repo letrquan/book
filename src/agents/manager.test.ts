@@ -20,6 +20,22 @@ import { applyReviewFixes } from '../review/fix.js';
 import { fixRunnerFor, reviewRunnerFor } from '../review/runner.js';
 import type { ReviewFinding } from '../review/types.js';
 
+/**
+ * Real persistence, without the blocking backoff.
+ *
+ * A contended atomic write pauses with `Atomics.wait` (`atomic-json.ts`), which
+ * stalls the whole thread for up to its 500 ms deadline -- measured at 519 ms
+ * for a single fully contended write. The integration tier runs one worker, so
+ * every such pause stalls the entire file. On a runner where writes contend
+ * (Windows with a file scanner) that is what took this suite from ~4 s locally
+ * to ~80 s there, and pushed one 84 ms test past the 20 s ceiling (#160).
+ *
+ * Nothing here exercises backoff -- `atomic-json.test.ts` covers retry on
+ * EPERM/EBUSY/EACCES, and injects its own clock to do it -- so the pause is a
+ * no-op and the writes stay real.
+ */
+const UNCONTENDED = { writerOptions: { sleep: () => {} } } as const;
+
 const tempRoots: string[] = [];
 
 function tempRoot(): string {
@@ -58,6 +74,8 @@ it('lets a managed child publish evidence through its owning manager', async () 
   config.settings.agents.persist = true;
   const manager = new AgentManager(config, evidenceTools, {
     findGitRoot: async () => undefined,
+    createStore: (repoHash, requestedRoot, enabled) =>
+      new AgentStore(repoHash, requestedRoot, enabled, UNCONTENDED),
     runLoop: async (childConfig, registry, _prompt, history, _callbacks, mode, options) => {
       const publish = registry.getTool('EvidencePublish');
       expect(publish).toBeDefined();
@@ -142,7 +160,7 @@ describe('AgentManager lifecycle', () => {
     const storeRoot = tempRoot();
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
-    const owner = new AgentStore(repositoryHash(root), storeRoot, true);
+    const owner = new AgentStore(repositoryHash(root), storeRoot, true, UNCONTENDED);
     owner.saveAgent(
       {
         id: 'foreign-agent',
@@ -162,6 +180,8 @@ describe('AgentManager lifecycle', () => {
     );
     const manager = new AgentManager(config, [], {
       storeRoot,
+      createStore: (repoHash, requestedRoot, enabled) =>
+        new AgentStore(repoHash, requestedRoot, enabled, UNCONTENDED),
       findGitRoot: async () => undefined,
     });
 
@@ -180,6 +200,7 @@ describe('AgentManager lifecycle', () => {
     config.settings.agents.persist = true;
     let now = 1;
     const owner = new AgentStore(repositoryHash(root), storeRoot, true, {
+      ...UNCONTENDED,
       instanceId: '11111111-1111-4111-8111-111111111111',
       pid: 111,
       hostname: 'test-host',
@@ -1522,7 +1543,7 @@ describe('resuming an interrupted backlog', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
 
-    const store = new AgentStore(repositoryHash(root), bookHome, true);
+    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
     store.saveAgent({
       id: 'patcher-1',
       name: 'patcher',
@@ -1566,7 +1587,7 @@ describe('resuming an interrupted backlog', () => {
     const config = defaultConfig({ workspace: root });
     config.settings.agents.persist = true;
 
-    const store = new AgentStore(repositoryHash(root), bookHome, true);
+    const store = new AgentStore(repositoryHash(root), bookHome, true, UNCONTENDED);
     store.saveAgent({
       id: 'patcher-2',
       name: 'patcher',
