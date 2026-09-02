@@ -1,7 +1,7 @@
 # Ranking
 
-Use this only for the default `$next` ranking pass. The north star is whether the change makes the
-owner more likely to daily-drive Book instead of Claude Code.
+Use this for every `$next` ranking pass — the default board and any single-aspect run. The north
+star is whether the change makes the owner more likely to daily-drive Book instead of Claude Code.
 
 ## Tiers
 
@@ -22,19 +22,28 @@ Falsification tests:
 Do not promote an internal refactor merely because it is important. Its user-visible reliability,
 cost, trust, or workflow consequence determines the tier.
 
+Craft findings tier the same way. A surface that misleads, buries state, or forces the same
+decision repeatedly breaks that surface's implicit promise — that is T2 evidence, not polish. A
+subtraction (removing an element, merging two surfaces, replacing a repeated prompt with a
+default) is a first-class candidate; judge it by its countable session delta, never penalize it
+for adding no capability. A craft candidate without a countable before/after cannot rank above
+T3.
+
 ## Candidate score
 
-Every candidate needs all four fields:
+Every candidate needs all five fields:
 
 1. **Tier** — `T1`, `T2`, or `T3`, justified by the corresponding falsification test.
-2. **Size** — `hours`, `a day`, or `more`, considering uncertainty and integration surface rather
+2. **Aspect** — what sourced it: `board` for inspector/issue/plan evidence, or the aspect file's
+   name (`ui`, `harness`, …).
+3. **Size** — `hours`, `a day`, or `more`, considering uncertainty and integration surface rather
    than file count alone.
-3. **Daily-drive delta** — what becomes faster, safer, cheaper, more reliable, or newly possible in
-   the owner's next Book session.
-4. **Trade-off** — coupling, prompt budget, latency, compatibility, migration risk, or API surface
+4. **Daily-drive delta** — what becomes faster, safer, cheaper, more reliable, or newly possible in
+   the owner's next Book session. For a craft candidate this is the countable before/after.
+5. **Trade-off** — coupling, prompt budget, latency, compatibility, migration risk, or API surface
    that the change introduces or locks in.
 
-A title without all four fields is not a ranked candidate.
+A title without all five fields is not a ranked candidate.
 
 Order by tier, then by the smallest completable slice, then by daily-drive delta. A large T1 remains
 above a small T2, but present its first independently useful `hours` or `a day` slice. If no such
@@ -45,10 +54,11 @@ slice exists, mark it `unsliceable` and do not choose it as the single recommend
 Use current evidence in this order:
 
 1. verified blocker, unwired, or thin findings;
-2. active PR or branch work that needs a bounded finishing slice;
-3. open issues;
-4. `docs/current-state.md` known boundaries;
-5. unchecked milestones and plans.
+2. findings from this run's aspect review;
+3. active PR or branch work that needs a bounded finishing slice;
+4. open issues;
+5. `docs/current-state.md` known boundaries;
+6. unchecked milestones and plans.
 
 Do not rank a whole phase, documentation-only cleanup, or tests by themselves. Documentation and
 tests belong inside the product change they validate.
@@ -59,11 +69,13 @@ Return 3-5 candidates in this form:
 
 ```text
 T2 — <smallest useful slice> (a day)
-  delta: <change in the next real Book session>
+  aspect: <board | ui | harness | …>
+  delta: <change in the next real Book session; countable for craft candidates>
   cost:  <specific trade-off>
 ```
 
-Then name one recommendation and why it wins now.
+Name the strongest candidate from each source examined (the board and the run's aspect), then
+name one overall recommendation and why it wins now.
 
 ## Research trigger
 

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { inspectBranches, inspectPlans, inspectState } from './inspect.mjs';
+import { inspectBranches, inspectPlans, inspectState, prVerdict } from './inspect.mjs';
 
 function git(repo, ...args) {
   return execFileSync('git', args, { cwd: repo, encoding: 'utf8', windowsHide: true }).trim();
@@ -60,6 +60,91 @@ test('state drift starts at the commit that last changed the snapshot', () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('drift baselines on origin/main when the local main ref is stale', () => {
+  const { root, repo } = fixture();
+  try {
+    write(
+      repo,
+      'docs/current-state.md',
+      '# Book Current State\n\nSnapshot for Book as of 2001-01-01.\n',
+    );
+    commit(repo, 'docs: add snapshot');
+
+    // Simulate a linked worktree: origin/main advances, local main stays behind.
+    git(repo, 'switch', '-c', 'landed');
+    write(repo, 'src/shipped.ts', 'export const shipped = true;\n');
+    commit(repo, 'feat: shipped upstream');
+    git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+    git(repo, 'switch', 'main');
+    git(repo, 'branch', '-D', 'landed');
+
+    const state = inspectState(repo);
+    assert.equal(state.baseline.ref, 'origin/main');
+    assert.equal(state.baseline.localMain.behindBaseline, 1);
+    assert.match(state.baseline.warning, /local main is 1 commits behind origin\/main/);
+    // Against stale local main this would read zero drift; against origin/main it is real.
+    assert.equal(state.snapshot.commitsSince, 1);
+    assert.deepEqual(state.snapshot.changedNonTestSourceFiles, ['src/shipped.ts']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a branch already contained in origin/main is not PR-ready', () => {
+  const { root, repo } = fixture();
+  try {
+    write(repo, 'base.txt', 'base\n');
+    commit(repo, 'chore: initial');
+
+    git(repo, 'switch', '-c', 'merged-upstream');
+    write(repo, 'merged.txt', 'merged\n');
+    commit(repo, 'feat: merged upstream');
+    git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+    git(repo, 'switch', 'main');
+
+    const result = inspectBranches(repo, { github: false });
+    const branch = result.branches.find((candidate) => candidate.name === 'merged-upstream');
+    // Stale local main would call this READY FOR PR; origin/main already has it.
+    assert.equal(branch.verdict, 'CONTAINED');
+    assert.equal(branch.aheadOfBaseline, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('prVerdict passes skipped checks and reports running CI', () => {
+  const green = {
+    isDraft: false,
+    mergeable: 'MERGEABLE',
+    statusCheckRollup: [
+      { name: 'Stability', conclusion: 'SUCCESS' },
+      { name: 'Security advisories', conclusion: 'SKIPPED' },
+    ],
+  };
+  assert.equal(prVerdict(green, null), 'MERGE');
+
+  const running = {
+    isDraft: false,
+    mergeable: 'MERGEABLE',
+    statusCheckRollup: [{ name: 'Stability', conclusion: '', status: 'IN_PROGRESS' }],
+  };
+  assert.equal(prVerdict(running, null), 'CI RUNNING');
+
+  const blocked = {
+    isDraft: false,
+    mergeable: 'MERGEABLE',
+    statusCheckRollup: [{ name: 'Stability', conclusion: 'FAILURE' }],
+  };
+  assert.equal(prVerdict(blocked, null), 'CI BLOCKED');
+
+  const computing = {
+    isDraft: false,
+    mergeable: 'UNKNOWN',
+    statusCheckRollup: [{ name: 'Stability', conclusion: 'SUCCESS' }],
+  };
+  assert.equal(prVerdict(computing, null), 'MERGEABILITY UNKNOWN');
 });
 
 test('plan inspection strips Markdown emphasis from status labels', () => {

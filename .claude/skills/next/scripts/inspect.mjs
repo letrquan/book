@@ -73,8 +73,38 @@ export function resolveRepository(candidate = DEFAULT_REPO) {
   return resolve(result.stdout);
 }
 
-export function inspectState(repoRoot) {
-  const mainCommit = requireGit(repoRoot, ['rev-parse', '--verify', 'main^{commit}']);
+// Shipped state is origin/main when it exists; the local main ref goes stale in linked
+// worktrees (nothing advances it), so baselining on it silently understates drift.
+export function resolveBaseline(repoRoot) {
+  const originMain = git(repoRoot, ['rev-parse', '--verify', 'origin/main^{commit}']);
+  const localMain = git(repoRoot, ['rev-parse', '--verify', 'main^{commit}']);
+  if (!originMain.ok && !localMain.ok) {
+    throw new Error('neither origin/main nor main resolves to a commit');
+  }
+  const ref = originMain.ok ? 'origin/main' : 'main';
+  let localMainRelation = null;
+  if (originMain.ok && localMain.ok) {
+    const relation = countPair(
+      requireGit(repoRoot, ['rev-list', '--left-right', '--count', 'main...origin/main']),
+    );
+    localMainRelation = {
+      commit: localMain.stdout,
+      behindBaseline: relation.right,
+      aheadOfBaseline: relation.left,
+    };
+  }
+  return {
+    ref,
+    commit: originMain.ok ? originMain.stdout : localMain.stdout,
+    localMain: localMainRelation,
+    warning:
+      localMainRelation && localMainRelation.behindBaseline > 0
+        ? `local main is ${localMainRelation.behindBaseline} commits behind ${ref}; all measurements use ${ref}`
+        : null,
+  };
+}
+
+export function inspectState(repoRoot, baseline = resolveBaseline(repoRoot)) {
   const currentBranch = requireGit(repoRoot, ['branch', '--show-current']) || null;
   const workingTreeChanges = lines(requireGit(repoRoot, ['status', '--short']));
   const snapshotPath = join(repoRoot, 'docs', 'current-state.md');
@@ -87,14 +117,14 @@ export function inspectState(repoRoot) {
       'log',
       '-1',
       '--format=%H%x09%cI',
-      'main',
+      baseline.ref,
       '--',
       'docs/current-state.md',
     ]);
 
     if (log.ok && log.stdout) {
       const [commit, committedAt] = log.stdout.split('\t');
-      const range = `${commit}..main`;
+      const range = `${commit}..${baseline.ref}`;
       const changedSourceFiles = lines(
         requireGit(repoRoot, ['diff', '--name-only', range, '--', 'src/']),
       );
@@ -136,7 +166,7 @@ export function inspectState(repoRoot) {
   }
 
   return {
-    mainCommit,
+    baseline,
     currentBranch,
     workingTree: {
       dirty: workingTreeChanges.length > 0,
@@ -274,14 +304,14 @@ function conflictFile(message) {
   return structural?.[1] ?? null;
 }
 
-function dryMerge(repoRoot, ref) {
+function dryMerge(repoRoot, baselineRef, ref) {
   const commonDirValue = requireGit(repoRoot, ['rev-parse', '--git-common-dir']);
   const commonDir = resolve(repoRoot, commonDirValue);
   const temporaryObjects = mkdtempSync(join(tmpdir(), 'book-next-merge-'));
   try {
     const result = git(
       repoRoot,
-      ['merge-tree', '--write-tree', '--name-only', '--messages', 'main', ref],
+      ['merge-tree', '--write-tree', '--name-only', '--messages', baselineRef, ref],
       {
         env: {
           ...process.env,
@@ -326,13 +356,18 @@ function branchVerdict({ checkedOut, dirty, ahead, behind, cherry, mergeCheck })
   return 'REVIEW';
 }
 
-function inspectBranch(repoRoot, group, worktrees) {
+function inspectBranch(repoRoot, group, worktrees, baseline) {
   const preferred = group.local ?? group.remote;
   const relation = countPair(
-    requireGit(repoRoot, ['rev-list', '--left-right', '--count', `main...${preferred.shortName}`]),
+    requireGit(repoRoot, [
+      'rev-list',
+      '--left-right',
+      '--count',
+      `${baseline.ref}...${preferred.shortName}`,
+    ]),
   );
   const cherryResult =
-    relation.right > 0 ? git(repoRoot, ['cherry', 'main', preferred.shortName]) : null;
+    relation.right > 0 ? git(repoRoot, ['cherry', baseline.ref, preferred.shortName]) : null;
   const cherry = cherryResult?.ok
     ? [
         ...new Set(
@@ -347,7 +382,9 @@ function inspectBranch(repoRoot, group, worktrees) {
   const checked = group.local ? worktrees.filter((worktree) => worktree.branch === group.name) : [];
   const current = checked.find((worktree) => resolve(worktree.path) === resolve(repoRoot));
   const dirty = checked.some((worktree) => worktree.dirty === true);
-  const mergeCheck = cherry.includes('+') ? dryMerge(repoRoot, preferred.shortName) : null;
+  const mergeCheck = cherry.includes('+')
+    ? dryMerge(repoRoot, baseline.ref, preferred.shortName)
+    : null;
   let tracking = null;
   if (group.local && group.remote) {
     const remoteRelation = countPair(
@@ -367,8 +404,8 @@ function inspectBranch(repoRoot, group, worktrees) {
     localRef: group.local?.shortName ?? null,
     remoteRef: group.remote?.shortName ?? null,
     remoteOnly: !group.local,
-    behindMain: relation.left,
-    aheadOfMain: relation.right,
+    behindBaseline: relation.left,
+    aheadOfBaseline: relation.right,
     cherry,
     tracking,
     checkedOutWorktrees: checked.map((worktree) => worktree.path),
@@ -385,22 +422,33 @@ function inspectBranch(repoRoot, group, worktrees) {
   };
 }
 
+// gh's statusCheckRollup mixes CheckRun rows (conclusion) with StatusContext rows (state),
+// and in-progress rows carry an empty conclusion rather than a marker value.
 function checkSummary(rollup) {
   return (rollup ?? []).map((check) => ({
     name: check.name ?? check.context ?? check.workflowName ?? 'check',
-    conclusion: check.conclusion ?? null,
+    conclusion: check.conclusion || check.state || null,
   }));
 }
 
-function prVerdict(pr, branch) {
+const PASSING_CHECK_CONCLUSIONS = new Set(['SUCCESS', 'SKIPPED', 'NEUTRAL']);
+
+function checkIsPending(conclusion) {
+  return conclusion === null || conclusion === 'PENDING' || conclusion === 'EXPECTED';
+}
+
+export function prVerdict(pr, branch) {
   if (pr.isDraft) return 'DRAFT';
   if (branch?.verdict === 'IN PROGRESS' || branch?.verdict === 'CHECKED OUT') {
     return branch.verdict;
   }
   const checks = checkSummary(pr.statusCheckRollup);
   if (checks.length === 0) return 'CI NOT RUN';
-  const failed = checks.filter((check) => check.conclusion !== 'SUCCESS');
-  if (failed.length > 0) return 'CI BLOCKED';
+  if (checks.some((check) => checkIsPending(check.conclusion))) return 'CI RUNNING';
+  if (checks.some((check) => !PASSING_CHECK_CONCLUSIONS.has(check.conclusion))) {
+    return 'CI BLOCKED';
+  }
+  if (pr.mergeable === 'UNKNOWN') return 'MERGEABILITY UNKNOWN';
   if (pr.mergeable !== 'MERGEABLE') return 'NOT MERGEABLE';
   return 'MERGE';
 }
@@ -464,31 +512,17 @@ function inspectGitHub(repoRoot, branches) {
 }
 
 export function inspectBranches(repoRoot, options = {}) {
-  const fetch = options.fetch === true;
-  let fetchResult = {
-    attempted: fetch,
-    ok: null,
-    error: null,
-    remoteAsOf: newestOriginDate(repoRoot),
-  };
-  if (fetch) {
-    const result = git(repoRoot, ['fetch', '--prune']);
-    fetchResult = {
-      attempted: true,
-      ok: result.ok,
-      error: result.ok ? null : result.stderr || 'git fetch --prune failed',
-      remoteAsOf: newestOriginDate(repoRoot),
-    };
-  }
-
+  const baseline = options.baseline ?? resolveBaseline(repoRoot);
   const worktrees = parseWorktrees(repoRoot);
-  const branches = readRefs(repoRoot).map((group) => inspectBranch(repoRoot, group, worktrees));
+  const branches = readRefs(repoRoot).map((group) =>
+    inspectBranch(repoRoot, group, worktrees, baseline),
+  );
   const github =
     options.github === false
       ? { available: false, error: 'skipped', pullRequests: [], issues: [] }
       : inspectGitHub(repoRoot, branches);
 
-  return { fetch: fetchResult, worktrees, branches, github };
+  return { worktrees, branches, github };
 }
 
 export function inspectRepository(options = {}) {
@@ -496,14 +530,35 @@ export function inspectRepository(options = {}) {
   const mode = options.mode ?? 'all';
   if (!MODES.has(mode)) throw new Error(`Unknown inspection mode: ${mode}`);
 
+  // Fetch before resolving the baseline so origin/main is fresh in every mode.
+  const fetchRequested = options.fetch === true;
+  let fetch = {
+    attempted: fetchRequested,
+    ok: null,
+    error: null,
+    remoteAsOf: newestOriginDate(repoRoot),
+  };
+  if (fetchRequested) {
+    const result = git(repoRoot, ['fetch', '--prune']);
+    fetch = {
+      attempted: true,
+      ok: result.ok,
+      error: result.ok ? null : result.stderr || 'git fetch --prune failed',
+      remoteAsOf: newestOriginDate(repoRoot),
+    };
+  }
+  const baseline = resolveBaseline(repoRoot);
+
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: new Date().toISOString(),
     repoRoot,
     mode,
-    ...(mode === 'all' || mode === 'state' ? { state: inspectState(repoRoot) } : {}),
+    fetch,
+    baseline,
+    ...(mode === 'all' || mode === 'state' ? { state: inspectState(repoRoot, baseline) } : {}),
     ...(mode === 'all' || mode === 'branches'
-      ? { branches: inspectBranches(repoRoot, options) }
+      ? { branches: inspectBranches(repoRoot, { ...options, baseline }) }
       : {}),
     ...(mode === 'all' || mode === 'plans' ? { plans: inspectPlans(repoRoot) } : {}),
   };
