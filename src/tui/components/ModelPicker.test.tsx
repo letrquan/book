@@ -77,7 +77,10 @@ describe('ModelPicker', () => {
     expect(view.lastFrame()).toContain('Add BYOK provider');
     expect(view.lastFrame()).toContain('Alt+A add');
     expect(view.lastFrame()).toContain('Alt+D remove BYOK');
-    expect(view.lastFrame()?.split('\n').length).toBeLessThanOrEqual(8);
+    // Nine, not eight: the footer became two lines so that no chord has to be
+    // dropped to make room. Alt+E was advertised nowhere at all, and Alt+S
+    // vanished whenever a removable provider existed.
+    expect(view.lastFrame()?.split('\n').length).toBeLessThanOrEqual(9);
   });
 
   it('hides provider-management actions while choosing a subagent model', async () => {
@@ -165,8 +168,8 @@ describe('ModelPicker', () => {
     expect(view.lastFrame()).not.toContain('Alt+R refresh');
 
     await write(view, '\x1b[B');
-    expect(view.lastFrame()).toContain('Alt+R refresh gateway model list');
-    expect(view.lastFrame()).toContain('Alt+M add a model manually');
+    expect(view.lastFrame()).toContain('Alt+R refresh gateway');
+    expect(view.lastFrame()).toContain('Alt+M add model');
   });
 
   it('adds hand-typed models to a provider with Alt+M', async () => {

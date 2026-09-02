@@ -264,6 +264,19 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Two dialogs now name the keys they actually accept.** `/model` binds six Alt-chords and
+  described them with four hand-written sentences picked by two booleans, which left holes.
+  `Alt+E` — set a model's effort — was advertised nowhere in the TUI at all: the row it opens
+  (`Effort [high] ← → adjust`) only appears once you have already guessed the key. And `Alt+S`,
+  use for this session, vanished whenever a removable BYOK provider existed, because that sentence
+  spent its line on `Alt+A` and `Alt+D` instead — the chord that always works was hidden by the
+  presence of one that sometimes does. The footer is now built from what is live, so a chord
+  cannot be advertised when it will not fire, or dropped because a different one appeared.
+
+  `/skills` listed eight chords on one line that did not fit, so Ink wrapped it — and the wrap
+  landed after a separator, leaving `Esc close` alone on a second line under a dangling `·`. Both
+  footers are now split deliberately, by what the keys act on.
+
 - **`/resume` can reach every conversation, page, and be typed at.** It drew twelve rows while
   its cursor wrapped over every session in the workspace, so in a workspace with more than twelve
   the thirteenth arrow press moved the highlight onto a row that was not on screen — the list

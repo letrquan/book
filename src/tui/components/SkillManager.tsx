@@ -283,9 +283,15 @@ export function SkillManager({
           </Text>
         </Box>
       ) : null}
+      {/* Two lines, split by what the keys act on. As one line this was eight
+          chords that did not fit, so Ink wrapped it — and the wrap landed after
+          a trailing separator, leaving "Esc close" stranded on a line of its
+          own under a dangling "·". */}
       <Text color={theme.subtle} dimColor>
-        ↑↓ select · Space activation · E consent · Enter insert · / search · G global · R reload ·
-        Esc close
+        ↑↓ select · / search · Enter insert · Esc close
+      </Text>
+      <Text color={theme.subtle} dimColor>
+        Space activation · E consent · G global · R reload
       </Text>
       {error ? <Text color={theme.error}>✕ {error}</Text> : null}
     </SoftPanel>

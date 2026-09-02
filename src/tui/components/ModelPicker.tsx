@@ -14,6 +14,7 @@ import {
 } from '../model-options.js';
 import { EFFORT_LEVELS, type EffortLevel, type EffortResult } from '../../commands/effort.js';
 import { ByokWizard } from './ByokWizard.js';
+import { modelPickerHints } from './model-picker-hints.js';
 import { useDensityMetrics } from '../density.js';
 import { stripSgrMouseSequences } from '../mouse.js';
 
@@ -539,24 +540,23 @@ export function ModelPicker({
         })}
       </Box>
       <Box flexDirection="column">
-        <Text color={theme.subtle} dimColor>
-          {!allowProviderManagement
-            ? 'Type filter · ↑↓ select · Enter save · Esc back'
-            : compact || !density.showOptionalHelp
-              ? hasRemovableProviders
-                ? '↑↓ select · Enter save · Alt+D remove BYOK · Esc cancel'
-                : '↑↓ select · Enter save · Alt+S session · Esc cancel'
-              : hasRemovableProviders
-                ? 'Type · ↑↓ select · Enter save · Alt+A add · Alt+D remove BYOK · Esc'
-                : 'Type filter · ↑↓ select · Enter save · Alt+A add BYOK · Alt+S session · Esc cancel'}
-        </Text>
-        {editableProviderId && !refreshing && (
-          <Text color={theme.subtle} dimColor>
-            {compact
-              ? `Alt+R refresh · Alt+M add model (${editableProviderId})`
-              : `Alt+R refresh ${editableProviderId} model list · Alt+M add a model manually`}
+        {modelPickerHints({
+          allowProviderManagement,
+          hasRemovableProviders,
+          canSetEffort:
+            effortLevels.length > 0 &&
+            selected !== addIndex &&
+            Boolean(filteredOptions[selected]?.effort),
+          // Refresh and add-model are announced only on a row they would act
+          // on, which is also the only state in which they fire.
+          editableProviderId: refreshing ? undefined : editableProviderId,
+          compact: compact || !density.showOptionalHelp,
+          filterable: true,
+        }).map((line) => (
+          <Text key={line} color={theme.subtle} dimColor>
+            {line}
           </Text>
-        )}
+        ))}
         {refreshing && <Text color={theme.brand}>Refreshing {refreshing} models…</Text>}
         {notice && !refreshing && <Text color={theme.success}>✓ {notice}</Text>}
         {onEffort && (
