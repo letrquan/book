@@ -21,6 +21,7 @@
  */
 import { Box, Text, useInput } from 'ink';
 import { useCallback, useEffect, useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import { runOAuthLogin, DEFAULT_LOGIN_TIMEOUT_MS, type LoginOptions } from '../../auth/login.js';
 import { missingClientIdMessage } from '../../auth/oauth.js';
@@ -91,7 +92,7 @@ export function LoginPicker({
   timeoutMs = DEFAULT_LOGIN_TIMEOUT_MS,
 }: LoginPickerProps) {
   const theme = useTheme();
-  const [selected, setSelected] = useState(() => {
+  const [selected, setSelected, currentSelected] = useKeyState(() => {
     const preferred = [initialProfileId, activeProfile].filter(Boolean);
     for (const id of preferred) {
       const index = profiles.findIndex((profile) => profile.id === id);
@@ -235,15 +236,15 @@ export function LoginPicker({
     }
     if (profiles.length === 0) return;
     if (key.upArrow) {
-      setSelected((index) => (index - 1 + profiles.length) % profiles.length);
+      setSelected((currentSelected() - 1 + profiles.length) % profiles.length);
       return;
     }
     if (key.downArrow) {
-      setSelected((index) => (index + 1) % profiles.length);
+      setSelected((currentSelected() + 1) % profiles.length);
       return;
     }
     if (key.return) {
-      const profile = profiles[selected];
+      const profile = profiles[currentSelected()];
       if (profile) start(profile);
     }
   });

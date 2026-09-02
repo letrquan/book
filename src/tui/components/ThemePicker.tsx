@@ -1,5 +1,6 @@
 import { Box, Text, useInput } from 'ink';
 import { useEffect, useMemo, useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import { PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
 
@@ -43,7 +44,7 @@ export function ThemePicker({
     ],
     [customThemes],
   );
-  const [selected, setSelected] = useState(() => {
+  const [selected, setSelected, currentSelected] = useKeyState(() => {
     const index = options.findIndex((option) => option.name === current);
     return index >= 0 ? index : 0;
   });
@@ -60,17 +61,17 @@ export function ThemePicker({
       return;
     }
     if (key.upArrow) {
-      setSelected((index) => (index - 1 + options.length) % options.length);
+      setSelected((currentSelected() - 1 + options.length) % options.length);
       setError(undefined);
       return;
     }
     if (key.downArrow) {
-      setSelected((index) => (index + 1) % options.length);
+      setSelected((currentSelected() + 1) % options.length);
       setError(undefined);
       return;
     }
     if (key.return) {
-      const option = options[selected];
+      const option = options[currentSelected()];
       if (!option) return;
       const result = onSelect(option.name);
       if (!result.ok) setError(result.error ?? 'Could not save the selected theme.');

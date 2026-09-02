@@ -66,6 +66,22 @@ describe('RewindPicker', () => {
     expect(onAction).not.toHaveBeenCalled();
   });
 
+  it('completes a two-stage choice delivered in one chunk', async () => {
+    // Enter advances target -> action, the arrow moves within the action list,
+    // and the second Enter acts. All three used to depend on React flushing the
+    // stage between keys; in one chunk the second Enter re-ran the first branch.
+    const onAction = vi.fn(async () => ({ ok: true as const }));
+    const view = render(
+      <RewindPicker targets={targets} isRewinding={false} onAction={onAction} onCancel={vi.fn()} />,
+    );
+
+    view.stdin.write('\r\u001B[B\r');
+    await tick();
+
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onAction).toHaveBeenCalledWith(targets[0], 'code');
+  });
+
   it('treats choosing Code as the final confirmation', async () => {
     const onAction = vi.fn(async () => ({ ok: true as const }));
     const view = render(

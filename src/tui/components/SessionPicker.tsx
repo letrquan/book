@@ -1,5 +1,6 @@
 import { Box, Text, useInput } from 'ink';
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import type { SessionMeta } from '../../types/sessions.js';
 import { displaySessionName } from '../../session/name.js';
 import { useTheme } from '../theme.js';
@@ -34,15 +35,15 @@ export function SessionPicker({
     () => sessions.filter((session) => session.id !== currentSessionId),
     [currentSessionId, sessions],
   );
-  const [selected, setSelected] = useState(0);
+  const [selected, setSelected, currentSelected] = useKeyState(0);
 
   useInput(
     (_input, key) => {
       if (key.escape) return onCancel();
       if (choices.length === 0) return;
-      if (key.upArrow) setSelected((index) => (index - 1 + choices.length) % choices.length);
-      if (key.downArrow) setSelected((index) => (index + 1) % choices.length);
-      if (key.return) onPick(choices[selected]);
+      if (key.upArrow) setSelected((currentSelected() - 1 + choices.length) % choices.length);
+      if (key.downArrow) setSelected((currentSelected() + 1) % choices.length);
+      if (key.return) onPick(choices[currentSelected()]);
     },
     { isActive: true },
   );

@@ -19,9 +19,15 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof ThemePicker
   return { view, onSelect, onCancel };
 }
 
+/**
+ * No settle delay: this suite has no async work, so the only thing a sleep here
+ * ever bought was a React flush between keypresses — and depending on that is
+ * what made these tests flake on a loaded CI runner (#148). At zero, a cursor
+ * read back from state fails immediately and deterministically instead.
+ */
 async function write(view: ReturnType<typeof render>, value: string) {
   view.stdin.write(value);
-  await wait(20);
+  await wait(0);
 }
 
 afterEach(cleanup);
@@ -48,6 +54,17 @@ describe('ThemePicker', () => {
     await write(view, '\x1b[B');
     expect(stripAnsi(view.lastFrame())).toContain('› light');
     await write(view, '\r');
+
+    expect(onSelect).toHaveBeenCalledWith('light');
+  });
+
+  it('selects the row the arrow reached when both keys arrive in one chunk', async () => {
+    // Ink hands a whole stdin chunk to its handlers in one go, so a paste or a
+    // fast repeat delivers both keys inside one React batch. Enter used to read
+    // the cursor back from state and act on where it was before the arrow.
+    const { view, onSelect } = renderPicker();
+
+    await write(view, '\x1b[B\r');
 
     expect(onSelect).toHaveBeenCalledWith('light');
   });

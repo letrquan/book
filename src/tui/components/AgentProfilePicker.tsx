@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from 'ink';
-import { useState } from 'react';
+import { useKeyState } from '../hooks/useKeyState.js';
 import type { ManagedAgentDef } from '../../agents/profiles.js';
 import { useTheme } from '../theme.js';
 import { floatingFrameMetrics, PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
@@ -36,7 +36,7 @@ export function AgentProfilePicker({
   onCancel,
 }: AgentProfilePickerProps) {
   const theme = useTheme();
-  const [selected, setSelected] = useState(0);
+  const [selected, setSelected, currentSelected] = useKeyState(0);
   const selectedProfile = profiles[selected];
   const frame = floatingFrameMetrics(terminalWidth);
   const contentWidth = Math.max(16, frame.width - 4);
@@ -45,14 +45,14 @@ export function AgentProfilePicker({
     if (key.escape) return onCancel();
     if (profiles.length === 0) return;
     if (key.upArrow) {
-      setSelected((index) => (index - 1 + profiles.length) % profiles.length);
+      setSelected((currentSelected() - 1 + profiles.length) % profiles.length);
     } else if (key.downArrow || key.tab) {
-      setSelected((index) => (index + 1) % profiles.length);
+      setSelected((currentSelected() + 1) % profiles.length);
     } else if (key.return) {
-      const profile = profiles[selected];
+      const profile = profiles[currentSelected()];
       if (profile) onSelect(profile.name);
     } else if (input.toLowerCase() === 'r') {
-      const profile = profiles[selected];
+      const profile = profiles[currentSelected()];
       if (profile) onReset(profile.name);
     }
   });
