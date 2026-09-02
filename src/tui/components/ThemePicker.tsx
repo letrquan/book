@@ -1,8 +1,5 @@
-import { Box, Text, useInput } from 'ink';
-import { useEffect, useMemo, useState } from 'react';
-import { useKeyState } from '../hooks/useKeyState.js';
-import { useTheme } from '../theme.js';
-import { PanelTitle, SelectionRow, SoftPanel } from './chrome.js';
+import { useMemo, useState } from 'react';
+import { ListPicker } from './ListPicker.js';
 
 export interface ThemeSelectionResult {
   ok: boolean;
@@ -34,7 +31,6 @@ export function ThemePicker({
   onSelect,
   onCancel,
 }: ThemePickerProps) {
-  const theme = useTheme();
   const options = useMemo(
     () => [
       ...BUILTIN_THEMES,
@@ -44,60 +40,38 @@ export function ThemePicker({
     ],
     [customThemes],
   );
-  const [selected, setSelected, currentSelected] = useKeyState(() => {
-    const index = options.findIndex((option) => option.name === current);
-    return index >= 0 ? index : 0;
-  });
   const [error, setError] = useState<string>();
 
-  useEffect(() => {
-    const index = options.findIndex((option) => option.name === current);
-    setSelected(index >= 0 ? index : 0);
-  }, [current, options]);
-
-  useInput((_, key) => {
-    if (key.escape) {
-      onCancel();
-      return;
-    }
-    if (key.upArrow) {
-      setSelected((currentSelected() - 1 + options.length) % options.length);
-      setError(undefined);
-      return;
-    }
-    if (key.downArrow) {
-      setSelected((currentSelected() + 1) % options.length);
-      setError(undefined);
-      return;
-    }
-    if (key.return) {
-      const option = options[currentSelected()];
-      if (!option) return;
-      const result = onSelect(option.name);
-      if (!result.ok) setError(result.error ?? 'Could not save the selected theme.');
-    }
-  });
+  const items = useMemo(
+    () =>
+      options.map((option) => ({
+        key: option.name,
+        label: `${option.name.padEnd(16)} ${option.description}`,
+        note: option.name === current ? '(current)' : undefined,
+        accent: option.name === current,
+      })),
+    [current, options],
+  );
 
   return (
-    <SoftPanel tone="brand">
-      <PanelTitle>Choose theme</PanelTitle>
-      <Text color={theme.subtle}>Select a palette for this workspace.</Text>
-      <Box flexDirection="column" marginTop={1}>
-        {options.map((option, index) => {
-          const isSelected = index === selected;
-          const isCurrent = option.name === current;
-          return (
-            <SelectionRow key={option.name} selected={isSelected}>
-              {isSelected ? '›' : ' '} {option.name.padEnd(16)} {option.description}
-              {isCurrent ? '  (current)' : ''}
-            </SelectionRow>
-          );
-        })}
-      </Box>
-      <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter save · Esc cancel
-      </Text>
-      {error ? <Text color={theme.error}>✕ {error}</Text> : null}
-    </SoftPanel>
+    <ListPicker
+      title="Choose theme"
+      subtitle="Select a palette for this workspace."
+      items={items}
+      initialIndex={Math.max(
+        0,
+        options.findIndex((option) => option.name === current),
+      )}
+      enterHint="save"
+      escHint="cancel"
+      error={error}
+      onSelect={(index) => {
+        const option = options[index];
+        if (!option) return;
+        const result = onSelect(option.name);
+        setError(result.ok ? undefined : (result.error ?? 'Could not save the selected theme.'));
+      }}
+      onCancel={onCancel}
+    />
   );
 }

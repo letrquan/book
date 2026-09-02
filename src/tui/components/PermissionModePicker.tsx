@@ -1,9 +1,6 @@
-import { Box, Text, useInput } from 'ink';
-import { useState } from 'react';
-import { useKeyState } from '../hooks/useKeyState.js';
-import { useTheme } from '../theme.js';
+import { useMemo, useState } from 'react';
+import { ListPicker } from './ListPicker.js';
 import type { PermissionMode } from '../../types/runtime.js';
-import { SelectionRow, SoftPanel, PanelTitle } from './chrome.js';
 
 export interface PermissionModeSelectionResult {
   ok: boolean;
@@ -32,48 +29,37 @@ export function PermissionModePicker({
   onSelect,
   onCancel,
 }: PermissionModePickerProps) {
-  const theme = useTheme();
-  const [selected, setSelected, currentSelected] = useKeyState(() =>
-    Math.max(0, availableModes.indexOf(current)),
-  );
   const [error, setError] = useState<string>();
 
-  useInput((_, key) => {
-    if (key.escape) return onCancel();
-    if (key.upArrow) {
-      setSelected((currentSelected() - 1 + availableModes.length) % availableModes.length);
-      setError(undefined);
-      return;
-    }
-    if (key.downArrow) {
-      setSelected((currentSelected() + 1) % availableModes.length);
-      setError(undefined);
-      return;
-    }
-    if (key.return) {
-      const mode = availableModes[currentSelected()];
-      if (!mode) return;
-      const result = onSelect(mode);
-      if (!result.ok) setError(result.error ?? 'Could not save the default permission mode.');
-    }
-  });
+  const items = useMemo(
+    () =>
+      availableModes.map((mode) => ({
+        key: mode,
+        label: `${mode.padEnd(18)} ${DESCRIPTIONS[mode]}`,
+        note: mode === current ? '(current)' : undefined,
+        accent: mode === current,
+      })),
+    [availableModes, current],
+  );
 
   return (
-    <SoftPanel tone="brand">
-      <PanelTitle>Default permission mode</PanelTitle>
-      <Text color={theme.subtle}>Choose the mode used when a run does not specify one.</Text>
-      <Box flexDirection="column" marginTop={1}>
-        {availableModes.map((mode, index) => (
-          <SelectionRow key={mode} selected={index === selected}>
-            {index === selected ? '›' : ' '} {mode.padEnd(18)} {DESCRIPTIONS[mode]}
-            {mode === current ? '  (current)' : ''}
-          </SelectionRow>
-        ))}
-      </Box>
-      <Text color={theme.subtle} dimColor>
-        ↑↓ select · Enter save globally · Esc cancel
-      </Text>
-      {error ? <Text color={theme.error}>✕ {error}</Text> : null}
-    </SoftPanel>
+    <ListPicker
+      title="Default permission mode"
+      subtitle="Choose the mode used when a run does not specify one."
+      items={items}
+      initialIndex={Math.max(0, availableModes.indexOf(current))}
+      enterHint="save globally"
+      escHint="cancel"
+      error={error}
+      onSelect={(index) => {
+        const mode = availableModes[index];
+        if (!mode) return;
+        const result = onSelect(mode);
+        setError(
+          result.ok ? undefined : (result.error ?? 'Could not save the default permission mode.'),
+        );
+      }}
+      onCancel={onCancel}
+    />
   );
 }
