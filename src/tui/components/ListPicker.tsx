@@ -45,8 +45,9 @@ interface ListPickerProps {
   /**
    * The verb after Esc. Dialogs used to pick their own — cancel, back, close,
    * not now — so the same key was described four ways depending on which one
-   * you had open. `close` is the default; override only when Esc genuinely
-   * returns to a previous step rather than dismissing.
+   * you had open. `cancel` is the default because abandoning the choice is what
+   * Esc does in a picker; override only where it genuinely returns to a
+   * previous step, which is the one case a different word earns.
    */
   escHint?: string;
   /** Extra chords to advertise, already formatted: `R reset to inherit`. */
@@ -94,7 +95,7 @@ export function ListPicker({
   width,
   marginX,
   enterHint,
-  escHint = 'close',
+  escHint = 'cancel',
   extraHints,
   tabMovesNext = false,
   filterable = false,
@@ -119,6 +120,11 @@ export function ListPicker({
   // Re-home the cursor when the caller's idea of "current" moves, and keep it
   // inside a list that just got shorter — a filter keystroke can strand it past
   // the end, which is how Enter ends up acting on nothing.
+  //
+  // The first effect clamps against `visibleItems` without depending on it, so
+  // items must be present at mount. Every adopter builds them synchronously; an
+  // adopter that loaded them asynchronously with a non-zero `initialIndex`
+  // would clamp against an empty list and never re-run.
   useEffect(() => {
     setSelected(Math.max(0, Math.min(initialIndex, visibleItems.length - 1)));
   }, [initialIndex, setSelected]);

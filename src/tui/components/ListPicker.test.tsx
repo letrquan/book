@@ -157,7 +157,7 @@ describe('ListPicker', () => {
   });
 
   it('names one verb for Esc unless the caller means something else by it', () => {
-    expect(stripAnsi(mount().view.lastFrame())).toContain('Esc close');
+    expect(stripAnsi(mount().view.lastFrame())).toContain('Esc cancel');
     cleanup();
     expect(stripAnsi(mount({ escHint: 'back' }).view.lastFrame())).toContain('Esc back');
   });

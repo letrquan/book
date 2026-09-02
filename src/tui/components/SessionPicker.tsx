@@ -53,7 +53,6 @@ export function SessionPicker({
       filterable
       emptyText="(no other sessions in this workspace)"
       enterHint="resume"
-      escHint="cancel"
       onSelect={(index) => {
         const session = choices[index];
         if (session) onPick(session);

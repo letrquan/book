@@ -95,6 +95,10 @@ export function LoginPicker({
   // The cursor itself now lives in `ListPicker`; this only decides where it
   // starts. `/login <profile>` wins over the active profile, because naming one
   // explicitly is the stronger signal.
+  //
+  // Returning from a login re-homes the cursor here rather than restoring where
+  // it was. That is deliberate: a completed sign-in changes which profile the
+  // list is about, and landing on the active one says so.
   const initialIndex = useMemo(() => {
     for (const id of [initialProfileId, activeProfile].filter(Boolean)) {
       const index = profiles.findIndex((profile) => profile.id === id);
@@ -339,7 +343,6 @@ export function LoginPicker({
       initialIndex={initialIndex}
       emptyText="No auth profiles are configured."
       enterHint="sign in"
-      escHint="cancel"
       onSelect={(index) => {
         const profile = profiles[index];
         if (profile) start(profile);

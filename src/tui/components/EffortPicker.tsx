@@ -38,7 +38,6 @@ export function EffortPicker({ current, availableLevels, onSelect, onCancel }: E
       items={items}
       initialIndex={Math.max(0, current ? availableLevels.indexOf(current) : 0)}
       enterHint="save"
-      escHint="cancel"
       error={error}
       onSelect={(index) => {
         const level = availableLevels[index];

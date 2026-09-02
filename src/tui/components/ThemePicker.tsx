@@ -63,7 +63,6 @@ export function ThemePicker({
         options.findIndex((option) => option.name === current),
       )}
       enterHint="save"
-      escHint="cancel"
       error={error}
       onSelect={(index) => {
         const option = options[index];

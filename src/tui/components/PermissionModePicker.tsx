@@ -49,7 +49,6 @@ export function PermissionModePicker({
       items={items}
       initialIndex={Math.max(0, availableModes.indexOf(current))}
       enterHint="save globally"
-      escHint="cancel"
       error={error}
       onSelect={(index) => {
         const mode = availableModes[index];
