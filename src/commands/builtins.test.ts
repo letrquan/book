@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -314,6 +314,15 @@ describe('built-in command contract', () => {
 
   it('renders and persists config commands with schema-backed metadata', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'book-command-config-'));
+    // `/config <key>=<value>` writes the user-global layer, which resolves
+    // through BOOK_HOME. Without one of its own this test would edit the
+    // developer's real ~/.book/settings.json.
+    const bookHome = mkdtempSync(join(tmpdir(), 'book-command-config-home-'));
+    const previousBookHome = process.env.BOOK_HOME;
+    process.env.BOOK_HOME = bookHome;
+    const globalSettings = () => JSON.parse(readFileSync(join(bookHome, 'settings.json'), 'utf-8'));
+    const localSettings = () =>
+      JSON.parse(readFileSync(join(workspace, '.book', 'settings.local.json'), 'utf-8'));
     try {
       const registry = createBuiltinCommandRegistry();
       const commandContext = {
@@ -327,23 +336,100 @@ describe('built-in command contract', () => {
         expect.objectContaining({ content: expect.stringContaining('  maxTurns') }),
       );
 
+      // A key with no live setter lands in the user-global layer, like
+      // `book config set` — and says so, naming the file and the fact that a
+      // file write on its own waits for the next start.
       const result = registry.execute('config', 'maxTurns=12', commandContext);
-      expect(result).toEqual(expect.objectContaining({ content: expect.stringContaining('12') }));
-      expect(
-        JSON.parse(readFileSync(join(workspace, '.book', 'settings.local.json'), 'utf-8')),
-      ).toEqual({ maxTurns: 12 });
+      expect(result).toEqual(
+        expect.objectContaining({ content: expect.stringContaining('user-global') }),
+      );
+      expect(result).toEqual(
+        expect.objectContaining({ content: expect.stringContaining('next start') }),
+      );
+      expect(globalSettings()).toEqual({ maxTurns: 12 });
+      expect(existsSync(join(workspace, '.book', 'settings.local.json'))).toBe(false);
+
+      // An explicit scope is honoured literally, so the workspace layer stays
+      // reachable for what is genuinely about this checkout.
+      registry.execute('config', '--local maxTurns=3', commandContext);
+      expect(localSettings()).toEqual({ maxTurns: 3 });
+
+      // The settings a running session holds outside `settings` are handed to
+      // the same effect the menu and the dedicated command use, so
+      // `/config model=x` is `/model x` rather than a file write nothing reads.
+      expect(registry.execute('config', 'model=openai/gpt-5', commandContext)).toEqual({
+        type: 'set-model',
+        selection: 'openai/gpt-5',
+      });
+      expect(registry.execute('config', 'theme=light', commandContext)).toEqual({
+        type: 'set-theme',
+        preference: 'light',
+      });
+      expect(registry.execute('config', 'effort=xhigh', commandContext)).toEqual({
+        type: 'set-effort',
+        level: 'xhigh',
+      });
+      expect(registry.execute('config', 'defaultMode=acceptEdits', commandContext)).toEqual({
+        type: 'set-default-permission-mode',
+        mode: 'accept-edits',
+      });
+      // The three booleans the menu toggles in place had been left out of that
+      // list, so the typed form still reported "next start" for a setting the
+      // row directly above it changed immediately.
+      expect(registry.execute('config', 'ui.showThinking=false', commandContext)).toEqual({
+        type: 'set-show-thinking',
+        enabled: false,
+      });
+      expect(registry.execute('config', 'ui.startupAnimation=true', commandContext)).toEqual({
+        type: 'set-startup-animation',
+        enabled: true,
+      });
+      expect(registry.execute('config', 'memory.autoSave=true', commandContext)).toEqual({
+        type: 'set-memory-auto-save',
+        enabled: true,
+      });
+      expect(registry.execute('config', 'ui.showThinking=yes', commandContext)).toEqual(
+        expect.objectContaining({ content: expect.stringContaining('takes true or false') }),
+      );
+
+      // Naming the layer a setting already uses is the same request as naming
+      // none. The explicit form used to do strictly less to the same file:
+      // no live apply, no stale-local cleanup, and a "next start" that was
+      // wrong because the session had not been told.
+      expect(registry.execute('config', '--global model=openai/gpt-5', commandContext)).toEqual({
+        type: 'set-model',
+        selection: 'openai/gpt-5',
+      });
+      expect(registry.execute('config', '-g effort=high', commandContext)).toEqual({
+        type: 'set-effort',
+        level: 'high',
+      });
+      // …and naming a different one is a request to write that file, which the
+      // reply says plainly, warning that the setting's own layer still wins.
+      const globalTheme = registry.execute('config', '--global theme=light', commandContext);
+      expect(globalTheme).toEqual(
+        expect.objectContaining({ content: expect.stringContaining('next start') }),
+      );
+      expect(globalTheme).toEqual(
+        expect.objectContaining({ content: expect.stringContaining('user-global') }),
+      );
 
       const compactResult = registry.execute(
         'config',
         'compact-model 9router/ag/gemini-3.6-flash-high',
         commandContext,
       );
-      expect(compactResult).toEqual(
-        expect.objectContaining({ content: expect.stringContaining('compactModel') }),
-      );
+      expect(compactResult).toEqual({
+        type: 'set-compact-model',
+        model: '9router/ag/gemini-3.6-flash-high',
+      });
+      // A scope flag reads the same before or after the keyword; swallowing the
+      // trailing one set the compact model to the literal string "--local …".
+      registry.execute('config', 'compact-model --local 9router/ag/x', commandContext);
+      expect(localSettings()).toMatchObject({ compactModel: '9router/ag/x' });
       expect(
-        JSON.parse(readFileSync(join(workspace, '.book', 'settings.local.json'), 'utf-8')),
-      ).toMatchObject({ compactModel: '9router/ag/gemini-3.6-flash-high' });
+        registry.execute('config', '--local compact-model --global x', commandContext),
+      ).toEqual(expect.objectContaining({ content: expect.stringContaining('at most one of') }));
 
       const strategyResult = registry.execute(
         'config',
@@ -361,11 +447,37 @@ describe('built-in command contract', () => {
       expect(experimentalResult).toEqual(
         expect.objectContaining({ content: expect.stringContaining('cannot be written') }),
       );
+
+      // The guards `book config set` had and the TUI did not: a key nothing
+      // reads used to report success and change nothing, in either direction.
+      expect(registry.execute('config', 'notAKey=1', commandContext)).toEqual(
+        expect.objectContaining({ content: expect.stringContaining('Unknown top-level key') }),
+      );
       expect(
-        JSON.parse(readFileSync(join(workspace, '.book', 'settings.local.json'), 'utf-8')),
-      ).toEqual({ maxTurns: 12, compactModel: '9router/ag/gemini-3.6-flash-high' });
+        registry.execute('config', 'permissions.projectAllowRules=[]', commandContext),
+      ).toEqual(expect.objectContaining({ content: expect.stringContaining('book trust rule') }));
+      // `--user` is not a flag `book config` defines, so it is a key here and
+      // fails as one rather than quietly meaning something the CLI rejects.
+      expect(registry.execute('config', '--user maxTurns=4', commandContext)).toEqual(
+        expect.objectContaining({ content: expect.stringContaining('Unknown top-level key') }),
+      );
+      expect(registry.execute('config', '--global --local maxTurns=4', commandContext)).toEqual(
+        expect.objectContaining({
+          content: expect.stringContaining(
+            'Pass at most one of --global, --project, --local. ' +
+              'Writes default to --global; reads without one report the resolved merge.',
+          ),
+        }),
+      );
+
+      // Only the two writes that named a file landed in it; every refusal and
+      // every live-setting delegation left the layer alone.
+      expect(globalSettings()).toEqual({ maxTurns: 12, theme: 'light' });
     } finally {
+      if (previousBookHome === undefined) delete process.env.BOOK_HOME;
+      else process.env.BOOK_HOME = previousBookHome;
       rmSync(workspace, { recursive: true, force: true });
+      rmSync(bookHome, { recursive: true, force: true });
     }
   });
 
