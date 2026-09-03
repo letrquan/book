@@ -8,6 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
+import { panelGrid } from './layout.js';
 import { ChatPanel } from './components/ChatPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { QueuedInputPreview } from './components/QueuedInputPreview.js';
@@ -2289,6 +2290,7 @@ export function App({
                   borderStyle="round"
                   borderColor={theme.border}
                   paddingX={1}
+                  width={panelGrid(termWidth).width}
                 >
                   <PanelHeading title="Slash Commands" theme={theme} />
                   <Box flexDirection="column">
@@ -2422,6 +2424,7 @@ export function App({
                   borderStyle="round"
                   borderColor={theme.border}
                   paddingX={1}
+                  width={panelGrid(termWidth).width}
                 >
                   <PanelHeading title="Session Status" theme={theme} />
                   <Box flexDirection="column">
@@ -2478,6 +2481,7 @@ export function App({
                   borderStyle="round"
                   borderColor={theme.border}
                   paddingX={1}
+                  width={panelGrid(termWidth).width}
                 >
                   <PanelHeading title="Permission Mode" theme={theme} />
                   <PermissionsPanel
@@ -2503,6 +2507,7 @@ export function App({
                   borderStyle="round"
                   borderColor={theme.border}
                   paddingX={1}
+                  width={panelGrid(termWidth).width}
                 >
                   <PanelHeading title="Keyboard Shortcuts" theme={theme} />
                   <Box flexDirection="column">

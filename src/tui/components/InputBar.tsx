@@ -11,7 +11,7 @@ import type { SlashCommand } from '../../types/commands.js';
 import type { Skill } from '../../skills.js';
 import { modeColorToken } from '../mode-style.js';
 import { isShortcutsToggleKey } from '../tool-presentation.js';
-import { floatingFrameMetrics } from './chrome.js';
+import { frameGrid } from '../layout.js';
 import {
   findActiveFileMention,
   getFileMentionCandidates,
@@ -811,7 +811,9 @@ export function InputBar({
   const baseBorderColor = theme[tokenKey];
 
   const outerWidth = Math.max(20, Math.floor(terminalWidth));
-  const frame = floatingFrameMetrics(outerWidth);
+  // The composer spans the transcript rather than floating over it, so it takes
+  // the full terminal like the rows above it -- not the bounded panel measure.
+  const frame = frameGrid(outerWidth);
   const editorWidth = Math.max(8, frame.width - 4);
   const inputWidth = Math.max(1, editorWidth - 2);
   const promptColor = baseBorderColor;

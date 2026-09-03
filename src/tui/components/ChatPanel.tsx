@@ -20,7 +20,7 @@ import { mergeAssistantMessages } from './transcript-messages.js';
 import { selectExpandedToolId } from '../tool-traces.js';
 import type { TranscriptMode } from '../tool-presentation.js';
 import type { ManagedAgentTrace } from '../managed-agent-transcript.js';
-import { truncateDisplay } from './word-wrap.js';
+import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { useTranscriptHistoryLoader, useTranscriptLayoutChange } from '../transcript-layout.js';
 import { useVirtualTranscript, VirtualTranscriptRow } from './virtual-transcript.js';
 
@@ -51,14 +51,18 @@ export function getCompletedTimelineWindow(terminalHeight?: number): number {
 }
 
 function estimateWrappedRows(content: string, width: number): number {
-  // Wrap against the measure the row is actually rendered at. Estimating
-  // against the raw terminal width past MAX_MEASURE reports roughly 60% of
-  // the true height, and the virtual transcript sizes its spacers from this.
+  // Wrap against the measure the row is actually rendered at, not the raw
+  // terminal width: the virtual transcript sizes its spacers from this count,
+  // so estimating against the wrong measure undercounts the wrapped rows.
   const contentWidth = transcriptGrid(width).content;
   if (!content) return 1;
-  return content
-    .split('\n')
-    .reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / contentWidth)), 0);
+  return (
+    content
+      .split('\n')
+      // Ink wraps on display width, so a CJK or emoji line occupies more columns
+      // than it has code units and `.length` would report half its true height.
+      .reduce((rows, line) => rows + Math.max(1, Math.ceil(displayWidth(line) / contentWidth)), 0)
+  );
 }
 
 function estimateTimelineRows(entry: Message | CompactBoundary, terminalWidth: number): number {
