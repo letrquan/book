@@ -429,6 +429,40 @@ export function App({
   const [showThemePicker, setShowThemePicker] = useState(false);
   const [showConfigPicker, setShowConfigPicker] = useState(false);
   const [showAgentProfilePicker, setShowAgentProfilePicker] = useState(false);
+  /**
+   * The `/config` row a sub-picker was opened from, or null when it was opened
+   * directly by its own command.
+   *
+   * `/config` is the only surface that exists to be *browsed* — it is the one
+   * place the two settings with no command of their own (compact model,
+   * subagent profiles) can be found — and it used to close the moment a row was
+   * chosen, so browsing it was impossible and changing two settings meant
+   * opening it twice. Two rows already came back, but only because
+   * `selectingCompactModel` and `agentProfileForModel` happened to imply where
+   * the picker had been opened from. Recording the origin explicitly is what
+   * lets the other five come back too, and it is a ref rather than state
+   * because the close handlers read it back inside their own keypress batch.
+   */
+  const configReturnRow = useRef<number | null>(null);
+  const [configInitialRow, setConfigInitialRow] = useState(0);
+
+  /** Reopen `/config` on the row a picker was launched from, if it was. */
+  const returnToConfig = useCallback((): void => {
+    const row = configReturnRow.current;
+    configReturnRow.current = null;
+    if (row === null) return;
+    setConfigInitialRow(row);
+    setShowConfigPicker(true);
+  }, []);
+
+  /**
+   * Forget the origin, for the paths that must end at the composer: a picker
+   * opened by its own command, and `/skills`'s "use this skill", which exists
+   * to put text in the input bar.
+   */
+  const forgetConfigOrigin = useCallback(() => {
+    configReturnRow.current = null;
+  }, []);
   const [showLoginPicker, setShowLoginPicker] = useState(false);
   const [loginProfileHint, setLoginProfileHint] = useState<string | undefined>(undefined);
   // Bumped when a login stores a credential, so the list below re-reads the
@@ -1655,8 +1689,13 @@ export function App({
           return;
         }
         if (effect?.type === 'show-modal') {
-          if (effect.modal === 'config') setShowConfigPicker(true);
-          else if (effect.modal === 'login') {
+          // Opened by its own command, so Esc belongs to the composer rather
+          // than to a `/config` menu the user may have visited earlier.
+          forgetConfigOrigin();
+          if (effect.modal === 'config') {
+            setConfigInitialRow(0);
+            setShowConfigPicker(true);
+          } else if (effect.modal === 'login') {
             setLoginProfileHint(effect.profile);
             setShowLoginPicker(true);
           } else if (effect.modal === 'model') {
@@ -1688,6 +1727,42 @@ export function App({
             result.ok
               ? `Set effort level to ${effect.level} (saved as default).`
               : `✕ ${result.error}`,
+          );
+          return;
+        }
+        if (effect?.type === 'set-compact-model') {
+          const result = setCompactModel(effect.model);
+          addLocalMessage(
+            result.ok
+              ? `Set compact model to ${effect.model} (saved as default).`
+              : `✕ ${result.error}`,
+          );
+          return;
+        }
+        if (effect?.type === 'set-default-permission-mode') {
+          const result = setDefaultPermissionMode(effect.mode);
+          addLocalMessage(
+            result.ok
+              ? `Default permission mode is now ${effect.mode} (saved as default).`
+              : `✕ ${result.error}`,
+          );
+          return;
+        }
+        if (effect?.type === 'set-show-thinking') {
+          const result = toggleShowThinking(effect.enabled);
+          addLocalMessage(
+            result.ok
+              ? `Show thinking is now ${effect.enabled ? 'on' : 'off'} (saved as default).`
+              : `✕ ${result.error ?? 'Could not save thinking setting.'}`,
+          );
+          return;
+        }
+        if (effect?.type === 'set-startup-animation') {
+          const result = toggleStartupAnimation(effect.enabled);
+          addLocalMessage(
+            result.ok
+              ? `Startup fire is now ${effect.enabled ? 'on' : 'off'} (saved as default).`
+              : `✕ ${result.error ?? 'Could not save the startup animation setting.'}`,
           );
           return;
         }
@@ -2676,6 +2751,7 @@ export function App({
                     key: (current?.key ?? 0) + 1,
                     value: `$${skill.name} `,
                   }));
+                  forgetConfigOrigin();
                   setShowSkills(false);
                 }}
                 onReload={() => {
@@ -2692,7 +2768,10 @@ export function App({
                   );
                   setSkillWatcherError(runtime?.skillWatcherError);
                 }}
-                onCancel={() => setShowSkills(false)}
+                onCancel={() => {
+                  setShowSkills(false);
+                  returnToConfig();
+                }}
               />
             ) : null}
             {showConfigPicker ? (
@@ -2708,7 +2787,8 @@ export function App({
                 skillCount={skills.length}
                 defaultPermissionMode={resolvePermissionMode(liveConfig.settings)}
                 terminalWidth={termWidth}
-                onOpen={(section: ConfigSection) => {
+                initialSelection={configInitialRow}
+                onOpen={(section: ConfigSection, rowIndex: number) => {
                   if (section === 'effort') {
                     const unavailable = getEffortUnavailableError(liveConfig);
                     if (unavailable) {
@@ -2716,6 +2796,7 @@ export function App({
                       return;
                     }
                   }
+                  configReturnRow.current = rowIndex;
                   setShowConfigPicker(false);
                   if (section === 'model') {
                     setSelectingCompactModel(false);
@@ -2752,7 +2833,10 @@ export function App({
                     );
                   }
                 }}
-                onCancel={() => setShowConfigPicker(false)}
+                onCancel={() => {
+                  forgetConfigOrigin();
+                  setShowConfigPicker(false);
+                }}
               />
             ) : null}
             {showAgentProfilePicker ? (
@@ -2777,7 +2861,7 @@ export function App({
                 }}
                 onCancel={() => {
                   setShowAgentProfilePicker(false);
-                  setShowConfigPicker(true);
+                  returnToConfig();
                 }}
               />
             ) : null}
@@ -2815,7 +2899,7 @@ export function App({
                     addLocalMessage(`Set compact model to ${model}.`);
                     setSelectingCompactModel(false);
                     setShowModelPicker(false);
-                    setShowConfigPicker(true);
+                    returnToConfig();
                     return result;
                   }
                   if (agentProfileForModel) {
@@ -2835,6 +2919,7 @@ export function App({
                       : `Switched to ${model} for this session only.`,
                   );
                   setShowModelPicker(false);
+                  returnToConfig();
                   return result;
                 }}
                 onPickEffort={(level) => setEffort(level)}
@@ -2847,6 +2932,7 @@ export function App({
                   if (!result.ok) return result;
                   addLocalMessage(providerRemovalMessage(result));
                   setShowModelPicker(false);
+                  returnToConfig();
                   return result;
                 }}
                 onProviderSaved={(request) => {
@@ -2854,15 +2940,19 @@ export function App({
                     `Added ${request.providerId} with ${request.models.length} model${request.models.length === 1 ? '' : 's'}; using ${request.providerId}/${request.activeModelId}.`,
                   );
                   setShowModelPicker(false);
+                  returnToConfig();
                 }}
                 onCancel={() => {
-                  const returnToConfig = selectingCompactModel;
+                  // A model chosen *for a profile* was reached through the
+                  // profile picker, which is one step deeper than the menu; its
+                  // own cancel carries the user the rest of the way back, so the
+                  // recorded `/config` row must survive this close.
                   const returnToAgents = Boolean(agentProfileForModel);
                   setSelectingCompactModel(false);
                   setAgentProfileForModel(undefined);
                   setShowModelPicker(false);
-                  if (returnToConfig) setShowConfigPicker(true);
-                  else if (returnToAgents) setShowAgentProfilePicker(true);
+                  if (returnToAgents) setShowAgentProfilePicker(true);
+                  else returnToConfig();
                 }}
               />
             ) : null}
@@ -2898,9 +2988,13 @@ export function App({
                   if (!result.ok) return result;
                   addLocalMessage(`Set effort level to ${level} (saved as default).`);
                   setShowEffortPicker(false);
+                  returnToConfig();
                   return result;
                 }}
-                onCancel={() => setShowEffortPicker(false)}
+                onCancel={() => {
+                  setShowEffortPicker(false);
+                  returnToConfig();
+                }}
               />
             ) : null}
             {showPermissionModePicker ? (
@@ -2923,9 +3017,13 @@ export function App({
                   if (!result.ok) return result;
                   addLocalMessage(`Default permission mode set to ${nextMode} globally.`);
                   setShowPermissionModePicker(false);
+                  returnToConfig();
                   return result;
                 }}
-                onCancel={() => setShowPermissionModePicker(false)}
+                onCancel={() => {
+                  setShowPermissionModePicker(false);
+                  returnToConfig();
+                }}
               />
             ) : null}
             {showThemePicker ? (
@@ -2937,9 +3035,13 @@ export function App({
                   if (!result.ok) return result;
                   addLocalMessage(themeAppliedMessage(result.theme));
                   setShowThemePicker(false);
+                  returnToConfig();
                   return { ok: true };
                 }}
-                onCancel={() => setShowThemePicker(false)}
+                onCancel={() => {
+                  setShowThemePicker(false);
+                  returnToConfig();
+                }}
               />
             ) : null}
             {showMcpApproval && pendingMcpApproval && mcp ? (

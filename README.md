@@ -187,11 +187,13 @@ Settings are loaded in priority order (later wins):
 
 #### Scopes
 
-`book config set` writes the **user-global** layer (`<BOOK_HOME>/settings.json`, normally
-`~/.book/settings.json`) unless told otherwise, so a preference you set once applies in every
-checkout. Pass `--project` to write the checked-in `.book/settings.json`, or `--local` to write the
-gitignored `.book/settings.local.json`. `-g`/`--global` states the default explicitly; passing more
-than one scope is an error.
+`book config set` and the TUI's `/config <key>=<value>` write the **user-global** layer
+(`<BOOK_HOME>/settings.json`, normally `~/.book/settings.json`) unless told otherwise, so a
+preference you set once applies in every checkout. Pass `--project` to write the checked-in
+`.book/settings.json`, or `--local` to write the gitignored `.book/settings.local.json`.
+`-g`/`--global` states the default explicitly; passing more than one scope is an error. Both
+surfaces run the same guards through one shared write, so they cannot disagree about which file a
+preference lands in.
 
 A write is checked against the *merged* configuration, not just the file it lands in. A value can be
 valid on its own and still leave a configuration nothing can load — `harness.workflow` is rejected
@@ -472,7 +474,26 @@ invalid setting path; provider secrets are redacted.
 
 Inside the TUI, `/config` opens a visual settings menu. Use it to change the main model, compact
 strategy, compact model, effort, theme, memory auto-capture, startup fire, or the model assigned to
-each managed-agent profile.
+each managed-agent profile. Choosing a row opens that setting's picker and returns to the menu on
+the same row when it closes, so one `/config` covers as many settings as you want to change.
+
+`/config <key>=<value>` is the same command in typed form, and it runs the same guarded write as
+`book config set`: it refuses a key nothing reads, checks the resulting merge before writing, and
+takes the same `--global` / `--project` / `--local` flags (at most one, before or after a
+`compact-model` keyword).
+
+Eight settings are held by the running session rather than re-read from `settings` each turn —
+`model`, `compactModel`, `effort`, `theme`, `defaultMode`, `ui.showThinking`,
+`ui.startupAnimation` and `memory.autoSave`. Each is handed to the same code path its menu row
+uses, so `/config model=…` switches the session exactly as `/model …` does rather than writing a
+file this session will not re-read. They land in the layer that setting belongs to: user-global
+for all of them except `theme`, which stays project-local because a theme name can come from a
+project's `.book/themes`. Everything else defaults to the user-global layer.
+
+Naming a scope that setting already uses is the same request as naming none. Naming a *different*
+one is a request to write that one file, and the reply then says the change waits for the next
+start — because that is what a file write on its own does — and warns when a later-resolved layer
+still decides the value.
 The startup fire plays only for a new, empty launch session and is skipped automatically for
 screen-reader or reduced-motion mode. Press Esc to skip it.
 
@@ -829,7 +850,8 @@ provider/model only for checkpoint generation while normal agent turns continue 
 reducer preserves the active model's accuracy; validate the pairing with `npm run eval:compact`
 before making it a shared default. You can set it without editing JSON:
 open `/config` and choose **Compact model** (shortcut `C`), or run
-`/config compact-model 9router/ag/gemini-3.6-flash-high` (or `/config compactModel=...`).
+`/config compact-model 9router/ag/gemini-3.6-flash-high` (or `/config compactModel=...`). Both
+reach the same place — the typed form is the menu row, not a separate write.
 
 `toolDiscovery.mode` accepts `auto`, `eager`, or `deferred`. Auto mode sends all authorized definitions only when there are at most ten and their schemas fit the configured budget; otherwise the provider receives the practical core plus `ToolSearch`. Search never returns tools outside the current command, skill, agent-role, permission-mode, or runtime-state capability intersection.
 
