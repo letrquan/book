@@ -19,7 +19,14 @@ interface ConfigMenuProps {
   skillCount: number;
   defaultPermissionMode: string;
   terminalWidth?: number;
-  onOpen: (section: ConfigSection) => void;
+  /**
+   * Row the cursor starts on. The menu closes while a sub-picker is open and
+   * remounts when that picker hands control back, so without this the return
+   * trip always landed on Model — the user pressed `S`, cancelled, and found
+   * the cursor four rows above where they had been.
+   */
+  initialSelection?: number;
+  onOpen: (section: ConfigSection, rowIndex: number) => void;
   onToggleMemory: () => void;
   onToggleThinking: () => void;
   onToggleStartupAnimation?: () => void;
@@ -74,6 +81,7 @@ export function ConfigMenu({
   skillCount,
   defaultPermissionMode,
   terminalWidth = 80,
+  initialSelection = 0,
   onOpen,
   onToggleMemory,
   onToggleThinking,
@@ -83,15 +91,17 @@ export function ConfigMenu({
   const theme = useTheme();
   // An accelerator sets the cursor and acts on it in the same keypress, so the
   // handler cannot read `selected` back from state — React has not flushed it.
-  const [selected, moveSelection, currentSelected] = useKeyState(0);
+  const [selected, moveSelection, currentSelected] = useKeyState(
+    Math.min(Math.max(0, initialSelection), ROWS.length - 1),
+  );
   const frame = floatingFrameMetrics(terminalWidth);
   const contentWidth = Math.max(16, frame.width - 4);
 
-  const activate = (row: Row) => {
+  const activate = (row: Row, index: number) => {
     if (row === 'memory') onToggleMemory();
     else if (row === 'thinking') onToggleThinking();
     else if (row === 'startup-animation') onToggleStartupAnimation();
-    else onOpen(row);
+    else onOpen(row, index);
   };
 
   useInput((input, key) => {
@@ -108,7 +118,8 @@ export function ConfigMenu({
       return;
     }
     if (key.return) {
-      activate(ROWS[currentSelected()].row);
+      const index = currentSelected();
+      activate(ROWS[index].row, index);
       return;
     }
     if (key.ctrl || key.meta) return;
@@ -119,7 +130,7 @@ export function ConfigMenu({
     const index = ROWS.findIndex((entry) => 'key' in entry && entry.key === shortcut);
     if (index < 0) return;
     moveSelection(index);
-    activate(ROWS[index].row);
+    activate(ROWS[index].row, index);
   });
 
   // Keyed rather than ordered: `ROWS` owns the order, so the two lists cannot

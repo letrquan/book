@@ -75,6 +75,68 @@ All notable changes to this project are documented in this file.
   terminal while its text stopped at column 114; both now come from `panelGrid`, so the rules end
   where the box does.
 
+- **`/config` stops answering the same question two ways.** The command was two products under one
+  name. Bare `/config` opened the settings menu, whose rows write the layer each setting belongs to
+  -- user-global for model, compact model, effort, permission default and the display toggles;
+  workspace-local for theme, skill overrides and per-profile agent models -- and take effect
+  immediately. `/config <key>=<value>` sent *everything* to `<workspace>/.book/settings.local.json`
+  and reported "(next session)". So the same setting had two homes and two moments depending on
+  which half of one command you used, and one screen could show both answers at once --
+  `/config theme=light` printed `Set theme = "light" ... (next session).` directly above a menu row
+  still reading `T  Theme  dark`. `book config set`, which had defaulted to the user layer for
+  exactly this reason, was a third opinion.
+
+  The typed form now runs the same guarded write as `book config set` -- user-global by default,
+  `--local` / `--project` / `-g` to name a layer, at most one of them -- and inherits the three
+  guards it never had. A key outside the schema (`/config maxTruns=12`) used to report success and
+  change nothing forever; so did a trust-owned key like `permissions.projectAllowRules`, which no
+  loader reads from a settings file at all. And a value that is valid alone but breaks the *merge*
+  is refused before it lands, rather than after, when every command that could remove it already
+  fails at load.
+
+  The eight settings a running session holds rather than re-reads -- `model`, `compactModel`,
+  `effort`, `theme`, `defaultMode`, `ui.showThinking`, `ui.startupAnimation`, `memory.autoSave` --
+  are handed to the effect the menu row and the dedicated command already use, so `/config model=x`
+  is `/model x`. Writing them to a file was the original lie: the session never re-reads it, so the
+  command reported a switch that had not happened. Each lands in the layer that setting belongs to,
+  which is why naming a scope now means something specific: asking for the layer a setting already
+  uses is the same request as asking for none and still takes the live path, while asking for a
+  different file gets a literal write and a reply saying the change waits for the next start.
+  `--global model=x` writing the same file as the bare form but skipping the live apply was the
+  divergence this entry exists to remove, reappearing inside the fix.
+
+  The write itself now lives in `src/settings-write.ts`, called by both surfaces, because two
+  copies of a layer policy is how they came to disagree in the first place. Two long-standing holes
+  in it are closed while it is one function: a write is now checked against every layer resolved
+  *after* it rather than only against the two below `user`, so `--project` no longer reports success
+  for a value the local layer still decides, and a `--settings` override that defines the key is
+  reported too, since it is merged last of all. The refusals for `experimental.*` and `auth.*` say
+  they apply in every scope instead of pointing the reader at `<BOOK_HOME>/settings.json` -- the
+  file the refused write was already aimed at, so following the message re-ran the same command.
+
+- **A user-global preference stops losing to the stale local value it was meant to replace.**
+  `setModel` cleared any workspace-local override after writing the global layer, because the local
+  layer resolves last and would otherwise keep deciding the next session. The other six user-layer
+  writes -- compact model, effort, permission default, and the three display toggles -- did not, so
+  the setting moved in front of the user and moved back when they restarted, silently. That stale
+  local value is exactly what the previous `/config <key>=<value>` wrote, so the users most likely
+  to hit it are the ones who followed the README. All seven now go through one
+  `persistUserSettingClearingLocal`.
+
+- **`/config` can be browsed.** It is the only place two settings can be reached at all -- compact
+  model and subagent profiles have no command of their own -- and it closed the moment you chose a
+  row, so browsing it was impossible and changing two settings meant opening it twice. Two of the
+  ten rows did come back, but only because `selectingCompactModel` and `agentProfileForModel`
+  happened to imply where the picker had been opened from; the other five picker rows had nothing
+  recording an origin, so `Esc` from them landed on the composer.
+
+  The origin is now recorded explicitly, so every picker returns to the menu on both cancel and
+  save -- and returns to *the row it was opened from*, since the menu unmounts while a picker is
+  open and would otherwise always remount on Model. The profile picker still wins over the menu
+  when a model is being chosen for a subagent, because it is the deeper surface and its own cancel
+  carries the user the rest of the way back. `/skills`' "use this skill" still ends at the
+  composer: it is putting text in the input bar, not browsing settings.
+
 - **The composer stops telling you to answer a question nobody asked.** It read "Answer the prompt
   above" whenever input was suppressed -- but that one flag covered two unrelated situations: a
   permission prompt, plan approval, question or elicitation genuinely waiting on the user, and a

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanup, render } from 'ink-testing-library';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { defaultConfig } from '../../test/fixtures.js';
 import { SessionStore } from '../../session/store.js';
 
@@ -28,6 +28,13 @@ vi.mock('../persist.js', async (importOriginal) => {
       persisted.calls.push({ key, value });
       return { ok: true };
     }),
+    // The user-layer preferences go through this rather than the bare global
+    // write: it also drops the workspace-local value that would otherwise
+    // outrank what was just saved and decide the next session.
+    persistUserSettingClearingLocal: vi.fn((_workspace: string, key: string, value: unknown) => {
+      persisted.calls.push({ key, value });
+      return { ok: true };
+    }),
   };
 });
 
@@ -44,6 +51,23 @@ import { useAgent } from './useAgent.js';
 
 const roots: string[] = [];
 let latest: ReturnType<typeof useAgent> | undefined;
+
+/**
+ * The user layer resolves through BOOK_HOME, and the mock below is the only
+ * thing standing between these toggles and the real `~/.book/settings.json`.
+ * A mock that stops covering the function the hook actually calls is a silent
+ * failure — it already happened once, and the suite wrote three keys into the
+ * developer's own settings before anything went red. A home of its own means
+ * the next such gap costs a wrong assertion rather than someone's config.
+ */
+let bookHome: string;
+let previousBookHome: string | undefined;
+
+beforeEach(() => {
+  bookHome = mkdtempSync(join(tmpdir(), 'book-use-agent-toggle-home-'));
+  previousBookHome = process.env.BOOK_HOME;
+  process.env.BOOK_HOME = bookHome;
+});
 
 function Harness({
   config,
@@ -86,6 +110,9 @@ function valuesFor(key: string): unknown[] {
 }
 
 afterEach(() => {
+  if (previousBookHome === undefined) delete process.env.BOOK_HOME;
+  else process.env.BOOK_HOME = previousBookHome;
+  rmSync(bookHome, { recursive: true, force: true });
   cleanup();
   latest = undefined;
   persisted.calls.length = 0;
@@ -135,7 +162,10 @@ describe('settings toggles inside one React batch', () => {
     render(<Harness config={config} session={session} />);
 
     const persist = await import('../persist.js');
-    vi.mocked(persist.persistSettingGlobal).mockReturnValueOnce({ ok: false, error: 'read-only' });
+    vi.mocked(persist.persistUserSettingClearingLocal).mockReturnValueOnce({
+      ok: false,
+      error: 'read-only',
+    });
 
     const before = latest!.liveConfig.settings.ui.startupAnimation !== false;
     // The rejecting mock replaces the recording one for that call, so the
