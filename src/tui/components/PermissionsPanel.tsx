@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useKeyState } from '../hooks/useKeyState.js';
 import { useTheme } from '../theme.js';
 import type { PermissionMode } from '../../types/runtime.js';
+import { panelContentWidth } from '../layout.js';
 import { SelectionRow } from './chrome.js';
 import { truncateDisplay } from './word-wrap.js';
 
@@ -67,7 +68,9 @@ export function PermissionsPanel({
     setSelected(entries.length === 0 ? 0 : next(currentSelected()));
   };
   const [notice, setNotice] = useState<string | null>(null);
-  const width = Math.max(24, Math.min(terminalWidth, 120) - 6);
+  // The interior of the bordered box app.tsx wraps this in, taken from the same
+  // panel grid that sizes the box -- so the rules stop exactly where it does.
+  const width = panelContentWidth(terminalWidth);
 
   // Removing the last rule, or a reload shrinking the list, must not leave the
   // cursor pointing past the end.

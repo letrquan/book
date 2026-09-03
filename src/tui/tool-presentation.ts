@@ -569,6 +569,13 @@ export function composeToolRow(
   const labelWidth = useLabelColumn ? grid.label + 1 : 0;
   const inlinePrefix = useLabelColumn || !title ? '' : `${title} `;
 
+  // Aligned rows lay out inside the grid's bounded row measure even when the
+  // prose around them takes the whole terminal. Right-aligning `67ms` against
+  // column 197 does not align it with the command it timed -- it just puts it
+  // far away, with a gap of pure padding rebuilt on every streamed frame in
+  // between. The bound lives on the grid so it narrows with nesting.
+  const measure = grid.row;
+
   // An error message outranks the target it failed on, so a failing row takes
   // as much as the message needs — capped, and never so much that the target
   // drops below a width worth reading.
@@ -577,7 +584,7 @@ export function composeToolRow(
         grid.meta,
         Math.min(
           ERROR_META_MAX,
-          grid.content - labelWidth - displayWidth(inlinePrefix) - MIN_TARGET_WIDTH - 1,
+          measure - labelWidth - displayWidth(inlinePrefix) - MIN_TARGET_WIDTH - 1,
         ),
       )
     : grid.meta;
@@ -587,10 +594,10 @@ export function composeToolRow(
   // The budget covers the whole truncated string, prefix included — subtracting
   // the prefix here as well clipped an inline-label row by exactly the width of
   // its own verb, and `gap` then padded those columns back with spaces.
-  const targetBudget = Math.max(4, grid.content - labelWidth - metaWidth - (metaWidth > 0 ? 1 : 0));
+  const targetBudget = Math.max(4, measure - labelWidth - metaWidth - (metaWidth > 0 ? 1 : 0));
   const target = truncateDisplay(`${inlinePrefix}${presentation.target ?? ''}`, targetBudget);
 
   const used = labelWidth + displayWidth(target) + metaWidth;
-  const gap = ' '.repeat(Math.max(metaWidth > 0 ? 1 : 0, grid.content - used));
+  const gap = ' '.repeat(Math.max(metaWidth > 0 ? 1 : 0, measure - used));
   return { label, target, gap, meta };
 }

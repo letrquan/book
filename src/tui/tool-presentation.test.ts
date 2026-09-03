@@ -8,7 +8,14 @@ import {
   shouldExpandTool,
 } from './tool-presentation.js';
 import { composeToolRow } from './tool-presentation.js';
-import { transcriptGrid } from './layout.js';
+import {
+  CONTENT_COLUMN,
+  GUTTER_WIDTH,
+  MAX_ROW_MEASURE,
+  indentedGrid,
+  nestedGrid,
+  transcriptGrid,
+} from './layout.js';
 import { displayWidth } from './components/word-wrap.js';
 
 type ResultOverrides = Partial<ToolResult> & {
@@ -249,6 +256,47 @@ describe('composeToolRow', () => {
   function render(row: ReturnType<typeof composeToolRow>): string {
     return `${row.label}${row.label ? ' ' : ''}${row.target}${row.gap}${row.meta}`;
   }
+
+  it('bounds the aligned measure so metadata stays near its target', () => {
+    // Prose takes the whole terminal; these columns do not. Right-aligning
+    // `31ms` against column 197 does not align it with the command it timed.
+    const wide = transcriptGrid(200);
+    const row = composeToolRow(
+      { title: 'Glob', target: 'src/tui/*.ts', metadata: ['53 files'] },
+      wide,
+      { elapsed: '31ms' },
+    );
+    expect(displayWidth(render(row))).toBe(MAX_ROW_MEASURE);
+    expect(displayWidth(row.gap)).toBeLessThan(MAX_ROW_MEASURE);
+
+    // Still one column, though: the rows agree with each other at any width.
+    const sibling = composeToolRow(
+      { title: 'Read', target: 'src/tui/layout.ts', metadata: ['161 lines'] },
+      wide,
+    );
+    expect(displayWidth(render(sibling))).toBe(displayWidth(render(row)));
+  });
+
+  it('keeps a nested row ending on its parent edge at any width', () => {
+    // indentedGrid exists to hold the right edge still as rows nest. A row
+    // measure clamped flat to MAX_ROW_MEASURE regardless of depth would let a
+    // child, which starts two columns further in, end two columns further out.
+    for (const width of [100, 120, 200, 400]) {
+      const base = transcriptGrid(width);
+      const indented = indentedGrid(base);
+      const nested = nestedGrid(indented);
+      const end = (grid: ReturnType<typeof transcriptGrid>, depth: number) =>
+        CONTENT_COLUMN +
+        GUTTER_WIDTH * depth +
+        displayWidth(
+          render(
+            composeToolRow({ title: 'Read', target: 'src/a.ts', metadata: ['8 lines'] }, grid),
+          ),
+        );
+      expect(end(indented, 1)).toBe(end(base, 0));
+      expect(end(nested, 2)).toBe(end(base, 0));
+    }
+  });
 
   it('right-aligns metadata to the same column across rows', () => {
     const rows = [

@@ -23,16 +23,32 @@
 export const GUTTER_WIDTH = 2;
 
 /**
- * Widest measure the transcript will use, however wide the terminal is.
+ * Widest measure a floating surface uses, however wide the terminal is.
  *
- * Two things break without a cap. Prose set to 190 columns is genuinely hard to
- * read — the eye loses the line on the return sweep. And right-aligned
- * metadata stops meaning anything: a `67ms` sitting 170 columns from the
- * command it belongs to is not aligned with that command, it is merely far
- * away from it. Wide enough for diffs and code, narrow enough that a row still
- * reads as one row.
+ * Content and chrome want opposite things from a wide terminal. The transcript
+ * holds the conversation — prose, diffs, code — and every column it is given is
+ * a column it can use. A popover holds a list: slash commands, files, skills,
+ * permission rules, none of them much past forty columns. Stretching that
+ * border to two hundred draws an enormous empty box around a short list, which
+ * is the same defect as a half-empty window wearing the opposite mask. So
+ * content takes the terminal and chrome stops here.
  */
-export const MAX_MEASURE = 120;
+export const MAX_PANEL_MEASURE = 120;
+
+/**
+ * Widest measure an aligned row lays its columns out in.
+ *
+ * A tool row puts its metadata flush against the right edge so the eye can scan
+ * that column straight down a turn. This only reads as alignment while the edge
+ * stays near the target: `67ms` sitting a hundred and seventy columns from the
+ * command it timed is not aligned with that command, it is merely far away from
+ * it. The prose around these rows takes the full terminal; the aligned columns
+ * stop here, which also bounds the padding {@link composeToolRow} builds.
+ */
+export const MAX_ROW_MEASURE = 120;
+
+/** Columns a bordered surface spends on its own border plus one of padding. */
+export const PANEL_CHROME = 4;
 
 /** Column where content begins on every row, nested or not. */
 export const CONTENT_COLUMN = GUTTER_WIDTH;
@@ -51,6 +67,12 @@ export interface TranscriptGrid {
   width: number;
   /** Columns available to content, measured from {@link CONTENT_COLUMN}. */
   content: number;
+  /**
+   * Columns an aligned row lays its columns out in: {@link content}, bounded by
+   * {@link MAX_ROW_MEASURE}. Shrinks with nesting exactly as `content` does, so
+   * a nested row's right edge still lands on its parent's.
+   */
+  row: number;
   /** Width of the fixed label column; `0` when labels render inline. */
   label: number;
   /** Columns the middle (target) column may occupy. */
@@ -59,16 +81,26 @@ export interface TranscriptGrid {
   meta: number;
 }
 
-/** Resolve the transcript grid for a terminal width. */
+/**
+ * Resolve the transcript grid for a terminal width.
+ *
+ * The grid takes the whole terminal. An earlier version capped the measure at
+ * 120 columns to keep prose from running long, but a capped transcript on a
+ * 200-column terminal does not read as a considered measure — it reads as a
+ * broken window. Two thirds of the screen sits blank, the composer border stops
+ * in mid-air, and diffs and code, which are most of what this UI exists to
+ * show, get wrapped for no reason while the space to hold them goes unused.
+ * The user picked the width of their terminal; do not reintroduce a cap here.
+ */
 export function transcriptGrid(terminalWidth: number): TranscriptGrid {
   // One trailing column stays empty: writing the last cell makes some
   // terminals emit a spurious wrap, which shears the row below.
-  const width = Math.min(MAX_MEASURE, Math.max(20, Math.floor(terminalWidth)));
+  const width = Math.max(20, Math.floor(terminalWidth));
   const content = Math.max(8, width - CONTENT_COLUMN - 1);
   const label = width >= LABEL_COLUMN_MIN_WIDTH ? LABEL_COLUMN_WIDTH : 0;
   const meta = Math.max(0, Math.min(20, Math.floor(content * 0.3)));
   const target = Math.max(MIN_TARGET_WIDTH, content - label - meta - 1);
-  return { width, content, label, target, meta };
+  return { width, content, row: Math.min(content, MAX_ROW_MEASURE), label, target, meta };
 }
 
 /**
@@ -91,6 +123,7 @@ export function indentedGrid(grid: TranscriptGrid, depth = 1): TranscriptGrid {
   return {
     ...grid,
     content,
+    row: railRowWidth(grid, depth),
     label,
     target: Math.max(MIN_TARGET_WIDTH, content - label - meta - 1),
     meta,
@@ -100,6 +133,18 @@ export function indentedGrid(grid: TranscriptGrid, depth = 1): TranscriptGrid {
 /** Content width inside a rail nested `depth` levels under a transcript row. */
 export function railContentWidth(grid: TranscriptGrid, depth = 1): number {
   return Math.max(8, grid.content - GUTTER_WIDTH * depth);
+}
+
+/**
+ * Aligned-row width inside a rail nested `depth` levels under a transcript row.
+ *
+ * The bound has to travel down the nesting the same way the content width does.
+ * Clamping every depth to a flat {@link MAX_ROW_MEASURE} would let a child row,
+ * which starts two columns further in, end two columns further right than the
+ * parent it hangs under — undoing the one thing {@link indentedGrid} exists for.
+ */
+export function railRowWidth(grid: TranscriptGrid, depth = 1): number {
+  return Math.max(8, grid.row - GUTTER_WIDTH * depth);
 }
 
 /**
@@ -114,6 +159,7 @@ export function nestedGrid(grid: TranscriptGrid, depth = 1): TranscriptGrid {
   return {
     ...grid,
     content,
+    row: railRowWidth(grid, depth),
     label: 0,
     target: Math.max(MIN_TARGET_WIDTH, content - meta - 1),
     meta,
@@ -149,13 +195,33 @@ export interface FrameGrid {
 }
 
 /**
- * Metrics for a bordered surface (composer, menu, permission prompt).
+ * Metrics for a bordered surface that spans the transcript — the composer.
  *
  * The box is flush at column 0 so that its border plus one column of padding
- * places its text on {@link CONTENT_COLUMN}, matching every transcript row.
+ * places its text on {@link CONTENT_COLUMN}, matching every transcript row. It
+ * takes the full terminal for the same reason the transcript does: it is as
+ * wide as the thing the user is typing into, and a composer that stops halfway
+ * is the most visible way a window can look broken. A surface that merely
+ * floats over the transcript wants {@link panelGrid} instead.
  */
 export function frameGrid(terminalWidth: number): FrameGrid {
-  const outer = Math.min(MAX_MEASURE, Math.max(20, Math.floor(terminalWidth)));
+  const outer = Math.max(20, Math.floor(terminalWidth));
   if (outer < 32) return { width: outer, marginX: 0 };
   return { width: outer - 1, marginX: 0 };
+}
+
+/**
+ * Metrics for a floating surface (menu, picker, card, rules panel).
+ *
+ * Same geometry as {@link frameGrid}, bounded by {@link MAX_PANEL_MEASURE}.
+ */
+export function panelGrid(terminalWidth: number): FrameGrid {
+  const outer = Math.min(MAX_PANEL_MEASURE, Math.max(20, Math.floor(terminalWidth)));
+  if (outer < 32) return { width: outer, marginX: 0 };
+  return { width: outer - 1, marginX: 0 };
+}
+
+/** Interior width of a bordered surface sized by {@link panelGrid}. */
+export function panelContentWidth(terminalWidth: number, minimum = 24): number {
+  return Math.max(minimum, panelGrid(terminalWidth).width - PANEL_CHROME);
 }

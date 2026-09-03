@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import type { ReactNode } from 'react';
 import { useTheme } from '../theme.js';
-import { frameGrid } from '../layout.js';
+import { panelGrid } from '../layout.js';
 
 export type PanelTone = 'neutral' | 'brand' | 'permission' | 'plan' | 'error';
 
@@ -83,9 +83,13 @@ export function SelectionRow({
 }
 
 /**
- * @deprecated Prefer {@link frameGrid} directly. Kept so every bordered surface
+ * @deprecated Prefer {@link panelGrid} directly. Kept so every floating surface
  * keeps a single call site while they migrate to the grid.
+ *
+ * Note this is {@link panelGrid}, not {@link frameGrid}: everything that reaches
+ * here floats over the transcript, so it is bounded. The composer is the one
+ * bordered surface that spans the transcript, and it calls `frameGrid` itself.
  */
 export function floatingFrameMetrics(terminalWidth: number): { width: number; marginX: number } {
-  return frameGrid(terminalWidth);
+  return panelGrid(terminalWidth);
 }

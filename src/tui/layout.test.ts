@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   CONTENT_COLUMN,
   GUTTER_WIDTH,
-  MAX_MEASURE,
+  MAX_PANEL_MEASURE,
+  panelContentWidth,
+  panelGrid,
   withLabelColumn,
   frameGrid,
   indentedGrid,
@@ -18,19 +20,19 @@ describe('transcriptGrid', () => {
     }
   });
 
-  it('caps the measure so a very wide terminal stays readable', () => {
-    // Prose set to the full width of an ultrawide terminal is hard to read, and
-    // right-aligned metadata that far from its row is not aligned with it.
-    for (const width of [MAX_MEASURE, 160, 200, 400]) {
+  it('takes the whole terminal however wide it is', () => {
+    // A capped measure leaves the right half of a wide terminal blank, which
+    // reads as a broken window rather than as a chosen line length.
+    for (const width of [120, 160, 200, 400]) {
       const grid = transcriptGrid(width);
-      expect(grid.width).toBe(MAX_MEASURE);
-      expect(CONTENT_COLUMN + grid.content).toBe(MAX_MEASURE - 1);
+      expect(grid.width).toBe(width);
+      expect(CONTENT_COLUMN + grid.content).toBe(width - 1);
     }
   });
 
-  it('caps bordered surfaces to the same measure as the transcript', () => {
-    expect(frameGrid(200).width).toBe(MAX_MEASURE - 1);
-    expect(frameGrid(120).width).toBe(MAX_MEASURE - 1);
+  it('grows bordered surfaces with the transcript', () => {
+    expect(frameGrid(200).width).toBe(199);
+    expect(frameGrid(120).width).toBe(119);
     expect(frameGrid(80).width).toBe(79);
   });
 
@@ -138,5 +140,36 @@ describe('withLabelColumn', () => {
     const grid = transcriptGrid(120);
     expect(withLabelColumn(grid, 0).label).toBe(1);
     expect(withLabelColumn(grid, -5).label).toBe(1);
+  });
+});
+
+describe('panelGrid', () => {
+  it('bounds a floating surface however wide the terminal is', () => {
+    // A slash-command list is forty columns of content. Letting its border
+    // follow a 200-column terminal draws an enormous empty box around it --
+    // the same defect as a half-empty window, wearing the opposite mask.
+    for (const width of [MAX_PANEL_MEASURE, 160, 200, 400]) {
+      expect(panelGrid(width).width).toBe(MAX_PANEL_MEASURE - 1);
+    }
+  });
+
+  it('tracks the terminal below the bound, like the composer does', () => {
+    expect(panelGrid(80).width).toBe(79);
+    expect(panelGrid(100).width).toBe(99);
+    expect(panelGrid(28).width).toBe(28);
+  });
+
+  it('never exceeds the composer it floats above', () => {
+    for (const width of [40, 80, 120, 200, 400]) {
+      expect(panelGrid(width).width).toBeLessThanOrEqual(frameGrid(width).width);
+    }
+  });
+
+  it('leaves an interior that stops where the border does', () => {
+    for (const width of [80, 120, 200]) {
+      // border (2) + paddingX (2) is what app.tsx wraps these surfaces in.
+      expect(panelContentWidth(width)).toBe(panelGrid(width).width - 4);
+    }
+    expect(panelContentWidth(20)).toBe(24);
   });
 });

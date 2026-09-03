@@ -49,6 +49,32 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **The TUI uses the whole terminal — and its floating panels still don't.** Every row resolved its
+  position through a transcript grid that capped the measure at 120 columns, so on a 200-column
+  terminal the transcript, the composer border and the turn rules all stopped two thirds of the way
+  across and the rest of the window sat blank. The cap kept prose from running long, but a window
+  that renders half empty does not read as a chosen line length: it reads as a bug, and it wrapped
+  the diffs and code this UI mostly exists to show while the space to hold them went unused.
+
+  The fix is not to delete the cap but to split it, because content and chrome want opposite things
+  from a wide terminal. **Content takes the terminal**: transcript prose, diffs, turn rules, the
+  status line, and the composer, which is the surface whose half-width border made the window look
+  broken in the first place. **Chrome stays bounded** (`panelGrid`, 120 columns): the slash-command
+  menu, the `@file` and skill pickers, `/config`, the skill manager, the rules panel, the question
+  and elicitation dialogs. Uncapping those had drawn a 199-column border around a list of
+  forty-column rows — the same defect as a half-empty window wearing the opposite mask.
+
+  **Aligned tool rows are bounded too** (`MAX_ROW_MEASURE`). A tool row right-aligns its metadata so
+  the eye can scan that column down a turn, and at full width `31ms` sat 170 columns from the
+  command it timed, which is not alignment but distance. Rows now lay out within 120 columns and
+  agree with each other at any terminal size; the gap between target and metadata is bounded again,
+  so a streaming frame no longer rebuilds hundreds of columns of padding per visible row.
+
+  Terminals at or below 120 columns render exactly as before, byte for byte. `PermissionsPanel`
+  carried a second, independent `min(width, 120)` and a wrapper whose border stretched to the full
+  terminal while its text stopped at column 114; both now come from `panelGrid`, so the rules end
+  where the box does.
+
 - **The composer stops telling you to answer a question nobody asked.** It read "Answer the prompt
   above" whenever input was suppressed -- but that one flag covered two unrelated situations: a
   permission prompt, plan approval, question or elicitation genuinely waiting on the user, and a
@@ -1124,17 +1150,19 @@ All notable changes to this project are documented in this file.
   assumed a filesystem path, but a `Bash` target is a command: `npx vitest run src/tui/` split at
   the trailing slash, leaving an empty basename and rendering the row's only content at its
   faintest. The ramp now applies to real paths only.
-- **The status line and working indicator share the transcript's 120-column cap.** Both still sized
-  themselves from the raw terminal width, so on a wide terminal the footer spread across the full
-  screen while everything above it stopped at the measure.
+- **The status line and working indicator share the transcript's measure.** Both sized themselves
+  from the raw terminal width rather than from the grid, so they could not stay in step with the
+  rows above them when that measure changed.
 - **The status-line git poll no longer re-renders the app every five seconds.** `useGitStatus`
   allocates a fresh status object per tick and returned it unconditionally, so wiring it into the
   footer made the whole tree reconcile twelve times a minute in an idle session for no visual
   change. It now keeps the previous object when the branch, tree and error are unchanged.
 - **The virtual transcript estimates row heights against the measure it actually renders at.** The
-  estimator wrapped against the raw terminal width, so on a terminal wider than the 120-column
-  measure every off-screen message was estimated at roughly 60% of its true height, drifting scroll
-  position and the "older entries hidden" threshold. A user turn's rule row is counted too.
+  estimator wrapped against the raw terminal width rather than the row's own measure, so off-screen
+  messages were estimated well short of their true height, drifting scroll position and the "older
+  entries hidden" threshold. A user turn's rule row is counted too, and the estimate measures
+  display width rather than code units — a line of CJK or emoji occupies twice the columns its
+  `.length` reports, and was counted at half its real height.
 - **An inline-label tool row no longer clips its target early.** The width budget subtracted the
   verb's width from a string that already contained the verb, so a narrow-terminal row lost exactly
   that many characters off its command and padded the columns back as spaces.
@@ -1241,10 +1269,12 @@ All notable changes to this project are documented in this file.
     aggregate heading said `Edit`, so the measured label column disagreed with the rendered one.
   - _Label-column widths snap to 4, 6 or 10_ rather than each turn's exact widest label. Exact
     per-turn sizing closed the gulf inside a turn but left two adjacent turns on different columns.
-- **The transcript is capped at a 120-column measure.** On a wide terminal nothing bounded the
-  row width, so prose ran to 190 columns and right-aligned metadata ended up 170 columns from the
-  command it described — aligned with nothing the eye could hold. The transcript, the composer and
-  the status line now share one maximum measure and sit left-aligned beyond it.
+- **One grid owns every row's horizontal position.** On a wide terminal nothing bounded the row
+  width, so right-aligned metadata ended up 170 columns from the command it described — aligned
+  with nothing the eye could hold. The transcript, the composer and the status line now resolve
+  their measure in one place instead of each picking its own. (Later in this release that measure
+  was split: content follows the terminal, while floating panels and aligned tool rows stay bounded
+  — see "The TUI uses the whole terminal" above, which is the end state.)
   - _The label column is sized per turn_ rather than to a fixed ten columns. A turn of `Bash` /
     `Read` / `Grep` rows left seven dead columns between every verb and its target.
   - _A failing row now takes as much width as its message needs_, capped, and never enough to

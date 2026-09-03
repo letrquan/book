@@ -37,8 +37,10 @@ capability boundary, providers, MCP, other settings and sandbox behavior, manage
   the main agent, and retrieves query-specific evidence from the original transcript each turn.
 - Every transcript row resolves its horizontal position through one grid module
   (`src/tui/layout.ts`). A row is `[gutter][content]`: a two-column gutter carries status, prose
-  begins on the content column, the measure is capped at 120 columns so prose and right-aligned
-  metadata stay readable on a wide terminal, the aligned label column is sized per message rather
+  begins on the content column, content (prose, diffs, rules, the status line and the composer)
+  takes the full terminal while floating chrome and aligned tool rows stay bounded at 120 columns
+  (`panelGrid`, `MAX_ROW_MEASURE`) so a popover is not a giant empty box and right-aligned metadata
+  stays near the row it belongs to, the aligned label column is sized per message rather
   than globally and renders inline instead of truncating when a label overflows, and bordered
   surfaces sit flush at column 0 so their one column of padding lands their text on that same
   content column. Tool rows and managed-agent blocks take the one deliberate step in from that

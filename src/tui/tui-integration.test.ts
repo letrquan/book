@@ -359,6 +359,41 @@ describe('TUI keyboard input', () => {
     expect(output).toContain('ctx');
   }, 20_000);
 
+  it('fills a wide terminal without stretching its floating panels', async () => {
+    // The whole point of removing the 120-column measure is only observable
+    // above 120, and the rest of this suite runs at exactly 120 -- the one
+    // width where that change is a no-op. So resize into the interesting range
+    // and read the real frame: the composer takes the terminal, the slash menu
+    // that floats above it does not.
+    const live = (session = await startAndWait());
+
+    // Poll the screen rather than sleeping a fixed span: a redraw that takes
+    // 200 ms on this machine can take many seconds on a loaded CI runner, and
+    // a fixed wait turns that difference into a flake.
+    async function topBorders(predicate: (widths: number[]) => boolean): Promise<number[]> {
+      const deadline = Date.now() + 8000;
+      let widths: number[] = [];
+      while (Date.now() < deadline) {
+        widths = (await live.readScreen())
+          .filter((line) => line.startsWith('\u256d'))
+          .map((line) => line.length);
+        if (predicate(widths)) return widths;
+        await sleep(100);
+      }
+      return widths;
+    }
+
+    live.resize(200, 45);
+    expect(await topBorders((w) => w.includes(199))).toContain(199);
+
+    // Type the slash without submitting -- Enter would run a command instead.
+    live.sendKey('/');
+    const withMenu = await topBorders((w) => w.includes(199) && w.includes(119));
+    // Two bordered surfaces now: the full-width composer and the bounded menu.
+    expect(withMenu).toContain(199);
+    expect(withMenu).toContain(119);
+  }, 40_000);
+
   it('clears the visible viewport before redrawing after resize', async () => {
     session = await startAndWait();
     session.sendKey('RESIZE_MARKER');
