@@ -124,6 +124,31 @@ export function persistSettingGlobal(key: string, value: unknown): { ok: boolean
   return persistSettingsGlobal({ [key]: value });
 }
 
+/**
+ * Write a user-global preference and drop the workspace-local value it would
+ * otherwise lose to.
+ *
+ * The local layer resolves last, so a stale override there survives the global
+ * write and silently decides the *next* session — the setting moves in front of
+ * the user, then moves back when they restart. `setModel` had carried the
+ * `clearLocalSettings` call for exactly this reason and the other six user-layer
+ * writes had not, which is how `compactModel` and `effort` came to revert:
+ * an earlier version of `/config <key>=<value>` put every typed setting in the
+ * local file, so the stale value is one those users are especially likely to
+ * have. One helper rather than seven call sites is what keeps that from being
+ * true again of the eighth.
+ */
+export function persistUserSettingClearingLocal(
+  workspace: string,
+  key: string,
+  value: unknown,
+): { ok: boolean; error?: string } {
+  const result = persistSettingsGlobal({ [key]: value });
+  if (!result.ok) return result;
+  clearLocalSettings(workspace, [key]);
+  return { ok: true };
+}
+
 /** Persist a profile model without treating dots in the profile name as path separators. */
 export function persistAgentProfileModel(
   workspace: string,

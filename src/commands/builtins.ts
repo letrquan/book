@@ -1,6 +1,6 @@
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import type { AgentConfig } from '../types/runtime.js';
+import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import type { CommandContext } from '../types/commands.js';
 import type { LocalCommandDisplay, Message, Usage } from '../types/messages.js';
 import type { CompactBoundary } from '../types/sessions.js';
@@ -12,11 +12,7 @@ import { CommandRegistry, type CommandAlias, type CommandDefinition } from './re
 import { buildReleaseNotesReport, writeFeedbackReport } from '../version-info.js';
 import { EFFORT_USAGE, isEffortLevel, type EffortLevel } from './effort.js';
 import { redactSettingValue } from '../settings-redaction.js';
-import {
-  formatSettingsDiagnostics,
-  formatSettingsKeyHelp,
-  SettingsRepository,
-} from '../settings-repository.js';
+import { formatSettingsKeyHelp } from '../settings-repository.js';
 import { buildMemoryInboxReport, buildMemoryReport } from '../memory-display.js';
 import {
   approveMemoryCandidate,
@@ -32,7 +28,9 @@ import type { SkillRegistrySnapshot } from '../skill-registry.js';
 import { buildSkillReport } from '../skill-report.js';
 import { buildMcpStatusReport } from '../mcp-report.js';
 import type { McpHostSnapshot } from '../mcp-host.js';
-import { blockedWorkspaceSettingPath } from '../settings-scope.js';
+import { settingsScopeLabel, type SettingsScope } from '../settings-scope.js';
+import { applySettingWrite, describeSettingShadow, guardSettingWrite } from '../settings-write.js';
+import { normalizePermissionMode } from '../permission-mode.js';
 import { listAuthProfiles, resolveAuthProfile } from '../auth/profiles.js';
 
 export interface BuiltinCommand {
@@ -98,6 +96,10 @@ export type BuiltinCommandEffect =
   | { type: 'set-theme'; preference: string }
   | { type: 'set-model'; selection: string }
   | { type: 'set-effort'; level: EffortLevel }
+  | { type: 'set-compact-model'; model: string }
+  | { type: 'set-default-permission-mode'; mode: PermissionMode }
+  | { type: 'set-show-thinking'; enabled: boolean }
+  | { type: 'set-startup-animation'; enabled: boolean }
   | { type: 'set-memory-auto-save'; enabled: boolean }
   | { type: 'toggle-panel'; panel: 'help' | 'status' | 'permissions' }
   | { type: 'add-task'; subject: string }
@@ -139,28 +141,208 @@ function promptEffect(
   };
 }
 
+/**
+ * Leading scope flags, exactly the set `book config` defines. `--user` is not
+ * one of them: accepting a spelling the CLI rejects is the same divergence this
+ * command exists to close, pointing the other way.
+ */
+const CONFIG_SCOPE_FLAGS: Record<string, SettingsScope> = {
+  '--local': 'local',
+  '--project': 'project',
+  '--global': 'user',
+  '-g': 'user',
+};
+
+/** The refusal `book config` prints for two scopes, word for word. */
+const DUPLICATE_SCOPE_ERROR =
+  'Pass at most one of --global, --project, --local. ' +
+  'Writes default to --global; reads without one report the resolved merge.';
+
+type ConfigScopeParse =
+  | {
+      ok: true;
+      /** Undefined means the user named no layer, so the setting's own decides. */
+      scope?: SettingsScope;
+      rest: string;
+    }
+  | { ok: false; error: string };
+
+function parseConfigScope(rawArguments: string): ConfigScopeParse {
+  let rest = rawArguments.trim();
+  let scope: SettingsScope | undefined;
+  for (;;) {
+    const flag = Object.keys(CONFIG_SCOPE_FLAGS).find(
+      (candidate) => rest === candidate || rest.startsWith(`${candidate} `),
+    );
+    if (!flag) break;
+    const next = CONFIG_SCOPE_FLAGS[flag];
+    // Two scopes name two files, and silently keeping the last one would write
+    // somewhere the user did not ask for. `book config` errors here too.
+    if (scope && scope !== next) return { ok: false, error: DUPLICATE_SCOPE_ERROR };
+    scope = next;
+    rest = rest.slice(flag.length).trim();
+  }
+  return { ok: true, scope, rest };
+}
+
+/**
+ * The settings a running session holds outside `settings`, or re-reads live from
+ * it, with the layer their own writer targets.
+ *
+ * These eight are why a typed `/config <key>=<value>` used to be a trap. Writing
+ * `model` into a file changes nothing about the session already running, so the
+ * command reported success for a switch that had not happened — and it wrote a
+ * different layer than the `/config` menu row for the same setting, so the two
+ * halves of one command disagreed about where the preference lived. Handing them
+ * to the effect the menu and the dedicated command already use makes
+ * `/config model=x` exactly `/model x`: one setting, one file, one moment.
+ *
+ * The layer matters because naming a scope has to mean something. Asking for the
+ * layer a setting already uses is not a different request, so it still takes the
+ * live path; asking for a *different* file is, so it gets a literal write and a
+ * reply saying the change waits for the next start.
+ *
+ * No key here may be one {@link guardSettingWrite} refuses. The guard runs
+ * before this branch anyway, so the two cannot diverge silently.
+ */
+interface LiveSetting {
+  layer: SettingsScope;
+  effect: (value: unknown, context: BuiltinCommandContext) => BuiltinCommandEffect;
+}
+
+function textOf(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : String(value);
+}
+
+/** Booleans stay booleans; `on`/`off` would be a second spelling of one setting. */
+function booleanEffect(
+  key: string,
+  value: unknown,
+  build: (enabled: boolean) => BuiltinCommandEffect,
+): BuiltinCommandEffect {
+  return typeof value === 'boolean'
+    ? build(value)
+    : {
+        type: 'local-message',
+        content: `✕ ${key} takes true or false, not ${JSON.stringify(value)}.`,
+        isError: true,
+      };
+}
+
+const LIVE_SETTINGS: Record<string, LiveSetting> = {
+  model: {
+    layer: 'user',
+    effect: (value) => ({ type: 'set-model', selection: textOf(value) }),
+  },
+  compactModel: {
+    layer: 'user',
+    effect: (value) => ({ type: 'set-compact-model', model: textOf(value) }),
+  },
+  // The theme picker persists locally on purpose: a theme name can come from a
+  // project's `.book/themes`, so a global value would not resolve elsewhere.
+  theme: {
+    layer: 'local',
+    effect: (value) => ({ type: 'set-theme', preference: textOf(value) }),
+  },
+  effort: {
+    layer: 'user',
+    effect: (value, context) => {
+      // The same refusal `/effort` gives, rather than persisting a level the
+      // active model has no way to spend.
+      if (context.effortUnavailableError) {
+        return {
+          type: 'local-message',
+          content: `✕ ${context.effortUnavailableError}`,
+          isError: true,
+        };
+      }
+      const level = textOf(value).toLowerCase();
+      return isEffortLevel(level)
+        ? { type: 'set-effort', level }
+        : { type: 'local-message', content: EFFORT_USAGE, isError: true };
+    },
+  },
+  defaultMode: {
+    layer: 'user',
+    effect: (value) => {
+      const mode = normalizePermissionMode(textOf(value));
+      return mode
+        ? { type: 'set-default-permission-mode', mode }
+        : {
+            type: 'local-message',
+            content:
+              `✕ Unknown permission mode "${textOf(value)}". Use one of: ` +
+              'default, acceptEdits, plan, auto, dontAsk, bypassPermissions.',
+            isError: true,
+          };
+    },
+  },
+  'ui.showThinking': {
+    layer: 'user',
+    effect: (value) =>
+      booleanEffect('ui.showThinking', value, (enabled) => ({
+        type: 'set-show-thinking',
+        enabled,
+      })),
+  },
+  'ui.startupAnimation': {
+    layer: 'user',
+    effect: (value) =>
+      booleanEffect('ui.startupAnimation', value, (enabled) => ({
+        type: 'set-startup-animation',
+        enabled,
+      })),
+  },
+  'memory.autoSave': {
+    layer: 'user',
+    effect: (value) =>
+      booleanEffect('memory.autoSave', value, (enabled) => ({
+        type: 'set-memory-auto-save',
+        enabled,
+      })),
+  },
+};
+
 function configCommandEffect(
   rawArguments: string,
   context: BuiltinCommandContext,
 ): BuiltinCommandEffect {
   if (!rawArguments) return { type: 'show-modal', modal: 'config' };
-  if (rawArguments === '--help') {
+
+  const parsed = parseConfigScope(rawArguments);
+  if (!parsed.ok) return { type: 'local-message', content: `✕ ${parsed.error}`, isError: true };
+  const { scope, rest } = parsed;
+
+  if (rest === '--help') {
     return {
       type: 'local-message',
       content:
         formatSettingsKeyHelp('Supported keys (experimental.* is user-global/--settings only):') +
-        '\n\nUsage: /config <key>=<value>\n' +
+        '\n\nUsage: /config <key>=<value>            writes the layer that setting uses\n' +
+        '                                        (user-global for all but theme)\n' +
+        '       /config --global <key>=<value>   force <BOOK_HOME>/settings.json\n' +
+        '       /config --project <key>=<value>  force .book/settings.json\n' +
+        '       /config --local <key>=<value>    force .book/settings.local.json\n' +
         '       /config compact-model <provider/model>',
     };
   }
-  const compactModelMatch = rawArguments.match(/^compact-model\s+(.+)$/i);
+  const compactModelMatch = rest.match(/^compact-model\s+(.+)$/i);
   if (compactModelMatch?.[1]?.trim()) {
+    // A flag can follow the keyword as easily as precede it, and swallowing it
+    // into the value set the compact model to the literal string `--local …`.
+    const tail = parseConfigScope(compactModelMatch[1]);
+    if (!tail.ok) return { type: 'local-message', content: `✕ ${tail.error}`, isError: true };
+    if (scope && tail.scope && scope !== tail.scope) {
+      return { type: 'local-message', content: `✕ ${DUPLICATE_SCOPE_ERROR}`, isError: true };
+    }
+    const resolved = scope ?? tail.scope;
+    const prefix = resolved ? `${scopeFlagFor(resolved)} ` : '';
     return configCommandEffect(
-      `compactModel=${JSON.stringify(compactModelMatch[1].trim())}`,
+      `${prefix}compactModel=${JSON.stringify(tail.rest.trim())}`,
       context,
     );
   }
-  if (/^(?:compact-strategy|compactStrategy)(?:\s|=)/i.test(rawArguments)) {
+  if (/^(?:compact-strategy|compactStrategy)(?:\s|=)/i.test(rest)) {
     return {
       type: 'local-message',
       content:
@@ -170,34 +352,57 @@ function configCommandEffect(
         '~/.book/settings.json), or pass an explicit --settings file.',
     };
   }
-  if (!rawArguments.includes('=')) {
+  if (!rest.includes('=')) {
     return { type: 'local-message', content: 'Usage: /config [key=value] or /config --help' };
   }
 
-  const separator = rawArguments.indexOf('=');
-  const rawKey = rawArguments.slice(0, separator).trim();
+  const separator = rest.indexOf('=');
+  const rawKey = rest.slice(0, separator).trim();
   const normalizedKey = rawKey.toLowerCase();
   const key = normalizedKey === 'compact-model' ? 'compactModel' : rawKey;
-  const rawValue = rawArguments.slice(separator + 1).trim();
+  const rawValue = rest.slice(separator + 1).trim();
   let value: unknown = rawValue;
   try {
     value = JSON.parse(rawValue);
   } catch {
     // Unquoted values are stored as strings.
   }
-  const blocked = blockedWorkspaceSettingPath(rawKey);
-  if (blocked) {
-    return { type: 'local-message', content: blocked };
+
+  // Ahead of the live branch as well as the write, so a refused key cannot be
+  // reached through whichever of the two paths happens not to check it.
+  const refusal = guardSettingWrite(key, value);
+  if (refusal) return { type: 'local-message', content: `✕ ${refusal}`, isError: true };
+
+  // Naming the layer a setting already uses is the same request as naming none;
+  // naming a different one is a request to write that file literally.
+  const live = LIVE_SETTINGS[key];
+  if (live && (!scope || scope === live.layer)) return live.effect(value, context);
+
+  const result = applySettingWrite({
+    workspace: context.workspace,
+    key,
+    value,
+    scope: scope ?? 'user',
+    settingsOverridePath: context.runtimeConfig.settingsContext?.overridePath,
+    noSettings: context.runtimeConfig.settingsContext?.noSettings,
+  });
+  if (!result.ok) {
+    return { type: 'local-message', content: `✕ ${result.error}`, isError: true };
   }
-  const result = new SettingsRepository(
-    join(context.workspace, '.book', 'settings.local.json'),
-  ).set({ [key]: value });
+  const shadows = result.shadowedBy.map((shadow) => `\n⚠  ${describeSettingShadow(shadow, key)}`);
   return {
     type: 'local-message',
-    content: result.ok
-      ? `Set ${key} = ${JSON.stringify(redactSettingValue(key, value))} in .book/settings.local.json (next session).`
-      : `✕ ${formatSettingsDiagnostics(result.diagnostics)}`,
+    content:
+      `Set ${key} = ${JSON.stringify(redactSettingValue(key, result.value))} in ` +
+      `${settingsScopeLabel(result.scope)} settings (${result.path}). ` +
+      'Takes effect on the next start.' +
+      shadows.join(''),
   };
+}
+
+/** The flag that names a scope, for re-entering this parser with it intact. */
+function scopeFlagFor(scope: SettingsScope): string {
+  return scope === 'user' ? '--global' : `--${scope}`;
 }
 
 function resolveMemoryCandidate(workspace: string, raw: string): string | undefined {

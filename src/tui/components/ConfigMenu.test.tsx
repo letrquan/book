@@ -35,7 +35,7 @@ describe('ConfigMenu', () => {
     expect(view.lastFrame()).toContain('Subagent profiles');
     expect(view.lastFrame()).toContain('Compact model');
     view.stdin.write('a');
-    expect(onOpen).toHaveBeenCalledWith('agents');
+    expect(onOpen).toHaveBeenCalledWith('agents', 7);
   });
 
   it('opens compact model settings from the keyboard shortcut', () => {
@@ -59,7 +59,7 @@ describe('ConfigMenu', () => {
     );
 
     view.stdin.write('c');
-    expect(onOpen).toHaveBeenCalledWith('compact-model');
+    expect(onOpen).toHaveBeenCalledWith('compact-model', 1);
   });
 
   it('does not expose the experimental Zero-Mem strategy in normal settings', () => {
@@ -109,7 +109,36 @@ describe('ConfigMenu', () => {
     expect(view.lastFrame()).toContain('Default permissions');
     expect(view.lastFrame()).toContain('accept-edits');
     view.stdin.write('p');
-    expect(onOpen).toHaveBeenCalledWith('permission-mode');
+    expect(onOpen).toHaveBeenCalledWith('permission-mode', 6);
+  });
+
+  it('starts on the row a sub-picker was opened from', () => {
+    const onOpen = vi.fn();
+    // The menu unmounts while a picker is open, so the return trip is a fresh
+    // mount. Without carrying the row across it, cancelling out of Skills put
+    // the cursor back on Model, eight rows above where the user had been.
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <ConfigMenu
+          model="gpt-5"
+          themeName="dark"
+          memoryAutoSave={false}
+          showThinking
+          agentCount={3}
+          skillCount={4}
+          defaultPermissionMode="default"
+          initialSelection={8}
+          onOpen={onOpen}
+          onToggleMemory={() => {}}
+          onToggleThinking={() => {}}
+          onCancel={() => {}}
+        />
+      </ThemeContext.Provider>,
+    );
+
+    expect(stripAnsi(view.lastFrame())).toContain('› S  Skills');
+    view.stdin.write('\r');
+    expect(onOpen).toHaveBeenCalledWith('skills', 8);
   });
 
   it('opens skill management from settings', () => {
@@ -134,7 +163,7 @@ describe('ConfigMenu', () => {
 
     expect(view.lastFrame()).toContain('4 discovered');
     view.stdin.write('s');
-    expect(onOpen).toHaveBeenCalledWith('skills');
+    expect(onOpen).toHaveBeenCalledWith('skills', 8);
   });
 
   it('shows and toggles model thinking from the keyboard shortcut', () => {
@@ -318,7 +347,7 @@ describe('ConfigMenu', () => {
     view.stdin.write('\t');
     view.stdin.write('\u001b[Z');
     view.stdin.write('\r');
-    expect(onOpen).toHaveBeenCalledWith('compact-model');
+    expect(onOpen).toHaveBeenCalledWith('compact-model', 1);
   });
 
   it('stops the footer from advertising a subset of the shortcuts', () => {

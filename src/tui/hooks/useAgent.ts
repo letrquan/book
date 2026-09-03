@@ -52,6 +52,7 @@ import {
   persistAgentProfileModel,
   persistSettingGlobal,
   persistSettingsGlobal,
+  persistUserSettingClearingLocal,
   persistPermissionRuleLocal,
   removePermissionRuleLocal,
   persistSkillActivationLocal,
@@ -1648,11 +1649,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
       if (options.persist !== false) {
-        const result = persistSettingGlobal('model', name);
+        const result = persistUserSettingClearingLocal(config.workspace, 'model', name);
         if (!result.ok) return result;
-        // Drop any stale per-project model override so this folder uses the
-        // global default we just wrote (local wins over global otherwise).
-        clearLocalSettings(config.workspace, ['model']);
       }
       setLiveConfig(next);
       return { ok: true };
@@ -1841,7 +1839,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       updateEffortLevel(
         liveConfigRef.current,
         level,
-        (selected) => persistSettingGlobal('effort', selected),
+        (selected) => persistUserSettingClearingLocal(config.workspace, 'effort', selected),
         (selected) =>
           setLiveConfig((current) => ({
             ...current,
@@ -1849,7 +1847,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             effortExplicit: true,
           })),
       ),
-    [],
+    [config.workspace],
   );
 
   const setAgentProfileModel = useCallback(
@@ -1876,16 +1874,19 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [config.workspace],
   );
 
-  const setCompactModel = useCallback((model: string) => {
-    const result = persistSettingGlobal('compactModel', model);
-    if (!result.ok) return result;
-    setLiveConfig((current) => ({
-      ...current,
-      compactModel: model,
-      settings: { ...current.settings, compactModel: model },
-    }));
-    return { ok: true };
-  }, []);
+  const setCompactModel = useCallback(
+    (model: string) => {
+      const result = persistUserSettingClearingLocal(config.workspace, 'compactModel', model);
+      if (!result.ok) return result;
+      setLiveConfig((current) => ({
+        ...current,
+        compactModel: model,
+        settings: { ...current.settings, compactModel: model },
+      }));
+      return { ok: true };
+    },
+    [config.workspace],
+  );
 
   const setSkillActivation = useCallback(
     (skillName: string, activation: SkillActivation) => {
@@ -1949,16 +1950,19 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
     [config.workspace],
   );
 
-  const setMemoryAutoSave = useCallback((enabled: boolean) => {
-    setLiveConfig((c) => ({
-      ...c,
-      settings: {
-        ...c.settings,
-        memory: { ...c.settings.memory, autoSave: enabled },
-      },
-    }));
-    persistSettingGlobal('memory.autoSave', enabled);
-  }, []);
+  const setMemoryAutoSave = useCallback(
+    (enabled: boolean) => {
+      setLiveConfig((c) => ({
+        ...c,
+        settings: {
+          ...c.settings,
+          memory: { ...c.settings.memory, autoSave: enabled },
+        },
+      }));
+      persistUserSettingClearingLocal(config.workspace, 'memory.autoSave', enabled);
+    },
+    [config.workspace],
+  );
 
   /**
    * Flip a boolean setting, reading the value that is actually current.
@@ -1978,8 +1982,14 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
       read: (config: AgentConfig) => boolean,
       write: (config: AgentConfig, value: boolean) => AgentConfig,
       persist: (value: boolean) => { ok: boolean; error?: string },
+      /**
+       * Target value, for the callers that name one rather than flip. `/config
+       * ui.showThinking=false` has to land in the same place the menu row does,
+       * or the typed and pointed halves of one command disagree again.
+       */
+      target?: boolean,
     ) => {
-      const next = !read(liveConfigRef.current);
+      const next = target ?? !read(liveConfigRef.current);
       const result = persist(next);
       if (!result.ok) return result;
       liveConfigRef.current = write(liveConfigRef.current, next);
@@ -1990,42 +2000,45 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   );
 
   const toggleShowThinking = useCallback(
-    () =>
+    (target?: boolean) =>
       toggleSetting(
         (c) => c.settings.ui.showThinking === true,
         (c, value) => ({
           ...c,
           settings: { ...c.settings, ui: { ...c.settings.ui, showThinking: value } },
         }),
-        (value) => persistSettingGlobal('ui.showThinking', value),
+        (value) => persistUserSettingClearingLocal(config.workspace, 'ui.showThinking', value),
+        target,
       ),
-    [toggleSetting],
+    [toggleSetting, config.workspace],
   );
 
   const toggleStartupAnimation = useCallback(
-    () =>
+    (target?: boolean) =>
       toggleSetting(
         (c) => c.settings.ui.startupAnimation !== false,
         (c, value) => ({
           ...c,
           settings: { ...c.settings, ui: { ...c.settings.ui, startupAnimation: value } },
         }),
-        (value) => persistSettingGlobal('ui.startupAnimation', value),
+        (value) => persistUserSettingClearingLocal(config.workspace, 'ui.startupAnimation', value),
+        target,
       ),
-    [toggleSetting],
+    [toggleSetting, config.workspace],
   );
 
   const toggleMemoryAutoSave = useCallback(
-    () =>
+    (target?: boolean) =>
       toggleSetting(
         (c) => c.settings.memory.autoSave === true,
         (c, value) => ({
           ...c,
           settings: { ...c.settings, memory: { ...c.settings.memory, autoSave: value } },
         }),
-        (value) => persistSettingGlobal('memory.autoSave', value),
+        (value) => persistUserSettingClearingLocal(config.workspace, 'memory.autoSave', value),
+        target,
       ),
-    [toggleSetting],
+    [toggleSetting, config.workspace],
   );
 
   // Add an allow rule from the "Always allow" approval flow (CC-aligned) and
@@ -2073,9 +2086,8 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
   const setDefaultPermissionMode = useCallback(
     (nextMode: PermissionMode) => {
       const storedMode = nextMode === 'accept-edits' ? 'acceptEdits' : nextMode;
-      const result = persistSettingGlobal('defaultMode', storedMode);
+      const result = persistUserSettingClearingLocal(config.workspace, 'defaultMode', storedMode);
       if (!result.ok) return result;
-      clearLocalSettings(config.workspace, ['defaultMode']);
       setLiveConfig((current) => ({
         ...current,
         settings: { ...current.settings, defaultMode: storedMode },

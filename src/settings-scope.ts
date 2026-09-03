@@ -83,6 +83,23 @@ export const WORKSPACE_AUTH_SETTINGS_MESSAGE =
   '--settings file when starting Book, or use BOOK_AUTH_PROFILE / ' +
   'BOOK_AUTH_CLIENT_ID_<PROFILE> in the environment.';
 
+/**
+ * Guidance for auth settings when the refusal covers every scope.
+ *
+ * {@link WORKSPACE_AUTH_SETTINGS_MESSAGE} explains that a *workspace file* may
+ * not carry one and points at `<BOOK_HOME>/settings.json` — which, now that
+ * configuration commands default to the user layer, is the very file the
+ * refused write was aimed at. A user following it verbatim re-runs the same
+ * command and is refused again with the same text.
+ */
+export const CONFIG_COMMAND_AUTH_SETTINGS_MESSAGE =
+  'Auth settings cannot be written by `book config` or `/config`, in any scope: every field ' +
+  'decides where an account-wide subscription token is obtained or sent, so the shortest ' +
+  'available command must not be able to retarget one. Set auth.* by editing ' +
+  '<BOOK_HOME>/settings.json (normally ~/.book/settings.json) directly, by passing an explicit ' +
+  '--settings file when starting Book, or with BOOK_AUTH_PROFILE / ' +
+  'BOOK_AUTH_CLIENT_ID_<PROFILE> in the environment.';
+
 /** Auth configuration may only be selected by an explicitly trusted settings source. */
 export function isAuthSettingPath(path: string): boolean {
   const normalized = path.trim().toLowerCase();
@@ -106,4 +123,23 @@ const WORKSPACE_FORBIDDEN_SCOPES: ReadonlyArray<readonly [(path: string) => bool
 /** The guidance for a path no workspace layer may carry, or undefined if it may. */
 export function blockedWorkspaceSettingPath(path: string): string | undefined {
   return WORKSPACE_FORBIDDEN_SCOPES.find(([matches]) => matches(path))?.[1];
+}
+
+/**
+ * The guidance for a path no `<key>=<value>` configuration surface may write,
+ * in any scope, or undefined if it may.
+ *
+ * Distinct from {@link blockedWorkspaceSettingPath} only in wording. Both refuse
+ * the same two families, but the workspace messages explain that a *workspace
+ * file* may not carry one and send the reader to `<BOOK_HOME>/settings.json` —
+ * which, now that these commands default to the user layer, is the file the
+ * refused write was already aimed at. Following either message verbatim
+ * produced the same refusal a second time. The gate is that no ordinary
+ * configuration command writes these, so the refusal has to name every scope,
+ * including the one file the value is actually read from.
+ */
+export function blockedConfigWritePath(path: string): string | undefined {
+  if (isExperimentalSettingPath(path)) return CONFIG_COMMAND_EXPERIMENTAL_SETTINGS_MESSAGE;
+  if (isAuthSettingPath(path)) return CONFIG_COMMAND_AUTH_SETTINGS_MESSAGE;
+  return blockedWorkspaceSettingPath(path);
 }
