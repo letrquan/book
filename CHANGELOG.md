@@ -352,6 +352,34 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The question wizard answers the question you are looking at, and only that one.** The batch
+  fix below made the wizard's cursor and question index safe against two keys arriving in one
+  stdin chunk, but the helpers those handlers called still looked the question up during render.
+  So back plus Enter, delivered together, recorded the answer against the question the user had
+  just left. Fixing that exposed a second owner of the Enter key: the custom-answer editor
+  submitted through its text input *and* the wizard's own handler saw the same keypress, and once
+  the mode flag was batch-safe the second listener read it already flipped and answered the next
+  question with its first option before it was ever shown. A pasted Enter, Down, Enter did the
+  same through the still-mounted text input, re-submitting the typed text against whichever
+  question the index had reached. The wizard now owns Enter in the editor outright, and every
+  helper resolves the question from its index rather than from render state.
+
+  Three smaller defects went with it. A custom answer that spelled an option's label was sent
+  beside the toggled label, which the host rejects as a duplicate and drops every answer in the
+  request; it now selects the option instead. A question the model happened to call
+  `constructor` read an inherited function where an array was expected and wedged the session in
+  the error screen; answers are keyed by question index now. And quick-choose accepted anything
+  `Number()` would coerce, so a pasted line beginning `" 1"` chose option 1.
+
+  #167 called the BYOK wizard's version of this latent. It was not: Space, Down, Enter in one
+  chunk deselected the last model and still passed the "select at least one" guard, persisting a
+  provider whose only model id was empty; arrow plus Enter on the source step discovered models
+  from an endpoint the user had just said has no model list; a filter character batched with
+  Down and Space toggled a model the filter then hid; and two arrows on the protocol step toggled
+  it once. Every value that wizard's handler reads back is batch-safe now, except the step itself,
+  which has to stay plain so a text field's Enter is not dispatched twice — the same reason the
+  elicitation form keeps its editing flag plain.
+
 - **A clock correction no longer breaks a run's timeouts in both directions.** Every duration Book
   decided — how long to keep retrying a failing provider, how long to wait for a background shell
   to start or stop, how long to let the evidence ledger flush, how long the run has been going as

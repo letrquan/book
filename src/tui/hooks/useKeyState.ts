@@ -23,6 +23,20 @@ import { useCallback, useRef, useState } from 'react';
  * hand-rolled `useState` + `useRef` pair does the moment one update forgets the
  * ref.
  *
+ * The hook only makes the value it holds batch-safe. Anything derived from
+ * that value during render — the item a cursor points at, the question an
+ * index selects, a list a filter narrows — is still one batch behind when the
+ * handler runs. So a helper invoked from a key handler must resolve indices
+ * against props or `read()`, never against a value computed during render,
+ * and take what it acts on as an argument. Passing the index alone is not
+ * enough if the helper then looks it up in a render-derived value.
+ *
+ * A batch-safe mode flag has one more consequence: a keypress a child text
+ * input consumes through `onSubmit` is also seen by the parent handler, which
+ * by then reads the flag already flipped and dispatches the same key again.
+ * Give Enter a single owner — either the text input's `onSubmit` with the flag
+ * left as plain state, or the parent handler with no `onSubmit` at all.
+ *
  * Use it for state a `useInput` handler reads. Plain `useState` is right for
  * everything a handler only writes (an error string, a filter echoed back into
  * the render).
