@@ -4,6 +4,54 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A turn that is only an unclosed reasoning block is retried, not accepted as the answer.** A
+  `--print` run finished with exit code 0 and an "answer" that was leaked chain-of-thought from its
+  first byte to its last: one `<reasoning_context>` tag, never closed, ending mid-sentence on a tool
+  call the model had serialized as prose. The empty-turn check reads only closed tags on purpose —
+  a finished answer may open with an unfenced `<thinking>`, and stripping it would fail a run that
+  had answered — so the leak passed as a reply, and in print mode nothing downstream could tell.
+
+  The discriminator is the shape itself: the block starts the content, is never closed, and no
+  answer text stands beside it. That turn now gets the same single retry an empty turn gets
+  (`isUnclosedReasoningOnly` in `src/reasoning-tags.ts`), since there is no answer there to
+  protect. If the retry comes back the same shape the text is kept as the answer, as before, never
+  discarded — so the worst case for an answer that merely opens with `<thinking>` is one spare
+  request. Text before the opening tag, a tool call, or a closed block leave the reading unchanged.
+
+- **The permission prompt shows what is being approved.** The card is where consent is given, and
+  it rendered the whole payload as a fixed 72-character slice with nothing marking the cut, so a
+  command that continued past that point read as if it ended there — `… && echo cleaned` for a
+  command whose tail was the part worth reading — with half the row left empty. File mutations
+  were worse: `Edit`, `MultiEdit`, `Write`, and `ApplyPatch` showed only the path, because the
+  diff those tools return exists only after the file is written. The user was asked to approve a
+  change they could not see.
+
+  A shell command now renders in full, every line of it, hard-wrapped to the card's interior
+  rather than word-wrapped, since a command's spacing is part of the command. When it still needs
+  a bound the bound is a count of rows, the cut is marked (`… 7 more rows · D shows all`), and `D`
+  opens it. A short argument stays on the header row as before.
+
+  File mutations show the diff they would produce, computed before anything is written from the
+  pending call's arguments against the file on disk, with the same matching the tool will use
+  (`src/tools/mutation-preview.ts`, reusing the tools' own edit and hunk appliers and rendered
+  through the transcript's `DiffBlock`). A change that cannot be previewed says why — `Cannot
+  preview: oldString not found in file`, or a patch that names one file twice — which is the
+  matching failure the tool was about to report, so the user can skip a call that is going to
+  fail instead of approving it first. (The tools' file-provenance gate, which refuses to mutate a
+  file the session has not read, is not previewed.) Previews are change-focused and bounded by
+  the terminal: eight diff rows on a tall terminal, fewer on a short one, and a patch across many
+  files shows as many as that budget can give a meaningful diff and counts the rest; `D` opens
+  them to what the terminal can hold, and is offered only when it would show more. A
+  worktree-isolated managed agent previews against its own checkout. The screen-reader rendering
+  reads the whole command and a per-file summary of lines added and removed.
+
+  Along the way the line diff (`src/tools/diff.ts`) now trims the lines shared at both ends
+  before building its LCS table, so a one-line edit deep in a twenty-thousand-line file costs a
+  handful of cells rather than four hundred million; the mutation tools, which run the same diff
+  after every write, get the same saving.
+
 ### Added
 
 - **`/login` — subscription sign-in from inside the TUI.** Subscription auth shipped as

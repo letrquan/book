@@ -1,15 +1,46 @@
-import { setImmediate as waitForImmediate } from 'node:timers/promises';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { setImmediate as waitForImmediate, setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import stripAnsi from 'strip-ansi';
 import { DEFAULT_THEME, ThemeContext } from '../theme.js';
-import { PermissionButtons, toolRiskLevel } from './PermissionButtons.js';
+import { PermissionButtons, toolRiskLevel, wrapPayload } from './PermissionButtons.js';
 
 function withTheme(children: React.ReactElement): React.ReactElement {
   return <ThemeContext.Provider value={DEFAULT_THEME}>{children}</ThemeContext.Provider>;
 }
 
-afterEach(() => cleanup());
+const workspaces: string[] = [];
+function makeWorkspace(files: Record<string, string>): string {
+  const root = mkdtempSync(join(tmpdir(), 'book-permission-preview-'));
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(root, name), content);
+  workspaces.push(root);
+  return root;
+}
+
+// The preview lands after real file I/O, so the wait is a deadline in wall
+// time, not a count of event-loop turns a loaded runner can burn through.
+async function frameContaining(
+  view: ReturnType<typeof render>,
+  needle: string,
+  timeoutMs = 5_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const frame = stripAnsi(view.lastFrame() ?? '');
+    if (frame.includes(needle)) return frame;
+    if (Date.now() > deadline)
+      throw new Error(`frame never contained ${JSON.stringify(needle)}:\n${view.lastFrame()}`);
+    await sleep(5);
+  }
+}
+
+afterEach(() => {
+  cleanup();
+  for (const root of workspaces.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 describe('PermissionButtons', () => {
   it('resolves consecutive tool prompts rendered in the same slot', async () => {
@@ -183,6 +214,243 @@ describe('PermissionButtons', () => {
 
     view.stdin.write('s');
     expect(onResolve).toHaveBeenCalledExactlyOnceWith('deny');
+  });
+});
+
+// The card is where consent is given, so it has to show what is being
+// consented to. A fixed 72-character slice hid the tail of every longer command
+// with nothing marking the cut, and a file mutation showed only its path.
+describe('PermissionButtons payload', () => {
+  const command =
+    "find . -type f -name '*.log' -mtime +30 -print0 | xargs -0 rm -f && echo cleaned up every old log file in this tree";
+
+  it('shows the whole command, wrapped to the card, instead of a silent 72-char cut', () => {
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-long', name: 'Bash', arguments: { command } }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+        />,
+      ),
+    );
+    const frame = stripAnsi(view.lastFrame() ?? '');
+    // Every character of the command is on screen, across rows.
+    const joined = frame
+      .split('\n')
+      .map((line) => line.replace(/^│ ?/, '').replace(/ ?│$/, ''))
+      .join('');
+    expect(joined).toContain('echo cleaned up every old log file in this tree');
+    expect(frame).not.toContain('more rows');
+    // No row spills past the terminal.
+    for (const line of frame.split('\n')) expect(line.length).toBeLessThanOrEqual(80);
+  });
+
+  it('keeps a short argument on the header row', () => {
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'read-1', name: 'Read', arguments: { file_path: 'README.md' } }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+        />,
+      ),
+    );
+    expect(stripAnsi(view.lastFrame() ?? '')).toContain('Permission required · Read README.md');
+  });
+
+  it('marks a cut it has to make and opens it on D', async () => {
+    const script = Array.from({ length: 12 }, (_, index) => `echo line ${index + 1}`).join('\n');
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-script', name: 'Bash', arguments: { command: script } }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+          terminalRows={40}
+        />,
+      ),
+    );
+    const collapsed = stripAnsi(view.lastFrame() ?? '');
+    expect(collapsed).toContain('echo line 1');
+    expect(collapsed).not.toContain('echo line 12');
+    expect(collapsed).toMatch(/… \d+ more rows · D shows all/);
+    expect(collapsed).toContain('D more');
+
+    view.stdin.write('d');
+    const expanded = await frameContaining(view, 'echo line 12');
+    expect(expanded).not.toContain('D shows all');
+    expect(expanded).toContain('D less');
+  });
+
+  it('shows the diff an Edit would make before anything is written', async () => {
+    const root = makeWorkspace({ 'notes.txt': 'alpha\nbeta\ngamma\n' });
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{
+            id: 'edit-1',
+            name: 'Edit',
+            arguments: { filePath: 'notes.txt', oldString: 'beta', newString: 'delta' },
+          }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+          workspaceRoot={root}
+        />,
+      ),
+    );
+    const frame = await frameContaining(view, '+ delta');
+    expect(frame).toContain('- beta');
+    expect(frame).toContain('update notes.txt +1 −1');
+  });
+
+  it('says why a mutation cannot be previewed instead of hiding it', async () => {
+    const root = makeWorkspace({ 'notes.txt': 'alpha\n' });
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{
+            id: 'edit-2',
+            name: 'Edit',
+            arguments: { filePath: 'notes.txt', oldString: 'zeta', newString: 'eta' },
+          }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+          workspaceRoot={root}
+        />,
+      ),
+    );
+    const frame = await frameContaining(view, 'Cannot preview');
+    expect(frame).toContain('oldString not found');
+  });
+
+  it('still answers the prompt while the preview is pending or absent', () => {
+    const onResolve = vi.fn();
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{
+            id: 'write-1',
+            name: 'Write',
+            arguments: { filePath: 'new.txt', content: 'hello\n' },
+          }}
+          onResolve={onResolve}
+          terminalWidth={80}
+        />,
+      ),
+    );
+    // No workspace root: the card names the path and nothing else.
+    const frame = stripAnsi(view.lastFrame() ?? '');
+    expect(frame).toContain('Write new.txt');
+    expect(frame).not.toContain('Computing diff');
+    view.stdin.write('r');
+    expect(onResolve).toHaveBeenCalledExactlyOnceWith('allow');
+  });
+
+  it('keeps a tab-indented command inside the card', () => {
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{
+            id: 'bash-tab',
+            name: 'Bash',
+            arguments: {
+              command: `cat > Makefile <<EOF\nall:\n\t\t\tgcc -o app main.c util.c\nEOF`,
+            },
+          }}
+          onResolve={vi.fn()}
+          terminalWidth={40}
+        />,
+      ),
+    );
+    const frame = stripAnsi(view.lastFrame() ?? '');
+    expect(frame).not.toContain('\t');
+    expect(frame).toContain('            gcc -o app');
+    for (const line of frame.split('\n')) expect(line.length).toBeLessThanOrEqual(40);
+  });
+
+  it('caps the files a multi-file patch shows and counts the rest', async () => {
+    const names = ['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt'];
+    const root = makeWorkspace(Object.fromEntries(names.map((name) => [name, 'one\ntwo\n'])));
+    const patch = [
+      '*** Begin Patch',
+      ...names.flatMap((name) => [`*** Update File: ${name}`, '@@', '-one', '+ONE']),
+      '*** End Patch',
+    ].join('\n');
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'patch-1', name: 'ApplyPatch', arguments: { patch } }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+          terminalRows={24}
+          workspaceRoot={root}
+        />,
+      ),
+    );
+    // 24 rows leave a 6-row diff budget: one file at a time, the rest counted.
+    const frame = await frameContaining(view, 'more files');
+    expect(frame).toContain('update a.txt +1 −1');
+    expect(frame).not.toContain('update b.txt');
+    expect(frame).toContain('… 4 more files · +4 −4');
+    expect(frame).toContain('5 files · +5 −5');
+    // Nothing more can open on a terminal this short, so D is not offered
+    // and does not pretend to have opened anything.
+    expect(frame).not.toContain('D more');
+    view.stdin.write('d');
+    await waitForImmediate();
+    expect(stripAnsi(view.lastFrame() ?? '')).not.toContain('D less');
+  });
+
+  it('reads the whole command and the change summary to a screen reader', async () => {
+    const root = makeWorkspace({ 'notes.txt': 'alpha\nbeta\n' });
+    const shell = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'bash-sr', name: 'Bash', arguments: { command } }}
+          onResolve={vi.fn()}
+          screenReader
+        />,
+      ),
+    );
+    // The test terminal wraps long rows; compare the text, not the layout.
+    const spoken = stripAnsi(shell.lastFrame() ?? '').replace(/\s+/g, ' ');
+    expect(spoken).toContain(`Command: ${command}`);
+
+    const edit = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{
+            id: 'edit-sr',
+            name: 'Edit',
+            arguments: { filePath: 'notes.txt', oldString: 'beta', newString: 'delta' },
+          }}
+          onResolve={vi.fn()}
+          screenReader
+          workspaceRoot={root}
+        />,
+      ),
+    );
+    const frame = await frameContaining(edit, 'Will update notes.txt');
+    expect(frame).toContain('1 lines added, 1 lines removed');
+  });
+});
+
+describe('wrapPayload', () => {
+  it('hard-wraps by display width and never drops text that fits the budget', () => {
+    const wrapped = wrapPayload('a'.repeat(25), 10, 5);
+    expect(wrapped.rows).toEqual(['a'.repeat(10), 'a'.repeat(10), 'aaaaa']);
+    expect(wrapped.hiddenRows).toBe(0);
+  });
+
+  it('keeps a row for the cut marker when the budget is exceeded', () => {
+    const wrapped = wrapPayload(['1', '2', '3', '4', '5'].join('\n'), 10, 3);
+    expect(wrapped.rows).toEqual(['1', '2']);
+    expect(wrapped.hiddenRows).toBe(3);
+  });
+
+  it('preserves spacing inside a command', () => {
+    expect(wrapPayload('echo "a  b"', 40, 3).rows).toEqual(['echo "a  b"']);
   });
 });
 

@@ -46,7 +46,7 @@ import {
   type CapabilityRule,
 } from '../tools/capability-rules.js';
 import { createDebugLogger } from '../debug-log.js';
-import { stripReasoningTags } from '../reasoning-tags.js';
+import { isUnclosedReasoningOnly, stripReasoningTags } from '../reasoning-tags.js';
 import { maybeCaptureMemoryCandidate } from '../memory-autosave.js';
 import { PLAN_PERMISSION_REQUIRED_TOOLS, READ_ONLY_PLAN_TOOLS } from '../tools/plan-mode.js';
 import { isFileMutatingTool } from '../tools/tool-capabilities.js';
@@ -1052,8 +1052,22 @@ export async function runAgentLoop(
       //
       // Every other `streamError` is either terminal (a refusal, an output cap)
       // or has its own recovery below (context overflow), so it is left alone.
+      //
+      // A third shape gets the same single retry: a turn that is nothing but a
+      // reasoning block the provider never closed. `stripReasoningTags` keeps
+      // an unclosed block as answer text on purpose — a finished answer may open
+      // with an unfenced `<thinking>` — so that reading alone never fired here,
+      // and a run whose last turn was leaked chain-of-thought ending mid-sentence
+      // reported success with the leak as its answer; in print mode nothing
+      // downstream can tell the two apart. When the block starts the content
+      // and consumes all of it there is no answer beside it to protect, so one
+      // more request is worth spending. If the retry comes back the same shape
+      // the text is kept as the answer, as before, never discarded.
+      const unclosedReasoningOnly =
+        toolCalls.length === 0 && isUnclosedReasoningOnly(assistantContent);
       const answeredNothing =
-        stripReasoningTags(assistantContent).trim().length === 0 && toolCalls.length === 0;
+        toolCalls.length === 0 &&
+        (unclosedReasoningOnly || stripReasoningTags(assistantContent).trim().length === 0);
       if (
         answeredNothing &&
         !signal?.aborted &&
@@ -1061,14 +1075,19 @@ export async function runAgentLoop(
       ) {
         if (emptyResponseRetryTurn !== turn) {
           emptyResponseRetryTurn = turn;
-          log.warn('provider returned an empty completion; retrying once', {
-            turn,
-            reasoningLen: reasoningContent.length,
-            contentLen: assistantContent.length,
-            streamDone,
-            streamErrorCode,
-            responseId: responseMetadata?.responseId,
-          });
+          log.warn(
+            unclosedReasoningOnly
+              ? 'provider returned only an unclosed reasoning block; retrying once'
+              : 'provider returned an empty completion; retrying once',
+            {
+              turn,
+              reasoningLen: reasoningContent.length,
+              contentLen: assistantContent.length,
+              streamDone,
+              streamErrorCode,
+              responseId: responseMetadata?.responseId,
+            },
+          );
           // The attempt's deltas are already with the host; tell it to drop
           // them so the retry's answer does not queue up behind an abandoned
           // reasoning block that no history will ever record.
@@ -1076,9 +1095,14 @@ export async function runAgentLoop(
           retrySameTurn = true;
           continue;
         }
-        // Keep a transport diagnosis rather than overwriting it with a generic
-        // one; `transport_interrupted` tells the user something different.
-        if (!streamError) {
+        if (unclosedReasoningOnly) {
+          log.warn('unclosed reasoning block kept as the answer after one retry', {
+            turn,
+            contentLen: assistantContent.length,
+          });
+        } else if (!streamError) {
+          // Keep a transport diagnosis rather than overwriting it with a generic
+          // one; `transport_interrupted` tells the user something different.
           streamError =
             'The provider returned an empty response after one retry. Please retry the request.';
           streamErrorCode = 'protocol_error';

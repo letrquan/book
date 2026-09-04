@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { splitReasoningParts, stripReasoningTags } from './reasoning-tags.js';
+import {
+  isUnclosedReasoningOnly,
+  splitReasoningParts,
+  stripReasoningTags,
+} from './reasoning-tags.js';
 
 /** The opening tag `stripReasoningTags` leaves behind but the renderer strips. */
 const REASONING_TAG_OPENER = /<(think|thinking|reasoning|reasoning_context)>/gi;
@@ -55,6 +59,37 @@ describe('stripReasoningTags', () => {
     // first block of the next message.
     const input = '<think>a</think>tail';
     expect(stripReasoningTags(input)).toBe(stripReasoningTags(input));
+  });
+});
+
+describe('isUnclosedReasoningOnly', () => {
+  it('recognises a turn that is leaked reasoning from first byte to last', () => {
+    // The shape observed in print mode: one opening tag, no closing tag, and a
+    // tool call the model serialized as prose, ending mid-sentence. It passed
+    // the conservative emptiness reading and the run reported success.
+    const content = `<reasoning_context>
+Let's check \`npm run lint\` to be sure.call:default_api:Bash{command:npm run lint}`;
+    expect(isUnclosedReasoningOnly(content)).toBe(true);
+    expect(isUnclosedReasoningOnly(`\n  ${content}`)).toBe(true);
+  });
+
+  it('lets a closed block ahead of the unclosed one stand', () => {
+    expect(isUnclosedReasoningOnly('<think>a</think><thinking>b')).toBe(true);
+  });
+
+  it('is false whenever there is an answer to protect', () => {
+    expect(isUnclosedReasoningOnly('just an answer')).toBe(false);
+    expect(isUnclosedReasoningOnly('Done. <thinking>trailing notes')).toBe(false);
+    expect(isUnclosedReasoningOnly('<think>planning</think>the answer')).toBe(false);
+  });
+
+  it('is false for a block the provider closed, which the strip reading already handles', () => {
+    expect(isUnclosedReasoningOnly('<think>weighing options</think>')).toBe(false);
+  });
+
+  it('leaves a fenced example alone', () => {
+    const content = ['```', '<thinking>quoted', '```'].join('\n');
+    expect(isUnclosedReasoningOnly(content)).toBe(false);
   });
 });
 

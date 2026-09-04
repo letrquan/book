@@ -946,6 +946,106 @@ describe('runAgentLoop streaming render callbacks', () => {
     expect(history.at(-1)?.content).toContain('done looking.');
   });
 
+  it('retries a turn that was nothing but an unclosed reasoning block', async () => {
+    // Leaked chain-of-thought from first byte to last, ending mid-sentence on a
+    // tool call the model serialized as prose. The conservative strip reading
+    // keeps an unclosed block as answer text, so this used to pass as the run's
+    // answer with exit code 0 in print mode.
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        if (calls === 1) {
+          yield {
+            type: 'text',
+            content:
+              '<reasoning_context>\nLet me run lint to be sure.call:default_api:Bash{command:npm run lint}',
+          };
+          yield { type: 'done', finishReasons: ['stop'] };
+          return;
+        }
+        yield { type: 'text', content: 'Lint is clean.' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onTerminal: (outcome) => outcomes.push(outcome) }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(outcomes[0]).toMatchObject({ status: 'completed' });
+    expect(history.at(-1)?.content).toBe('Lint is clean.');
+  });
+
+  it('keeps an answer that opens with an unclosed tag when the retry says the same', async () => {
+    // A finished answer that merely opens with an unfenced `<thinking>` costs
+    // one extra request under this rule and is then kept, never discarded: the
+    // worst case stays a spare round trip, not a lost reply.
+    const errors: string[] = [];
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'text', content: '<thinking>\nThe answer is 42.' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const outcomes: AgentTerminalOutcome[] = [];
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({
+        onError: (error) => errors.push(error),
+        onTerminal: (outcome) => outcomes.push(outcome),
+      }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(2);
+    expect(errors).toEqual([]);
+    expect(outcomes[0]).toMatchObject({ status: 'completed', reason: 'normal_completion' });
+    expect(history.at(-1)?.content).toContain('The answer is 42.');
+  });
+
+  it('does not retry an unclosed block that follows answer text', async () => {
+    let calls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        calls++;
+        yield { type: 'text', content: 'Done. <thinking>some trailing notes' };
+        yield { type: 'done', finishReasons: ['stop'] };
+      },
+    };
+
+    const history = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks(),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(calls).toBe(1);
+    expect(history.at(-1)?.content).toContain('Done.');
+  });
+
   it('retries a stream cut before its terminal event', async () => {
     // `transport_interrupted` never sets `streamDone`, so gating the retry on it
     // meant a router that closed the socket early was never retried at all.

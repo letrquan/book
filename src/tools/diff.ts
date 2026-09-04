@@ -24,51 +24,81 @@ export interface DiffStats {
   removedLines: number;
 }
 
+interface DiffOp {
+  kind: 'ctx' | 'add' | 'del';
+  text: string;
+  ai: number;
+  bi: number;
+}
+
 const DIFF_YIELD_CELLS = 32_768;
 const DIFF_YIELD_ITEMS = 1_024;
 
-/** Compute a line-level diff between two strings. Returns hunks with context. */
-export function lineDiff(oldText: string, newText: string, context = 3): DiffHunk[] {
-  const a = splitLines(oldText);
-  const b = splitLines(newText);
+/**
+ * Lines shared at both ends of the two inputs.
+ *
+ * The LCS table below is O(n·m) in time and memory, and almost every real
+ * edit changes a few lines of a file that is otherwise identical on both
+ * sides. Trimming the shared prefix and suffix first turns a one-line edit
+ * in a twenty-thousand-line file from a 400M-cell table into a handful.
+ */
+function commonAffixes(a: string[], b: string[]): { prefix: number; suffix: number } {
+  const max = Math.min(a.length, b.length);
+  let prefix = 0;
+  while (prefix < max && a[prefix] === b[prefix]) prefix++;
+  let suffix = 0;
+  while (suffix < max - prefix && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix++;
+  return { prefix, suffix };
+}
 
-  // LCS-based edit script. O(n*m) — fine for typical file sizes in a CLI tool.
+function contextOps(a: string[], from: number, count: number, bOffset: number): DiffOp[] {
+  const ops: DiffOp[] = [];
+  for (let index = 0; index < count; index++) {
+    const ai = from + index;
+    ops.push({ kind: 'ctx', text: a[ai], ai, bi: ai + bOffset });
+  }
+  return ops;
+}
+
+/** Walk a filled LCS table into an edit script, offset into the full inputs. */
+function editScript(
+  a: string[],
+  b: string[],
+  dp: ArrayLike<ArrayLike<number>>,
+  offset: number,
+): DiffOp[] {
   const n = a.length;
   const m = b.length;
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-
-  const ops: Array<{ kind: 'ctx' | 'add' | 'del'; text: string; ai: number; bi: number }> = [];
+  const ops: DiffOp[] = [];
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
     if (a[i] === b[j]) {
-      ops.push({ kind: 'ctx', text: a[i], ai: i, bi: j });
+      ops.push({ kind: 'ctx', text: a[i], ai: offset + i, bi: offset + j });
       i++;
       j++;
     } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      ops.push({ kind: 'del', text: a[i], ai: i, bi: j });
+      ops.push({ kind: 'del', text: a[i], ai: offset + i, bi: offset + j });
       i++;
     } else {
-      ops.push({ kind: 'add', text: b[j], ai: i, bi: j });
+      ops.push({ kind: 'add', text: b[j], ai: offset + i, bi: offset + j });
       j++;
     }
   }
   while (i < n) {
-    ops.push({ kind: 'del', text: a[i], ai: i, bi: j });
+    ops.push({ kind: 'del', text: a[i], ai: offset + i, bi: offset + j });
     i++;
   }
   while (j < m) {
-    ops.push({ kind: 'add', text: b[j], ai: i, bi: j });
+    ops.push({ kind: 'add', text: b[j], ai: offset + i, bi: offset + j });
     j++;
   }
+  return ops;
+}
 
-  // Group consecutive non-context ops into hunks, padded by `context` ctx lines.
-  const hunks: DiffHunk[] = [];
+/** Group consecutive non-context ops into hunks, padded by `context` ctx lines. */
+function hunkBounds(ops: DiffOp[], context: number): Array<[number, number]> {
+  const bounds: Array<[number, number]> = [];
   let k = 0;
   while (k < ops.length) {
     if (ops[k].kind === 'ctx') {
@@ -83,7 +113,6 @@ export function lineDiff(oldText: string, newText: string, context = 3): DiffHun
       s--;
       ctxBefore++;
     }
-    const hunkStart = s + 1;
     // Walk forward through all consecutive non-context ops, then context after.
     let e = start;
     while (e < ops.length && ops[e].kind !== 'ctx') e++;
@@ -92,18 +121,45 @@ export function lineDiff(oldText: string, newText: string, context = 3): DiffHun
       e++;
       ctxAfter++;
     }
-    const hunkOps = ops.slice(hunkStart, e);
-    const oldStart = (hunkOps[0]?.ai ?? 0) + 1;
-    const newStart = (hunkOps[0]?.bi ?? 0) + 1;
-    hunks.push({
-      oldStart,
-      newStart,
-      lines: hunkOps.map((o) => ({ kind: o.kind, text: o.text })),
-    });
+    bounds.push([s + 1, e]);
     k = e;
   }
+  return bounds;
+}
 
-  return hunks;
+function hunkFrom(ops: DiffOp[], start: number, end: number): DiffHunk {
+  const hunkOps = ops.slice(start, end);
+  return {
+    oldStart: (hunkOps[0]?.ai ?? 0) + 1,
+    newStart: (hunkOps[0]?.bi ?? 0) + 1,
+    lines: hunkOps.map((o) => ({ kind: o.kind, text: o.text })),
+  };
+}
+
+/** Compute a line-level diff between two strings. Returns hunks with context. */
+export function lineDiff(oldText: string, newText: string, context = 3): DiffHunk[] {
+  const a = splitLines(oldText);
+  const b = splitLines(newText);
+  const { prefix, suffix } = commonAffixes(a, b);
+  const midA = a.slice(prefix, a.length - suffix);
+  const midB = b.slice(prefix, b.length - suffix);
+
+  // LCS-based edit script over the changed span only.
+  const n = midA.length;
+  const m = midB.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = midA[i] === midB[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  const ops = [
+    ...contextOps(a, 0, prefix, 0),
+    ...editScript(midA, midB, dp, prefix),
+    ...contextOps(a, a.length - suffix, suffix, b.length - a.length),
+  ];
+  return hunkBounds(ops, context).map(([start, end]) => hunkFrom(ops, start, end));
 }
 
 /** Cooperative variant used by agent tools so large diffs do not block Ink. */
@@ -115,8 +171,11 @@ export async function lineDiffAsync(
 ): Promise<DiffHunk[]> {
   const a = splitLines(oldText);
   const b = splitLines(newText);
-  const n = a.length;
-  const m = b.length;
+  const { prefix, suffix } = commonAffixes(a, b);
+  const midA = a.slice(prefix, a.length - suffix);
+  const midB = b.slice(prefix, b.length - suffix);
+  const n = midA.length;
+  const m = midB.length;
   const dp: number[][] = [];
 
   for (let row = 0; row <= n; row++) {
@@ -127,7 +186,7 @@ export async function lineDiffAsync(
   let cellsUntilYield = DIFF_YIELD_CELLS;
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      dp[i][j] = midA[i] === midB[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
       cellsUntilYield--;
       if (cellsUntilYield === 0) {
         cellsUntilYield = DIFF_YIELD_CELLS;
@@ -137,71 +196,16 @@ export async function lineDiffAsync(
   }
 
   throwIfAborted(signal);
-  const ops: Array<{ kind: 'ctx' | 'add' | 'del'; text: string; ai: number; bi: number }> = [];
-  let i = 0;
-  let j = 0;
-  let itemsUntilYield = DIFF_YIELD_ITEMS;
-  while (i < n && j < m) {
-    if (a[i] === b[j]) {
-      ops.push({ kind: 'ctx', text: a[i], ai: i, bi: j });
-      i++;
-      j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      ops.push({ kind: 'del', text: a[i], ai: i, bi: j });
-      i++;
-    } else {
-      ops.push({ kind: 'add', text: b[j], ai: i, bi: j });
-      j++;
-    }
-    itemsUntilYield--;
-    if (itemsUntilYield === 0) {
-      itemsUntilYield = DIFF_YIELD_ITEMS;
-      await yieldToEventLoop(signal);
-    }
-  }
-  while (i < n) {
-    ops.push({ kind: 'del', text: a[i], ai: i, bi: j });
-    i++;
-    if (i % DIFF_YIELD_ITEMS === 0) await yieldToEventLoop(signal);
-  }
-  while (j < m) {
-    ops.push({ kind: 'add', text: b[j], ai: i, bi: j });
-    j++;
-    if (j % DIFF_YIELD_ITEMS === 0) await yieldToEventLoop(signal);
-  }
+  const ops = [
+    ...contextOps(a, 0, prefix, 0),
+    ...editScript(midA, midB, dp, prefix),
+    ...contextOps(a, a.length - suffix, suffix, b.length - a.length),
+  ];
+  if (ops.length > DIFF_YIELD_ITEMS) await yieldToEventLoop(signal);
 
   const hunks: DiffHunk[] = [];
-  let k = 0;
-  while (k < ops.length) {
-    if (ops[k].kind === 'ctx') {
-      k++;
-      if (k % DIFF_YIELD_ITEMS === 0) await yieldToEventLoop(signal);
-      continue;
-    }
-    const start = k;
-    let ctxBefore = 0;
-    let s = start - 1;
-    while (s >= 0 && ops[s].kind === 'ctx' && ctxBefore < context) {
-      s--;
-      ctxBefore++;
-    }
-    const hunkStart = s + 1;
-    let e = start;
-    while (e < ops.length && ops[e].kind !== 'ctx') e++;
-    let ctxAfter = 0;
-    while (e < ops.length && ops[e].kind === 'ctx' && ctxAfter < context) {
-      e++;
-      ctxAfter++;
-    }
-    const hunkOps = ops.slice(hunkStart, e);
-    const oldStart = (hunkOps[0]?.ai ?? 0) + 1;
-    const newStart = (hunkOps[0]?.bi ?? 0) + 1;
-    hunks.push({
-      oldStart,
-      newStart,
-      lines: hunkOps.map((o) => ({ kind: o.kind, text: o.text })),
-    });
-    k = e;
+  for (const [start, end] of hunkBounds(ops, context)) {
+    hunks.push(hunkFrom(ops, start, end));
     await yieldToEventLoop(signal);
   }
 

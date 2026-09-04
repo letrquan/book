@@ -9,6 +9,10 @@ interface DiffProps {
   filePath?: string;
   /** When true, render a change-focused preview across all hunks. */
   collapsed?: boolean;
+  /** Row budget for the collapsed preview; defaults to the transcript's. */
+  maxRows?: number;
+  /** Key hint appended to the omission footer while collapsed. */
+  expandHint?: string;
   terminalWidth?: number;
 }
 
@@ -265,7 +269,7 @@ export function inferDiffLanguage(filePath: string | undefined): string | undefi
   return extension ? languages[extension] : undefined;
 }
 
-function expandTabs(value: string, tabSize = 4): string {
+export function expandTabs(value: string, tabSize = 4): string {
   let column = 0;
   let result = '';
   for (const character of value) {
@@ -379,10 +383,11 @@ interface SelectedDiffRow {
 function selectRenderedRows(
   rows: readonly ParsedDiffLine[],
   collapsed: boolean,
+  limit: number,
 ): { rows: SelectedDiffRow[]; hiddenRows: number; hiddenBytes: number } {
   const rowBytes = rows.map((row, index) => rowByteSize(row, index, rows.length));
   const indices = collapsed
-    ? selectPreviewIndices(rows, COLLAPSED_ROWS)
+    ? selectPreviewIndices(rows, Math.max(1, Math.floor(limit)))
     : rows.map((_, index) => index);
   const selected = new Set(indices);
   const hiddenBytes = rowBytes.reduce(
@@ -411,10 +416,20 @@ function syntaxSegments(
   return highlightCode(content, language, theme)[0];
 }
 
-export function DiffBlock({ output, filePath, collapsed = false, terminalWidth = 80 }: DiffProps) {
+export function DiffBlock({
+  output,
+  filePath,
+  collapsed = false,
+  maxRows = COLLAPSED_ROWS,
+  expandHint = 'Ctrl+E shows all',
+  terminalWidth = 80,
+}: DiffProps) {
   const theme = useTheme();
   const parsed = useMemo(() => parseDiffLines(output), [output]);
-  const selected = useMemo(() => selectRenderedRows(parsed, collapsed), [collapsed, parsed]);
+  const selected = useMemo(
+    () => selectRenderedRows(parsed, collapsed, maxRows),
+    [collapsed, maxRows, parsed],
+  );
   const language = inferDiffLanguage(filePath);
   const maxOld = Math.max(1, ...parsed.map((row) => row.oldLineNumber ?? 0));
   const maxNew = Math.max(1, ...parsed.map((row) => row.newLineNumber ?? 0));
@@ -529,7 +544,7 @@ export function DiffBlock({ output, filePath, collapsed = false, terminalWidth =
           <Text color={theme.subtle} dimColor>
             │{' '}
             {truncateDisplay(
-              `… ${selected.hiddenRows} ${selected.hiddenRows === 1 ? 'row' : 'rows'} and ${selected.hiddenBytes} B omitted${collapsed ? '; Ctrl+E shows all' : ''}`,
+              `… ${selected.hiddenRows} ${selected.hiddenRows === 1 ? 'row' : 'rows'} and ${selected.hiddenBytes} B omitted${collapsed && expandHint ? `; ${expandHint}` : ''}`,
               Math.max(4, terminalWidth - 4),
             )}
           </Text>
