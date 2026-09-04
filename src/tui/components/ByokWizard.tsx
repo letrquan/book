@@ -82,6 +82,16 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Model discovery failed.';
 }
 
+function filterModels(models: DiscoveredModel[], filter: string): DiscoveredModel[] {
+  const query = filter.trim().toLowerCase();
+  return query
+    ? models.filter(
+        (model) =>
+          model.id.toLowerCase().includes(query) || model.label?.toLowerCase().includes(query),
+      )
+    : models;
+}
+
 export function ByokWizard({
   retry,
   compact = false,
@@ -92,19 +102,25 @@ export function ByokWizard({
 }: ByokWizardProps) {
   const theme = useTheme();
   const density = useDensityMetrics();
+  // `step` deliberately stays plain render state. On the text-field steps Enter
+  // belongs to the field's `onSubmit`, and the handler below relies on still
+  // reading the old step when Ink hands it the same keypress; a batch-safe step
+  // would let a double Enter submit the field and then advance a second time.
   const [step, setStep] = useState<Step>('provider');
   const [providerId, setProviderId] = useState('');
-  const [type, setType] = useState<ProviderProtocol>('openai');
+  // Everything else the key handler reads back is batch-safe. Ink runs the
+  // handler once per stdin chunk, so with plain state a batched arrow+Space
+  // toggled the model above the highlighted one, arrow+Enter on the source step
+  // discovered models the user had just declined, Space+Enter saved a provider
+  // with no models, and two arrows on the protocol step toggled it once.
+  const [type, setType, currentType] = useKeyState<ProviderProtocol>('openai');
   const [baseURL, setBaseURL] = useState('');
   const [apiKey, setApiKey] = useState('');
-  const [modelSource, setModelSource] = useState<ModelSource>('discover');
+  const [modelSource, setModelSource, currentSource] = useKeyState<ModelSource>('discover');
   const [models, setModels] = useState<DiscoveredModel[]>([]);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  // Read back by the key handler, which Ink runs once per stdin chunk: with
-  // plain state a batched arrow+Space toggled the model above the highlighted
-  // one.
+  const [selectedIds, setSelectedIds, currentSelected] = useKeyState<string[]>([]);
   const [modelCursor, setModelCursor, currentModel] = useKeyState(0);
-  const [modelFilter, setModelFilter] = useState('');
+  const [modelFilter, setModelFilter, currentFilter] = useKeyState('');
   const [manualModel, setManualModel] = useState('');
   const [label, setLabel] = useState('');
   const [error, setError] = useState<string>();
@@ -112,15 +128,7 @@ export function ByokWizard({
   const discoveryAbortRef = useRef<AbortController | null>(null);
   const saveRef = useRef(false);
 
-  const filteredModels = useMemo(() => {
-    const query = modelFilter.trim().toLowerCase();
-    return query
-      ? models.filter(
-          (model) =>
-            model.id.toLowerCase().includes(query) || model.label?.toLowerCase().includes(query),
-        )
-      : models;
-  }, [modelFilter, models]);
+  const filteredModels = useMemo(() => filterModels(models, modelFilter), [modelFilter, models]);
 
   const activeModelId = selectedIds[0] ?? '';
 
@@ -211,7 +219,7 @@ export function ByokWizard({
       }
       if (step === 'protocol') {
         if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) {
-          const next: ProviderProtocol = type === 'openai' ? 'anthropic' : 'openai';
+          const next: ProviderProtocol = currentType() === 'openai' ? 'anthropic' : 'openai';
           setType(next);
           setBaseURL(DEFAULT_PROVIDER_BASE_URLS[next]);
           return;
@@ -221,11 +229,11 @@ export function ByokWizard({
       }
       if (step === 'model-source') {
         if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) {
-          setModelSource((current) => (current === 'discover' ? 'manual' : 'discover'));
+          setModelSource(currentSource() === 'discover' ? 'manual' : 'discover');
           return;
         }
         if (key.return) {
-          if (modelSource === 'discover') void startDiscovery();
+          if (currentSource() === 'discover') void startDiscovery();
           else {
             setError(undefined);
             setModels([]);
@@ -249,7 +257,7 @@ export function ByokWizard({
       if (step === 'choose-models') {
         const typed = stripSgrMouseSequences(input);
         if (key.return) {
-          if (selectedIds.length === 0) setError('Select at least one model.');
+          if (currentSelected().length === 0) setError('Select at least one model.');
           else {
             setError(undefined);
             setStep('label');
@@ -257,34 +265,39 @@ export function ByokWizard({
           return;
         }
         if (key.backspace || key.delete) {
-          setModelFilter((value) => value.slice(0, -1));
+          setModelFilter(currentFilter().slice(0, -1));
           setModelCursor(0);
           return;
         }
-        if (filteredModels.length === 0) {
+        // The list a filter character earlier in this chunk produced, not the
+        // one the last render showed — otherwise Down and Space act on a model
+        // the new filter hides.
+        const visible = filterModels(models, currentFilter());
+        if (visible.length === 0) {
           if (typed && typed !== ' ' && !key.ctrl && !key.meta) {
-            setModelFilter((value) => value + typed);
+            setModelFilter(currentFilter() + typed);
           }
           return;
         }
         if (key.upArrow) {
-          setModelCursor((currentModel() - 1 + filteredModels.length) % filteredModels.length);
+          setModelCursor((currentModel() - 1 + visible.length) % visible.length);
           return;
         }
         if (key.downArrow) {
-          setModelCursor((currentModel() + 1) % filteredModels.length);
+          setModelCursor((currentModel() + 1) % visible.length);
           return;
         }
         if (input === ' ') {
-          const id = filteredModels[currentModel()]?.id;
+          const id = visible[currentModel()]?.id;
           if (!id) return;
-          setSelectedIds((current) =>
+          const current = currentSelected();
+          setSelectedIds(
             current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
           );
           return;
         }
         if (typed && !key.ctrl && !key.meta) {
-          setModelFilter((value) => value + typed);
+          setModelFilter(currentFilter() + typed);
           setModelCursor(0);
         }
         return;

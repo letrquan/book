@@ -282,4 +282,62 @@ describe('ByokWizard', () => {
       expect.objectContaining({ models: [{ id: 'model-a', label: 'Model A' }] }),
     );
   });
+
+  it('saves once when two Enters reach the review step in one write', async () => {
+    const { view, onSave } = createWizard();
+    await advanceToModelChoice(view);
+    await write(view, '\r');
+    await waitForText(view, 'Display label');
+    await write(view, '\r');
+    await waitForText(view, 'Review');
+    // Enter, Up, Enter as one chunk: the arrow is inert on review, so this is
+    // two saves inside one React batch, before `saving` can re-render. Two
+    // separate writes would let the render-state flag reject the second and
+    // prove nothing about the ref that has to catch this case.
+    await write(view, '\r\x1b[A\r');
+    expect(onSave).toHaveBeenCalledOnce();
+  });
+
+  it('opens manual entry when the arrow and Enter arrive in one write', async () => {
+    const { view, discover } = createWizard();
+    await advanceToModelSource(view);
+    await write(view, '\x1b[B\r');
+    await waitForText(view, 'Model IDs');
+    expect(discover).not.toHaveBeenCalled();
+  });
+
+  it('refuses to continue when the same write deselects the last model', async () => {
+    const { view } = createWizard();
+    await advanceToModelChoice(view);
+    await write(view, ' ');
+    await waitForText(view, '1 selected');
+    await write(view, '\x1b[B');
+    // Space (deselect the only remaining model), Down, Enter in one chunk.
+    await write(view, ' \x1b[B\r');
+    await waitForText(view, 'Select at least one model.');
+    expect(stripAnsi(view.lastFrame())).not.toContain('Display label');
+  });
+
+  it('toggles the model the filter left visible when filter and Space are batched', async () => {
+    const discover = vi.fn(async () => [{ id: 'alpha' }, { id: 'beta' }, { id: 'gamma' }]);
+    const { view } = createWizard({ discover });
+    await advanceToModelChoice(view);
+    await waitForText(view, '3 selected');
+    // "g" narrows the list to gamma; Down and Space must act on that list, not
+    // the three-item one the render still shows.
+    await write(view, 'g\x1b[B ');
+    await waitForText(view, '○ gamma');
+    expect(stripAnsi(view.lastFrame())).toContain('2 selected');
+  });
+
+  it('lands on the protocol two arrows chose', async () => {
+    const { view } = createWizard();
+    await write(view, 'gateway');
+    await write(view, '\r');
+    await waitForText(view, 'Protocol');
+    // Two arrows in one chunk toggle twice, back to OpenAI-compatible.
+    await write(view, '\x1b[B\x1b[B\r');
+    await waitForText(view, 'Base URL');
+    expect(stripAnsi(view.lastFrame())).toContain('https://api.openai.com/v1');
+  });
 });

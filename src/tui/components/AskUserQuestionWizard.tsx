@@ -15,26 +15,58 @@ interface AskUserQuestionWizardProps {
   screenReader?: boolean;
 }
 
+/**
+ * Option labels chosen (single-select) or toggled (multi-select), by question
+ * index. Keyed by index rather than by question text so a question the model
+ * happened to call `constructor` or `__proto__` cannot read an inherited member
+ * of `Object.prototype` where an array was expected.
+ */
+type Choices = Record<number, string[]>;
+
+/** The Other-row text, by question index. Kept apart from the labels: see {@link answerValues}. */
+type CustomAnswers = Record<number, string>;
+
 function sourceLabel(request: UserQuestionRequest): string {
   if (request.source.kind === 'root') return 'Book';
   return request.source.agentPath.join(' / ');
 }
 
-function removeValue(values: string[], value: string | undefined): string[] {
-  return value ? values.filter((item) => item !== value) : values;
+/** The host validator compares answers this way; matching it here keeps a duplicate from leaving. */
+function normalizeLabel(value: string): string {
+  return value.trim().toLocaleLowerCase();
+}
+
+/**
+ * The value a question is answered with. Custom text lives beside the toggled
+ * labels rather than among them, so toggling an option can never delete it and
+ * an exact-match filter can never mistake one for the other.
+ */
+function answerValues(
+  question: UserQuestion,
+  index: number,
+  choices: Choices,
+  custom: CustomAnswers,
+): string[] {
+  const labels = choices[index] ?? [];
+  const text = custom[index];
+  if (question.multiSelect) return text ? [...labels, text] : labels;
+  return text ? [text] : labels;
 }
 
 function normalizeAnswers(
   questions: UserQuestion[],
-  answers: Record<string, string[]>,
+  choices: Choices,
+  custom: CustomAnswers,
 ): Record<string, string | string[]> | null {
-  const normalized: Record<string, string | string[]> = {};
-  for (const question of questions) {
-    const values = answers[question.question] ?? [];
+  const entries: [string, string | string[]][] = [];
+  for (const [index, question] of questions.entries()) {
+    const values = answerValues(question, index, choices, custom);
     if (values.length === 0) return null;
-    normalized[question.question] = question.multiSelect ? values : values[0];
+    entries.push([question.question, question.multiSelect ? values : values[0]]);
   }
-  return normalized;
+  // fromEntries defines own properties, so a question literally named
+  // `__proto__` lands as an answer key rather than replacing the prototype.
+  return Object.fromEntries(entries);
 }
 
 export function AskUserQuestionWizard({
@@ -49,21 +81,22 @@ export function AskUserQuestionWizard({
   const frame = floatingFrameMetrics(outerWidth);
   const contentWidth = Math.max(14, frame.width - 4);
   const compact = outerWidth < 60;
-  // Read back by the key handler, so plain state is not enough: Ink delivers a
-  // whole stdin chunk in one React batch, and a batched arrow+Enter answered
-  // with the option the cursor had left rather than the one highlighted.
+  // Everything the key handler reads back is batch-safe: Ink delivers a whole
+  // stdin chunk in one React batch, so plain state would still show the value
+  // from before the first key. Helpers take the question *index* and resolve it
+  // against `request.questions` (props), never against `question` below, which
+  // is one batch behind after a back + Enter.
   const [questionIndex, setQuestionIndex, currentQuestion] = useKeyState(0);
   const [cursor, setCursor, currentCursor] = useKeyState(0);
-  const [answers, setAnswers] = useState<Record<string, string[]>>({});
-  const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({});
+  const [choices, setChoices, currentChoices] = useKeyState<Choices>({});
+  const [customAnswers, setCustomAnswers, currentCustom] = useKeyState<CustomAnswers>({});
   const [otherMode, setOtherMode, inOtherMode] = useKeyState(false);
-  const [otherValue, setOtherValue] = useState('');
+  const [otherValue, setOtherValue, currentOtherValue] = useKeyState('');
   const [notice, setNotice] = useState<string | null>(null);
   const resolvedRef = useRef(false);
   const question = request.questions[questionIndex];
-  const selected = answers[question.question] ?? [];
-  const customAnswer = customAnswers[question.question];
-  const rowCount = question.options.length + 1;
+  const selected = choices[questionIndex] ?? [];
+  const customAnswer = customAnswers[questionIndex];
 
   const resolveOnce = useCallback(
     (response: UserQuestionResponse) => {
@@ -74,122 +107,179 @@ export function AskUserQuestionWizard({
     [onResolve],
   );
 
-  const advance = useCallback(
-    (nextAnswers: Record<string, string[]>) => {
-      if (currentQuestion() === request.questions.length - 1) {
-        const normalized = normalizeAnswers(request.questions, nextAnswers);
-        if (!normalized) {
-          setNotice('Choose at least one answer to continue.');
-          return;
-        }
-        resolveOnce({ action: 'answer', answers: normalized });
-        return;
-      }
-      setQuestionIndex(currentQuestion() + 1);
-      setCursor(0);
-      setNotice(null);
+  const setChoice = useCallback(
+    (index: number, labels: string[]) => {
+      setChoices({ ...currentChoices(), [index]: labels });
     },
-    [currentQuestion, setQuestionIndex, setCursor, request.questions, resolveOnce],
+    [currentChoices, setChoices],
   );
 
-  const saveAndAdvance = useCallback(
-    (values: string[]) => {
-      const nextAnswers = { ...answers, [question.question]: values };
-      setAnswers(nextAnswers);
-      advance(nextAnswers);
+  const setCustom = useCallback(
+    (index: number, text: string | undefined) => {
+      const next = { ...currentCustom() };
+      if (text === undefined) delete next[index];
+      else next[index] = text;
+      setCustomAnswers(next);
     },
-    [advance, answers, question.question],
+    [currentCustom, setCustomAnswers],
   );
+
+  const advance = useCallback(() => {
+    const index = currentQuestion();
+    if (index === request.questions.length - 1) {
+      const normalized = normalizeAnswers(request.questions, currentChoices(), currentCustom());
+      if (!normalized) {
+        setNotice('Choose at least one answer to continue.');
+        return;
+      }
+      resolveOnce({ action: 'answer', answers: normalized });
+      return;
+    }
+    setQuestionIndex(index + 1);
+    setCursor(0);
+    setNotice(null);
+  }, [
+    currentQuestion,
+    currentChoices,
+    currentCustom,
+    request.questions,
+    resolveOnce,
+    setQuestionIndex,
+    setCursor,
+  ]);
 
   const chooseKnownOption = useCallback(
-    (index: number) => {
-      const label = question.options[index]?.label;
+    (index: number, optionIndex: number) => {
+      const target = request.questions[index];
+      const label = target?.options[optionIndex]?.label;
       if (!label) return;
       setNotice(null);
-      if (!question.multiSelect) {
-        setCustomAnswers((current) => {
-          const next = { ...current };
-          delete next[question.question];
-          return next;
-        });
-        saveAndAdvance([label]);
+      if (!target.multiSelect) {
+        setCustom(index, undefined);
+        setChoice(index, [label]);
+        advance();
         return;
       }
-      setAnswers((current) => {
-        const values = current[question.question] ?? [];
-        return {
-          ...current,
-          [question.question]: values.includes(label)
-            ? values.filter((value) => value !== label)
-            : [...values, label],
-        };
-      });
+      const labels = currentChoices()[index] ?? [];
+      setChoice(
+        index,
+        labels.includes(label) ? labels.filter((value) => value !== label) : [...labels, label],
+      );
     },
-    [question, saveAndAdvance],
+    [request.questions, currentChoices, setChoice, setCustom, advance],
   );
 
-  const openOther = useCallback(() => {
-    setOtherValue(customAnswer ?? '');
-    setOtherMode(true);
-    setNotice(null);
-  }, [customAnswer]);
+  const openOther = useCallback(
+    (index: number) => {
+      setOtherValue(currentCustom()[index] ?? '');
+      setOtherMode(true);
+      setNotice(null);
+    },
+    [currentCustom, setOtherValue, setOtherMode],
+  );
+
+  const submitOther = useCallback(
+    (index: number) => {
+      const target = request.questions[index];
+      if (!target) return;
+      const text = currentOtherValue().trim();
+      if (!text) {
+        setNotice('Type an answer before continuing.');
+        return;
+      }
+      setOtherMode(false);
+      setOtherValue('');
+      // Text that names an option is that option. Stored as custom text it
+      // would reach the host as a duplicate, and the validator then discards
+      // every answer in the request.
+      const key = normalizeLabel(text);
+      const match = target.options.findIndex((option) => normalizeLabel(option.label) === key);
+      if (match >= 0) {
+        if (!target.multiSelect) {
+          chooseKnownOption(index, match);
+          return;
+        }
+        const label = target.options[match].label;
+        const labels = currentChoices()[index] ?? [];
+        setCustom(index, undefined);
+        setChoice(index, labels.includes(label) ? labels : [...labels, label]);
+        advance();
+        return;
+      }
+      if (!target.multiSelect) setChoice(index, []);
+      setCustom(index, text);
+      advance();
+    },
+    [
+      request.questions,
+      currentOtherValue,
+      currentChoices,
+      setOtherMode,
+      setOtherValue,
+      setChoice,
+      setCustom,
+      chooseKnownOption,
+      advance,
+    ],
+  );
 
   useInput((input, key) => {
+    const index = currentQuestion();
     if (inOtherMode()) {
-      if (key.escape) {
+      // This handler is the only owner of Enter while the editor is open; the
+      // TextInput below has no onSubmit. Two listeners on one keypress meant
+      // the second saw the mode flag already flipped and answered the next
+      // question with its first option before it was ever shown.
+      if (key.return) submitOther(index);
+      else if (key.escape) {
         setOtherMode(false);
         setNotice(null);
       }
       return;
     }
 
-    const numeric = Number(input);
-    if (Number.isInteger(numeric) && numeric >= 1 && numeric <= question.options.length) {
-      setCursor(numeric - 1);
-      chooseKnownOption(numeric - 1);
+    const activeQuestion = request.questions[index];
+    if (!activeQuestion) return;
+
+    const activeCursor = currentCursor();
+    const otherRow = activeQuestion.options.length;
+    const rowCount = otherRow + 1;
+
+    // A single digit, not anything Number() would coerce: a pasted line that
+    // starts with " 1" or "1.0" is text, not the quick-choose the footer offers.
+    if (/^[1-9]$/.test(input) && Number(input) <= otherRow) {
+      setCursor(Number(input) - 1);
+      chooseKnownOption(index, Number(input) - 1);
       return;
     }
     if (key.upArrow || (key.shift && key.tab)) {
-      setCursor((currentCursor() - 1 + rowCount) % rowCount);
+      setCursor((activeCursor - 1 + rowCount) % rowCount);
       setNotice(null);
     } else if (key.downArrow || key.tab) {
-      setCursor((currentCursor() + 1) % rowCount);
+      setCursor((activeCursor + 1) % rowCount);
       setNotice(null);
-    } else if (input === ' ' && question.multiSelect) {
-      if (currentCursor() === question.options.length) {
-        if (customAnswer) {
-          setAnswers((current) => ({
-            ...current,
-            [question.question]: removeValue(current[question.question] ?? [], customAnswer),
-          }));
-          setCustomAnswers((current) => {
-            const next = { ...current };
-            delete next[question.question];
-            return next;
-          });
-        } else {
-          openOther();
-        }
+    } else if (input === ' ' && activeQuestion.multiSelect) {
+      if (activeCursor === otherRow) {
+        if (currentCustom()[index]) setCustom(index, undefined);
+        else openOther(index);
       } else {
-        chooseKnownOption(currentCursor());
+        chooseKnownOption(index, activeCursor);
       }
     } else if (key.return) {
-      if (currentCursor() === question.options.length) {
-        openOther();
-      } else if (question.multiSelect) {
-        if (selected.length === 0) {
-          setNotice('Select one or more options first.');
-        } else {
-          saveAndAdvance(selected);
-        }
+      if (activeCursor === otherRow) {
+        openOther(index);
+      } else if (activeQuestion.multiSelect) {
+        const values = answerValues(activeQuestion, index, currentChoices(), currentCustom());
+        if (values.length === 0) setNotice('Select one or more options first.');
+        else advance();
       } else {
-        chooseKnownOption(currentCursor());
+        chooseKnownOption(index, activeCursor);
       }
     } else if (input.toLowerCase() === 'o') {
-      setCursor(question.options.length);
-      openOther();
-    } else if ((input.toLowerCase() === 'b' || key.leftArrow) && currentQuestion() > 0) {
-      setQuestionIndex(currentQuestion() - 1);
+      setCursor(otherRow);
+      openOther(index);
+    } else if ((input.toLowerCase() === 'b' || key.leftArrow) && index > 0) {
+      setQuestionIndex(index - 1);
       setCursor(0);
       setNotice(null);
     } else if (input.toLowerCase() === 'd') {
@@ -302,21 +392,6 @@ export function AskUserQuestionWizard({
             <TextInput
               value={otherValue}
               onChange={(value) => setOtherValue(value.slice(0, 2000))}
-              onSubmit={(value) => {
-                const custom = value.trim();
-                if (!custom) {
-                  setNotice('Type an answer before continuing.');
-                  return;
-                }
-                const base = removeValue(selected, customAnswer);
-                const values = question.multiSelect ? [...base, custom] : [custom];
-                const nextAnswers = { ...answers, [question.question]: values };
-                setAnswers(nextAnswers);
-                setCustomAnswers((current) => ({ ...current, [question.question]: custom }));
-                setOtherMode(false);
-                setOtherValue('');
-                advance(nextAnswers);
-              }}
             />
           </Box>
           <Text color={theme.subtle} dimColor>
