@@ -269,7 +269,7 @@ export function inferDiffLanguage(filePath: string | undefined): string | undefi
   return extension ? languages[extension] : undefined;
 }
 
-function expandTabs(value: string, tabSize = 4): string {
+export function expandTabs(value: string, tabSize = 4): string {
   let column = 0;
   let result = '';
   for (const character of value) {

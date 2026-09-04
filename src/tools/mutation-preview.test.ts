@@ -53,21 +53,26 @@ describe('previewMutation', () => {
     expect(readFileSync(join(workspace, 'notes.txt'), 'utf8')).toBe('alpha\nbeta\ngamma\n');
   });
 
-  // The prompt is raised before the registry normalizes argument names, so the
-  // model-facing spellings must preview exactly like the canonical ones.
-  it('accepts the model-facing argument aliases', async () => {
+  it('honours replaceAll', async () => {
     const preview = await previewMutation(
-      call('Edit', {
-        file_path: 'notes.txt',
-        old_string: 'a',
-        new_string: 'A',
-        replace_all: true,
-      }),
+      call('Edit', { filePath: 'notes.txt', oldString: 'a', newString: 'A', replaceAll: true }),
       workspace,
     );
     expect(preview?.error).toBeUndefined();
     expect(preview?.files[0].diff).toContain('+AlphA');
     expect(preview?.files[0].diff).toContain('+gAmmA');
+  });
+
+  // The agent loop normalizes argument names through the registry before the
+  // prompt fires, so this module reads canonical names only. A raw call is a
+  // caller bug, and it must read as one rather than silently half-work.
+  it('reads canonical argument names only', async () => {
+    const raw = await previewMutation(
+      call('Write', { file_path: 'notes.txt', content: 'omega\n' }),
+      workspace,
+    );
+    expect(raw?.files).toEqual([]);
+    expect(raw?.error).toBe('No file path given');
   });
 
   it('reports the failure the tool would report instead of a diff', async () => {
@@ -103,7 +108,7 @@ describe('previewMutation', () => {
         filePath: 'notes.txt',
         edits: [
           { oldString: 'alpha', newString: 'one' },
-          { old_string: 'gamma', new_string: 'three' },
+          { oldString: 'gamma', newString: 'three' },
         ],
       }),
       workspace,
@@ -122,11 +127,12 @@ describe('previewMutation', () => {
       workspace,
     );
     expect(failing?.error).toContain('Edit 2:');
+    expect(failing?.error).toContain('MultiEdit is atomic');
   });
 
   it('shows a Write as an update of an existing file or a create of a new one', async () => {
     const update = await previewMutation(
-      call('Write', { file_path: 'notes.txt', content: 'alpha\nomega\n' }),
+      call('Write', { filePath: 'notes.txt', content: 'alpha\nomega\n' }),
       workspace,
     );
     expect(update?.files[0].kind).toBe('update');
@@ -183,6 +189,26 @@ describe('previewMutation', () => {
     expect(readFileSync(join(workspace, 'gone.txt'), 'utf8')).toBe('bye\n');
   });
 
+  // The tool rejects such a patch before touching anything; a preview that
+  // showed two clean diffs would be consenting to a change that cannot happen.
+  it('refuses a patch that names one file twice, as the tool does', async () => {
+    const patch = [
+      '*** Begin Patch',
+      '*** Update File: notes.txt',
+      '@@',
+      '-alpha',
+      '+ALPHA',
+      '*** Update File: ./notes.txt',
+      '@@',
+      '-gamma',
+      '+GAMMA',
+      '*** End Patch',
+    ].join('\n');
+    const preview = await previewMutation(call('ApplyPatch', { patch }), workspace);
+    expect(preview?.files).toEqual([]);
+    expect(preview?.error).toBe('A patch may contain only one operation per file');
+  });
+
   it('surfaces a patch whose context does not match', async () => {
     const patch = [
       '*** Begin Patch',
@@ -211,5 +237,18 @@ describe('previewMutation', () => {
       (await previewMutation(call('MultiEdit', { filePath: 'notes.txt', edits: 'x' }), workspace))
         ?.error,
     ).toBe('No edits provided');
+    expect(
+      (await previewMutation(call('MultiEdit', { filePath: 'notes.txt', edits: [1] }), workspace))
+        ?.error,
+    ).toBe('Malformed edit entry');
+  });
+
+  it('refuses a file over the line ceiling before doing any matching', async () => {
+    writeFileSync(join(workspace, 'huge.txt'), 'x\n'.repeat(20_001));
+    const preview = await previewMutation(
+      call('Edit', { filePath: 'huge.txt', oldString: 'x', newString: 'y' }),
+      workspace,
+    );
+    expect(preview?.error).toBe('File is too large to preview');
   });
 });

@@ -11,12 +11,13 @@ import {
   isPreviewableMutation,
   previewMutation,
   type MutationPreview,
+  type MutationPreviewFile,
 } from '../../tools/mutation-preview.js';
 import { permissionRuleForToolCall, permissionRuleLadder } from '../../permissions.js';
 import type { PermissionDecision, PermissionResult, ToolCall } from '../../types/tools.js';
 import { createUiDebugLogger } from '../../debug-log.js';
 import { useDebugMount } from '../debug.js';
-import { DiffBlock } from './Diff.js';
+import { DiffBlock, expandTabs } from './Diff.js';
 import { displayWidth, hardWrapLine, truncateDisplay } from './word-wrap.js';
 
 const uiLog = createUiDebugLogger('tui:permbtn');
@@ -32,6 +33,7 @@ const COLLAPSED_COMMAND_ROWS = 6;
 const COLLAPSED_DIFF_ROWS = 8;
 /** Rows the card keeps free for its own chrome, the buttons, and the composer. */
 const RESERVED_ROWS = 12;
+/** A file shown with fewer diff rows than this says nothing; hide it instead. */
 const MIN_DIFF_ROWS_PER_FILE = 4;
 
 /**
@@ -143,12 +145,15 @@ export interface WrappedPayload {
  *
  * A hard wrap, not a word wrap: a command's spacing is part of the command,
  * and a display that collapses `"a  b"` to `"a b"` shows something the shell
- * will not run. The cut always leaves room for its own marker, so a reader can
- * tell a payload that fits from one that was trimmed.
+ * will not run. Tabs are expanded to the columns they will occupy, and a
+ * carriage return ends a row rather than reaching the terminal, where it
+ * would drag the rest of the row back over the card's border. The cut always
+ * leaves room for its own marker, so a reader can tell a payload that fits
+ * from one that was trimmed.
  */
 export function wrapPayload(text: string, width: number, maxRows: number): WrappedPayload {
   const columns = Math.max(4, Math.floor(width));
-  const rows = text.split('\n').flatMap((line) => hardWrapLine(line, columns));
+  const rows = text.split(/\r\n|\r|\n/).flatMap((line) => hardWrapLine(expandTabs(line), columns));
   const budget = Math.max(1, Math.floor(maxRows));
   if (rows.length <= budget) return { rows, hiddenRows: 0 };
   // The marker takes a row of its own, so one fewer payload row survives.
@@ -156,17 +161,14 @@ export function wrapPayload(text: string, width: number, maxRows: number): Wrapp
   return { rows: rows.slice(0, kept), hiddenRows: rows.length - kept };
 }
 
-type PreviewState =
-  { status: 'idle' } | { status: 'loading' } | { status: 'ready'; preview: MutationPreview };
-
-function previewSummary(preview: MutationPreview): string {
-  const added = preview.files.reduce((total, file) => total + file.stats.addedLines, 0);
-  const removed = preview.files.reduce((total, file) => total + file.stats.removedLines, 0);
+function previewSummary(files: readonly MutationPreviewFile[]): string {
+  const added = files.reduce((total, file) => total + file.stats.addedLines, 0);
+  const removed = files.reduce((total, file) => total + file.stats.removedLines, 0);
   return `+${added} −${removed}`;
 }
 
-function fileKindLabel(kind: 'create' | 'update' | 'delete'): string {
-  return kind === 'create' ? 'create' : kind === 'delete' ? 'delete' : 'update';
+function diffRowCount(file: MutationPreviewFile): number {
+  return file.diff.length === 0 ? 0 : file.diff.split('\n').length;
 }
 
 /**
@@ -196,7 +198,6 @@ export function PermissionButtons({
   const [selected, setSelected, currentSelected] = useKeyState(0);
   const resolvedToolCallIdRef = useRef<string | null>(null);
   const canonical = canonicalToolName(toolCall.name);
-  const primaryArg = getPrimaryArg(toolCall.arguments);
   const payload = permissionPayloadText(toolCall);
   const risk = toolRiskLevel(toolCall);
   const hint = riskHint(risk);
@@ -224,7 +225,7 @@ export function PermissionButtons({
   // A change-focused diff draws a `⋮ n rows omitted` marker between every run
   // of selected rows, so in the worst case each budgeted row costs two on
   // screen; the diff budget is the row budget halved.
-  const expandedDiffRows = Math.max(MIN_DIFF_ROWS_PER_FILE, Math.floor(rowBudget / 2));
+  const expandedDiffRows = Math.floor(rowBudget / 2);
   const collapsedDiffRows = Math.min(COLLAPSED_DIFF_ROWS, expandedDiffRows);
 
   // The header carries the payload inline only when the whole thing fits on
@@ -247,52 +248,58 @@ export function PermissionButtons({
   // arguments against the file on disk. Nothing is written until the user
   // answers; the tool recomputes against the file it finds when it runs.
   const previewable = Boolean(workspaceRoot) && isPreviewableMutation(toolCall);
-  const [previewState, setPreviewState] = useState<PreviewState>(
-    previewable ? { status: 'loading' } : { status: 'idle' },
-  );
+  const [preview, setPreview] = useState<MutationPreview | null>(null);
+  const previewLoading = previewable && preview === null;
+  // A managed agent's record is replaced wholesale on every agent event, so
+  // the request object can change identity while the request does not; key
+  // the preview on the call id and read the call through a ref.
+  const toolCallRef = useRef(toolCall);
+  toolCallRef.current = toolCall;
   useEffect(() => {
-    if (!previewable || !workspaceRoot) {
-      setPreviewState({ status: 'idle' });
-      return;
-    }
+    setPreview(null);
+    if (!previewable || !workspaceRoot) return;
     const controller = new AbortController();
-    setPreviewState({ status: 'loading' });
-    previewMutation(toolCall, workspaceRoot, controller.signal)
-      .then((preview) => {
-        if (controller.signal.aborted) return;
-        setPreviewState(preview ? { status: 'ready', preview } : { status: 'idle' });
+    previewMutation(toolCallRef.current, workspaceRoot, controller.signal)
+      .then((result) => {
+        if (controller.signal.aborted || !result) return;
+        setPreview(result);
         uiLog.event('preview', {
           tool: canonical,
-          files: preview?.files.length ?? 0,
-          error: preview?.error ?? '',
+          files: result.files.length,
+          error: result.error ?? '',
         });
       })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
-        setPreviewState({
-          status: 'ready',
-          preview: {
-            files: [],
-            error: `Preview failed: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        });
-      });
+      // Only the abort from the cleanup below rejects; nothing to show for it.
+      .catch(() => undefined);
     return () => controller.abort();
-  }, [canonical, previewable, toolCall, workspaceRoot]);
+  }, [canonical, previewable, toolCall.id, workspaceRoot]);
 
-  const preview = previewState.status === 'ready' ? previewState.preview : null;
-  const diffFiles = preview?.files.filter((file) => file.diff.length > 0) ?? [];
-  const diffRowsPerFile =
-    diffFiles.length === 0
+  // Row counts are constant for the life of a preview; the card re-renders on
+  // every keypress and must not re-split a large diff each time.
+  const diffRows = useMemo(
+    () => new Map((preview?.files ?? []).map((file) => [file.filePath, diffRowCount(file)])),
+    [preview],
+  );
+  const files = preview && !preview.error ? preview.files : [];
+  const diffBudget = expanded ? expandedDiffRows : collapsedDiffRows;
+  // The budget bounds the card, not each file: a patch across many files
+  // shows as many as the budget can give a meaningful diff, and counts the rest.
+  const filesShown =
+    files.length === 0
       ? 0
-      : Math.max(
-          MIN_DIFF_ROWS_PER_FILE,
-          Math.floor((expanded ? expandedDiffRows : collapsedDiffRows) / diffFiles.length),
-        );
-  const diffRowsTotal = diffFiles.reduce((total, file) => total + file.diff.split('\n').length, 0);
+      : Math.max(1, Math.min(files.length, Math.floor(diffBudget / MIN_DIFF_ROWS_PER_FILE)));
+  const shownFiles = files.slice(0, filesShown);
+  const hiddenFiles = files.slice(filesShown);
+  const shownWithDiff = Math.max(
+    1,
+    shownFiles.filter((file) => (diffRows.get(file.filePath) ?? 0) > 0).length,
+  );
+  const diffRowsPerFile = Math.max(MIN_DIFF_ROWS_PER_FILE, Math.floor(diffBudget / shownWithDiff));
   // `D` is offered only while it would show something more, or has. On a
   // terminal too short for a larger budget the diff already shows what it can.
-  const diffHasMore = diffRowsTotal > diffRowsPerFile * Math.max(1, diffFiles.length);
+  const diffHasMore =
+    hiddenFiles.length > 0 ||
+    shownFiles.some((file) => (diffRows.get(file.filePath) ?? 0) > diffRowsPerFile);
   const canExpand =
     expanded ||
     wrappedPayload.hiddenRows > 0 ||
@@ -304,7 +311,7 @@ export function PermissionButtons({
   useDebugMount(uiLog, {
     tool: canonical,
     risk,
-    primaryArg: primaryArg ? primaryArg.slice(0, 40) : null,
+    primaryArg: payload ? payload.slice(0, 40) : null,
   });
 
   const moveSelection = useCallback((next: (current: number) => number) => {
@@ -384,8 +391,10 @@ export function PermissionButtons({
         return;
       }
       // `D` only changes what the card shows, never what it resolves, so a
-      // stray press costs nothing.
+      // stray press costs nothing. It does nothing at all while there is
+      // nothing to open, so the card never claims to be expanded when it is not.
       if (input === 'd' || input === 'D') {
+        if (!canExpand) return;
         setExpanded((current) => {
           uiLog.event('input:shortcut', {
             tool: canonical,
@@ -440,17 +449,15 @@ export function PermissionButtons({
     return (
       <Box marginLeft={CONTENT_COLUMN} flexDirection="column">
         <Text>Permission required for: {canonical}</Text>
-        {risk === 'shell' && payload ? (
-          <Text>Command: {payload}</Text>
-        ) : (
-          <Text>Primary argument: {primaryArg || '(none)'}</Text>
-        )}
+        <Text>
+          {risk === 'shell' ? 'Command' : 'Primary argument'}: {payload || '(none)'}
+        </Text>
         {hint ? <Text>Warning: {hint}</Text> : null}
-        {previewState.status === 'loading' ? <Text>Computing the change preview.</Text> : null}
+        {previewLoading ? <Text>Computing the change preview.</Text> : null}
         {preview?.error ? <Text>Cannot preview this change: {preview.error}</Text> : null}
-        {preview?.files.map((file) => (
+        {files.map((file) => (
           <Text key={file.filePath}>
-            Will {fileKindLabel(file.kind)} {file.filePath}: {file.stats.addedLines} lines added,{' '}
+            Will {file.kind} {file.filePath}: {file.stats.addedLines} lines added,{' '}
             {file.stats.removedLines} lines removed.
           </Text>
         ))}
@@ -512,7 +519,7 @@ export function PermissionButtons({
           <Text color={risk === 'shell' ? theme.error : theme.warning}>{hint}</Text>
         </Box>
       ) : null}
-      {previewState.status === 'loading' ? (
+      {previewLoading ? (
         <Box>
           <Text color={theme.subtle} dimColor>
             Computing diff…
@@ -526,44 +533,60 @@ export function PermissionButtons({
           </Text>
         </Box>
       ) : null}
-      {preview && !preview.error && preview.files.length > 0 ? (
+      {files.length > 0 ? (
         <Box flexDirection="column">
-          {preview.files.map((file) => (
-            <Box key={file.filePath} flexDirection="column">
-              <Box>
-                <Text color={theme.subtle} dimColor>
-                  {fileKindLabel(file.kind)}{' '}
-                </Text>
-                <Text color={theme.text}>
-                  {truncateDisplay(file.filePath, Math.max(8, contentWidth - 20))}
-                </Text>
-                <Text> </Text>
-                <Text color={theme.success}>+{file.stats.addedLines}</Text>
-                <Text> </Text>
-                <Text color={theme.error}>−{file.stats.removedLines}</Text>
-                {file.diff.length === 0 ? (
+          {shownFiles.map((file) => {
+            const noChange = file.diff.length === 0 ? ' no textual change' : '';
+            const counts = ` +${file.stats.addedLines} −${file.stats.removedLines}`;
+            // The path takes what the row's other segments leave it.
+            const pathRoom =
+              contentWidth - displayWidth(`${file.kind} `) - displayWidth(counts + noChange);
+            return (
+              <Box key={file.filePath} flexDirection="column">
+                <Box>
                   <Text color={theme.subtle} dimColor>
-                    {' '}
-                    no textual change
+                    {file.kind}{' '}
                   </Text>
+                  <Text color={theme.text}>
+                    {truncateDisplay(file.filePath, Math.max(8, pathRoom))}
+                  </Text>
+                  <Text> </Text>
+                  <Text color={theme.success}>+{file.stats.addedLines}</Text>
+                  <Text> </Text>
+                  <Text color={theme.error}>−{file.stats.removedLines}</Text>
+                  {noChange ? (
+                    <Text color={theme.subtle} dimColor>
+                      {noChange}
+                    </Text>
+                  ) : null}
+                </Box>
+                {file.diff.length > 0 ? (
+                  <DiffBlock
+                    output={file.diff}
+                    filePath={file.filePath}
+                    collapsed
+                    maxRows={diffRowsPerFile}
+                    expandHint={canExpand && !expanded ? 'D shows more' : ''}
+                    terminalWidth={contentWidth}
+                  />
                 ) : null}
               </Box>
-              {file.diff.length > 0 ? (
-                <DiffBlock
-                  output={file.diff}
-                  filePath={file.filePath}
-                  collapsed
-                  maxRows={diffRowsPerFile}
-                  expandHint={canExpand && !expanded ? 'D shows more' : ''}
-                  terminalWidth={contentWidth}
-                />
-              ) : null}
-            </Box>
-          ))}
-          {preview.files.length > 1 ? (
+            );
+          })}
+          {hiddenFiles.length > 0 ? (
             <Box>
               <Text color={theme.subtle} dimColor>
-                {preview.files.length} files · {previewSummary(preview)}
+                {truncateDisplay(
+                  `… ${hiddenFiles.length} more ${hiddenFiles.length === 1 ? 'file' : 'files'} · ${previewSummary(hiddenFiles)}${canExpand && !expanded ? ' · D shows more' : ''}`,
+                  contentWidth,
+                )}
+              </Text>
+            </Box>
+          ) : null}
+          {files.length > 1 ? (
+            <Box>
+              <Text color={theme.subtle} dimColor>
+                {files.length} files · {previewSummary(files)}
               </Text>
             </Box>
           ) : null}

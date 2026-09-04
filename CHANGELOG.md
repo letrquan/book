@@ -23,11 +23,20 @@ All notable changes to this project are documented in this file.
   pending call's arguments against the file on disk, with the same matching the tool will use
   (`src/tools/mutation-preview.ts`, reusing the tools' own edit and hunk appliers and rendered
   through the transcript's `DiffBlock`). A change that cannot be previewed says why — `Cannot
-  preview: oldString not found in file` — which is also the failure the tool was about to report,
-  so the user can skip a call that is going to fail instead of approving it first. Previews are
-  bounded to a change-focused dozen rows across all files of a patch; `D` opens them to what the
-  terminal can hold. A worktree-isolated managed agent previews against its own checkout. The
-  screen-reader rendering reads the whole command and a per-file summary of lines added and removed.
+  preview: oldString not found in file`, or a patch that names one file twice — which is the
+  matching failure the tool was about to report, so the user can skip a call that is going to
+  fail instead of approving it first. (The tools' file-provenance gate, which refuses to mutate a
+  file the session has not read, is not previewed.) Previews are change-focused and bounded by
+  the terminal: eight diff rows on a tall terminal, fewer on a short one, and a patch across many
+  files shows as many as that budget can give a meaningful diff and counts the rest; `D` opens
+  them to what the terminal can hold, and is offered only when it would show more. A
+  worktree-isolated managed agent previews against its own checkout. The screen-reader rendering
+  reads the whole command and a per-file summary of lines added and removed.
+
+  Along the way the line diff (`src/tools/diff.ts`) now trims the lines shared at both ends
+  before building its LCS table, so a one-line edit deep in a twenty-thousand-line file costs a
+  handful of cells rather than four hundred million; the mutation tools, which run the same diff
+  after every write, get the same saving.
 
 ### Added
 

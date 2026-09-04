@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setImmediate as waitForImmediate } from 'node:timers/promises';
+import { setImmediate as waitForImmediate, setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
 import stripAnsi from 'strip-ansi';
@@ -20,17 +20,21 @@ function makeWorkspace(files: Record<string, string>): string {
   return root;
 }
 
+// The preview lands after real file I/O, so the wait is a deadline in wall
+// time, not a count of event-loop turns a loaded runner can burn through.
 async function frameContaining(
   view: ReturnType<typeof render>,
   needle: string,
-  attempts = 200,
+  timeoutMs = 5_000,
 ): Promise<string> {
-  for (let attempt = 0; attempt < attempts; attempt++) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
     const frame = stripAnsi(view.lastFrame() ?? '');
     if (frame.includes(needle)) return frame;
-    await waitForImmediate();
+    if (Date.now() > deadline)
+      throw new Error(`frame never contained ${JSON.stringify(needle)}:\n${view.lastFrame()}`);
+    await sleep(5);
   }
-  throw new Error(`frame never contained ${JSON.stringify(needle)}:\n${view.lastFrame()}`);
 }
 
 afterEach(() => {
@@ -287,7 +291,7 @@ describe('PermissionButtons payload', () => {
           toolCall={{
             id: 'edit-1',
             name: 'Edit',
-            arguments: { file_path: 'notes.txt', old_string: 'beta', new_string: 'delta' },
+            arguments: { filePath: 'notes.txt', oldString: 'beta', newString: 'delta' },
           }}
           onResolve={vi.fn()}
           terminalWidth={80}
@@ -341,6 +345,61 @@ describe('PermissionButtons payload', () => {
     expect(frame).not.toContain('Computing diff');
     view.stdin.write('r');
     expect(onResolve).toHaveBeenCalledExactlyOnceWith('allow');
+  });
+
+  it('keeps a tab-indented command inside the card', () => {
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{
+            id: 'bash-tab',
+            name: 'Bash',
+            arguments: {
+              command: `cat > Makefile <<EOF\nall:\n\t\t\tgcc -o app main.c util.c\nEOF`,
+            },
+          }}
+          onResolve={vi.fn()}
+          terminalWidth={40}
+        />,
+      ),
+    );
+    const frame = stripAnsi(view.lastFrame() ?? '');
+    expect(frame).not.toContain('\t');
+    expect(frame).toContain('            gcc -o app');
+    for (const line of frame.split('\n')) expect(line.length).toBeLessThanOrEqual(40);
+  });
+
+  it('caps the files a multi-file patch shows and counts the rest', async () => {
+    const names = ['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt'];
+    const root = makeWorkspace(Object.fromEntries(names.map((name) => [name, 'one\ntwo\n'])));
+    const patch = [
+      '*** Begin Patch',
+      ...names.flatMap((name) => [`*** Update File: ${name}`, '@@', '-one', '+ONE']),
+      '*** End Patch',
+    ].join('\n');
+    const view = render(
+      withTheme(
+        <PermissionButtons
+          toolCall={{ id: 'patch-1', name: 'ApplyPatch', arguments: { patch } }}
+          onResolve={vi.fn()}
+          terminalWidth={80}
+          terminalRows={24}
+          workspaceRoot={root}
+        />,
+      ),
+    );
+    // 24 rows leave a 6-row diff budget: one file at a time, the rest counted.
+    const frame = await frameContaining(view, 'more files');
+    expect(frame).toContain('update a.txt +1 −1');
+    expect(frame).not.toContain('update b.txt');
+    expect(frame).toContain('… 4 more files · +4 −4');
+    expect(frame).toContain('5 files · +5 −5');
+    // Nothing more can open on a terminal this short, so D is not offered
+    // and does not pretend to have opened anything.
+    expect(frame).not.toContain('D more');
+    view.stdin.write('d');
+    await waitForImmediate();
+    expect(stripAnsi(view.lastFrame() ?? '')).not.toContain('D less');
   });
 
   it('reads the whole command and the change summary to a screen reader', async () => {
