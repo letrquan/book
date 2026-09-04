@@ -100,7 +100,7 @@ import { PermissionsPanel } from './components/PermissionsPanel.js';
 import { useDebugMount, useDebugValueChange } from './debug.js';
 import { getAvailableEffortLevels, getEffortUnavailableError } from '../commands/effort.js';
 import type { InteractiveAssets } from './interactive-assets.js';
-import { resolveContextLimit } from '../models.js';
+import { resolveContextWindow } from '../models.js';
 import { wordWrap } from './components/word-wrap.js';
 import {
   createQueuedInput,
@@ -2191,6 +2191,8 @@ export function App({
     );
   }
 
+  const contextWindow = resolveContextWindow(liveConfig);
+
   return (
     <AppProviders theme={currentTheme.tokens} density={density}>
       <ErrorBoundary resumeCommand={resumeCommand} onExit={exitFromCrash}>
@@ -3248,7 +3250,8 @@ export function App({
               gitStatus={gitStatus.status}
               model={liveConfig.modelSelection ?? liveConfig.model}
               tokenCount={tokenCount}
-              maxTokens={resolveContextLimit(liveConfig)}
+              maxTokens={contextWindow.window}
+              maxTokensSource={contextWindow.source}
               mode={mode}
               taskCount={tasks.length}
               activeTaskCount={tasks.filter((t) => t.status === 'in_progress').length}

@@ -45,11 +45,15 @@ export interface ConfigCommandDisplay {
   };
 }
 
+export type ContextWindowSource = 'declared' | 'family' | 'default';
+
 export interface ContextCommandDisplay {
   kind: 'context';
   model: string;
   maxTokens: number;
-  /** False/absent when maxTokens is the assumed default, not a declared window. */
+  /** Origin of the context window: declared in settings, matched from a family prior, or product default. */
+  windowSource?: ContextWindowSource;
+  /** @deprecated Use `windowSource`. False/absent when maxTokens is the assumed default. */
   windowDeclared?: boolean;
   estimatedTokens: number;
   totalMessages: number;

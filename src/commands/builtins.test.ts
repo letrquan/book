@@ -201,7 +201,7 @@ describe('built-in command contract', () => {
     // not silently reported as having 272k of headroom.
     expect(unknownModel).toEqual(
       expect.objectContaining({
-        display: expect.objectContaining({ windowDeclared: false }),
+        display: expect.objectContaining({ windowSource: 'default', windowDeclared: false }),
       }),
     );
 
@@ -216,7 +216,27 @@ describe('built-in command contract', () => {
         display: expect.objectContaining({
           kind: 'context',
           maxTokens: 1_048_576,
+          windowSource: 'declared',
           windowDeclared: true,
+        }),
+      }),
+    );
+
+    // A model matching a known family resolves its window from the family table.
+    const familyModel = registry.execute(
+      'context',
+      '',
+      context({
+        runtimeConfig: defaultConfig({ model: '9router/ag/gemini-3.8-flash-high' }),
+      }),
+    );
+    expect(familyModel).toEqual(
+      expect.objectContaining({
+        display: expect.objectContaining({
+          kind: 'context',
+          maxTokens: 1_048_576,
+          windowSource: 'family',
+          windowDeclared: false,
         }),
       }),
     );
