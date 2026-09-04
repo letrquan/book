@@ -6,6 +6,26 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **Model family context-window table and three-state source reporting.** Previously,
+  `resolveContextLimit()` returned the fallback `DEFAULT_CONTEXT_WINDOW = 272_000` for every model
+  that did not explicitly declare a per-model `contextWindow` in settings. On 1M-context models such
+  as Gemini Flash behind router prefixes (`9router/ag/gemini-3.8-flash-high`), premature
+  auto-compactions were triggered against the 272k ceiling.
+
+  Book now resolves context windows through `resolveContextWindow()` across a three-state source
+  precedence: explicit declaration in `modelInfo.contextWindow` (`declared`), matching a known
+  conservative family prior (`family`), or the product fallback (`default`). A built-in family
+  table covers Gemini Flash (1,048,576 tokens), Claude 3+ (200,000 tokens), GPT-4o (128,000 tokens),
+  GPT-4 Turbo (128,000 tokens), and OpenAI o-series (128,000 tokens), stripping router paths and date
+  stamps during normalization; families whose published window varies too widely across variants
+  — Qwen being the case in point, 32k to 1M — are deliberately left to the default so the user is
+  prompted to declare one. The three-state source is threaded through `/context` reports, the
+  `/context` command panel metric card (`(default)`, `(family)`, or unadorned when declared), and the
+  responsive TUI status line (`(family)` or `(default)` on wide terminals, dropping out first when
+  space is tight). Because initial tool discovery derives its schema token budget from
+  `window * 0.05`, models resolving to 128k families receive a proportionally tightened eager tool
+  catalog (6,400 tokens, down from the 8,000-token cap applied at 272k).
+
 - **`/login` — subscription sign-in from inside the TUI.** Subscription auth shipped as
   `book auth login` and nothing else: no slash command, no import from `src/auth/` anywhere under
   `src/tui/`, and no credential row in `/status`. A user who never left the TUI had no way to

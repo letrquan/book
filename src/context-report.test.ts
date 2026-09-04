@@ -101,4 +101,54 @@ describe('buildContextReport', () => {
     expect(report).toContain('Subagents       : 2 discoverable');
     expect(report).toContain('Memory index    : loaded');
   });
+
+  it('explains family-matched window source without default advice', () => {
+    const report = buildContextReport([], {
+      model: '9router/ag/gemini-3.8-flash-high',
+      maxTokens: 1_048_576,
+      windowSource: 'family',
+      commandCount: 0,
+      hasClaudeMdLoader: false,
+    });
+
+    expect(report).toContain(
+      'This window came from a known family for that model and is not a per-model declaration.',
+    );
+    expect(report).not.toContain('— assumed default');
+    expect(report).not.toContain(
+      'This model declares no context window, so the default above is a guess.',
+    );
+  });
+
+  it('explains assumed default window and advises setting contextWindow', () => {
+    const report = buildContextReport([], {
+      model: 'unknown-model',
+      maxTokens: 272_000,
+      windowSource: 'default',
+      commandCount: 0,
+      hasClaudeMdLoader: false,
+    });
+
+    expect(report).toContain('— assumed default');
+    expect(report).toContain(
+      'This model declares no context window, so the default above is a guess.',
+    );
+    expect(report).toContain(
+      'settings.provider.<id>.models["unknown-model"].contextWindow to the real value.',
+    );
+  });
+
+  it('keeps declared window silent without advice or default notice', () => {
+    const report = buildContextReport([], {
+      model: 'custom-model',
+      maxTokens: 500_000,
+      windowSource: 'declared',
+      commandCount: 0,
+      hasClaudeMdLoader: false,
+    });
+
+    expect(report).not.toContain('— assumed default');
+    expect(report).not.toContain('This window came from a known family');
+    expect(report).not.toContain('This model declares no context window');
+  });
 });

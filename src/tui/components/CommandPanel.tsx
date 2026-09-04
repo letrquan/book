@@ -407,9 +407,12 @@ function ContextPanelBody({
     {
       label: 'Window',
       value:
-        data.windowDeclared === false
+        data.windowSource === 'default' ||
+        (data.windowSource === undefined && data.windowDeclared === false)
           ? `${compactNumber(data.maxTokens)} (default)`
-          : compactNumber(data.maxTokens),
+          : data.windowSource === 'family'
+            ? `${compactNumber(data.maxTokens)} (family)`
+            : compactNumber(data.maxTokens),
       color: theme.brand,
     },
     { label: 'Estimate', value: compactNumber(data.estimatedTokens) },
