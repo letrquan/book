@@ -311,9 +311,14 @@ Work aimed at running an objective unattended for days rather than hours. All of
 - Reasoning-tag handling has two deliberately different readings. Rendering treats an unclosed
   recognized tag as thinking through the end of a streaming message, while empty-turn detection
   strips only closed tags and leaves an unclosed tag in answer text; this favors preserving a real
-  answer over triggering a retry on ambiguous markup. A reasoning-only/empty response receives at
-  most one same-turn retry, and already-emitted attempt text is marked `attempt_discarded` rather
-  than persisted as the replacement turn.
+  answer over triggering a retry on ambiguous markup. One shape is carved out of that reading: a
+  turn that is nothing but an unclosed reasoning block — the tag opens the content, is never
+  closed, and no answer text stands beside it — gets the same single retry an empty turn gets,
+  because there is no answer there to protect; if the retry comes back the same shape the text
+  is kept as the answer rather than discarded. A reasoning-only/empty response receives at most
+  one same-turn retry, and already-emitted attempt text is marked `attempt_discarded` rather than
+  persisted as the replacement turn. Print mode's exit code does not change with the terminal
+  outcome (see README, "Exit codes"): a failed outcome still exits 0.
 - Print/headless and SDK hosts run only the built-ins marked non-interactive — `/init`,
   `/security-review`, and `/review` — plus any `.book/commands/*.md` file. Every other built-in
   (session controls, pickers, panels, `/config`, `/export`, `/memory`) is refused before its own

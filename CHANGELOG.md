@@ -6,6 +6,20 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A turn that is only an unclosed reasoning block is retried, not accepted as the answer.** A
+  `--print` run finished with exit code 0 and an "answer" that was leaked chain-of-thought from its
+  first byte to its last: one `<reasoning_context>` tag, never closed, ending mid-sentence on a tool
+  call the model had serialized as prose. The empty-turn check reads only closed tags on purpose —
+  a finished answer may open with an unfenced `<thinking>`, and stripping it would fail a run that
+  had answered — so the leak passed as a reply, and in print mode nothing downstream could tell.
+
+  The discriminator is the shape itself: the block starts the content, is never closed, and no
+  answer text stands beside it. That turn now gets the same single retry an empty turn gets
+  (`isUnclosedReasoningOnly` in `src/reasoning-tags.ts`), since there is no answer there to
+  protect. If the retry comes back the same shape the text is kept as the answer, as before, never
+  discarded — so the worst case for an answer that merely opens with `<thinking>` is one spare
+  request. Text before the opening tag, a tool call, or a closed block leave the reading unchanged.
+
 - **The permission prompt shows what is being approved.** The card is where consent is given, and
   it rendered the whole payload as a fixed 72-character slice with nothing marking the cut, so a
   command that continued past that point read as if it ended there — `… && echo cleaned` for a
