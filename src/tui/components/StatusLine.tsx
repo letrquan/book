@@ -3,6 +3,7 @@ import { useMemo } from 'react';
 import { usePulse, useTimedFlash } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import type { PermissionMode } from '../../types/runtime.js';
+import type { ContextWindowSource } from '../../types/messages.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../../models.js';
 import { displayWidth, truncateDisplay } from './word-wrap.js';
 import { createRenderDebugLogger } from '../../debug-log.js';
@@ -31,6 +32,7 @@ interface StatusLineProps {
   model: string;
   tokenCount: number;
   maxTokens?: number;
+  maxTokensSource?: ContextWindowSource;
   mode: PermissionMode;
   taskCount: number;
   activeTaskCount: number;
@@ -83,6 +85,7 @@ export function StatusLine({
   model,
   tokenCount,
   maxTokens = DEFAULT_CONTEXT_WINDOW,
+  maxTokensSource,
   mode,
   taskCount,
   activeTaskCount,
@@ -118,6 +121,7 @@ export function StatusLine({
     compact,
     usagePercent,
     tokenCount,
+    maxTokensSource,
     mode,
     taskCount,
     activeTaskCount,
@@ -174,6 +178,10 @@ export function StatusLine({
 
     segments.push({ text: truncateDisplay(model, modelBudget), color: theme.subtle });
 
+    if (width >= 72 && !compact && maxTokensSource && maxTokensSource !== 'declared') {
+      segments.push({ text: `(${maxTokensSource})`, color: theme.subtle });
+    }
+
     if (taskCount > 0) {
       segments.push({
         text: `tasks ${activeTaskCount > 0 ? `${activeTaskCount}/` : ''}${taskCount}`,
@@ -212,6 +220,7 @@ export function StatusLine({
     model,
     taskCount,
     needsInputAgentCount,
+    maxTokensSource,
     tokenCount,
     usagePercent,
     width,

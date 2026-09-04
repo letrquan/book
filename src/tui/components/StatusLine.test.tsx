@@ -50,6 +50,147 @@ describe('StatusLine', () => {
     expect(output).toContain('ctx 50%');
   });
 
+  it('renders family source annotation on wide terminals', () => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="gemini-3.8-flash-high"
+          tokenCount={104_857}
+          maxTokens={1_048_576}
+          maxTokensSource="family"
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain('ctx 10%');
+    expect(output).toContain('(family)');
+    expect(output).toContain('gemini-3.8-flash-high');
+  });
+
+  it('renders default source annotation on wide terminals', () => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="unknown-model"
+          tokenCount={27_200}
+          maxTokens={272_000}
+          maxTokensSource="default"
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain('ctx 10%');
+    expect(output).toContain('(default)');
+    expect(output).toContain('unknown-model');
+  });
+
+  it('omits source annotation for declared windows on wide terminals', () => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="declared-model"
+          tokenCount={20_000}
+          maxTokens={200_000}
+          maxTokensSource="declared"
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          terminalWidth={100}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain('ctx 10%');
+    expect(output).not.toContain('(declared)');
+    expect(output).not.toContain('(family)');
+    expect(output).not.toContain('(default)');
+  });
+
+  it('drops source annotation on narrow terminals', () => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="gemini-3.8-flash-high"
+          tokenCount={104_857}
+          maxTokens={1_048_576}
+          maxTokensSource="family"
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          terminalWidth={56}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain('ctx 10%');
+    expect(output).not.toContain('(family)');
+  });
+
+  it('drops source annotation at 62 columns while preserving percentage', () => {
+    const view = render(
+      withTheme(
+        <StatusLine
+          model="gemini-3.8-flash-high"
+          tokenCount={0}
+          maxTokens={1_048_576}
+          maxTokensSource="family"
+          mode="default"
+          taskCount={0}
+          activeTaskCount={0}
+          terminalWidth={62}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain('ctx 0%');
+    expect(output).not.toContain('(family)');
+  });
+
+  it('preserves the model name and drops annotation at 72 and 74 columns with long branch', () => {
+    for (const width of [72, 74]) {
+      const view = render(
+        withTheme(
+          <StatusLine
+            model="mp/gemini-3.8-flash-high"
+            tokenCount={0}
+            maxTokens={1_048_576}
+            maxTokensSource="family"
+            mode="default"
+            taskCount={0}
+            activeTaskCount={0}
+            gitBranch="research/next-task"
+            gitStatus="+1"
+            terminalWidth={width}
+            reducedMotion
+          />,
+        ),
+      );
+
+      const output = stripAnsi(view.lastFrame());
+      expect(output).toContain('mp/gemini-3.8-flash-high');
+      expect(output).not.toContain('(family)');
+      view.unmount();
+    }
+  });
+
   it('renders full status on wide terminals', () => {
     const view = render(
       withTheme(

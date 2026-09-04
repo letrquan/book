@@ -7,7 +7,7 @@
  * onUsage; this is the structural breakdown the user asks for with /context.
  */
 import type { CompactBoundary } from './types/sessions.js';
-import type { Message } from './types/messages.js';
+import type { ContextWindowSource, Message } from './types/messages.js';
 
 /** Rough token estimate for an arbitrary string. ~4 chars/token for English/code. */
 export function estimateTokens(text: string): number {
@@ -78,6 +78,7 @@ export function buildContextReport(
   ambient: {
     model: string;
     maxTokens: number;
+    windowSource?: ContextWindowSource;
     windowDeclared?: boolean;
     contextHistory?: Message[];
     compactBoundaries?: CompactBoundary[];
@@ -119,14 +120,26 @@ export function buildContextReport(
     );
     lines.push('');
   }
+  const source =
+    ambient.windowSource ??
+    (ambient.windowDeclared === true
+      ? 'declared'
+      : ambient.windowDeclared === false
+        ? 'default'
+        : undefined);
+
   lines.push(
     `Model context budget: ${ambient.maxTokens.toLocaleString()} tokens (${ambient.model})` +
-      (ambient.windowDeclared === false ? ' — assumed default' : ''),
+      (source === 'default' ? ' — assumed default' : ''),
   );
-  if (ambient.windowDeclared === false) {
+  if (source === 'default') {
     lines.push('This model declares no context window, so the default above is a guess. Set');
     lines.push(
       `settings.provider.<id>.models["${ambient.model}"].contextWindow to the real value.`,
+    );
+  } else if (source === 'family') {
+    lines.push(
+      'This window came from a known family for that model and is not a per-model declaration.',
     );
   }
   const pct =

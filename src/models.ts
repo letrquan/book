@@ -9,6 +9,9 @@
  * thinking); others ignore it.
  */
 import type { AgentConfig } from './types/runtime.js';
+import type { ContextWindowSource } from './types/messages.js';
+
+export type { ContextWindowSource };
 
 export interface ModelOption {
   id: string;
@@ -81,14 +84,119 @@ export function resolveEditFormat(model: string, override?: EditFormat): EditFor
  */
 export const DEFAULT_CONTEXT_WINDOW = 272_000;
 
-/** The context window to act on: what the model declares, else the default. */
-export function resolveContextLimit(config: Pick<AgentConfig, 'modelInfo'>): number {
-  const window = config.modelInfo?.contextWindow;
-  return typeof window === 'number' && window > 0 ? window : DEFAULT_CONTEXT_WINDOW;
+/**
+ * Normalizes a model identifier by extracting the terminal model name and
+ * stripping version/date stamps (e.g. `9router/ag/gemini-3.8-flash-high` ->
+ * `gemini-3.8-flash-high`, `claude-haiku-4-5-20251001` -> `claude-haiku-4-5`).
+ */
+export function normalizeModelName(model: string): string {
+  const last = model.split('/').pop()?.toLowerCase().trim() ?? '';
+  return last.replace(/[-.@]\d{4}-?\d{2}-?\d{2}$|[-.@]\d{8}$/, '');
+}
+
+/**
+ * Advisory context window table by model family.
+ *
+ * Sizing rule: a family value that is too LARGE is worse than falling back to
+ * DEFAULT_CONTEXT_WINDOW, because compaction would not fire in time and the
+ * run would hit a provider refusal followed by overflow compaction. When a
+ * family has variants, use the SMALLER published window. Unknown models fall
+ * through to DEFAULT_CONTEXT_WINDOW.
+ *
+ * RE-VERIFY against published documentation before a release.
+ */
+export const MODEL_FAMILY_CONTEXT_WINDOWS: ReadonlyArray<{
+  family: string;
+  pattern: RegExp;
+  contextWindow: number;
+}> = [
+  // Google Gemini Flash family: 1,048,576 tokens (1M).
+  // 1.5 Flash, 2.0 Flash, 2.5 Flash, 3.x Flash all publish 1,048,576 input tokens.
+  {
+    family: 'gemini-flash',
+    pattern: /^gemini(?!.*-(?:image|tts)).*flash/,
+    contextWindow: 1_048_576,
+  },
+  // Anthropic Claude 3+ family: 200,000 tokens published standard context.
+  // Sonnet 3.5/5, Opus 3/4.x/5, Haiku 3.5/4.5, Fable 5.
+  {
+    family: 'claude',
+    pattern: /^claude-(?:[3-9]|opus|sonnet|haiku|fable)/,
+    contextWindow: 200_000,
+  },
+  // OpenAI GPT-4o / GPT-4o-mini: 128,000 tokens.
+  {
+    family: 'gpt-4o',
+    pattern: /^gpt-4o/,
+    contextWindow: 128_000,
+  },
+  // OpenAI GPT-4 Turbo: 128,000 tokens.
+  {
+    family: 'gpt-4-turbo',
+    pattern: /^gpt-4-turbo|^gpt-4-\d{4}-preview/,
+    contextWindow: 128_000,
+  },
+  // OpenAI o-series reasoning models (o1, o3, o4): 128,000 tokens.
+  // Using the smaller 128k baseline (o1-preview / o1-mini) per the sizing rule.
+  {
+    family: 'o-series',
+    pattern: /^o[134](?:-mini|-preview)?(?![a-z\d])/,
+    contextWindow: 128_000,
+  },
+  // Note: Qwen (e.g. Qwen 2.5) was deliberately excluded. Its published context window
+  // spans 32k (native context in common local deployments without YaRN rope scaling)
+  // to 1M (Turbo/1M variants), so no single family-level value is safe. It falls
+  // through to DEFAULT_CONTEXT_WINDOW with source: 'default', prompting explicit configuration.
+];
+
+/**
+ * Resolve a model string against known model families.
+ */
+export function resolveFamilyContextWindow(model: string): number | undefined {
+  const normalized = normalizeModelName(model);
+  if (!normalized) return undefined;
+  for (const entry of MODEL_FAMILY_CONTEXT_WINDOWS) {
+    if (entry.pattern.test(normalized)) {
+      return entry.contextWindow;
+    }
+  }
+  return undefined;
+}
+
+export interface ContextWindowResolution {
+  window: number;
+  source: ContextWindowSource;
+}
+
+/**
+ * Resolve the context window and its origin for a model.
+ * Precedence: declared (`config.modelInfo?.contextWindow`) -> family match -> DEFAULT_CONTEXT_WINDOW.
+ */
+export function resolveContextWindow(
+  config: Pick<AgentConfig, 'modelInfo'> & Partial<Pick<AgentConfig, 'model' | 'modelSelection'>>,
+): ContextWindowResolution {
+  const declared = config.modelInfo?.contextWindow;
+  if (typeof declared === 'number' && declared > 0) {
+    return { window: declared, source: 'declared' };
+  }
+  const modelName = config.model ?? config.modelSelection;
+  if (modelName) {
+    const familyWindow = resolveFamilyContextWindow(modelName);
+    if (familyWindow !== undefined) {
+      return { window: familyWindow, source: 'family' };
+    }
+  }
+  return { window: DEFAULT_CONTEXT_WINDOW, source: 'default' };
+}
+
+/** The context window to act on: what the model declares, else family, else default. */
+export function resolveContextLimit(
+  config: Pick<AgentConfig, 'modelInfo'> & Partial<Pick<AgentConfig, 'model' | 'modelSelection'>>,
+): number {
+  return resolveContextWindow(config).window;
 }
 
 /** True when the window above came from the model rather than the default. */
 export function hasDeclaredContextWindow(config: Pick<AgentConfig, 'modelInfo'>): boolean {
-  const window = config.modelInfo?.contextWindow;
-  return typeof window === 'number' && window > 0;
+  return resolveContextWindow(config).source === 'declared';
 }
