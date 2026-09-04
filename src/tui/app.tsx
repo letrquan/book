@@ -2610,6 +2610,9 @@ export function App({
                 toolCall={pendingPermission.toolCall}
                 onResolve={resolvePermission}
                 screenReader={screenReader}
+                terminalWidth={termWidth}
+                terminalRows={termHeight}
+                workspaceRoot={config.workspace}
               />
             ) : childPermission?.type === 'agent_permission' ? (
               <Box flexDirection="column">
@@ -2630,6 +2633,13 @@ export function App({
                     )
                   }
                   screenReader={screenReader}
+                  terminalWidth={termWidth}
+                  terminalRows={termHeight}
+                  // A worktree-isolated agent mutates its own checkout, so the
+                  // preview must read the file the call will actually touch.
+                  workspaceRoot={
+                    managedAgents.records.get(childPermission.agentId)?.worktree ?? config.workspace
+                  }
                 />
               </Box>
             ) : null}

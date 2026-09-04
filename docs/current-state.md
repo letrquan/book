@@ -35,6 +35,12 @@ capability boundary, providers, MCP, other settings and sandbox behavior, manage
   suggestions. Zero-Mem retrieval remains available only as the explicitly named, default-off
   `experimental.zeroMem` capability; it writes no summary checkpoints, disables auto-compaction for
   the main agent, and retrieves query-specific evidence from the original transcript each turn.
+- The permission prompt shows what it is asking consent for: a shell command in full, every
+  line hard-wrapped to the card with any row cut marked and openable with `D`, and for
+  `Edit`/`MultiEdit`/`Write`/`ApplyPatch` the diff the call would make, computed from the pending
+  arguments against the file on disk before anything is written (`src/tools/mutation-preview.ts`,
+  the tools' own matching and hunk application, rendered through `DiffBlock`). A preview that
+  cannot be computed says why, which is the failure the tool would have reported.
 - Every transcript row resolves its horizontal position through one grid module
   (`src/tui/layout.ts`). A row is `[gutter][content]`: a two-column gutter carries status, prose
   begins on the content column, content (prose, diffs, rules, the status line and the composer)

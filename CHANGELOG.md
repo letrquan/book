@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The permission prompt shows what is being approved.** The card is where consent is given, and
+  it rendered the whole payload as a fixed 72-character slice with nothing marking the cut, so a
+  command that continued past that point read as if it ended there — `… && echo cleaned` for a
+  command whose tail was the part worth reading — with half the row left empty. File mutations
+  were worse: `Edit`, `MultiEdit`, `Write`, and `ApplyPatch` showed only the path, because the
+  diff those tools return exists only after the file is written. The user was asked to approve a
+  change they could not see.
+
+  A shell command now renders in full, every line of it, hard-wrapped to the card's interior
+  rather than word-wrapped, since a command's spacing is part of the command. When it still needs
+  a bound the bound is a count of rows, the cut is marked (`… 7 more rows · D shows all`), and `D`
+  opens it. A short argument stays on the header row as before.
+
+  File mutations show the diff they would produce, computed before anything is written from the
+  pending call's arguments against the file on disk, with the same matching the tool will use
+  (`src/tools/mutation-preview.ts`, reusing the tools' own edit and hunk appliers and rendered
+  through the transcript's `DiffBlock`). A change that cannot be previewed says why — `Cannot
+  preview: oldString not found in file` — which is also the failure the tool was about to report,
+  so the user can skip a call that is going to fail instead of approving it first. Previews are
+  bounded to a change-focused dozen rows across all files of a patch; `D` opens them to what the
+  terminal can hold. A worktree-isolated managed agent previews against its own checkout. The
+  screen-reader rendering reads the whole command and a per-file summary of lines added and removed.
+
 ### Added
 
 - **`/login` — subscription sign-in from inside the TUI.** Subscription auth shipped as
