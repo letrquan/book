@@ -27,6 +27,7 @@ import {
   clipHistoryToolResults,
   estimateHistoryTokens,
   estimateProviderRequestTokens,
+  resolveCompactBudgets,
   shouldCompact,
   usagePressureTokens,
 } from './compact.js';
@@ -798,7 +799,10 @@ export async function runAgentLoop(
       }
 
       if (preflightEligible) {
-        const clippedHistory = clipHistoryToolResults(newHistory);
+        const clippedHistory = clipHistoryToolResults(
+          newHistory,
+          resolveCompactBudgets(effectiveConfig).retainedToolResultMaxTokens,
+        );
         if (clippedHistory.some((message, index) => message !== newHistory[index])) {
           newHistory.length = 0;
           newHistory.push(...clippedHistory);

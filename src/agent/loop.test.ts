@@ -1724,6 +1724,76 @@ describe('runAgentLoop error handling', () => {
     expect(providerToolContent.length).toBeLessThan(10_000);
   });
 
+  it('keeps a retained tool result under the scaled cap through the preflight clip', async () => {
+    // At the production window the retained-tail budget scales the per-result
+    // clip to ~10k tokens (`resolveCompactBudgets`), so a 6k-token result that
+    // compaction just retained must reach the provider intact, while a result
+    // that crosses the preflight gate is still cut -- to the scaled cap, not
+    // to the old flat 2,000 tokens (8,000 characters).
+    const toolContents: string[] = [];
+    const clippedIds = Array.from({ length: 16 }, (_, index) => `clipped-tool-${index}`);
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        for (const message of messages) {
+          if (message.role === 'tool') toolContents.push(String(message.content));
+        }
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done' };
+      },
+    };
+    const history = [
+      {
+        id: 'scaled-user',
+        role: 'user' as const,
+        content: 'inspect',
+        includeInContext: true,
+        timestamp: 0,
+      },
+      {
+        id: 'scaled-assistant',
+        role: 'assistant' as const,
+        content: '',
+        includeInContext: true,
+        toolCalls: [
+          { id: 'kept-tool', name: 'Read', arguments: {} },
+          ...clippedIds.map((id) => ({ id, name: 'Read', arguments: {} })),
+        ],
+        toolResults: [
+          toolSuccess('z'.repeat(24_000), { toolCallId: 'kept-tool' }),
+          // `toolSuccess` already caps a single result at 50 KiB (~12.8k tokens),
+          // so crossing the 272k preflight gate (~166k tokens) takes many of them.
+          ...clippedIds.map((id) => toolSuccess('y'.repeat(800_000), { toolCallId: id })),
+        ],
+        timestamp: 0,
+      },
+    ];
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        maxTokens: 64_000,
+        autoCompactEnabled: false,
+        modelInfo: { contextWindow: 272_000 },
+      }),
+      createRegistry(),
+      'continue',
+      history,
+      noopCallbacks(),
+      'auto',
+      { provider, isNewSession: false },
+    );
+
+    const kept = toolContents.find((content) => content.startsWith('zzzz'));
+    const clipped = toolContents.filter((content) => content.startsWith('yyyy'));
+    expect(kept).toHaveLength(24_000);
+    expect(clipped).toHaveLength(clippedIds.length);
+    for (const content of clipped) {
+      expect(content.length).toBeGreaterThanOrEqual(30_000);
+      expect(content.length).toBeLessThanOrEqual(45_000);
+    }
+  });
+
   it('recovers once from a router context error without persisting the error as an answer', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'book-loop-overflow-'));
     let providerTurn = 0;

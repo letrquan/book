@@ -6,6 +6,7 @@ import {
   serializeHistoryForCompact,
   usagePressureTokens,
   runCompact,
+  resolveCompactBudgets,
   IMAGE_TOKEN_ESTIMATE,
   estimateProviderRequestTokens,
 } from './compact.js';
@@ -130,6 +131,59 @@ describe('resolveContextLimit', () => {
 
     expect(shouldCompact(below, contextLimit)).toBe(false);
     expect(shouldCompact(atThreshold, contextLimit)).toBe(true);
+  });
+});
+
+describe('resolveCompactBudgets', () => {
+  it('computes expected budgets for 272k production window', () => {
+    const budgets = resolveCompactBudgets({
+      modelInfo: { contextWindow: 272_000 },
+      maxTokens: 64_000,
+    });
+    expect(budgets.reservedOutputTokens).toBe(64_000);
+    expect(budgets.usableContextLimit).toBe(208_000);
+    expect(budgets.targetTokens).toBe(104_000);
+    expect(budgets.checkpointBudget).toBe(4_096);
+    expect(budgets.recentBudget).toBeGreaterThanOrEqual(99_000);
+    expect(budgets.recentBudget).toBeLessThanOrEqual(100_000);
+    expect(budgets.retainedToolResultMaxTokens).toBeGreaterThanOrEqual(9_900);
+    expect(budgets.retainedToolResultMaxTokens).toBeLessThanOrEqual(10_000);
+  });
+
+  it('computes expected budgets for 32k window', () => {
+    const budgets = resolveCompactBudgets({
+      modelInfo: { contextWindow: 32_000 },
+      maxTokens: 4_096,
+    });
+    expect(budgets.recentBudget).toBeGreaterThanOrEqual(10_000);
+    expect(budgets.recentBudget).toBeLessThanOrEqual(11_000);
+    expect(budgets.retainedToolResultMaxTokens).toBe(2_000);
+  });
+
+  it('clamps output reserve and applies proportional floor for 8k window', () => {
+    const budgets = resolveCompactBudgets({
+      modelInfo: { contextWindow: 8_192 },
+      maxTokens: 64_000,
+    });
+    expect(budgets.reservedOutputTokens).toBe(4_096);
+    expect(budgets.targetTokens).toBe(2_048);
+    expect(budgets.recentBudget).toBe(Math.floor(8_192 * 0.2));
+    expect(budgets.recentBudget).toBe(1_638);
+  });
+
+  it('computes expected budgets for 1M window', () => {
+    const budgets = resolveCompactBudgets({
+      modelInfo: { contextWindow: 1_048_576 },
+      maxTokens: 64_000,
+    });
+    expect(budgets.recentBudget).toBeGreaterThanOrEqual(487_000);
+    expect(budgets.recentBudget).toBeLessThanOrEqual(489_000);
+    expect(budgets.retainedToolResultMaxTokens).toBeGreaterThanOrEqual(
+      Math.floor(budgets.recentBudget * 0.1) - 100,
+    );
+    expect(budgets.retainedToolResultMaxTokens).toBeLessThanOrEqual(
+      Math.floor(budgets.recentBudget * 0.1) + 100,
+    );
   });
 });
 
@@ -309,6 +363,37 @@ describe('runCompact', () => {
     });
 
     expect(result.status).toBe('compacted');
+  });
+
+  it('skips auto compaction when the whole history fits the auto tail', async () => {
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'old evidence '.repeat(5_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      {
+        id: '4',
+        role: 'assistant',
+        content: 'new evidence '.repeat(2_500),
+        includeInContext: true,
+        timestamp: 0,
+      },
+    ];
+
+    const result = await runCompact(makeConfig({ modelInfo: undefined }), history, {
+      trigger: 'auto',
+    });
+
+    expect(result).toMatchObject({ status: 'skipped', reason: 'too-short' });
   });
 
   it('summarizes an oversized newest bundle instead of rejecting compaction', async () => {

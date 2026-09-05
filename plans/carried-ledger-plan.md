@@ -2,7 +2,7 @@
 
 - **Date:** 2026-08-30
 - **Status:** Phase 0 landed; Phase 0.8 baseline recorded; **Phase 2 landed** (this document);
-  Phases 1 and 3 proposed
+  **Phase 1 landed 2026-09-05**; Phase 3 proposed
 - **Scope:** `src/agent/compact.ts`, `src/agent/carried-ledger.ts`,
   `src/agent/compact-fidelity.ts`, `ConversationCheckpointV2` in `src/types/sessions.ts`
 - **Goal:** A conversation that runs for days must still obey the rule it was given on turn 3.
@@ -184,11 +184,13 @@ it was given on turn 3.
   benchmark.
 - **Phase 2 — the ledger itself** (landed, this document). `carried-ledger.ts`, the `carried`
   field, the author split, the cap, the supersession rule, the reading rule.
-- **Phase 1 — budget rework** (proposed). `maxPostHistoryUtilization` is a *ceiling* at 0.15:
-  compaction targets half the window but the retention and checkpoint caps pin real
-  post-compaction history far below it, and the difference is headroom the agent is entitled
-  to keep and instead pays to rebuild by re-reading files. Phase 1 raises it deliberately.
-  When it does, that constant must be updated consciously rather than left to drift.
+- **Phase 1 — budget rework** (landed 2026-09-05). `maxPostHistoryUtilization` was a *ceiling*
+  at 0.15: compaction targeted half the window but the retention and checkpoint caps pinned real
+  post-compaction history far below it, and the difference was headroom the agent was entitled
+  to keep and instead paid to rebuild by re-reading files. The retained tail is now the residual
+  of the target, anchored to the usable window (`resolveCompactBudgets` in `compact.ts`), the
+  per-result clip scales with it, and the harness records per-arm floors in `FIDELITY_ARMS` with
+  utilization as a floor (0.43 at 32k, 0.46 at 272k).
 - **Phase 3 — beyond constraints** (proposed). The author split generalizes: user-stated
   current values and user-stated open threads have the same ownership problem as user-stated
   rules. Not started; the cap tiers were designed with room for a `kind` discriminator.

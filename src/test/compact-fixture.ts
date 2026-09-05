@@ -66,7 +66,10 @@ function makeMessage(role: Message['role'], content: string, index: number): Mes
  * The shape is deliberate -- the facts that must survive are the ones furthest
  * from the retained tail.
  */
-export function buildCompactFixtureHistory(): CompactFixtureHistory {
+export function buildCompactFixtureHistory(
+  options: { fillerRepeat?: number } = {},
+): CompactFixtureHistory {
+  const fillerRepeat = options.fillerRepeat ?? 3;
   const history: Message[] = [];
   let index = 0;
   const addTurn = (user: string, assistant: string): { userId: string; assistantId: string } => {
@@ -101,8 +104,8 @@ export function buildCompactFixtureHistory(): CompactFixtureHistory {
     'We inspected an unrelated implementation detail and found no change required. Keep the discussion scoped to the handoff, preserve existing behavior, and report evidence before claiming completion. ';
   const addFiller = (turn: number): void => {
     addTurn(
-      `Unrelated investigation ${turn}: ${filler.repeat(3)}The result was informational only.`,
-      `Investigation ${turn} is complete. No constraint, accepted decision, current value, or open thread changed. ${filler.repeat(3)}`,
+      `Unrelated investigation ${turn}: ${filler.repeat(fillerRepeat)}The result was informational only.`,
+      `Investigation ${turn} is complete. No constraint, accepted decision, current value, or open thread changed. ${filler.repeat(fillerRepeat)}`,
     );
   };
   for (let turn = 1; turn <= 8; turn++) addFiller(turn);

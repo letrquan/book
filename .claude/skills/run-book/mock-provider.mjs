@@ -25,6 +25,15 @@
  *     { "text": "done" }
  *   ]
  *
+ * A turn with a `match` regex answers any request whose last message matches it
+ * WITHOUT consuming a position in the sequence. That is how a scripted session
+ * survives Book's own model calls landing at unpredictable indices: the
+ * compaction reducer's request, for one, arrives whenever the preflight gate
+ * fires. `{ "match": "BEGIN HISTORICAL EVENTS", "checkpoint": true }` answers the
+ * reducer with a minimal valid ConversationCheckpointV2 whose generation is read
+ * from the prompt, so compaction takes its healthy path rather than the
+ * deterministic fallback.
+ *
  * With no --script the server always replies with a single text turn taken from
  * --reply (default: a fixed sentence). Every request is appended as JSON to
  * <port>.requests.jsonl next to the log so you can assert on what Book sent.
@@ -46,6 +55,8 @@ const requestLog = arg('request-log', `/tmp/book-mock-${port}.requests.jsonl`);
 const turns = scriptPath
   ? JSON.parse(readFileSync(scriptPath, 'utf8'))
   : [{ text: replyText }];
+const matchedTurns = turns.filter((turn) => typeof turn.match === 'string');
+const sequenceTurns = turns.filter((turn) => typeof turn.match !== 'string');
 
 let requestCount = 0;
 
@@ -60,8 +71,36 @@ function sse(res, obj) {
   res.write(`data: ${JSON.stringify(obj)}\n\n`);
 }
 
-function streamTurn(res, turn, model) {
-  const id = `chatcmpl-mock-${requestCount}`;
+/** The text of the request's last message, whether a string or content parts. */
+function lastMessageText(parsed) {
+  const last = parsed.messages?.at(-1);
+  const content = last?.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((part) => part?.type === 'text')
+      .map((part) => part.text)
+      .join('\n');
+  }
+  return '';
+}
+
+/** A minimal checkpoint the reducer's validator accepts, for the generation the prompt asks for. */
+function checkpointText(prompt) {
+  const generation = Number(/generation (\d+)/.exec(prompt)?.[1] ?? '1');
+  return JSON.stringify({
+    version: 2,
+    generation,
+    state: { summary: `Mock checkpoint for generation ${generation}.`, status: 'active' },
+    constraints: [],
+    files: [],
+    episodes: [],
+    openThreads: [],
+    statistics: { summarizedMessages: 0, retainedMessages: 0, preTokens: 0, postTokens: 0 },
+  });
+}
+
+function streamTurn(res, turn, model, id) {
   const base = { id, object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: {} }] };
 
   sse(res, { ...base, choices: [{ index: 0, delta: { role: 'assistant' } }] });
@@ -77,7 +116,7 @@ function streamTurn(res, turn, model) {
             tool_calls: [
               {
                 index: 0,
-                id: `call_mock_${requestCount}`,
+                id: `call_mock_${id}`,
                 type: 'function',
                 function: {
                   name: turn.tool.name,
@@ -128,21 +167,34 @@ const server = createServer((req, res) => {
     } catch {
       /* keep the raw body in the log below */
     }
+
+    const prompt = lastMessageText(parsed);
+    const matched = matchedTurns.find((turn) => new RegExp(turn.match).test(prompt));
+    let turn;
+    let id;
+    if (matched) {
+      turn = matched.checkpoint ? { text: checkpointText(prompt) } : matched;
+      id = `chatcmpl-mock-matched-${requestCount}`;
+    } else {
+      turn = sequenceTurns[Math.min(requestCount, sequenceTurns.length - 1)];
+      id = `chatcmpl-mock-${requestCount}`;
+      requestCount += 1;
+    }
     try {
-      appendFileSync(requestLog, JSON.stringify({ n: requestCount, body: parsed }) + '\n');
+      appendFileSync(
+        requestLog,
+        JSON.stringify({ n: requestCount, matched: Boolean(matched), body: parsed }) + '\n',
+      );
     } catch {
       /* logging is best-effort */
     }
-
-    const turn = turns[Math.min(requestCount, turns.length - 1)];
-    requestCount += 1;
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     });
-    streamTurn(res, turn, parsed.model ?? 'mock-model');
+    streamTurn(res, turn, parsed.model ?? 'mock-model', id);
   });
 });
 

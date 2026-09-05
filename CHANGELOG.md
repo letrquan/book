@@ -49,6 +49,28 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Compaction keeps the recent history it is entitled to (Carried Ledger Phase 1).** After an
+  auto-compaction the retained tail was capped at a flat 20,000 tokens whatever the window, and a
+  single turn with dozens of tool calls exceeds that even after clipping, so at the 272k default
+  window compaction kept nothing verbatim: seven of eight real compactions in the owner's sessions
+  retained zero messages and collapsed 167k-219k tokens to a 0.2k-6.7k checkpoint. The tail is now
+  the residual of the post-compaction target (`resolveCompactBudgets` in `src/agent/compact.ts`):
+  half the usable window - the window minus the output reserve the loop already subtracts, clamped
+  to half the window - less the checkpoint budget and its header. At 272k with the 64k default
+  reserve that is ~99.6k tokens of verbatim recent history instead of 20k. The per-result clip
+  scales with the tail (~10k tokens per retained tool result instead of 2k) and the loop's preflight
+  clip uses the same cap, so it cannot undo what compaction just retained. A manual `/compact` on a
+  session that fits the new tail falls back to the old short tail so it still shrinks something;
+  auto compaction never does. The fidelity harness now runs two arms, the 32k corpus and the 272k
+  production window, with per-arm floors in `FIDELITY_ARMS`: post-history utilization flipped from
+  a 0.15 ceiling to a floor (0.43 and 0.46 measured), final retention at 272k measured 0.833, and
+  retention precision is recorded per arm because the old 0.898 mostly measured an empty tail. Cost:
+  post-compaction requests carry ~4x more history, compactions fire more often (the headroom to the
+  next preflight at 272k shrinks from ~140k to ~65k tokens), and one real reducer call was observed
+  at 2.1x its estimated history in provider tokens, cause unverified. The `run-book` mock provider
+  gained content-matched turns so a scripted session survives the reducer's request landing at any
+  index.
+
 - **The TUI uses the whole terminal — and its floating panels still don't.** Every row resolved its
   position through a transcript grid that capped the measure at 120 columns, so on a 200-column
   terminal the transcript, the composer border and the turn rules all stopped two thirds of the way

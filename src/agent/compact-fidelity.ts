@@ -70,10 +70,32 @@ export interface FidelityMetrics {
  */
 export const PREFLIGHT_FRACTION = 0.8;
 
+export interface FidelityFloors {
+  minFinalRetention: number;
+  minMeanRetention: number;
+  minVerbatimUserRetention: number;
+  minSupersessionCorrectness: number;
+  minGroundedSourceRecall: number;
+  minRetentionPrecision: number;
+  maxReducerCalls: number;
+  /** Floor now: the dead budget is reclaimed. Was the ceiling maxPostHistoryUtilization = 0.15. */
+  minPostHistoryUtilization: number;
+}
+
+export interface FidelityArm {
+  contextWindow: number;
+  /** config.maxTokens for the arm: the output reserve the loop would subtract. */
+  reservedOutputTokens: number;
+  fillerRepeat: number;
+  floors: FidelityFloors;
+}
+
 /**
- * The recorded v2 fidelity baseline, re-measured 2026-08-30 after the Carried
- * Ledger landed (`agent/carried-ledger.ts`); the pre-ledger numbers it replaces
- * were measured 2026-08-29 after phase 0 (items 0.1-0.5, 0.7) and audit item I.
+ * The recorded v2 fidelity baseline, re-measured 2026-09-05 after the Carried
+ * Ledger Phase 1 budget rework (residual retained tail); the pre-rework numbers
+ * it replaces were measured 2026-08-30 after the Carried Ledger landed
+ * (`agent/carried-ledger.ts`), which itself replaced the pre-ledger numbers from
+ * 2026-08-29.
  *
  * Floors, not targets, and they move in one direction only -- upward for
  * retention and grounding, downward for reducer calls. A change that lowers one
@@ -90,37 +112,77 @@ export const PREFLIGHT_FRACTION = 0.8;
  * not evict, and the measured value is now 1.0 across all eight generations.
  * Overall retention rose with it -- from 0.333 to 0.667 -- because the same
  * sentences also carry facts the episodes were losing.
+ *
+ * What Phase 1 changed (2026-09-05). The retained tail is now the residual of
+ * the post-compaction target instead of a flat 20k cap (`resolveCompactBudgets`
+ * in `compact.ts`), so the harness runs two arms: the 32k corpus it always ran,
+ * and the 272k default window the owner's sessions actually compact at, where
+ * the flat cap used to bind and no test could reach it. `postHistoryUtilization`
+ * flipped from a 0.15 ceiling to a floor on both arms. `retentionPrecision`
+ * fell from 0.898 and is NOT comparable with that number: an empty retained
+ * tail scores 1.0, and seven of the eight old generations retained nothing,
+ * so the old figure mostly measured the absence of a tail. With a real tail
+ * the metric counts every retained turn that carries no planted fact, which
+ * in this corpus is the filler by design. Each arm records its own floors.
  */
-export const FIDELITY_BASELINE = {
-  /** Measured 0.667. Was 0.333 before the Carried Ledger. */
-  minFinalRetention: 0.66,
-  /** Measured 0.677 across the eight generations. Was 0.333. */
-  minMeanRetention: 0.67,
-  /**
-   * Measured 1.0, and the reason the Carried Ledger exists. Was 0.0.
-   *
-   * This floor is the load-bearing one: a change that drops it means Book has
-   * gone back to forgetting the rule it was given on turn 3, which is exactly
-   * the failure the ledger was built to make impossible.
-   */
-  minVerbatimUserRetention: 1,
-  minSupersessionCorrectness: 1,
-  minGroundedSourceRecall: 1,
-  /** Measured 0.898: most of the retained tail carries something. */
-  minRetentionPrecision: 0.89,
-  /** Measured 8 -- one reducer call per generation, no repairs spent. */
-  maxReducerCalls: 8,
-  /**
-   * Measured 0.145, and a ceiling rather than a floor. This is the design's
-   * "dead budget": compaction targets half the window, but the retention and
-   * checkpoint caps pin the real post-compaction history far below it, and the
-   * difference is headroom the agent is entitled to keep and instead pays to
-   * rebuild by re-reading files. Phase 1's budget rework is expected to raise
-   * this deliberately -- when it does, this constant must be updated
-   * consciously rather than drift.
-   */
-  maxPostHistoryUtilization: 0.15,
-} as const;
+export const FIDELITY_ARMS: readonly FidelityArm[] = [
+  {
+    contextWindow: 32_000,
+    reservedOutputTokens: 4_096,
+    fillerRepeat: 5,
+    floors: {
+      /** Measured 0.667 on 2026-09-05. */
+      minFinalRetention: 0.66,
+      /** Measured 0.677 across the eight generations on 2026-09-05. */
+      minMeanRetention: 0.67,
+      /** Measured 1.0 on 2026-09-05. */
+      minVerbatimUserRetention: 1,
+      /** Measured 1.0 on 2026-09-05. */
+      minSupersessionCorrectness: 1,
+      /** Measured 1.0 on 2026-09-05. */
+      minGroundedSourceRecall: 1,
+      /**
+       * Measured 0.056 on 2026-09-05. Not a regression against the old 0.898:
+       * that figure came from seven generations that retained nothing (an
+       * empty tail scores 1.0). See the module comment.
+       */
+      minRetentionPrecision: 0.05,
+      /** Measured 8 on 2026-09-05 -- one reducer call per generation, no repairs spent. */
+      maxReducerCalls: 8,
+      /** Floor now: dead budget reclaimed. Measured 0.434 on 2026-09-05. */
+      minPostHistoryUtilization: 0.43,
+    },
+  },
+  {
+    contextWindow: 272_000,
+    reservedOutputTokens: 64_000,
+    fillerRepeat: 60,
+    floors: {
+      /** Measured 0.833 on 2026-09-05. */
+      minFinalRetention: 0.83,
+      /** Measured 0.823 across the eight generations on 2026-09-05. */
+      minMeanRetention: 0.82,
+      /** Measured 1.0 on 2026-09-05. */
+      minVerbatimUserRetention: 1,
+      /** Measured 1.0 on 2026-09-05. */
+      minSupersessionCorrectness: 1,
+      /** Measured 1.0 on 2026-09-05. */
+      minGroundedSourceRecall: 1,
+      /**
+       * Measured 0.166 on 2026-09-05. A ~100k tail keeps the fixture's unrelated
+       * filler turns by construction, so precision is not comparable across
+       * arms and must not be rescued by shrinking the filler.
+       */
+      minRetentionPrecision: 0.16,
+      /** Measured 8 on 2026-09-05 -- one reducer call per generation, no repairs spent. */
+      maxReducerCalls: 8,
+      /** Floor now: dead budget reclaimed. Measured 0.464 on 2026-09-05 (floor at least 0.35). */
+      minPostHistoryUtilization: 0.46,
+    },
+  },
+];
+
+export const FIDELITY_BASELINE = FIDELITY_ARMS[0].floors;
 
 function checkpointText(checkpoint: ConversationCheckpointV2): string {
   return JSON.stringify(checkpoint);

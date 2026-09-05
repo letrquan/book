@@ -33,12 +33,25 @@ const log = createDebugLogger('compact');
 
 export const DEFAULT_COMPACT_THRESHOLD = 0.8;
 export const IMAGE_TOKEN_ESTIMATE = 1_000;
+/** Post-compaction target fraction of the usable window that compaction aims for. */
 const DESIRED_CONTEXT_FRACTION = 0.5;
+/** Manual fallback ceiling for retained recent history. */
 const RECENT_TAIL_MAX_TOKENS = 20_000;
+/** Floor fraction of context window kept as recent history. */
 const RECENT_TAIL_FRACTION = 0.2;
 const CHECKPOINT_MAX_TOKENS = 4_096;
 const CHECKPOINT_FRACTION = 0.1;
 const SUMMARIZER_INPUT_FRACTION = 0.65;
+/**
+ * An output reserve larger than half the window (Book's 64k default against a 32k local model)
+ * says nothing about how much history is worth keeping; without this clamp the target
+ * collapses to 1 token and compaction would evict everything.
+ */
+const MAX_OUTPUT_RESERVE_FRACTION = 0.5;
+/** Room for the carriedLedgerNotice text in the checkpoint header. */
+const CARRIED_LEDGER_NOTICE_MARGIN_TOKENS = 256;
+/** Share of recent retention budget allocated to tool output result clipping. */
+const RETAINED_TOOL_RESULT_TAIL_SHARE = 0.1;
 /**
  * The reducer's provider cap has to sit above the checkpoint content budget. The
  * model emits a whole JSON envelope around `checkpointBudget` tokens of content,
@@ -53,6 +66,7 @@ const REDUCER_OUTPUT_MIN_MARGIN_TOKENS = 2_048;
 const TRUNCATION_FINISH_REASONS = new Set(['length', 'max_tokens']);
 const MESSAGE_OVERHEAD_TOKENS = 6;
 const TOOL_OVERHEAD_TOKENS = 12;
+/** Floor per-tool-result token limit that scales with the retained tail. */
 const RETAINED_TOOL_RESULT_MAX_TOKENS = 2_000;
 const MAX_CHECKPOINT_FILES = 30;
 const MAX_MODEL_CALLS = 16;
@@ -316,6 +330,67 @@ function estimateTextTokens(text: string): number {
   return text ? Math.ceil(text.length / 4) : 0;
 }
 
+export interface CompactBudgets {
+  contextWindow: number;
+  /** The loop's output reserve, clamped to at most half the window for sizing purposes. */
+  reservedOutputTokens: number;
+  usableContextLimit: number;
+  /** Post-compaction size the compactor aims for: DESIRED_CONTEXT_FRACTION of the usable window. */
+  targetTokens: number;
+  checkpointBudget: number;
+  /** Tokens of verbatim recent history kept after an auto compaction. */
+  recentBudget: number;
+  /** Today's short tail; manual /compact falls back to it when the residual would summarize nothing. */
+  legacyRecentBudget: number;
+  /** Per-tool-result clip applied to retained history and to the loop's preflight clip. */
+  retainedToolResultMaxTokens: number;
+}
+
+export function resolveCompactBudgets(
+  config: Pick<AgentConfig, 'modelInfo' | 'maxTokens'>,
+  options?: { checkpointMaxTokens?: number },
+): CompactBudgets {
+  const contextWindow = resolveContextLimit(config);
+  const w = contextWindow;
+  const loopReserve = Math.min(
+    Math.max(1024, config.modelInfo?.maxOutputTokens ?? config.maxTokens ?? Math.floor(w * 0.2)),
+    Math.max(1, w - 1),
+  );
+  const reservedOutputTokens = Math.min(loopReserve, Math.floor(w * MAX_OUTPUT_RESERVE_FRACTION));
+  const usableContextLimit = Math.max(1, w - reservedOutputTokens);
+  const targetTokens = Math.max(1, Math.floor(usableContextLimit * DESIRED_CONTEXT_FRACTION));
+  const checkpointBudget = Math.max(
+    1,
+    Math.floor(
+      Math.min(options?.checkpointMaxTokens ?? CHECKPOINT_MAX_TOKENS, w * CHECKPOINT_FRACTION),
+    ),
+  );
+  const checkpointEnvelopeTokens =
+    estimateTextTokens(CHECKPOINT_PREFIX) +
+    MESSAGE_OVERHEAD_TOKENS +
+    CARRIED_LEDGER_NOTICE_MARGIN_TOKENS;
+  const legacyRecentBudget = Math.min(RECENT_TAIL_MAX_TOKENS, Math.floor(w * RECENT_TAIL_FRACTION));
+  const recentBudget = Math.max(
+    Math.floor(w * RECENT_TAIL_FRACTION),
+    targetTokens - checkpointBudget - checkpointEnvelopeTokens,
+  );
+  const retainedToolResultMaxTokens = Math.max(
+    RETAINED_TOOL_RESULT_MAX_TOKENS,
+    Math.floor(recentBudget * RETAINED_TOOL_RESULT_TAIL_SHARE),
+  );
+
+  return {
+    contextWindow,
+    reservedOutputTokens,
+    usableContextLimit,
+    targetTokens,
+    checkpointBudget,
+    recentBudget,
+    legacyRecentBudget,
+    retainedToolResultMaxTokens,
+  };
+}
+
 export function compactHistory(
   history: Message[],
   keepLast: number,
@@ -387,9 +462,21 @@ export async function runCompact(
   // cheap, so it runs before the hooks: a compaction that will immediately skip
   // must not fire the user's PreCompact commands. Only once the work is known to
   // be real do the hooks get a chance to observe or block it.
-  const contextWindow = resolveContextLimit(config);
-  const recentBudget = Math.min(RECENT_TAIL_MAX_TOKENS, contextWindow * RECENT_TAIL_FRACTION);
-  const selection = selectRecentBundles(contextHistory, recentBudget);
+  const budgets = resolveCompactBudgets(config, {
+    checkpointMaxTokens: options.checkpointMaxTokens,
+  });
+  let selection = selectRecentBundles(
+    contextHistory,
+    budgets.recentBudget,
+    budgets.retainedToolResultMaxTokens,
+  );
+  if (options.trigger === 'manual' && selection.summarizedBundles.flat().length === 0) {
+    selection = selectRecentBundles(
+      contextHistory,
+      budgets.legacyRecentBudget,
+      RETAINED_TOOL_RESULT_MAX_TOKENS,
+    );
+  }
   const summarizedMessages = selection.summarizedBundles.flat();
   if (summarizedMessages.length === 0) {
     return {
@@ -415,15 +502,7 @@ export async function runCompact(
 
   const reducerConfig = resolveCompactModelConfig(config);
   const reducerProvider = options.provider ?? createProvider(reducerConfig);
-  const checkpointBudget = Math.max(
-    1,
-    Math.floor(
-      Math.min(
-        options.checkpointMaxTokens ?? CHECKPOINT_MAX_TOKENS,
-        contextWindow * CHECKPOINT_FRACTION,
-      ),
-    ),
-  );
+  const checkpointBudget = budgets.checkpointBudget;
   // An explicit `checkpointMaxTokens` is an evaluation knob and stays the literal
   // provider cap; otherwise the cap is derived so the envelope and any thinking
   // tokens fit around a checkpoint of `checkpointBudget`.
@@ -466,7 +545,7 @@ export async function runCompact(
     ? cloneCheckpoint(selection.priorCheckpoint)
     : undefined;
 
-  let effectiveContextWindow = contextWindow;
+  let effectiveContextWindow = budgets.contextWindow;
   let modelCalls = 0;
   let repairUsed = false;
   let finalCheckpoint: ConversationCheckpointV2 | undefined;
@@ -648,7 +727,7 @@ export async function runCompact(
   const retainedBundles = selection.retainedBundles.map((bundle) => [...bundle]);
   const postBudgetOmitted = new Set<string>();
   const compactId = crypto.randomUUID();
-  const targetTokens = Math.max(1, Math.floor(contextWindow * DESIRED_CONTEXT_FRACTION));
+  const targetTokens = budgets.targetTokens;
   let checkpoint = finalCheckpoint!;
   /**
    * Re-attached after every rewrite of `checkpoint`, including the deterministic
@@ -794,6 +873,9 @@ export async function runCompact(
     postMessageCount: replacementHistory.length,
     preTokens,
     postContextTokens,
+    recentBudget: budgets.recentBudget,
+    targetTokens: budgets.targetTokens,
+    retainedToolResultMaxTokens: budgets.retainedToolResultMaxTokens,
   });
   return {
     status: 'compacted',
@@ -845,7 +927,11 @@ async function runPreCompactHooks(
     : undefined;
 }
 
-function selectRecentBundles(history: readonly Message[], budget: number): CompactSelection {
+function selectRecentBundles(
+  history: readonly Message[],
+  budget: number,
+  retainedToolResultMaxTokens = RETAINED_TOOL_RESULT_MAX_TOKENS,
+): CompactSelection {
   let priorCheckpointIndex = -1;
   let priorCheckpoint: ConversationCheckpointV2 | undefined;
   for (let index = history.length - 1; index >= 0; index--) {
@@ -865,7 +951,7 @@ function selectRecentBundles(history: readonly Message[], budget: number): Compa
   const retainedBundles: Message[][] = [];
   let used = 0;
   for (let index = bundles.length - 1; index >= 0; index--) {
-    const clipped = clipBundleToolResults(bundles[index]);
+    const clipped = clipBundleToolResults(bundles[index], retainedToolResultMaxTokens);
     const tokens = estimateHistoryTokens(clipped);
     if (index === bundles.length - 1 && tokens > budget) break;
     if (used + tokens > budget) break;
@@ -939,8 +1025,11 @@ export function clipHistoryToolResults(
   });
 }
 
-function clipBundleToolResults(bundle: readonly Message[]): Message[] {
-  return clipHistoryToolResults(bundle);
+function clipBundleToolResults(
+  bundle: readonly Message[],
+  retainedToolResultMaxTokens = RETAINED_TOOL_RESULT_MAX_TOKENS,
+): Message[] {
+  return clipHistoryToolResults(bundle, retainedToolResultMaxTokens);
 }
 
 function planReduction(
