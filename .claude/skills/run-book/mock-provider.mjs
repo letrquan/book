@@ -36,10 +36,13 @@
  *
  * With no --script the server always replies with a single text turn taken from
  * --reply (default: a fixed sentence). Every request is appended as JSON to
- * <port>.requests.jsonl next to the log so you can assert on what Book sent.
+ * book-mock-<port>.requests.jsonl in the OS temp directory (--request-log overrides
+ * it) so you can assert on what Book sent.
  */
 import { createServer } from 'node:http';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const argv = process.argv.slice(2);
 function arg(name, fallback) {
@@ -50,11 +53,11 @@ function arg(name, fallback) {
 const port = Number(arg('port', '8919'));
 const replyText = arg('reply', 'MOCK-OK: Book reached the provider and streamed this reply.');
 const scriptPath = arg('script', null);
-const requestLog = arg('request-log', `/tmp/book-mock-${port}.requests.jsonl`);
+// os.tmpdir(), not /tmp: on Windows node resolves /tmp to C:\tmp, which usually does not
+// exist, and the best-effort writes below then lose every request without a word.
+const requestLog = arg('request-log', join(tmpdir(), `book-mock-${port}.requests.jsonl`));
 
-const turns = scriptPath
-  ? JSON.parse(readFileSync(scriptPath, 'utf8'))
-  : [{ text: replyText }];
+const turns = scriptPath ? JSON.parse(readFileSync(scriptPath, 'utf8')) : [{ text: replyText }];
 const matchedTurns = turns.filter((turn) => typeof turn.match === 'string');
 const sequenceTurns = turns.filter((turn) => typeof turn.match !== 'string');
 
