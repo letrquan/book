@@ -129,6 +129,12 @@ export const FIDELITY_ARMS: readonly FidelityArm[] = [
   {
     contextWindow: 32_000,
     reservedOutputTokens: 4_096,
+    /**
+     * 3 was the corpus every earlier baseline ran on. At this window the
+     * residual tail (~10.4k tokens) holds that whole corpus, so generation 1
+     * would skip with nothing to summarize; 5 is the smallest filler that
+     * pushes the oldest turns out of the tail again.
+     */
     fillerRepeat: 5,
     floors: {
       /** Measured 0.667 on 2026-09-05. */
