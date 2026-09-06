@@ -3,17 +3,18 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { requiresToolPermission, runAgentLoop } from './loop.js';
+import { resolveCompactBudgets } from './compact.js';
 import { createDefaultRegistry, createRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
-import type { Message } from '../types/messages.js';
+import type { Message, Usage } from '../types/messages.js';
 import { askUserQuestionTools } from '../tools/ask-user-question.js';
 import { toolSuccess } from '../tools/result.js';
 import { readToolUseRecords } from '../tool-telemetry.js';
 import { SessionRuntime } from '../session/runtime.js';
 import type { Provider } from '../provider/index.js';
-import type { CompactResult } from '../types/sessions.js';
+import type { CompactRequestHints, CompactResult } from '../types/sessions.js';
 import type { AgentTerminalOutcome } from '../types/terminal.js';
 import { createAgentRunContext } from '../types/runs.js';
 
@@ -1678,11 +1679,18 @@ describe('runAgentLoop error handling', () => {
   });
 
   it('reserves the complete requested output budget during preflight', async () => {
-    let providerToolContent = '';
+    // A 40k output reserve on a 100k window leaves 60k of input and a 48k gate.
+    // Four results at the model-facing byte cap (~12.8k tokens each) cross it
+    // only because the whole reserve is subtracted, not a fraction of it; the
+    // retained-tail clip at this window is the flat 2,000 tokens.
+    const toolContents: string[] = [];
+    const ids = Array.from({ length: 4 }, (_, index) => `budget-tool-${index}`);
     const provider: Provider = {
       id: 'scripted',
       stream: async function* (_config, messages) {
-        providerToolContent = String(messages.find((message) => message.role === 'tool')?.content);
+        for (const message of messages) {
+          if (message.role === 'tool') toolContents.push(String(message.content));
+        }
         yield { type: 'text', content: 'ok' };
         yield { type: 'done' };
       },
@@ -1700,8 +1708,8 @@ describe('runAgentLoop error handling', () => {
         role: 'assistant' as const,
         content: '',
         includeInContext: true,
-        toolCalls: [{ id: 'budget-tool', name: 'Read', arguments: {} }],
-        toolResults: [toolSuccess('z'.repeat(80_000), { toolCallId: 'budget-tool' })],
+        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolResults: ids.map((id) => toolSuccess('z'.repeat(51_200), { toolCallId: id })),
         timestamp: 0,
       },
     ];
@@ -1709,9 +1717,9 @@ describe('runAgentLoop error handling', () => {
     await runAgentLoop(
       defaultConfig({
         maxTurns: 1,
-        maxTokens: 80_000,
+        maxTokens: 40_000,
         autoCompactEnabled: false,
-        modelInfo: { contextWindow: 100_000, maxOutputTokens: 80_000 },
+        modelInfo: { contextWindow: 100_000, maxOutputTokens: 40_000 },
       }),
       createRegistry(),
       'continue',
@@ -1721,7 +1729,10 @@ describe('runAgentLoop error handling', () => {
       { provider, isNewSession: false },
     );
 
-    expect(providerToolContent.length).toBeLessThan(10_000);
+    expect(toolContents).toHaveLength(ids.length);
+    for (const content of toolContents) {
+      expect(content.length).toBeLessThan(10_000);
+    }
   });
 
   it('keeps a retained tool result under the scaled cap through the preflight clip', async () => {
@@ -1761,9 +1772,10 @@ describe('runAgentLoop error handling', () => {
         ],
         toolResults: [
           toolSuccess('z'.repeat(24_000), { toolCallId: 'kept-tool' }),
-          // `toolSuccess` already caps a single result at 50 KiB (~12.8k tokens),
-          // so crossing the 272k preflight gate (~166k tokens) takes many of them.
-          ...clippedIds.map((id) => toolSuccess('y'.repeat(800_000), { toolCallId: id })),
+          // The model-facing content of one result is capped at 50 KiB (~12.8k
+          // tokens) by `toolResultModelContent` when the request is built, so
+          // crossing the 272k preflight gate (~166k tokens) takes many of them.
+          ...clippedIds.map((id) => toolSuccess('y'.repeat(51_200), { toolCallId: id })),
         ],
         timestamp: 0,
       },
@@ -1788,9 +1800,167 @@ describe('runAgentLoop error handling', () => {
     const clipped = toolContents.filter((content) => content.startsWith('yyyy'));
     expect(kept).toHaveLength(24_000);
     expect(clipped).toHaveLength(clippedIds.length);
+    // Each clipped result holds about the scaled cap's worth of characters (head
+    // and tail halves plus the elision marker), not the flat cap's 8,000. The
+    // loop subtracts this request's prompt overhead from the target, so the cap
+    // in effect sits a little under the overhead-free one computed here.
+    const clipChars =
+      resolveCompactBudgets({ maxTokens: 64_000, modelInfo: { contextWindow: 272_000 } })
+        .retainedToolResultMaxTokens * 4;
+    expect(clipChars).toBeGreaterThan(20_000);
     for (const content of clipped) {
-      expect(content.length).toBeGreaterThanOrEqual(30_000);
-      expect(content.length).toBeLessThanOrEqual(45_000);
+      expect(content.length).toBeGreaterThan(20_000);
+      expect(content.length).toBeLessThanOrEqual(clipChars + 200);
+    }
+  });
+
+  it('sends a tool-bearing request on a 32k model with the default 64k reserve', async () => {
+    // A settings-declared 32k window without `maxOutputTokens` leaves Book's 64k
+    // default reserve in place. Sized without the half-window clamp, the usable
+    // window was 1 token and every request carrying a tool result was refused
+    // before the provider was called.
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done' };
+      },
+    };
+    const onError = vi.fn();
+    const history = [
+      {
+        id: 'small-user',
+        role: 'user' as const,
+        content: 'inspect',
+        includeInContext: true,
+        timestamp: 0,
+      },
+      {
+        id: 'small-assistant',
+        role: 'assistant' as const,
+        content: '',
+        includeInContext: true,
+        toolCalls: [{ id: 'small-tool', name: 'Read', arguments: {} }],
+        toolResults: [toolSuccess('hello world', { toolCallId: 'small-tool' })],
+        timestamp: 0,
+      },
+    ];
+
+    const result = await runAgentLoop(
+      defaultConfig({ maxTurns: 1, maxTokens: 64_000, modelInfo: { contextWindow: 32_000 } }),
+      createRegistry(),
+      'continue',
+      history,
+      noopCallbacks({ onError }),
+      'auto',
+      { provider, isNewSession: false },
+    );
+
+    expect(providerCalls).toBe(1);
+    expect(onError).not.toHaveBeenCalled();
+    expect(result.at(-1)?.content).toBe('ok');
+  });
+
+  it('asks the compactor for the short tail when recovering from a provider rejection', async () => {
+    // The provider has refused the request the residual tail was sized for, so
+    // the recovery compaction must not keep that tail again: the loop gets one
+    // retry, and `recovery` is how the compactor learns to keep the short one.
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls === 1) {
+          yield { type: 'error', error: 'maximum context length exceeded' };
+          return;
+        }
+        yield { type: 'text', content: 'recovered' };
+        yield { type: 'done' };
+      },
+    };
+    const hints: Array<CompactRequestHints | undefined> = [];
+    const compact = vi.fn(
+      async (_history: Message[], _usage: Usage | null, requestHints?: CompactRequestHints) => {
+        hints.push(requestHints);
+        return compactedForRetry();
+      },
+    );
+
+    const result = await runAgentLoop(
+      defaultConfig({ maxTurns: 1 }),
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      { provider, isNewSession: false },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(hints[0]?.recovery).toBe(true);
+    expect(hints[0]?.requestOverheadTokens).toBeGreaterThan(0);
+    expect(providerCalls).toBe(2);
+    expect(result.at(-1)?.content).toBe('recovered');
+  });
+
+  it('falls back to the flat clip when the scaled clip still leaves the request too large', async () => {
+    // Compaction is off, so the deterministic clip is all the loop has. Thirty
+    // results at the model-facing byte cap are ~384k tokens; the scaled cap
+    // (~7.9k each) leaves ~237k, still over the 208k usable window, and the flat
+    // cap the loop always had (2k each) is what lets the turn go out at all.
+    const toolContents: string[] = [];
+    const ids = Array.from({ length: 30 }, (_, index) => `flat-tool-${index}`);
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, messages) {
+        for (const message of messages) {
+          if (message.role === 'tool') toolContents.push(String(message.content));
+        }
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done' };
+      },
+    };
+    const onError = vi.fn();
+    const history = [
+      {
+        id: 'flat-user',
+        role: 'user' as const,
+        content: 'inspect',
+        includeInContext: true,
+        timestamp: 0,
+      },
+      {
+        id: 'flat-assistant',
+        role: 'assistant' as const,
+        content: '',
+        includeInContext: true,
+        toolCalls: ids.map((id) => ({ id, name: 'Read', arguments: {} })),
+        toolResults: ids.map((id) => toolSuccess('w'.repeat(51_200), { toolCallId: id })),
+        timestamp: 0,
+      },
+    ];
+
+    await runAgentLoop(
+      defaultConfig({
+        maxTurns: 1,
+        maxTokens: 64_000,
+        autoCompactEnabled: false,
+        modelInfo: { contextWindow: 272_000 },
+      }),
+      createRegistry(),
+      'continue',
+      history,
+      noopCallbacks({ onError }),
+      'auto',
+      { provider, isNewSession: false },
+    );
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(toolContents).toHaveLength(ids.length);
+    for (const content of toolContents) {
+      expect(content.length).toBeLessThanOrEqual(2_000 * 4 + 200);
     }
   });
 

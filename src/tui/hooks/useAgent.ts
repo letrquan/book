@@ -930,7 +930,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             // Consumed after this send settles (see the pending-handoff effect).
             pendingHandoffRef.current = handoff;
           },
-          onCompact: async (history, usage) => {
+          onCompact: async (history, usage, hints) => {
             if (!stillCurrent()) {
               return { status: 'skipped', reason: 'disabled', message: 'Session changed.' };
             }
@@ -947,6 +947,7 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
               isCurrent: stillCurrent,
               onCommitted: projectCompactResult,
               options: {
+                ...hints,
                 trigger: 'auto',
                 preContextTokens: usage ? usagePressureTokens(usage) : undefined,
               },

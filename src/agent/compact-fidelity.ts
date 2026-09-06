@@ -50,25 +50,16 @@ export interface FidelityMetrics {
   /** Total reducer calls across every generation. */
   reducerCalls: number;
   /**
-   * Post-compaction HISTORY tokens over `contextWindow * PREFLIGHT_FRACTION`,
-   * averaged. Deliberately a proxy, not the loop's own gate: the loop compares
-   * a full request estimate -- system prompt and tool schemas included --
-   * against a threshold computed after subtracting its output reserve, and
-   * neither of those is available here. The absolute value is therefore not
-   * the loop's utilization; what makes it useful is that it is computed the
-   * same way every run, so the design's "dead budget" -- headroom compaction
-   * discards and then pays to rebuild by re-reading files -- is comparable
-   * across changes.
+   * Post-compaction HISTORY tokens over the loop's preflight gate
+   * (`resolveCompactBudgets(config).preflightThreshold`), averaged. The gate
+   * counts the whole request -- system prompt and tool schemas included -- and
+   * the harness has no request, so this is the history's share of the gate: an
+   * upper bound on what a real session sees, computed the same way every run,
+   * so the design's "dead budget" -- headroom compaction discards and then pays
+   * to rebuild by re-reading files -- is comparable across changes.
    */
   postHistoryUtilization: number;
 }
-
-/**
- * The loop's preflight fraction, duplicated here as the proxy's denominator.
- * It is a literal on both sides; see `postHistoryUtilization` for why this
- * metric is not the loop's gate and does not try to be.
- */
-export const PREFLIGHT_FRACTION = 0.8;
 
 export interface FidelityFloors {
   minFinalRetention: number;
@@ -113,17 +104,30 @@ export interface FidelityArm {
  * Overall retention rose with it -- from 0.333 to 0.667 -- because the same
  * sentences also carry facts the episodes were losing.
  *
- * What Phase 1 changed (2026-09-05). The retained tail is now the residual of
- * the post-compaction target instead of a flat 20k cap (`resolveCompactBudgets`
- * in `compact.ts`), so the harness runs two arms: the 32k corpus it always ran,
- * and the 272k default window the owner's sessions actually compact at, where
- * the flat cap used to bind and no test could reach it. `postHistoryUtilization`
- * flipped from a 0.15 ceiling to a floor on both arms. `retentionPrecision`
+ * What Phase 1 changed (2026-09-05, revised 2026-09-06 after review). The
+ * retained tail is now the residual of the post-compaction target instead of a
+ * flat 20k cap (`resolveCompactBudgets` in `compact.ts`), and the target is
+ * half the loop's preflight gate, so the harness runs two arms: a 32k window
+ * with a 4k reserve, and the 272k default window the owner's sessions actually
+ * compact at, where the flat cap used to bind and no test could reach it.
+ *
+ * The 32k arm is NOT the corpus the 2026-08-30 floors were measured on. Its
+ * filler grew from three repeats to five (the residual tail holds the whole
+ * three-repeat corpus, so generation 1 had nothing to summarize), its tail is
+ * ~7.9k tokens instead of 6.4k, and its target ~11.2k instead of 16k. Where a
+ * floor below equals an older number, that is coincidence, not continuity; the
+ * ratchet compares a floor only with a measurement on the same arm as recorded
+ * here. `postHistoryUtilization` flipped from a 0.15 ceiling to a floor on both
+ * arms and is now measured against the loop's own gate. `retentionPrecision`
  * fell from 0.898 and is NOT comparable with that number: an empty retained
  * tail scores 1.0, and seven of the eight old generations retained nothing,
  * so the old figure mostly measured the absence of a tail. With a real tail
  * the metric counts every retained turn that carries no planted fact, which
  * in this corpus is the filler by design. Each arm records its own floors.
+ *
+ * To re-measure after a change: run the fidelity test with
+ * `BOOK_FIDELITY_PRINT=1` (the arm test prints one JSON line of metrics per
+ * arm), then paste the numbers here with the date.
  */
 export const FIDELITY_ARMS: readonly FidelityArm[] = [
   {
@@ -131,32 +135,37 @@ export const FIDELITY_ARMS: readonly FidelityArm[] = [
     reservedOutputTokens: 4_096,
     /**
      * 3 was the corpus every earlier baseline ran on. At this window the
-     * residual tail (~10.4k tokens) holds that whole corpus, so generation 1
-     * would skip with nothing to summarize; 5 is the smallest filler that
+     * residual tail (~7.9k tokens) holds most of that corpus, so generation 1
+     * would have little or nothing to summarize; 5 is the smallest filler that
      * pushes the oldest turns out of the tail again.
      */
     fillerRepeat: 5,
     floors: {
-      /** Measured 0.667 on 2026-09-05. */
+      /** Measured 0.667 on 2026-09-06. */
       minFinalRetention: 0.66,
-      /** Measured 0.677 across the eight generations on 2026-09-05. */
+      /** Measured 0.677 across the eight generations on 2026-09-06. */
       minMeanRetention: 0.67,
-      /** Measured 1.0 on 2026-09-05. */
+      /** Measured 1.0 on 2026-09-06. */
       minVerbatimUserRetention: 1,
-      /** Measured 1.0 on 2026-09-05. */
+      /** Measured 1.0 on 2026-09-06. */
       minSupersessionCorrectness: 1,
-      /** Measured 1.0 on 2026-09-05. */
+      /** Measured 1.0 on 2026-09-06. */
       minGroundedSourceRecall: 1,
       /**
-       * Measured 0.056 on 2026-09-05. Not a regression against the old 0.898:
+       * Measured 0.026 on 2026-09-06. Not a regression against the old 0.898:
        * that figure came from seven generations that retained nothing (an
-       * empty tail scores 1.0). See the module comment.
+       * empty tail scores 1.0), and the ~7.9k tail here keeps two filler turns
+       * per generation by construction. See the module comment.
        */
-      minRetentionPrecision: 0.05,
-      /** Measured 8 on 2026-09-05 -- one reducer call per generation, no repairs spent. */
+      minRetentionPrecision: 0.02,
+      /** Measured 8 on 2026-09-06 -- one reducer call per generation, no repairs spent. */
       maxReducerCalls: 8,
-      /** Floor now: dead budget reclaimed. Measured 0.434 on 2026-09-05. */
-      minPostHistoryUtilization: 0.43,
+      /**
+       * Floor, not ceiling: dead budget reclaimed. Measured 0.470 against the
+       * loop's 22,323-token gate on 2026-09-06; post-compaction history sits at
+       * the target, which is half the gate.
+       */
+      minPostHistoryUtilization: 0.46,
     },
   },
   {
@@ -164,31 +173,32 @@ export const FIDELITY_ARMS: readonly FidelityArm[] = [
     reservedOutputTokens: 64_000,
     fillerRepeat: 60,
     floors: {
-      /** Measured 0.833 on 2026-09-05. */
+      /** Measured 0.833 on 2026-09-06. */
       minFinalRetention: 0.83,
-      /** Measured 0.823 across the eight generations on 2026-09-05. */
+      /** Measured 0.823 across the eight generations on 2026-09-06. */
       minMeanRetention: 0.82,
-      /** Measured 1.0 on 2026-09-05. */
+      /** Measured 1.0 on 2026-09-06. */
       minVerbatimUserRetention: 1,
-      /** Measured 1.0 on 2026-09-05. */
+      /** Measured 1.0 on 2026-09-06. */
       minSupersessionCorrectness: 1,
-      /** Measured 1.0 on 2026-09-05. */
+      /** Measured 1.0 on 2026-09-06. */
       minGroundedSourceRecall: 1,
       /**
-       * Measured 0.166 on 2026-09-05. A ~100k tail keeps the fixture's unrelated
+       * Measured 0.176 on 2026-09-06. A ~79k tail keeps the fixture's unrelated
        * filler turns by construction, so precision is not comparable across
        * arms and must not be rescued by shrinking the filler.
        */
-      minRetentionPrecision: 0.16,
-      /** Measured 8 on 2026-09-05 -- one reducer call per generation, no repairs spent. */
+      minRetentionPrecision: 0.17,
+      /** Measured 8 on 2026-09-06 -- one reducer call per generation, no repairs spent. */
       maxReducerCalls: 8,
-      /** Floor now: dead budget reclaimed. Measured 0.464 on 2026-09-05 (floor at least 0.35). */
-      minPostHistoryUtilization: 0.46,
+      /**
+       * Floor, not ceiling: dead budget reclaimed. Measured 0.480 against the
+       * loop's 166,400-token gate on 2026-09-06 (post-compaction history 77k-82k).
+       */
+      minPostHistoryUtilization: 0.47,
     },
   },
 ];
-
-export const FIDELITY_BASELINE = FIDELITY_ARMS[0].floors;
 
 function checkpointText(checkpoint: ConversationCheckpointV2): string {
   return JSON.stringify(checkpoint);
@@ -308,7 +318,8 @@ export function scoreFidelity(
   generations: readonly GenerationRecord[],
   facts: readonly PlantedFact[],
   sourceHistory: readonly Message[],
-  contextWindow: number,
+  /** The loop's preflight gate for the arm's config: `resolveCompactBudgets(config).preflightThreshold`. */
+  preflightThreshold: number,
 ): FidelityMetrics {
   if (generations.length === 0) {
     throw new Error('scoreFidelity requires at least one generation.');
@@ -352,7 +363,7 @@ export function scoreFidelity(
     groundedPerGeneration.push(groundedSourceRatio(record.checkpoint, sourceHistory));
     precisionPerGeneration.push(retentionPrecisionFor(record.replacementHistory, facts));
     historyUtilizationPerGeneration.push(
-      record.postContextTokens / Math.max(1, contextWindow * PREFLIGHT_FRACTION),
+      record.postContextTokens / Math.max(1, preflightThreshold),
     );
     reducerCalls += record.modelCalls;
   }

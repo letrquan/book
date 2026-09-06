@@ -571,6 +571,12 @@ export async function runAgentLoop(
     let turn = 0;
     const approveAllRules: string[] = [];
     let lastUsage: Usage | null = null;
+    /**
+     * The loop's own estimate of the request `lastUsage` measures, and how much of
+     * it was not history. Compaction shrinks its target by the ratio of the two
+     * counts, and sizes it against the gate that includes the overhead.
+     */
+    let lastRequestEstimate: { requestTokens: number; overheadTokens: number } | null = null;
     /** Avoid re-attempting compact for the same pressure snapshot after skip/fail. */
     let lastCompactAttemptKey: string | null = null;
     let retrySameTurn = false;
@@ -648,7 +654,10 @@ export async function runAgentLoop(
             contextLimit,
           });
           try {
-            const result = await callbacks.onCompact(newHistory, lastUsage);
+            const result = await callbacks.onCompact(newHistory, lastUsage, {
+              requestOverheadTokens: lastRequestEstimate?.overheadTokens,
+              estimatedRequestTokens: lastRequestEstimate?.requestTokens,
+            });
             if (result.status === 'compacted') {
               newHistory.length = 0;
               newHistory.push(...result.replacementHistory);
@@ -737,17 +746,36 @@ export async function runAgentLoop(
         options?.resolveAttachment,
       );
       let requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
-      const reservedOutputTokens = Math.min(
-        Math.max(
-          1_024,
-          effectiveConfig.modelInfo?.maxOutputTokens ??
-            effectiveConfig.maxTokens ??
-            Math.floor(contextLimit * 0.2),
-        ),
-        Math.max(1, contextLimit - 1),
-      );
-      const usableContextLimit = Math.max(1, contextLimit - reservedOutputTokens);
-      const preflightThreshold = Math.floor(usableContextLimit * 0.8);
+      const rebuildRequest = async (): Promise<void> => {
+        messages = await buildMessages(
+          effectiveConfig,
+          newHistory,
+          toolContext.todos,
+          options?.commands,
+          signal,
+          {
+            append: options?.systemPromptAppend,
+            dynamicPolicy: dynamicPolicy(turn),
+            hideAgents: options?.hideAgents,
+            toolCatalogSummary: toolSurface.catalogSummary(),
+            planMode: effectiveMode === 'plan',
+            planUnrestored: runtime.planUnrestored,
+            runElapsedMs: clock.monotonicNowMs() - runStartedAt,
+            workflowPolicy: options?.harnessContext?.workflowPolicySection,
+          },
+          runtime.agentContextCache,
+          options?.resolveAttachment,
+        );
+        requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
+      };
+      // Everything in the request that is not history: system prompt, tool schemas, session
+      // state. Compaction sizes its target against the gate, which counts all of it.
+      const requestOverheadTokens = Math.max(0, requestTokens - estimateHistoryTokens(newHistory));
+      // One resolver for the loop and the compactor, so the gate enforced here and the target
+      // compaction aims for are computed from the same clamped output reserve.
+      const budgets = resolveCompactBudgets(effectiveConfig, { requestOverheadTokens });
+      const usableContextLimit = budgets.usableContextLimit;
+      const preflightThreshold = budgets.preflightThreshold;
       const hasToolResults = newHistory.some((message) => (message.toolResults?.length ?? 0) > 0);
       const preflightEligible = requestTokens >= preflightThreshold && hasToolResults;
 
@@ -765,32 +793,15 @@ export async function runAgentLoop(
           };
           log.info('preflight compact triggered', { requestTokens, contextLimit });
           try {
-            const result = await callbacks.onCompact(newHistory, estimatedUsage);
+            const result = await callbacks.onCompact(newHistory, estimatedUsage, {
+              requestOverheadTokens,
+            });
             if (result.status === 'compacted') {
               newHistory.length = 0;
               newHistory.push(...result.replacementHistory);
               lastUsage = null;
               lastCompactAttemptKey = null;
-              messages = await buildMessages(
-                effectiveConfig,
-                newHistory,
-                toolContext.todos,
-                options?.commands,
-                signal,
-                {
-                  append: options?.systemPromptAppend,
-                  dynamicPolicy: dynamicPolicy(turn),
-                  hideAgents: options?.hideAgents,
-                  toolCatalogSummary: toolSurface.catalogSummary(),
-                  planMode: effectiveMode === 'plan',
-                  planUnrestored: runtime.planUnrestored,
-                  runElapsedMs: clock.monotonicNowMs() - runStartedAt,
-                  workflowPolicy: options?.harnessContext?.workflowPolicySection,
-                },
-                runtime.agentContextCache,
-                options?.resolveAttachment,
-              );
-              requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
+              await rebuildRequest();
             }
           } catch {
             // Deterministic clipping below remains available if model-assisted compaction fails.
@@ -799,34 +810,31 @@ export async function runAgentLoop(
       }
 
       if (preflightEligible) {
+        // The scaled cap keeps what compaction just retained intact.
         const clippedHistory = clipHistoryToolResults(
           newHistory,
-          resolveCompactBudgets(effectiveConfig).retainedToolResultMaxTokens,
+          budgets.retainedToolResultMaxTokens,
         );
         if (clippedHistory.some((message, index) => message !== newHistory[index])) {
           newHistory.length = 0;
           newHistory.push(...clippedHistory);
-          messages = await buildMessages(
-            effectiveConfig,
-            newHistory,
-            toolContext.todos,
-            options?.commands,
-            signal,
-            {
-              append: options?.systemPromptAppend,
-              dynamicPolicy: dynamicPolicy(turn),
-              hideAgents: options?.hideAgents,
-              toolCatalogSummary: toolSurface.catalogSummary(),
-              planMode: effectiveMode === 'plan',
-              planUnrestored: runtime.planUnrestored,
-              runElapsedMs: clock.monotonicNowMs() - runStartedAt,
-              workflowPolicy: options?.harnessContext?.workflowPolicySection,
-            },
-            runtime.agentContextCache,
-            options?.resolveAttachment,
-          );
-          requestTokens = estimateProviderRequestTokens(messages, activeDefinitions);
+          await rebuildRequest();
           log.info('preflight tool outputs clipped', { requestTokens, contextLimit });
+        }
+        // When the request would still be refused -- compaction disabled, failed, or
+        // skipped -- the flat cap the loop always had is the last valve: less evidence
+        // in the tool results beats a dead turn.
+        if (requestTokens >= usableContextLimit && hasToolResults) {
+          const shortClipped = clipHistoryToolResults(newHistory);
+          if (shortClipped.some((message, index) => message !== newHistory[index])) {
+            newHistory.length = 0;
+            newHistory.push(...shortClipped);
+            await rebuildRequest();
+            log.info('preflight tool outputs clipped to the short cap', {
+              requestTokens,
+              contextLimit,
+            });
+          }
         }
       }
 
@@ -842,6 +850,7 @@ export async function runAgentLoop(
         );
         return newHistory;
       }
+      lastRequestEstimate = { requestTokens, overheadTokens: requestOverheadTokens };
       let assistantContent = '';
       let reasoningContent = '';
       const toolCalls: ToolCall[] = [];
@@ -1133,7 +1142,12 @@ export async function runAgentLoop(
               contextTokens: requestTokens,
             };
             try {
-              const result = await callbacks.onCompact(newHistory, estimatedUsage);
+              // The provider has refused the request the residual tail was sized for; the
+              // compactor keeps the short tail so the one retry fits any real window.
+              const result = await callbacks.onCompact(newHistory, estimatedUsage, {
+                recovery: true,
+                requestOverheadTokens: lastRequestEstimate?.overheadTokens,
+              });
               if (result.status === 'compacted') {
                 newHistory.length = 0;
                 newHistory.push(...result.replacementHistory);

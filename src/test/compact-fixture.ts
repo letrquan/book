@@ -14,8 +14,27 @@
  */
 
 import type { Message } from '../types/messages.js';
+import type { AgentConfig } from '../types/runtime.js';
 import type { FileObservation } from '../types/tools.js';
 import { toolSuccess } from '../tools/result.js';
+import { defaultConfig } from './fixtures.js';
+
+/**
+ * The one configuration the compaction suites share. The window and the output
+ * reserve are both explicit because `resolveCompactBudgets` sizes the retained
+ * tail from the two together: the fixture default of 128k output tokens against
+ * a 32k window clamps the reserve to half the window and leaves only the short
+ * tail, which is not the regime the suites mean to exercise.
+ */
+export function compactTestConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
+  return defaultConfig({
+    autoCompactEnabled: true,
+    accessibility: { screenReader: false, reducedMotion: true },
+    maxTokens: 4_096,
+    modelInfo: { contextWindow: 32_000 },
+    ...overrides,
+  });
+}
 
 /**
  * What kind of thing a planted fact is. Compaction is not equally obliged to

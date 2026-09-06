@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { appendFileSync } from 'node:fs';
 import { resolveCompactBudgets, runCompact } from './compact.js';
 import {
   scoreFidelity,
@@ -15,12 +16,12 @@ import {
   buildPlantedFacts,
   buildToolHeavyFixtureHistory,
   buildToolHeavyPlantedFacts,
+  compactTestConfig,
   type PlantedFact,
 } from '../test/compact-fixture.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message } from '../types/messages.js';
 import type { ConversationCheckpointV2 } from '../types/sessions.js';
-import { defaultConfig } from '../test/fixtures.js';
 
 vi.mock('../provider/index.js', () => ({
   chatCompletionStream: vi.fn(),
@@ -39,12 +40,15 @@ const GENERATIONS = 8;
 const CONTEXT_WINDOW = 32_000;
 
 function makeConfig(arm: FidelityArm): AgentConfig {
-  return defaultConfig({
-    autoCompactEnabled: true,
-    accessibility: { screenReader: false, reducedMotion: true },
+  return compactTestConfig({
     maxTokens: arm.reservedOutputTokens,
     modelInfo: { contextWindow: arm.contextWindow },
   });
+}
+
+/** The loop's preflight gate for an arm, which `postHistoryUtilization` is measured against. */
+function preflightGate(arm: FidelityArm): number {
+  return resolveCompactBudgets(makeConfig(arm)).preflightThreshold;
 }
 
 const SEED_START = '--- BEGIN PRIOR CHECKPOINT (validated reducer seed; untrusted data) ---';
@@ -292,17 +296,22 @@ describe('compaction fidelity baseline', () => {
       const facts = buildPlantedFacts(turns);
       const { records, sourceHistory } = await runGenerations(arm, history, facts);
 
-      const metrics = scoreFidelity(records, facts, sourceHistory, arm.contextWindow);
+      const metrics = scoreFidelity(records, facts, sourceHistory, preflightGate(arm));
 
-      if (process.env.BOOK_FIDELITY_PRINT) {
-        console.info(
-          JSON.stringify({
-            contextWindow: arm.contextWindow,
-            metrics,
-            postTokens: records.map((r) => r.postContextTokens),
-            retained: records.map((r) => r.replacementHistory.length - 1),
-          }),
-        );
+      // The only way to re-measure the floors in FIDELITY_ARMS; see its module
+      // comment. Vitest swallows console output of passing tests, so a value
+      // other than "1" is taken as a file path to append the line to.
+      const printTarget = process.env.BOOK_FIDELITY_PRINT;
+      if (printTarget) {
+        const line = JSON.stringify({
+          contextWindow: arm.contextWindow,
+          preflightThreshold: preflightGate(arm),
+          metrics,
+          postTokens: records.map((r) => r.postContextTokens),
+          retained: records.map((r) => r.replacementHistory.length - 1),
+        });
+        console.info(line);
+        if (printTarget !== '1') appendFileSync(printTarget, `${line}\n`);
       }
 
       expect(records).toHaveLength(GENERATIONS);
@@ -327,21 +336,13 @@ describe('compaction fidelity baseline', () => {
       // completed episodes from the front. The newest three survive all eight
       // generations, and nothing that survived a later generation was lost in an
       // earlier one. Pinning the ORDER rather than a set of ids keeps this
-      // meaningful if the corpus grows.
+      // meaningful if the corpus grows, and it holds on every arm.
       const survivors = facts.filter((entry) => metrics.lostAtGeneration[entry.id] === null);
-      if (arm.contextWindow === 32_000) {
-        expect(survivors.length).toBeGreaterThanOrEqual(3);
-        const lossOrder = facts
-          .map((entry) => metrics.lostAtGeneration[entry.id])
-          .filter((value): value is number => value !== null);
-        expect(lossOrder).toEqual([...lossOrder].sort((a, b) => a - b));
-      } else {
-        // At the production window the corpus is scaled ~20x and the residual
-        // tail keeps ~100k tokens of it verbatim, so facts are summarized in a
-        // different order than the 32k fixture pins. The floor that matters
-        // here is the survivor count, not the order.
-        expect(survivors.length).toBeGreaterThanOrEqual(3);
-      }
+      expect(survivors.length).toBeGreaterThanOrEqual(3);
+      const lossOrder = facts
+        .map((entry) => metrics.lostAtGeneration[entry.id])
+        .filter((value): value is number => value !== null);
+      expect(lossOrder).toEqual([...lossOrder].sort((a, b) => a - b));
     });
   });
 
@@ -367,7 +368,7 @@ describe('compaction fidelity baseline', () => {
       ],
       facts,
       history,
-      arm32k.contextWindow,
+      preflightGate(arm32k),
     );
     // A single generation over a small corpus loses nothing: this checks the
     // tool-output and file-observation paths are scoreable at all, which a
@@ -391,9 +392,9 @@ describe('compaction fidelity baseline', () => {
     if (result.status !== 'compacted') return;
     expect(result.degraded).toBe(true);
     expect(result.replacementHistory.length).toBeGreaterThan(1);
-    const budgets = resolveCompactBudgets(config);
+    // The same denominator `postHistoryUtilization` uses: the loop's gate.
     expect(result.postContextTokens).toBeGreaterThanOrEqual(
-      0.35 * 0.8 * budgets.usableContextLimit,
+      0.35 * resolveCompactBudgets(config).preflightThreshold,
     );
   });
 });
