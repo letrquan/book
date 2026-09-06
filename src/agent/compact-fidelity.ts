@@ -126,8 +126,10 @@ export interface FidelityArm {
  * in this corpus is the filler by design. Each arm records its own floors.
  *
  * To re-measure after a change: run the fidelity test with
- * `BOOK_FIDELITY_PRINT=1` (the arm test prints one JSON line of metrics per
- * arm), then paste the numbers here with the date.
+ * `BOOK_FIDELITY_PRINT=<file>` (the arm test appends one JSON line of metrics
+ * per arm to that file; vitest swallows console output of passing tests, so
+ * the value `1`, which only prints, is rarely useful), then paste the numbers
+ * here with the date.
  */
 export const FIDELITY_ARMS: readonly FidelityArm[] = [
   {
