@@ -54,22 +54,33 @@ All notable changes to this project are documented in this file.
   single turn with dozens of tool calls exceeds that even after clipping, so at the 272k default
   window compaction kept nothing verbatim: seven of eight real compactions in the owner's sessions
   retained zero messages and collapsed 167k-219k tokens to a 0.2k-6.7k checkpoint. The tail is now
-  the residual of the post-compaction target (`resolveCompactBudgets` in `src/agent/compact.ts`):
-  half the usable window - the window minus the output reserve the loop already subtracts, clamped
-  to half the window - less the checkpoint budget and its header. At 272k with the 64k default
-  reserve that is ~99.6k tokens of verbatim recent history instead of 20k. The per-result clip
-  scales with the tail (~10k tokens per retained tool result instead of 2k) and the loop's preflight
-  clip uses the same cap, so it cannot undo what compaction just retained. A manual `/compact` on a
-  session that fits the new tail falls back to the old short tail so it still shrinks something;
-  auto compaction never does. The fidelity harness now runs two arms, the 32k corpus and the 272k
-  production window, with per-arm floors in `FIDELITY_ARMS`: post-history utilization flipped from
-  a 0.15 ceiling to a floor (0.43 and 0.46 measured), final retention at 272k measured 0.833, and
-  retention precision is recorded per arm because the old 0.898 mostly measured an empty tail. Cost:
-  post-compaction requests carry ~4x more history, compactions fire more often (the headroom to the
-  next preflight at 272k shrinks from ~140k to ~65k tokens), and one real reducer call was observed
-  at 2.1x its estimated history in provider tokens, cause unverified. The `run-book` mock provider
-  gained content-matched turns so a scripted session survives the reducer's request landing at any
-  index.
+  the residual of the post-compaction target (`resolveCompactBudgets` in `src/agent/compact.ts`).
+  The target is half the loop's preflight gate net of the request overhead the loop measures
+  (system prompt, tool schemas, session state), so after a compaction the whole request sits at
+  half the gate and the next compaction is as far away as the request is large; the tail is that
+  target less the checkpoint budget and its header. At 272k with the 64k default reserve that is
+  ~79k tokens of verbatim recent history with no overhead, ~73k against this repository's ~12k
+  prompt, instead of 20k. The loop and the compactor size from the one resolver, so the output
+  reserve is clamped to half the window on both sides: a 32k local model under Book's 64k default
+  reserve was refused every tool-bearing request before the provider was called (issue #189). The
+  per-result clip scales with the tail (~7.9k tokens per retained tool result at 272k instead of
+  2k) and the loop's preflight clip uses the same cap, falling back to the flat cap only when the
+  request would still be refused. The short 20k tail stays where it is the right answer: the
+  recovery compaction after a provider rejects a request as too large always keeps it, because the
+  residual was sized for a window the provider has just said it does not have, and every trigger
+  falls back to it when the residual would summarize nothing. A compaction that fires on
+  provider-measured usage also shrinks its target by the ratio of measured to estimated tokens, so
+  an undercounting estimator (CJK prose, base64) cannot size a tail that does not fit. The fidelity
+  harness runs two arms, a 32k window with a 4k reserve and the 272k production window, with
+  per-arm floors in `FIDELITY_ARMS`: post-history utilization is measured against the loop's own
+  gate and flipped from a 0.15 ceiling to a floor (0.47 and 0.48 measured), final retention at 272k
+  measured 0.833, and retention precision is recorded per arm because the old 0.898 mostly measured
+  an empty tail. Cost: post-compaction requests carry ~4x more history and compactions fire more
+  often (the headroom to the next preflight at 272k is the post-compaction request itself, ~83k
+  tokens, instead of ~140k). The `run-book` mock provider gained content-matched turns so a scripted
+  session survives the reducer's request landing at any index, an `--overflow-above` switch that
+  refuses oversized requests the way a model with a smaller real window does, and a request log in
+  the OS temp directory.
 
 - **The TUI uses the whole terminal — and its floating panels still don't.** Every row resolved its
   position through a transcript grid that capped the measure at 120 columns, so on a 200-column

@@ -2,7 +2,7 @@
 
 - **Date:** 2026-08-30
 - **Status:** Phase 0 landed; Phase 0.8 baseline recorded; **Phase 2 landed** (this document);
-  **Phase 1 landed 2026-09-05**; Phase 3 proposed
+  **Phase 1 landed 2026-09-05, revised 2026-09-06 after review**; Phase 3 proposed
 - **Scope:** `src/agent/compact.ts`, `src/agent/carried-ledger.ts`,
   `src/agent/compact-fidelity.ts`, `ConversationCheckpointV2` in `src/types/sessions.ts`
 - **Goal:** A conversation that runs for days must still obey the rule it was given on turn 3.
@@ -170,7 +170,7 @@ also carry facts the episodes were losing. The cost is ~0.001 of post-compaction
 utilization and zero extra reducer calls — the ledger is built by a pure pass over messages
 the host already has.
 
-The floors in `FIDELITY_BASELINE` moved up accordingly. `minVerbatimUserRetention: 1` is now
+The floors (since Phase 1 recorded per arm in `FIDELITY_ARMS`) moved up accordingly. `minVerbatimUserRetention: 1` is now
 the load-bearing one: a change that drops it means Book has gone back to forgetting the rule
 it was given on turn 3.
 
@@ -180,7 +180,7 @@ it was given on turn 3.
   item I: single end-of-run fit, inherited-source preservation, coverage split, reducer output
   cap, deterministic-fallback summary inheritance.
 - **Phase 0.8 — scoring** (landed). `compact-fidelity.ts`: tagged planted-fact corpus,
-  deterministic scorer, ratcheted `FIDELITY_BASELINE` shared with the provider-backed
+  deterministic scorer, ratcheted per-arm floors (`FIDELITY_ARMS`) shared with the provider-backed
   benchmark.
 - **Phase 2 — the ledger itself** (landed, this document). `carried-ledger.ts`, the `carried`
   field, the author split, the cap, the supersession rule, the reading rule.
@@ -188,9 +188,16 @@ it was given on turn 3.
   at 0.15: compaction targeted half the window but the retention and checkpoint caps pinned real
   post-compaction history far below it, and the difference was headroom the agent was entitled
   to keep and instead paid to rebuild by re-reading files. The retained tail is now the residual
-  of the target, anchored to the usable window (`resolveCompactBudgets` in `compact.ts`), the
-  per-result clip scales with it, and the harness records per-arm floors in `FIDELITY_ARMS` with
-  utilization as a floor (0.43 at 32k, 0.46 at 272k).
+  of the target, which is half the loop's preflight gate net of the measured request overhead
+  (`resolveCompactBudgets` in `compact.ts`, shared with the loop so both clamp the output
+  reserve alike), the per-result clip scales with it, the overflow recovery and any compaction that
+  would retain everything keep the short 20k tail, a usage-triggered compaction shrinks its target
+  by the measured estimator drift, and the harness records per-arm floors in `FIDELITY_ARMS` with
+  utilization as a floor against the loop's gate (0.47 at 32k, 0.48 at 272k). The 2026-09-05 cut
+  anchored the target to the usable window with a raw-window tail floor; review found the floor
+  exceeded the target on every window up to 64k, the loop's own reserve was still unclamped, and
+  the overflow recovery could no longer shrink a history that fit the residual, all fixed in the
+  revision.
 - **Phase 3 — beyond constraints** (proposed). The author split generalizes: user-stated
   current values and user-stated open threads have the same ownership problem as user-stated
   rules. Not started; the cap tiers were designed with room for a `kind` discriminator.

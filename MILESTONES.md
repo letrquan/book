@@ -48,9 +48,11 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
 - [x] Compaction fidelity: the Carried Ledger's Phase 0.8 baseline, recorded after Phase 0 landed,
       and Phase 2 -- the host-owned constraint ledger itself, with its cap and supersession rule.
       `verbatimUserRetention` went from 0.0 to 1.0 and overall retention from 0.333 to 0.667. The
-      design is `plans/carried-ledger-plan.md`. Phase 1 (budget rework) landed 2026-09-05: the
-      retained tail is the residual of the post-compaction target (~99.6k tokens at 272k instead of
-      a flat 20k), measured on a 272k fidelity arm; Phase 3 remains proposed.
+      design is `plans/carried-ledger-plan.md`. Phase 1 (budget rework) landed 2026-09-05 and was
+      revised 2026-09-06 after review: the retained tail is the residual of a target set at half
+      the preflight gate (~79k tokens at 272k instead of a flat 20k), the loop and the compactor
+      share one budget resolver, and the overflow recovery keeps the short tail; measured on a
+      272k fidelity arm. Phase 3 remains proposed.
 - [ ] A control surface for a run in flight - at hour 30 the only interventions are `kill` and wait.
 - [x] Monotonic clock for every duration decided **inside one process** — the provider retry
       budget and model-discovery budget, the harness flush deadline and sync cadence, the
