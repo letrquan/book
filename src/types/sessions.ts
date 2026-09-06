@@ -6,6 +6,32 @@ import type { FileObservation } from './tools.js';
 export type CompactTrigger = 'manual' | 'auto';
 
 /**
+ * What the agent loop knows about the request behind a compaction and the
+ * compactor cannot see for itself. Hosts forward these into `RunCompactOptions`
+ * unchanged.
+ */
+export interface CompactRequestHints {
+  /**
+   * The provider has just rejected the request as too large. The compactor
+   * must keep only the short tail: the residual tail was sized for a window
+   * the provider has said it does not have, and the loop gets one retry.
+   */
+  recovery?: boolean;
+  /**
+   * Estimated tokens of the request outside the history: system prompt, tool
+   * schemas, session state. The compaction target is measured against the
+   * preflight gate, which counts them.
+   */
+  requestOverheadTokens?: number;
+  /**
+   * The loop's estimate of the request whose provider-measured usage is being
+   * passed as pressure. Together they measure how far the estimator undercounts
+   * this session's text, and the target shrinks by that ratio.
+   */
+  estimatedRequestTokens?: number;
+}
+
+/**
  * Result of `runCompact`. Discriminated so hosts can clear usage only on success
  * and avoid treating blocked/too-short outcomes as a history rewrite.
  */

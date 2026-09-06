@@ -6,13 +6,15 @@ import {
   serializeHistoryForCompact,
   usagePressureTokens,
   runCompact,
+  resolveCompactBudgets,
   IMAGE_TOKEN_ESTIMATE,
   estimateProviderRequestTokens,
 } from './compact.js';
 import { DEFAULT_CONTEXT_WINDOW, resolveContextLimit } from '../models.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message, Usage } from '../types/messages.js';
-import { defaultConfig, toolResult } from '../test/fixtures.js';
+import { toolResult } from '../test/fixtures.js';
+import { compactTestConfig } from '../test/compact-fixture.js';
 
 vi.mock('../provider/index.js', () => ({
   chatCompletionStream: vi.fn(),
@@ -61,12 +63,7 @@ const twoTurns: Message[] = [
 ];
 
 function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
-  return defaultConfig({
-    autoCompactEnabled: true,
-    accessibility: { screenReader: false, reducedMotion: true },
-    modelInfo: { contextWindow: 32_000 },
-    ...overrides,
-  });
+  return compactTestConfig(overrides);
 }
 
 describe('shouldCompact', () => {
@@ -130,6 +127,146 @@ describe('resolveContextLimit', () => {
 
     expect(shouldCompact(below, contextLimit)).toBe(false);
     expect(shouldCompact(atThreshold, contextLimit)).toBe(true);
+  });
+});
+
+describe('resolveCompactBudgets', () => {
+  // Checkpoint header (16) + message overhead (6) + the largest carried-ledger notice (62).
+  const ENVELOPE = 84;
+
+  it('sizes the production window against the preflight gate', () => {
+    const budgets = resolveCompactBudgets({
+      modelInfo: { contextWindow: 272_000 },
+      maxTokens: 64_000,
+    });
+    expect(budgets.reservedOutputTokens).toBe(64_000);
+    expect(budgets.usableContextLimit).toBe(208_000);
+    expect(budgets.preflightThreshold).toBe(166_400);
+    // Half the gate: the next compaction is as far away as the request is large.
+    expect(budgets.targetTokens).toBe(83_200);
+    expect(budgets.checkpointBudget).toBe(4_096);
+    expect(budgets.recentBudget).toBe(83_200 - 4_096 - ENVELOPE);
+    expect(budgets.recentBudget).toBe(79_020);
+    expect(budgets.shortRecentBudget).toBe(20_000);
+    expect(budgets.retainedToolResultMaxTokens).toBe(7_902);
+    expect(budgets.tail).toBe('residual');
+  });
+
+  it('subtracts the request overhead the loop measured from the target', () => {
+    const budgets = resolveCompactBudgets(
+      { modelInfo: { contextWindow: 272_000 }, maxTokens: 64_000 },
+      { requestOverheadTokens: 11_805 },
+    );
+    expect(budgets.targetTokens).toBe(Math.floor((166_400 - 11_805) * 0.5));
+    expect(budgets.targetTokens).toBe(77_297);
+    expect(budgets.recentBudget).toBe(73_117);
+    expect(budgets.retainedToolResultMaxTokens).toBe(7_311);
+  });
+
+  it('shrinks the target by the measured estimator drift and never grows it', () => {
+    const config = { modelInfo: { contextWindow: 272_000 }, maxTokens: 64_000 };
+    const undercount = resolveCompactBudgets(config, {
+      measuredRequestTokens: 200_000,
+      estimatedRequestTokens: 100_000,
+    });
+    expect(undercount.estimatorDrift).toBe(2);
+    expect(undercount.targetTokens).toBe(41_600);
+    expect(undercount.recentBudget).toBe(37_420);
+
+    const overcount = resolveCompactBudgets(config, {
+      measuredRequestTokens: 50_000,
+      estimatedRequestTokens: 100_000,
+    });
+    expect(overcount.estimatorDrift).toBe(1);
+    expect(overcount.targetTokens).toBe(83_200);
+
+    // One number alone is not a pair.
+    const unmatched = resolveCompactBudgets(config, { measuredRequestTokens: 200_000 });
+    expect(unmatched.estimatorDrift).toBe(1);
+  });
+
+  it('keeps the short tail on request, with the flat per-result clip', () => {
+    const budgets = resolveCompactBudgets(
+      { modelInfo: { contextWindow: 272_000 }, maxTokens: 64_000 },
+      { tail: 'short' },
+    );
+    expect(budgets.tail).toBe('short');
+    expect(budgets.recentBudget).toBe(20_000);
+    expect(budgets.retainedToolResultMaxTokens).toBe(2_000);
+    // Everything the loop gates on is the same whichever tail is kept.
+    expect(budgets.targetTokens).toBe(83_200);
+    expect(budgets.preflightThreshold).toBe(166_400);
+  });
+
+  it('fits the residual tail inside the target on a 32k window with a real reserve', () => {
+    const budgets = resolveCompactBudgets({
+      modelInfo: { contextWindow: 32_000 },
+      maxTokens: 4_096,
+    });
+    expect(budgets.usableContextLimit).toBe(27_904);
+    expect(budgets.preflightThreshold).toBe(22_323);
+    expect(budgets.targetTokens).toBe(11_161);
+    expect(budgets.checkpointBudget).toBe(3_200);
+    expect(budgets.recentBudget).toBe(11_161 - 3_200 - ENVELOPE);
+    expect(budgets.recentBudget).toBe(7_877);
+    expect(budgets.shortRecentBudget).toBe(6_400);
+    expect(budgets.retainedToolResultMaxTokens).toBe(2_000);
+  });
+
+  it('clamps the default 64k reserve on a 32k local model and caps the short tail by the target', () => {
+    // The configuration the clamp exists for: a settings-declared 32k window and
+    // Book's 64k default reserve. Tail plus checkpoint plus envelope never
+    // exceeds the target, so the fitter has nothing to evict.
+    const budgets = resolveCompactBudgets({
+      modelInfo: { contextWindow: 32_000 },
+      maxTokens: 64_000,
+    });
+    expect(budgets.reservedOutputTokens).toBe(16_000);
+    expect(budgets.usableContextLimit).toBe(16_000);
+    expect(budgets.preflightThreshold).toBe(12_800);
+    expect(budgets.targetTokens).toBe(6_400);
+    expect(budgets.recentBudget).toBe(6_400 - 3_200 - ENVELOPE);
+    expect(budgets.recentBudget).toBe(3_116);
+    expect(budgets.shortRecentBudget).toBe(3_116);
+    expect(budgets.recentBudget + budgets.checkpointBudget + ENVELOPE).toBeLessThanOrEqual(
+      budgets.targetTokens,
+    );
+  });
+
+  it('fits the tail inside the target on an 8k window', () => {
+    const budgets = resolveCompactBudgets({
+      modelInfo: { contextWindow: 8_192 },
+      maxTokens: 64_000,
+    });
+    expect(budgets.reservedOutputTokens).toBe(4_096);
+    expect(budgets.targetTokens).toBe(1_638);
+    expect(budgets.checkpointBudget).toBe(819);
+    expect(budgets.recentBudget).toBe(735);
+    expect(budgets.recentBudget + budgets.checkpointBudget + ENVELOPE).toBeLessThanOrEqual(
+      budgets.targetTokens,
+    );
+  });
+
+  it('lets the checkpoint override move the tail only when it exceeds the production budget', () => {
+    const config = { modelInfo: { contextWindow: 272_000 }, maxTokens: 64_000 };
+    const production = resolveCompactBudgets(config);
+    const smaller = resolveCompactBudgets(config, { checkpointMaxTokens: 512 });
+    const larger = resolveCompactBudgets(config, { checkpointMaxTokens: 16_000 });
+    expect(smaller.checkpointBudget).toBe(512);
+    expect(smaller.recentBudget).toBe(production.recentBudget);
+    expect(larger.checkpointBudget).toBe(16_000);
+    expect(larger.recentBudget).toBe(83_200 - 16_000 - ENVELOPE);
+    expect(larger.recentBudget).toBe(67_116);
+  });
+
+  it('scales the per-result clip with the tail on a 1M window', () => {
+    const budgets = resolveCompactBudgets({
+      modelInfo: { contextWindow: 1_048_576 },
+      maxTokens: 64_000,
+    });
+    expect(budgets.targetTokens).toBe(393_830);
+    expect(budgets.recentBudget).toBe(389_650);
+    expect(budgets.retainedToolResultMaxTokens).toBe(38_965);
   });
 });
 
@@ -309,6 +446,89 @@ describe('runCompact', () => {
     });
 
     expect(result.status).toBe('compacted');
+  });
+
+  it('falls back to the short tail when auto compaction would otherwise summarize nothing', async () => {
+    // A compaction that was asked for must shrink something: a history that fits
+    // the residual tail is kept short instead of returning `too-short`, because
+    // the trigger fired on real pressure the estimate cannot see (a smaller real
+    // window, an undercounting estimator).
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [
+      { id: '1', role: 'user', content: 'old task', includeInContext: true, timestamp: 0 },
+      {
+        id: '2',
+        role: 'assistant',
+        content: 'old evidence '.repeat(5_000),
+        includeInContext: true,
+        timestamp: 0,
+      },
+      { id: '3', role: 'user', content: 'new task', includeInContext: true, timestamp: 0 },
+      {
+        id: '4',
+        role: 'assistant',
+        content: 'new evidence '.repeat(2_500),
+        includeInContext: true,
+        timestamp: 0,
+      },
+    ];
+
+    const result = await runCompact(makeConfig({ modelInfo: undefined }), history, {
+      trigger: 'auto',
+    });
+
+    expect(result.status).toBe('compacted');
+    if (result.status !== 'compacted') return;
+    // The short tail (20k) holds the newest bundle (~8k) but not both, so the
+    // older one is summarized and the newest stays verbatim.
+    expect(result.summarizedCount).toBe(2);
+    expect(result.retainedCount).toBe(2);
+  });
+
+  it('keeps only the short tail for the overflow recovery', async () => {
+    // The provider has just refused a request the residual tail was sized for.
+    // The recovery must not keep the residual again: at the default window the
+    // whole history below fits it, and a second refusal ends the turn.
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: validCheckpoint() };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
+    const history: Message[] = [];
+    for (let turn = 0; turn < 10; turn++) {
+      history.push(
+        {
+          id: `u${turn}`,
+          role: 'user',
+          content: `task ${turn}`,
+          includeInContext: true,
+          timestamp: 0,
+        },
+        {
+          id: `a${turn}`,
+          role: 'assistant',
+          content: `evidence ${turn} `.repeat(3_000),
+          includeInContext: true,
+          timestamp: 0,
+        },
+      );
+    }
+
+    // Ten turns of ~8k tokens: more than the residual tail at the default
+    // window with a 128k reserve (~53k), so the residual keeps six turns and
+    // the short tail keeps two.
+    const config = makeConfig({ modelInfo: undefined, maxTokens: 128_000 });
+    const residual = await runCompact(config, history, { trigger: 'auto' });
+    const recovery = await runCompact(config, history, { trigger: 'auto', recovery: true });
+
+    expect(residual.status).toBe('compacted');
+    expect(recovery.status).toBe('compacted');
+    if (residual.status !== 'compacted' || recovery.status !== 'compacted') return;
+    expect(residual.retainedCount).toBeGreaterThanOrEqual(8);
+    expect(recovery.retainedCount).toBe(4);
+    expect(recovery.postContextTokens).toBeLessThan(25_000);
   });
 
   it('summarizes an oversized newest bundle instead of rejecting compaction', async () => {
@@ -1128,7 +1348,13 @@ ${JSON.stringify(prior)}`,
     }
   });
 
-  it('drops retained bundles and marks post-budget coverage instead of failing', async () => {
+  it('completes with nothing retained when the window is too small for any tail', async () => {
+    // At a 250-token window the residual tail is one token and even the short
+    // tail is capped by the same target, so nothing is retained and the whole
+    // history is summarized. Before the tail was capped by the target, this
+    // window retained a bundle the fitter then had to evict as `post-budget`;
+    // now the budgets never hand the fitter a tail it must throw away, and the
+    // compaction still completes rather than failing.
     mockedStream.mockImplementation(async function* () {
       yield { type: 'text', content: validCheckpoint() };
       yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
@@ -1152,15 +1378,19 @@ ${JSON.stringify(prior)}`,
       },
     ];
 
+    const budgets = resolveCompactBudgets(makeConfig({ modelInfo: { contextWindow: 250 } }));
+    expect(budgets.recentBudget).toBe(1);
+    expect(budgets.shortRecentBudget).toBe(1);
+
     const result = await runCompact(makeConfig({ modelInfo: { contextWindow: 250 } }), history, {
       trigger: 'manual',
     });
 
     expect(result.status).toBe('compacted');
     if (result.status === 'compacted') {
-      expect(result.checkpoint.coverage?.reasons).toContain('post-budget');
-      expect(result.degraded).toBe(true);
       expect(result.retainedCount).toBe(0);
+      expect(result.summarizedCount).toBe(4);
+      expect(result.checkpoint.coverage?.reasons ?? []).not.toContain('post-budget');
     }
   });
 

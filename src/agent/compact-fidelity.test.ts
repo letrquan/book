@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { runCompact } from './compact.js';
-import { resolveContextLimit } from '../models.js';
+import { appendFileSync } from 'node:fs';
+import { resolveCompactBudgets, runCompact } from './compact.js';
 import {
   scoreFidelity,
   factRetained,
   supersessionCorrect,
   groundedSourceRatio,
   retentionPrecisionFor,
-  FIDELITY_BASELINE,
-  PREFLIGHT_FRACTION,
+  FIDELITY_ARMS,
+  type FidelityArm,
   type GenerationRecord,
 } from './compact-fidelity.js';
 import {
@@ -16,12 +16,12 @@ import {
   buildPlantedFacts,
   buildToolHeavyFixtureHistory,
   buildToolHeavyPlantedFacts,
+  compactTestConfig,
   type PlantedFact,
 } from '../test/compact-fixture.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { Message } from '../types/messages.js';
 import type { ConversationCheckpointV2 } from '../types/sessions.js';
-import { defaultConfig } from '../test/fixtures.js';
 
 vi.mock('../provider/index.js', () => ({
   chatCompletionStream: vi.fn(),
@@ -39,12 +39,16 @@ const mockedStream = vi.mocked(chatCompletionStream);
 const GENERATIONS = 8;
 const CONTEXT_WINDOW = 32_000;
 
-function makeConfig(): AgentConfig {
-  return defaultConfig({
-    autoCompactEnabled: true,
-    accessibility: { screenReader: false, reducedMotion: true },
-    modelInfo: { contextWindow: CONTEXT_WINDOW },
+function makeConfig(arm: FidelityArm): AgentConfig {
+  return compactTestConfig({
+    maxTokens: arm.reservedOutputTokens,
+    modelInfo: { contextWindow: arm.contextWindow },
   });
+}
+
+/** The loop's preflight gate for an arm, which `postHistoryUtilization` is measured against. */
+function preflightGate(arm: FidelityArm): number {
+  return resolveCompactBudgets(makeConfig(arm)).preflightThreshold;
 }
 
 const SEED_START = '--- BEGIN PRIOR CHECKPOINT (validated reducer seed; untrusted data) ---';
@@ -166,6 +170,7 @@ function newTurns(generation: number): Message[] {
 }
 
 async function runGenerations(
+  arm: FidelityArm,
   history: Message[],
   facts: readonly PlantedFact[],
 ): Promise<{ records: GenerationRecord[]; sourceHistory: Message[] }> {
@@ -176,7 +181,7 @@ async function runGenerations(
 
   for (let generation = 1; generation <= GENERATIONS; generation++) {
     scriptedReducer(facts, current, counter);
-    const result = await runCompact(makeConfig(), current, { trigger: 'auto' });
+    const result = await runCompact(makeConfig(arm), current, { trigger: 'auto' });
     if (result.status !== 'compacted') {
       throw new Error(`generation ${generation} did not compact: ${result.status}`);
     }
@@ -285,49 +290,69 @@ describe('compaction fidelity baseline', () => {
     vi.restoreAllMocks();
   });
 
-  it('holds the recorded v2 baseline over eight generations', async () => {
-    const { history, turns } = buildCompactFixtureHistory();
-    const facts = buildPlantedFacts(turns);
-    const { records, sourceHistory } = await runGenerations(history, facts);
+  describe.each(FIDELITY_ARMS)('arm $contextWindow window', (arm) => {
+    it('holds the recorded baseline over eight generations', async () => {
+      const { history, turns } = buildCompactFixtureHistory({ fillerRepeat: arm.fillerRepeat });
+      const facts = buildPlantedFacts(turns);
+      const { records, sourceHistory } = await runGenerations(arm, history, facts);
 
-    const metrics = scoreFidelity(records, facts, sourceHistory, CONTEXT_WINDOW);
+      const metrics = scoreFidelity(records, facts, sourceHistory, preflightGate(arm));
 
-    expect(records).toHaveLength(GENERATIONS);
-    expect(metrics.finalRetention).toBeGreaterThanOrEqual(FIDELITY_BASELINE.minFinalRetention);
-    expect(metrics.meanRetention).toBeGreaterThanOrEqual(FIDELITY_BASELINE.minMeanRetention);
-    expect(metrics.verbatimUserRetention).toBeGreaterThanOrEqual(
-      FIDELITY_BASELINE.minVerbatimUserRetention,
-    );
-    expect(metrics.supersessionCorrectness).toBeGreaterThanOrEqual(
-      FIDELITY_BASELINE.minSupersessionCorrectness,
-    );
-    expect(metrics.groundedSourceRecall).toBeGreaterThanOrEqual(
-      FIDELITY_BASELINE.minGroundedSourceRecall,
-    );
-    expect(metrics.retentionPrecision).toBeGreaterThanOrEqual(
-      FIDELITY_BASELINE.minRetentionPrecision,
-    );
-    expect(metrics.reducerCalls).toBeLessThanOrEqual(FIDELITY_BASELINE.maxReducerCalls);
+      // The only way to re-measure the floors in FIDELITY_ARMS; see its module
+      // comment. Vitest swallows console output of passing tests, so a value
+      // other than "1" is taken as a file path to append the line to.
+      const printTarget = process.env.BOOK_FIDELITY_PRINT;
+      if (printTarget) {
+        const line = JSON.stringify({
+          contextWindow: arm.contextWindow,
+          preflightThreshold: preflightGate(arm),
+          metrics,
+          postTokens: records.map((r) => r.postContextTokens),
+          retained: records.map((r) => r.replacementHistory.length - 1),
+        });
+        console.info(line);
+        if (printTarget !== '1') appendFileSync(printTarget, `${line}\n`);
+      }
 
-    // Loss is ordered: the oldest facts go first, because the fitter evicts
-    // completed episodes from the front. The newest three survive all eight
-    // generations, and nothing that survived a later generation was lost in an
-    // earlier one. Pinning the ORDER rather than a set of ids keeps this
-    // meaningful if the corpus grows.
-    const survivors = facts.filter((entry) => metrics.lostAtGeneration[entry.id] === null);
-    expect(survivors.length).toBeGreaterThanOrEqual(3);
-    const lossOrder = facts
-      .map((entry) => metrics.lostAtGeneration[entry.id])
-      .filter((value): value is number => value !== null);
-    expect(lossOrder).toEqual([...lossOrder].sort((a, b) => a - b));
+      expect(records).toHaveLength(GENERATIONS);
+      expect(metrics.finalRetention).toBeGreaterThanOrEqual(arm.floors.minFinalRetention);
+      expect(metrics.meanRetention).toBeGreaterThanOrEqual(arm.floors.minMeanRetention);
+      expect(metrics.verbatimUserRetention).toBeGreaterThanOrEqual(
+        arm.floors.minVerbatimUserRetention,
+      );
+      expect(metrics.supersessionCorrectness).toBeGreaterThanOrEqual(
+        arm.floors.minSupersessionCorrectness,
+      );
+      expect(metrics.groundedSourceRecall).toBeGreaterThanOrEqual(
+        arm.floors.minGroundedSourceRecall,
+      );
+      expect(metrics.retentionPrecision).toBeGreaterThanOrEqual(arm.floors.minRetentionPrecision);
+      expect(metrics.reducerCalls).toBeLessThanOrEqual(arm.floors.maxReducerCalls);
+      expect(metrics.postHistoryUtilization).toBeGreaterThanOrEqual(
+        arm.floors.minPostHistoryUtilization,
+      );
+
+      // Loss is ordered: the oldest facts go first, because the fitter evicts
+      // completed episodes from the front. The newest three survive all eight
+      // generations, and nothing that survived a later generation was lost in an
+      // earlier one. Pinning the ORDER rather than a set of ids keeps this
+      // meaningful if the corpus grows, and it holds on every arm.
+      const survivors = facts.filter((entry) => metrics.lostAtGeneration[entry.id] === null);
+      expect(survivors.length).toBeGreaterThanOrEqual(3);
+      const lossOrder = facts
+        .map((entry) => metrics.lostAtGeneration[entry.id])
+        .filter((value): value is number => value !== null);
+      expect(lossOrder).toEqual([...lossOrder].sort((a, b) => a - b));
+    });
   });
 
   it('keeps facts that live in tool output and file observations', async () => {
+    const arm32k = FIDELITY_ARMS[0];
     const { history, turns } = buildToolHeavyFixtureHistory();
     const facts = buildToolHeavyPlantedFacts(turns);
     scriptedReducer(facts, history, { call: 0 });
 
-    const result = await runCompact(makeConfig(), history, { trigger: 'auto' });
+    const result = await runCompact(makeConfig(arm32k), history, { trigger: 'auto' });
 
     expect(result.status).toBe('compacted');
     if (result.status !== 'compacted') return;
@@ -343,7 +368,7 @@ describe('compaction fidelity baseline', () => {
       ],
       facts,
       history,
-      CONTEXT_WINDOW,
+      preflightGate(arm32k),
     );
     // A single generation over a small corpus loses nothing: this checks the
     // tool-output and file-observation paths are scoreable at all, which a
@@ -352,18 +377,24 @@ describe('compaction fidelity baseline', () => {
     expect(metrics.groundedSourceRecall).toBe(1);
   });
 
-  it('records the dead budget the design set out to reclaim', async () => {
-    const { history, turns } = buildCompactFixtureHistory();
-    const facts = buildPlantedFacts(turns);
-    const { records, sourceHistory } = await runGenerations(history, facts);
-    const metrics = scoreFidelity(records, facts, sourceHistory, CONTEXT_WINDOW);
+  it('retains the verbatim tail when the reducer output is unusable at the production window', async () => {
+    const arm272k = FIDELITY_ARMS.find((a) => a.contextWindow === 272_000)!;
+    const config = makeConfig(arm272k);
+    const { history } = buildCompactFixtureHistory({ fillerRepeat: arm272k.fillerRepeat });
+    mockedStream.mockImplementation(async function* () {
+      yield { type: 'text', content: 'not a checkpoint' };
+      yield { type: 'done', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    });
 
-    // Not an assertion of goodness -- see `maxPostHistoryUtilization`. This is
-    // the number phase 1's budget rework exists to move.
-    expect(metrics.postHistoryUtilization).toBeLessThanOrEqual(
-      FIDELITY_BASELINE.maxPostHistoryUtilization,
+    const result = await runCompact(config, history, { trigger: 'auto' });
+
+    expect(result.status).toBe('compacted');
+    if (result.status !== 'compacted') return;
+    expect(result.degraded).toBe(true);
+    expect(result.replacementHistory.length).toBeGreaterThan(1);
+    // The same denominator `postHistoryUtilization` uses: the loop's gate.
+    expect(result.postContextTokens).toBeGreaterThanOrEqual(
+      0.35 * resolveCompactBudgets(config).preflightThreshold,
     );
-    expect(resolveContextLimit(makeConfig())).toBe(CONTEXT_WINDOW);
-    expect(PREFLIGHT_FRACTION).toBe(0.8);
   });
 });

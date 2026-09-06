@@ -21,7 +21,7 @@ board. This aspect reviews the live agent path.
 ## Evidence
 
 - Prefer measurements over readings: the eval entry points (`eval:edit`, `eval:compact`,
-  `eval:skills`, `eval:review`), `FIDELITY_BASELINE` in `src/agent/compact-fidelity.ts`,
+  `eval:skills`, `eval:review`), `FIDELITY_ARMS` in `src/agent/compact-fidelity.ts`,
   `book tool-stats`, and real session transcripts or `BOOK_DEBUG*` logs when present.
 - Reading a prompt or tool description and judging it is allowed — but quote the model-visible
   text being judged.
