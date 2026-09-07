@@ -1,5 +1,6 @@
 import type { AgentConfig } from './types/runtime.js';
 import type { Message, Usage } from './types/messages.js';
+import type { CompactRequestHints } from './types/sessions.js';
 import type { FileObservation, NestedToolObserver, UserQuestionHandler } from './types/tools.js';
 import type { HarnessObserver } from './harness/contracts.js';
 import { wrapAgentLoopCallbacks } from './harness/coordinator.js';
@@ -99,8 +100,9 @@ export async function runSubagent(
     onDone: () => {},
     onPermissionRequired: async () => 'deny' as const,
     onUsage: () => {},
-    onCompact: (compactHistory: Message[], usage: Usage | null) =>
+    onCompact: (compactHistory: Message[], usage: Usage | null, hints?: CompactRequestHints) =>
       runCompact(subConfig, compactHistory, {
+        ...hints,
         trigger: 'auto',
         preContextTokens: usage ? usagePressureTokens(usage) : undefined,
         signal: options?.signal,

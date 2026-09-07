@@ -1639,10 +1639,11 @@ export class AgentManager {
               this.questionResolvers.set(record.id, resolvePromise);
             });
           },
-          onCompact: (history, usage) => {
+          onCompact: (history, usage, hints) => {
             record.runMetrics!.compactions++;
             const activity = startActivity('compacting', 'Compacting context');
             return (this.options.compactRunner ?? runCompact)(agentConfig, history, {
+              ...hints,
               trigger: 'auto',
               preContextTokens: usage ? usagePressureTokens(usage) : undefined,
               signal: controller.signal,

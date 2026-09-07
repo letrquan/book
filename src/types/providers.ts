@@ -1,7 +1,7 @@
 import type { AgentRuntimeEvent } from '../agents/types.js';
 import type { Message, ProviderMessageMetadata, Usage } from './messages.js';
 import type { AgentTask, PermissionMode, RetryPhase } from './runtime.js';
-import type { CompactResult } from './sessions.js';
+import type { CompactRequestHints, CompactResult } from './sessions.js';
 import type { AgentTerminalOutcome } from './terminal.js';
 import type {
   PermissionDecision,
@@ -114,10 +114,16 @@ export interface AgentLoopCallbacks {
   /** Called when the root agent or a Task subagent needs structured user input. */
   onUserQuestionRequired?: UserQuestionHandler;
   /**
-   * Called when the context approaches its limit mid-loop.
+   * Called when the context approaches its limit mid-loop, and as the last
+   * resort after the provider rejects a request as too large (`hints.recovery`).
    * Return a CompactResult; only `status: 'compacted'` replaces loop history.
+   * Hosts forward `hints` into `RunCompactOptions` unchanged.
    */
-  onCompact?: (history: Message[], usage: Usage | null) => Promise<CompactResult>;
+  onCompact?: (
+    history: Message[],
+    usage: Usage | null,
+    hints?: CompactRequestHints,
+  ) => Promise<CompactResult>;
   /**
    * Called when an assistant turn (including tool results) is finalized.
    * Hosts should persist this immediately rather than slicing the final history.

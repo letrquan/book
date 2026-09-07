@@ -3,6 +3,7 @@ import type { AgentConfig } from '../types/runtime.js';
 import type {
   CheckpointSourceRef,
   CompactCoverageReason,
+  CompactRequestHints,
   CompactResult,
   CompactTrigger,
   ConversationCheckpointCoverage,
@@ -26,19 +27,51 @@ import {
   toolResultModelContent,
   toolResultSucceeded,
 } from '../tools/result.js';
-import { buildCarriedLedger, carriedLedgerNotice, carriedLedgerTokens } from './carried-ledger.js';
+import {
+  CARRIED_LEDGER_NOTICE_MAX_TOKENS,
+  buildCarriedLedger,
+  carriedLedgerNotice,
+  carriedLedgerTokens,
+} from './carried-ledger.js';
 import { createDebugLogger } from '../debug-log.js';
 
 const log = createDebugLogger('compact');
 
 export const DEFAULT_COMPACT_THRESHOLD = 0.8;
 export const IMAGE_TOKEN_ESTIMATE = 1_000;
+/**
+ * Where compaction leaves the request, as a fraction of the loop's preflight
+ * gate: afterwards the whole request -- history plus the overhead the loop
+ * measured around it -- sits at half the gate, so the next compaction is as far
+ * away as the request is large. Callers without a request (manual `/compact`
+ * from a host, evaluations) supply no overhead and get half the gate outright.
+ */
 const DESIRED_CONTEXT_FRACTION = 0.5;
+/**
+ * The short tail: the flat cap every compaction kept before the residual tail.
+ * Still the tail for the overflow recovery, where the provider has just refused
+ * a request the residual was sized for, and the fallback for every trigger when
+ * the residual would summarize nothing.
+ */
 const RECENT_TAIL_MAX_TOKENS = 20_000;
 const RECENT_TAIL_FRACTION = 0.2;
 const CHECKPOINT_MAX_TOKENS = 4_096;
 const CHECKPOINT_FRACTION = 0.1;
 const SUMMARIZER_INPUT_FRACTION = 0.65;
+/**
+ * An output reserve larger than half the window (Book's 64k default against a 32k local model)
+ * says nothing about how much history is worth keeping. Without this clamp the usable window
+ * collapses to 1 token: the loop refuses every request that carries a tool result and
+ * compaction would evict everything. The loop sizes from `resolveCompactBudgets` too, so the
+ * gate it enforces and the target compaction aims for come from the same clamped reserve.
+ */
+const MAX_OUTPUT_RESERVE_FRACTION = 0.5;
+/**
+ * Share of the retained tail one tool result may occupy. The model-facing byte cap
+ * (`TOOL_RESULT_MAX_BYTES`, ~12.8k tokens) is the ceiling above which this share stops
+ * binding, which at the default window it does not reach.
+ */
+const RETAINED_TOOL_RESULT_TAIL_SHARE = 0.1;
 /**
  * The reducer's provider cap has to sit above the checkpoint content budget. The
  * model emits a whole JSON envelope around `checkpointBudget` tokens of content,
@@ -53,6 +86,7 @@ const REDUCER_OUTPUT_MIN_MARGIN_TOKENS = 2_048;
 const TRUNCATION_FINISH_REASONS = new Set(['length', 'max_tokens']);
 const MESSAGE_OVERHEAD_TOKENS = 6;
 const TOOL_OVERHEAD_TOKENS = 12;
+/** Floor per-tool-result token limit that scales with the retained tail. */
 const RETAINED_TOOL_RESULT_MAX_TOKENS = 2_000;
 const MAX_CHECKPOINT_FILES = 30;
 const MAX_MODEL_CALLS = 16;
@@ -316,6 +350,146 @@ function estimateTextTokens(text: string): number {
   return text ? Math.ceil(text.length / 4) : 0;
 }
 
+export type CompactTail = 'residual' | 'short';
+
+export interface CompactBudgetInputs {
+  /**
+   * Reducer output cap override for evaluation experiments. It changes what the
+   * checkpoint may hold; the tail only gives up room when the override exceeds
+   * the production budget, so a sweep below it measures the cap and nothing else.
+   */
+  checkpointMaxTokens?: number;
+  /** Estimated tokens of the triggering request outside the history; zero when the caller has no request. */
+  requestOverheadTokens?: number;
+  /**
+   * A matched pair for one request: what the loop estimated it at and what the
+   * provider then counted. Their ratio is how far the estimator undercounts this
+   * session's text, and the target shrinks by it so a tail sized in estimated
+   * tokens fits in real ones. It never grows the target.
+   */
+  measuredRequestTokens?: number;
+  estimatedRequestTokens?: number;
+  /** Which tail to keep; see `CompactBudgets.tail`. */
+  tail?: CompactTail;
+}
+
+export interface CompactBudgets {
+  contextWindow: number;
+  /** The loop's output reserve, clamped to at most half the window. */
+  reservedOutputTokens: number;
+  /** Window minus the reserve: the most input the loop will send. */
+  usableContextLimit: number;
+  /** The loop's preflight gate: a request at or above this is compacted before it is sent. */
+  preflightThreshold: number;
+  /** Estimated tokens of the request outside the history, as supplied by the caller. */
+  requestOverheadTokens: number;
+  /** Provider-measured over estimated tokens for the triggering request; 1 when unknown. */
+  estimatorDrift: number;
+  /** Post-compaction history size the compactor aims for. */
+  targetTokens: number;
+  checkpointBudget: number;
+  /**
+   * 'residual' keeps what the target leaves after the checkpoint. 'short' keeps
+   * the flat pre-residual tail: the overflow recovery uses it because the
+   * provider has just refused a request the residual was sized for, and every
+   * trigger falls back to it when the residual would summarize nothing.
+   */
+  tail: CompactTail;
+  /** Tokens of verbatim recent history kept. */
+  recentBudget: number;
+  /** The short tail at this window, whichever tail is in effect. */
+  shortRecentBudget: number;
+  /** Per-tool-result clip applied to retained history and to the loop's preflight clip. */
+  retainedToolResultMaxTokens: number;
+}
+
+export function resolveCompactBudgets(
+  config: Pick<AgentConfig, 'modelInfo' | 'maxTokens'>,
+  inputs: CompactBudgetInputs = {},
+): CompactBudgets {
+  const contextWindow = resolveContextLimit(config);
+  const loopReserve = Math.min(
+    Math.max(
+      1024,
+      config.modelInfo?.maxOutputTokens ?? config.maxTokens ?? Math.floor(contextWindow * 0.2),
+    ),
+    Math.max(1, contextWindow - 1),
+  );
+  const reservedOutputTokens = Math.min(
+    loopReserve,
+    Math.floor(contextWindow * MAX_OUTPUT_RESERVE_FRACTION),
+  );
+  const usableContextLimit = Math.max(1, contextWindow - reservedOutputTokens);
+  const preflightThreshold = Math.floor(usableContextLimit * DEFAULT_COMPACT_THRESHOLD);
+  const requestOverheadTokens = Math.max(0, Math.floor(inputs.requestOverheadTokens ?? 0));
+  const estimatorDrift =
+    inputs.measuredRequestTokens !== undefined &&
+    inputs.estimatedRequestTokens !== undefined &&
+    inputs.estimatedRequestTokens > 0
+      ? Math.max(1, inputs.measuredRequestTokens / inputs.estimatedRequestTokens)
+      : 1;
+  const targetTokens = Math.max(
+    1,
+    Math.floor(
+      ((preflightThreshold - requestOverheadTokens) * DESIRED_CONTEXT_FRACTION) / estimatorDrift,
+    ),
+  );
+  const productionCheckpointBudget = Math.max(
+    1,
+    Math.floor(Math.min(CHECKPOINT_MAX_TOKENS, contextWindow * CHECKPOINT_FRACTION)),
+  );
+  const checkpointBudget =
+    inputs.checkpointMaxTokens === undefined
+      ? productionCheckpointBudget
+      : Math.max(
+          1,
+          Math.floor(Math.min(inputs.checkpointMaxTokens, contextWindow * CHECKPOINT_FRACTION)),
+        );
+  const checkpointEnvelopeTokens =
+    estimateTextTokens(CHECKPOINT_PREFIX) +
+    MESSAGE_OVERHEAD_TOKENS +
+    CARRIED_LEDGER_NOTICE_MAX_TOKENS;
+  const residualTail = Math.max(
+    1,
+    targetTokens -
+      Math.max(productionCheckpointBudget, checkpointBudget) -
+      checkpointEnvelopeTokens,
+  );
+  // Capped by the same target: a tail the fitter would evict straight away is not a tail.
+  const shortRecentBudget = Math.max(
+    1,
+    Math.min(
+      RECENT_TAIL_MAX_TOKENS,
+      Math.floor(contextWindow * RECENT_TAIL_FRACTION),
+      residualTail,
+    ),
+  );
+  const tail = inputs.tail ?? 'residual';
+  const recentBudget = tail === 'short' ? shortRecentBudget : residualTail;
+  const retainedToolResultMaxTokens =
+    tail === 'short'
+      ? RETAINED_TOOL_RESULT_MAX_TOKENS
+      : Math.max(
+          RETAINED_TOOL_RESULT_MAX_TOKENS,
+          Math.floor(recentBudget * RETAINED_TOOL_RESULT_TAIL_SHARE),
+        );
+
+  return {
+    contextWindow,
+    reservedOutputTokens,
+    usableContextLimit,
+    preflightThreshold,
+    requestOverheadTokens,
+    estimatorDrift,
+    targetTokens,
+    checkpointBudget,
+    tail,
+    recentBudget,
+    shortRecentBudget,
+    retainedToolResultMaxTokens,
+  };
+}
+
 export function compactHistory(
   history: Message[],
   keepLast: number,
@@ -351,7 +525,7 @@ export function buildCompactPrompt(
   );
 }
 
-export interface RunCompactOptions {
+export interface RunCompactOptions extends CompactRequestHints {
   trigger: CompactTrigger;
   focus?: string;
   upcomingUserIntent?: string;
@@ -387,9 +561,34 @@ export async function runCompact(
   // cheap, so it runs before the hooks: a compaction that will immediately skip
   // must not fire the user's PreCompact commands. Only once the work is known to
   // be real do the hooks get a chance to observe or block it.
-  const contextWindow = resolveContextLimit(config);
-  const recentBudget = Math.min(RECENT_TAIL_MAX_TOKENS, contextWindow * RECENT_TAIL_FRACTION);
-  const selection = selectRecentBundles(contextHistory, recentBudget);
+  const budgetInputs: CompactBudgetInputs = {
+    checkpointMaxTokens: options.checkpointMaxTokens,
+    requestOverheadTokens: options.requestOverheadTokens,
+    // Only a matched pair measures drift: the pressure a host passes for a usage
+    // trigger is the provider's count of the request the loop estimated.
+    measuredRequestTokens:
+      options.estimatedRequestTokens !== undefined ? options.preContextTokens : undefined,
+    estimatedRequestTokens: options.estimatedRequestTokens,
+  };
+  let budgets = resolveCompactBudgets(config, {
+    ...budgetInputs,
+    tail: options.recovery ? 'short' : 'residual',
+  });
+  let selection = selectRecentBundles(
+    contextHistory,
+    budgets.recentBudget,
+    budgets.retainedToolResultMaxTokens,
+  );
+  // A compaction that was asked for must shrink something. When the whole
+  // history fits the residual tail, keep the short one instead, whoever asked.
+  if (budgets.tail === 'residual' && selection.summarizedBundles.flat().length === 0) {
+    budgets = resolveCompactBudgets(config, { ...budgetInputs, tail: 'short' });
+    selection = selectRecentBundles(
+      contextHistory,
+      budgets.recentBudget,
+      budgets.retainedToolResultMaxTokens,
+    );
+  }
   const summarizedMessages = selection.summarizedBundles.flat();
   if (summarizedMessages.length === 0) {
     return {
@@ -415,15 +614,7 @@ export async function runCompact(
 
   const reducerConfig = resolveCompactModelConfig(config);
   const reducerProvider = options.provider ?? createProvider(reducerConfig);
-  const checkpointBudget = Math.max(
-    1,
-    Math.floor(
-      Math.min(
-        options.checkpointMaxTokens ?? CHECKPOINT_MAX_TOKENS,
-        contextWindow * CHECKPOINT_FRACTION,
-      ),
-    ),
-  );
+  const checkpointBudget = budgets.checkpointBudget;
   // An explicit `checkpointMaxTokens` is an evaluation knob and stays the literal
   // provider cap; otherwise the cap is derived so the envelope and any thinking
   // tokens fit around a checkpoint of `checkpointBudget`.
@@ -466,7 +657,7 @@ export async function runCompact(
     ? cloneCheckpoint(selection.priorCheckpoint)
     : undefined;
 
-  let effectiveContextWindow = contextWindow;
+  let effectiveContextWindow = budgets.contextWindow;
   let modelCalls = 0;
   let repairUsed = false;
   let finalCheckpoint: ConversationCheckpointV2 | undefined;
@@ -648,7 +839,7 @@ export async function runCompact(
   const retainedBundles = selection.retainedBundles.map((bundle) => [...bundle]);
   const postBudgetOmitted = new Set<string>();
   const compactId = crypto.randomUUID();
-  const targetTokens = Math.max(1, Math.floor(contextWindow * DESIRED_CONTEXT_FRACTION));
+  const targetTokens = budgets.targetTokens;
   let checkpoint = finalCheckpoint!;
   /**
    * Re-attached after every rewrite of `checkpoint`, including the deterministic
@@ -794,6 +985,13 @@ export async function runCompact(
     postMessageCount: replacementHistory.length,
     preTokens,
     postContextTokens,
+    tail: budgets.tail,
+    recentBudget: budgets.recentBudget,
+    targetTokens: budgets.targetTokens,
+    preflightThreshold: budgets.preflightThreshold,
+    requestOverheadTokens: budgets.requestOverheadTokens,
+    estimatorDrift: budgets.estimatorDrift,
+    retainedToolResultMaxTokens: budgets.retainedToolResultMaxTokens,
   });
   return {
     status: 'compacted',
@@ -845,7 +1043,11 @@ async function runPreCompactHooks(
     : undefined;
 }
 
-function selectRecentBundles(history: readonly Message[], budget: number): CompactSelection {
+function selectRecentBundles(
+  history: readonly Message[],
+  budget: number,
+  retainedToolResultMaxTokens: number,
+): CompactSelection {
   let priorCheckpointIndex = -1;
   let priorCheckpoint: ConversationCheckpointV2 | undefined;
   for (let index = history.length - 1; index >= 0; index--) {
@@ -865,7 +1067,7 @@ function selectRecentBundles(history: readonly Message[], budget: number): Compa
   const retainedBundles: Message[][] = [];
   let used = 0;
   for (let index = bundles.length - 1; index >= 0; index--) {
-    const clipped = clipBundleToolResults(bundles[index]);
+    const clipped = clipHistoryToolResults(bundles[index], retainedToolResultMaxTokens);
     const tokens = estimateHistoryTokens(clipped);
     if (index === bundles.length - 1 && tokens > budget) break;
     if (used + tokens > budget) break;
@@ -937,10 +1139,6 @@ export function clipHistoryToolResults(
       }),
     };
   });
-}
-
-function clipBundleToolResults(bundle: readonly Message[]): Message[] {
-  return clipHistoryToolResults(bundle);
 }
 
 function planReduction(

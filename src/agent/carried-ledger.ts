@@ -510,8 +510,21 @@ export function buildCarriedLedger(
  */
 export function carriedLedgerNotice(ledger: CarriedLedger | undefined): string {
   if (!ledger || ledger.constraints.length === 0) return '';
-  const lossy = ledger.droppedCount
-    ? ` ${ledger.droppedCount} older entr${ledger.droppedCount === 1 ? 'y was' : 'ies were'} dropped by the ledger cap and can be retrieved from session history.`
-    : '';
-  return `[carried: ${ledger.constraints.length} constraint(s) quoted verbatim from the user's own turns, oldest first; they remain in force, and where two conflict the later one wins.${lossy}]\n`;
+  return carriedLedgerNoticeText(ledger.constraints.length, ledger.droppedCount ?? 0);
 }
+
+function carriedLedgerNoticeText(constraintCount: number, droppedCount: number): string {
+  const lossy = droppedCount
+    ? ` ${droppedCount} older entr${droppedCount === 1 ? 'y was' : 'ies were'} dropped by the ledger cap and can be retrieved from session history.`
+    : '';
+  return `[carried: ${constraintCount} constraint(s) quoted verbatim from the user's own turns, oldest first; they remain in force, and where two conflict the later one wins.${lossy}]\n`;
+}
+
+/**
+ * The most the notice can cost, for budgets that must leave room for it before
+ * any ledger exists: the entry cap's count and a six-digit dropped count.
+ * Derived from the text so a longer notice moves the budgets with it.
+ */
+export const CARRIED_LEDGER_NOTICE_MAX_TOKENS = Math.ceil(
+  carriedLedgerNoticeText(CARRIED_LEDGER_MAX_ENTRIES, 999_999).length / 4,
+);

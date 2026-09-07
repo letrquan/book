@@ -376,7 +376,7 @@ export async function runHeadless(
         lastUsage = nextUsage;
         lastHostCompactAttemptKey = null;
       },
-      onCompact: async (history, usage) => {
+      onCompact: async (history, usage, hints) => {
         const outcome = await agentSession.compact({
           config,
           history,
@@ -389,6 +389,7 @@ export async function runHeadless(
           timelineStore: store,
           onCommitted: (_result, boundary) => compactBoundaries.push(boundary),
           options: {
+            ...hints,
             trigger: 'auto',
             preContextTokens: usage ? usagePressureTokens(usage) : undefined,
             signal: opts.signal,

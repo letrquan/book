@@ -3,7 +3,7 @@ import { runCompact } from './compact.js';
 import type { AgentConfig } from '../types/runtime.js';
 import type { ConversationCheckpointV2 } from '../types/sessions.js';
 import type { Message } from '../types/messages.js';
-import { defaultConfig } from '../test/fixtures.js';
+import { compactTestConfig } from '../test/compact-fixture.js';
 
 vi.mock('../provider/index.js', () => ({
   chatCompletionStream: vi.fn(),
@@ -51,11 +51,7 @@ const GENERATIONS = 6;
 const PADDED_SUMMARY = `Work continues. ${'Narrative padding. '.repeat(700)}`;
 
 function makeConfig(): AgentConfig {
-  return defaultConfig({
-    autoCompactEnabled: true,
-    accessibility: { screenReader: false, reducedMotion: true },
-    modelInfo: { contextWindow: 32_000 },
-  });
+  return compactTestConfig();
 }
 
 type ScriptedConstraint = {

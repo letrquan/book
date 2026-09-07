@@ -158,10 +158,17 @@ capability boundary, providers, MCP, other settings and sandbox behavior, manage
   (`src/agent/carried-ledger.ts`) of user-authored constraints, extracted deterministically from
   the user's own typed turns, readable but not writable by the reducer, not evictable by the
   fitter, capped at 32 entries / 1024 tokens / 35% of the checkpoint budget, and disclosed in the
-  checkpoint header. It has no setting: it is always on and costs no extra model call. Measured
-  `verbatimUserRetention` over the eight-generation fidelity corpus went from 0.0 to 1.0 and
-  overall retention from 0.333 to 0.667; the floors are ratcheted in `FIDELITY_BASELINE`. Design:
-  `plans/carried-ledger-plan.md`.
+  checkpoint header. It has no setting: it is always on and costs no extra model call. Since Phase 1
+  (2026-09-05, revised 2026-09-06 after review) the tail an auto-compaction keeps verbatim is the
+  residual of the post-compaction target rather than a flat 20k cap. The target is half the loop's
+  preflight gate net of the measured request overhead, which is about 79k tokens of tail at the
+  272k default window with the default output reserve and no overhead, and the per-result clip
+  scales with it. The loop and the compactor share one budget resolver. The short 20k tail is kept
+  by the recovery compaction after a provider rejects a request, and by any compaction that would
+  otherwise retain everything. Measured over the eight-generation fidelity corpus:
+  `verbatimUserRetention` 1.0 on both arms, final retention 0.667 at 32k and 0.833 at 272k, and
+  post-history utilization 0.47 and 0.48 against the loop's gate, recorded as per-arm floors in
+  `FIDELITY_ARMS`. Design: `plans/carried-ledger-plan.md`.
 - Adaptive harness: `harness.mode` is `off`, which has no filesystem effect; `--harness-workflow`
   fails closed while it stays off.
 - Tool discovery: `auto`; the practical core stays loaded and `ToolSearch` activates deferred
