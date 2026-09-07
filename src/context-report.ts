@@ -72,6 +72,21 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
   };
 }
 
+/**
+ * Canonical source label for context window origin.
+ *
+ * Precedence: explicit windowSource string -> (if omitted) legacy windowDeclared boolean -> undefined.
+ */
+export function sourceLabel(
+  source?: ContextWindowSource,
+  windowDeclared?: boolean,
+): ContextWindowSource | undefined {
+  if (source) return source;
+  if (windowDeclared === true) return 'declared';
+  if (windowDeclared === false) return 'default';
+  return undefined;
+}
+
 /** Render a /context report string for the TUI. */
 export function buildContextReport(
   messages: Message[],
@@ -120,13 +135,7 @@ export function buildContextReport(
     );
     lines.push('');
   }
-  const source =
-    ambient.windowSource ??
-    (ambient.windowDeclared === true
-      ? 'declared'
-      : ambient.windowDeclared === false
-        ? 'default'
-        : undefined);
+  const source = sourceLabel(ambient.windowSource, ambient.windowDeclared);
 
   lines.push(
     `Model context budget: ${ambient.maxTokens.toLocaleString()} tokens (${ambient.model})` +
@@ -141,6 +150,8 @@ export function buildContextReport(
     lines.push(
       'This window came from a known family for that model and is not a per-model declaration.',
     );
+  } else if (source === 'learned') {
+    lines.push('This window was learned from a previous provider context-overflow refusal.');
   }
   const pct =
     ambient.maxTokens > 0

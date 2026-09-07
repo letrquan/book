@@ -10,8 +10,9 @@
  */
 import type { AgentConfig } from './types/runtime.js';
 import type { ContextWindowSource } from './types/messages.js';
+import type { ModelWindowStore } from './model-window-store.js';
 
-export type { ContextWindowSource };
+export type { ContextWindowSource, ModelWindowStore };
 
 export interface ModelOption {
   id: string;
@@ -143,6 +144,25 @@ export const MODEL_FAMILY_CONTEXT_WINDOWS: ReadonlyArray<{
     pattern: /^o[134](?:-mini|-preview)?(?![a-z\d])/,
     contextWindow: 128_000,
   },
+  // OpenAI GPT-4 32k: 32,768 tokens.
+  {
+    family: 'gpt-4-32k',
+    pattern: /^gpt-4-32k/,
+    contextWindow: 32_768,
+  },
+  // OpenAI GPT-4 (original 8k base models): 8,192 tokens.
+  // Gated so it does not match gpt-4o, gpt-4-turbo, or gpt-4-32k defined above.
+  {
+    family: 'gpt-4',
+    pattern: /^gpt-4(?![a-z\d])/,
+    contextWindow: 8_192,
+  },
+  // OpenAI GPT-3.5 Turbo: 16,385 tokens.
+  {
+    family: 'gpt-3.5-turbo',
+    pattern: /^gpt-3\.5-turbo/,
+    contextWindow: 16_385,
+  },
   // Note: Qwen (e.g. Qwen 2.5) was deliberately excluded. Its published context window
   // spans 32k (native context in common local deployments without YaRN rope scaling)
   // to 1M (Turbo/1M variants), so no single family-level value is safe. It falls
@@ -169,19 +189,41 @@ export interface ContextWindowResolution {
 }
 
 /**
+ * Derive the model key for context window resolution and ratchet storage.
+ *
+ * Precedence: modelSelection (e.g. configured or overridden model string) -> model.
+ * Used consistently for learned store reads, family pattern matching, and learned
+ * store ratchet writes (#186).
+ */
+export function resolveModelKey(
+  config: Partial<Pick<AgentConfig, 'model' | 'modelSelection'>>,
+): string | undefined {
+  return config.modelSelection ?? config.model;
+}
+
+/**
  * Resolve the context window and its origin for a model.
- * Precedence: declared (`config.modelInfo?.contextWindow`) -> family match -> DEFAULT_CONTEXT_WINDOW.
+ * Precedence: declared (`config.modelInfo?.contextWindow`) -> learned (from overflow store) -> family match -> DEFAULT_CONTEXT_WINDOW.
  */
 export function resolveContextWindow(
-  config: Pick<AgentConfig, 'modelInfo'> & Partial<Pick<AgentConfig, 'model' | 'modelSelection'>>,
+  config: Pick<AgentConfig, 'modelInfo'> &
+    Partial<Pick<AgentConfig, 'model' | 'modelSelection' | 'modelWindowStore'>>,
+  store?: ModelWindowStore,
 ): ContextWindowResolution {
   const declared = config.modelInfo?.contextWindow;
   if (typeof declared === 'number' && declared > 0) {
     return { window: declared, source: 'declared' };
   }
-  const modelName = config.model ?? config.modelSelection;
-  if (modelName) {
-    const familyWindow = resolveFamilyContextWindow(modelName);
+  const effectiveStore = store ?? config.modelWindowStore;
+  const modelKey = resolveModelKey(config);
+  if (modelKey && effectiveStore) {
+    const learnedWindow = effectiveStore.get(modelKey);
+    if (typeof learnedWindow === 'number' && learnedWindow > 0) {
+      return { window: learnedWindow, source: 'learned' };
+    }
+  }
+  if (modelKey) {
+    const familyWindow = resolveFamilyContextWindow(modelKey);
     if (familyWindow !== undefined) {
       return { window: familyWindow, source: 'family' };
     }
@@ -189,14 +231,19 @@ export function resolveContextWindow(
   return { window: DEFAULT_CONTEXT_WINDOW, source: 'default' };
 }
 
-/** The context window to act on: what the model declares, else family, else default. */
+/** The context window to act on: what the model declares, else learned, else family, else default. */
 export function resolveContextLimit(
-  config: Pick<AgentConfig, 'modelInfo'> & Partial<Pick<AgentConfig, 'model' | 'modelSelection'>>,
+  config: Pick<AgentConfig, 'modelInfo'> &
+    Partial<Pick<AgentConfig, 'model' | 'modelSelection' | 'modelWindowStore'>>,
+  store?: ModelWindowStore,
 ): number {
-  return resolveContextWindow(config).window;
+  return resolveContextWindow(config, store).window;
 }
 
-/** True when the window above came from the model rather than the default. */
-export function hasDeclaredContextWindow(config: Pick<AgentConfig, 'modelInfo'>): boolean {
-  return resolveContextWindow(config).source === 'declared';
+/** True when the window was explicitly declared in config.modelInfo. */
+export function hasDeclaredContextWindow(
+  config: Partial<Pick<AgentConfig, 'modelInfo' | 'model' | 'modelSelection' | 'modelWindowStore'>>,
+): boolean {
+  const declared = config.modelInfo?.contextWindow;
+  return typeof declared === 'number' && declared > 0;
 }

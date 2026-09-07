@@ -178,7 +178,13 @@ export function StatusLine({
 
     segments.push({ text: truncateDisplay(model, modelBudget), color: theme.subtle });
 
-    if (width >= 72 && !compact && maxTokensSource && maxTokensSource !== 'declared') {
+    // Qualifies the ctx% two segments back: it says that number rests on a
+    // family guess or the bare default rather than a declared window. That
+    // makes it worth more than the cost estimate when the row gets tight, so
+    // it is packed before cost, not after it. The gate matches its neighbours'
+    // — the old bare `width >= 72` was the actual defect, dropping the
+    // annotation between 64 and 71 columns while `$0.003` sailed through.
+    if (!compact && width >= 64 && maxTokensSource && maxTokensSource !== 'declared') {
       segments.push({ text: `(${maxTokensSource})`, color: theme.subtle });
     }
 

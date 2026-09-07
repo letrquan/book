@@ -6,6 +6,39 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A learned context window can no longer be lost, raised, or set above the real window.** Book
+  records a ceiling for a model when a provider refuses a request for exceeding its context limit,
+  in `<BOOK_HOME>/model-windows.json`, so the next session sizes compaction against a number the
+  provider has shown it will not accept. A review of that store found the recorded number was
+  wrong in three independent ways, each of which the file's own design claimed to prevent.
+
+  **The value was the size that was refused.** History alone can exceed the window — a 100k model
+  handed 150k of history refuses, and 150k was stored as the window, half again larger than
+  reality. The ceiling is now a fixed fraction of the refused size
+  (`LEARNED_WINDOW_SAFETY_MARGIN`), so it lands below the real window in one step instead of
+  decaying toward it through a sequence of failed turns the user watches. The old comment argued
+  the estimate was conservative by comparing it to the refused *prompt*; the value is stored as the
+  *window*, so that reasoning never applied to what the code did.
+
+  **"Strictly downward" only held inside one process.** The store cached the file at session start
+  and wrote the whole document back from that snapshot, so two concurrent sessions — a TUI beside a
+  `--print` run, managed agents in worktrees, a background job — dropped each other's entries, and
+  a session holding a stale snapshot would happily restore a ceiling another had just lowered.
+  A write is now computed from a fresh read and merged per model by minimum, so a concurrent
+  lowering is never undone.
+
+  **One malformed entry discarded all of them.** The document was validated in a single pass, so a
+  truncated write, a hand edit, or an entry written by a future version emptied the store for every
+  model — and the next refusal persisted that empty document, making it permanent. Entries are now
+  validated individually and a bad one costs only itself; a file whose version is newer than this
+  build is read but never rewritten.
+
+  Alongside: `book doctor` lists every learned window and when it was learned, `/context` and the
+  status line name which source the window came from, and the family table gained `gpt-4` (8k),
+  `gpt-4-32k` (32k), and `gpt-3.5-turbo` (16k) — the families where falling back to the 272k
+  default is most dangerous, and the ones the table's own sizing rule was written for. A window
+  declared in settings still wins over everything above.
+
 - **A turn that is only an unclosed reasoning block is retried, not accepted as the answer.** A
   `--print` run finished with exit code 0 and an "answer" that was leaked chain-of-thought from its
   first byte to its last: one `<reasoning_context>` tag, never closed, ending mid-sentence on a tool
@@ -53,6 +86,24 @@ All notable changes to this project are documented in this file.
   after every write, get the same saving.
 
 ### Added
+
+- **Learned context-window store and downward ratchet on provider overflow.** For unknown models
+  or local routers whose `/v1/models` endpoint exposes no context lengths, Book now learns a context
+  ceiling from the provider's context overflow refusal instead of repeating the overflow every session.
+
+  Learned ceilings are stored per model in `<BOOK_HOME>/model-windows.json` (via atomic temp-file replace),
+  isolated from the workspace tree so repositories cannot tamper with learned limits. When a provider
+  refuses a request with a context overflow error and the context window in force was not explicitly
+  declared by the user in settings, the conservative history token estimate at the moment of refusal is
+  recorded. The ratchet is strictly monotonic downward: subsequent overflows at a smaller size lower the
+  ceiling, while overflows at larger sizes change nothing, and explicit user settings declarations remain
+  authoritative and are never overwritten.
+
+  `ContextWindowSource` is extended with `'learned'` in the four-state precedence:
+  `declared -> learned -> family -> default`. The learned origin is surfaced in `/context` breakdown
+  reports with an explanation of the refusal signal, in the `/context` command panel metric card
+  (`(learned)`), and as a trailing annotation on the responsive TUI status line (`(learned)` on wide
+  terminals).
 
 - **Model family context-window table and three-state source reporting.** Previously,
   `resolveContextLimit()` returned the fallback `DEFAULT_CONTEXT_WINDOW = 272_000` for every model

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { estimateTokens, buildContextBreakdown, buildContextReport } from './context-report.js';
+import {
+  estimateTokens,
+  buildContextBreakdown,
+  buildContextReport,
+  sourceLabel,
+} from './context-report.js';
 import type { Message } from './types/messages.js';
 import { toolSuccess } from './tools/result.js';
 
@@ -24,6 +29,24 @@ describe('estimateTokens', () => {
   it('rounds up chars/4', () => {
     expect(estimateTokens('1234567')).toBe(2); // ceil(7/4)
     expect(estimateTokens('')).toBe(0);
+  });
+});
+
+describe('sourceLabel', () => {
+  it('prefers explicit source over windowDeclared flag', () => {
+    expect(sourceLabel('family', true)).toBe('family');
+    expect(sourceLabel('learned', false)).toBe('learned');
+    expect(sourceLabel('default', true)).toBe('default');
+    expect(sourceLabel('declared', false)).toBe('declared');
+  });
+
+  it('maps legacy windowDeclared flag when source is absent', () => {
+    expect(sourceLabel(undefined, true)).toBe('declared');
+    expect(sourceLabel(undefined, false)).toBe('default');
+  });
+
+  it('returns undefined when neither is provided', () => {
+    expect(sourceLabel(undefined, undefined)).toBeUndefined();
   });
 });
 
@@ -147,6 +170,23 @@ describe('buildContextReport', () => {
       hasClaudeMdLoader: false,
     });
 
+    expect(report).not.toContain('— assumed default');
+    expect(report).not.toContain('This window came from a known family');
+    expect(report).not.toContain('This model declares no context window');
+  });
+
+  it('explains learned window source in one line without default or family notices', () => {
+    const report = buildContextReport([], {
+      model: 'router/gemini-flash',
+      maxTokens: 65_536,
+      windowSource: 'learned',
+      commandCount: 0,
+      hasClaudeMdLoader: false,
+    });
+
+    expect(report).toContain(
+      'This window was learned from a previous provider context-overflow refusal.',
+    );
     expect(report).not.toContain('— assumed default');
     expect(report).not.toContain('This window came from a known family');
     expect(report).not.toContain('This model declares no context window');

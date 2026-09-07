@@ -50,6 +50,17 @@ function approvalHint(label: string, workspace: string, rest: string): string {
     : `${label} ${command}`;
 }
 
+function formatRelativeTime(timestamp: number, now = Date.now()): string {
+  const elapsedMs = Math.max(0, now - timestamp);
+  const minutes = Math.floor(elapsedMs / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 /**
  * One line naming what will actually authenticate the next request.
  *
@@ -403,6 +414,24 @@ export async function runDoctorCommand(
     if (existsSync(directory)) {
       console.log(
         `  [!] Third-party definitions found at ${directory}; preview them with /agents import ${directory}.`,
+      );
+    }
+  }
+  console.log();
+
+  // Learned context windows.
+  const { createModelWindowStore } = await import('../model-window-store.js');
+  const windowStore = createModelWindowStore();
+  const allLearned = windowStore.all();
+  const learnedModels = Object.keys(allLearned);
+  console.log('Learned context windows:');
+  if (learnedModels.length === 0) {
+    console.log('  (none)');
+  } else {
+    for (const modelName of learnedModels) {
+      const entry = windowStore.getEntry(modelName) ?? allLearned[modelName];
+      console.log(
+        `  ${modelName}: ${entry.contextWindow.toLocaleString()} tokens (${formatRelativeTime(entry.learnedAt)})`,
       );
     }
   }

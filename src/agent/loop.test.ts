@@ -1,11 +1,11 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { requiresToolPermission, runAgentLoop } from './loop.js';
-import { resolveCompactBudgets } from './compact.js';
+import { estimateHistoryTokens, resolveCompactBudgets } from './compact.js';
 import { createDefaultRegistry, createRegistry } from '../tools/registry.js';
-import { defaultConfig } from '../test/fixtures.js';
+import { defaultConfig, userMsg } from '../test/fixtures.js';
 import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { ToolResult, UserQuestionRequest } from '../types/tools.js';
 import type { Message, Usage } from '../types/messages.js';
@@ -17,6 +17,7 @@ import type { Provider } from '../provider/index.js';
 import type { CompactRequestHints, CompactResult } from '../types/sessions.js';
 import type { AgentTerminalOutcome } from '../types/terminal.js';
 import { createAgentRunContext } from '../types/runs.js';
+import { MemoryModelWindowStore } from '../model-window-store.js';
 
 function writeLoopSkill(
   workspace: string,
@@ -78,6 +79,27 @@ function compactedForRetry(): Extract<CompactResult, { status: 'compacted' }> {
 }
 
 const config = defaultConfig();
+
+let tempHome: string | undefined;
+let previousBookHome: string | undefined;
+
+beforeEach(() => {
+  previousBookHome = process.env.BOOK_HOME;
+  tempHome = mkdtempSync(join(tmpdir(), 'book-loop-home-'));
+  process.env.BOOK_HOME = tempHome;
+});
+
+afterEach(() => {
+  if (previousBookHome === undefined) {
+    delete process.env.BOOK_HOME;
+  } else {
+    process.env.BOOK_HOME = previousBookHome;
+  }
+  if (tempHome) {
+    rmSync(tempHome, { recursive: true, force: true });
+    tempHome = undefined;
+  }
+});
 
 describe('persistent background shell permissions', () => {
   it('requires explicit permission in auto mode but preserves bypass mode', () => {
@@ -1206,6 +1228,70 @@ describe('runAgentLoop streaming render callbacks', () => {
     expect(result.at(-1)?.content).toBe('continued after compact');
   });
 
+  it('uses the modelOverride window for auto-compact and preflight decisions', async () => {
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* (_config, _messages) {
+        providerCalls++;
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: 'echo-1', name: 'Echo', arguments: { value: 'ok' } },
+          };
+          yield {
+            type: 'done',
+            usage: {
+              promptTokens: 110_000,
+              completionTokens: 100,
+              totalTokens: 110_100,
+              contextTokens: 110_000,
+            },
+          };
+          return;
+        }
+        yield { type: 'text', content: 'continued after compact' };
+        yield { type: 'done' };
+      },
+    };
+    const registry = createRegistry();
+    registry.register({
+      name: 'Echo',
+      description: 'Return the provided value',
+      parameters: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+        required: ['value'],
+      },
+      execute: async (args) => toolSuccess(String(args.value ?? '')),
+    });
+    const compact = vi.fn(async () => compactedForRetry());
+
+    // Parent model has a 1M family window (gemini-flash), where 110k tokens is far below 80%.
+    // Overridden model has 128k family window (gpt-4o), where 110k tokens exceeds 80% (102.4k).
+    await runAgentLoop(
+      defaultConfig({
+        model: '9router/ag/gemini-3.8-flash-high',
+        maxTurns: 2,
+        maxTokens: 4_000,
+        autoCompactEnabled: true,
+      }),
+      registry,
+      'hello',
+      [],
+      noopCallbacks({ onCompact: compact }),
+      'default',
+      {
+        provider,
+        isNewSession: false,
+        modelOverride: 'openai/gpt-4o',
+      },
+    );
+
+    expect(compact).toHaveBeenCalledOnce();
+    expect(providerCalls).toBe(2);
+  });
+
   it('carries provider-native assistant metadata into tool follow-up requests', async () => {
     let calls = 0;
     const provider: Provider = {
@@ -1293,7 +1379,7 @@ describe('runAgentLoop streaming render callbacks', () => {
         },
       }),
       'default',
-      { provider, isNewSession: false },
+      { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
     );
 
     expect(providerCalls).toBe(2);
@@ -1321,11 +1407,152 @@ describe('runAgentLoop streaming render callbacks', () => {
       [],
       noopCallbacks({ onCompact: compact, onError }),
       'default',
-      { provider, isNewSession: false },
+      { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
     );
 
     expect(compact).toHaveBeenCalledOnce();
     expect(onError).toHaveBeenCalledWith('maximum context length exceeded');
+  });
+
+  it('records learned ceiling into modelWindowStore on context overflow when window is not declared', async () => {
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls === 1) {
+          yield { type: 'error', error: 'maximum context length exceeded' };
+          return;
+        }
+        yield { type: 'text', content: 'recovered' };
+        yield { type: 'done' };
+      },
+    };
+    const store = new MemoryModelWindowStore();
+    const config = defaultConfig({ maxTurns: 1, model: 'router/test-overflow-model' });
+
+    await runAgentLoop(
+      config,
+      createRegistry(),
+      'hello',
+      [userMsg('x'.repeat(100_000))],
+      noopCallbacks({ onCompact: async () => compactedForRetry() }),
+      'default',
+      { provider, isNewSession: false, modelWindowStore: store },
+    );
+
+    expect(providerCalls).toBe(2);
+    expect(store.get('router/test-overflow-model')).toBeGreaterThan(0);
+  });
+
+  it('records floor(size * 0.8) on context overflow, not the refused size', async () => {
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls === 1) {
+          yield { type: 'error', error: 'maximum context length exceeded' };
+          return;
+        }
+        yield { type: 'text', content: 'recovered' };
+        yield { type: 'done' };
+      },
+    };
+    const store = new MemoryModelWindowStore();
+    const config = defaultConfig({ maxTurns: 1, model: 'router/margin-test-model' });
+    const initialHistory = [userMsg('x'.repeat(100_000))];
+    let refusedHistorySize = 0;
+
+    await runAgentLoop(
+      config,
+      createRegistry(),
+      'hello',
+      initialHistory,
+      noopCallbacks({
+        onCompact: async (history) => {
+          refusedHistorySize = estimateHistoryTokens(history);
+          return compactedForRetry();
+        },
+      }),
+      'default',
+      { provider, isNewSession: false, modelWindowStore: store },
+    );
+
+    expect(providerCalls).toBe(2);
+    expect(refusedHistorySize).toBeGreaterThan(20_000);
+    const recorded = store.get('router/margin-test-model');
+    expect(recorded).toBe(Math.floor(refusedHistorySize * 0.8));
+    expect(recorded).not.toBe(refusedHistorySize);
+  });
+
+  it('does not record learned ceiling when safety margin pushes the value below MIN_LEARNED_CONTEXT_WINDOW', async () => {
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls === 1) {
+          yield { type: 'error', error: 'maximum context length exceeded' };
+          return;
+        }
+        yield { type: 'text', content: 'recovered' };
+        yield { type: 'done' };
+      },
+    };
+    const store = new MemoryModelWindowStore();
+    const config = defaultConfig({ maxTurns: 1, model: 'router/below-floor-model' });
+    // ~18k history tokens, which is > MIN_LEARNED_CONTEXT_WINDOW (16,384),
+    // but floor(18k * 0.8) ~ 14.4k, which is below the floor.
+    const initialHistory = [userMsg('x'.repeat(72_000))];
+
+    await runAgentLoop(
+      config,
+      createRegistry(),
+      'hello',
+      initialHistory,
+      noopCallbacks({ onCompact: async () => compactedForRetry() }),
+      'default',
+      { provider, isNewSession: false, modelWindowStore: store },
+    );
+
+    expect(providerCalls).toBe(2);
+    expect(store.get('router/below-floor-model')).toBeUndefined();
+  });
+
+  it('does not record or overwrite learned ceiling when window is explicitly declared in settings', async () => {
+    let providerCalls = 0;
+    const provider: Provider = {
+      id: 'scripted',
+      stream: async function* () {
+        providerCalls++;
+        if (providerCalls === 1) {
+          yield { type: 'error', error: 'maximum context length exceeded' };
+          return;
+        }
+        yield { type: 'text', content: 'recovered' };
+        yield { type: 'done' };
+      },
+    };
+    const store = new MemoryModelWindowStore();
+    const config = defaultConfig({
+      maxTurns: 1,
+      model: 'router/declared-model',
+      modelInfo: { contextWindow: 200_000 },
+    });
+
+    await runAgentLoop(
+      config,
+      createRegistry(),
+      'hello',
+      [],
+      noopCallbacks({ onCompact: async () => compactedForRetry() }),
+      'default',
+      { provider, isNewSession: false, modelWindowStore: store },
+    );
+
+    expect(providerCalls).toBe(2);
+    expect(store.get('router/declared-model')).toBeUndefined();
   });
 
   it('marks tool-call output as partial after compaction shortens the history', async () => {
@@ -1377,7 +1604,7 @@ describe('runAgentLoop streaming render callbacks', () => {
         onTerminal: (outcome) => terminalOutcomes.push(outcome),
       }),
       'default',
-      { provider, isNewSession: false },
+      { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
     );
 
     expect(terminalOutcomes).toEqual([
@@ -2119,7 +2346,7 @@ describe('runAgentLoop error handling', () => {
           onText: (text) => streamedText.push(text),
         }),
         'auto',
-        { provider, isNewSession: false },
+        { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
       );
 
       expect(providerTurn).toBe(2);
@@ -2157,7 +2384,7 @@ describe('runAgentLoop error handling', () => {
       ],
       noopCallbacks({ onTerminal: (outcome) => terminalOutcomes.push(outcome) }),
       'default',
-      { provider, isNewSession: false },
+      { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
     );
 
     expect(terminalOutcomes).toEqual([

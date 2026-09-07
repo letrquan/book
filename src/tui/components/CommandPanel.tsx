@@ -14,6 +14,7 @@ import type {
 import { useStaggeredReveal } from '../hooks/useAnimation.js';
 import { useTheme } from '../theme.js';
 import { failureTotal, formatFailureCounts } from '../../pricing.js';
+import { sourceLabel } from '../../context-report.js';
 import { padDisplay, truncateDisplay, wordWrap } from './word-wrap.js';
 
 interface CommandPanelProps {
@@ -403,16 +404,14 @@ function ContextPanelBody({
   const meterColor = percent >= 95 ? theme.error : percent >= 80 ? theme.warning : theme.brand;
   const roleTotal = Math.max(1, data.userTokens + data.assistantTokens);
   const meterWidth = Math.max(8, contentWidth - (narrow ? 18 : 24));
+  const windowSource = sourceLabel(data.windowSource, data.windowDeclared);
   const metrics: Metric[] = [
     {
       label: 'Window',
       value:
-        data.windowSource === 'default' ||
-        (data.windowSource === undefined && data.windowDeclared === false)
-          ? `${compactNumber(data.maxTokens)} (default)`
-          : data.windowSource === 'family'
-            ? `${compactNumber(data.maxTokens)} (family)`
-            : compactNumber(data.maxTokens),
+        windowSource && windowSource !== 'declared'
+          ? `${compactNumber(data.maxTokens)} (${windowSource})`
+          : compactNumber(data.maxTokens),
       color: theme.brand,
     },
     { label: 'Estimate', value: compactNumber(data.estimatedTokens) },

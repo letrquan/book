@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runAgentLoop } from './loop.js';
 import { createRegistry } from '../tools/registry.js';
 import { defaultConfig } from '../test/fixtures.js';
@@ -6,6 +9,7 @@ import type { AgentLoopCallbacks } from '../types/providers.js';
 import type { Provider } from '../provider/index.js';
 import type { AgentTerminalOutcome } from '../types/terminal.js';
 import type { Message } from '../types/messages.js';
+import { MemoryModelWindowStore } from '../model-window-store.js';
 
 function callbacks(
   onTerminal: (outcome: AgentTerminalOutcome) => void,
@@ -49,10 +53,31 @@ async function run(
     [],
     callbacks((value) => (outcome = value), errors),
     'auto',
-    { provider, isNewSession: false },
+    { provider, isNewSession: false, modelWindowStore: new MemoryModelWindowStore() },
   );
   return { outcome, errors, history };
 }
+
+let tempHome: string | undefined;
+let previousBookHome: string | undefined;
+
+beforeEach(() => {
+  previousBookHome = process.env.BOOK_HOME;
+  tempHome = mkdtempSync(join(tmpdir(), 'book-stream-reissue-home-'));
+  process.env.BOOK_HOME = tempHome;
+});
+
+afterEach(() => {
+  if (previousBookHome === undefined) {
+    delete process.env.BOOK_HOME;
+  } else {
+    process.env.BOOK_HOME = previousBookHome;
+  }
+  if (tempHome) {
+    rmSync(tempHome, { recursive: true, force: true });
+    tempHome = undefined;
+  }
+});
 
 describe('re-issuing a turn after a transport failure', () => {
   it('recovers a stalled stream instead of ending the run', async () => {

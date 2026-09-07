@@ -45,7 +45,7 @@ export interface ConfigCommandDisplay {
   };
 }
 
-export type ContextWindowSource = 'declared' | 'family' | 'default';
+export type ContextWindowSource = 'declared' | 'learned' | 'family' | 'default';
 
 export interface ContextCommandDisplay {
   kind: 'context';
