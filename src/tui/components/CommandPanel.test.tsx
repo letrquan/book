@@ -107,6 +107,28 @@ describe('CommandPanel', () => {
     }
   });
 
+  it('renders learned window source annotation in the metrics grid', () => {
+    const learnedDisplay: ContextCommandDisplay = {
+      ...contextDisplay,
+      maxTokens: 65_536,
+      windowSource: 'learned',
+    };
+    const view = render(
+      withTheme(
+        <CommandPanel
+          display={learnedDisplay}
+          fallback="Context window breakdown"
+          terminalWidth={80}
+          reducedMotion
+        />,
+      ),
+    );
+
+    const output = stripAnsi(view.lastFrame());
+    expect(output).toContain('Window');
+    expect(output).toContain('(learned)');
+  });
+
   it('uses the plain report in screen-reader mode', () => {
     const fallback = 'Context window breakdown\nConversation total: 12';
     const view = render(

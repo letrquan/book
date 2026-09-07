@@ -31,7 +31,12 @@ import {
   shouldCompact,
   usagePressureTokens,
 } from './compact.js';
-import { resolveContextLimit } from '../models.js';
+import { hasDeclaredContextWindow, resolveContextLimit, resolveModelKey } from '../models.js';
+import {
+  createModelWindowStore,
+  LEARNED_WINDOW_SAFETY_MARGIN,
+  type ModelWindowStore,
+} from '../model-window-store.js';
 import {
   evaluatePermissionDetail,
   permissionResultOf,
@@ -181,6 +186,8 @@ export async function runAgentLoop(
     toolOutputRoot?: string;
     /** Override user-local tool-use telemetry storage (primarily for isolated hosts/tests). */
     toolTelemetryRoot?: string;
+    /** User-global store for learned context window ceilings (primarily for isolated tests). */
+    modelWindowStore?: ModelWindowStore;
     provider?: Provider;
   },
 ): Promise<Message[]> {
@@ -291,7 +298,11 @@ export async function runAgentLoop(
 
   // Apply model override from command frontmatter.
   const effectiveConfig = options?.modelOverride
-    ? { ...config, model: options.modelOverride }
+    ? {
+        ...config,
+        model: options.modelOverride,
+        modelSelection: options.modelOverride,
+      }
     : config;
 
   // SessionStart hook — hosts with a multi-turn lifecycle (the TUI/headless
@@ -349,7 +360,7 @@ export async function runAgentLoop(
   const skillRegistry = ownsRuntime
     ? runtime.skills(config.workspace, config.settings.skills)
     : runtime.consumeSkillChanges(config.workspace, config.settings.skills);
-  skillRegistry.recordPromptCatalog(resolveContextLimit(config));
+  skillRegistry.recordPromptCatalog(resolveContextLimit(effectiveConfig));
   const hasUsableSkills = skillRegistry
     .list()
     .some((skill) => skill.valid && skill.activation !== 'off');
@@ -639,7 +650,7 @@ export async function runAgentLoop(
       syncHostMode();
 
       // Mid-loop auto-compact safety net (host also runs pre-turn compact).
-      const contextLimit = resolveContextLimit(config);
+      const contextLimit = resolveContextLimit(effectiveConfig);
       if (
         config.autoCompactEnabled !== false &&
         callbacks.onCompact &&
@@ -1156,6 +1167,34 @@ export async function runAgentLoop(
             error: streamError,
           });
           let beforeTokens = estimateHistoryTokens(newHistory);
+
+          // The provider refused the prompt, so beforeTokens represents a size known to be
+          // too large rather than an accepted limit. Applying LEARNED_WINDOW_SAFETY_MARGIN
+          // guarantees the recorded ceiling is strictly below the refused size rather than
+          // the refused size itself, converging below the real context window.
+          // Only record when the window in force came from family or default (not declared):
+          // if the user explicitly declared contextWindow in settings, leave their setting
+          // authoritative and do not overwrite it from a heuristic.
+          const overflowModelKey = resolveModelKey(effectiveConfig);
+          if (!hasDeclaredContextWindow(effectiveConfig) && beforeTokens > 0 && overflowModelKey) {
+            // effectiveConfig carries the override in BOTH model and modelSelection, so
+            // this is the same key the read side resolves. Spelling the precedence out
+            // again here is how the two drifted apart in the first place.
+            const modelKey = overflowModelKey;
+            const windowStore =
+              options?.modelWindowStore ??
+              effectiveConfig.modelWindowStore ??
+              createModelWindowStore();
+            const learnedCeiling = Math.floor(beforeTokens * LEARNED_WINDOW_SAFETY_MARGIN);
+            const ratcheted = windowStore.ratchet(modelKey, learnedCeiling);
+            if (ratcheted) {
+              log.info('learned context window ceiling from overflow refusal', {
+                model: modelKey,
+                ceiling: learnedCeiling,
+              });
+            }
+          }
+
           let compactedTokens: number | undefined;
           let compacted = false;
           if (callbacks.onCompact) {

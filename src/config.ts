@@ -12,6 +12,7 @@ import { assertHarnessModeAvailable, assertSelectableWorkflow } from './harness/
 import { selectAuthProfile, type AuthSelection } from './auth/selection.js';
 import { profileOrigin, type AuthProfile } from './auth/profiles.js';
 import type { AuthProfileInputs } from './types/auth.js';
+import { createModelWindowStore, type ModelWindowStore } from './model-window-store.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
@@ -92,6 +93,8 @@ export interface LoadConfigOptions {
   settingsPaths?: SettingsResolutionPaths;
   /** Let the interactive TUI start before a BYOK credential has been added. */
   allowMissingApiKey?: boolean;
+  /** Optional store for learned context window ceilings. */
+  modelWindowStore?: ModelWindowStore;
 }
 
 export function loadConfig(workspace?: string, options?: LoadConfigOptions): AgentConfig {
@@ -253,6 +256,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     provider: defaultProvider,
     authProfile: auth?.profile.id,
     authInputs,
+    modelWindowStore: options?.modelWindowStore ?? createModelWindowStore(),
   };
 
   config = applyModelDefaults(resolveModelProviderConfig(config, rawModel));
