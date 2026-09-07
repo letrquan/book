@@ -1,6 +1,6 @@
 # Book Milestones
 
-Status date: 2026-08-19. This roadmap records shipped foundations and remaining work. For exact
+Status date: 2026-09-07. This roadmap records shipped foundations and remaining work. For exact
 runtime defaults and known boundaries, see [docs/current-state.md](docs/current-state.md).
 
 ## Shipped Foundation

@@ -26,3 +26,6 @@ __pycache__/
 # Local TUI/verify scratch captures (ConPTY dumps, fixture providers, etc.)
 .tmp-*/
 .tmp-*
+
+# Local dogfooding scratch (PTY logs, probe scripts)
+.dogfood/
