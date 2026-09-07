@@ -916,6 +916,7 @@ export async function runHeadless(
           usage: reportedUsage,
           accounting: result.accounting,
           outcome,
+          stopReason: outcome.reason,
           runs: runResults,
           structured: result.structured,
           structuredError: result.structuredError,
@@ -926,11 +927,13 @@ export async function runHeadless(
     } else if (opts.outputFormat === 'stream-json') {
       emit({
         type: 'result',
+        stopReason: outcome.reason,
         result: {
           messages: contextHistory,
           usage: reportedUsage,
           accounting: result.accounting,
           outcome,
+          stopReason: outcome.reason,
           runs: runResults,
           structured: result.structured,
           structuredError: result.structuredError,

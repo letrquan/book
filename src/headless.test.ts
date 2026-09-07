@@ -580,6 +580,86 @@ describe('runHeadless — json output', () => {
       partialOutput: true,
     });
   });
+
+  it('produces a failed outcome when stopped by max turns', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sse([toolDelta('call-1', 'TaskCreate', { subject: 'test task' })])),
+    );
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'do something',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      maxTurns: 1,
+      stdout: { write: () => true },
+    });
+
+    expect(result.outcome.status).toBe('failed');
+    expect(result.outcome.reason).toBe('max_turns');
+  });
+
+  it('states terminal reason in stream-json result event when stopped by max turns', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sse([toolDelta('call-1', 'TaskCreate', { subject: 'test task' })])),
+    );
+
+    const writes: string[] = [];
+    const stdout = {
+      write: (s: string) => {
+        writes.push(s);
+        return true;
+      },
+    };
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'do something',
+      inputFormat: 'text',
+      outputFormat: 'stream-json',
+      history: [],
+      mode: 'bypassPermissions',
+      maxTurns: 1,
+      stdout,
+    });
+
+    expect(result.outcome.status).toBe('failed');
+    expect(result.outcome.reason).toBe('max_turns');
+
+    const lines = writes.join('').split('\n').filter(Boolean);
+    const resultEvent = lines.map((l) => JSON.parse(l)).find((e) => e.type === 'result');
+    expect(resultEvent).toBeDefined();
+    expect(resultEvent.result.outcome.status).toBe('failed');
+    expect(resultEvent.result.outcome.reason).toBe('max_turns');
+    expect(resultEvent.result.stopReason).toBe('max_turns');
+    expect(resultEvent.stopReason).toBe('max_turns');
+  });
+
+  it('produces a cancelled outcome on aborted run without failing', async () => {
+    const controller = new AbortController();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        controller.abort();
+        return sse([]);
+      }),
+    );
+
+    const result = await runHeadless(config, createDefaultRegistry(), {
+      prompt: 'say hi',
+      inputFormat: 'text',
+      outputFormat: 'text',
+      history: [],
+      mode: 'bypassPermissions',
+      signal: controller.signal,
+      stdout: { write: () => true },
+    });
+
+    expect(result.outcome.status).toBe('cancelled');
+    expect(result.outcome.status).not.toBe('failed');
+  });
 });
 
 describe('runHeadless — stream-json output', () => {

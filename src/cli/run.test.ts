@@ -275,3 +275,126 @@ describe('runMainAction — slash commands in print mode', () => {
     expect(provider.requests.length).toBe(0);
   }, 30000);
 });
+
+describe('runMainAction — print mode exit codes (#190)', () => {
+  const saved: Record<string, string | undefined> = {};
+  let tempDirs: string[] = [];
+
+  function stashEnv(name: string, value: string): void {
+    if (!(name in saved)) saved[name] = process.env[name];
+    process.env[name] = value;
+  }
+
+  function printWorkspace(): string {
+    const workspace = mkdtempSync(join(tmpdir(), 'book-run-print-exit-'));
+    const home = mkdtempSync(join(tmpdir(), 'book-run-home-exit-'));
+    tempDirs.push(workspace, home);
+    stashEnv('BOOK_HOME', home);
+    stashEnv('BOOK_API_KEY', 'test-key');
+    return workspace;
+  }
+
+  function printOptions(workspace: string, print: string): Record<string, unknown> {
+    return {
+      print,
+      workspace,
+      settings: false,
+      inputFormat: 'text',
+      outputFormat: 'text',
+      sessionPersistence: false,
+      maxTurns: '1',
+    };
+  }
+
+  afterEach(() => {
+    setExitFn((code: number): never => process.exit(code));
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+      delete saved[name];
+    }
+    for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+    tempDirs = [];
+  });
+
+  it('exits non-zero when a print run stops due to max turns', async () => {
+    const workspace = printWorkspace();
+    const provider = createRepeatingScriptedProvider(() =>
+      sseResponse([
+        JSON.stringify({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'call-1',
+                    function: {
+                      name: 'TaskCreate',
+                      arguments: JSON.stringify({ subject: 'test task' }),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ]),
+    );
+    vi.stubGlobal('fetch', provider.fetch);
+    const codes: number[] = [];
+    setExitFn(((code: number) => {
+      codes.push(code);
+      throw new Error(`process.exit(${code})`);
+    }) as (code: number) => never);
+
+    await expect(runMainAction(printOptions(workspace, 'create task'))).rejects.toThrow(
+      'process.exit(1)',
+    );
+
+    expect(codes).toEqual([1]);
+  });
+
+  it('exits 0 on normal completion in print mode', async () => {
+    const workspace = printWorkspace();
+    const provider = createRepeatingScriptedProvider(() =>
+      sseResponse([JSON.stringify({ choices: [{ delta: { content: 'all done' } }] })]),
+    );
+    vi.stubGlobal('fetch', provider.fetch);
+    const codes: number[] = [];
+    setExitFn(((code: number) => {
+      codes.push(code);
+      throw new Error(`unexpected exit(${code})`);
+    }) as (code: number) => never);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runMainAction(printOptions(workspace, 'say hi'));
+
+    expect(codes).toEqual([]);
+  });
+
+  it('does not exit non-zero when a print run is aborted', async () => {
+    const workspace = printWorkspace();
+    const controller = new AbortController();
+    const provider = createRepeatingScriptedProvider(() => {
+      controller.abort();
+      return sseResponse([]);
+    });
+    vi.stubGlobal('fetch', provider.fetch);
+    const codes: number[] = [];
+    setExitFn(((code: number) => {
+      codes.push(code);
+      throw new Error(`unexpected exit(${code})`);
+    }) as (code: number) => never);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runMainAction({
+      ...printOptions(workspace, 'say hi'),
+      signal: controller.signal,
+    });
+
+    expect(codes).toEqual([]);
+  });
+});
