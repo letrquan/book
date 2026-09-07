@@ -1,12 +1,17 @@
 # Book Current State
 
-This is the implementation-backed product snapshot for Book as of 2026-08-26. Update this file
+This is the implementation-backed product snapshot for Book as of 2026-09-07. Update this file
 when a user-facing surface changes; the README is the usage guide and this page is the status
-reference for roadmap and design documents. This refresh re-verified the interactive transcript and
-terminal interaction path, reasoning/retry propagation, and headless/stream-JSON framing only
-(surfaces not re-verified this run: project-declaration trust gates, the experimental Zero-Mem
+reference for roadmap and design documents.
+
+The last independent surface re-verification was 2026-08-26 and covered the interactive transcript
+and terminal interaction path, reasoning/retry propagation, and headless/stream-JSON framing only
+(surfaces not re-verified that run: project-declaration trust gates, the experimental Zero-Mem
 capability boundary, providers, MCP, other settings and sandbox behavior, managed agents,
-`/review`, background jobs, skills, and the adaptive harness).
+`/review`, background jobs, skills, and the adaptive harness). Sections written since then were
+authored alongside the implementation they describe and merged with it -- the residual compaction
+tail (PR #192) and the permission-prompt preview (PR #188) -- and carry that evidence rather than a
+fresh verification pass.
 
 ## Release Identity
 
