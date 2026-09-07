@@ -6,6 +6,23 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **A print run that was cut off no longer reports success.** `--print` ended with exit code 0 after
+  emitting `Reached max turns (150)`, so a CI step, a wrapper that resumes on failure, or any script
+  reading `$?` could not tell a finished objective from one abandoned at the turn limit. In print
+  mode the exit code is the whole contract — there is no human watching the transcript to notice.
+
+  The agent loop had already done its half: the max-turns branch produces a `failed` terminal
+  outcome, as do `no_progress`, `blocked_plan`, `continuation_limit` and a budget stop. What was
+  missing was the last hop — the CLI awaited the headless run and discarded its result, so the
+  process fell through to 0. It now reads the outcome and exits 1 on any failed status, keyed on the
+  status rather than on the reason, so a failure mode added later is covered without being
+  remembered.
+
+  **A user cancelling is not a failure.** Ctrl-C and an abort signal keep exiting as they did, with
+  a test pinning it, so a later change cannot quietly turn someone pressing Ctrl-C into a red CI
+  run. And because a consumer parsing the stream should not have to infer this from an exit code,
+  the `result` event now carries `stopReason`.
+
 - **A turn that is only an unclosed reasoning block is retried, not accepted as the answer.** A
   `--print` run finished with exit code 0 and an "answer" that was leaked chain-of-thought from its
   first byte to its last: one `<reasoning_context>` tag, never closed, ending mid-sentence on a tool
