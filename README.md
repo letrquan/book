@@ -228,8 +228,23 @@ misspelled provider id.
 
 Set `BOOK_HOME` to replace the default `~/.book` user-state root. This relocates user settings,
 sessions, memory, managed-agent state and worktrees, jobs, rewind snapshots, telemetry, tool output,
-MCP configuration, and user-level skills, commands, agents, and `AGENTS.md` discovery. Project-local
-`.book/` directories are unchanged.
+learned context windows (`model-windows.json`), MCP configuration, and user-level skills, commands,
+agents, and `AGENTS.md` discovery. Project-local `.book/` directories are unchanged.
+
+#### Learned context windows
+
+When a provider refuses a request for exceeding its context limit, Book records a ceiling for that
+model in `<BOOK_HOME>/model-windows.json` so the next session sizes compaction against a number the
+provider has actually shown it will not exceed. The value is a fraction of the refused size, never
+the refused size itself, and it only ever ratchets **down** — a later refusal at a smaller size
+lowers it, a larger one does not raise it. It is never read from the workspace, so a repository
+cannot declare a ceiling for a clone.
+
+A window you declare yourself always wins: set `contextWindow` on the model in settings and nothing
+is learned or applied over it. `book doctor` lists every learned window with how long ago it was
+learned, and `/context` and the status line mark which source the current window came from
+(`declared`, `learned`, `family`, or `default`). To discard one, delete its entry from
+`model-windows.json`, or delete the file to forget them all — it is rebuilt on demand.
 
 ### Subscription authentication
 

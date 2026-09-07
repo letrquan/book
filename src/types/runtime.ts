@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'child_process';
 import type { CompactStrategy, ProviderModelConfig, ResolvedSettings } from '../settings.js';
 import type { LoadedMemoryContext } from '../memory-store.js';
+import type { ModelWindowStore } from '../model-window-store.js';
 import type { AuthProfileInputs } from './auth.js';
 
 export type PermissionMode =
@@ -211,4 +212,6 @@ export interface AgentConfig {
   authInputs: AuthProfileInputs;
   /** Approved memory snapshot loaded once at session start. */
   memoryContext?: LoadedMemoryContext;
+  /** Optional store for learned context window ceilings. */
+  modelWindowStore?: ModelWindowStore;
 }

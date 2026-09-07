@@ -220,22 +220,75 @@ function readCommands() {
     .filter((l) => l && !l.startsWith('#'));
 }
 
+async function flushAndExit(code) {
+  process.exitCode = code;
+  if (process.stdout._handle?.setBlocking) {
+    try {
+      process.stdout._handle.setBlocking(true);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (process.stderr._handle?.setBlocking) {
+    try {
+      process.stderr._handle.setBlocking(true);
+    } catch {
+      /* ignore */
+    }
+  }
+  await new Promise((resolve) => {
+    let remaining = 2;
+    const finish = () => {
+      if (--remaining <= 0) resolve();
+    };
+    const timer = setTimeout(resolve, 1000);
+    timer.unref?.();
+    try {
+      if (process.stdout.writable) {
+        process.stdout.write('', finish);
+      } else {
+        finish();
+      }
+    } catch {
+      finish();
+    }
+    try {
+      if (process.stderr.writable) {
+        process.stderr.write('', finish);
+      } else {
+        finish();
+      }
+    } catch {
+      finish();
+    }
+  });
+  process.exit(code);
+}
+
 async function fail(msg) {
   console.error(`\n[driver] FAIL: ${msg}`);
   console.error('[driver] last screen:\n' + (await screen()).join('\n'));
   await cleanup();
-  process.exit(1);
+  await flushAndExit(1);
+}
+
+let ptyKilled = false;
+function releasePty() {
+  if (ptyKilled) return;
+  ptyKilled = true;
+  try {
+    pty.kill();
+  } catch {
+    /* already gone */
+  }
 }
 
 async function cleanup() {
   if (!exited) {
-    try {
-      pty.kill();
-    } catch {
-      /* already gone */
-    }
+    releasePty();
     for (let i = 0; i < 40 && !exited; i++) await sleep(50);
   }
+  releasePty();
   mockProc?.kill();
   if (scratch) rmSync(scratch, { recursive: true, force: true });
 }
@@ -263,7 +316,8 @@ async function run() {
       }
       case 'expect': {
         const text = (await screen()).join('\n');
-        if (!new RegExp(rest).test(text)) await fail(`expect ${JSON.stringify(rest)} not on screen`);
+        if (!new RegExp(rest).test(text))
+          await fail(`expect ${JSON.stringify(rest)} not on screen`);
         console.log(`[driver] expect ok: ${rest}`);
         break;
       }
@@ -334,8 +388,10 @@ async function run() {
   console.log('[driver] OK');
 }
 
-run().catch(async (e) => {
-  console.error('[driver] crashed:', e);
-  await cleanup();
-  process.exit(1);
-});
+run()
+  .then(() => flushAndExit(0))
+  .catch(async (e) => {
+    console.error('[driver] crashed:', e);
+    await cleanup();
+    await flushAndExit(1);
+  });

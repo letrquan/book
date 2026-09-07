@@ -7,7 +7,7 @@
  * onUsage; this is the structural breakdown the user asks for with /context.
  */
 import type { CompactBoundary } from './types/sessions.js';
-import type { Message } from './types/messages.js';
+import type { ContextWindowSource, Message } from './types/messages.js';
 
 /** Rough token estimate for an arbitrary string. ~4 chars/token for English/code. */
 export function estimateTokens(text: string): number {
@@ -72,12 +72,28 @@ export function buildContextBreakdown(messages: Message[]): ContextBreakdown {
   };
 }
 
+/**
+ * Canonical source label for context window origin.
+ *
+ * Precedence: explicit windowSource string -> (if omitted) legacy windowDeclared boolean -> undefined.
+ */
+export function sourceLabel(
+  source?: ContextWindowSource,
+  windowDeclared?: boolean,
+): ContextWindowSource | undefined {
+  if (source) return source;
+  if (windowDeclared === true) return 'declared';
+  if (windowDeclared === false) return 'default';
+  return undefined;
+}
+
 /** Render a /context report string for the TUI. */
 export function buildContextReport(
   messages: Message[],
   ambient: {
     model: string;
     maxTokens: number;
+    windowSource?: ContextWindowSource;
     windowDeclared?: boolean;
     contextHistory?: Message[];
     compactBoundaries?: CompactBoundary[];
@@ -119,15 +135,23 @@ export function buildContextReport(
     );
     lines.push('');
   }
+  const source = sourceLabel(ambient.windowSource, ambient.windowDeclared);
+
   lines.push(
     `Model context budget: ${ambient.maxTokens.toLocaleString()} tokens (${ambient.model})` +
-      (ambient.windowDeclared === false ? ' — assumed default' : ''),
+      (source === 'default' ? ' — assumed default' : ''),
   );
-  if (ambient.windowDeclared === false) {
+  if (source === 'default') {
     lines.push('This model declares no context window, so the default above is a guess. Set');
     lines.push(
       `settings.provider.<id>.models["${ambient.model}"].contextWindow to the real value.`,
     );
+  } else if (source === 'family') {
+    lines.push(
+      'This window came from a known family for that model and is not a per-model declaration.',
+    );
+  } else if (source === 'learned') {
+    lines.push('This window was learned from a previous provider context-overflow refusal.');
   }
   const pct =
     ambient.maxTokens > 0

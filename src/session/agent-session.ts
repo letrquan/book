@@ -877,7 +877,11 @@ export class AgentSession {
       : request.config;
     runtime.runAccounting.startRoot(runContext, request.maxBudgetUsd);
     const effectiveConfig = request.options?.modelOverride
-      ? { ...loopConfig, model: request.options.modelOverride }
+      ? {
+          ...loopConfig,
+          model: request.options.modelOverride,
+          modelSelection: request.options.modelOverride,
+        }
       : loopConfig;
     const ambient = runtime.recordRunAmbientSnapshot(
       runContext.runId,
@@ -1042,7 +1046,7 @@ export class AgentSession {
 
     try {
       if (usesZeroMem) {
-        const contextLimit = resolveContextLimit(request.config);
+        const contextLimit = resolveContextLimit(effectiveConfig);
         const prepared = await runtime.zeroMemRuntime.prepare({
           transcript: request.transcript ?? request.history,
           query: request.options?.displayMessage ?? request.prompt,
