@@ -171,14 +171,14 @@ async function countOccurrences(
   return count;
 }
 
-type EditApplication =
+export type EditApplication =
   { ok: true; content: string; note?: string } | { ok: false; failure: ToolResult };
 
 /**
  * Apply one oldString→newString replacement: exact first, then the
  * whitespace-tolerant ladder (unique matches only, never for replaceAll).
  */
-async function applySingleEdit(
+export async function applySingleEdit(
   content: string,
   oldStr: string,
   newStr: string,

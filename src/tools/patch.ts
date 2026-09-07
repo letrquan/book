@@ -27,7 +27,7 @@ export type PatchOperation =
   | { kind: 'add'; path: string; lines: string[] }
   | { kind: 'delete'; path: string };
 
-interface PatchHunk {
+export interface PatchHunk {
   header: string;
   oldStart?: number;
   lines: Array<{
@@ -197,7 +197,10 @@ function candidateLine(haystack: string[], line: string): number | undefined {
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-function applyHunks(text: string, hunks: PatchHunk[]): { text: string; mismatch?: ToolResult } {
+export function applyHunks(
+  text: string,
+  hunks: PatchHunk[],
+): { text: string; mismatch?: ToolResult } {
   let lines = linesOf(text);
   let trailingNewline = text.endsWith('\n');
   for (let hunkIndex = 0; hunkIndex < hunks.length; hunkIndex++) {

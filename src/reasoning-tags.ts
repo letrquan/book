@@ -163,6 +163,27 @@ export function splitReasoningParts(
 }
 
 /**
+ * Whether a settled message is nothing but reasoning the provider never closed.
+ *
+ * `stripReasoningTags` keeps an unclosed block as answer text on purpose, so a
+ * finished answer that merely opens with an unfenced `<thinking>` is never
+ * judged empty. The cost of that reading is a turn that is leaked
+ * chain-of-thought from its first byte to its last — ending mid-sentence on a
+ * tool call the model serialized as prose — passing as an answer. This is the
+ * discriminator between the two: the block starts the content, is never
+ * closed, and no answer text stands beside it. A closed block ahead of it is
+ * reasoning the provider delimited and does not change the reading; text
+ * before the opening tag does, because then there is an answer to protect.
+ */
+export function isUnclosedReasoningOnly(content: string): boolean {
+  if (!content.includes('<')) return false;
+  const { parts, unterminated } = splitWith(content, REASONING_TAG_PATTERN);
+  return (
+    unterminated && parts.every((part) => part.kind === 'think' || part.text.trim().length === 0)
+  );
+}
+
+/**
  * The message with completed reasoning blocks removed.
  *
  * Used to decide whether a turn actually answered, so it is deliberately the
