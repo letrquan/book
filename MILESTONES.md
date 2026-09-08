@@ -105,6 +105,11 @@ See [plans/security-assessment.md](plans/security-assessment.md) for the current
 - [ ] Complete the renderer real-PTY matrix and interactive soak on Windows and Unix terminals.
 - [ ] Maintain three eligible green main-branch CI runs with no open lifecycle/accounting
   regression issues before advancing runtime-attribution work.
+- [x] Publishing runs from CI on a `v*` tag through npm trusted publishing (OIDC), with no token
+  to leak or expire: `.github/workflows/release.yml` verifies the tag against the manifest, runs
+  the full gate and the installed-artifact smoke test, then publishes with provenance. This also
+  replaces the bypass-2FA token 0.2.0 shipped on, which npm retires for direct publish in
+  January 2027.
 - [ ] Cut the next version only after `npm run release:check`, full Node 22/24 validation, package
   inspection, changelog promotion, and installed-artifact smoke tests.
 

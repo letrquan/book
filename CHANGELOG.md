@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Releases publish from CI with no token.** `.github/workflows/release.yml` publishes on a `v*`
+  tag using npm trusted publishing, which proves the workflow's identity over OIDC instead of
+  presenting a credential. 0.2.0 went out on a bypass-2FA granular token, the only thing that still
+  worked from a laptop — npm revoked classic tokens in December 2025 and retires direct publish for
+  bypass-2FA tokens in January 2027, so that path was already on a clock. The workflow refuses a tag
+  that disagrees with `package.json`, runs the full gate and the installed-artifact smoke test
+  before publishing, and gets provenance attached automatically.
+
 ## [0.2.0] - 2026-09-08
 
 ### Added

@@ -1370,6 +1370,25 @@ daily at 01:00 UTC and on every pull request:
   or above `high` appears, rewriting it as the set changes, and closing it once clear. A scan that
   fails to complete never closes the issue.
 
+### Releasing
+
+`.github/workflows/release.yml` publishes to npm on a `v*` tag, using **trusted publishing**: GitHub
+Actions proves the workflow's identity to the registry over OIDC, so no npm token exists to leak or
+expire. The workflow refuses a tag that disagrees with `package.json`, then runs `npm run check`,
+the integration tier, and `npm run release:check` — which packs the tarball, installs it, and runs
+the installed CLI and SDK — before publishing. Provenance is attached automatically.
+
+Cutting a release is therefore:
+
+```bash
+# version bump + changelog promotion committed on main
+git tag -a v0.3.0 -m "Book 0.3.0"
+git push origin v0.3.0
+```
+
+The one-time registry side is on npmjs.com under the package's Settings → Trusted Publisher:
+organization `letrquan`, repository `book`, workflow filename `release.yml`.
+
 ## License
 
 Copyright (c) 2026 letrquan.
