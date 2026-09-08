@@ -21,6 +21,32 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **`Bash` no longer runs through `cmd.exe` on Windows.** Node's `shell: true` means `%ComSpec%`,
+  so a tool named `Bash` was spawning `cmd.exe`: one command per line, `%VAR%` quoting, no
+  heredocs, and the shell models write worst. The system prompt told the model to expect that
+  rather than fixing it, which traded the model's strongest syntax for its weakest on the one
+  platform Book is developed on — where `Bash` is by some distance the most-failing tool.
+
+  Book now resolves a real shell once per session and tells the model which one it got. On Windows:
+  `BOOK_SHELL` or the `shell` setting, then **Git Bash when Book was launched from one**, then
+  **PowerShell 7**, then **Windows PowerShell 5.1**, then an installed Git Bash, and `cmd.exe` only
+  when nothing else exists. macOS and Linux keep the platform default. The resolved shell rides on
+  the config, so the tool, the system prompt, and `book doctor` cannot disagree about which shell
+  is in force, and the Harness prompt line now states that shell's actual syntax rules instead of
+  warning the model off Windows.
+
+  A real shell is spawned as an argument vector, reusing the form sandboxing already used;
+  `cmd.exe` and `/bin/sh` still go through `shell: true`, because `cmd.exe` quoting cannot be
+  reproduced from an argv. PowerShell is driven with `-EncodedCommand`, since 5.1 re-parses a
+  `-Command` argument and silently strips embedded double quotes. Under 5.1 the error stream is
+  merged and each record rendered as text: left alone, that shell serializes a redirected stderr as
+  CLIXML, so a failing `Get-Item` handed the model an XML document instead of `Cannot find path`.
+  Exit codes still follow the last statement, verified against the real interpreter.
+
+  `shell` is stripped from both workspace settings layers and refused by `book config` there, on
+  the same reasoning as `auth`: it names the program every command is handed to, so a repository
+  that could set it would run a binary it ships on the first call.
+
 - **Inline reasoning tags no longer leak into a subagent's live transcript.** Routers that inline
   a model's thinking as `<think>…</think>` emit an empty block ahead of every tool call. Each one
   rendered as a `thought · 0 lines` row — a toggle that expanded to nothing — stacked between every

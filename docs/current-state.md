@@ -192,6 +192,12 @@ fresh verification pass.
   representative evaluation.
 - TUI renderer: `safe` on Windows, `incremental` on other interactive terminals. Windows users can
   opt into incremental rendering with `BOOK_TUI_RENDERER=incremental`.
+- `Bash` shell: the platform default (`/bin/sh`) on macOS and Linux. On Windows, `BOOK_SHELL` or the
+  `shell` setting, then Git Bash when Book was launched from one, then PowerShell 7, then Windows
+  PowerShell 5.1, then an installed Git Bash, and `cmd.exe` only when nothing else exists
+  (`src/shell-selection.ts`). Resolved once per session onto `AgentConfig`, reported by
+  `book doctor`, and named in the Harness prompt section with that shell's own syntax rules. `shell`
+  is stripped from both workspace layers and refused by `book config` there, like `auth`.
 - Web access: HTTPS and public destinations by default; HTTP and private-network exceptions require
   explicit environment opt-ins.
 
@@ -260,6 +266,10 @@ Work aimed at running an objective unattended for days rather than hours. All of
   under `src/tui/`. Print/headless and SDK runs report what they are skipping; the TUI is silent,
   so the mode most likely to open an unfamiliar repository is the one mode that discloses nothing
   about what that repository declared.
+- The Windows shell ladder changes which interpreter parses a command, not what a command is
+  allowed to do: `permissions` rules still match the command string the model wrote, so a rule
+  written for one shell's syntax does not describe another's. The bubblewrap sandbox is unaffected
+  because it remains unavailable on Windows.
 - Bubblewrap is optional and currently Linux-oriented; when unavailable, behavior follows the
   configured `sandbox.failIfUnavailable` policy and may run unsandboxed. Where it is available the
   boundary is real: sandboxed commands are spawned as a direct argument vector rather than a shell

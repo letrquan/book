@@ -984,6 +984,33 @@ config, and managed agents already report through `SubagentStop`. Like `SessionE
 skipped when a run ends early through a blocked prompt, context overflow, an exhausted run budget,
 or a provider stream error.
 
+### Which shell `Bash` runs
+
+Book picks one shell per session and tells the model which one it got, so the syntax the model
+writes matches the interpreter that will parse it. On macOS and Linux that is the platform default,
+`/bin/sh`. On Windows, Book resolves in this order and stops at the first hit:
+
+1. `BOOK_SHELL`, then the `shell` setting — a name (`bash`, `pwsh`, `powershell`, `cmd`, `sh`) or a
+   path to an executable. A request that cannot be found is reported by `book doctor` and the
+   automatic order continues, rather than failing every command.
+2. **Git Bash**, when Book was launched from one (`MSYSTEM` or a POSIX `SHELL` is set) — so the
+   shell you see in your own terminal is the shell the model writes for.
+3. **PowerShell 7** (`pwsh`), then **Windows PowerShell 5.1**.
+4. Git Bash if it is merely installed.
+5. `cmd.exe`, only when nothing else exists.
+
+`shell` is honoured from `~/.book/settings.json`, an explicit `--settings` document, or the
+environment only. A workspace file cannot set it and `book config set shell` refuses those scopes:
+it names the program every command is handed to, so a repository that could set it would run a
+binary it ships on your first command. `book doctor` prints the resolved shell and why it was
+chosen.
+
+PowerShell is driven with `-EncodedCommand`, because 5.1 re-parses a `-Command` argument and
+silently strips embedded double quotes. Under 5.1, Book also merges the error stream and renders
+each record as text: left alone, that shell serializes a redirected stderr as a CLIXML document, so
+a failing `Get-Item` handed the model XML instead of `Cannot find path`. Exit codes follow the last
+statement, as in bash.
+
 ### Shell command timeouts
 
 A foreground `Bash` command is killed after **300000 ms** (five minutes) by default. The model can
@@ -1197,6 +1224,7 @@ Project themes can override any token in `.book/themes/<name>.json`. They appear
 | `BOOK_AUTH_CLIENT_SECRET_<PROFILE>`                                                               | Client secret, only for a confidential client                     |
 | `BOOK_EFFORT`                                                                                     | Thinking effort level                                             |
 | `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                               |
+| `BOOK_SHELL`                                                                                      | Shell for `Bash`: `bash`, `pwsh`, `powershell`, `cmd`, or a path  |
 | `BOOK_WORKSPACE`                                                                                  | Default workspace                                                 |
 | `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                          |
 | `BOOK_EXPERIMENTAL_ZERO_MEM`                                                                      | Explicit `true`/`false` opt-in for experimental Zero-Mem          |
