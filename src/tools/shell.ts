@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import type { BackgroundShellNotify, CommandExecution } from '../types/runtime.js';
+import type { BackgroundShellNotify, CommandExecution, ResolvedShell } from '../types/runtime.js';
+import { resolveShell, shellExecution } from '../shell-selection.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types/tools.js';
 import {
   createSandbox,
@@ -104,10 +105,26 @@ interface EffectiveCommand {
   command: string;
   workdir: string;
   effectiveCommand: string;
-  /** Present only for sandboxed commands, which never go through a shell. */
+  /**
+   * Present for sandboxed commands and for a session shell spawned as argv
+   * (Git Bash or PowerShell on Windows); absent means Node's `shell: true`,
+   * which is how cmd.exe and the POSIX default are driven.
+   */
   exec?: CommandExecution;
   sandboxed: boolean;
   error?: string;
+}
+
+/**
+ * The shell for this session. `loadConfig` resolves it once and the loop
+ * copies it onto the context; a hand-built context resolves on demand.
+ */
+function sessionShell(ctx: ToolContext): ResolvedShell {
+  return (
+    ctx.shell ??
+    ctx.agentConfig?.shell ??
+    resolveShell({ env: ctx.env, requested: ctx.agentConfig?.settings.shell })
+  );
 }
 
 /**
@@ -138,6 +155,11 @@ function buildEffectiveCommand(
   if (!command) return undefined;
   const workdir = readString(args, 'workdir') || ctx.workspaceRoot;
   const plain: EffectiveCommand = { command, workdir, effectiveCommand: command, sandboxed: false };
+  // An unsandboxed command still spawns as argv when the session shell is a
+  // real program (Git Bash, PowerShell); only cmd.exe and `/bin/sh` fall back
+  // to `shell: true`.
+  const shellExec = shellExecution(sessionShell(ctx), command);
+  if (shellExec) plain.exec = shellExec;
   const failed = (error: string): EffectiveCommand => ({ ...plain, error });
 
   // Every path that ends with the command running outside a bubblewrap
@@ -433,7 +455,8 @@ export const shellTools: ToolDefinition[] = [
   {
     name: 'Bash',
     argumentAliases: { runInBackground: 'run_in_background' },
-    description: 'Execute a shell command in the workspace',
+    description:
+      'Execute a command in the session shell named by the Harness section of the system prompt (Git Bash, PowerShell, /bin/sh, or cmd.exe) in the workspace',
     timeoutMs: DEFAULT_BASH_TIMEOUT_MS,
     parameters: {
       type: 'object',

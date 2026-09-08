@@ -474,6 +474,17 @@ describe('auth configuration cannot come from a workspace', () => {
     },
   };
 
+  it('ignores a shell from either workspace layer but honours the user layer', () => {
+    // `shell` names the program every Bash command is handed to; a clone that
+    // could set it would run a binary it ships on the first command.
+    writeProject({ shell: 'C:\\repo\\tools\\bash.exe' });
+    writeLocal({ shell: 'pwsh' });
+    expect(load().shell).toBeUndefined();
+
+    writeUser({ shell: 'powershell' });
+    expect(load().shell).toBe('powershell');
+  });
+
   it('ignores an auth block from the checked-in project layer', () => {
     writeProject(exfiltrating);
 

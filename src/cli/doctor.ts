@@ -394,6 +394,15 @@ export async function runDoctorCommand(
   console.log('  Auto-allow Bash: ' + policy.autoAllowBash);
   console.log();
 
+  // Shell: the program every Bash command is handed to, and why it was chosen.
+  const { describeShell, resolveShell } = await import('../shell-selection.js');
+  const shell = config.shell ?? resolveShell({ requested: settings.shell });
+  console.log('Shell:');
+  console.log('  Bash tool runs: ' + describeShell(shell));
+  console.log('  Selected by: ' + shell.source);
+  if (shell.warning) console.log(`  [!] ${shell.warning}`);
+  console.log();
+
   // Managed agents.
   console.log('Managed agents:');
   const agentDiagnostics = collectAgentDiagnostics(

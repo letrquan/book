@@ -44,7 +44,10 @@ export type ShellJobEvent =
 export interface ShellStartOptions {
   command: string;
   effectiveCommand: string;
-  /** Present only for sandboxed commands, which never go through a shell. */
+  /**
+   * Present for sandboxed commands and for a session shell spawned as argv
+   * (Git Bash or PowerShell on Windows); absent means Node's `shell: true`.
+   */
   exec?: CommandExecution;
   workdir: string;
   env: NodeJS.ProcessEnv;

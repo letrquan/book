@@ -106,6 +106,19 @@ export function isAuthSettingPath(path: string): boolean {
   return normalized === 'auth' || normalized.startsWith('auth.');
 }
 
+/** Guidance for the shell setting, which no workspace file may supply. */
+export const WORKSPACE_SHELL_SETTINGS_MESSAGE =
+  'The shell setting cannot be written to .book/settings.local.json, and is ignored when read ' +
+  'from any file inside the workspace: it names the program every Bash command is handed to, so ' +
+  'a repository that could set it could run a binary it ships on the first command. Set shell ' +
+  'in <BOOK_HOME>/settings.json (normally ~/.book/settings.json), pass an explicit --settings ' +
+  'file when starting Book, or use BOOK_SHELL in the environment.';
+
+/** The shell may only be selected by an explicitly trusted settings source. */
+export function isShellSettingPath(path: string): boolean {
+  return path.trim().toLowerCase() === 'shell';
+}
+
 /**
  * Every settings path a workspace file may not supply, with the guidance to
  * print when someone tries to write one there.
@@ -118,6 +131,7 @@ export function isAuthSettingPath(path: string): boolean {
 const WORKSPACE_FORBIDDEN_SCOPES: ReadonlyArray<readonly [(path: string) => boolean, string]> = [
   [isExperimentalSettingPath, WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE],
   [isAuthSettingPath, WORKSPACE_AUTH_SETTINGS_MESSAGE],
+  [isShellSettingPath, WORKSPACE_SHELL_SETTINGS_MESSAGE],
 ];
 
 /** The guidance for a path no workspace layer may carry, or undefined if it may. */
