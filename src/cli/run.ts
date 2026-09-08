@@ -9,12 +9,13 @@ import { McpSessionHost } from '../mcp-host.js';
 import { mcpServersToRecord, partitionMcpServersByApproval } from '../mcp-approvals.js';
 import { resolveMcpServerList } from '../mcp-config.js';
 import { collectWithheldProjectNotices } from '../project-approval-notices.js';
-import { exit } from './exit.js';
+import { exit, isExiting } from './exit.js';
 import { parseNumericFlag } from './utils.js';
 import { parseEffortLevel } from '../commands/effort.js';
 import { join } from 'path';
 import type { AgentConfig } from '../types/runtime.js';
 import type { RewindSnapshotStoreInterface } from '../types/sessions.js';
+import type { HeadlessResult } from '../types/public-sdk.js';
 import { resolveSessionBootstrap } from '../session/resolve.js';
 import {
   createRewindSnapshotStore,
@@ -214,6 +215,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       const mcp = await connectMcpServers(config.workspace, {
         servers: mcpServersToRecord(mcpPartition.allowed),
       });
+      let result: HeadlessResult | undefined;
       try {
         const registry = createDefaultRegistry({ agents: config.settings.agents.mode !== 'off' });
         if (mcp.tools.length > 0) {
@@ -235,7 +237,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         });
         sessionStore?.cleanup(DEFAULT_LOCAL_DATA_RETENTION_DAYS, new Set([bootstrap.sessionId]));
 
-        await runHeadless(config, registry, {
+        result = await runHeadless(config, registry, {
           prompt: typeof options.print === 'string' ? (options.print as string) : undefined,
           inputFormat: options.inputFormat as 'text' | 'stream-json',
           outputFormat: options.outputFormat as 'text' | 'json' | 'stream-json',
@@ -246,6 +248,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
           carriedUsage: bootstrap.carriedUsage,
           carriedModels: bootstrap.carriedModels,
           mode,
+          signal: options.signal as AbortSignal | undefined,
           maxTurns: parseNumericFlag(options.maxTurns, '--max-turns', { integer: true }),
           maxBudgetUsd: parseNumericFlag(options.maxBudgetUsd, '--max-budget-usd'),
           verbose: options.verbose as boolean | undefined,
@@ -262,6 +265,9 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         });
       } finally {
         await disconnectMcpServers(mcp.connections);
+      }
+      if (result?.outcome.status === 'failed') {
+        exit(1);
       }
       return;
     }
@@ -361,6 +367,7 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
       ephemeralRewind?.dispose();
     }
   } catch (e) {
+    if (isExiting()) throw e;
     console.error(e instanceof Error ? e.message : String(e));
     exit(1);
   }

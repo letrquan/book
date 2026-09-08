@@ -43,7 +43,7 @@ export type StreamJsonEvent =
   | { type: 'command_result'; command?: string; output?: string; data?: unknown }
   | { type: 'prompt_suggestions'; suggestions?: string[] }
   | { type: 'error'; error?: string }
-  | { type: 'result'; result?: unknown }
+  | { type: 'result'; result?: unknown; stopReason?: string }
   | { type: 'done' };
 
 export type StreamJsonDiagnosticCode = 'invalid-json' | 'invalid-shape' | 'oversized-line';

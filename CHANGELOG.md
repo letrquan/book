@@ -31,6 +31,23 @@ All notable changes to this project are documented in this file.
   split, markdown, and width as every settled one, and honours `ui.showThinking`. The buffer that
   drives it is also cleared when the finished message lands, so the text no longer showed twice
   and no longer accumulated across the child's later turns.
+- **A print run that was cut off no longer reports success.** `--print` ended with exit code 0 after
+  emitting `Reached max turns (150)`, so a CI step, a wrapper that resumes on failure, or any script
+  reading `$?` could not tell a finished objective from one abandoned at the turn limit. In print
+  mode the exit code is the whole contract — there is no human watching the transcript to notice.
+
+  The agent loop had already done its half: the max-turns branch produces a `failed` terminal
+  outcome, as do `no_progress`, `blocked_plan`, `continuation_limit` and a budget stop. What was
+  missing was the last hop — the CLI awaited the headless run and discarded its result, so the
+  process fell through to 0. It now reads the outcome and exits 1 on any failed status, keyed on the
+  status rather than on the reason, so a failure mode added later is covered without being
+  remembered.
+
+  **A user cancelling is not a failure.** Ctrl-C and an abort signal keep exiting as they did, with
+  a test pinning it, so a later change cannot quietly turn someone pressing Ctrl-C into a red CI
+  run. And because a consumer parsing the stream should not have to infer this from an exit code,
+  the `result` event now carries `stopReason`.
+
 - **A learned context window can no longer be lost, raised, or set above the real window.** Book
   records a ceiling for a model when a provider refuses a request for exceeding its context limit,
   in `<BOOK_HOME>/model-windows.json`, so the next session sizes compaction against a number the
