@@ -22,6 +22,6 @@ export function loadInteractiveAssets(
       enabled: config.settings.skills.enabled,
     }),
     customThemes: listCustomThemes(config.workspace),
-    initialTheme: resolveTheme(config.workspace, config.settings.theme ?? 'dark'),
+    initialTheme: resolveTheme(config.workspace, config.settings.theme ?? 'apple'),
   };
 }

@@ -704,7 +704,7 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
   {
     name: 'theme',
     description: 'Switch color theme',
-    argumentHint: '[dark|light|auto|name]',
+    argumentHint: '[apple|dark|light|auto|name]',
     execute: ({ rawArguments }) =>
       rawArguments
         ? { type: 'set-theme', preference: rawArguments }

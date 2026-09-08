@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **New default theme: `apple`.** The interactive TUI now opens on a calmer, Apple-inspired
+  palette — near-black neutral surfaces, bright grey text, and one blue accent for the things you
+  act on (the composer and your own turns). Every other hue is a status colour that appears only
+  when a state needs attention, so ordinary chrome never competes with the work. `/theme auto` on a
+  dark terminal also resolves to `apple`. The previous warm editorial palette is still available as
+  `/theme dark`, and an explicit `theme` setting is honoured unchanged.
+- The composer keeps a steady focus frame instead of recolouring its border with every permission
+  mode; the status line carries the mode, and reserves saturated colour for non-default modes,
+  warnings, and context pressure near the limit. Healthy usage stays quiet.
+- Inline code in assistant replies is marked by colour alone; the background pill behind every
+  span is gone, so a paragraph full of identifiers no longer reads as a row of badges. The
+  `mdInlineCodeBg` token is still accepted in custom theme files but no longer paints anything.
+
 ### Fixed
 
 - **A learned context window can no longer be lost, raised, or set above the real window.** Book

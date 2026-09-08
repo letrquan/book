@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  APPLE_THEME,
   DARK_THEME,
   LIGHT_THEME,
   CATPPUCCIN_THEME,
@@ -66,9 +67,14 @@ describe('theme resolution', () => {
   });
 
   it('resolves built-ins and auto mode', () => {
+    expect(resolveTheme(dir, 'apple')?.tokens).toBe(APPLE_THEME);
+    expect(resolveTheme(dir, 'apple-dark')?.tokens).toBe(APPLE_THEME);
+    expect(resolveTheme(dir, 'dark')?.tokens).toBe(DARK_THEME);
     expect(resolveTheme(dir, 'LIGHT')?.tokens).toBe(LIGHT_THEME);
     expect(resolveTheme(dir, 'auto', '0;15')?.resolvedName).toBe('light');
-    expect(resolveTheme(dir, 'auto', '15;0')?.resolvedName).toBe('dark');
+    // A dark terminal under `auto` gets the same palette as a fresh install.
+    expect(resolveTheme(dir, 'auto', '15;0')?.resolvedName).toBe('apple');
+    expect(resolveTheme(dir, 'auto', '15;0')?.tokens).toBe(APPLE_THEME);
     expect(resolveTheme(dir, 'catppuccin')?.tokens).toBe(CATPPUCCIN_THEME);
     expect(resolveTheme(dir, 'catppuccin-mocha')?.tokens).toBe(CATPPUCCIN_THEME);
     expect(resolveTheme(dir, 'mocha')?.tokens).toBe(CATPPUCCIN_THEME);
@@ -108,6 +114,7 @@ describe('built-in editorial themes', () => {
   ] as const;
 
   for (const [name, theme] of [
+    ['apple', APPLE_THEME],
     ['dark', DARK_THEME],
     ['light', LIGHT_THEME],
     ['catppuccin', CATPPUCCIN_THEME],
@@ -166,5 +173,18 @@ describe('built-in editorial themes', () => {
     expect(DARK_THEME.assistantAccent).toBe('#AFC19D');
     expect(LIGHT_THEME.text).toBe('#302E2A');
     expect(LIGHT_THEME.assistantAccent).toBe('#607257');
+  });
+
+  it('keeps the apple palette neutral except for the action accent', () => {
+    // The whole point of the default palette is that ordinary chrome is grey:
+    // the composer frame and user input are the one blue, the agent speaks in
+    // cyan, and every other saturated hue is a status that needs attention.
+    // `default` mode in particular must carry no colour of its own.
+    expect(APPLE_THEME.promptBorder).toBe(APPLE_THEME.userAccent);
+    expect(APPLE_THEME.modeDefault).toBe(APPLE_THEME.subtle);
+    for (const role of ['border', 'toolRail', 'inactive', 'subtle', 'suggestion'] as const) {
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(APPLE_THEME[role].slice(i, i + 2), 16));
+      expect(Math.max(r, g, b) - Math.min(r, g, b), `${role} is not neutral`).toBeLessThan(8);
+    }
   });
 });

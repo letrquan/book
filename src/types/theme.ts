@@ -83,6 +83,10 @@ export interface ThemeTokens {
   mdCodeNumber: string;
   mdCodeFunction: string;
   mdCodeLineNumber: string;
+  /**
+   * Retained for custom theme files that still set it; inline code renders
+   * with `mdInlineCodeText` alone and never paints a background.
+   */
   mdInlineCodeBg: string;
   mdInlineCodeText: string;
   mdHeading: string;
