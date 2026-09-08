@@ -1428,6 +1428,8 @@ export function App({
     },
     [activeTranscriptScope],
   );
+  // The live turn renders as a streaming AgentMessage; its exact height depends
+  // on markdown and reasoning collapse, so this is only a change signal.
   const selectedManagedAgentLiveRows = selectedManagedAgentLiveText
     ? wordWrap(selectedManagedAgentLiveText, Math.max(1, termWidth - 2)).split('\n').length
     : 0;
@@ -2247,6 +2249,7 @@ export function App({
                     toolExpansionOverrides={toolExpansionOverrides}
                     showAllToolOutput={showAllDetailedOutput}
                     showAllToolOutputIds={showAllToolOutputIds}
+                    showThinking={liveConfig.settings.ui.showThinking}
                   />
                 ) : (
                   <Box paddingX={1}>

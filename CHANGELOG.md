@@ -21,6 +21,16 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Inline reasoning tags no longer leak into a subagent's live transcript.** Routers that inline
+  a model's thinking as `<think>…</think>` emit an empty block ahead of every tool call. Each one
+  rendered as a `thought · 0 lines` row — a toggle that expanded to nothing — stacked between every
+  wave of tool rows, in both the main transcript and a child's. Empty blocks are now dropped. While
+  a managed child's turn was still open, its detail view printed the raw stream buffer, so the same
+  reasoning that the settled transcript collapses to a `thought` row appeared verbatim, tags and
+  all; the live turn is now rendered as a streaming assistant message, with the same reasoning
+  split, markdown, and width as every settled one, and honours `ui.showThinking`. The buffer that
+  drives it is also cleared when the finished message lands, so the text no longer showed twice
+  and no longer accumulated across the child's later turns.
 - **A learned context window can no longer be lost, raised, or set above the real window.** Book
   records a ceiling for a model when a provider refuses a request for exceeding its context limit,
   in `<BOOK_HOME>/model-windows.json`, so the next session sizes compaction against a number the

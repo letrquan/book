@@ -93,6 +93,12 @@ can assert on what Book actually sent.
 ]
 ```
 
+A turn with both `text` and `tool` streams the text first and the tool call after it on the same
+turn — how a router that inlines reasoning delivers the `<think></think>` a thinking model emits
+before every tool call. `"holdMs": 9000` keeps a turn open after its text is on the wire, which is
+the only way to see the live (unsettled) rendering of a streaming message or a child's detail view
+long enough to screenshot it.
+
 ### `smoke.sh` — the end-to-end check
 
 `bash .claude/skills/run-book/smoke.sh` boots the real TUI against the mock and drives one full

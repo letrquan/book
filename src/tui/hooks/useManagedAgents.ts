@@ -216,6 +216,15 @@ export function useManagedAgents(
               transcript: [...record.transcript, event.message],
             });
           });
+          // The deltas that built this message are now in the transcript. Left
+          // in the live buffer they render a second time under it, and keep
+          // accumulating across the child's later turns.
+          setLiveText((current) => {
+            if (!current.has(event.agentId)) return current;
+            const next = new Map(current);
+            next.delete(event.agentId);
+            return next;
+          });
           return;
         }
         if (event.type === 'agent_text_delta') {
