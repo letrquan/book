@@ -4,8 +4,33 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **New default theme: `apple`.** The interactive TUI now opens on a calmer, Apple-inspired
+  palette — near-black neutral surfaces, bright grey text, and one blue accent for the things you
+  act on (the composer and your own turns). Every other hue is a status colour that appears only
+  when a state needs attention, so ordinary chrome never competes with the work. `/theme auto` on a
+  dark terminal also resolves to `apple`. The previous warm editorial palette is still available as
+  `/theme dark`, and an explicit `theme` setting is honoured unchanged.
+- The composer keeps a steady focus frame instead of recolouring its border with every permission
+  mode; the status line carries the mode, and reserves saturated colour for non-default modes,
+  warnings, and context pressure near the limit. Healthy usage stays quiet.
+- Inline code in assistant replies is marked by colour alone; the background pill behind every
+  span is gone, so a paragraph full of identifiers no longer reads as a row of badges. The
+  `mdInlineCodeBg` token is still accepted in custom theme files but no longer paints anything.
+
 ### Fixed
 
+- **Inline reasoning tags no longer leak into a subagent's live transcript.** Routers that inline
+  a model's thinking as `<think>…</think>` emit an empty block ahead of every tool call. Each one
+  rendered as a `thought · 0 lines` row — a toggle that expanded to nothing — stacked between every
+  wave of tool rows, in both the main transcript and a child's. Empty blocks are now dropped. While
+  a managed child's turn was still open, its detail view printed the raw stream buffer, so the same
+  reasoning that the settled transcript collapses to a `thought` row appeared verbatim, tags and
+  all; the live turn is now rendered as a streaming assistant message, with the same reasoning
+  split, markdown, and width as every settled one, and honours `ui.showThinking`. The buffer that
+  drives it is also cleared when the finished message lands, so the text no longer showed twice
+  and no longer accumulated across the child's later turns.
 - **A print run that was cut off no longer reports success.** `--print` ended with exit code 0 after
   emitting `Reached max turns (150)`, so a CI step, a wrapper that resumes on failure, or any script
   reading `$?` could not tell a finished objective from one abandoned at the turn limit. In print

@@ -1214,17 +1214,20 @@ describe('App theme command', () => {
   });
 
   it('selects and persists a theme from the picker', async () => {
+    // No theme setting: a fresh install opens the picker on `apple`, so one
+    // step down lands on `dark`.
     const { agentState, view } = renderIdle();
 
     await submit(view, '/theme');
+    expect(stripAnsi(view.lastFrame())).toMatch(/› apple\s+Near-black neutrals/);
     view.stdin.write('\x1b[B');
     await new Promise((resolve) => setTimeout(resolve, 30));
     view.stdin.write('\r');
     await new Promise((resolve) => setTimeout(resolve, 75));
 
-    expect(persistSettingLocalMock).toHaveBeenCalledWith('/tmp/book', 'theme', 'light');
+    expect(persistSettingLocalMock).toHaveBeenCalledWith('/tmp/book', 'theme', 'dark');
     expect(agentState.addLocalMessage).toHaveBeenCalledWith(
-      'Switched to light theme (saved as default).',
+      'Switched to dark theme (saved as default).',
     );
     expect(stripAnsi(view.lastFrame())).not.toContain('Choose theme');
   });
@@ -1248,7 +1251,7 @@ describe('App theme command', () => {
 
     expect(persistSettingLocalMock).not.toHaveBeenCalled();
     expect(agentState.addLocalMessage).toHaveBeenCalledWith(
-      '✕ Theme "missing-theme" was not found. Choose dark, light, auto, catppuccin, nord, gruvbox, solarized-dark, or a theme from .book/themes.',
+      '✕ Theme "missing-theme" was not found. Choose apple, dark, light, auto, catppuccin, nord, gruvbox, solarized-dark, or a theme from .book/themes.',
     );
   });
 

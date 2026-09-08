@@ -4,7 +4,8 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
-import { DEFAULT_THEME, ThemeContext } from '../theme.js';
+import chalk from 'chalk';
+import { APPLE_THEME, DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { InputBar } from './InputBar.js';
 import { MODE_COLOR_TOKENS } from '../mode-style.js';
 import { displayWidth } from './word-wrap.js';
@@ -275,6 +276,75 @@ describe('InputBar mode border colors', () => {
       dontAsk: 'modeDontAsk',
       bypassPermissions: 'modeBypass',
     });
+  });
+
+  /**
+   * Ink colours through chalk, and chalk emits nothing when stdout is not a
+   * TTY -- which is every test run. Forcing truecolor for these cases is the
+   * only way to see which token a border actually took, and the SGR for a hex
+   * colour is `38;2;r;g;b`, so a token can be matched by its own bytes.
+   */
+  function sgrFor(hex: string): string {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    return `\x1b[38;2;${r};${g};${b}m`;
+  }
+
+  function withTrueColor<T>(run: () => T): T {
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      return run();
+    } finally {
+      chalk.level = level;
+    }
+  }
+
+  function borderRow(theme: typeof DEFAULT_THEME, props: Record<string, unknown>): string {
+    return withTrueColor(() => {
+      const view = render(
+        React.createElement(
+          ThemeContext.Provider,
+          { value: theme },
+          React.createElement(InputBar, {
+            onSubmit: () => {},
+            submissionMode: 'submit',
+            mode: 'default',
+            onCycleMode: () => {},
+            commands: [],
+            reducedMotion: true,
+            terminalWidth: 40,
+            ...props,
+          }),
+        ),
+      );
+      const top = (view.lastFrame() ?? '').split('\n')[0] ?? '';
+      view.unmount();
+      return top;
+    });
+  }
+
+  it('keeps one steady frame colour across every permission mode', () => {
+    // The frame used to take the mode's colour, so switching to plan or bypass
+    // repainted the whole composer as a warning badge. The status line carries
+    // the mode now; the composer is the thing you act on and stays on
+    // `promptBorder` no matter what mode the session is in.
+    const modes = Object.keys(MODE_COLOR_TOKENS) as Array<keyof typeof MODE_COLOR_TOKENS>;
+    for (const mode of modes) {
+      const row = borderRow(APPLE_THEME, { mode });
+      expect(row, `mode=${mode}`).toContain(sgrFor(APPLE_THEME.promptBorder));
+    }
+    // The token had to differ from the mode colours for this to prove anything.
+    for (const token of ['modePlan', 'modeBypass', 'modeDontAsk'] as const) {
+      expect(APPLE_THEME[token]).not.toBe(APPLE_THEME.promptBorder);
+    }
+  });
+
+  it('drops to the plain border while a modal holds the keyboard', () => {
+    // A suppressed composer is not the focused control, so it must not wear the
+    // focus accent -- the prompt above it is what has the keys.
+    const row = borderRow(APPLE_THEME, { inputSuppressed: true });
+    expect(row).toContain(sgrFor(APPLE_THEME.border));
+    expect(row).not.toContain(sgrFor(APPLE_THEME.promptBorder));
   });
 
   it('uses the softer visual prompt marker', () => {

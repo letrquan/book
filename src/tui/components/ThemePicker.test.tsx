@@ -38,6 +38,7 @@ describe('ThemePicker', () => {
     const frame = stripAnsi(view.lastFrame());
 
     expect(frame).toContain('Choose theme');
+    expect(frame).toContain('apple');
     expect(frame).toContain('dark');
     expect(frame).toContain('catppuccin');
     expect(frame).toContain('nord');
@@ -48,9 +49,11 @@ describe('ThemePicker', () => {
     expect(frame).toContain('Project theme');
   });
 
-  it('navigates and selects a theme', async () => {
+  it('opens on the current theme and navigates from there', async () => {
     const { view, onSelect } = renderPicker();
 
+    // `apple` is listed first, but the cursor starts on the theme in effect.
+    expect(stripAnsi(view.lastFrame())).toContain('› dark');
     await write(view, '\x1b[B');
     expect(stripAnsi(view.lastFrame())).toContain('› light');
     await write(view, '\r');

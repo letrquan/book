@@ -1158,8 +1158,9 @@ Book clears sessions and rotated debug-log backups after 30 days. Startup resolv
 
 ### Themes
 
-Use `/theme` to open the keyboard theme picker, or switch directly with `/theme dark`, `/theme light`, `/theme auto`, `/theme catppuccin`, `/theme nord`, `/theme gruvbox`, or `/theme solarized-dark`. The selection is applied immediately and saved to `.book/settings.local.json` for the next launch. The built-in themes provide thoughtfully tuned palettes:
+Use `/theme` to open the keyboard theme picker, or switch directly with `/theme apple`, `/theme dark`, `/theme light`, `/theme auto`, `/theme catppuccin`, `/theme nord`, `/theme gruvbox`, or `/theme solarized-dark`. The selection is applied immediately and saved to `.book/settings.local.json` for the next launch. A fresh install opens on `apple`; `auto` follows the terminal background and resolves to `apple` on a dark terminal and `light` on a light one. The built-in themes provide thoughtfully tuned palettes:
 
+- **apple** (default): Near-black neutral surfaces, bright grey text, and one blue accent for the composer and your own turns. Every other hue is a status colour that appears only when a state needs attention.
 - **dark / light**: Editorial warm charcoal / soft parchment with grounded sage and clay accents.
 - **catppuccin**: Soothing medium-contrast pastel palette based on Catppuccin Mocha for minimal eye fatigue.
 - **nord**: Arctic and glacial slate palette designed to reduce blue-light glare and harsh transitions.
@@ -1168,7 +1169,7 @@ Use `/theme` to open the keyboard theme picker, or switch directly with `/theme 
 
 Roles are kept visually distinct on purpose: sage/lavender/frost belongs to the agent, clay/blue/orange to product chrome and user input, teal/cyan to references and usage meters, and distinct status hues carry results. A custom theme that reuses one hue across roles will render those roles identically, which is what the built-ins avoid.
 
-Project themes can override any token in `.book/themes/<name>.json`. They appear automatically in the picker and can also be activated with `/theme <name>`. Theme files are partial and inherit unspecified values from the dark default:
+Project themes can override any token in `.book/themes/<name>.json`. They appear automatically in the picker and can also be activated with `/theme <name>`. Theme files are partial and inherit unspecified values from the editorial `dark` palette (not from `apple`), so existing custom themes render exactly as before:
 
 ```json
 {

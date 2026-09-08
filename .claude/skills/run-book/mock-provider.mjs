@@ -25,6 +25,15 @@
  *     { "text": "done" }
  *   ]
  *
+ * A turn with both `text` and `tool` streams the content deltas first and the
+ * tool call after them, the way a router that inlines reasoning does — the
+ * `<think></think>` a thinking model emits ahead of every tool call arrives as
+ * content on the same turn, not as a turn of its own.
+ *
+ * `holdMs` on a turn pauses after the content deltas and before the finish, so
+ * the turn stays open with its text already on the wire: the state a slow model
+ * leaves the TUI in, and the only time the live (unsettled) rendering shows.
+ *
  * A turn with a `match` regex answers any request whose last USER message
  * matches it WITHOUT consuming a position in the sequence. That is how a
  * scripted session survives Book's own model calls landing at unpredictable
@@ -123,12 +132,18 @@ function checkpointText() {
   });
 }
 
-function streamTurn(res, turn, model, id) {
+async function streamTurn(res, turn, model, id) {
   const base = { id, object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: {} }] };
 
   sse(res, { ...base, choices: [{ index: 0, delta: { role: 'assistant' } }] });
 
   if (turn.tool) {
+    if (turn.text) {
+      for (const piece of turn.text.match(/.{1,12}/gs) ?? [turn.text]) {
+        sse(res, { ...base, choices: [{ index: 0, delta: { content: piece } }] });
+      }
+    }
+    if (turn.holdMs) await new Promise((resolve) => setTimeout(resolve, turn.holdMs));
     // Tool arguments are streamed as a JSON string, exactly like OpenAI does.
     sse(res, {
       ...base,
@@ -158,6 +173,7 @@ function streamTurn(res, turn, model, id) {
     for (const piece of text.match(/.{1,12}/gs) ?? [text]) {
       sse(res, { ...base, choices: [{ index: 0, delta: { content: piece } }] });
     }
+    if (turn.holdMs) await new Promise((resolve) => setTimeout(resolve, turn.holdMs));
     sse(res, { ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
   }
 
@@ -251,7 +267,7 @@ const server = createServer((req, res) => {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     });
-    streamTurn(res, turn, parsed.model ?? 'mock-model', id);
+    void streamTurn(res, turn, parsed.model ?? 'mock-model', id);
   });
 });
 

@@ -89,3 +89,34 @@ describe('AgentMessage unclosed reasoning tags', () => {
     expect(frameOf(withTool, { showThinking: false })).not.toContain('private deliberation');
   });
 });
+
+describe('AgentMessage empty reasoning blocks', () => {
+  // Routers that inline thinking as `<think></think>` emit an empty block on
+  // every tool-call turn. Each one rendered as a `thought · 0 lines` row: a
+  // toggle that expands to nothing, stacked between every wave of tool rows.
+  it('renders no thought row for an empty block on a tool-call turn', () => {
+    const withTool = assistant('<think></think>', [
+      { id: 'Read-1', name: 'Read', arguments: { filePath: 'a.ts' } },
+    ]);
+    const frame = frameOf(withTool);
+
+    expect(frame).not.toContain('thought');
+    expect(frame).not.toContain('0 lines');
+    expect(frame).not.toContain('<think>');
+  });
+
+  it('renders no thought row for an empty block ahead of the answer', () => {
+    const frame = frameOf(assistant('<think></think>The answer.'));
+
+    expect(frame).toContain('The answer.');
+    expect(frame).not.toContain('thought');
+    expect(frame).not.toContain('<think>');
+  });
+
+  it('still collapses a block that has a body', () => {
+    const frame = frameOf(assistant('<think>weighing</think>The answer.'));
+
+    expect(frame).toContain('thought · 1 line');
+    expect(frame).not.toContain('weighing');
+  });
+});

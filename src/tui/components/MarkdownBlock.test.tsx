@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { Text } from 'ink';
+import chalk from 'chalk';
 import React from 'react';
 import { ThemeContext } from '../theme.js';
 import { DEFAULT_THEME } from '../../types/theme.js';
@@ -140,6 +141,28 @@ describe('MarkdownBlock', () => {
     );
     const output = frame(view.lastFrame);
     expect(output).toContain('readFile');
+  });
+
+  it('marks inline code with colour only, never a background', () => {
+    // A background pill behind every span turned a normal paragraph into a
+    // row of highlighted badges. The code colour is the whole signal.
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      const view = render(
+        withTheme(React.createElement(MarkdownBlock, { content: 'Use the `readFile` function' })),
+      );
+      const raw = view.lastFrame() ?? '';
+      expect(stripAnsi(raw)).toContain('readFile');
+      expect(raw).not.toMatch(/\x1b\[48;/);
+      // The span still carries the theme's inline-code colour.
+      const [r, g, b] = [1, 3, 5].map((i) =>
+        parseInt(DEFAULT_THEME.mdInlineCodeText.slice(i, i + 2), 16),
+      );
+      expect(raw).toContain(`\x1b[38;2;${r};${g};${b}mreadFile`);
+    } finally {
+      chalk.level = level;
+    }
   });
 
   it('renders fenced code block with language label', () => {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from 'ink-testing-library';
-import { DEFAULT_THEME, ThemeContext } from '../theme.js';
+import chalk from 'chalk';
+import { APPLE_THEME, DEFAULT_THEME, ThemeContext } from '../theme.js';
 import { buildColoredSegments, StatusLine } from './StatusLine.js';
 import { displayWidth } from './word-wrap.js';
 
@@ -462,6 +463,88 @@ describe('StatusLine git segment', () => {
 
   it('leads with the permission mode chip', () => {
     expect(statusFor({ mode: 'plan' })).toContain('◆ plan');
+  });
+});
+
+describe('StatusLine colour budget', () => {
+  /**
+   * Ink colours through chalk, which emits nothing off a TTY. Forcing
+   * truecolor is the only way to read which token a segment took; a hex colour
+   * renders as `38;2;r;g;b`, so a token is matched by its own bytes.
+   */
+  function sgrFor(hex: string): string {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    return `\x1b[38;2;${r};${g};${b}m`;
+  }
+
+  function runFor(text: string, frame: string): string {
+    // The SGR that opens a run sits right before its text; a run for `text`
+    // is the colour introduced most recently before it.
+    const at = frame.indexOf(text);
+    expect(at, `${text} is not on the row`).toBeGreaterThan(-1);
+    const opens = frame.slice(0, at).match(/\x1b\[38;2;\d+;\d+;\d+m/g) ?? [];
+    return opens.at(-1) ?? '';
+  }
+
+  function colouredFrame(props: Partial<React.ComponentProps<typeof StatusLine>>): string {
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      const view = render(
+        <ThemeContext.Provider value={APPLE_THEME}>
+          <StatusLine
+            model="claude-opus-5"
+            tokenCount={10_000}
+            maxTokens={100_000}
+            mode="default"
+            taskCount={0}
+            activeTaskCount={0}
+            terminalWidth={100}
+            reducedMotion
+            {...props}
+          />
+        </ThemeContext.Provider>,
+      );
+      const frame = view.lastFrame() ?? '';
+      view.unmount();
+      return frame;
+    } finally {
+      chalk.level = level;
+    }
+  }
+
+  it('keeps a healthy default session entirely grey', () => {
+    // The footer is metadata. When nothing needs a decision, nothing on it
+    // may be louder than the model name -- the row used to tint `default`
+    // and a 10% context reading, which made the whole footer read as status.
+    const frame = colouredFrame({ gitBranch: 'main', gitStatus: '✓' });
+
+    for (const text of ['default', 'ctx 10%', 'main', 'claude-opus-5']) {
+      expect(runFor(text, frame), text).toBe(sgrFor(APPLE_THEME.subtle));
+    }
+    for (const token of ['usageMeter', 'modeDefault', 'warning', 'error'] as const) {
+      if (APPLE_THEME[token] === APPLE_THEME.subtle) continue;
+      expect(frame, `${token} leaked into a healthy row`).not.toContain(sgrFor(APPLE_THEME[token]));
+    }
+  });
+
+  it('colours a permission mode that is not the default', () => {
+    const frame = colouredFrame({ mode: 'plan' });
+    expect(runFor('plan', frame)).toBe(sgrFor(APPLE_THEME.modePlan));
+  });
+
+  it('warns once context pressure passes 80%', () => {
+    expect(runFor('ctx 85%', colouredFrame({ tokenCount: 85_000 }))).toBe(
+      sgrFor(APPLE_THEME.warning),
+    );
+    expect(runFor('ctx 97%', colouredFrame({ tokenCount: 97_000 }))).toBe(
+      sgrFor(APPLE_THEME.error),
+    );
+  });
+
+  it('marks a dirty tree in the warning colour', () => {
+    const frame = colouredFrame({ gitBranch: 'main', gitStatus: '+2 ~1' });
+    expect(runFor('main*', frame)).toBe(sgrFor(APPLE_THEME.warning));
   });
 });
 

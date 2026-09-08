@@ -159,6 +159,25 @@ describe('useManagedAgents', () => {
     await wait(0);
     expect(latest?.liveText.get('older')).toBe('live');
 
+    // The finished message supersedes the deltas that built it. Left in the
+    // buffer they rendered twice and kept accumulating across later turns.
+    listener?.({
+      type: 'agent_message',
+      agentId: 'older',
+      message: {
+        id: 'older-turn-1',
+        role: 'assistant',
+        content: 'live',
+        includeInContext: true,
+        timestamp: 24,
+      },
+    });
+    await wait(0);
+    expect(latest?.records.get('older')?.transcript.map((message) => message.id)).toEqual([
+      'older-turn-1',
+    ]);
+    expect(latest?.liveText.has('older')).toBe(false);
+
     listener?.({
       type: 'agent_activity',
       agentId: 'older',

@@ -52,7 +52,7 @@ import {
   ThemeContext,
   listCustomThemes,
   resolveTheme,
-  DARK_THEME,
+  APPLE_THEME,
   type ThemeTokens,
   type ResolvedTheme,
 } from './theme.js';
@@ -522,10 +522,10 @@ export function App({
   const [currentTheme, setCurrentTheme] = useState<ResolvedTheme>(
     () =>
       interactiveAssets?.initialTheme ??
-      resolveTheme(config.workspace, config.settings.theme ?? 'dark') ?? {
-        preference: 'dark',
-        resolvedName: 'dark',
-        tokens: DARK_THEME,
+      resolveTheme(config.workspace, config.settings.theme ?? 'apple') ?? {
+        preference: 'apple',
+        resolvedName: 'apple',
+        tokens: APPLE_THEME,
       },
   );
   const [customThemes, setCustomThemes] = useState<string[]>(
@@ -1428,9 +1428,10 @@ export function App({
     },
     [activeTranscriptScope],
   );
+  // The live turn renders as a streaming AgentMessage; its exact height depends
+  // on markdown and reasoning collapse, so this is only a change signal.
   const selectedManagedAgentLiveRows = selectedManagedAgentLiveText
-    ? wordWrap(selectedManagedAgentLiveText.slice(-1000), Math.max(1, termWidth - 2)).split('\n')
-        .length
+    ? wordWrap(selectedManagedAgentLiveText, Math.max(1, termWidth - 2)).split('\n').length
     : 0;
   const transcriptLayoutRevision = useMemo(
     () =>
@@ -1518,7 +1519,7 @@ export function App({
       if (!resolved) {
         return {
           ok: false,
-          error: `Theme "${preference}" was not found. Choose dark, light, auto, catppuccin, nord, gruvbox, solarized-dark, or a theme from .book/themes.`,
+          error: `Theme "${preference}" was not found. Choose apple, dark, light, auto, catppuccin, nord, gruvbox, solarized-dark, or a theme from .book/themes.`,
         };
       }
       const persisted = persistSettingLocal(config.workspace, 'theme', resolved.preference);
@@ -2248,6 +2249,7 @@ export function App({
                     toolExpansionOverrides={toolExpansionOverrides}
                     showAllToolOutput={showAllDetailedOutput}
                     showAllToolOutputIds={showAllToolOutputIds}
+                    showThinking={liveConfig.settings.ui.showThinking}
                   />
                 ) : (
                   <Box paddingX={1}>
@@ -2330,7 +2332,7 @@ export function App({
                       theme={theme}
                     />
                     <HelpRow
-                      label="/theme [dark|light|auto|name]"
+                      label="/theme [apple|dark|light|auto|name]"
                       description="Choose and save a color theme"
                       theme={theme}
                     />

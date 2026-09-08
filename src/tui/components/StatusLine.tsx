@@ -127,11 +127,14 @@ export function StatusLine({
     activeTaskCount,
   });
 
-  const modeColor = theme[modeColorToken(mode)] as string;
+  // Most of the footer is metadata. Reserve saturated colour for a state that
+  // needs a decision, so the transcript and composer keep visual priority.
+  // `default` is not a decision — it is the absence of one — so it stays as
+  // grey as the model name beside it, whatever the palette's `modeDefault` is.
+  const modeColor = mode === 'default' ? theme.subtle : (theme[modeColorToken(mode)] as string);
   const activeModeColor = modeFlash ? theme.brandShimmer : modeColor;
-  // Context pressure is the one number here that is always worth a glance, so
-  // it always carries colour — the old row only tinted it past 80%, which left
-  // the whole footer a flat grey nobody read.
+  // Context pressure earns colour only when it is close to the limit. Healthy
+  // usage stays quiet so the footer does not compete with the active turn.
   const contextColor =
     usageCritical && usageBlink
       ? theme.usageMeterCritical
@@ -139,7 +142,7 @@ export function StatusLine({
         ? theme.error
         : usageNearLimit
           ? theme.warning
-          : theme.usageMeter;
+          : theme.subtle;
 
   const coloredRuns = useMemo(() => {
     // The branch outranks the model when the row gets tight. Both are identity,

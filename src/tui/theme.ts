@@ -7,6 +7,115 @@ import { join } from 'path';
 /** Quiet editorial dark theme. This is the same as DEFAULT_THEME. */
 export const DARK_THEME: ThemeTokens = { ...DEFAULT_THEME };
 
+/**
+ * Apple-inspired default palette: near-black neutral surfaces, bright grey
+ * text, and one blue action accent. Every other hue is a system colour that
+ * appears only when a state needs attention, so ordinary chrome never competes
+ * with the work.
+ *
+ * Roles stay distinct, as in the editorial palettes: blue is the user and the
+ * composer (the things you act on), cyan is the agent speaking, indigo is
+ * product chrome, teal carries references, and the orange/red/green trio is
+ * status. A token that reuses another role's hue makes the two indistinguishable
+ * on screen, which is exactly what the calm palette exists to avoid.
+ */
+export const APPLE_THEME: ThemeTokens = {
+  ...DEFAULT_THEME,
+  brand: '#5E5CE6',
+  brandShimmer: '#8E8CFF',
+
+  text: '#F5F5F7',
+  inverseText: '#111113',
+  inactive: '#6E6E73',
+  subtle: '#98989D',
+  suggestion: '#8E8E93',
+  permission: '#FF9F0A',
+  remember: '#BF5AF2',
+
+  surface: '#1C1C1E',
+  surfaceActive: '#2C2C2E',
+  border: '#3A3A3C',
+  selectionText: '#FFFFFF',
+  userAccent: '#0A84FF',
+  assistantAccent: '#64D2FF',
+  toolRail: '#636366',
+
+  success: '#30D158',
+  error: '#FF453A',
+  warning: '#FF9F0A',
+  merged: '#66D4CF',
+
+  promptBorder: '#0A84FF',
+  planMode: '#BF5AF2',
+  autoAccept: '#30D158',
+  bashBorder: '#FF9F0A',
+
+  // `default` is the quiet mode: neutral grey, so an ordinary session carries
+  // no permission-mode signal at all.
+  modeDefault: '#98989D',
+  modePlan: '#BF5AF2',
+  modeAcceptEdits: '#30D158',
+  modeAuto: '#66D4CF',
+  modeDontAsk: '#FF453A',
+  modeBypass: '#FF9F0A',
+
+  diffAdded: '#173A28',
+  diffRemoved: '#3A1E22',
+  diffAddedWord: '#24633D',
+  diffRemovedWord: '#6B2932',
+  diffAddedDimmed: '#122B1E',
+  diffRemovedDimmed: '#2B181C',
+
+  usageMeter: '#66D4CF',
+  usageMeterHigh: '#FF9F0A',
+  usageMeterCritical: '#FF453A',
+
+  // The spinner is the agent speaking, so it keeps the cyan identity.
+  shimmerPair: ['#64D2FF', '#A5E3FF'],
+
+  subagentColors: [
+    '#FF453A',
+    '#FF9F0A',
+    '#FFD60A',
+    '#30D158',
+    '#64D2FF',
+    '#0A84FF',
+    '#BF5AF2',
+    '#5E5CE6',
+  ],
+
+  mdCodeBackground: '#161618',
+  mdCodeBorder: '#3A3A3C',
+  mdCodeText: '#F5F5F7',
+  mdCodeKeyword: '#BF5AF2',
+  mdCodeString: '#30D158',
+  mdCodeComment: '#6E6E73',
+  mdCodeNumber: '#FF9F0A',
+  mdCodeFunction: '#64D2FF',
+  mdCodeLineNumber: '#636366',
+  mdInlineCodeBg: '#2C2C2E',
+  mdInlineCodeText: '#66D4CF',
+  // Three distinct brightness steps, none at `text`, so heading depth stays
+  // legible without markers.
+  mdHeadingH1: '#FFFFFF',
+  mdHeadingH2: '#E5E5EA',
+  mdHeading: '#AEAEB2',
+  mdBlockquoteBorder: '#636366',
+  mdBlockquoteText: '#98989D',
+  mdLink: '#66D4CF',
+  mdListMarker: '#0A84FF',
+  mdHr: '#3A3A3C',
+  mdTableBorder: '#3A3A3C',
+  mdThinkBg: '#161618',
+  mdThinkBorder: '#3A3A3C',
+  mdThinkText: '#8E8E93',
+  mdTurnSeparator: '#3A3A3C',
+  mdCheckboxChecked: '#30D158',
+  mdCheckboxUnchecked: '#6E6E73',
+
+  userBg: '#202022',
+};
+
 /** Matched editorial palette for terminals with light backgrounds. */
 /**
  * Warm editorial light palette. Mirrors DEFAULT_THEME role for role: the same
@@ -550,6 +659,9 @@ export function resolveTheme(
 ): ResolvedTheme | null {
   const requested = preference.trim();
   const builtin = requested.toLowerCase();
+  if (builtin === 'apple' || builtin === 'apple-dark') {
+    return { preference: 'apple', resolvedName: 'apple', tokens: APPLE_THEME };
+  }
   if (builtin === 'dark') {
     return { preference: 'dark', resolvedName: 'dark', tokens: DARK_THEME };
   }
@@ -557,11 +669,13 @@ export function resolveTheme(
     return { preference: 'light', resolvedName: 'light', tokens: LIGHT_THEME };
   }
   if (builtin === 'auto') {
+    // A dark terminal gets the default palette, not the warm editorial one, so
+    // `auto` never looks different from a fresh install on the same screen.
     const isLight = hasLightTerminalBackground(colorFgBg);
     return {
       preference: 'auto',
-      resolvedName: isLight ? 'light' : 'dark',
-      tokens: isLight ? LIGHT_THEME : DARK_THEME,
+      resolvedName: isLight ? 'light' : 'apple',
+      tokens: isLight ? LIGHT_THEME : APPLE_THEME,
     };
   }
   if (builtin === 'catppuccin' || builtin === 'catppuccin-mocha' || builtin === 'mocha') {

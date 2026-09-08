@@ -477,8 +477,15 @@ export function AgentMessageInner({
   // continue through — a reasoning tag the provider never closed must not be
   // allowed to swallow the answer into a collapsed thought. A turn that did call
   // a tool keeps the strict reading; see `splitReasoningParts`.
+  //
+  // An empty reasoning block is dropped outright. Routers that inline thinking
+  // as `<think></think>` emit one on every tool-call turn, and each rendered as
+  // a `thought · 0 lines` row: a toggle that expands to nothing.
   const contentParts = useMemo(
-    () => splitThinkBlocks(displayContent, { concluded: !isStreaming && toolCalls.length === 0 }),
+    () =>
+      splitThinkBlocks(displayContent, {
+        concluded: !isStreaming && toolCalls.length === 0,
+      }).filter((part) => part.kind !== 'think' || part.text.length > 0),
     [displayContent, isStreaming, toolCalls.length],
   );
   const renderAsUnifiedDiff = useMemo(

@@ -14,6 +14,7 @@ interface ThemePickerProps {
 }
 
 const BUILTIN_THEMES = [
+  { name: 'apple', description: 'Near-black neutrals with one blue accent' },
   { name: 'dark', description: 'Warm charcoal and muted sage' },
   { name: 'light', description: 'Soft parchment with grounded contrast' },
   { name: 'auto', description: 'Follow the terminal background' },

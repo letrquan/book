@@ -9,7 +9,6 @@ import type { PermissionMode } from '../../types/runtime.js';
 import type { ImageAttachment } from '../../types/messages.js';
 import type { SlashCommand } from '../../types/commands.js';
 import type { Skill } from '../../skills.js';
-import { modeColorToken } from '../mode-style.js';
 import { isShortcutsToggleKey } from '../tool-presentation.js';
 import { frameGrid } from '../layout.js';
 import {
@@ -184,7 +183,6 @@ export function InputBar({
   onSubmit,
   onPasteImage,
   submissionMode,
-  mode,
   onCycleMode,
   canSubmitWhileBusy,
   canQueueWhileBusy,
@@ -807,8 +805,11 @@ export function InputBar({
     ],
   );
 
-  const tokenKey = modeColorToken(mode);
-  const baseBorderColor = theme[tokenKey];
+  // Keep the composer calm and stable while the status line carries the
+  // permission mode. The focused input is the primary action in this surface;
+  // changing its border colour with every mode made the whole frame feel like
+  // a warning badge even when nothing needed attention.
+  const baseBorderColor = inputSuppressed ? theme.border : theme.promptBorder;
 
   const outerWidth = Math.max(20, Math.floor(terminalWidth));
   // The composer spans the transcript rather than floating over it, so it takes
@@ -816,7 +817,7 @@ export function InputBar({
   const frame = frameGrid(outerWidth);
   const editorWidth = Math.max(8, frame.width - 4);
   const inputWidth = Math.max(1, editorWidth - 2);
-  const promptColor = baseBorderColor;
+  const promptColor = inputSuppressed ? theme.subtle : theme.promptBorder;
   // A modal owns the keyboard, so the composer accepts nothing — saying
   // "Type a follow-up" here invited the user to type into a locked field while
   // the prompt above was reading their keystrokes as answers. Which of the two

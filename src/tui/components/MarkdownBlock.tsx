@@ -37,7 +37,6 @@ type InlineStyle = {
   strikethrough?: boolean;
   underline?: boolean;
   dimColor?: boolean;
-  backgroundColor?: string;
 };
 
 type InlineRun = InlineStyle & { text: string };
@@ -146,8 +145,7 @@ function appendRun(runs: InlineRun[], text: string, style: InlineStyle) {
     previous.italic === style.italic &&
     previous.strikethrough === style.strikethrough &&
     previous.underline === style.underline &&
-    previous.dimColor === style.dimColor &&
-    previous.backgroundColor === style.backgroundColor
+    previous.dimColor === style.dimColor
   ) {
     previous.text += text;
     return;
@@ -204,14 +202,14 @@ function inlineRunsFromTokens(
         break;
       }
       case 'codespan': {
+        // Colour alone marks inline code. A background pill on every span
+        // turned an ordinary paragraph into a row of highlighted badges, which
+        // is exactly the noise the quiet palette removes everywhere else.
         const t = token as Tokens.Codespan;
         appendRun(
           runs,
           t.text,
-          mergeStyle(style, {
-            color: theme?.mdInlineCodeText ?? style.color,
-            backgroundColor: theme?.mdInlineCodeBg,
-          }),
+          mergeStyle(style, { color: theme?.mdInlineCodeText ?? style.color }),
         );
         break;
       }
@@ -415,7 +413,6 @@ function InlineRuns({ runs }: { runs: InlineRun[] }) {
           strikethrough={run.strikethrough}
           underline={run.underline}
           dimColor={run.dimColor}
-          backgroundColor={run.backgroundColor}
         >
           {run.text}
         </Text>

@@ -152,6 +152,49 @@ describe('SubagentDetail', () => {
     expect(output).not.toContain('Waiting for the subagent to produce output');
   });
 
+  it('keeps inline reasoning tags out of the live stream', () => {
+    // A router that inlines thinking as `<think>…</think>` streams the tags
+    // through the live buffer. Printed raw, the detail view showed the child's
+    // private reasoning verbatim, tags and all, while the same text in the
+    // settled transcript one row up was collapsed to a `thought` row.
+    const record: AgentRecord = {
+      id: 'agent-live',
+      profile: 'reviewer',
+      displayName: 'Review the change',
+      profileDescription: 'Review changes',
+      purpose: 'Review the change',
+      resolvedModel: 'gateway/review',
+      isolation: 'workspace-readonly',
+      name: 'reviewer',
+      role: 'reviewer',
+      description: 'Review changes',
+      status: 'running',
+      applicationStatus: 'not_applied',
+      prompt: 'Review the change',
+      referencedEvidenceIds: [],
+      transcript: [],
+      pendingMessages: [],
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const view = render(
+      <ThemeContext.Provider value={DEFAULT_THEME}>
+        <SubagentDetail
+          record={record}
+          liveText="<think></think>I'll read the surrounding context.<think></think><think>private</think>"
+          width={100}
+          height={30}
+          reducedMotion
+        />
+      </ThemeContext.Provider>,
+    );
+    const output = view.lastFrame() ?? '';
+    expect(output).toContain("I'll read the surrounding context.");
+    expect(output).not.toContain('<think>');
+    expect(output).not.toContain('</think>');
+    expect(output).not.toContain('0 lines');
+  });
+
   it('applies expansion overrides to tool rows in the child transcript', () => {
     const record: AgentRecord = {
       id: 'agent-tools',

@@ -510,7 +510,7 @@ export const bookSettingsSchema = z.object({
   maxTurns: z.number().int().min(1).optional(),
   maxTokens: z.number().int().min(1000).optional(),
   effort: effortLevelSchema.optional(),
-  /** TUI color theme: dark, light, auto, or a custom theme filename. */
+  /** TUI color theme: apple (default), dark, light, auto, a bundled palette, or a custom theme filename. */
   theme: z.string().min(1).optional(),
   ui: uiSettingsSchema.default({}),
   skills: skillSettingsSchema.default({}),
