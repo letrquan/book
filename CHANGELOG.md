@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Removed
+
+- **Subscription authentication over OAuth.** Book supports API-key authentication only. The
+  `book auth` subcommand (`login`, `logout`, `status`), the `/login` slash command and TUI login
+  picker, the `auth` configuration block, and subscription credential resolution across provider
+  transports have been removed entirely, without shims or compatibility aliases.
+
+  The feature could not work as shipped. Book bundled no vendor client IDs, which required users to
+  supply their own OAuth client ID that neither Anthropic nor OpenAI publishes for third-party CLI
+  use. In addition, the built-in `codex` profile targeted an endpoint that the OpenAI-compatible client
+  cannot speak (it appends `/chat/completions`, whereas that host serves the Responses API). Carrying
+  a non-functional credential path is worse than not having one; Book now authenticates exclusively
+  via API keys (`BOOK_API_KEY`, `provider.<id>.apiKey`, and `{env:VAR}` references).
+
 ### Changed
 
 - **New default theme: `apple`.** The interactive TUI now opens on a calmer, Apple-inspired

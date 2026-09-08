@@ -31,7 +31,6 @@ import type { McpHostSnapshot } from '../mcp-host.js';
 import { settingsScopeLabel, type SettingsScope } from '../settings-scope.js';
 import { applySettingWrite, describeSettingShadow, guardSettingWrite } from '../settings-write.js';
 import { normalizePermissionMode } from '../permission-mode.js';
-import { listAuthProfiles, resolveAuthProfile } from '../auth/profiles.js';
 
 export interface BuiltinCommand {
   name: string;
@@ -89,9 +88,7 @@ export type BuiltinCommandEffect =
   | { type: 'exit' }
   | {
       type: 'show-modal';
-      modal: 'config' | 'model' | 'rewind' | 'theme' | 'effort' | 'skills' | 'login';
-      /** Profile `/login <profile>` named, preselected in the picker. */
-      profile?: string;
+      modal: 'config' | 'model' | 'rewind' | 'theme' | 'effort' | 'skills';
     }
   | { type: 'set-theme'; preference: string }
   | { type: 'set-model'; selection: string }
@@ -725,27 +722,6 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
       rawArguments
         ? { type: 'local-message', content: 'Usage: /providers' }
         : { type: 'show-modal', modal: 'model' },
-  },
-  {
-    name: 'login',
-    description: 'Sign in with a provider subscription (OAuth)',
-    argumentHint: '[profile]',
-    execute: ({ rawArguments }, context) => {
-      const requested = rawArguments.trim();
-      // An unrecognised id must not fall through to "first profile in the
-      // list": Enter would then start an OAuth flow for a different vendor
-      // than the one the user typed. `book auth login <bogus>` refuses too.
-      if (requested && !resolveAuthProfile(requested, context.runtimeConfig.settings)) {
-        const known = listAuthProfiles(context.runtimeConfig.settings)
-          .map((profile) => profile.id)
-          .join(', ');
-        return {
-          type: 'local-message',
-          content: `✕ Unknown auth profile "${requested}". Available: ${known || '(none)'}`,
-        };
-      }
-      return { type: 'show-modal', modal: 'login', profile: requested || undefined };
-    },
   },
   {
     name: 'effort',

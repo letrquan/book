@@ -2,7 +2,6 @@ import type { ChildProcess } from 'child_process';
 import type { CompactStrategy, ProviderModelConfig, ResolvedSettings } from '../settings.js';
 import type { LoadedMemoryContext } from '../memory-store.js';
 import type { ModelWindowStore } from '../model-window-store.js';
-import type { AuthProfileInputs } from './auth.js';
 
 export type PermissionMode =
   'default' | 'auto' | 'plan' | 'accept-edits' | 'dontAsk' | 'bypassPermissions';
@@ -153,14 +152,6 @@ export interface AgentConfig {
   /** Plain-model fallback values used after provider/model switches. */
   defaultApiKey?: string;
   defaultBaseUrl?: string;
-  /**
-   * Base URL to restore for a plain model selection while an auth profile is
-   * active. Kept apart from `defaultBaseUrl` because that value is what a named
-   * `provider.<id>` entry inherits when it declares none, and such an entry
-   * must not inherit the subscription vendor's endpoint - it would post its own
-   * API key there.
-   */
-  defaultProfileBaseUrl?: string;
   defaultProvider?: 'anthropic' | 'openai' | 'auto';
   autoCompactEnabled: boolean;
   workspace: string;
@@ -193,23 +184,6 @@ export interface AgentConfig {
   provider?: 'anthropic' | 'openai' | 'auto';
   /** Metadata from settings.provider.<id>.models.<model>, if selected. */
   modelInfo?: ProviderModelConfig;
-  /**
-   * Active subscription auth profile id, resolved once at config load. Unset
-   * means API-key auth; see `src/auth/selection.ts`.
-   */
-  authProfile?: string;
-  /**
-   * Inputs that decided the auth-derived endpoint/model, retained so a login
-   * performed *during* a session can re-run the same precedence rather than
-   * re-deriving it from values the resolved config has already flattened.
-   *
-   * Required, not optional: the obvious fallback for an absent value is
-   * `defaultProvider`, which is the *resolved* transport rather than the
-   * `BOOK_PROVIDER` override — substituting one for the other would let an
-   * Anthropic subscription token be spent through the OpenAI-compatible
-   * transport. Every constructor must say what the inputs were.
-   */
-  authInputs: AuthProfileInputs;
   /** Approved memory snapshot loaded once at session start. */
   memoryContext?: LoadedMemoryContext;
   /** Optional store for learned context window ceilings. */

@@ -5,8 +5,6 @@ import { collectAgentDiagnostics } from '../agents/diagnostics.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { resolveBookHome } from '../book-home.js';
-import { readAuthStore } from '../auth/store.js';
-import { describeExpiry } from '../auth/resolve.js';
 import type { HookEntry } from '../settings.js';
 import type { AgentConfig } from '../types/runtime.js';
 
@@ -63,34 +61,11 @@ function formatRelativeTime(timestamp: number, now = Date.now()): string {
 
 /**
  * One line naming what will actually authenticate the next request.
- *
- * An active auth profile outranks any API key in the environment - the
- * transports replace the key headers entirely - so reporting "resolved"
- * because BOOK_API_KEY happens to be set would name the wrong credential.
  */
 function describeCredentials(config: AgentConfig): string {
-  if (config.authProfile) {
-    const read = readAuthStore();
-    // "Nothing is logged in" would be a dead end here: `book auth login` also
-    // refuses to write a store it cannot parse, so an unreadable file has to be
-    // named as such by the command whose job is diagnosing a broken setup.
-    if (read.status === 'unreadable') {
-      return `auth profile "${config.authProfile}" selected, but ${read.path} is unreadable (${read.error}) - delete it, then run: book auth login ${config.authProfile}`;
-    }
-    const credential = read.store.credentials[config.authProfile];
-    if (!credential) {
-      return `auth profile "${config.authProfile}" selected, but nothing is logged in - run: book auth login ${config.authProfile}`;
-    }
-    const account = credential.tokens?.account;
-    // The same renderer `book auth status` uses, so the two commands cannot
-    // disagree about whether a credential is still good.
-    const expiry =
-      credential.kind === 'oauth' ? describeExpiry(credential.tokens) : 'stored API key';
-    return `auth profile "${config.authProfile}"${account ? ` (${account})` : ''} - ${expiry}`;
-  }
   return config.apiKey
     ? 'API key resolved'
-    : 'not resolved - set BOOK_API_KEY, run `book auth login <profile>`, or set provider.<id>.apiKey in settings';
+    : 'not resolved - set BOOK_API_KEY or set provider.<id>.apiKey in settings';
 }
 
 /**

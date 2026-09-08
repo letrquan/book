@@ -58,16 +58,6 @@ describe('guard order', () => {
     expect(refusal).not.toContain('Unknown top-level key');
   });
 
-  it('refuses auth in every scope without naming a file the write could reach', () => {
-    const refusal = guardSettingWrite('auth.profile', 'anthropic');
-    expect(refusal).toContain('in any scope');
-    expect(refusal).toContain('BOOK_AUTH_CLIENT_ID_<PROFILE>');
-    // The workspace wording pointed at <BOOK_HOME>/settings.json, which is the
-    // file a user-global write was already aimed at: following it verbatim
-    // re-ran the same command and was refused again.
-    expect(refusal).not.toContain('cannot be written to .book/settings.local.json');
-  });
-
   it('reaches a trust-owned key from above and below its own path', () => {
     expect(guardSettingWrite('permissions.projectAllowRules', [])).toContain('book trust rule');
     expect(guardSettingWrite('hooks.projectEntries.abc', {})).toContain('book trust hook');
