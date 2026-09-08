@@ -15,10 +15,11 @@ fresh verification pass.
 
 ## Release Identity
 
-- Package version: `0.1.0` (`package.json` is still `private: true`).
-- Distribution: source checkout, GitHub tag, or a locally built/link-installed CLI. There is no
-  published npm package for this repository.
-- License: proprietary, all rights reserved; see the README.
+- Package version: `0.2.0`, published as `@letrquan/book`.
+- Distribution: `npm install -g @letrquan/book`, a source checkout, or a GitHub tag. The command
+  is `book`; the package is scoped because the unscoped name was taken.
+- License: PolyForm Small Business 1.0.0 — source-available, commercial use limited to companies
+  under 100 people and 1,000,000 USD (2019) revenue. See `LICENSE`.
 - Runtime: Node.js 22.13 or newer; CI exercises Node.js 22 and 24 on Ubuntu and Windows.
 - Build: `tsup` emits ESM CLI, SDK, and job-runner bundles plus declarations into `dist/`.
 
@@ -172,7 +173,9 @@ fresh verification pass.
   and expanding a row reveals structured details or output rather than the parameters.
 - Skills: discovered skills start in `manual` activation mode. Enable `auto` per skill only after
   representative evaluation.
-- TUI renderer: `safe` on Windows, `incremental` on other interactive terminals. Windows users can
+- TUI renderer: `safe` on Windows, `incremental` on other interactive terminals — and `safe`
+  anywhere the Ink patch is absent, which is every npm install under npm 11, since it blocks the
+  postinstall that applies it (`isInkIncrementalRendererPatched`). Windows users can
   opt into incremental rendering with `BOOK_TUI_RENDERER=incremental`.
 - `Bash` shell: the platform default (`/bin/sh`) on macOS and Linux. On Windows, `BOOK_SHELL` or the
   `shell` setting, then Git Bash when Book was launched from one, then PowerShell 7, then Windows

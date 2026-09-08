@@ -4,6 +4,43 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-08
+
+### Added
+
+- **Book is published: `npm install -g @letrquan/book`.** The first release anyone outside this
+  repository can install. The command is still `book`; the package is scoped because the unscoped
+  npm name was taken years ago. `private: true` is gone from `package.json`, deliberately.
+
+### Changed
+
+- **Licence: PolyForm Small Business 1.0.0, replacing "all rights reserved".** Publishing a package
+  invites people to install and run it, which the previous licence granted no permission to do —
+  a contradiction that would have made the release useless to the users it was meant to reach.
+  The new terms are source-available: read, modify and redistribute freely, and use it for your own
+  work or a company with fewer than 100 people and under 1,000,000 USD (2019) revenue. Larger
+  commercial use needs a separate licence. This is not an open-source licence, and does not pretend
+  to be one.
+
+  The published tarball contains source maps with the full TypeScript source. That is now a choice
+  rather than an oversight: the licence makes reading the source a right.
+
+### Fixed
+
+- **A published install would have had no `book` command.** `bin.book` carried a `./` prefix, and
+  `npm publish` drops a bin entry whose path it considers malformed — silently, after which the
+  package installs cleanly and provides nothing to run. `npm pack` keeps the entry verbatim and the
+  package smoke test invoked `dist/index.js` directly, so neither could see it; only the
+  publish-time warning named it. The path is fixed and `scripts/package-smoke.ts` now asserts the
+  format at pack time, verified by reintroducing the bug and watching the check fail.
+
+### Known
+
+- npm 11 blocks install scripts by default, so the Ink patch does not apply on a fresh
+  `npm install -g @letrquan/book`. Book already detects an unpatched Ink and falls back to the
+  full-frame `safe` renderer, so the TUI is correct either way — it simply redraws more on macOS
+  and Linux, where `incremental` would otherwise be the default. `npm approve-scripts` opts back in.
+
 ### Removed
 
 - **The adaptive harness and the experimental Zero-Mem capability.** Both were default-off research

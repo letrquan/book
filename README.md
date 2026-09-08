@@ -29,19 +29,29 @@ See [`docs/current-state.md`](./docs/current-state.md) for the verified product 
 Requires **Node.js 22.13+**.
 
 ```bash
-# Clone (repo is currently private — use a machine with GitHub access)
+npm install -g @letrquan/book
+book --version
+```
+
+npm 11 blocks install scripts by default, so Book's Ink patch — which fixes a cursor bug in Ink's
+incremental renderer — is not applied on a fresh install. Book detects this and uses the full-frame
+`safe` renderer instead, which is correct but redraws more. To get incremental rendering on macOS
+and Linux, allow the script once:
+
+```bash
+npm approve-scripts @letrquan/book   # then reinstall, or run: npm rebuild @letrquan/book
+```
+
+The command is `book`; the package is scoped because the unscoped npm name was
+already taken. To work on Book itself:
+
+```bash
 git clone https://github.com/letrquan/book.git
 cd book
 npm install
 npm run build
-npm link   # makes `book` available globally
-
-# Or install a tagged release without linking
-npm install -g github:letrquan/book#v0.1.0
+npm link   # makes your checkout's `book` the global one
 ```
-
-> **Note:** The unscoped npm name `book` is already taken on the public registry.
-> v0.1.0 is distributed via GitHub only.
 
 ## Quick Start
 
@@ -1362,6 +1372,12 @@ daily at 01:00 UTC and on every pull request:
 
 ## License
 
-Copyright (c) 2026 letrquan. All rights reserved.
+Copyright (c) 2026 letrquan.
 
-Proprietary software. No permission is granted to use, copy, modify, or distribute this software without prior written authorization.
+[PolyForm Small Business License 1.0.0](LICENSE). Source-available: read it, change it, and use it
+for your own work or your company's, provided the company has fewer than 100 people and under
+1,000,000 USD (2019, inflation-adjusted) revenue in the prior tax year. Larger companies, and anyone
+wanting terms beyond that, need a separate licence — open an issue.
+
+This is not an open-source licence: it restricts who may use the software commercially. It does not
+restrict reading, modifying, or redistributing it under the same terms.

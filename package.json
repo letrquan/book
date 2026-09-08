@@ -1,10 +1,9 @@
 {
-  "name": "book",
-  "version": "0.1.0",
+  "name": "@letrquan/book",
+  "version": "0.2.0",
   "description": "AI coding agent CLI with rich TUI",
   "type": "module",
-  "private": true,
-  "license": "UNLICENSED",
+  "license": "PolyForm-Small-Business-1.0.0",
   "author": "letrquan",
   "repository": {
     "type": "git",
@@ -32,13 +31,17 @@
     "dist",
     "README.md",
     "CHANGELOG.md",
+    "LICENSE",
     "patches/ink+6.8.0.patch",
     "scripts/apply-ink-patch.mjs",
     "scripts/ink-patch.mjs",
     "scripts/verify-ink-patch.mjs"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
-    "book": "./dist/index.js"
+    "book": "dist/index.js"
   },
   "main": "./dist/sdk.js",
   "types": "./dist/sdk.d.ts",

@@ -10,7 +10,14 @@ interface PackResult {
 }
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
+// Read the name rather than assuming one: a scoped package installs to
+// `node_modules/@scope/name`, and hardcoding the unscoped path made this smoke
+// test pass only for the name the project happened to start with.
+const packageName = (
+  JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { name: string }
+).name;
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'book-package-smoke-'));
+const installedRoot = join(temporaryRoot, 'node_modules', ...packageName.split('/'));
 
 try {
   const dryRun = runNpm(['pack', '--dry-run', '--json'], root);
@@ -27,6 +34,28 @@ try {
     if (!packagedFiles.has(required)) throw new Error(`Packed artifact is missing ${required}.`);
   }
 
+  // The command is the product for a CLI, and `npm publish` silently drops a
+  // `bin` entry whose path it considers malformed — a leading `./` is enough —
+  // after which the package installs cleanly and provides no command at all.
+  // Neither `npm pack` nor running `dist/index.js` directly can see it: both
+  // keep working, and only the published manifest loses the entry. So the
+  // format is asserted here, where it is still checkable.
+  const declaredBin = (
+    JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { bin?: Record<string, string> }
+  ).bin;
+  for (const [command, target] of Object.entries(declaredBin ?? {})) {
+    if (target.startsWith('./') || target.startsWith('.\\')) {
+      throw new Error(
+        `bin["${command}"] is "${target}"; npm publish drops a relative-prefixed bin path, ` +
+          `which would ship a CLI with no command. Use "${target.slice(2)}".`,
+      );
+    }
+    if (!packagedFiles.has(target.replace(/\\/g, '/'))) {
+      throw new Error(`bin["${command}"] points at ${target}, which is not in the packed files.`);
+    }
+  }
+  if (!declaredBin?.book) throw new Error('package.json declares no `book` command.');
+
   const packed = parsePackResult(
     runNpm(['pack', '--json', '--pack-destination', temporaryRoot], root),
   );
@@ -35,23 +64,23 @@ try {
   runNpm(['install', '--no-audit', '--no-fund', tarball], temporaryRoot);
 
   const installedPackage = JSON.parse(
-    readFileSync(join(temporaryRoot, 'node_modules', 'book', 'package.json'), 'utf8'),
+    readFileSync(join(installedRoot, 'package.json'), 'utf8'),
   ) as { version: string };
   const cliOutput = execFileSync(
     process.execPath,
-    [join(temporaryRoot, 'node_modules', 'book', 'dist', 'index.js'), '--version'],
+    [join(installedRoot, 'dist', 'index.js'), '--version'],
     { cwd: temporaryRoot, encoding: 'utf8' },
   ).trim();
   if (cliOutput !== installedPackage.version) {
     throw new Error(`Installed CLI reported ${cliOutput}; expected ${installedPackage.version}.`);
   }
 
-  const sdkPath = join(temporaryRoot, 'node_modules', 'book', 'dist', 'sdk.js');
+  const sdkPath = join(installedRoot, 'dist', 'sdk.js');
   const sdk = (await import(pathToFileURL(sdkPath).href)) as Record<string, unknown>;
   if (typeof sdk.query !== 'function') throw new Error('Installed SDK does not export query().');
 
   console.log(
-    `Packed and installed book@${installedPackage.version}; CLI and SDK smoke tests passed.`,
+    `Packed and installed ${packageName}@${installedPackage.version}; CLI and SDK smoke tests passed.`,
   );
 } finally {
   rmSync(temporaryRoot, { recursive: true, force: true });

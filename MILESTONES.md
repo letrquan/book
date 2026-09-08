@@ -97,8 +97,11 @@ See [plans/security-assessment.md](plans/security-assessment.md) for the current
 
 ### 2. Release Readiness
 
-- [ ] Decide the distribution identity: keep GitHub/source-only distribution or choose an
-  available scoped npm package name and remove `private: true` intentionally.
+- [x] Distribution identity decided: `@letrquan/book` on the public npm registry, `private` removed
+  and `publishConfig.access` set to `public` deliberately. The binary stays `book`.
+- [x] Licence reconciled with public distribution: PolyForm Small Business 1.0.0, which permits the
+  use a published package invites while reserving large-company commercial use. The published
+  tarball ships source maps, so the source is public by intention rather than by accident.
 - [ ] Complete the renderer real-PTY matrix and interactive soak on Windows and Unix terminals.
 - [ ] Maintain three eligible green main-branch CI runs with no open lifecycle/accounting
   regression issues before advancing runtime-attribution work.
