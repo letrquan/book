@@ -9,7 +9,6 @@ interface Violation {
     | 'cycle'
     | 'type-hub'
     | 'blocking-process'
-    | 'harness-boundary'
     | 'process-exit';
   source: string;
   target: string;
@@ -60,14 +59,6 @@ function callsProcessExit(text: string): boolean {
     }
     return PROCESS_EXIT_PATTERN.test(line);
   });
-}
-
-function isEvaluationModule(path: string): boolean {
-  return path.startsWith('harness/evaluation/');
-}
-
-function isHarnessRuntimeBoundary(path: string): boolean {
-  return path === 'harness/contracts.ts' || path === 'harness/coordinator.ts';
 }
 
 function isLiveRuntimeModule(path: string): boolean {
@@ -140,57 +131,6 @@ export function checkArchitecture(srcRoot: string): Violation[] {
       const dependency = resolveImport(file, match[2]);
       if (!dependency || !dependency.startsWith(root)) continue;
       const targetName = relative(root, dependency).replaceAll('\\', '/');
-      if (!isEvaluationModule(sourceName) && isEvaluationModule(targetName)) {
-        violations.push({
-          kind: 'harness-boundary',
-          source: sourceName,
-          target: targetName,
-          detail:
-            'Live and shared runtime code must not import offline harness evaluation modules.',
-        });
-      }
-      if (isEvaluationModule(sourceName) && isLiveRuntimeModule(targetName)) {
-        violations.push({
-          kind: 'harness-boundary',
-          source: sourceName,
-          target: targetName,
-          detail:
-            'Offline harness evaluation must consume completed evidence, not live runtime modules.',
-        });
-      }
-      if (TRUSTED_KERNEL_FILES.has(sourceName) && targetName.startsWith('harness/')) {
-        violations.push({
-          kind: 'harness-boundary',
-          source: sourceName,
-          target: targetName,
-          detail: 'Trusted permission and sandbox modules must not depend on the adaptive harness.',
-        });
-      }
-      if (
-        isLiveRuntimeModule(sourceName) &&
-        targetName.startsWith('harness/') &&
-        !isEvaluationModule(targetName) &&
-        !isHarnessRuntimeBoundary(targetName)
-      ) {
-        violations.push({
-          kind: 'harness-boundary',
-          source: sourceName,
-          target: targetName,
-          detail: 'Live runtime code may import only the harness contracts or coordinator facade.',
-        });
-      }
-      if (
-        (sourceName.startsWith('agent/') || sourceName.startsWith('agents/')) &&
-        targetName.startsWith('harness/') &&
-        targetName !== 'harness/contracts.ts'
-      ) {
-        violations.push({
-          kind: 'harness-boundary',
-          source: sourceName,
-          target: targetName,
-          detail: 'The agent runtime may depend only on shared harness contracts.',
-        });
-      }
       if (match[1]) continue;
       dependencies.push(targetName);
 

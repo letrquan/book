@@ -314,7 +314,7 @@ function configCommandEffect(
     return {
       type: 'local-message',
       content:
-        formatSettingsKeyHelp('Supported keys (experimental.* is user-global/--settings only):') +
+        formatSettingsKeyHelp('Supported keys:') +
         '\n\nUsage: /config <key>=<value>            writes the layer that setting uses\n' +
         '                                        (user-global for all but theme)\n' +
         '       /config --global <key>=<value>   force <BOOK_HOME>/settings.json\n' +
@@ -339,16 +339,6 @@ function configCommandEffect(
       context,
     );
   }
-  if (/^(?:compact-strategy|compactStrategy)(?:\s|=)/i.test(rest)) {
-    return {
-      type: 'local-message',
-      content:
-        'Compact strategy selection was removed. Summary is the default; enable the ' +
-        'Zero-Mem experiment with BOOK_EXPERIMENTAL_ZERO_MEM=true or ' +
-        'experimental.zeroMem=true in <BOOK_HOME>/settings.json (normally ' +
-        '~/.book/settings.json), or pass an explicit --settings file.',
-    };
-  }
   if (!rest.includes('=')) {
     return { type: 'local-message', content: 'Usage: /config [key=value] or /config --help' };
   }
@@ -367,7 +357,7 @@ function configCommandEffect(
 
   // Ahead of the live branch as well as the write, so a refused key cannot be
   // reached through whichever of the two paths happens not to check it.
-  const refusal = guardSettingWrite(key, value);
+  const refusal = guardSettingWrite(key);
   if (refusal) return { type: 'local-message', content: `✕ ${refusal}`, isError: true };
 
   // Naming the layer a setting already uses is the same request as naming none;

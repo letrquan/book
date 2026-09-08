@@ -69,7 +69,6 @@
     "bench:runtime": "tsx src/tui/__benchmarks__/runtime.bench.ts",
     "eval:edit": "tsx scripts/edit-eval.ts",
     "eval:compact": "tsx scripts/compact-eval.ts",
-    "eval:zero-mem": "tsx scripts/zero-mem-eval.ts",
     "eval:skills": "tsx scripts/skill-eval.ts",
     "eval:review": "tsx scripts/review-eval.ts",
     "apply:ink-patch": "node scripts/apply-ink-patch.mjs",
@@ -106,7 +105,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@huggingface/transformers": "^4.2.0",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
@@ -128,14 +126,6 @@
     "tsx": "^4.23.12",
     "typescript": "5.9.3",
     "vitest": "^4.1.9"
-  },
-  "peerDependencies": {
-    "@huggingface/transformers": "^4.2.0"
-  },
-  "peerDependenciesMeta": {
-    "@huggingface/transformers": {
-      "optional": true
-    }
   },
   "overrides": {
     "postcss": "8.5.26",

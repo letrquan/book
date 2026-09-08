@@ -15,7 +15,6 @@ export function defaultConfig(overrides: Partial<AgentConfig> = {}): AgentConfig
     maxTurns: 5,
     maxTokens: 128000,
     compactStrategy: settings.compactStrategy,
-    experimentalZeroMem: false,
     autoCompactEnabled: false,
     workspace: '.',
     animation: { typewriterSpeed: 3, spinnerStyle: 'braille' },

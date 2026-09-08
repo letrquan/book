@@ -2,8 +2,6 @@ import type { AgentConfig } from './types/runtime.js';
 import type { Message, Usage } from './types/messages.js';
 import type { CompactRequestHints } from './types/sessions.js';
 import type { FileObservation, NestedToolObserver, UserQuestionHandler } from './types/tools.js';
-import type { HarnessObserver } from './harness/contracts.js';
-import { wrapAgentLoopCallbacks } from './harness/coordinator.js';
 import { runAgentLoop } from './agent/loop.js';
 import { SessionRuntime } from './session/runtime.js';
 import { applyModelDefaults, resolveModelProviderConfig } from './config.js';
@@ -37,13 +35,6 @@ export async function runSubagent(
     agentPath?: string[];
     /** Parent file observations, copied so same-workspace edits need no re-Read. */
     fileObservationSeed?: ReadonlyMap<string, FileObservation>;
-    /** Observe-mode evidence: child events join the parent's root stream. */
-    harness?: {
-      observer: HarnessObserver;
-      runId: string;
-      rootRunId?: string;
-      parentRunId?: string;
-    };
   },
 ): Promise<{ content: string; error?: string }> {
   const registry = createCapabilityRegistry(fullRegistry, def.allowedTools);
@@ -67,26 +58,6 @@ export async function runSubagent(
   let result = '';
   let error: string | undefined;
 
-  const harness = options?.harness;
-  if (harness) {
-    try {
-      const attributes: Record<string, import('./harness/contracts.js').HarnessEventAttribute> = {
-        agentName: def.name.slice(0, 128) as never,
-        child: true,
-      };
-      if (harness.rootRunId) attributes.rootRunId = harness.rootRunId.slice(0, 128) as never;
-      if (harness.parentRunId) attributes.parentRunId = harness.parentRunId.slice(0, 128) as never;
-      harness.observer.enqueue({
-        type: 'subagent_handoff_created',
-        occurredAt: Date.now(),
-        runId: harness.runId,
-        parentRunId: harness.parentRunId,
-        attributes,
-      });
-    } catch {
-      // Evidence is best-effort here; the child task result must not change.
-    }
-  }
   const baseCallbacks = {
     onText: (text: string) => {
       result += text;
@@ -116,12 +87,7 @@ export async function runSubagent(
       registry,
       prompt,
       history,
-      harness
-        ? wrapAgentLoopCallbacks(baseCallbacks, {
-            observer: harness.observer,
-            runId: harness.runId,
-          })
-        : baseCallbacks,
+      baseCallbacks,
       'bypassPermissions', // subagents run with bypass to avoid interactive prompts
       {
         // The task prompt came from the delegating model, not from a person.
@@ -135,7 +101,6 @@ export async function runSubagent(
         agentPath: options?.agentPath,
         systemPromptAppend: def.body,
         hideAgents: true,
-        harnessObserver: harness ? { observer: harness.observer, runId: harness.runId } : undefined,
       },
     );
 

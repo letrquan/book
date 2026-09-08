@@ -39,7 +39,6 @@ import {
 } from './agents/completion-notification.js';
 import { getOrCreateAgentManager } from './agents/manager.js';
 import { resolvePermissionMode } from './permission-mode.js';
-import { assertHarnessModeAvailable, createHarnessCoordinator } from './harness/coordinator.js';
 
 /**
  * Re-price restored tokens.
@@ -85,10 +84,6 @@ export async function runHeadless(
   registry: ToolRegistry,
   opts: HeadlessOptions,
 ): Promise<HeadlessResult> {
-  // Direct SDK/embedding callers may bypass settings startup. Preserve the
-  // fail-before-run-setup boundary for modes this build does not implement.
-  const harnessMode = config.settings.harness.mode;
-  assertHarnessModeAvailable(harnessMode);
   const mode = resolvePermissionMode(config.settings, opts.mode);
   const stdout = opts.stdout ?? process.stdout;
   const emit = (obj: unknown) => {
@@ -120,12 +115,6 @@ export async function runHeadless(
     todos: runtime.todos.length,
     tasks: runtime.tasks.length,
   });
-  const harnessCoordinator =
-    harnessMode === 'off'
-      ? undefined
-      : createHarnessCoordinator(harnessMode, { workspace: config.workspace });
-  /** Latest terminal outcome per root; the deferred seal uses it after linked turns finish. */
-  const harnessRootOutcomes = new Map<string, AgentTerminalOutcome>();
 
   try {
     if (opts.outputFormat === 'stream-json') {
@@ -380,7 +369,6 @@ export async function runHeadless(
         const outcome = await agentSession.compact({
           config,
           history,
-          sourceHistory: transcript,
           compactBoundaries,
           sessionId,
           transcriptOrdinal: transcript.length,
@@ -429,7 +417,6 @@ export async function runHeadless(
           registry,
           prompt,
           history: contextHistory,
-          transcript,
           compactBoundaries,
           mode,
           sessionId: runtimeSessionId,
@@ -438,8 +425,6 @@ export async function runHeadless(
           callbacks: createRunCallbacks(runContext, (outcome) => {
             runOutcome = outcome;
           }),
-          harnessCoordinator,
-          harnessFinalize: false,
           runContext,
           maxBudgetUsd: opts.maxBudgetUsd,
           options: {
@@ -470,7 +455,6 @@ export async function runHeadless(
         const failedOutcome =
           runOutcome ??
           createTerminalOutcome('interrupted', 'missing_terminal', { partialOutput: false });
-        harnessRootOutcomes.set(runContext.rootRunId, failedOutcome);
         recordRunResult({
           context: runContext,
           outcome: failedOutcome,
@@ -491,7 +475,6 @@ export async function runHeadless(
         createTerminalOutcome('interrupted', 'missing_terminal', {
           partialOutput: updated.some((message) => message.role === 'assistant'),
         });
-      harnessRootOutcomes.set(runContext.rootRunId, turnOutcome);
       recordRunResult({
         context: runContext,
         outcome: turnOutcome,
@@ -696,7 +679,6 @@ export async function runHeadless(
       const contextLimit = resolveContextLimit(config);
       const hostCompactAttemptKey = `${usagePressureTokens(lastUsage)}:${contextHistory.length}`;
       if (
-        !config.experimentalZeroMem &&
         config.autoCompactEnabled !== false &&
         contextLimit != null &&
         shouldCompact(lastUsage, contextLimit) &&
@@ -707,7 +689,6 @@ export async function runHeadless(
           const outcome = await agentSession.compact({
             config,
             history: contextHistory,
-            sourceHistory: transcript,
             compactBoundaries,
             sessionId,
             transcriptOrdinal: transcript.length,
@@ -951,20 +932,6 @@ export async function runHeadless(
 
     return result;
   } finally {
-    // Deferred root seal: linked continuation turns share each root stream, so
-    // the terminal record and seal land only after every linked turn finished.
-    if (harnessCoordinator) {
-      for (const [rootRunId, outcome] of harnessRootOutcomes) {
-        try {
-          await harnessCoordinator.finalizeRun(rootRunId, {
-            status: outcome.status === 'timed_out' ? 'timed-out' : outcome.status,
-            reasonCode: outcome.reason,
-          });
-        } catch {
-          // Evidence sealing is best-effort; the user-facing result is already decided.
-        }
-      }
-    }
     disposeCrashHandlers?.();
     agentSession.dispose('headless_complete');
   }

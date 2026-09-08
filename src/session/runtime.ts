@@ -14,7 +14,6 @@ import type { ResolvedSettings, SkillSettings } from '../settings.js';
 import { createSandbox, type Sandbox } from '../sandbox.js';
 import { SkillWatcher } from '../skill-watcher.js';
 import type { DiscoverSkillsOptions } from '../skills.js';
-import { ZeroMemRuntime } from '../agent/zero-mem-runtime.js';
 
 export interface SessionRuntimeOptions {
   tasks?: AgentTask[];
@@ -30,7 +29,6 @@ export interface SessionRuntimeOptions {
   skillRegistry?: SkillRegistry;
   /** Skill root discovery options, shared by the registry and the watcher so they agree. */
   skillDiscoveryOptions?: DiscoverSkillsOptions;
-  zeroMemRuntime?: ZeroMemRuntime;
 }
 
 /** Mutable resources owned by one logical agent session. */
@@ -57,7 +55,6 @@ export class SessionRuntime {
   readonly runAccounting: RunAccounting;
   readonly runAmbientSnapshots: Map<string, AgentRunAmbientSnapshot>;
   readonly shellManager: ShellJobManager;
-  readonly zeroMemRuntime: ZeroMemRuntime;
   private sandboxInstance?: { key: string; sandbox: Sandbox | null };
   private skillRegistry?: SkillRegistry;
   private readonly skillDiscoveryOptions: DiscoverSkillsOptions;
@@ -87,7 +84,6 @@ export class SessionRuntime {
     this.runAccounting = options.runAccounting ?? new RunAccounting();
     this.runAmbientSnapshots = options.runAmbientSnapshots ?? new Map();
     this.shellManager = new ShellJobManager(this.backgroundShells);
-    this.zeroMemRuntime = options.zeroMemRuntime ?? new ZeroMemRuntime();
     this.traceId = options.traceId ?? crypto.randomUUID();
     this.skillRegistry = options.skillRegistry;
     this.skillDiscoveryOptions = options.skillDiscoveryOptions ?? {};
@@ -275,7 +271,6 @@ export class SessionRuntime {
     this.skillChangeListeners.clear();
     this.agentManager?.dispose();
     this.agentManager = undefined;
-    void this.zeroMemRuntime.dispose().catch(() => undefined);
     this.childProcesses.clear();
   }
 }

@@ -32,7 +32,6 @@ import { installFrameCapture } from './frame-buffer.js';
 import { isInkIncrementalRendererPatched } from './ink-patch.js';
 import { resolveTuiRendererMode } from './tui-renderer-mode.js';
 import { resolvePermissionMode } from '../permission-mode.js';
-import { assertSelectableWorkflow } from '../harness/coordinator.js';
 import { spawn } from 'node:child_process';
 import { resolveBookHome } from '../book-home.js';
 
@@ -172,13 +171,6 @@ export async function runMainAction(options: Record<string, unknown>): Promise<v
         throw new Error('--agents must be adaptive, manual, or off');
       }
       config.settings.agents.mode = agentsMode as 'adaptive' | 'manual' | 'off';
-    }
-    if (options.harnessWorkflow !== undefined) {
-      // Run-scoped: it beats the persisted settings value and is not written back.
-      const workflow = String(options.harnessWorkflow).trim();
-      if (!workflow) throw new Error('--harness-workflow requires a workflow id');
-      assertSelectableWorkflow(config.settings.harness.mode, workflow);
-      config.harnessWorkflowOverride = workflow;
     }
     if (options.provider) {
       const VALID_PROVIDERS = new Set(['anthropic', 'openai', 'auto']);

@@ -375,15 +375,7 @@ export interface SystemPromptOverrides {
    */
   toolCatalogSummary?: string;
   /**
-   * Host-rendered harness execution policy. It belongs to the dynamic zone so
-   * switching workflows does not invalidate the cached prefix, and it is kept
-   * separate from `append`, which carries unrelated cached agent text.
-   */
-  workflowPolicy?: string;
-  /**
-   * Activation-class policy — active skill frames and activation notices. It
-   * shares the dynamic zone with `workflowPolicy` so activating a skill costs
-   * one message-cache miss instead of invalidating the cached prefix too.
+   * Activation-class policy — active skill frames and activation notices.
    */
   dynamicPolicy?: string;
   /**
@@ -507,7 +499,6 @@ export async function buildSystemPromptZones(
       .filter(Boolean)
       .join('\n\n'),
     dynamicSuffix: [
-      overrides?.workflowPolicy ?? '',
       overrides?.dynamicPolicy ?? '',
       overrides?.toolCatalogSummary
         ? ['## Deferred tool catalog', overrides.toolCatalogSummary].join('\n')

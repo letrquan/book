@@ -690,7 +690,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         const contextLimit = resolveContextLimit(liveConfig);
         const hostCompactAttemptKey = `${usagePressureTokens(hostUsageRef.current)}:${contextHistoryRef.current.length}`;
         if (
-          !liveConfig.experimentalZeroMem &&
           liveConfig.autoCompactEnabled !== false &&
           contextLimit != null &&
           shouldCompact(hostUsageRef.current, contextLimit) &&
@@ -708,7 +707,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             const autoOutcome = await agentSession.compact({
               config: liveConfig,
               history: contextHistoryRef.current,
-              sourceHistory: messagesRef.current,
               compactBoundaries,
               sessionId: activeSessionId,
               transcriptOrdinal: messagesRef.current.length,
@@ -819,7 +817,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         contextMessage: messageOptions?.contextMessage,
         createUserMessage,
         history: () => contextHistoryRef.current,
-        transcript: () => messagesRef.current,
         compactBoundaries,
         mode: modeRef.current,
         sessionId: activeSessionId,
@@ -930,7 +927,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
             const outcome = await agentSession.compact({
               config: liveConfigRef.current,
               history,
-              sourceHistory: messagesRef.current,
               compactBoundaries,
               sessionId: activeSessionId,
               transcriptOrdinal: messagesRef.current.length,
@@ -1316,7 +1312,6 @@ export function useAgent(config: AgentConfig, session: UseAgentSessionOptions) {
         const outcome = await agentSession.compact({
           config: liveConfigRef.current,
           history: contextHistoryRef.current,
-          sourceHistory: messagesRef.current,
           compactBoundaries,
           sessionId: activeSessionId,
           transcriptOrdinal: messagesRef.current.length,

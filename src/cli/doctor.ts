@@ -92,15 +92,9 @@ async function settingsLayers(workspace: string): Promise<Array<[string, string]
  * Which layer a configuration failure first appears in.
  *
  * Some rejections name their own file: malformed JSON and schema violations both
- * carry a path. The ones that do not are precisely the ones about the *merged*
- * value -- `harness.workflow` is validated against the effective `harness.mode`,
- * so no single file is wrong on its own and none of them says so. Finding it
- * meant reading all three by hand.
- *
- * Resolving cumulative prefixes of the stack answers it directly: the first
- * prefix that fails ends at the layer that turned a working configuration into a
- * broken one. Undefined means no prefix loads, so the cause is outside the
- * layers -- an environment variable, or a legacy `.bookrc.json`.
+ * carry a path. Resolving cumulative prefixes of the stack answers which layer
+ * turned a working configuration into a broken one. Undefined means no prefix loads,
+ * so the cause is outside the layers -- an environment variable, or a legacy `.bookrc.json`.
  */
 async function attributeFailingLayer(workspace: string): Promise<string | undefined> {
   const layers = await settingsLayers(workspace);
@@ -128,10 +122,9 @@ async function attributeFailingLayer(workspace: string): Promise<string | undefi
  * Report a configuration that would not load at all.
  *
  * A missing credential is already handled by allowMissingApiKey, but every
- * other rejection - malformed JSON, a schema violation, an unknown harness
- * workflow - used to escape loadConfig as an unhandled stack trace. A broken
- * settings file is precisely what doctor exists to diagnose, so it is a finding
- * to render, not a reason to die.
+ * other rejection - malformed JSON, a schema violation - used to escape
+ * loadConfig as an unhandled stack trace. A broken settings file is precisely
+ * what doctor exists to diagnose, so it is a finding to render, not a reason to die.
  */
 async function reportUnloadableConfig(workspace: string, error: unknown): Promise<void> {
   const { existsSync } = await import('fs');

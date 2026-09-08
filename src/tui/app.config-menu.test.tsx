@@ -49,7 +49,6 @@ function config(): AgentConfig {
     maxTurns: 4,
     maxTokens: 128000,
     compactStrategy: 'summary',
-    experimentalZeroMem: false,
     autoCompactEnabled: true,
     workspace: '/tmp/book',
     animation: { typewriterSpeed: 3, spinnerStyle: 'braille' },

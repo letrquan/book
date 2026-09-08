@@ -42,50 +42,7 @@ export function isWorkspaceScope(scope: SettingsScope): boolean {
   return scope === 'project' || scope === 'local';
 }
 
-/** Guidance shared by workspace-local settings mutation surfaces. */
-export const WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE =
-  'Experimental capability settings cannot be written to a workspace settings file ' +
-  '(.book/settings.json or .book/settings.local.json). ' +
-  'Set experimental.zeroMem in <BOOK_HOME>/settings.json (normally ~/.book/settings.json), ' +
-  'pass an explicit --settings file when starting Book, or use ' +
-  'BOOK_EXPERIMENTAL_ZERO_MEM=true.';
-
-/**
- * `book config` refuses experimental flags in *every* scope, including the
- * user-global one it can otherwise write.
- *
- * The capability boundary is that opening a workspace must never opt a user
- * into unstable runtime behavior, and the way that is kept honest is that no
- * ordinary configuration command enables it — only hand-editing the trusted
- * file, an explicit `--settings` document, or a process environment opt-in.
- * Now that `config set` defaults to the user-global layer it *could* write the
- * flag, which is exactly why it still declines to: a gate that the shortest
- * available command satisfies is not a gate.
- */
-export const CONFIG_COMMAND_EXPERIMENTAL_SETTINGS_MESSAGE =
-  'Experimental capability settings cannot be written by `book config`, in any scope. ' +
-  'Set experimental.zeroMem by editing <BOOK_HOME>/settings.json (normally ' +
-  '~/.book/settings.json) directly, by passing an explicit --settings file when starting ' +
-  'Book, or with BOOK_EXPERIMENTAL_ZERO_MEM=true.';
-
-/** Experimental capabilities may only be selected by an explicitly trusted settings source. */
-export function isExperimentalSettingPath(path: string): boolean {
-  const normalized = path.trim().toLowerCase();
-  return normalized === 'experimental' || normalized.startsWith('experimental.');
-}
-
-/**
- * Every settings path a workspace file may not supply, with the guidance to
- * print when someone tries to write one there.
- *
- * One list because there are three writers - `book config set`, the `/config`
- * slash command, and `persistSettingsLocal` - and a scope added to only some of
- * them writes a value the loader silently strips, which is worse than a
- * refusal: the user believes they configured something that is being ignored.
- */
-const WORKSPACE_FORBIDDEN_SCOPES: ReadonlyArray<readonly [(path: string) => boolean, string]> = [
-  [isExperimentalSettingPath, WORKSPACE_EXPERIMENTAL_SETTINGS_MESSAGE],
-];
+const WORKSPACE_FORBIDDEN_SCOPES: ReadonlyArray<readonly [(path: string) => boolean, string]> = [];
 
 /** The guidance for a path no workspace layer may carry, or undefined if it may. */
 export function blockedWorkspaceSettingPath(path: string): string | undefined {
@@ -95,17 +52,7 @@ export function blockedWorkspaceSettingPath(path: string): string | undefined {
 /**
  * The guidance for a path no `<key>=<value>` configuration surface may write,
  * in any scope, or undefined if it may.
- *
- * Distinct from {@link blockedWorkspaceSettingPath} only in wording. Both refuse
- * the same two families, but the workspace messages explain that a *workspace
- * file* may not carry one and send the reader to `<BOOK_HOME>/settings.json` —
- * which, now that these commands default to the user layer, is the file the
- * refused write was already aimed at. Following either message verbatim
- * produced the same refusal a second time. The gate is that no ordinary
- * configuration command writes these, so the refusal has to name every scope,
- * including the one file the value is actually read from.
  */
 export function blockedConfigWritePath(path: string): string | undefined {
-  if (isExperimentalSettingPath(path)) return CONFIG_COMMAND_EXPERIMENTAL_SETTINGS_MESSAGE;
   return blockedWorkspaceSettingPath(path);
 }

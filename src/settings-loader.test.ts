@@ -42,7 +42,6 @@ describe('loadSettingsFile', () => {
       JSON.stringify({
         model: 'gpt-4o',
         compactStrategy: 'summary',
-        experimental: { zeroMem: true },
         compactModel: 'router/flash-reducer',
         maxTurns: 10,
         theme: 'paper-ink',
@@ -51,30 +50,26 @@ describe('loadSettingsFile', () => {
     const result = loadSettingsFile(join(dir, 'good.json'));
     expect(result?.model).toBe('gpt-4o');
     expect(result?.compactStrategy).toBe('summary');
-    expect(result?.experimental.zeroMem).toBe(true);
     expect(result?.compactModel).toBe('router/flash-reducer');
     expect(result?.maxTurns).toBe(10);
     expect(result?.theme).toBe('paper-ink');
   });
 
-  it('rejects the legacy Zero-Mem strategy with migration guidance', () => {
+  /**
+   * `compactStrategy` is now `"summary"` only, so the removed Zero-Mem selector
+   * would fail the schema and take the whole file with it. A setting that no
+   * longer exists must cost the user that key, not their install.
+   */
+  it('drops the removed Zero-Mem strategy instead of failing the document', () => {
     writeFileSync(
       join(dir, 'legacy-zero-mem.json'),
-      JSON.stringify({ compactStrategy: ' ZERO-MEM ' }),
+      JSON.stringify({ compactStrategy: 'zero-mem', model: 'gpt-4o' }),
     );
 
-    expect(() => loadSettingsFile(join(dir, 'legacy-zero-mem.json'))).toThrow(
-      'experimental.zeroMem=true',
-    );
-  });
+    const result = loadSettingsFile(join(dir, 'legacy-zero-mem.json'));
 
-  it('rejects an invalid harness mode', () => {
-    writeFileSync(
-      join(dir, 'bad-harness.json'),
-      JSON.stringify({ harness: { mode: 'sometimes' } }),
-    );
-
-    expect(() => loadSettingsFile(join(dir, 'bad-harness.json'))).toThrow(/Invalid settings/);
+    expect(result?.compactStrategy).toBeUndefined();
+    expect(result?.model).toBe('gpt-4o');
   });
 
   it('keeps compact provider registry metadata', () => {
@@ -183,7 +178,6 @@ describe('resolveSettings — layered merging', () => {
     const result = resolveSettings(dir);
     expect(result.permissions.allow).toEqual([]);
     expect(result.compactStrategy).toBe('summary');
-    expect(result.experimental.zeroMem).toBe(false);
     expect(result.sandbox.enabled).toBe(false);
     expect(result.memory).toEqual({ enabled: true, autoSave: true, requireApproval: true });
   });
@@ -330,38 +324,21 @@ describe('resolveSettings — layered merging', () => {
     expect(result.additionalDirectories).toEqual([normalize('../one')]);
   });
 
-  it('allows a trusted user-global document to enable the Zero-Mem experiment', () => {
-    const userPath = join(userDir, 'user.json');
-    writeFileSync(userPath, JSON.stringify({ experimental: { zeroMem: true } }));
-
-    const result = resolveSettings(dir, undefined, { userSettingsPath: userPath });
-
-    expect(result.experimental.zeroMem).toBe(true);
-  });
-
-  it('withholds Zero-Mem opt-ins from both workspace settings layers', () => {
+  /**
+   * A removed block is discarded by validation wherever it appears, so a stale
+   * `experimental` key costs the user that key and nothing else.
+   */
+  it('ignores the removed experimental block from every layer', () => {
     const projectPath = join(dir, 'project.json');
-    const localPath = join(dir, 'local.json');
     writeFileSync(
       projectPath,
       JSON.stringify({ model: 'project-model', experimental: { zeroMem: true } }),
     );
-    writeFileSync(localPath, JSON.stringify({ experimental: { zeroMem: true } }));
 
-    const result = resolveSettings(dir, undefined, {
-      projectSettingsPath: projectPath,
-      localSettingsPath: localPath,
-    });
+    const result = resolveSettings(dir, undefined, { projectSettingsPath: projectPath });
 
     expect(result.model).toBe('project-model');
-    expect(result.experimental.zeroMem).toBe(false);
-  });
-
-  it('allows an explicit --settings document to enable the Zero-Mem experiment', () => {
-    const overridePath = join(dir, 'explicit.json');
-    writeFileSync(overridePath, JSON.stringify({ experimental: { zeroMem: true } }));
-
-    expect(resolveSettings(dir, overridePath).experimental.zeroMem).toBe(true);
+    expect(result).not.toHaveProperty('experimental');
   });
 
   it('rejects malformed settings files with clear error', () => {
@@ -416,26 +393,6 @@ describe('resolveSettings — layered merging', () => {
     });
     expect(result.disableBypassPermissionsMode).toBe(true);
   });
-});
-
-describe('harness settings', () => {
-  it('defaults to the disabled mode', () => {
-    expect(resolveSettings(dir).harness).toEqual({ mode: 'off' });
-  });
-
-  it.each(['shadow', 'active', 'learn'] as const)(
-    'rejects the valid but unavailable %s mode after settings resolution',
-    (mode) => {
-      const projectSettingsDir = join(dir, '.book');
-      mkdirSync(projectSettingsDir, { recursive: true });
-      writeFileSync(
-        join(projectSettingsDir, 'settings.json'),
-        JSON.stringify({ harness: { mode } }),
-      );
-
-      expect(() => resolveSettings(dir)).toThrow(`Harness mode "${mode}"`);
-    },
-  );
 });
 
 describe('trust decisions come from outside the workspace', () => {

@@ -91,65 +91,27 @@ describe('loadConfig model defaults', () => {
     expect(loadConfig(workspace).compactModel).toBe('router/env-reducer');
   });
 
-  it('keeps summary compaction and the Zero-Mem experiment disabled by default', () => {
-    const config = loadConfig(workspace, { noSettings: true });
-
-    expect(config.compactStrategy).toBe('summary');
-    expect(config.experimentalZeroMem).toBe(false);
-    expect(config.settings.experimental.zeroMem).toBe(false);
+  it('uses summary compaction, which is the only strategy', () => {
+    expect(loadConfig(workspace, { noSettings: true }).compactStrategy).toBe('summary');
   });
 
-  it('loads the Zero-Mem experiment from the trusted user-global settings file', () => {
-    const bookHome = join(workspace, 'book-home');
-    mkdirSync(bookHome, { recursive: true });
+  /**
+   * Zero-Mem's selector survives in real settings files. Removing the feature
+   * must not take a working install down with it: `compactStrategy` is now
+   * `"summary"` only, so an obsolete value would fail the whole document and
+   * stop Book from starting.
+   */
+  it('starts normally when a settings file still selects the removed Zero-Mem strategy', () => {
     writeFileSync(
-      join(bookHome, 'settings.json'),
-      JSON.stringify({ experimental: { zeroMem: true } }),
+      join(workspace, '.book', 'settings.json'),
+      JSON.stringify({ compactStrategy: 'zero-mem', maxTurns: 12 }),
     );
-    process.env.BOOK_HOME = bookHome;
 
     const config = loadConfig(workspace);
 
     expect(config.compactStrategy).toBe('summary');
-    expect(config.experimentalZeroMem).toBe(true);
-    expect(config.settings.experimental.zeroMem).toBe(true);
-  });
-
-  it('loads the Zero-Mem experiment from an explicit --settings document', () => {
-    const overridePath = join(workspace, 'explicit-settings.json');
-    writeFileSync(overridePath, JSON.stringify({ experimental: { zeroMem: true } }));
-
-    expect(loadConfig(workspace, { settingsOverridePath: overridePath }).experimentalZeroMem).toBe(
-      true,
-    );
-  });
-
-  it('allows a strict environment opt-in and opt-out for the Zero-Mem experiment', () => {
-    process.env.BOOK_EXPERIMENTAL_ZERO_MEM = ' TRUE ';
-    expect(loadConfig(workspace, { noSettings: true }).experimentalZeroMem).toBe(true);
-
-    process.env.BOOK_EXPERIMENTAL_ZERO_MEM = 'false';
-    expect(loadConfig(workspace, { noSettings: true }).experimentalZeroMem).toBe(false);
-
-    process.env.BOOK_EXPERIMENTAL_ZERO_MEM = '1';
-    expect(() => loadConfig(workspace, { noSettings: true })).toThrow(
-      'BOOK_EXPERIMENTAL_ZERO_MEM must be "true" or "false"',
-    );
-  });
-
-  it('rejects legacy Zero-Mem environment selection with migration guidance', () => {
-    process.env.BOOK_COMPACT_STRATEGY = 'SUMMARY';
-    expect(loadConfig(workspace, { noSettings: true }).compactStrategy).toBe('summary');
-
-    process.env.BOOK_COMPACT_STRATEGY = 'zero-mem';
-    expect(() => loadConfig(workspace, { noSettings: true })).toThrow(
-      'BOOK_EXPERIMENTAL_ZERO_MEM=true',
-    );
-
-    process.env.BOOK_COMPACT_STRATEGY = 'invalid';
-    expect(() => loadConfig(workspace, { noSettings: true })).toThrow(
-      'BOOK_COMPACT_STRATEGY is deprecated',
-    );
+    // The rest of the document still applies; only the removed key is dropped.
+    expect(config.settings.maxTurns).toBe(12);
   });
 });
 
@@ -165,105 +127,6 @@ describe('loadConfig permission defaults', () => {
   });
 });
 
-describe('loadConfig harness boundary', () => {
-  it('loads the inert off mode', () => {
-    writeFileSync(
-      join(workspace, '.book', 'settings.json'),
-      JSON.stringify({ harness: { mode: 'off' } }),
-    );
-
-    expect(loadConfig(workspace).settings.harness.mode).toBe('off');
-  });
-
-  it('rejects a valid future mode before constructing runtime configuration', () => {
-    writeFileSync(
-      join(workspace, '.book', 'settings.json'),
-      JSON.stringify({ harness: { mode: 'shadow' } }),
-    );
-
-    expect(() => loadConfig(workspace)).toThrow('Harness mode "shadow"');
-  });
-
-  it('accepts a workflow selection under an enabled mode', () => {
-    writeFileSync(
-      join(workspace, '.book', 'settings.json'),
-      JSON.stringify({ harness: { mode: 'observe', workflow: 'safe-edit' } }),
-    );
-
-    expect(loadConfig(workspace).settings.harness.workflow).toBe('safe-edit');
-  });
-
-  it('fails closed when a workflow is selected while the harness is off', () => {
-    writeFileSync(
-      join(workspace, '.book', 'settings.json'),
-      JSON.stringify({ harness: { mode: 'off', workflow: 'safe-edit' } }),
-    );
-
-    expect(() => loadConfig(workspace)).toThrow('requires an enabled harness mode');
-  });
-
-  it('rejects an unknown workflow id at load time', () => {
-    writeFileSync(
-      join(workspace, '.book', 'settings.json'),
-      JSON.stringify({ harness: { mode: 'observe', workflow: 'does-not-exist' } }),
-    );
-
-    expect(() => loadConfig(workspace)).toThrow('Unknown harness workflow "does-not-exist"');
-  });
-
-  it('rejects a path-like workflow id before it can address the candidate store', () => {
-    writeFileSync(
-      join(workspace, '.book', 'settings.json'),
-      JSON.stringify({ harness: { mode: 'observe', workflow: '../candidates/evil' } }),
-    );
-
-    expect(() => loadConfig(workspace)).toThrow();
-  });
-
-  it('leaves an off run on the baseline label when no workflow is selected', () => {
-    writeFileSync(
-      join(workspace, '.book', 'settings.json'),
-      JSON.stringify({ harness: { mode: 'off' } }),
-    );
-
-    const config = loadConfig(workspace);
-    expect(config.settings.harness.workflow).toBeUndefined();
-    expect(config.harnessWorkflowOverride).toBeUndefined();
-  });
-
-  it('rejects an unavailable mode before a requested migration creates storage', () => {
-    const bookHome = join(workspace, 'isolated-book-home');
-    mkdirSync(bookHome, { recursive: true });
-    writeFileSync(
-      join(bookHome, 'permissions.json'),
-      JSON.stringify({ rules: [{ toolName: 'Read', effect: 'allow' }] }),
-    );
-    process.env.BOOK_HOME = bookHome;
-    writeFileSync(
-      join(workspace, '.book', 'settings.json'),
-      JSON.stringify({ harness: { mode: 'shadow' } }),
-    );
-
-    expect(() => loadConfig(workspace, { runMigrations: true })).toThrow('Harness mode "shadow"');
-    expect(existsSync(join(workspace, '.book', 'settings.local.json'))).toBe(false);
-    expect(existsSync(join(workspace, '.book', 'migrations.json'))).toBe(false);
-  });
-
-  it('re-resolves settings after a requested migration succeeds', () => {
-    const bookHome = join(workspace, 'isolated-book-home');
-    mkdirSync(bookHome, { recursive: true });
-    writeFileSync(
-      join(bookHome, 'permissions.json'),
-      JSON.stringify({ rules: [{ toolName: 'Read', effect: 'allow' }] }),
-    );
-    process.env.BOOK_HOME = bookHome;
-
-    const config = loadConfig(workspace, { runMigrations: true });
-
-    expect(config.settings.permissions.allow).toContain('Read');
-    expect(existsSync(join(workspace, '.book', 'migrations.json'))).toBe(true);
-  });
-});
 
 describe('freezeAgentConfig', () => {
   it('deep-freezes resolved configuration without runtime resource fields', () => {

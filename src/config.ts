@@ -3,12 +3,12 @@ import { readFileSync, existsSync } from 'fs';
 import { isAbsolute, join, relative, resolve } from 'path';
 import { homedir } from 'os';
 import type { AgentConfig, RetryConfig } from './types/runtime.js';
-import { resolveSettings, migrateLegacyPermissions } from './settings-loader.js';
+import { resolveSettings, migrateLegacyPermissions, settingsLayerPaths } from './settings-loader.js';
+import { hadRemovedAuthConfiguration } from './settings-removed.js';
 import type { SettingsResolutionPaths } from './settings-loader.js';
 import { DEFAULT_SETTINGS, type CompactStrategy, type ResolvedSettings } from './settings.js';
 import { loadMemoryContext } from './memory-store.js';
 import { isEffortLevel } from './commands/effort.js';
-import { assertHarnessModeAvailable, assertSelectableWorkflow } from './harness/coordinator.js';
 import { createModelWindowStore, type ModelWindowStore } from './model-window-store.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
@@ -72,7 +72,7 @@ export interface LoadConfigOptions {
   settingsOverridePath?: string;
   /** If true, skip all settings.json layers entirely (use defaults + legacy .bookrc.json). */
   noSettings?: boolean;
-  /** Run storage migrations after the effective settings and harness mode are validated. */
+  /** Run storage migrations after effective settings are validated. */
   runMigrations?: boolean;
   /** CLI -m/--model override, applied before provider registry resolution. */
   modelOverride?: string;
@@ -104,8 +104,6 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   let settings = noSettings
     ? structuredClone(DEFAULT_SETTINGS)
     : resolveSettings(resolvedWorkspace, settingsOverridePath, options?.settingsPaths);
-  assertHarnessModeAvailable(settings.harness.mode);
-  assertSelectableWorkflow(settings.harness.mode, settings.harness.workflow);
 
   if (!noSettings && options?.runMigrations) {
     const migrated = migrateLegacyPermissions(resolvedWorkspace, undefined, settings);
@@ -170,15 +168,6 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const rawModel =
     options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
-  validateLegacyCompactStrategy(process.env.BOOK_COMPACT_STRATEGY);
-  const experimentalZeroMem =
-    process.env.BOOK_EXPERIMENTAL_ZERO_MEM === undefined
-      ? settings.experimental.zeroMem
-      : parseExperimentalZeroMem(process.env.BOOK_EXPERIMENTAL_ZERO_MEM);
-  settings = {
-    ...settings,
-    experimental: { ...settings.experimental, zeroMem: experimentalZeroMem },
-  };
   const compactStrategy: CompactStrategy = 'summary';
   const defaultApiKey = process.env.BOOK_API_KEY || '';
   const explicitBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl;
@@ -198,7 +187,6 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     modelSelection: rawModel,
     compactModel,
     compactStrategy,
-    experimentalZeroMem,
     // Undefined = unlimited. Only set when env/settings/legacy explicitly provide a value.
     maxTurns: process.env.BOOK_MAX_TURNS
       ? parseInt(process.env.BOOK_MAX_TURNS, 10)
@@ -231,9 +219,23 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   config.modelProviderWarning = describeUnresolvedProviderPrefix(settings.provider, rawModel);
 
   if (!config.apiKey && !options?.allowMissingApiKey) {
+    // Someone whose only credential was a subscription profile arrives here
+    // after their `auth` block was silently discarded by validation. Telling
+    // them to set a key they never had describes a user who configured
+    // nothing, not one whose working configuration was removed.
     throw new Error(
       'BOOK_API_KEY or provider.<id>.apiKey not set. Set BOOK_API_KEY ' +
-        'or use {env:VAR} in settings.',
+        'or use {env:VAR} in settings.' +
+        (hadRemovedAuthConfiguration(
+          noSettings
+            ? []
+            : settingsLayerPaths(resolvedWorkspace, settingsOverridePath, options?.settingsPaths),
+          process.env,
+        )
+          ? '\n\nSubscription authentication (`book auth login`) was removed in this version, ' +
+            'and Book authenticates with API keys only. The auth configuration still on this ' +
+            'machine is no longer read; `book doctor` lists it and what to delete.'
+          : ''),
     );
   }
 
@@ -243,8 +245,12 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
 function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
   return {
     ...config,
-    apiKey: config.defaultApiKey ?? config.apiKey,
-    baseUrl: config.defaultBaseUrl ?? config.baseUrl,
+    // `||`, not `??`: `defaultApiKey` is `''` when BOOK_API_KEY is unset, and
+    // an empty string is present as far as `??` is concerned. Switching to an
+    // unprefixed model would then wipe a key that came from a provider entry
+    // and send every later request out with an empty credential.
+    apiKey: config.defaultApiKey || config.apiKey,
+    baseUrl: config.defaultBaseUrl || config.baseUrl,
     model,
     modelSelection: model,
     modelInfo: undefined,
@@ -335,7 +341,9 @@ export function resolveModelProviderConfig(
   const provider = config.settings.provider[providerId];
   if (!provider) return plainModelConfig(config, rawModel);
 
-  const fallbackApiKey = config.defaultApiKey !== undefined ? config.defaultApiKey : config.apiKey;
+  // Same empty-string trap as `plainModelConfig`: an unset BOOK_API_KEY is `''`,
+  // which is defined, so a presence test would prefer it over a real key.
+  const fallbackApiKey = config.defaultApiKey || config.apiKey;
   const apiKey = resolveSecret(provider.apiKey, config.workspace) ?? fallbackApiKey;
   return {
     ...config,
@@ -397,26 +405,6 @@ function validateProvider(raw: string | undefined): AgentConfig['provider'] {
   if (!raw) return undefined;
   const normalized = raw.trim().toLowerCase();
   return VALID_PROVIDERS.has(normalized) ? (normalized as AgentConfig['provider']) : undefined;
-}
-
-function validateLegacyCompactStrategy(raw: string | undefined): void {
-  if (raw === undefined) return;
-  const normalized = raw.trim().toLowerCase();
-  if (normalized === 'summary') return;
-  if (normalized === 'zero-mem') {
-    throw new Error(
-      'BOOK_COMPACT_STRATEGY=zero-mem is no longer supported. Set ' +
-        'BOOK_EXPERIMENTAL_ZERO_MEM=true to enable the experimental Zero-Mem runtime.',
-    );
-  }
-  throw new Error('BOOK_COMPACT_STRATEGY is deprecated and, when present, must be "summary"');
-}
-
-function parseExperimentalZeroMem(raw: string): boolean {
-  const normalized = raw.trim().toLowerCase();
-  if (normalized === 'true') return true;
-  if (normalized === 'false') return false;
-  throw new Error('BOOK_EXPERIMENTAL_ZERO_MEM must be "true" or "false"');
 }
 
 function clampInt(raw: string, min: number, max: number): number {

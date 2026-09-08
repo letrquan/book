@@ -13,7 +13,6 @@ import { toolSuccess } from './tools/result.js';
 import type { AgentEvent } from './session/agent-events.js';
 import type { AgentManager } from './agents/manager.js';
 import type { AgentCompletionNotification } from './agents/types.js';
-import { RunEvidenceStore } from './harness/run-store.js';
 
 const config = defaultConfig({ baseUrl: 'http://localhost/v1' });
 let tempDirs: string[] = [];
@@ -1154,79 +1153,6 @@ describe('runHeadless — runtime stores', () => {
   });
 });
 
-describe('runHeadless — harness observation', () => {
-  it('rejects unavailable modes before constructing run state', async () => {
-    const unavailable = freshConfig({ workspace: makeWorkspace() });
-    unavailable.settings.harness.mode = 'shadow';
-    await expect(
-      runHeadless(unavailable, createDefaultRegistry(), {
-        prompt: 'must not start',
-        inputFormat: 'text',
-        outputFormat: 'text',
-        history: [],
-        mode: 'bypassPermissions',
-        persistSession: false,
-        stdout: { write: () => true },
-      }),
-    ).rejects.toThrow(/unavailable/);
-  });
-
-  it('seals one root evidence stream per prompt and keeps user output identical to off', async () => {
-    const workspace = makeWorkspace();
-    const bookHome = mkdtempSync(join(tmpdir(), 'book-headless-harness-'));
-    tempDirs.push(bookHome);
-    vi.stubEnv('BOOK_HOME', bookHome);
-    try {
-      const collect = () => {
-        const writes: string[] = [];
-        return {
-          writes,
-          stdout: {
-            write: (s: string) => {
-              writes.push(s);
-              return true;
-            },
-          },
-        };
-      };
-      const observeConfig = freshConfig({ workspace });
-      observeConfig.settings.harness.mode = 'observe';
-      const observe = collect();
-      const observeResult = await runHeadless(observeConfig, createDefaultRegistry(), {
-        prompt: 'say hi',
-        inputFormat: 'text',
-        outputFormat: 'text',
-        history: [],
-        mode: 'bypassPermissions',
-        persistSession: false,
-        stdout: observe.stdout,
-      });
-      const off = collect();
-      await runHeadless(freshConfig({ workspace }), createDefaultRegistry(), {
-        prompt: 'say hi',
-        inputFormat: 'text',
-        outputFormat: 'text',
-        history: [],
-        mode: 'bypassPermissions',
-        persistSession: false,
-        stdout: off.stdout,
-      });
-      expect(observe.writes).toEqual(off.writes);
-
-      const store = new RunEvidenceStore({ workspace, bookHome });
-      const rootRunId = observeResult.runs![0]!.context.rootRunId;
-      const run = await store.readRun(rootRunId);
-      expect(run.status).toBe('complete');
-      expect(run.seal?.terminalStatus).toBe('completed');
-      expect(run.records[0]?.eventType).toBe('run_started');
-      expect(run.records.at(-1)?.eventType).toBe('run_completed');
-      // The off-mode run added no evidence stream.
-      expect((await store.rebuildIndex()).length).toBe(1);
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-});
 
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {

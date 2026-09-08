@@ -14,7 +14,6 @@ function config(): AgentConfig {
     model: 'test',
     maxTokens: 128_000,
     compactStrategy: 'summary',
-    experimentalZeroMem: false,
     autoCompactEnabled: false,
     workspace: process.cwd(),
     animation: { typewriterSpeed: 0, spinnerStyle: 'dots' },

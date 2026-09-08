@@ -1,6 +1,4 @@
 import { z } from 'zod';
-import { WORKFLOW_ID_MESSAGE, WORKFLOW_ID_PATTERN } from './harness/contracts.js';
-import type { HarnessMode } from './harness/contracts.js';
 
 /**
  * Permission rule: "Tool" or "Tool(specifier)" where specifier is a glob pattern
@@ -352,26 +350,6 @@ export const observabilitySettingsSchema = z.object({
 
 export type ObservabilitySettings = z.infer<typeof observabilitySettingsSchema>;
 
-export const harnessModeSchema: z.ZodType<HarnessMode> = z.enum([
-  'off',
-  'observe',
-  'shadow',
-  'active',
-  'learn',
-]);
-
-export const harnessSettingsSchema = z.object({
-  mode: harnessModeSchema.default('off'),
-  /**
-   * Explicit workflow selection by registry ID. Requires an enabled harness
-   * mode: under `off` there is no run evidence to record the choice against, so
-   * a selection fails closed rather than silently changing behavior.
-   */
-  workflow: z.string().regex(WORKFLOW_ID_PATTERN, WORKFLOW_ID_MESSAGE).optional(),
-});
-
-export type HarnessSettings = z.infer<typeof harnessSettingsSchema>;
-
 export const mcpProjectServerChoiceSchema = z.object({
   /** Hash of the server's command/args/env at decision time; a mismatch re-prompts. */
   fingerprint: z.string().min(1),
@@ -440,16 +418,9 @@ export type SkillSettings = z.infer<typeof skillSettingsSchema>;
 export type ProviderModelConfig = z.infer<typeof providerModelSchema>;
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;
 
-/** The supported production strategy; Zero-Mem is gated separately as experimental. */
+/** The supported production strategy. */
 export const compactStrategySchema = z.literal('summary');
 export type CompactStrategy = z.infer<typeof compactStrategySchema>;
-
-export const experimentalSettingsSchema = z.object({
-  /** Experimental query-time Zero-Mem retrieval. Disabled unless explicitly enabled. */
-  zeroMem: z.boolean().default(false),
-});
-
-export type ExperimentalSettings = z.infer<typeof experimentalSettingsSchema>;
 
 /**
  * Full settings.json schema — all keys that book supports.
@@ -459,8 +430,6 @@ export const bookSettingsSchema = z.object({
   model: z.string().optional(),
   /** Default strategy used to reduce historical conversation context. */
   compactStrategy: compactStrategySchema.optional(),
-  /** Unstable features that are unavailable under shipped defaults. */
-  experimental: experimentalSettingsSchema.default({}),
   /** Optional model used only to generate historical conversation checkpoints. */
   compactModel: z.string().min(1).optional(),
   /** Max agent turns per user message. Omit for unlimited. */
@@ -490,7 +459,6 @@ export const bookSettingsSchema = z.object({
   toolDiscovery: toolDiscoverySettingsSchema.default({}),
   toolExecution: toolExecutionSettingsSchema.default({}),
   observability: observabilitySettingsSchema.default({}),
-  harness: harnessSettingsSchema.default({}),
   mcp: mcpSettingsSchema.default({}),
   commands: commandSettingsSchema.default({}),
 });
@@ -532,7 +500,6 @@ export type ResolvedSettings = Required<
  */
 export const DEFAULT_SETTINGS: ResolvedSettings = {
   compactStrategy: 'summary',
-  experimental: { zeroMem: false },
   permissions: { allow: [], ask: [], deny: [], projectAllowRules: {} },
   sandbox: {
     enabled: false,
@@ -620,9 +587,6 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   observability: {
     toolTelemetry: true,
     toolTelemetryRetentionDays: 30,
-  },
-  harness: {
-    mode: 'off',
   },
   mcp: {
     projectServers: {},
