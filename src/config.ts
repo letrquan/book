@@ -3,13 +3,18 @@ import { readFileSync, existsSync } from 'fs';
 import { isAbsolute, join, relative, resolve } from 'path';
 import { homedir } from 'os';
 import type { AgentConfig, RetryConfig } from './types/runtime.js';
-import { resolveSettings, migrateLegacyPermissions, settingsLayerPaths } from './settings-loader.js';
+import {
+  resolveSettings,
+  migrateLegacyPermissions,
+  settingsLayerPaths,
+} from './settings-loader.js';
 import { hadRemovedAuthConfiguration } from './settings-removed.js';
 import type { SettingsResolutionPaths } from './settings-loader.js';
 import { DEFAULT_SETTINGS, type CompactStrategy, type ResolvedSettings } from './settings.js';
 import { loadMemoryContext } from './memory-store.js';
 import { isEffortLevel } from './commands/effort.js';
 import { createModelWindowStore, type ModelWindowStore } from './model-window-store.js';
+import { resolveShell } from './shell-selection.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
@@ -169,6 +174,9 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
   const compactStrategy: CompactStrategy = 'summary';
+  // Resolved once here: the Bash tool, the system prompt, and `book doctor`
+  // must all name the same shell for the whole session.
+  const shell = resolveShell({ requested: settings.shell });
   const defaultApiKey = process.env.BOOK_API_KEY || '';
   const explicitBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl;
   const defaultProviderOverride = validateProvider(process.env.BOOK_PROVIDER) || 'auto';
@@ -204,6 +212,7 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     animation: legacy?.animation || { typewriterSpeed: 3, spinnerStyle: 'braille' },
     accessibility: legacy?.accessibility || { screenReader: false, reducedMotion: false },
     settings,
+    shell,
     settingsContext: {
       overridePath: settingsOverridePath,
       noSettings,

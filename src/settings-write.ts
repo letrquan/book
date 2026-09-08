@@ -121,10 +121,10 @@ export type SettingWriteResult =
  * Would this write leave a merged configuration that no command can load?
  *
  * Validating the single layer being written does not determine the effective
- * configuration. `harness.workflow` is valid on its own and rejected against an
- * effective `harness.mode` of `off` — so the write succeeded and every
- * subsequent invocation, including the command that made it, failed before it
- * started. The recovery was hand-editing JSON.
+ * configuration, and a value that is valid in isolation can still leave a merge
+ * no command can load. That write used to succeed, after which every subsequent
+ * invocation — including the command that made it — failed before it started,
+ * leaving hand-editing JSON as the only recovery.
  *
  * The candidate layer is resolved in place of the real one, through the same
  * merge and the same assertions the loader runs, so this cannot drift from what

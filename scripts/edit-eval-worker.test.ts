@@ -3,14 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runEvaluationProcess } from '../src/harness/evaluation/runner.js';
-import { evaluateRunEligibility } from '../src/harness/evaluation/eligibility.js';
+import { runEvaluationProcess } from './eval-process.js';
+import { evaluateRunEligibility } from './eval-eligibility.js';
 import { query } from '../src/sdk.js';
 import type { EvalTask } from './edit-eval-fixtures.js';
 import { runEditEvalWorker } from './edit-eval-worker.js';
 
 vi.mock('../src/sdk.js', () => ({ query: vi.fn() }));
-vi.mock('../src/harness/evaluation/eligibility.js', () => ({
+vi.mock('./eval-eligibility.js', () => ({
   evaluateRunEligibility: vi.fn(),
 }));
 

@@ -153,8 +153,8 @@ describe('SDK runtime event bridge', () => {
     expect(forwardedTypes).toContain('agent_text_delta');
   });
 
-  it('rejects an unavailable harness mode before SDK startup migrations write files', async () => {
-    sessionFixture = createSessionFixture('book-sdk-harness-');
+  it('rejects an unloadable configuration before SDK startup migrations write files', async () => {
+    sessionFixture = createSessionFixture('book-sdk-unloadable-');
     const bookHome = join(sessionFixture.root, 'book-home');
     mkdirSync(bookHome, { recursive: true });
     writeFileSync(
@@ -165,7 +165,7 @@ describe('SDK runtime event bridge', () => {
     mkdirSync(join(sessionFixture.root, '.book'), { recursive: true });
     writeFileSync(
       join(sessionFixture.root, '.book', 'settings.json'),
-      JSON.stringify({ harness: { mode: 'shadow' } }),
+      JSON.stringify({ maxTurns: 0 }),
     );
 
     const iterator = query('unreachable', {
@@ -173,7 +173,7 @@ describe('SDK runtime event bridge', () => {
       persistSession: false,
     });
 
-    await expect(iterator.next()).rejects.toThrow('Harness mode "shadow"');
+    await expect(iterator.next()).rejects.toThrow('Invalid settings');
     expect(existsSync(join(sessionFixture.root, '.book', 'settings.local.json'))).toBe(false);
     expect(existsSync(join(sessionFixture.root, '.book', 'migrations.json'))).toBe(false);
   });

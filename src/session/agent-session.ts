@@ -1,7 +1,7 @@
 import type { AgentRuntimeEvent } from '../agents/types.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { runCompact, runPostCompactHooks, type RunCompactOptions } from '../agent/compact.js';
-import { resolveContextLimit } from '../models.js';
+
 import { runSessionEnd, runSessionStart } from './lifecycle.js';
 import type { SessionLifecycleOptions } from './lifecycle.js';
 import type { ToolRegistry } from '../tools/registry.js';
@@ -33,7 +33,7 @@ import {
   expandAtMentions,
   expandShellCommands,
 } from '../input/input-expansion.js';
-import { observationKey, workspaceIdentity } from '../tools/file-provenance.js';
+import { observationKey } from '../tools/file-provenance.js';
 import { AgentInteractionController } from './agent-interactions.js';
 import {
   AgentSessionOperations,

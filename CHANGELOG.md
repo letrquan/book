@@ -6,6 +6,28 @@ All notable changes to this project are documented in this file.
 
 ### Removed
 
+- **The adaptive harness and the experimental Zero-Mem capability.** Both were default-off research
+  surfaces that no shipped configuration reached, and together they were roughly 10,600 lines —
+  about a ninth of the codebase — that every change to the live paths had to be reasoned around.
+
+  Neither was close to earning that. The harness ledger's own eligibility check reported directory
+  sync unavailable, so no `observe` run ever produced promotion-eligible evidence; of its ten
+  planned phases three were built and the selector that would have made it a learning system was
+  not among them. Zero-Mem needed an optional `@huggingface/transformers` peer and a locally cached
+  embedding/NER pair before it could answer a single turn.
+
+  Gone with them: the `harness.*` and `experimental.*` settings blocks, the `--harness-workflow`
+  flag, `BOOK_EXPERIMENTAL_ZERO_MEM`, `BOOK_ZERO_MEM_MODEL_CACHE`, `BOOK_ZERO_MEM_LOCAL_FILES_ONLY`,
+  `BOOK_COMPACT_STRATEGY`, the `eval:zero-mem` script, and the `@huggingface/transformers` peer
+  dependency. Production summary compaction is untouched, including the Carried Ledger and the
+  residual tail; `compactStrategy` remains `summary` and is now the only strategy.
+
+  **A removed setting costs you the key, not your install.** `compactStrategy: "zero-mem"` would
+  otherwise fail the whole settings document against the surviving literal type and stop Book from
+  starting, with a validator dump naming no remedy — so removed values are dropped and removed
+  blocks are reported instead. `book doctor` lists the removed keys still present in each settings
+  layer and in the environment, and says what to delete.
+
 - **Subscription authentication over OAuth.** Book supports API-key authentication only. The
   `book auth` subcommand (`login`, `logout`, `status`), the `/login` slash command and TUI login
   picker, the `auth` configuration block, and subscription credential resolution across provider
@@ -17,6 +39,13 @@ All notable changes to this project are documented in this file.
   cannot speak (it appends `/chat/completions`, whereas that host serves the Responses API). Carrying
   a non-functional credential path is worse than not having one; Book now authenticates exclusively
   via API keys (`BOOK_API_KEY`, `provider.<id>.apiKey`, and `{env:VAR}` references).
+
+  **If you ever ran `book auth login`, delete `<BOOK_HOME>/auth.json`** (normally
+  `~/.book/auth.json`) and revoke the token with the provider. It holds a long-lived OAuth refresh
+  token that nothing in Book reads, reports or revokes any more; the file is left in place rather
+  than deleted for you, because a tool that removes credentials without being asked is worse than
+  one that tells you they are there. `book doctor` names the file while it exists, and the "no
+  credential" error names the removal when a stale `auth` block was your only configured one.
 
 ### Changed
 
@@ -34,6 +63,32 @@ All notable changes to this project are documented in this file.
   `mdInlineCodeBg` token is still accepted in custom theme files but no longer paints anything.
 
 ### Fixed
+
+- **`Bash` no longer runs through `cmd.exe` on Windows.** Node's `shell: true` means `%ComSpec%`,
+  so a tool named `Bash` was spawning `cmd.exe`: one command per line, `%VAR%` quoting, no
+  heredocs, and the shell models write worst. The system prompt told the model to expect that
+  rather than fixing it, which traded the model's strongest syntax for its weakest on the one
+  platform Book is developed on — where `Bash` is by some distance the most-failing tool.
+
+  Book now resolves a real shell once per session and tells the model which one it got. On Windows:
+  `BOOK_SHELL` or the `shell` setting, then **Git Bash when Book was launched from one**, then
+  **PowerShell 7**, then **Windows PowerShell 5.1**, then an installed Git Bash, and `cmd.exe` only
+  when nothing else exists. macOS and Linux keep the platform default. The resolved shell rides on
+  the config, so the tool, the system prompt, and `book doctor` cannot disagree about which shell
+  is in force, and the Harness prompt line now states that shell's actual syntax rules instead of
+  warning the model off Windows.
+
+  A real shell is spawned as an argument vector, reusing the form sandboxing already used;
+  `cmd.exe` and `/bin/sh` still go through `shell: true`, because `cmd.exe` quoting cannot be
+  reproduced from an argv. PowerShell is driven with `-EncodedCommand`, since 5.1 re-parses a
+  `-Command` argument and silently strips embedded double quotes. Under 5.1 the error stream is
+  merged and each record rendered as text: left alone, that shell serializes a redirected stderr as
+  CLIXML, so a failing `Get-Item` handed the model an XML document instead of `Cannot find path`.
+  Exit codes still follow the last statement, verified against the real interpreter.
+
+  `shell` is stripped from both workspace settings layers and refused by `book config` there, on
+  the same reasoning as `auth`: it names the program every command is handed to, so a repository
+  that could set it would run a binary it ships on the first call.
 
 - **Inline reasoning tags no longer leak into a subagent's live transcript.** Routers that inline
   a model's thinking as `<think>…</think>` emit an empty block ahead of every tool call. Each one

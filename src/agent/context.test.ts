@@ -483,9 +483,8 @@ describe('buildMessages', () => {
     expect(zones.cachedPrefix).toContain('## Harness');
     expect(zones.cachedPrefix).toContain('GitHub-flavored markdown in a terminal TUI');
     expect(zones.cachedPrefix).toContain('`file_path:line`');
-    // Book spawns through Node's `shell: true`, so Windows gets cmd.exe, not a POSIX shell.
-    expect(zones.cachedPrefix).toContain('`/bin/sh` on macOS and Linux, `cmd.exe` on Windows');
-    expect(zones.cachedPrefix).toContain('requires bubblewrap and is unavailable on Windows');
+    expect(zones.cachedPrefix).toContain('- The Bash tool runs ');
+    expect(zones.cachedPrefix).toContain('sandbox');
     expect(zones.cachedPrefix).toContain('A denied tool call means the user declined it');
     expect(zones.cachedPrefix).toContain('Hook output attached to a tool result');
     expect(zones.cachedPrefix).toContain('<session-state> block emitted by the host');

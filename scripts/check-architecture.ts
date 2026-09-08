@@ -3,13 +3,7 @@ import { dirname, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 interface Violation {
-  kind:
-    | 'layer'
-    | 'entrypoint'
-    | 'cycle'
-    | 'type-hub'
-    | 'blocking-process'
-    | 'process-exit';
+  kind: 'layer' | 'entrypoint' | 'cycle' | 'type-hub' | 'blocking-process' | 'process-exit';
   source: string;
   target: string;
   detail: string;
@@ -25,30 +19,6 @@ const PROCESS_EXIT_PATTERN = /\bprocess\.exit\s*\(/;
  * else must call `exit()` so tests can capture the code instead of dying.
  */
 const PROCESS_LIFETIME_OWNERS = new Set(['index.ts', 'sdk.ts', 'job-runner.ts', 'cli/exit.ts']);
-const LIVE_RUNTIME_PREFIXES = [
-  'agent/',
-  'agents/',
-  'cli/',
-  'commands/',
-  'provider/',
-  'session/',
-  'tools/',
-  'tui/',
-];
-const LIVE_RUNTIME_FILES = new Set([
-  'config.ts',
-  'headless.ts',
-  'index.ts',
-  'sdk.ts',
-  'settings-loader.ts',
-  'settings-repository.ts',
-]);
-const TRUSTED_KERNEL_FILES = new Set([
-  'permission-mode.ts',
-  'permissions.ts',
-  'sandbox.ts',
-  'secret-detect.ts',
-]);
 
 /** True when the file really calls process.exit(), ignoring mentions in comments. */
 function callsProcessExit(text: string): boolean {
@@ -61,11 +31,6 @@ function callsProcessExit(text: string): boolean {
   });
 }
 
-function isLiveRuntimeModule(path: string): boolean {
-  return (
-    LIVE_RUNTIME_FILES.has(path) || LIVE_RUNTIME_PREFIXES.some((prefix) => path.startsWith(prefix))
-  );
-}
 function sourceFiles(root: string): string[] {
   const files: string[] = [];
   const visit = (directory: string) => {

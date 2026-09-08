@@ -16,9 +16,6 @@ import type { Message } from '../types/messages.js';
 import { createSessionFixture } from '../test/session-fixture.js';
 import { createAgentRunContext } from '../types/runs.js';
 import { SessionRuntime } from './runtime.js';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 function compactedResult(): Extract<CompactResult, { status: 'compacted' }> {
   const replacementHistory: Message[] = [
@@ -1566,4 +1563,3 @@ describe('AgentSession', () => {
     expect(session.finishSend(operation)).toBe(false);
   });
 });
-

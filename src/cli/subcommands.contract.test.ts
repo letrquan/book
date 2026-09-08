@@ -101,7 +101,7 @@ describe('non-interactive subcommands without credentials', () => {
  * dying on it.
  *
  * allowMissingApiKey covers only the missing-credential rejection. Every other
- * one - malformed JSON, a schema violation, an unknown harness workflow - used
+ * one - malformed JSON, a schema violation, an out-of-range value - used
  * to escape loadConfig as an unhandled stack trace, which is the least useful
  * possible response from the command whose job is diagnosing a broken setup.
  */
@@ -114,7 +114,7 @@ describe('book doctor with an unloadable configuration', () => {
   const broken: Array<[string, string]> = [
     ['malformed JSON', '{ "model": '],
     ['a schema violation', JSON.stringify({ permissions: { allow: 'not-an-array' } })],
-    ['an unknown harness workflow', JSON.stringify({ harness: { workflow: 'not-a-workflow' } })],
+    ['an out-of-range value', JSON.stringify({ maxTurns: 0 })],
   ];
 
   for (const [label, contents] of broken) {

@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
-import { runEvaluationProcess } from '../src/harness/evaluation/runner.js';
+import { runEvaluationProcess } from './eval-process.js';
 import type { EvalTask } from './edit-eval-fixtures.js';
 import { createEditEvaluationSettings, runEditEvalTask } from './edit-eval.js';
 
 vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }));
-vi.mock('../src/harness/evaluation/runner.js', () => ({
+vi.mock('./eval-process.js', () => ({
   runEvaluationProcess: vi.fn(),
   evaluationControlsFromResult: vi.fn((result) => ({
     evaluationDate: result.evaluationDate,

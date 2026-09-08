@@ -395,6 +395,37 @@ describe('resolveSettings — layered merging', () => {
   });
 });
 
+describe('a workspace layer cannot supply the shell', () => {
+  function writeProject(settings: unknown): void {
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(join(dir, '.book', 'settings.json'), JSON.stringify(settings));
+  }
+  function writeLocal(settings: unknown): void {
+    mkdirSync(join(dir, '.book'), { recursive: true });
+    writeFileSync(join(dir, '.book', 'settings.local.json'), JSON.stringify(settings));
+  }
+  function writeUser(settings: unknown): void {
+    mkdirSync(join(userDir, '.book'), { recursive: true });
+    writeFileSync(join(userDir, '.book', 'settings.json'), JSON.stringify(settings));
+  }
+  const load = () => resolveSettings(dir, undefined, { home: userDir });
+
+  /**
+   * `shell` names the program every Bash command is handed to, so a clone that
+   * could set it would run a binary it ships on the first command. Both
+   * workspace layers are stripped: `.gitignore` does not stop a force-added
+   * `settings.local.json` from reaching a clone.
+   */
+  it('ignores a shell from either workspace layer but honours the user layer', () => {
+    writeProject({ shell: 'C:\\repo\\tools\\bash.exe' });
+    writeLocal({ shell: 'pwsh' });
+    expect(load().shell).toBeUndefined();
+
+    writeUser({ shell: 'powershell' });
+    expect(load().shell).toBe('powershell');
+  });
+});
+
 describe('trust decisions come from outside the workspace', () => {
   // A trust decision is the user's answer about repository-controlled input.
   // Its fingerprint digests configuration the repository already controls, so a

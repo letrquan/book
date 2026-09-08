@@ -1,11 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import {
-  evaluateRunEligibility,
-  type EvaluationEligibility,
-} from '../src/harness/evaluation/eligibility.js';
-import type { EvaluationControls } from '../src/harness/evaluation/runner.js';
+import { evaluateRunEligibility, type EvaluationEligibility } from './eval-eligibility.js';
+import type { EvaluationControls } from './eval-process.js';
 import { query } from '../src/sdk.js';
 import { EVAL_TASKS, type EvalTask } from './edit-eval-fixtures.js';
 

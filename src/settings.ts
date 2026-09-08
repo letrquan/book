@@ -438,6 +438,13 @@ export const bookSettingsSchema = z.object({
   effort: effortLevelSchema.optional(),
   /** TUI color theme: apple (default), dark, light, auto, a bundled palette, or a custom theme filename. */
   theme: z.string().min(1).optional(),
+  /**
+   * The shell the Bash tool spawns: `bash`, `pwsh`, `powershell`, `cmd`, `sh`,
+   * or an executable path. Honoured from the user-global layer, an explicit
+   * `--settings` document, or `BOOK_SHELL` only: a workspace file cannot pick
+   * the program every command is handed to.
+   */
+  shell: z.string().min(1).optional(),
   ui: uiSettingsSchema.default({}),
   skills: skillSettingsSchema.default({}),
   autoCompactEnabled: z.boolean().optional(),
@@ -477,6 +484,7 @@ export type ResolvedSettings = Required<
     | 'maxTokens'
     | 'effort'
     | 'theme'
+    | 'shell'
     | 'autoCompactEnabled'
     | 'defaultMode'
     | 'disableBypassPermissionsMode'
@@ -490,6 +498,7 @@ export type ResolvedSettings = Required<
     | 'maxTokens'
     | 'effort'
     | 'theme'
+    | 'shell'
     | 'autoCompactEnabled'
     | 'defaultMode'
     | 'disableBypassPermissionsMode'

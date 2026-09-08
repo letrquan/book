@@ -193,6 +193,36 @@ export async function runDoctorCommand(
   // the credential line read as a missing key, which is the wrong hunt.
   if (config.modelProviderWarning) console.log('  ⚠ ' + config.modelProviderWarning);
   console.log('Credentials:', describeCredentials(config));
+  // Configuration for a feature that no longer exists is invisible otherwise:
+  // validation discards unknown blocks silently, so a user whose subscription
+  // login stopped working has nothing to read. The orphaned credential file
+  // matters most — it holds a refresh token nothing revokes.
+  const {
+    collectRemovedSettingNotices,
+    collectRemovedEnvNotices,
+    removedAuthStoreNotice,
+    readSettingsDocumentForNotices,
+  } = await import('../settings-removed.js');
+  const { settingsLayerPaths } = await import('../settings-loader.js');
+  const { join: joinPath } = await import('path');
+  const { existsSync: fileExists } = await import('fs');
+  const removedNotices = [
+    ...settingsLayerPaths(workspace, undefined, {}).flatMap((path) =>
+      collectRemovedSettingNotices(readSettingsDocumentForNotices(path)).map(
+        (notice) => `${notice.key} in ${path}: ${notice.message}`,
+      ),
+    ),
+    ...collectRemovedEnvNotices(process.env).map(
+      (notice) => `${notice.key} is set: ${notice.message}`,
+    ),
+  ];
+  const authStorePath = joinPath(resolveBookHome(), 'auth.json');
+  if (fileExists(authStorePath)) removedNotices.push(removedAuthStoreNotice(authStorePath));
+  if (removedNotices.length > 0) {
+    console.log();
+    console.log('Removed features still configured on this machine:');
+    for (const notice of removedNotices) console.log(`  [!] ${notice}`);
+  }
   console.log();
 
   // Settings layers.
@@ -360,6 +390,15 @@ export async function runDoctorCommand(
   console.log('  Excluded commands: ' + settings.sandbox.excludedCommands.length);
   console.log('  Unsandboxed commands: ' + policy.unsandboxedCommands);
   console.log('  Auto-allow Bash: ' + policy.autoAllowBash);
+  console.log();
+
+  // Shell: the program every Bash command is handed to, and why it was chosen.
+  const { describeShell, resolveShell } = await import('../shell-selection.js');
+  const shell = config.shell ?? resolveShell({ requested: settings.shell });
+  console.log('Shell:');
+  console.log('  Bash tool runs: ' + describeShell(shell));
+  console.log('  Selected by: ' + shell.source);
+  if (shell.warning) console.log(`  [!] ${shell.warning}`);
   console.log();
 
   // Managed agents.

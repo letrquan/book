@@ -35,11 +35,13 @@ if (
 // `effectiveCommand` is the raw user command now that sandboxing rides on
 // `exec`, so a spec claiming `sandboxed` without one would run completely
 // unconfined while the job panel and the [sandboxed] marker said otherwise.
-// Refuse to start rather than silently downgrade.
-if (loadedSpec.sandboxed !== Boolean(loadedSpec.exec)) {
+// Refuse to start rather than silently downgrade. The reverse is legitimate:
+// an unsandboxed command also carries an `exec` when the session shell is
+// spawned as argv (Git Bash or PowerShell on Windows).
+if (loadedSpec.sandboxed && !loadedSpec.exec) {
   process.exitCode = 2;
   throw new Error(
-    'Invalid persistent shell specification: sandboxed does not match the presence of a sandboxed argv.',
+    'Invalid persistent shell specification: sandboxed is set but no sandboxed argv is present.',
   );
 }
 const spec: PersistentShellSpec = loadedSpec;

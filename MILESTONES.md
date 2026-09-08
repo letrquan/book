@@ -55,9 +55,9 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
       272k fidelity arm. Phase 3 remains proposed.
 - [ ] A control surface for a run in flight - at hour 30 the only interventions are `kill` and wait.
 - [x] Monotonic clock for every duration decided **inside one process** — the provider retry
-      budget and model-discovery budget, the harness flush deadline and sync cadence, the
-      background-shell start/stop budgets, the process-group kill bound, and the run's own elapsed
-      time as the model is told it. `src/clock.ts`; injected, never a module global.
+      budget and model-discovery budget, the background-shell start/stop budgets, the
+      process-group kill bound, and the run's own elapsed time as the model is told it.
+      `src/clock.ts`; injected, never a module global.
 - [ ] Cross-process liveness/TTL is **still on the wall clock, and monotonic time cannot fix it** —
       two processes share no monotonic origin, so a reading cannot be persisted or compared across
       that boundary. Affects the background-shell heartbeat, the run-status file `book status`
@@ -112,32 +112,7 @@ See [plans/security-assessment.md](plans/security-assessment.md) for the current
 - [ ] Add permission-preserving rerun, task-aware stop behavior, cleanup commands, and richer doctor
   diagnostics for stale/lost persistent jobs.
 
-### 4. Adaptive Harness
-
-- [x] Stabilize terminal framing, root/child/resume accounting, budget enforcement, provider
-  identity, versioned pricing, run IDs, and ambient run fingerprints.
-- [ ] Finish the remaining evaluator, architecture, workspace-trust, permission-ceiling, and
-  isolated-home preconditions.
-- [ ] Phase 0: freeze the evaluation contract and deterministic corpus.
-- [x] Phase 1: inert harness boundary with `off` as the only live mode and runtime-equivalent
-  disabled behavior.
-- [x] Phase 2: observe-only append-only run-evidence ledger — sealed per-root hash-chained JSONL
-  streams, allowlist redaction, OTel-mapped telemetry, deferred headless root seals, and explicit
-  managed-continuation child linkage.
-- [x] Phase 3: validated fixed workflow registry — three built-in definitions (`minimal`,
-  `safe-edit`, `verify-heavy`) behind recursively strict validation and a hashed registry, manually
-  selected through `harness.workflow` or `--harness-workflow`, rendered as bounded guidance in the
-  dynamic prompt zone, with kernel clamps and full provenance recorded per run. Selection fails
-  closed under `harness.mode = off` and on unknown or path-like IDs; no automatic selection exists.
-- [ ] Phases 3A-3B: explicit capability manifests and reliable deterministic routing.
-- [ ] Phases 4-8: selector, externally grounded outcomes, shadow evaluation, scoped canaries, and
-  bounded workflow evolution. None of these phases currently controls live runtime behavior.
-- [ ] Phase 9 remains a future research gate for cross-context transfer.
-
-The authoritative phase ledger is
-[plans/adaptive-harness-implementation-plan.md](plans/adaptive-harness-implementation-plan.md).
-
-### 5. Review Pipeline Follow-up
+### 4. Review Pipeline Follow-up
 
 - [ ] Run the evaluation harness end to end: execute the review pipeline over checked-in golden
   diffs instead of scoring reports captured by hand, and gate prompt changes on the result.

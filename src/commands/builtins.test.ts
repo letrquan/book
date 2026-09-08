@@ -428,20 +428,8 @@ describe('built-in command contract', () => {
         registry.execute('config', '--local compact-model --global x', commandContext),
       ).toEqual(expect.objectContaining({ content: expect.stringContaining('at most one of') }));
 
-      const strategyResult = registry.execute(
-        'config',
-        'compact-strategy zero-mem',
-        commandContext,
-      );
-      expect(strategyResult).toEqual(
-        expect.objectContaining({ content: expect.stringContaining('BOOK_EXPERIMENTAL_ZERO_MEM') }),
-      );
-      const experimentalResult = registry.execute(
-        'config',
-        'experimental.zeroMem=true',
-        commandContext,
-      );
-      expect(experimentalResult).toEqual(
+      const shellResult = registry.execute('config', 'shell=pwsh', commandContext);
+      expect(shellResult).toEqual(
         expect.objectContaining({ content: expect.stringContaining('cannot be written') }),
       );
 

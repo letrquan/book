@@ -190,11 +190,10 @@ preference you set once applies in every checkout. Pass `--project` to write the
 surfaces run the same guards through one shared write, so they cannot disagree about which file a
 preference lands in.
 
-A write is checked against the *merged* configuration, not just the file it lands in. A value can be
-valid on its own and still leave a configuration nothing can load — `harness.workflow` is rejected
-against an effective `harness.mode` of `off` — so such a write is refused before it lands rather
-than bricking every later command. A configuration that is already broken stays writable, since
-repairing one is what the command is for.
+A write is checked against the *merged* configuration, not just the file it lands in, so a value
+that is valid on its own but would leave a configuration nothing can load is refused before it
+lands rather than bricking every later command. A configuration that is already broken stays
+writable, since repairing one is what the command is for.
 
 `book config get` and `book config list` report the *resolved* merge of all layers by default.
 Given a scope they read that one file verbatim instead, which is how you find the stray value
@@ -206,8 +205,9 @@ it.
 Two groups of keys are refused in every scope. Trust decisions
 (`mcp.projectServers`, `permissions.projectAllowRules`, `hooks.projectEntries`,
 `commands.projectCommands`) live in `<BOOK_HOME>/trust.json` and are recorded with `book trust`.
-Experimental capability flags (`experimental.*`) are not writable by `book config` at all — edit the
-user-global file directly, pass `--settings`, or use the environment opt-in.
+The `shell` setting is not writable by `book config` in a workspace scope — it names the program
+every `Bash` command is handed to, so edit the user-global file directly, pass `--settings`, or
+use `BOOK_SHELL`.
 
 #### Model ids and provider prefixes
 
@@ -442,31 +442,6 @@ compaction call, making it possible to test a cheaper reducer while keeping prob
 cheaper reducer or a higher-fidelity reducer can be evaluated independently from the probe model.
 The benchmark requires configured provider credentials and is not part of CI.
 
-`npm run eval:zero-mem` adds a paper-aligned experimental third arm based on Zero-Mem
-(arXiv:2607.29377v1). It uses BGE-M3 embeddings, non-generative BERT NER plus technical spans,
-occurrence-weighted entity/context edges, query-conditioned sentence propagation, PageRank with
-`gamma = 0.6`, semantic/session-aware trace regions, evidence closure, and deterministic evidence
-and answer calibration. Original messages, actions, reasoning, tool observations, attachments, and
-file observations remain the source of record; generated compact checkpoints are excluded.
-
-The paper's complete implementation is not public, so this is a defensible reproduction rather
-than an exact code replica. With provider credentials it compares full history, production
-compaction, and Zero-Mem using the same final reader and the compact arm's context size as the
-Zero-Mem evidence budget. Reader calls share a 1,024-token output cap across all arms.
-`--retrieval-only` (or `--offline`) skips the reader but still runs the real local NER and BGE-M3
-encoder. Model weights are cached outside the repository; set
-`BOOK_ZERO_MEM_MODEL_CACHE` to choose a persistent cache directory.
-The Zero-Mem runtime capability is unavailable by default and never silently starts a model
-download when explicitly enabled. Set `BOOK_ZERO_MEM_LOCAL_FILES_ONLY=false` for one run to
-populate the cache, then remove it or set it back to `true`. Zero-Mem uses the optional
-`@huggingface/transformers` peer; source checkouts install it for evaluation, while packaged
-installations that enable Zero-Mem must install that peer explicitly.
-
-```bash
-BOOK_ZERO_MEM_MODEL_CACHE=/path/to/model-cache npm run eval:zero-mem -- --retrieval-only --suite standard
-BOOK_ZERO_MEM_MODEL_CACHE=/path/to/model-cache npm run eval:zero-mem -- --model 9router/cmc/deepseek/deepseek-v4-flash --suite standard
-```
-
 `Write` remains appropriate for generated or intentional full-file replacement. The
 `apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not silently reinterpreted.
 
@@ -666,37 +641,7 @@ Managed agents refuse to spawn rather than fill the disk: `agents.maxWorktrees` 
 simultaneous worktrees per repository and `agents.minFreeDiskBytes` (default 2 GB) is the free-space
 floor. Both raise an `alarm` notification when they bite, and 0 disables either check.
 
-`compactStrategy` supports only `summary`, the production default. Zero-Mem is retained as an
-explicitly named experiment and is unavailable under shipped defaults. Opt in for one process with
-`BOOK_EXPERIMENTAL_ZERO_MEM=true`, or put the following in the user-global
-`<BOOK_HOME>/settings.json` (normally `~/.book/settings.json`):
-
-```json
-{
-  "experimental": {
-    "zeroMem": true
-  }
-}
-```
-
-An explicit `--settings <path>` document may also enable it. Project `.book/settings.json` and
-workspace `.book/settings.local.json` cannot activate experimental capabilities, and neither the
-`/config` menu nor `/config`/`book config set` writes offer a local opt-in. This prevents merely
-opening a clone — including one that force-added a local settings file — from enabling unstable
-runtime behavior.
-
-When enabled, Zero-Mem keeps the original session transcript authoritative, builds a session-scoped
-BGE-M3/NER index, incrementally indexes completed turns, and retrieves query-specific evidence
-before each main-agent run. It does not persist retrieved evidence as a checkpoint. Manual
-`/compact` initializes or refreshes the index and reports readiness without replacing conversation
-history; managed subagents continue to use summary compaction. Routine auto-compaction stays off,
-but if the provider reports a context overflow the loop still falls back to summary compaction for
-that turn -- warming an index cannot shrink a request the provider has already refused.
-
-Migration: remove `compactStrategy: "zero-mem"` and replace it with the trusted
-`experimental.zeroMem` opt-in above. `BOOK_COMPACT_STRATEGY=zero-mem` is also rejected; use
-`BOOK_EXPERIMENTAL_ZERO_MEM=true` instead. The old setting, environment selector, TUI shortcut, and
-`/config compact-strategy` command no longer activate Zero-Mem.
+`compactStrategy` supports only `summary`, the production default; it is the only strategy.
 
 `compactModel` is optional. When set, manual and automatic `/compact` calls use that configured
 provider/model only for checkpoint generation while normal agent turns continue on `model`. The
@@ -823,6 +768,33 @@ config, and managed agents already report through `SubagentStop`. Like `SessionE
 skipped when a run ends early through a blocked prompt, context overflow, an exhausted run budget,
 or a provider stream error.
 
+### Which shell `Bash` runs
+
+Book picks one shell per session and tells the model which one it got, so the syntax the model
+writes matches the interpreter that will parse it. On macOS and Linux that is the platform default,
+`/bin/sh`. On Windows, Book resolves in this order and stops at the first hit:
+
+1. `BOOK_SHELL`, then the `shell` setting — a name (`bash`, `pwsh`, `powershell`, `cmd`, `sh`) or a
+   path to an executable. A request that cannot be found is reported by `book doctor` and the
+   automatic order continues, rather than failing every command.
+2. **Git Bash**, when Book was launched from one (`MSYSTEM` or a POSIX `SHELL` is set) — so the
+   shell you see in your own terminal is the shell the model writes for.
+3. **PowerShell 7** (`pwsh`), then **Windows PowerShell 5.1**.
+4. Git Bash if it is merely installed.
+5. `cmd.exe`, only when nothing else exists.
+
+`shell` is honoured from `~/.book/settings.json`, an explicit `--settings` document, or the
+environment only. A workspace file cannot set it and `book config set shell` refuses those scopes:
+it names the program every command is handed to, so a repository that could set it would run a
+binary it ships on your first command. `book doctor` prints the resolved shell and why it was
+chosen.
+
+PowerShell is driven with `-EncodedCommand`, because 5.1 re-parses a `-Command` argument and
+silently strips embedded double quotes. Under 5.1, Book also merges the error stream and renders
+each record as text: left alone, that shell serializes a redirected stderr as a CLIXML document, so
+a failing `Get-Item` handed the model XML instead of `Cannot find path`. Exit codes follow the last
+statement, as in bash.
+
 ### Shell command timeouts
 
 A foreground `Bash` command is killed after **300000 ms** (five minutes) by default. The model can
@@ -928,47 +900,6 @@ Read            402      0    0.0%     15ms     34ms     0.0%
 
 Use `--json` for a machine-readable aggregate, `--since <days>` to change the window, `--all` for full history, and `--prune` to drop records older than the window from disk. `observability.toolTelemetryRetentionDays` sets the default reporting window and the `--prune` target; disk use is otherwise bounded by log rotation. Records store outcomes and hashes only, never prompts or file contents. This is separate from the ephemeral in-session counters shown by `/usage`.
 
-### Run evidence ledger (experimental)
-
-`harness.mode` defaults to `off`, which is fully inert: no run identity, no timers, no files. Setting
-it to `observe` records an append-only evidence ledger for each root request without changing what
-the model sees or how the run behaves. Records land in
-`~/.book/projects/<workspace-id>/harness/v1/runs/<yyyy-mm>/<root-run-id>.jsonl`, written by a single
-writer as canonical JSON lines chained by SHA-256 record hashes and closed by a signed seal that
-reports durability, dropped-event and storage-error counters, and evidence eligibility.
-
-Persisted events are an allowlist of bounded scalars — turn, model-usage, tool start/finish,
-permission decision, provider retry/stall, assistant-message, and managed-agent handoff facts, with
-OpenTelemetry-mapped names pinned to Semantic Conventions v1.44.0. Prompts, completions, tool
-arguments and output, file contents and paths, commands, URLs, and secrets are never written;
-ambiguous values are omitted and accounted for. Observation is best-effort: a storage failure marks
-the ledger incomplete and is reported to the host, but never fails or alters the user's run.
-`shadow`, `active`, and `learn` are accepted by the schema but rejected before run setup.
-
-### Execution workflows (experimental)
-
-With `harness.mode = observe`, a run can use one of three built-in execution workflows. Select one
-with `harness.workflow` in settings or `--harness-workflow <id>` for a single run; the CLI flag wins
-and is never persisted, so a resumed process starts again from the settings value.
-
-| Workflow       | Effect                                                                              |
-| -------------- | ----------------------------------------------------------------------------------- |
-| `minimal`      | Preserves current behavior. Adds no prompt text; provider messages match a run with no harness. |
-| `safe-edit`    | Short plan before mutating work, narrow edits, targeted verification, extra confirmation. |
-| `verify-heavy` | Explicit plan, deeper inspection, project verifiers, and stated evidence before completion. |
-
-Workflows are **behavioral guidance, not enforcement**. Permissions, sandboxing, budgets, retries,
-compaction, checkpoint/resume, and tool contracts stay owned by the trusted runtime; a workflow can
-never broaden them. Requests the runtime does not implement are clamped and recorded rather than
-silently ignored, and a workflow's free-form description is never rendered into the prompt.
-
-The active workflow renders into the dynamic prompt zone, so switching workflows does not invalidate
-the cached prompt prefix. Each run records the requested and effective workflow, its source and
-reason, the registry and definition digests, every clamp, the override scope, and declared
-complexity. Selection fails closed: a workflow chosen while `harness.mode` is `off` has no ledger to
-record it, so both `book config set` and startup reject it, as they do an unknown or path-like ID.
-Project-defined workflow files are not loaded; only built-in IDs resolve.
-
 ### Managed agents
 
 Adaptive mode keeps targeted work inline and nudges the parent toward the read-only `explorer` profile after three successful root `Glob`/`Grep` queries. The reminder is advisory: the fourth lookup is still allowed. Broad exploration receives a purpose name such as `Trace authentication flow`; the reusable profile (`explorer`, `patcher`, or `validator`) remains separate. `--agents manual` keeps the same lifecycle tools but requires explicit user delegation; `--agents off` removes managed-agent tools and routing guidance.
@@ -1033,11 +964,10 @@ Project themes can override any token in `.book/themes/<name>.json`. They appear
 | `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                                 |
 | `BOOK_EFFORT`                                                                                     | Thinking effort level                                             |
 | `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                               |
+| `BOOK_SHELL`                                                                                      | Shell for `Bash`: `bash`, `pwsh`, `powershell`, `cmd`, or a path  |
 | `BOOK_WORKSPACE`                                                                                  | Default workspace                                                 |
 | `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                          |
-| `BOOK_EXPERIMENTAL_ZERO_MEM`                                                                      | Explicit `true`/`false` opt-in for experimental Zero-Mem          |
 | `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                        |
-| `BOOK_ZERO_MEM_MODEL_CACHE` / `BOOK_ZERO_MEM_LOCAL_FILES_ONLY`                                    | Zero-Mem model cache and download policy                          |
 | `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                          |
 | `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout (`Bash` included) and telemetry location             |
 | `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)          |
@@ -1407,7 +1337,6 @@ npm run deadcode:report # knip scan as Markdown (used for the CI job summary)
 npm run deadcode:json   # knip scan as JSON
 npm run eval:edit    # Edit reliability evaluation (configured provider)
 npm run eval:compact # Compaction paired evaluation (configured provider)
-npm run eval:zero-mem # Zero-Mem retrieval/compaction comparison
 npm run eval:skills  # Skill activation evaluation
 npm run verify:ink-patch
 npm run release:check # Version, audit, and package smoke checks

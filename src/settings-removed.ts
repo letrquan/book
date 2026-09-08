@@ -65,7 +65,10 @@ const REMOVED_ENV_VARS: ReadonlyArray<readonly [string, string]> = [
   ['BOOK_EXPERIMENTAL_ZERO_MEM', 'Zero-Mem was removed; summary compaction is the only strategy.'],
   ['BOOK_ZERO_MEM_MODEL_CACHE', 'Zero-Mem was removed.'],
   ['BOOK_ZERO_MEM_LOCAL_FILES_ONLY', 'Zero-Mem was removed.'],
-  ['BOOK_COMPACT_STRATEGY', 'Compaction strategy is no longer selectable; summary is the only one.'],
+  [
+    'BOOK_COMPACT_STRATEGY',
+    'Compaction strategy is no longer selectable; summary is the only one.',
+  ],
 ];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -131,11 +134,12 @@ export function collectRemovedEnvNotices(env: NodeJS.ProcessEnv): RemovedSetting
   const notices: RemovedSettingNotice[] = [];
   for (const [name, message] of REMOVED_ENV_VARS) {
     // The client-id variables are per-profile suffixed, so match by prefix.
-    const matches = name.endsWith('CLIENT_ID') || name.endsWith('CLIENT_SECRET')
-      ? Object.keys(env).filter((key) => key.startsWith(`${name}_`) || key === name)
-      : env[name] !== undefined
-        ? [name]
-        : [];
+    const matches =
+      name.endsWith('CLIENT_ID') || name.endsWith('CLIENT_SECRET')
+        ? Object.keys(env).filter((key) => key.startsWith(`${name}_`) || key === name)
+        : env[name] !== undefined
+          ? [name]
+          : [];
     for (const key of matches) notices.push({ key, message });
   }
   return notices;

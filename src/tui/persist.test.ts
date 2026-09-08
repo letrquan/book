@@ -48,8 +48,8 @@ describe('persistSettingLocal', () => {
     expect(readSettingsLocal(dir)).toEqual({ model: 'claude-sonnet-5', maxTurns: 50 });
   });
 
-  it('refuses to write experimental capability flags to workspace-local settings', () => {
-    const result = persistSettingLocal(dir, 'experimental.zeroMem', true);
+  it('refuses to write the shell setting to workspace-local settings', () => {
+    const result = persistSettingLocal(dir, 'shell', 'pwsh');
 
     expect(result).toEqual({
       ok: false,

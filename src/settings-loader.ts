@@ -136,6 +136,10 @@ function sanitizeLayer(
   const sanitized = structuredClone(settings);
   // Project/local settings cannot opt a session into the most permissive mode.
   if (sanitized.defaultMode === 'bypassPermissions') delete sanitized.defaultMode;
+  // `shell` names the program every Bash command is handed to. A clone that
+  // could point it at a binary it ships would run that binary on the first
+  // command, so the key is honoured from trusted layers only.
+  delete sanitized.shell;
   stripPaths(sanitized, WORKSPACE_FORBIDDEN_PATHS);
   return sanitized;
 }

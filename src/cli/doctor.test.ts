@@ -156,11 +156,11 @@ describe('runDoctorCommand credentials', () => {
   });
 });
 describe('runDoctorCommand unloadable configuration', () => {
-  // The pairing from #120: a workflow selected while the effective harness mode
-  // is the `off` default. No single file is invalid, so nothing named one, and
-  // finding it meant jq-ing all three layers by hand.
+  // From #120: a configuration that stops loading, where nothing named the layer
+  // responsible and finding it meant jq-ing all three by hand. `maxTurns: 0` is
+  // valid JSON and a real key, so only validation rejects it.
   function writeBrokenPairing(path: string): void {
-    writeFileSync(path, JSON.stringify({ harness: { workflow: 'safe-edit' } }));
+    writeFileSync(path, JSON.stringify({ maxTurns: 0 }));
   }
 
   it('marks the layer the failure appears with', async () => {
@@ -190,7 +190,7 @@ describe('runDoctorCommand unloadable configuration', () => {
   it('blames no layer when the cause is outside them', async () => {
     // Rejected in loadConfig from the environment, so every layer prefix fails
     // including the empty one. Accusing `User` there would be a wrong lead.
-    process.env.BOOK_COMPACT_STRATEGY = 'zero-mem';
+    process.env.BOOK_MAX_TOKENS = 'not-a-number';
     try {
       const output = await doctorOutput();
 
@@ -198,7 +198,7 @@ describe('runDoctorCommand unloadable configuration', () => {
       expect(output).toContain('No single layer accounts for it');
       expect(output).not.toContain('<- the failure appears with this layer');
     } finally {
-      delete process.env.BOOK_COMPACT_STRATEGY;
+      delete process.env.BOOK_MAX_TOKENS;
     }
   });
 
@@ -215,10 +215,7 @@ describe('runDoctorCommand unloadable configuration', () => {
 describe('runDoctorCommand --no-settings', () => {
   it('reports a full diagnostic past a layer that will not load', async () => {
     mkdirSync(join(workspace, '.book'), { recursive: true });
-    writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
-      JSON.stringify({ harness: { workflow: 'safe-edit' } }),
-    );
+    writeFileSync(join(workspace, '.book', 'settings.local.json'), JSON.stringify({ maxTurns: 0 }));
 
     const output = await doctorOutput(workspace, { noSettings: true });
 

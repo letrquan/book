@@ -6,7 +6,7 @@ import {
   resolveCompactModelConfig,
   resolveModelProviderConfig,
 } from './config.js';
-import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { defaultConfig } from './test/fixtures.js';
 import { tmpdir } from 'os';
@@ -126,7 +126,6 @@ describe('loadConfig permission defaults', () => {
     expect(config.settings.defaultMode).toBe('plan');
   });
 });
-
 
 describe('freezeAgentConfig', () => {
   it('deep-freezes resolved configuration without runtime resource fields', () => {

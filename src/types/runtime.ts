@@ -13,11 +13,38 @@ export type PermissionMode =
  * spawning it with `shell: true` lets any metacharacter in the user's command
  * split at the *outer* shell, outside the sandbox. Callers that receive an
  * `exec` spawn `file` with `args` and `shell: false`; when it is absent the raw
- * command string goes to the platform shell as before.
+ * command string goes to the platform shell as before. Unsandboxed commands
+ * use the same form when the session shell is spawned as argv (see
+ * `ResolvedShell`).
  */
 export interface CommandExecution {
   file: string;
   args: string[];
+}
+
+/** The program that interprets a Bash tool command string. */
+export type ShellKind = 'bash' | 'pwsh' | 'powershell' | 'cmd' | 'sh';
+
+/** Where a shell selection came from, for diagnostics. */
+export type ShellSource = 'setting' | 'launching-shell' | 'detected' | 'fallback';
+
+/**
+ * The shell the Bash tool spawns, resolved once per session by
+ * `resolveShell()` in `src/shell-selection.ts`.
+ *
+ * `file` is the executable spawned as argv; when absent the command string
+ * goes to Node's `shell: true` (`/bin/sh`, or `%ComSpec%` on Windows), which
+ * is the only way cmd.exe is ever driven because its quoting cannot be
+ * reproduced from a plain argument vector.
+ */
+export interface ResolvedShell {
+  kind: ShellKind;
+  file?: string;
+  /** Short human name: "Git Bash", "PowerShell 7", "Windows PowerShell 5.1", "cmd.exe", "/bin/sh". */
+  label: string;
+  source: ShellSource;
+  /** Set when a requested shell could not be honoured and the automatic ladder was used instead. */
+  warning?: string;
 }
 
 /** What phase of retry is currently active (drives the TUI spinner label). */
@@ -163,6 +190,12 @@ export interface AgentConfig {
   };
   /** Resolved layered settings (permissions, sandbox, etc.). */
   settings: ResolvedSettings;
+  /**
+   * The shell the Bash tool spawns, resolved once at load from `BOOK_SHELL`,
+   * `settings.shell`, and what is installed. Optional so hand-built configs in
+   * tests keep working; the tool resolves it on demand when absent.
+   */
+  shell?: ResolvedShell;
   /** Settings-layer context retained for live TUI re-resolution. */
   settingsContext?: {
     overridePath?: string;

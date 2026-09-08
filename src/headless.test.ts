@@ -1153,7 +1153,6 @@ describe('runHeadless — runtime stores', () => {
   });
 });
 
-
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     Object.freeze(value);

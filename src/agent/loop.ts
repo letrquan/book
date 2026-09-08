@@ -469,6 +469,7 @@ export async function runAgentLoop(
     envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,
     sandbox: config.settings.sandbox,
+    shell: config.shell,
     agentConfig: config,
     signal,
     nestedToolObserver: options?.nestedToolObserver,
