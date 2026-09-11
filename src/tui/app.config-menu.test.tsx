@@ -177,18 +177,18 @@ describe('the /config menu survives the picker it opens', () => {
     await submit(view, '/config');
     expect(frameOf(view)).toContain('Settings');
 
-    view.stdin.write('t');
+    view.stdin.write('c');
     await settle();
-    expect(frameOf(view)).toContain('Choose theme');
+    expect(frameOf(view)).toContain('Choose compact model');
     expect(frameOf(view)).not.toContain('Choose a setting to change');
 
     view.stdin.write('\x1b');
     await settle();
     const frame = frameOf(view);
     expect(frame).toContain('Choose a setting to change');
-    // Back on Theme, not on Model: the menu remounts, so the row has to be
+    // Back on Compact model, not on Model: the menu remounts, so the row has to be
     // carried across the trip rather than reset to the top.
-    expect(frame).toContain('› T  Theme');
+    expect(frame).toContain('› C  Compact model');
   });
 
   it('comes back after a sub-picker saves, so a second setting costs no reopen', async () => {
@@ -241,7 +241,7 @@ describe('the /config menu survives the picker it opens', () => {
     const view = startApp(vi.fn());
     await settle();
 
-    await submit(view, '/theme');
+    await submit(view, '/model');
     await settle();
     expect(frameOf(view)).not.toContain('Choose a setting to change');
 

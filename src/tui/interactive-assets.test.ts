@@ -4,7 +4,7 @@ import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from '../settings.js';
 import { loadInteractiveAssets } from './interactive-assets.js';
-import { APPLE_THEME, DARK_THEME } from './theme.js';
+import { APPLE_THEME } from './theme.js';
 
 let workspace: string | undefined;
 
@@ -22,24 +22,23 @@ function assetsFor(theme?: string) {
 
 describe('loadInteractiveAssets initial theme', () => {
   it('opens a fresh install on the apple palette', () => {
-    // No `theme` setting is the state every new user is in, so this is the
-    // palette the product ships with. `dark` is still available by name.
     const { initialTheme } = assetsFor();
 
     expect(initialTheme?.resolvedName).toBe('apple');
     expect(initialTheme?.tokens).toBe(APPLE_THEME);
   });
 
-  it('honours an explicit theme setting over the default', () => {
-    const { initialTheme } = assetsFor('dark');
+  it('honours an explicit theme setting for apple', () => {
+    const { initialTheme } = assetsFor('apple');
 
-    expect(initialTheme?.resolvedName).toBe('dark');
-    expect(initialTheme?.tokens).toBe(DARK_THEME);
+    expect(initialTheme?.resolvedName).toBe('apple');
+    expect(initialTheme?.tokens).toBe(APPLE_THEME);
   });
 
-  it('reports an unknown theme as unresolved instead of falling back silently', () => {
+  it('reports an unknown or removed theme as unresolved instead of falling back silently', () => {
     // The App owns the fallback; the loader must not paper over a typo in
     // settings by quietly substituting the default.
+    expect(assetsFor('dark').initialTheme).toBeNull();
     expect(assetsFor('no-such-theme').initialTheme).toBeNull();
   });
 });

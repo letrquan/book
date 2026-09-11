@@ -488,7 +488,7 @@ Writes use an atomic sibling-file replacement, and malformed or non-object
 invalid setting path; provider secrets are redacted.
 
 Inside the TUI, `/config` opens a visual settings menu. Use it to change the main model, compact
-strategy, compact model, effort, theme, memory auto-capture, startup fire, or the model assigned to
+strategy, compact model, effort, memory auto-capture, startup fire, or the model assigned to
 each managed-agent profile. Choosing a row opens that setting's picker and returns to the menu on
 the same row when it closes, so one `/config` covers as many settings as you want to change.
 
@@ -497,13 +497,12 @@ the same row when it closes, so one `/config` covers as many settings as you wan
 takes the same `--global` / `--project` / `--local` flags (at most one, before or after a
 `compact-model` keyword).
 
-Eight settings are held by the running session rather than re-read from `settings` each turn —
-`model`, `compactModel`, `effort`, `theme`, `defaultMode`, `ui.showThinking`,
+Seven settings are held by the running session rather than re-read from `settings` each turn —
+`model`, `compactModel`, `effort`, `defaultMode`, `ui.showThinking`,
 `ui.startupAnimation` and `memory.autoSave`. Each is handed to the same code path its menu row
 uses, so `/config model=…` switches the session exactly as `/model …` does rather than writing a
 file this session will not re-read. They land in the layer that setting belongs to: user-global
-for all of them except `theme`, which stays project-local because a theme name can come from a
-project's `.book/themes`. Everything else defaults to the user-global layer.
+by default. Everything else defaults to the user-global layer.
 
 Naming a scope that setting already uses is the same request as naming none. Naming a *different*
 one is a request to write that one file, and the reply then says the change waits for the next
@@ -516,9 +515,8 @@ TUI preference changes are saved by whose choice they are. Preferences about how
 *you* — model, effort, compact model, permission default mode, provider registries and API keys,
 thinking display, startup animation, memory auto-capture — are written to the user-global
 `~/.book/settings.json` and follow you across projects. What is genuinely about *this* repository
-stays in `.book/settings.local.json`: skill overrides, approved permission rules, per-profile agent
-models, and the theme (a theme name can come from a project's `.book/themes`, so it would not
-resolve elsewhere). Set `ui.startupAnimation` to `false` in `~/.book/settings.json` to disable the
+stays in `.book/settings.local.json`: skill overrides, approved permission rules, and per-profile agent
+models. Set `ui.startupAnimation` to `false` in `~/.book/settings.json` to disable the
 effect everywhere.
 
 ### File mutations
@@ -1158,18 +1156,11 @@ Book clears sessions and rotated debug-log backups after 30 days. Startup resolv
 
 ### Themes
 
-Use `/theme` to open the keyboard theme picker, or switch directly with `/theme apple`, `/theme dark`, `/theme light`, `/theme auto`, `/theme catppuccin`, `/theme nord`, `/theme gruvbox`, or `/theme solarized-dark`. The selection is applied immediately and saved to `.book/settings.local.json` for the next launch. A fresh install opens on `apple`; `auto` follows the terminal background and resolves to `apple` on a dark terminal and `light` on a light one. The built-in themes provide thoughtfully tuned palettes:
+Book uses the `apple` theme by default: near-black neutral surfaces, bright grey text, and one blue accent for the composer and your own turns. Every other hue is a status colour that appears only when a state needs attention.
 
-- **apple** (default): Near-black neutral surfaces, bright grey text, and one blue accent for the composer and your own turns. Every other hue is a status colour that appears only when a state needs attention.
-- **dark / light**: Editorial warm charcoal / soft parchment with grounded sage and clay accents.
-- **catppuccin**: Soothing medium-contrast pastel palette based on Catppuccin Mocha for minimal eye fatigue.
-- **nord**: Arctic and glacial slate palette designed to reduce blue-light glare and harsh transitions.
-- **gruvbox**: Warm retro-earthy dark palette with amber and olive tones for evening and low-strain coding.
-- **solarized-dark**: Scientifically engineered Lab color-space palette with tuned luminance contrast.
+Roles are kept visually distinct on purpose: blue is the user and composer, cyan is the agent speaking, indigo is product chrome, teal carries references, and distinct status hues carry results.
 
-Roles are kept visually distinct on purpose: sage/lavender/frost belongs to the agent, clay/blue/orange to product chrome and user input, teal/cyan to references and usage meters, and distinct status hues carry results. A custom theme that reuses one hue across roles will render those roles identically, which is what the built-ins avoid.
-
-Project themes can override any token in `.book/themes/<name>.json`. They appear automatically in the picker and can also be activated with `/theme <name>`. Theme files are partial and inherit unspecified values from the editorial `dark` palette (not from `apple`), so existing custom themes render exactly as before:
+Project themes can override any token in `.book/themes/<name>.json`:
 
 ```json
 {
@@ -1266,7 +1257,7 @@ that substitutes no shell has nothing to approve.
 Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, `/exit`,
 `/help`), task and job controls (`/task`, `/jobs`, with `/tasks` as an alias), managed-agent
 controls (`/agents`, `/agent`), config (`/model`, `/providers`, `/login [profile]`,
-`/effort [low|medium|high|xhigh|max]`, `/config`, `/permissions`, `/theme`), inspection
+`/effort [low|medium|high|xhigh|max]`, `/config`, `/permissions`), inspection
 (`/status`, `/mcp`, `/cost`, `/usage` with `/stats` as an alias, `/context`, `/diff`, `/skills`,
 `/memory`), local output and reload (`/export`, `/reload-skills`), release/support
 (`/release-notes`, `/feedback`), agent prompts (`/init`, `/security-review`), and code review

@@ -271,23 +271,15 @@ describe('resolvePrintCommand — host effects fail loudly', () => {
 
   // `/review` is absent on purpose: it is host-orchestrated and now has a print
   // handler (see print-dispatch.review.test.ts). Everything here still refuses.
-  it.each([
-    'clear',
-    'new',
-    'resume',
-    'compact',
-    'exit',
-    'theme',
-    'config',
-    'memory',
-    'jobs',
-    'rewind',
-  ])('refuses /%s rather than sending it as prose', async (command) => {
-    const workspace = tempWorkspace();
-    await expect(resolvePrintCommand(`/${command}`, env(workspace))).rejects.toBeInstanceOf(
-      UnsupportedPrintCommandError,
-    );
-  });
+  it.each(['clear', 'new', 'resume', 'compact', 'exit', 'config', 'memory', 'jobs', 'rewind'])(
+    'refuses /%s rather than sending it as prose',
+    async (command) => {
+      const workspace = tempWorkspace();
+      await expect(resolvePrintCommand(`/${command}`, env(workspace))).rejects.toBeInstanceOf(
+        UnsupportedPrintCommandError,
+      );
+    },
+  );
 
   it('never executes an interactive built-in, so its side effects cannot fire', async () => {
     const workspace = tempWorkspace();

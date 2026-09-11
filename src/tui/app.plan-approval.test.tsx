@@ -891,7 +891,7 @@ describe('App interactive asset cache', () => {
           commands: [],
           skills: [],
           customThemes: [],
-          initialTheme: { preference: 'dark', resolvedName: 'dark', tokens: DEFAULT_THEME },
+          initialTheme: { preference: 'apple', resolvedName: 'apple', tokens: DEFAULT_THEME },
         }}
       />,
     );
@@ -1173,97 +1173,6 @@ describe('App effort command', () => {
     const { view } = renderIdle();
     await submit(view, '/status');
     expect(stripAnsi(view.lastFrame() ?? '')).toContain('Session Status  Esc to close');
-  });
-});
-
-describe('App theme command', () => {
-  const submit = async (view: ReturnType<typeof render>, value: string) => {
-    view.stdin.write(value);
-    await new Promise((resolve) => setTimeout(resolve, 75));
-    view.stdin.write('\r');
-    await new Promise((resolve) => setTimeout(resolve, 75));
-  };
-
-  function renderIdle(appConfig = config()) {
-    const agentState = {
-      ...pendingAgentState(),
-      isThinking: false,
-      pendingPlanApproval: null,
-      liveConfig: appConfig,
-    };
-    useAgentMock.mockReturnValue(agentState);
-    useTasksMock.mockReturnValue({
-      tasks: [],
-      addTask: vi.fn(),
-      updateTaskStatus: vi.fn(),
-      removeTask: vi.fn(),
-      clearTasks: vi.fn(),
-    });
-    return { agentState, view: render(<App config={appConfig} session={testSession} />) };
-  }
-
-  it('opens a dedicated picker with the current theme highlighted', async () => {
-    const appConfig = config();
-    appConfig.settings.theme = 'light';
-    const { view } = renderIdle(appConfig);
-
-    await submit(view, '/theme');
-    const frame = stripAnsi(view.lastFrame());
-
-    expect(frame).toContain('Choose theme');
-    expect(frame).toMatch(/› light\s+Soft parchment/);
-    expect(frame).toContain('(current)');
-  });
-
-  it('selects and persists a theme from the picker', async () => {
-    // No theme setting: a fresh install opens the picker on `apple`, so one
-    // step down lands on `dark`.
-    const { agentState, view } = renderIdle();
-
-    await submit(view, '/theme');
-    expect(stripAnsi(view.lastFrame())).toMatch(/› apple\s+Near-black neutrals/);
-    view.stdin.write('\x1b[B');
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    view.stdin.write('\r');
-    await new Promise((resolve) => setTimeout(resolve, 75));
-
-    expect(persistSettingLocalMock).toHaveBeenCalledWith('/tmp/book', 'theme', 'dark');
-    expect(agentState.addLocalMessage).toHaveBeenCalledWith(
-      'Switched to dark theme (saved as default).',
-    );
-    expect(stripAnsi(view.lastFrame())).not.toContain('Choose theme');
-  });
-
-  it('applies direct arguments and reports auto resolution', async () => {
-    vi.stubEnv('COLORFGBG', '0;15');
-    const { agentState, view } = renderIdle();
-
-    await submit(view, '/theme AUTO');
-
-    expect(persistSettingLocalMock).toHaveBeenCalledWith('/tmp/book', 'theme', 'auto');
-    expect(agentState.addLocalMessage).toHaveBeenCalledWith(
-      'Theme set to auto (currently light) and saved as default.',
-    );
-  });
-
-  it('reports missing themes instead of failing silently', async () => {
-    const { agentState, view } = renderIdle();
-
-    await submit(view, '/theme missing-theme');
-
-    expect(persistSettingLocalMock).not.toHaveBeenCalled();
-    expect(agentState.addLocalMessage).toHaveBeenCalledWith(
-      '✕ Theme "missing-theme" was not found. Choose apple, dark, light, auto, catppuccin, nord, gruvbox, solarized-dark, or a theme from .book/themes.',
-    );
-  });
-
-  it('dispatches only the exact /theme command', async () => {
-    const { agentState, view } = renderIdle();
-
-    await submit(view, '/themes light');
-
-    expect(persistSettingLocalMock).not.toHaveBeenCalled();
-    expect(agentState.send).toHaveBeenCalledWith('/themes light');
   });
 });
 

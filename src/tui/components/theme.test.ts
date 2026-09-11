@@ -2,19 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import {
-  APPLE_THEME,
-  DARK_THEME,
-  LIGHT_THEME,
-  CATPPUCCIN_THEME,
-  NORD_THEME,
-  GRUVBOX_THEME,
-  SOLARIZED_DARK_THEME,
-  hasLightTerminalBackground,
-  listCustomThemes,
-  loadCustomTheme,
-  resolveTheme,
-} from '../theme.js';
+import { APPLE_THEME, listCustomThemes, loadCustomTheme, resolveTheme } from '../theme.js';
 import { DEFAULT_THEME } from '../../types/theme.js';
 
 let dir: string;
@@ -60,29 +48,16 @@ describe('loadCustomTheme', () => {
 });
 
 describe('theme resolution', () => {
-  it('detects the background from the final COLORFGBG value', () => {
-    expect(hasLightTerminalBackground('15;0')).toBe(false);
-    expect(hasLightTerminalBackground('0;15')).toBe(true);
-    expect(hasLightTerminalBackground('0;7')).toBe(true);
-  });
-
-  it('resolves built-ins and auto mode', () => {
+  it('resolves apple and reports other or unknown themes as null', () => {
     expect(resolveTheme(dir, 'apple')?.tokens).toBe(APPLE_THEME);
     expect(resolveTheme(dir, 'apple-dark')?.tokens).toBe(APPLE_THEME);
-    expect(resolveTheme(dir, 'dark')?.tokens).toBe(DARK_THEME);
-    expect(resolveTheme(dir, 'LIGHT')?.tokens).toBe(LIGHT_THEME);
-    expect(resolveTheme(dir, 'auto', '0;15')?.resolvedName).toBe('light');
-    // A dark terminal under `auto` gets the same palette as a fresh install.
-    expect(resolveTheme(dir, 'auto', '15;0')?.resolvedName).toBe('apple');
-    expect(resolveTheme(dir, 'auto', '15;0')?.tokens).toBe(APPLE_THEME);
-    expect(resolveTheme(dir, 'catppuccin')?.tokens).toBe(CATPPUCCIN_THEME);
-    expect(resolveTheme(dir, 'catppuccin-mocha')?.tokens).toBe(CATPPUCCIN_THEME);
-    expect(resolveTheme(dir, 'mocha')?.tokens).toBe(CATPPUCCIN_THEME);
-    expect(resolveTheme(dir, 'nord')?.tokens).toBe(NORD_THEME);
-    expect(resolveTheme(dir, 'gruvbox')?.tokens).toBe(GRUVBOX_THEME);
-    expect(resolveTheme(dir, 'gruvbox-dark')?.tokens).toBe(GRUVBOX_THEME);
-    expect(resolveTheme(dir, 'solarized-dark')?.tokens).toBe(SOLARIZED_DARK_THEME);
-    expect(resolveTheme(dir, 'solarized')?.tokens).toBe(SOLARIZED_DARK_THEME);
+    expect(resolveTheme(dir, 'dark')).toBeNull();
+    expect(resolveTheme(dir, 'light')).toBeNull();
+    expect(resolveTheme(dir, 'auto')).toBeNull();
+    expect(resolveTheme(dir, 'catppuccin')).toBeNull();
+    expect(resolveTheme(dir, 'nord')).toBeNull();
+    expect(resolveTheme(dir, 'gruvbox')).toBeNull();
+    expect(resolveTheme(dir, 'solarized-dark')).toBeNull();
   });
 
   it('lists and resolves project themes', () => {
@@ -97,10 +72,7 @@ describe('theme resolution', () => {
   });
 });
 
-describe('built-in editorial themes', () => {
-  // Clay is deliberately shared by `brand` and `userAccent`: it is one warm
-  // accent used in two contexts (product chrome and user-authored content),
-  // which never carry competing meaning on the same row.
+describe('apple default theme', () => {
   const DISTINCT_ROLES = [
     'text',
     'brand',
@@ -113,15 +85,7 @@ describe('built-in editorial themes', () => {
     'modeDefault',
   ] as const;
 
-  for (const [name, theme] of [
-    ['apple', APPLE_THEME],
-    ['dark', DARK_THEME],
-    ['light', LIGHT_THEME],
-    ['catppuccin', CATPPUCCIN_THEME],
-    ['nord', NORD_THEME],
-    ['gruvbox', GRUVBOX_THEME],
-    ['solarized-dark', SOLARIZED_DARK_THEME],
-  ] as const) {
+  for (const [name, theme] of [['apple', APPLE_THEME]] as const) {
     it(`gives every ${name} role its own hue`, () => {
       const used = new Map<string, string>();
       for (const role of DISTINCT_ROLES) {
@@ -132,14 +96,6 @@ describe('built-in editorial themes', () => {
     });
 
     it(`keeps the ${name} spinner on the agent's own hue`, () => {
-      // The spinner is the agent speaking, so its gradient is anchored on
-      // `assistantAccent` and eases to a lighter tint of the same hue. `brand`
-      // is product chrome — the plan header and the plan's active step — and
-      // the two sit on adjacent rows in the footer. A breath that lands on
-      // `brand` erases the difference between the run talking and the UI
-      // labelling it, which is the whole reason the activity row stopped using
-      // `text`. Nord shipped this pair transposed and Catppuccin ended it on
-      // `brand`; in both, the working line rendered in the plan's colour.
       const [from, to] = theme.shimmerPair;
       expect(from).toBe(theme.assistantAccent);
       expect(from).not.toBe(theme.brand);
@@ -147,39 +103,19 @@ describe('built-in editorial themes', () => {
     });
 
     it(`keeps ${name} prose headings out of the chrome palette`, () => {
-      // A heading that matches brand or the agent accent makes body copy read
-      // as UI chrome, which is what the single-hue palette used to do.
       expect(theme.mdHeadingH1).not.toBe(theme.brand);
       expect(theme.mdHeadingH1).not.toBe(theme.assistantAccent);
       expect(theme.usageMeter).not.toBe(theme.brand);
     });
 
     it(`ranks ${name} heading depth by three distinct steps`, () => {
-      // Headings carry no `###` marker or side rule any more, so depth is
-      // legible only through this ramp. If two steps collapse — or one matches
-      // `text` — a heading becomes indistinguishable from a bold run of body
-      // copy, which is exactly what H1 did when it was set to `text`.
       const ramp = [theme.mdHeadingH1, theme.mdHeadingH2, theme.mdHeading];
       expect(new Set(ramp).size).toBe(3);
-      // No step may sit at `text`. A heading that matches body copy is carried
-      // by bold alone, which is the weakest signal in a terminal and reads as
-      // an emphasised sentence rather than a section.
       for (const step of ramp) expect(step).not.toBe(theme.text);
     });
   }
 
-  it('anchors the warm editorial identity', () => {
-    expect(DARK_THEME.text).toBe('#E7E1D4');
-    expect(DARK_THEME.assistantAccent).toBe('#AFC19D');
-    expect(LIGHT_THEME.text).toBe('#302E2A');
-    expect(LIGHT_THEME.assistantAccent).toBe('#607257');
-  });
-
   it('keeps the apple palette neutral except for the action accent', () => {
-    // The whole point of the default palette is that ordinary chrome is grey:
-    // the composer frame and user input are the one blue, the agent speaks in
-    // cyan, and every other saturated hue is a status that needs attention.
-    // `default` mode in particular must carry no colour of its own.
     expect(APPLE_THEME.promptBorder).toBe(APPLE_THEME.userAccent);
     expect(APPLE_THEME.modeDefault).toBe(APPLE_THEME.subtle);
     for (const role of ['border', 'toolRail', 'inactive', 'subtle', 'suggestion'] as const) {
