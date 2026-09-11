@@ -22,7 +22,7 @@ interface Rgb {
 }
 
 /** Last-resort colour when a theme supplies no usable shimmer pair. */
-const FALLBACK_SHIMMER = '#AFC19D';
+const FALLBACK_SHIMMER = '#64D2FF';
 
 /**
  * Parse a hex colour, tolerating anything a custom theme might supply.

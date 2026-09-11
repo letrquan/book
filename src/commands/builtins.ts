@@ -89,11 +89,10 @@ export type BuiltinCommandEffect =
   | { type: 'exit' }
   | {
       type: 'show-modal';
-      modal: 'config' | 'model' | 'rewind' | 'theme' | 'effort' | 'skills' | 'login';
+      modal: 'config' | 'model' | 'rewind' | 'effort' | 'skills' | 'login';
       /** Profile `/login <profile>` named, preselected in the picker. */
       profile?: string;
     }
-  | { type: 'set-theme'; preference: string }
   | { type: 'set-model'; selection: string }
   | { type: 'set-effort'; level: EffortLevel }
   | { type: 'set-compact-model'; model: string }
@@ -238,12 +237,6 @@ const LIVE_SETTINGS: Record<string, LiveSetting> = {
     layer: 'user',
     effect: (value) => ({ type: 'set-compact-model', model: textOf(value) }),
   },
-  // The theme picker persists locally on purpose: a theme name can come from a
-  // project's `.book/themes`, so a global value would not resolve elsewhere.
-  theme: {
-    layer: 'local',
-    effect: (value) => ({ type: 'set-theme', preference: textOf(value) }),
-  },
   effort: {
     layer: 'user',
     effect: (value, context) => {
@@ -319,7 +312,7 @@ function configCommandEffect(
       content:
         formatSettingsKeyHelp('Supported keys (experimental.* is user-global/--settings only):') +
         '\n\nUsage: /config <key>=<value>            writes the layer that setting uses\n' +
-        '                                        (user-global for all but theme)\n' +
+        '                                        (user-global by default)\n' +
         '       /config --global <key>=<value>   force <BOOK_HOME>/settings.json\n' +
         '       /config --project <key>=<value>  force .book/settings.json\n' +
         '       /config --local <key>=<value>    force .book/settings.local.json\n' +
@@ -700,15 +693,6 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
     description: 'Inspect or control a managed agent',
     argumentHint: '<id>|send <id> <message>|stop <id>|apply <id>',
     execute: ({ rawArguments }, context) => agentCommandEffect(rawArguments, context),
-  },
-  {
-    name: 'theme',
-    description: 'Switch color theme',
-    argumentHint: '[apple|dark|light|auto|name]',
-    execute: ({ rawArguments }) =>
-      rawArguments
-        ? { type: 'set-theme', preference: rawArguments }
-        : { type: 'show-modal', modal: 'theme' },
   },
   {
     name: 'model',
