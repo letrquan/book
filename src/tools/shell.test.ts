@@ -7,14 +7,30 @@ import { createDefaultRegistry } from './registry.js';
 import { getPrimaryArg } from './primary-arg.js';
 import { SessionRuntime } from '../session/runtime.js';
 import { DEFAULT_SETTINGS, type ResolvedSettings } from '../settings.js';
-import type { BackgroundShellStore } from '../types/runtime.js';
+import type { BackgroundShellStore, ResolvedShell } from '../types/runtime.js';
 import type { ToolContext, ToolDefinition, ToolResult } from '../types/tools.js';
 
 let dir: string;
 let contexts: ToolContext[] = [];
 
+/**
+ * The shell these tests run commands under, pinned rather than resolved.
+ *
+ * `sessionShell` falls back to the ambient environment when a context carries
+ * no shell, which would make these assertions depend on how the test runner was
+ * launched — a Git Bash terminal and a PowerShell one would exercise different
+ * interpreters and different quoting. The Bash *tool* is what is under test
+ * here (backgrounding, deadlines, output capture), not shell selection, so the
+ * platform default is pinned and `shell-selection.test.ts` covers the ladder,
+ * including real PowerShell and Git Bash execution.
+ */
+const TEST_SHELL: ResolvedShell =
+  process.platform === 'win32'
+    ? { kind: 'cmd', label: 'cmd.exe', source: 'fallback' }
+    : { kind: 'sh', label: '/bin/sh', source: 'detected' };
+
 function ctx(): ToolContext {
-  const c: ToolContext = { workspaceRoot: dir, env: {} };
+  const c: ToolContext = { workspaceRoot: dir, env: {}, shell: TEST_SHELL };
   contexts.push(c);
   return c;
 }
@@ -329,7 +345,12 @@ describe('Bash shell tools', () => {
         finishedAt: now + index,
       });
     }
-    const c: ToolContext = { workspaceRoot: dir, env: {}, backgroundShells: store };
+    const c: ToolContext = {
+      workspaceRoot: dir,
+      env: {},
+      backgroundShells: store,
+      shell: TEST_SHELL,
+    };
     contexts.push(c);
 
     await bashOutput.execute({ shell_id: 'shell_29' }, c);
@@ -341,8 +362,18 @@ describe('Bash shell tools', () => {
 
   it('shares configured background shell state across contexts', async () => {
     const store: BackgroundShellStore = { nextId: 1, shells: new Map() };
-    const first: ToolContext = { workspaceRoot: dir, env: {}, backgroundShells: store };
-    const second: ToolContext = { workspaceRoot: dir, env: {}, backgroundShells: store };
+    const first: ToolContext = {
+      workspaceRoot: dir,
+      env: {},
+      backgroundShells: store,
+      shell: TEST_SHELL,
+    };
+    const second: ToolContext = {
+      workspaceRoot: dir,
+      env: {},
+      backgroundShells: store,
+      shell: TEST_SHELL,
+    };
     contexts.push(first, second);
     const command = nodeCommand('shared.cjs', `console.log('shared-ready');\n`);
 
@@ -431,6 +462,7 @@ describe('sandbox.allowUnsandboxedCommands', () => {
       workspaceRoot: dir,
       env: {},
       sandbox: { ...structuredClone(DEFAULT_SETTINGS.sandbox), ...overrides },
+      shell: TEST_SHELL,
     };
     contexts.push(c);
     return c;

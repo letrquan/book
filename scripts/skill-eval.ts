@@ -1,10 +1,7 @@
 import { copyFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  evaluationControlsFromResult,
-  runEvaluationProcess,
-} from '../src/harness/evaluation/runner.js';
+import { evaluationControlsFromResult, runEvaluationProcess } from './eval-process.js';
 import {
   SKILL_EVALUATION_CATEGORIES,
   writeSkillEvaluationReport,

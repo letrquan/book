@@ -1,10 +1,9 @@
 {
-  "name": "book",
-  "version": "0.1.0",
+  "name": "@letrquan/book",
+  "version": "0.2.0",
   "description": "AI coding agent CLI with rich TUI",
   "type": "module",
-  "private": true,
-  "license": "UNLICENSED",
+  "license": "PolyForm-Small-Business-1.0.0",
   "author": "letrquan",
   "repository": {
     "type": "git",
@@ -32,13 +31,17 @@
     "dist",
     "README.md",
     "CHANGELOG.md",
+    "LICENSE",
     "patches/ink+6.8.0.patch",
     "scripts/apply-ink-patch.mjs",
     "scripts/ink-patch.mjs",
     "scripts/verify-ink-patch.mjs"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
-    "book": "./dist/index.js"
+    "book": "dist/index.js"
   },
   "main": "./dist/sdk.js",
   "types": "./dist/sdk.d.ts",
@@ -69,7 +72,6 @@
     "bench:runtime": "tsx src/tui/__benchmarks__/runtime.bench.ts",
     "eval:edit": "tsx scripts/edit-eval.ts",
     "eval:compact": "tsx scripts/compact-eval.ts",
-    "eval:zero-mem": "tsx scripts/zero-mem-eval.ts",
     "eval:skills": "tsx scripts/skill-eval.ts",
     "eval:review": "tsx scripts/review-eval.ts",
     "apply:ink-patch": "node scripts/apply-ink-patch.mjs",
@@ -106,7 +108,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@huggingface/transformers": "^4.2.0",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
@@ -128,14 +129,6 @@
     "tsx": "^4.23.12",
     "typescript": "5.9.3",
     "vitest": "^4.1.9"
-  },
-  "peerDependencies": {
-    "@huggingface/transformers": "^4.2.0"
-  },
-  "peerDependenciesMeta": {
-    "@huggingface/transformers": {
-      "optional": true
-    }
   },
   "overrides": {
     "postcss": "8.5.26",

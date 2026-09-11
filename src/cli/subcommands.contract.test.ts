@@ -8,7 +8,6 @@ import { runMcpListCommand } from './mcp.js';
 import { runToolStatsCommand } from './tool-stats.js';
 import { runStatusCommand } from './status-cmd.js';
 import { runTrustCommand } from './trust-cmd.js';
-import { runAuthLogoutCommand, runAuthStatusCommand } from './auth-cmd.js';
 import { setExitFn } from './exit.js';
 
 /**
@@ -79,13 +78,6 @@ describe('non-interactive subcommands without credentials', () => {
     ['book status', () => void runStatusCommand({ workspace })],
     // Approving a project hook is part of getting a broken workspace working,
     // so it must not be gated behind the provider it may be needed to fix.
-    // Subscription auth is exactly the thing a user without a working key comes
-    // here to set up, so reading and clearing it must not require one.
-    ['book auth status', () => runAuthStatusCommand({ workspace, home: bookHome })],
-    [
-      'book auth logout --all',
-      () => runAuthLogoutCommand(undefined, { workspace, home: bookHome, all: true }),
-    ],
     [
       'book trust hook --all-pending',
       () =>
@@ -109,7 +101,7 @@ describe('non-interactive subcommands without credentials', () => {
  * dying on it.
  *
  * allowMissingApiKey covers only the missing-credential rejection. Every other
- * one - malformed JSON, a schema violation, an unknown harness workflow - used
+ * one - malformed JSON, a schema violation, an out-of-range value - used
  * to escape loadConfig as an unhandled stack trace, which is the least useful
  * possible response from the command whose job is diagnosing a broken setup.
  */
@@ -122,7 +114,7 @@ describe('book doctor with an unloadable configuration', () => {
   const broken: Array<[string, string]> = [
     ['malformed JSON', '{ "model": '],
     ['a schema violation', JSON.stringify({ permissions: { allow: 'not-an-array' } })],
-    ['an unknown harness workflow', JSON.stringify({ harness: { workflow: 'not-a-workflow' } })],
+    ['an out-of-range value', JSON.stringify({ maxTurns: 0 })],
   ];
 
   for (const [label, contents] of broken) {

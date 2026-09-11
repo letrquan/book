@@ -2,7 +2,13 @@ import type { AgentManager } from '../agents/manager.js';
 import type { AgentRole, AgentRuntimeEvent } from '../agents/types.js';
 import type { ResolvedSettings } from '../settings.js';
 import type { SessionRuntime } from '../session/runtime.js';
-import type { AgentConfig, AgentTask, BackgroundShellStore, PermissionMode } from './runtime.js';
+import type {
+  AgentConfig,
+  AgentTask,
+  BackgroundShellStore,
+  PermissionMode,
+  ResolvedShell,
+} from './runtime.js';
 import type { AgentRunContext } from './runs.js';
 
 export type PermissionResult = 'allow' | 'deny' | 'always';
@@ -297,6 +303,8 @@ export interface ToolContext {
   gitignorePatterns?: string[];
   /** Resolved sandbox settings for the Bash tool. */
   sandbox?: ResolvedSettings['sandbox'];
+  /** The shell the Bash tool spawns for unsandboxed commands; resolved on demand when absent. */
+  shell?: ResolvedShell;
   /** The active AgentConfig, set by the agent loop before tool execution. */
   agentConfig?: AgentConfig;
   /** Abort signal shared with nested Task subagents. */
@@ -344,8 +352,6 @@ export interface ToolContext {
   parentSessionId?: string;
   /** Root/parent execution attribution for managed agents and evidence. */
   runContext?: AgentRunContext;
-  /** Observe-only runtime sink; absent while the harness is off. */
-  harnessObserver?: import('../harness/contracts.js').HarnessRuntimeObserver;
   /** Host sink for managed-agent lifecycle and evidence events. */
   onAgentEvent?: (event: AgentRuntimeEvent) => void;
   /** Host sink used by lifecycle hooks started from managed-agent tools. */

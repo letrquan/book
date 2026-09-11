@@ -31,7 +31,6 @@ import type { McpHostSnapshot } from '../mcp-host.js';
 import { settingsScopeLabel, type SettingsScope } from '../settings-scope.js';
 import { applySettingWrite, describeSettingShadow, guardSettingWrite } from '../settings-write.js';
 import { normalizePermissionMode } from '../permission-mode.js';
-import { listAuthProfiles, resolveAuthProfile } from '../auth/profiles.js';
 
 export interface BuiltinCommand {
   name: string;
@@ -89,9 +88,7 @@ export type BuiltinCommandEffect =
   | { type: 'exit' }
   | {
       type: 'show-modal';
-      modal: 'config' | 'model' | 'rewind' | 'effort' | 'skills' | 'login';
-      /** Profile `/login <profile>` named, preselected in the picker. */
-      profile?: string;
+      modal: 'config' | 'model' | 'rewind' | 'effort' | 'skills';
     }
   | { type: 'set-model'; selection: string }
   | { type: 'set-effort'; level: EffortLevel }
@@ -310,7 +307,7 @@ function configCommandEffect(
     return {
       type: 'local-message',
       content:
-        formatSettingsKeyHelp('Supported keys (experimental.* is user-global/--settings only):') +
+        formatSettingsKeyHelp('Supported keys:') +
         '\n\nUsage: /config <key>=<value>            writes the layer that setting uses\n' +
         '                                        (user-global by default)\n' +
         '       /config --global <key>=<value>   force <BOOK_HOME>/settings.json\n' +
@@ -335,16 +332,6 @@ function configCommandEffect(
       context,
     );
   }
-  if (/^(?:compact-strategy|compactStrategy)(?:\s|=)/i.test(rest)) {
-    return {
-      type: 'local-message',
-      content:
-        'Compact strategy selection was removed. Summary is the default; enable the ' +
-        'Zero-Mem experiment with BOOK_EXPERIMENTAL_ZERO_MEM=true or ' +
-        'experimental.zeroMem=true in <BOOK_HOME>/settings.json (normally ' +
-        '~/.book/settings.json), or pass an explicit --settings file.',
-    };
-  }
   if (!rest.includes('=')) {
     return { type: 'local-message', content: 'Usage: /config [key=value] or /config --help' };
   }
@@ -363,7 +350,7 @@ function configCommandEffect(
 
   // Ahead of the live branch as well as the write, so a refused key cannot be
   // reached through whichever of the two paths happens not to check it.
-  const refusal = guardSettingWrite(key, value);
+  const refusal = guardSettingWrite(key);
   if (refusal) return { type: 'local-message', content: `✕ ${refusal}`, isError: true };
 
   // Naming the layer a setting already uses is the same request as naming none;
@@ -709,27 +696,6 @@ export const BUILTIN_COMMAND_DEFINITIONS: BuiltinCommandDefinition[] = [
       rawArguments
         ? { type: 'local-message', content: 'Usage: /providers' }
         : { type: 'show-modal', modal: 'model' },
-  },
-  {
-    name: 'login',
-    description: 'Sign in with a provider subscription (OAuth)',
-    argumentHint: '[profile]',
-    execute: ({ rawArguments }, context) => {
-      const requested = rawArguments.trim();
-      // An unrecognised id must not fall through to "first profile in the
-      // list": Enter would then start an OAuth flow for a different vendor
-      // than the one the user typed. `book auth login <bogus>` refuses too.
-      if (requested && !resolveAuthProfile(requested, context.runtimeConfig.settings)) {
-        const known = listAuthProfiles(context.runtimeConfig.settings)
-          .map((profile) => profile.id)
-          .join(', ');
-        return {
-          type: 'local-message',
-          content: `✕ Unknown auth profile "${requested}". Available: ${known || '(none)'}`,
-        };
-      }
-      return { type: 'show-modal', modal: 'login', profile: requested || undefined };
-    },
   },
   {
     name: 'effort',

@@ -1,6 +1,4 @@
 import { z } from 'zod';
-import { WORKFLOW_ID_MESSAGE, WORKFLOW_ID_PATTERN } from './harness/contracts.js';
-import type { HarnessMode } from './harness/contracts.js';
 
 /**
  * Permission rule: "Tool" or "Tool(specifier)" where specifier is a glob pattern
@@ -197,47 +195,6 @@ export const providerModelSchema = z.object({
     .optional(),
 });
 
-/**
- * Per-profile overrides for subscription auth.
- *
- * `clientId` is the field that matters: Book ships none (see
- * `src/auth/profiles.ts`), so a subscription login only works once the user
- * supplies the client id their vendor issued them. The rest exists so a
- * self-hosted or proxied authorization server needs configuration, not a fork.
- */
-export const authProfileOverrideSchema = z.object({
-  label: z.string().min(1).optional(),
-  clientId: z.string().min(1).optional(),
-  /**
-   * Only for a confidential client. Supports `{env:VAR}` / `{file:path}`
-   * indirection like every other secret in settings, and is read exclusively
-   * from a trusted layer - the whole `auth` block is stripped from any
-   * workspace file.
-   */
-  clientSecret: z.string().min(1).optional(),
-  providerType: z.enum(['anthropic', 'openai']).optional(),
-  authorizeUrl: z.string().url().optional(),
-  tokenUrl: z.string().url().optional(),
-  scopes: z.array(z.string().min(1)).optional(),
-  redirectPort: z.number().int().min(0).max(65535).optional(),
-  redirectPath: z.string().startsWith('/').optional(),
-  baseUrl: z.string().min(1).optional(),
-  headers: z.record(z.string()).optional(),
-  defaultModel: z.string().min(1).optional(),
-});
-
-export const authSettingsSchema = z.object({
-  /**
-   * Which stored credential to spend: a profile id, or `api-key` to ignore
-   * stored credentials entirely. Left unset, Book uses a stored credential
-   * only when no API key resolved and exactly one credential matches the
-   * active provider — so adding a login never silently retargets a workspace
-   * that already had a working key.
-   */
-  profile: z.string().min(1).optional(),
-  profiles: z.record(authProfileOverrideSchema).default({}),
-});
-
 export const providerConfigSchema = z.object({
   type: z.enum(['openai', 'anthropic']).default('openai'),
   baseURL: z.string().min(1).optional(),
@@ -393,26 +350,6 @@ export const observabilitySettingsSchema = z.object({
 
 export type ObservabilitySettings = z.infer<typeof observabilitySettingsSchema>;
 
-export const harnessModeSchema: z.ZodType<HarnessMode> = z.enum([
-  'off',
-  'observe',
-  'shadow',
-  'active',
-  'learn',
-]);
-
-export const harnessSettingsSchema = z.object({
-  mode: harnessModeSchema.default('off'),
-  /**
-   * Explicit workflow selection by registry ID. Requires an enabled harness
-   * mode: under `off` there is no run evidence to record the choice against, so
-   * a selection fails closed rather than silently changing behavior.
-   */
-  workflow: z.string().regex(WORKFLOW_ID_PATTERN, WORKFLOW_ID_MESSAGE).optional(),
-});
-
-export type HarnessSettings = z.infer<typeof harnessSettingsSchema>;
-
 export const mcpProjectServerChoiceSchema = z.object({
   /** Hash of the server's command/args/env at decision time; a mismatch re-prompts. */
   fingerprint: z.string().min(1),
@@ -480,19 +417,10 @@ export type SkillSettings = z.infer<typeof skillSettingsSchema>;
 
 export type ProviderModelConfig = z.infer<typeof providerModelSchema>;
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;
-export type AuthProfileOverride = z.infer<typeof authProfileOverrideSchema>;
-export type AuthSettings = z.infer<typeof authSettingsSchema>;
 
-/** The supported production strategy; Zero-Mem is gated separately as experimental. */
+/** The supported production strategy. */
 export const compactStrategySchema = z.literal('summary');
 export type CompactStrategy = z.infer<typeof compactStrategySchema>;
-
-export const experimentalSettingsSchema = z.object({
-  /** Experimental query-time Zero-Mem retrieval. Disabled unless explicitly enabled. */
-  zeroMem: z.boolean().default(false),
-});
-
-export type ExperimentalSettings = z.infer<typeof experimentalSettingsSchema>;
 
 /**
  * Full settings.json schema — all keys that book supports.
@@ -502,8 +430,6 @@ export const bookSettingsSchema = z.object({
   model: z.string().optional(),
   /** Default strategy used to reduce historical conversation context. */
   compactStrategy: compactStrategySchema.optional(),
-  /** Unstable features that are unavailable under shipped defaults. */
-  experimental: experimentalSettingsSchema.default({}),
   /** Optional model used only to generate historical conversation checkpoints. */
   compactModel: z.string().min(1).optional(),
   /** Max agent turns per user message. Omit for unlimited. */
@@ -512,6 +438,13 @@ export const bookSettingsSchema = z.object({
   effort: effortLevelSchema.optional(),
   /** TUI color theme: apple (default), or a custom theme filename. */
   theme: z.string().min(1).optional(),
+  /**
+   * The shell the Bash tool spawns: `bash`, `pwsh`, `powershell`, `cmd`, `sh`,
+   * or an executable path. Honoured from the user-global layer, an explicit
+   * `--settings` document, or `BOOK_SHELL` only: a workspace file cannot pick
+   * the program every command is handed to.
+   */
+  shell: z.string().min(1).optional(),
   ui: uiSettingsSchema.default({}),
   skills: skillSettingsSchema.default({}),
   autoCompactEnabled: z.boolean().optional(),
@@ -523,7 +456,6 @@ export const bookSettingsSchema = z.object({
   additionalDirectories: z.array(z.string()).default([]),
   env: z.record(z.string()).default({}),
   provider: z.record(providerConfigSchema).default({}),
-  auth: authSettingsSchema.default({}),
   permissions: permissionsSchema.default({}),
   sandbox: sandboxSchema.default({}),
   hooks: hooksSchema.default({}),
@@ -534,7 +466,6 @@ export const bookSettingsSchema = z.object({
   toolDiscovery: toolDiscoverySettingsSchema.default({}),
   toolExecution: toolExecutionSettingsSchema.default({}),
   observability: observabilitySettingsSchema.default({}),
-  harness: harnessSettingsSchema.default({}),
   mcp: mcpSettingsSchema.default({}),
   commands: commandSettingsSchema.default({}),
 });
@@ -553,6 +484,7 @@ export type ResolvedSettings = Required<
     | 'maxTokens'
     | 'effort'
     | 'theme'
+    | 'shell'
     | 'autoCompactEnabled'
     | 'defaultMode'
     | 'disableBypassPermissionsMode'
@@ -566,6 +498,7 @@ export type ResolvedSettings = Required<
     | 'maxTokens'
     | 'effort'
     | 'theme'
+    | 'shell'
     | 'autoCompactEnabled'
     | 'defaultMode'
     | 'disableBypassPermissionsMode'
@@ -576,7 +509,6 @@ export type ResolvedSettings = Required<
  */
 export const DEFAULT_SETTINGS: ResolvedSettings = {
   compactStrategy: 'summary',
-  experimental: { zeroMem: false },
   permissions: { allow: [], ask: [], deny: [], projectAllowRules: {} },
   sandbox: {
     enabled: false,
@@ -604,7 +536,6 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   additionalDirectories: [],
   env: {},
   provider: {},
-  auth: { profiles: {} },
   ui: { showThinking: true, startupAnimation: true },
   skills: { enabled: true, overrides: {}, execution: {} },
   retry: {
@@ -665,9 +596,6 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   observability: {
     toolTelemetry: true,
     toolTelemetryRetentionDays: 30,
-  },
-  harness: {
-    mode: 'off',
   },
   mcp: {
     projectServers: {},

@@ -48,47 +48,32 @@ function write(key: string, value: unknown, scope: SettingsScope = 'user', overr
 
 describe('guard order', () => {
   /**
-   * `experimental` is not in the settings schema, so an ordering that ran the
-   * top-level check first would answer a capability-gate question with a typo
-   * message — and a reader would conclude the flag is simply misspelled.
+   * `shell` is a real settings key, so the refusal has to explain the trust
+   * boundary rather than the schema: it is honoured from the user-global file
+   * and refused in a workspace one, and a reader told only "unknown key" would
+   * conclude they had misspelled it.
    */
-  it('refuses an experimental flag as a capability gate, not an unknown key', () => {
-    const refusal = guardSettingWrite('experimental.zeroMem', true);
-    expect(refusal).toContain('in any scope');
+  it('refuses the shell setting as a trust boundary, not an unknown key', () => {
+    const refusal = guardSettingWrite('shell');
+    expect(refusal).toContain('BOOK_SHELL');
     expect(refusal).not.toContain('Unknown top-level key');
   });
 
-  it('refuses auth in every scope without naming a file the write could reach', () => {
-    const refusal = guardSettingWrite('auth.profile', 'anthropic');
-    expect(refusal).toContain('in any scope');
-    expect(refusal).toContain('BOOK_AUTH_CLIENT_ID_<PROFILE>');
-    // The workspace wording pointed at <BOOK_HOME>/settings.json, which is the
-    // file a user-global write was already aimed at: following it verbatim
-    // re-ran the same command and was refused again.
-    expect(refusal).not.toContain('cannot be written to .book/settings.local.json');
-  });
-
   it('reaches a trust-owned key from above and below its own path', () => {
-    expect(guardSettingWrite('permissions.projectAllowRules', [])).toContain('book trust rule');
-    expect(guardSettingWrite('hooks.projectEntries.abc', {})).toContain('book trust hook');
+    expect(guardSettingWrite('permissions.projectAllowRules')).toContain('book trust rule');
+    expect(guardSettingWrite('hooks.projectEntries.abc')).toContain('book trust hook');
     // Replacing the whole section is the same write with the same silent outcome.
-    expect(guardSettingWrite('commands', { projectCommands: {} })).toContain('book trust command');
+    expect(guardSettingWrite('commands')).toContain('book trust command');
   });
 
   it('rejects an unknown top-level key before anything is written', () => {
-    expect(guardSettingWrite('maxTruns', 12)).toContain('Unknown top-level key');
+    expect(guardSettingWrite('maxTruns')).toContain('Unknown top-level key');
     expect(write('maxTruns', 12).ok).toBe(false);
     expect(existsSync(join(bookHome, 'settings.json'))).toBe(false);
   });
 
-  it('rejects the retired Zero-Mem strategy value', () => {
-    expect(guardSettingWrite('compactStrategy', 'zero-mem')).toContain(
-      'BOOK_EXPERIMENTAL_ZERO_MEM=true',
-    );
-  });
-
   it('accepts a key the schema declares', () => {
-    expect(guardSettingWrite('maxTurns', 12)).toBeUndefined();
+    expect(guardSettingWrite('maxTurns')).toBeUndefined();
   });
 });
 

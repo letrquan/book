@@ -3,7 +3,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { runDoctorCommand } from './doctor.js';
-import { writeCredential } from '../auth/store.js';
 
 // Only the backend probe is stubbed; `sandboxPolicySummary` and everything else
 // stay real. Whether the developer's machine has bubblewrap installed must not
@@ -58,7 +57,7 @@ beforeEach(() => {
   // Doctor is the command a user reaches for when nothing works, so no test here
   // may hand it a credential: clearing the key means every case below also proves
   // the report survives an unconfigured environment.
-  for (const key of ['BOOK_HOME', 'BOOK_API_KEY', 'BOOK_AUTH_PROFILE']) {
+  for (const key of ['BOOK_HOME', 'BOOK_API_KEY']) {
     previousEnv[key] = process.env[key];
     delete process.env[key];
   }
@@ -155,46 +154,13 @@ describe('runDoctorCommand credentials', () => {
     expect(output).toContain('Credentials: API key resolved');
     expect(output).not.toContain('test-key');
   });
-
-  /**
-   * An active auth profile outranks any key in the environment - the transports
-   * replace the key headers outright - so naming the key here would point the
-   * user at the wrong credential when a subscription login is what actually
-   * fails.
-   */
-  it('names the active auth profile rather than a leftover API key', async () => {
-    writeSettings({ enabled: false });
-    process.env.BOOK_API_KEY = 'test-key';
-    process.env.BOOK_AUTH_PROFILE = 'anthropic';
-    writeCredential(
-      'anthropic',
-      {
-        kind: 'oauth',
-        tokens: { accessToken: 'secret-at', expiresAt: Date.now() + 3_600_000, account: 'a@b.c' },
-      },
-      { home: bookHome },
-    );
-
-    const output = await doctorOutput();
-
-    expect(output).toContain('auth profile "anthropic" (a@b.c)');
-    expect(output).toContain('valid until');
-    expect(output).not.toContain('secret-at');
-  });
-
-  it('tells the user to log in when the selected profile has no credential', async () => {
-    writeSettings({ enabled: false });
-    process.env.BOOK_AUTH_PROFILE = 'codex';
-
-    expect(await doctorOutput()).toContain('book auth login codex');
-  });
 });
 describe('runDoctorCommand unloadable configuration', () => {
-  // The pairing from #120: a workflow selected while the effective harness mode
-  // is the `off` default. No single file is invalid, so nothing named one, and
-  // finding it meant jq-ing all three layers by hand.
+  // From #120: a configuration that stops loading, where nothing named the layer
+  // responsible and finding it meant jq-ing all three by hand. `maxTurns: 0` is
+  // valid JSON and a real key, so only validation rejects it.
   function writeBrokenPairing(path: string): void {
-    writeFileSync(path, JSON.stringify({ harness: { workflow: 'safe-edit' } }));
+    writeFileSync(path, JSON.stringify({ maxTurns: 0 }));
   }
 
   it('marks the layer the failure appears with', async () => {
@@ -224,7 +190,7 @@ describe('runDoctorCommand unloadable configuration', () => {
   it('blames no layer when the cause is outside them', async () => {
     // Rejected in loadConfig from the environment, so every layer prefix fails
     // including the empty one. Accusing `User` there would be a wrong lead.
-    process.env.BOOK_COMPACT_STRATEGY = 'zero-mem';
+    process.env.BOOK_MAX_TOKENS = 'not-a-number';
     try {
       const output = await doctorOutput();
 
@@ -232,7 +198,7 @@ describe('runDoctorCommand unloadable configuration', () => {
       expect(output).toContain('No single layer accounts for it');
       expect(output).not.toContain('<- the failure appears with this layer');
     } finally {
-      delete process.env.BOOK_COMPACT_STRATEGY;
+      delete process.env.BOOK_MAX_TOKENS;
     }
   });
 
@@ -249,10 +215,7 @@ describe('runDoctorCommand unloadable configuration', () => {
 describe('runDoctorCommand --no-settings', () => {
   it('reports a full diagnostic past a layer that will not load', async () => {
     mkdirSync(join(workspace, '.book'), { recursive: true });
-    writeFileSync(
-      join(workspace, '.book', 'settings.local.json'),
-      JSON.stringify({ harness: { workflow: 'safe-edit' } }),
-    );
+    writeFileSync(join(workspace, '.book', 'settings.local.json'), JSON.stringify({ maxTurns: 0 }));
 
     const output = await doctorOutput(workspace, { noSettings: true });
 

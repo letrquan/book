@@ -8,7 +8,6 @@ import { runDoctorCommand } from './cli/doctor.js';
 import { runToolStatsCommand } from './cli/tool-stats.js';
 import { runConfigCommand } from './cli/config-cmd.js';
 import { runTrustCommand } from './cli/trust-cmd.js';
-import { runAuthLoginCommand, runAuthLogoutCommand, runAuthStatusCommand } from './cli/auth-cmd.js';
 import { runMainAction } from './cli/run.js';
 import { getPackageVersion } from './version-info.js';
 import { formatSettingsKeyHelp } from './settings-repository.js';
@@ -91,10 +90,6 @@ program
   .option('--include-partial-messages', 'Emit partial assistant text deltas in stream-json output')
   .option('--prompt-suggestions', 'Ask model for follow-up prompt suggestions after completion')
   .option('--agents <mode>', 'Managed agents: adaptive, manual, off')
-  .option(
-    '--harness-workflow <id>',
-    'Harness execution workflow: minimal, safe-edit, verify-heavy (requires harness.mode != off; run-scoped)',
-  )
   .option('--scrollback', 'Use terminal-native scrollback instead of the full-screen TUI')
   .option('--settings <path>', 'Path to an ad-hoc settings file (overrides all scopes)')
   .option('--no-settings', 'Skip all settings.json layers (use defaults + legacy .bookrc.json)')
@@ -290,60 +285,6 @@ trustCommand
         workspace: resolveWorkspace(options.workspace),
       });
     },
-  );
-
-// ---- book auth ----
-const authCommand = program
-  .command('auth')
-  .description('Sign in with a provider subscription instead of an API key');
-
-authCommand
-  .command('login')
-  .description('Run the OAuth flow for a subscription profile (anthropic, codex, …)')
-  .argument('[profile]', 'Auth profile id')
-  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
-  .option('--no-browser', 'Print the authorization URL instead of opening a browser')
-  .option('--manual', 'Paste the redirect URL back instead of listening on localhost')
-  .option('--timeout <seconds>', 'How long to wait for the redirect (default 300)')
-  .action(
-    async (
-      profile: string | undefined,
-      options: {
-        workspace?: string;
-        browser?: boolean;
-        manual?: boolean;
-        timeout?: string;
-      },
-    ) => {
-      await runAuthLoginCommand(profile, {
-        ...options,
-        // Commander renders --no-browser as `browser: false`.
-        noBrowser: options.browser === false,
-        workspace: resolveWorkspace(options.workspace),
-      });
-    },
-  );
-
-authCommand
-  .command('logout')
-  .description('Remove a stored credential')
-  .argument('[profile]', 'Auth profile id')
-  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
-  .option('--all', 'Remove every stored credential')
-  .action((profile: string | undefined, options: { workspace?: string; all?: boolean }) =>
-    runAuthLogoutCommand(profile, {
-      ...options,
-      workspace: resolveWorkspace(options.workspace),
-    }),
-  );
-
-authCommand
-  .command('status')
-  .description('Show which credential Book will use, without revealing it')
-  .option('-w, --workspace <path>', 'Workspace root directory (defaults to the root -w, then cwd)')
-  .option('--json', 'Emit JSON')
-  .action((options: { workspace?: string; json?: boolean }) =>
-    runAuthStatusCommand({ ...options, workspace: resolveWorkspace(options.workspace) }),
   );
 
 // ---- book config ----

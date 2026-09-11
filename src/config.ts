@@ -3,16 +3,18 @@ import { readFileSync, existsSync } from 'fs';
 import { isAbsolute, join, relative, resolve } from 'path';
 import { homedir } from 'os';
 import type { AgentConfig, RetryConfig } from './types/runtime.js';
-import { resolveSettings, migrateLegacyPermissions } from './settings-loader.js';
+import {
+  resolveSettings,
+  migrateLegacyPermissions,
+  settingsLayerPaths,
+} from './settings-loader.js';
+import { hadRemovedAuthConfiguration } from './settings-removed.js';
 import type { SettingsResolutionPaths } from './settings-loader.js';
 import { DEFAULT_SETTINGS, type CompactStrategy, type ResolvedSettings } from './settings.js';
 import { loadMemoryContext } from './memory-store.js';
 import { isEffortLevel } from './commands/effort.js';
-import { assertHarnessModeAvailable, assertSelectableWorkflow } from './harness/coordinator.js';
-import { selectAuthProfile, type AuthSelection } from './auth/selection.js';
-import { profileOrigin, type AuthProfile } from './auth/profiles.js';
-import type { AuthProfileInputs } from './types/auth.js';
 import { createModelWindowStore, type ModelWindowStore } from './model-window-store.js';
+import { resolveShell } from './shell-selection.js';
 
 /** Legacy .bookrc.json schema (v0.1.0 format, deprecated). */
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
@@ -75,7 +77,7 @@ export interface LoadConfigOptions {
   settingsOverridePath?: string;
   /** If true, skip all settings.json layers entirely (use defaults + legacy .bookrc.json). */
   noSettings?: boolean;
-  /** Run storage migrations after the effective settings and harness mode are validated. */
+  /** Run storage migrations after effective settings are validated. */
   runMigrations?: boolean;
   /** CLI -m/--model override, applied before provider registry resolution. */
   modelOverride?: string;
@@ -107,8 +109,6 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   let settings = noSettings
     ? structuredClone(DEFAULT_SETTINGS)
     : resolveSettings(resolvedWorkspace, settingsOverridePath, options?.settingsPaths);
-  assertHarnessModeAvailable(settings.harness.mode);
-  assertSelectableWorkflow(settings.harness.mode, settings.harness.workflow);
 
   if (!noSettings && options?.runMigrations) {
     const migrated = migrateLegacyPermissions(resolvedWorkspace, undefined, settings);
@@ -170,64 +170,31 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
   const effortExplicit = Boolean(
     options?.effortOverride || process.env.BOOK_EFFORT || settings.effort,
   );
-  // Deliberately without the 'gpt-4o' fallback: an active auth profile supplies
-  // a default model, and it has to rank below every explicit source but above
-  // the built-in fallback. `rawModel` applies both, once the profile resolves.
-  const explicitModel =
-    options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model;
+  const rawModel =
+    options?.modelOverride || process.env.BOOK_MODEL || settings.model || legacy?.model || 'gpt-4o';
   const compactModel = process.env.BOOK_COMPACT_MODEL || settings.compactModel;
-  validateLegacyCompactStrategy(process.env.BOOK_COMPACT_STRATEGY);
-  const experimentalZeroMem =
-    process.env.BOOK_EXPERIMENTAL_ZERO_MEM === undefined
-      ? settings.experimental.zeroMem
-      : parseExperimentalZeroMem(process.env.BOOK_EXPERIMENTAL_ZERO_MEM);
-  settings = {
-    ...settings,
-    experimental: { ...settings.experimental, zeroMem: experimentalZeroMem },
-  };
   const compactStrategy: CompactStrategy = 'summary';
+  // Resolved once here: the Bash tool, the system prompt, and `book doctor`
+  // must all name the same shell for the whole session.
+  const shell = resolveShell({ requested: settings.shell });
   const defaultApiKey = process.env.BOOK_API_KEY || '';
   const explicitBaseUrl = process.env.BOOK_BASE_URL || legacy?.baseUrl;
   const defaultProviderOverride = validateProvider(process.env.BOOK_PROVIDER) || 'auto';
 
-  // Selection is resolved before the config is assembled so that an active
-  // subscription profile can supply the endpoint and model the run would
-  // otherwise inherit from Book's OpenAI-shaped defaults. Redemption of the
-  // credential (refresh, headers) happens per request in `auth/resolve.ts`.
-  const auth: AuthSelection | undefined = selectAuthProfile({
-    settings,
-    providerType: defaultProviderOverride,
-    hasApiKey: Boolean(defaultApiKey),
-  });
-
-  // Deliberately *not* the profile's endpoint: `defaultBaseUrl` is the value a
-  // named `provider.<id>` entry inherits when it declares none, and a provider
-  // entry inheriting the subscription vendor's host would post that entry's own
-  // API key there. The profile supplies the live base URL below instead.
-  const authInputs: AuthProfileInputs = {
-    explicitBaseUrl: explicitBaseUrl || undefined,
-    explicitModel: explicitModel || undefined,
-    providerOverride: defaultProviderOverride,
-  };
-  const contribution = authProfileContribution(auth?.profile, authInputs);
-
   const defaultBaseUrl = explicitBaseUrl || DEFAULT_OPENAI_BASE_URL;
-  const profileBaseUrl = contribution.baseUrl;
-  const rawModel = contribution.model;
   const defaultMaxTokens =
     envMaxTokens ?? settings.maxTokens ?? legacy?.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const defaultEffort =
     options?.effortOverride || validateEffort(process.env.BOOK_EFFORT) || settings.effort || 'high';
-  const defaultProvider = contribution.provider;
+  const defaultProvider = defaultProviderOverride;
 
   let config: AgentConfig = {
     apiKey: defaultApiKey,
-    baseUrl: profileBaseUrl,
+    baseUrl: defaultBaseUrl,
     model: rawModel,
     modelSelection: rawModel,
     compactModel,
     compactStrategy,
-    experimentalZeroMem,
     // Undefined = unlimited. Only set when env/settings/legacy explicitly provide a value.
     maxTurns: process.env.BOOK_MAX_TURNS
       ? parseInt(process.env.BOOK_MAX_TURNS, 10)
@@ -239,13 +206,13 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     defaultEffort,
     defaultApiKey,
     defaultBaseUrl,
-    defaultProfileBaseUrl: contribution.defaultProfileBaseUrl,
     defaultProvider,
     autoCompactEnabled: settings.autoCompactEnabled ?? legacy?.autoCompactEnabled ?? true,
     workspace: resolvedWorkspace,
     animation: legacy?.animation || { typewriterSpeed: 3, spinnerStyle: 'braille' },
     accessibility: legacy?.accessibility || { screenReader: false, reducedMotion: false },
     settings,
+    shell,
     settingsContext: {
       overridePath: settingsOverridePath,
       noSettings,
@@ -254,184 +221,45 @@ export function loadConfig(workspace?: string, options?: LoadConfigOptions): Age
     memoryContext,
     effort: defaultEffort,
     provider: defaultProvider,
-    authProfile: auth?.profile.id,
-    authInputs,
     modelWindowStore: options?.modelWindowStore ?? createModelWindowStore(),
   };
 
   config = applyModelDefaults(resolveModelProviderConfig(config, rawModel));
   config.modelProviderWarning = describeUnresolvedProviderPrefix(settings.provider, rawModel);
 
-  // Read off the *resolved* config: `resolveModelProviderConfig` may have
-  // cleared `authProfile` for a named provider entry, and a guard keyed on the
-  // pre-resolution selection would then wave through a run with no credential
-  // at all - the failure the guard exists to name, deferred to an opaque 401.
-  const activeProfile = config.authProfile
-    ? auth?.profile.id === config.authProfile
-      ? auth
-      : undefined
-    : undefined;
-  const credentialPresent = config.authProfile ? Boolean(activeProfile?.credentialPresent) : false;
-
-  if (!config.apiKey && !options?.allowMissingApiKey && !credentialPresent) {
+  if (!config.apiKey && !options?.allowMissingApiKey) {
+    // Someone whose only credential was a subscription profile arrives here
+    // after their `auth` block was silently discarded by validation. Telling
+    // them to set a key they never had describes a user who configured
+    // nothing, not one whose working configuration was removed.
     throw new Error(
-      config.authProfile
-        ? `Auth profile "${config.authProfile}" is selected but nothing is logged in. ` +
-            `Run: book auth login ${config.authProfile}`
-        : 'BOOK_API_KEY or provider.<id>.apiKey not set. Set BOOK_API_KEY, run ' +
-            '`book auth login <profile>`, or use {env:VAR} in settings.',
+      'BOOK_API_KEY or provider.<id>.apiKey not set. Set BOOK_API_KEY ' +
+        'or use {env:VAR} in settings.' +
+        (hadRemovedAuthConfiguration(
+          noSettings
+            ? []
+            : settingsLayerPaths(resolvedWorkspace, settingsOverridePath, options?.settingsPaths),
+          process.env,
+        )
+          ? '\n\nSubscription authentication (`book auth login`) was removed in this version, ' +
+            'and Book authenticates with API keys only. The auth configuration still on this ' +
+            'machine is no longer read; `book doctor` lists it and what to delete.'
+          : ''),
     );
   }
 
   return config;
 }
 
-/** What an active auth profile contributes to a config. */
-export interface AuthProfileContribution {
-  baseUrl: string;
-  /** Undefined with no profile active; see `AgentConfig.defaultProfileBaseUrl`. */
-  defaultProfileBaseUrl: string | undefined;
-  model: string;
-  provider: 'anthropic' | 'openai' | 'auto';
-}
-
-/**
- * The endpoint, model, and transport an auth profile contributes — expressed
- * exactly once.
- *
- * `loadConfig` calls this at startup and `configWithAuthProfile` calls it after
- * a login performed inside a running session. Two copies of this precedence
- * would drift, and the failure that drift produces is silent: a session that
- * spends a subscription against the wrong endpoint, or keeps a model the new
- * vendor does not serve. An explicit override always outranks the profile,
- * which is why a `BOOK_MODEL` that predates the login survives it.
- */
-export function authProfileContribution(
-  profile: AuthProfile | undefined,
-  inputs: AuthProfileInputs,
-): AuthProfileContribution {
-  const baseUrl = inputs.explicitBaseUrl || profile?.baseUrl || DEFAULT_OPENAI_BASE_URL;
-  return {
-    baseUrl,
-    defaultProfileBaseUrl: profile ? baseUrl : undefined,
-    model: inputs.explicitModel || profile?.defaultModel || 'gpt-4o',
-    provider:
-      inputs.providerOverride !== 'auto'
-        ? inputs.providerOverride
-        : (profile?.providerType ?? 'auto'),
-  };
-}
-
-/** The outcome of trying to spend a profile from a running session. */
-export type AuthActivation =
-  | {
-      ok: true;
-      config: AgentConfig;
-      /** What the session will actually use — not necessarily the profile's own. */
-      model: string;
-      baseUrl: string;
-      /** A configured value that survives activation but may not work against it. */
-      warning?: string;
-    }
-  | { ok: false; error: string };
-
-/**
- * Re-point a live config at a subscription profile, as `loadConfig` would have
- * had the profile been active at startup — or refuse, saying why.
- *
- * Refusing matters more than re-pointing. Activation persists `auth.profile`
- * globally, so a combination that cannot work does not merely fail this
- * session: it fails every future one, in every project, and the overlay offers
- * no way back. Both refusals below are states `loadConfig` can also reach, but
- * there they are the user's own startup configuration rather than something a
- * keystroke just did to them.
- *
- * `modelInfo` is cleared because it describes the *previous* selection's
- * provider entry, and the model resolution is re-run so a `provider/<id>`
- * selection still wins.
- */
-export function activateAuthProfile(config: AgentConfig, profile: AuthProfile): AuthActivation {
-  const contribution = authProfileContribution(profile, config.authInputs);
-
-  // An explicit base URL outranks the profile's, and `assertOriginAllowed`
-  // refuses to send a credential anywhere but the origin it was issued for.
-  // Activating into that combination would 401-equivalent every turn from here
-  // on, so it is refused while the user can still see why.
-  const expectedOrigin = profileOrigin(profile.baseUrl);
-  const actualOrigin = profileOrigin(contribution.baseUrl);
-  if (!expectedOrigin || !actualOrigin || expectedOrigin !== actualOrigin) {
-    return {
-      ok: false,
-      error:
-        `A base-URL override points this session at ${actualOrigin ?? contribution.baseUrl}, but ` +
-        `the "${profile.id}" credential may only be sent to ${expectedOrigin ?? profile.baseUrl}. ` +
-        'Clear BOOK_BASE_URL (or a legacy .bookrc.json baseUrl), or point ' +
-        `auth.profiles.${profile.id}.baseUrl at the host you mean.`,
-    };
-  }
-
-  const next: AgentConfig = {
-    ...config,
-    baseUrl: contribution.baseUrl,
-    defaultProfileBaseUrl: contribution.defaultProfileBaseUrl,
-    defaultProvider: contribution.provider,
-    provider: contribution.provider,
-    model: contribution.model,
-    modelSelection: contribution.model,
-    modelInfo: undefined,
-    authProfile: profile.id,
-  };
-  const resolved = applyModelDefaults(resolveModelProviderConfig(next, contribution.model));
-
-  // `resolveModelProviderConfig` clears `authProfile` for a named provider
-  // entry, which brings its own endpoint and key. Reporting success here would
-  // claim a switch that did not happen — the same guard `loadConfig` applies
-  // before deciding whether a credential is present.
-  if (resolved.authProfile !== profile.id) {
-    const providerId = contribution.model.slice(0, contribution.model.indexOf('/'));
-    return {
-      ok: false,
-      error:
-        `The selected model "${contribution.model}" resolves to the "${providerId}" provider ` +
-        'entry, which brings its own endpoint and key, so a subscription credential is not spent ' +
-        'through it. Pick a plain model with /model first, then sign in.',
-    };
-  }
-
-  // Compaction resolves its own model against the live config, so a compact
-  // model configured for the previous vendor would be posted to this profile's
-  // endpoint — and it would fail at the moment the context filled. Not fatal
-  // and not ours to discard, but the user should hear it now rather than then.
-  const compactModel = config.compactModel?.trim() || config.settings.compactModel?.trim();
-  const warning =
-    compactModel && compactModel !== resolved.model && !compactModel.includes('/')
-      ? `Compaction is set to use "${compactModel}", which will be sent to ${actualOrigin}. ` +
-        'Clear BOOK_COMPACT_MODEL / compactModel if that vendor does not serve it.'
-      : undefined;
-
-  return { ok: true, config: resolved, model: resolved.model, baseUrl: resolved.baseUrl, warning };
-}
-
-/**
- * Record a model the user chose during the session.
- *
- * `authInputs.explicitModel` is a startup snapshot, and a later login consults
- * it to decide whether the profile's default model may apply. Without this, a
- * `/model` switch would be silently undone by a subsequent `/login` — or, worse,
- * replaced by the startup model the user had already moved away from.
- */
-export function withExplicitModel(config: AgentConfig, model: string): AgentConfig {
-  return { ...config, authInputs: { ...config.authInputs, explicitModel: model } };
-}
-
 function plainModelConfig(config: AgentConfig, model: string): AgentConfig {
   return {
     ...config,
-    apiKey: config.defaultApiKey ?? config.apiKey,
-    // An active auth profile keeps its own endpoint across a plain model
-    // switch; `defaultBaseUrl` is the profile-free fallback a named provider
-    // entry inherits instead.
-    baseUrl: config.defaultProfileBaseUrl ?? config.defaultBaseUrl ?? config.baseUrl,
+    // `||`, not `??`: `defaultApiKey` is `''` when BOOK_API_KEY is unset, and
+    // an empty string is present as far as `??` is concerned. Switching to an
+    // unprefixed model would then wipe a key that came from a provider entry
+    // and send every later request out with an empty credential.
+    apiKey: config.defaultApiKey || config.apiKey,
+    baseUrl: config.defaultBaseUrl || config.baseUrl,
     model,
     modelSelection: model,
     modelInfo: undefined,
@@ -522,7 +350,9 @@ export function resolveModelProviderConfig(
   const provider = config.settings.provider[providerId];
   if (!provider) return plainModelConfig(config, rawModel);
 
-  const fallbackApiKey = config.defaultApiKey !== undefined ? config.defaultApiKey : config.apiKey;
+  // Same empty-string trap as `plainModelConfig`: an unset BOOK_API_KEY is `''`,
+  // which is defined, so a presence test would prefer it over a real key.
+  const fallbackApiKey = config.defaultApiKey || config.apiKey;
   const apiKey = resolveSecret(provider.apiKey, config.workspace) ?? fallbackApiKey;
   return {
     ...config,
@@ -532,11 +362,6 @@ export function resolveModelProviderConfig(
     modelSelection: rawModel,
     modelInfo: provider.models[model],
     provider: provider.type,
-    // A named provider entry brings its own endpoint and key, so the
-    // subscription credential does not follow the model switch. Carrying it
-    // would send an account-wide bearer token to whatever host that entry
-    // names - a different vendor, a proxy, a gateway.
-    authProfile: undefined,
   };
 }
 
@@ -589,26 +414,6 @@ function validateProvider(raw: string | undefined): AgentConfig['provider'] {
   if (!raw) return undefined;
   const normalized = raw.trim().toLowerCase();
   return VALID_PROVIDERS.has(normalized) ? (normalized as AgentConfig['provider']) : undefined;
-}
-
-function validateLegacyCompactStrategy(raw: string | undefined): void {
-  if (raw === undefined) return;
-  const normalized = raw.trim().toLowerCase();
-  if (normalized === 'summary') return;
-  if (normalized === 'zero-mem') {
-    throw new Error(
-      'BOOK_COMPACT_STRATEGY=zero-mem is no longer supported. Set ' +
-        'BOOK_EXPERIMENTAL_ZERO_MEM=true to enable the experimental Zero-Mem runtime.',
-    );
-  }
-  throw new Error('BOOK_COMPACT_STRATEGY is deprecated and, when present, must be "summary"');
-}
-
-function parseExperimentalZeroMem(raw: string): boolean {
-  const normalized = raw.trim().toLowerCase();
-  if (normalized === 'true') return true;
-  if (normalized === 'false') return false;
-  throw new Error('BOOK_EXPERIMENTAL_ZERO_MEM must be "true" or "false"');
 }
 
 function clampInt(raw: string, min: number, max: number): number {

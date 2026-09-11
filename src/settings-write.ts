@@ -18,7 +18,6 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { getNestedValue, setNestedValue } from './cli/utils.js';
 import { resolveSettings } from './settings-loader.js';
-import { assertHarnessModeAvailable, assertSelectableWorkflow } from './harness/coordinator.js';
 import {
   formatSettingsDiagnostics,
   readSettingsDocument,
@@ -122,10 +121,10 @@ export type SettingWriteResult =
  * Would this write leave a merged configuration that no command can load?
  *
  * Validating the single layer being written does not determine the effective
- * configuration. `harness.workflow` is valid on its own and rejected against an
- * effective `harness.mode` of `off` — so the write succeeded and every
- * subsequent invocation, including the command that made it, failed before it
- * started. The recovery was hand-editing JSON.
+ * configuration, and a value that is valid in isolation can still leave a merge
+ * no command can load. That write used to succeed, after which every subsequent
+ * invocation — including the command that made it — failed before it started,
+ * leaving hand-editing JSON as the only recovery.
  *
  * The candidate layer is resolved in place of the real one, through the same
  * merge and the same assertions the loader runs, so this cannot drift from what
@@ -180,9 +179,7 @@ function assertLoadable(
   settingsOverridePath: string | undefined,
   paths?: Record<string, string>,
 ): void {
-  const resolved = resolveSettings(workspace, settingsOverridePath, paths);
-  assertHarnessModeAvailable(resolved.harness.mode);
-  assertSelectableWorkflow(resolved.harness.mode, resolved.harness.workflow);
+  resolveSettings(workspace, settingsOverridePath, paths);
 }
 
 /**
@@ -250,7 +247,7 @@ function shadowingScopes(
 }
 
 /** The refusal for a key no configuration surface may write, or undefined. */
-export function guardSettingWrite(key: string, value: unknown): string | undefined {
+export function guardSettingWrite(key: string): string | undefined {
   const parts = key.split('.').filter(Boolean);
   if (parts.length === 0) {
     return 'Invalid key. Use dot-separated path: e.g. permissions.deny';
@@ -289,18 +286,6 @@ export function guardSettingWrite(key: string, value: unknown): string | undefin
     );
   }
 
-  if (
-    key.trim().toLowerCase() === 'compactstrategy' &&
-    typeof value === 'string' &&
-    value.trim().toLowerCase() === 'zero-mem'
-  ) {
-    return (
-      'compactStrategy "zero-mem" is no longer supported. Set ' +
-      'experimental.zeroMem=true in <BOOK_HOME>/settings.json, pass an explicit ' +
-      '--settings file, or use BOOK_EXPERIMENTAL_ZERO_MEM=true.'
-    );
-  }
-
   return undefined;
 }
 
@@ -313,7 +298,7 @@ export function guardSettingWrite(key: string, value: unknown): string | undefin
  * lands in.
  */
 export function applySettingWrite(options: SettingWriteOptions): SettingWriteResult {
-  const refusal = guardSettingWrite(options.key, options.value);
+  const refusal = guardSettingWrite(options.key);
   if (refusal) return { ok: false, error: refusal };
 
   // Checked before the write, not after: a value that bricks the merge would

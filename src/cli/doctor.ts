@@ -5,8 +5,6 @@ import { collectAgentDiagnostics } from '../agents/diagnostics.js';
 import { withBuiltInAgents } from '../agents/profiles.js';
 import { discoverAgents } from '../subagent-discovery.js';
 import { resolveBookHome } from '../book-home.js';
-import { readAuthStore } from '../auth/store.js';
-import { describeExpiry } from '../auth/resolve.js';
 import type { HookEntry } from '../settings.js';
 import type { AgentConfig } from '../types/runtime.js';
 
@@ -63,34 +61,11 @@ function formatRelativeTime(timestamp: number, now = Date.now()): string {
 
 /**
  * One line naming what will actually authenticate the next request.
- *
- * An active auth profile outranks any API key in the environment - the
- * transports replace the key headers entirely - so reporting "resolved"
- * because BOOK_API_KEY happens to be set would name the wrong credential.
  */
 function describeCredentials(config: AgentConfig): string {
-  if (config.authProfile) {
-    const read = readAuthStore();
-    // "Nothing is logged in" would be a dead end here: `book auth login` also
-    // refuses to write a store it cannot parse, so an unreadable file has to be
-    // named as such by the command whose job is diagnosing a broken setup.
-    if (read.status === 'unreadable') {
-      return `auth profile "${config.authProfile}" selected, but ${read.path} is unreadable (${read.error}) - delete it, then run: book auth login ${config.authProfile}`;
-    }
-    const credential = read.store.credentials[config.authProfile];
-    if (!credential) {
-      return `auth profile "${config.authProfile}" selected, but nothing is logged in - run: book auth login ${config.authProfile}`;
-    }
-    const account = credential.tokens?.account;
-    // The same renderer `book auth status` uses, so the two commands cannot
-    // disagree about whether a credential is still good.
-    const expiry =
-      credential.kind === 'oauth' ? describeExpiry(credential.tokens) : 'stored API key';
-    return `auth profile "${config.authProfile}"${account ? ` (${account})` : ''} - ${expiry}`;
-  }
   return config.apiKey
     ? 'API key resolved'
-    : 'not resolved - set BOOK_API_KEY, run `book auth login <profile>`, or set provider.<id>.apiKey in settings';
+    : 'not resolved - set BOOK_API_KEY or set provider.<id>.apiKey in settings';
 }
 
 /**
@@ -117,15 +92,9 @@ async function settingsLayers(workspace: string): Promise<Array<[string, string]
  * Which layer a configuration failure first appears in.
  *
  * Some rejections name their own file: malformed JSON and schema violations both
- * carry a path. The ones that do not are precisely the ones about the *merged*
- * value -- `harness.workflow` is validated against the effective `harness.mode`,
- * so no single file is wrong on its own and none of them says so. Finding it
- * meant reading all three by hand.
- *
- * Resolving cumulative prefixes of the stack answers it directly: the first
- * prefix that fails ends at the layer that turned a working configuration into a
- * broken one. Undefined means no prefix loads, so the cause is outside the
- * layers -- an environment variable, or a legacy `.bookrc.json`.
+ * carry a path. Resolving cumulative prefixes of the stack answers which layer
+ * turned a working configuration into a broken one. Undefined means no prefix loads,
+ * so the cause is outside the layers -- an environment variable, or a legacy `.bookrc.json`.
  */
 async function attributeFailingLayer(workspace: string): Promise<string | undefined> {
   const layers = await settingsLayers(workspace);
@@ -153,10 +122,9 @@ async function attributeFailingLayer(workspace: string): Promise<string | undefi
  * Report a configuration that would not load at all.
  *
  * A missing credential is already handled by allowMissingApiKey, but every
- * other rejection - malformed JSON, a schema violation, an unknown harness
- * workflow - used to escape loadConfig as an unhandled stack trace. A broken
- * settings file is precisely what doctor exists to diagnose, so it is a finding
- * to render, not a reason to die.
+ * other rejection - malformed JSON, a schema violation - used to escape
+ * loadConfig as an unhandled stack trace. A broken settings file is precisely
+ * what doctor exists to diagnose, so it is a finding to render, not a reason to die.
  */
 async function reportUnloadableConfig(workspace: string, error: unknown): Promise<void> {
   const { existsSync } = await import('fs');
@@ -225,6 +193,36 @@ export async function runDoctorCommand(
   // the credential line read as a missing key, which is the wrong hunt.
   if (config.modelProviderWarning) console.log('  ⚠ ' + config.modelProviderWarning);
   console.log('Credentials:', describeCredentials(config));
+  // Configuration for a feature that no longer exists is invisible otherwise:
+  // validation discards unknown blocks silently, so a user whose subscription
+  // login stopped working has nothing to read. The orphaned credential file
+  // matters most — it holds a refresh token nothing revokes.
+  const {
+    collectRemovedSettingNotices,
+    collectRemovedEnvNotices,
+    removedAuthStoreNotice,
+    readSettingsDocumentForNotices,
+  } = await import('../settings-removed.js');
+  const { settingsLayerPaths } = await import('../settings-loader.js');
+  const { join: joinPath } = await import('path');
+  const { existsSync: fileExists } = await import('fs');
+  const removedNotices = [
+    ...settingsLayerPaths(workspace, undefined, {}).flatMap((path) =>
+      collectRemovedSettingNotices(readSettingsDocumentForNotices(path)).map(
+        (notice) => `${notice.key} in ${path}: ${notice.message}`,
+      ),
+    ),
+    ...collectRemovedEnvNotices(process.env).map(
+      (notice) => `${notice.key} is set: ${notice.message}`,
+    ),
+  ];
+  const authStorePath = joinPath(resolveBookHome(), 'auth.json');
+  if (fileExists(authStorePath)) removedNotices.push(removedAuthStoreNotice(authStorePath));
+  if (removedNotices.length > 0) {
+    console.log();
+    console.log('Removed features still configured on this machine:');
+    for (const notice of removedNotices) console.log(`  [!] ${notice}`);
+  }
   console.log();
 
   // Settings layers.
@@ -392,6 +390,15 @@ export async function runDoctorCommand(
   console.log('  Excluded commands: ' + settings.sandbox.excludedCommands.length);
   console.log('  Unsandboxed commands: ' + policy.unsandboxedCommands);
   console.log('  Auto-allow Bash: ' + policy.autoAllowBash);
+  console.log();
+
+  // Shell: the program every Bash command is handed to, and why it was chosen.
+  const { describeShell, resolveShell } = await import('../shell-selection.js');
+  const shell = config.shell ?? resolveShell({ requested: settings.shell });
+  console.log('Shell:');
+  console.log('  Bash tool runs: ' + describeShell(shell));
+  console.log('  Selected by: ' + shell.source);
+  if (shell.warning) console.log(`  [!] ${shell.warning}`);
   console.log();
 
   // Managed agents.

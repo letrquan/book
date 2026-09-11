@@ -55,9 +55,9 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
       272k fidelity arm. Phase 3 remains proposed.
 - [ ] A control surface for a run in flight - at hour 30 the only interventions are `kill` and wait.
 - [x] Monotonic clock for every duration decided **inside one process** — the provider retry
-      budget and model-discovery budget, the harness flush deadline and sync cadence, the
-      background-shell start/stop budgets, the process-group kill bound, and the run's own elapsed
-      time as the model is told it. `src/clock.ts`; injected, never a module global.
+      budget and model-discovery budget, the background-shell start/stop budgets, the
+      process-group kill bound, and the run's own elapsed time as the model is told it.
+      `src/clock.ts`; injected, never a module global.
 - [ ] Cross-process liveness/TTL is **still on the wall clock, and monotonic time cannot fix it** —
       two processes share no monotonic origin, so a reading cannot be persisted or compared across
       that boundary. Affects the background-shell heartbeat, the run-status file `book status`
@@ -78,8 +78,7 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
   refuses those four paths outright, and `book doctor` prints what is withheld. What remains here
   is provider blocks and agent definitions, and an interactive surface for any of it: the MCP gate
   is the only one with a TUI prompt, so in the primary mode a withheld declaration is silent until
-  `book doctor` is run. The `auth` block joined the stripped set when subscription auth shipped,
-  as a subtree delete rather than an enumeration of leaves.
+  `book doctor` is run.
 - [x] Rebuild shell sandbox execution around structured argv instead of a wrapped command string.
 - [x] Enforce declared filesystem sandbox policy, and fail closed on network domain rules that
   bubblewrap cannot express.
@@ -91,22 +90,26 @@ Shipped on `feat/long-term-sessions`; see `docs/current-state.md` for the surfac
   reports the effective policy — but at its `true` default a model-chosen command that happens to
   match an operator's exclusion pattern still runs on the host with no separate approval step.
 - [ ] Bind provider credentials to approved origins and restrict lower-trust secret resolution.
-  Subscription credentials are bound: `auth/resolve.ts` refuses to present a profile's token to
-  any origin but the profile's own, checked where the request header is built rather than at any
-  of the several places a base URL can change (`BOOK_BASE_URL`, a repository-shipped legacy
-  `.bookrc.json`, a `provider.<id>` entry). The whole `auth` settings block is stripped from both
-  workspace layers. What remains here is the same binding for BYOK API keys, which still follow
-  whatever base URL the resolved configuration carries.
+  BYOK API keys still follow whatever base URL the resolved configuration carries; binding them
+  to declared or approved origins remains to be done.
 
 See [plans/security-assessment.md](plans/security-assessment.md) for the current risk register.
 
 ### 2. Release Readiness
 
-- [ ] Decide the distribution identity: keep GitHub/source-only distribution or choose an
-  available scoped npm package name and remove `private: true` intentionally.
+- [x] Distribution identity decided: `@letrquan/book` on the public npm registry, `private` removed
+  and `publishConfig.access` set to `public` deliberately. The binary stays `book`.
+- [x] Licence reconciled with public distribution: PolyForm Small Business 1.0.0, which permits the
+  use a published package invites while reserving large-company commercial use. The published
+  tarball ships source maps, so the source is public by intention rather than by accident.
 - [ ] Complete the renderer real-PTY matrix and interactive soak on Windows and Unix terminals.
 - [ ] Maintain three eligible green main-branch CI runs with no open lifecycle/accounting
   regression issues before advancing runtime-attribution work.
+- [x] Publishing runs from CI on a `v*` tag through npm trusted publishing (OIDC), with no token
+  to leak or expire: `.github/workflows/release.yml` verifies the tag against the manifest, runs
+  the full gate and the installed-artifact smoke test, then publishes with provenance. This also
+  replaces the bypass-2FA token 0.2.0 shipped on, which npm retires for direct publish in
+  January 2027.
 - [ ] Cut the next version only after `npm run release:check`, full Node 22/24 validation, package
   inspection, changelog promotion, and installed-artifact smoke tests.
 
@@ -117,32 +120,7 @@ See [plans/security-assessment.md](plans/security-assessment.md) for the current
 - [ ] Add permission-preserving rerun, task-aware stop behavior, cleanup commands, and richer doctor
   diagnostics for stale/lost persistent jobs.
 
-### 4. Adaptive Harness
-
-- [x] Stabilize terminal framing, root/child/resume accounting, budget enforcement, provider
-  identity, versioned pricing, run IDs, and ambient run fingerprints.
-- [ ] Finish the remaining evaluator, architecture, workspace-trust, permission-ceiling, and
-  isolated-home preconditions.
-- [ ] Phase 0: freeze the evaluation contract and deterministic corpus.
-- [x] Phase 1: inert harness boundary with `off` as the only live mode and runtime-equivalent
-  disabled behavior.
-- [x] Phase 2: observe-only append-only run-evidence ledger — sealed per-root hash-chained JSONL
-  streams, allowlist redaction, OTel-mapped telemetry, deferred headless root seals, and explicit
-  managed-continuation child linkage.
-- [x] Phase 3: validated fixed workflow registry — three built-in definitions (`minimal`,
-  `safe-edit`, `verify-heavy`) behind recursively strict validation and a hashed registry, manually
-  selected through `harness.workflow` or `--harness-workflow`, rendered as bounded guidance in the
-  dynamic prompt zone, with kernel clamps and full provenance recorded per run. Selection fails
-  closed under `harness.mode = off` and on unknown or path-like IDs; no automatic selection exists.
-- [ ] Phases 3A-3B: explicit capability manifests and reliable deterministic routing.
-- [ ] Phases 4-8: selector, externally grounded outcomes, shadow evaluation, scoped canaries, and
-  bounded workflow evolution. None of these phases currently controls live runtime behavior.
-- [ ] Phase 9 remains a future research gate for cross-context transfer.
-
-The authoritative phase ledger is
-[plans/adaptive-harness-implementation-plan.md](plans/adaptive-harness-implementation-plan.md).
-
-### 5. Review Pipeline Follow-up
+### 4. Review Pipeline Follow-up
 
 - [ ] Run the evaluation harness end to end: execute the review pipeline over checked-in golden
   diffs instead of scoring reports captured by hand, and gate prompt changes on the result.

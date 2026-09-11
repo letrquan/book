@@ -3,14 +3,7 @@ import { dirname, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 interface Violation {
-  kind:
-    | 'layer'
-    | 'entrypoint'
-    | 'cycle'
-    | 'type-hub'
-    | 'blocking-process'
-    | 'harness-boundary'
-    | 'process-exit';
+  kind: 'layer' | 'entrypoint' | 'cycle' | 'type-hub' | 'blocking-process' | 'process-exit';
   source: string;
   target: string;
   detail: string;
@@ -26,30 +19,6 @@ const PROCESS_EXIT_PATTERN = /\bprocess\.exit\s*\(/;
  * else must call `exit()` so tests can capture the code instead of dying.
  */
 const PROCESS_LIFETIME_OWNERS = new Set(['index.ts', 'sdk.ts', 'job-runner.ts', 'cli/exit.ts']);
-const LIVE_RUNTIME_PREFIXES = [
-  'agent/',
-  'agents/',
-  'cli/',
-  'commands/',
-  'provider/',
-  'session/',
-  'tools/',
-  'tui/',
-];
-const LIVE_RUNTIME_FILES = new Set([
-  'config.ts',
-  'headless.ts',
-  'index.ts',
-  'sdk.ts',
-  'settings-loader.ts',
-  'settings-repository.ts',
-]);
-const TRUSTED_KERNEL_FILES = new Set([
-  'permission-mode.ts',
-  'permissions.ts',
-  'sandbox.ts',
-  'secret-detect.ts',
-]);
 
 /** True when the file really calls process.exit(), ignoring mentions in comments. */
 function callsProcessExit(text: string): boolean {
@@ -62,19 +31,6 @@ function callsProcessExit(text: string): boolean {
   });
 }
 
-function isEvaluationModule(path: string): boolean {
-  return path.startsWith('harness/evaluation/');
-}
-
-function isHarnessRuntimeBoundary(path: string): boolean {
-  return path === 'harness/contracts.ts' || path === 'harness/coordinator.ts';
-}
-
-function isLiveRuntimeModule(path: string): boolean {
-  return (
-    LIVE_RUNTIME_FILES.has(path) || LIVE_RUNTIME_PREFIXES.some((prefix) => path.startsWith(prefix))
-  );
-}
 function sourceFiles(root: string): string[] {
   const files: string[] = [];
   const visit = (directory: string) => {
@@ -140,57 +96,6 @@ export function checkArchitecture(srcRoot: string): Violation[] {
       const dependency = resolveImport(file, match[2]);
       if (!dependency || !dependency.startsWith(root)) continue;
       const targetName = relative(root, dependency).replaceAll('\\', '/');
-      if (!isEvaluationModule(sourceName) && isEvaluationModule(targetName)) {
-        violations.push({
-          kind: 'harness-boundary',
-          source: sourceName,
-          target: targetName,
-          detail:
-            'Live and shared runtime code must not import offline harness evaluation modules.',
-        });
-      }
-      if (isEvaluationModule(sourceName) && isLiveRuntimeModule(targetName)) {
-        violations.push({
-          kind: 'harness-boundary',
-          source: sourceName,
-          target: targetName,
-          detail:
-            'Offline harness evaluation must consume completed evidence, not live runtime modules.',
-        });
-      }
-      if (TRUSTED_KERNEL_FILES.has(sourceName) && targetName.startsWith('harness/')) {
-        violations.push({
-          kind: 'harness-boundary',
-          source: sourceName,
-          target: targetName,
-          detail: 'Trusted permission and sandbox modules must not depend on the adaptive harness.',
-        });
-      }
-      if (
-        isLiveRuntimeModule(sourceName) &&
-        targetName.startsWith('harness/') &&
-        !isEvaluationModule(targetName) &&
-        !isHarnessRuntimeBoundary(targetName)
-      ) {
-        violations.push({
-          kind: 'harness-boundary',
-          source: sourceName,
-          target: targetName,
-          detail: 'Live runtime code may import only the harness contracts or coordinator facade.',
-        });
-      }
-      if (
-        (sourceName.startsWith('agent/') || sourceName.startsWith('agents/')) &&
-        targetName.startsWith('harness/') &&
-        targetName !== 'harness/contracts.ts'
-      ) {
-        violations.push({
-          kind: 'harness-boundary',
-          source: sourceName,
-          target: targetName,
-          detail: 'The agent runtime may depend only on shared harness contracts.',
-        });
-      }
       if (match[1]) continue;
       dependencies.push(targetName);
 

@@ -32,13 +32,13 @@ import {
   evaluationControlsFromResult,
   runEvaluationProcess,
   type EvaluationControls,
-} from '../src/harness/evaluation/runner.js';
+} from './eval-process.js';
 import {
   evaluateComparisonEligibility,
   evaluateRunEligibility,
   type EvaluationComparisonEligibility,
   type EvaluationEligibility,
-} from '../src/harness/evaluation/eligibility.js';
+} from './eval-eligibility.js';
 import { estimateUsageCost, PRICING_VERSION } from '../src/pricing.js';
 import { createRunAmbientSnapshot } from '../src/session/run-ambient.js';
 import { createRegistry } from '../src/tools/registry.js';

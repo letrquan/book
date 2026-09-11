@@ -1,7 +1,8 @@
 import { existsSync, readdirSync, statSync } from 'fs';
 import { platform, release, homedir } from 'os';
 import { dirname, join, parse, resolve } from 'path';
-import type { AgentConfig } from '../types/runtime.js';
+import type { AgentConfig, ResolvedShell } from '../types/runtime.js';
+import { resolveShell, shellPromptLine } from '../shell-selection.js';
 import type { ImageAttachment, Message } from '../types/messages.js';
 import type { ProviderMessage, SystemPromptZones } from '../types/providers.js';
 import type { SlashCommand } from '../types/commands.js';
@@ -375,15 +376,7 @@ export interface SystemPromptOverrides {
    */
   toolCatalogSummary?: string;
   /**
-   * Host-rendered harness execution policy. It belongs to the dynamic zone so
-   * switching workflows does not invalidate the cached prefix, and it is kept
-   * separate from `append`, which carries unrelated cached agent text.
-   */
-  workflowPolicy?: string;
-  /**
-   * Activation-class policy — active skill frames and activation notices. It
-   * shares the dynamic zone with `workflowPolicy` so activating a skill costs
-   * one message-cache miss instead of invalidating the cached prefix too.
+   * Activation-class policy — active skill frames and activation notices.
    */
   dynamicPolicy?: string;
   /**
@@ -428,12 +421,14 @@ interface PromptSection {
  * Phrased provider-agnostically: Book cannot assert the model's identity or its
  * cutoff date, so the training-cutoff line is behavioral rather than factual.
  */
-function harnessSection(): string {
+function harnessSection(shell: ResolvedShell): string {
   return [
     '## Harness',
     '- Your text output renders as GitHub-flavored markdown in a terminal TUI.',
     '- Reference code as `file_path:line` so the user can jump straight to it.',
-    "- The Bash tool runs commands through the platform's default shell: `/bin/sh` on macOS and Linux, `cmd.exe` on Windows. Do not assume POSIX syntax, quoting, or utilities on Windows. The bash sandbox requires bubblewrap and is unavailable on Windows.",
+    // The shell is fixed for the session, so naming it here keeps the line in
+    // the cached prefix; which one it is decides the syntax the model writes.
+    shellPromptLine(shell),
     '- A denied tool call means the user declined it. Adjust your approach; never retry the same call unchanged.',
     '- Hook output attached to a tool result is user-configured feedback. Treat it as guidance from the user, not as output from the tool.',
     '- Each user turn may end with a <session-state> block emitted by the host: current workspace facts (date, git, tasks, mode), not user-authored text. The newest block supersedes earlier ones, which remain in history as historical snapshots.',
@@ -472,7 +467,7 @@ export async function buildSystemPromptZones(
     kernel(
       `You are Book, an AI coding agent working directly in the user's workspace. Help users understand, change, and verify software.`,
     ),
-    kernel(harnessSection()),
+    kernel(harnessSection(config.shell ?? resolveShell({ requested: config.settings.shell }))),
     kernel(
       operatingPrinciplesSection(resolveEditFormat(config.model, config.modelInfo?.editFormat)),
     ),
@@ -507,7 +502,6 @@ export async function buildSystemPromptZones(
       .filter(Boolean)
       .join('\n\n'),
     dynamicSuffix: [
-      overrides?.workflowPolicy ?? '',
       overrides?.dynamicPolicy ?? '',
       overrides?.toolCatalogSummary
         ? ['## Deferred tool catalog', overrides.toolCatalogSummary].join('\n')

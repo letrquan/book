@@ -62,13 +62,11 @@ vi.mock('../review/host.js', async (importOriginal) => {
 function config(): AgentConfig {
   return {
     apiKey: 'test-key',
-    authInputs: { providerOverride: 'auto' },
     baseUrl: 'http://localhost',
     model: 'model-x',
     maxTurns: 4,
     maxTokens: 128000,
     compactStrategy: 'summary',
-    experimentalZeroMem: false,
     autoCompactEnabled: true,
     workspace: '/tmp/book',
     animation: { typewriterSpeed: 3, spinnerStyle: 'braille' },

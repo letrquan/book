@@ -6,40 +6,28 @@ reference for roadmap and design documents.
 
 The last independent surface re-verification was 2026-08-26 and covered the interactive transcript
 and terminal interaction path, reasoning/retry propagation, and headless/stream-JSON framing only
-(surfaces not re-verified that run: project-declaration trust gates, the experimental Zero-Mem
-capability boundary, providers, MCP, other settings and sandbox behavior, managed agents,
-`/review`, background jobs, skills, and the adaptive harness). Sections written since then were
+(surfaces not re-verified that run: project-declaration trust gates, providers, MCP, other
+settings and sandbox behavior, managed agents, `/review`, background jobs, and skills). Sections
+written since then were
 authored alongside the implementation they describe and merged with it -- the residual compaction
 tail (PR #192) and the permission-prompt preview (PR #188) -- and carry that evidence rather than a
 fresh verification pass.
 
 ## Release Identity
 
-- Package version: `0.1.0` (`package.json` is still `private: true`).
-- Distribution: source checkout, GitHub tag, or a locally built/link-installed CLI. There is no
-  published npm package for this repository.
-- License: proprietary, all rights reserved; see the README.
+- Package version: `0.2.0`, published as `@letrquan/book`.
+- Distribution: `npm install -g @letrquan/book`, a source checkout, or a GitHub tag. The command
+  is `book`; the package is scoped because the unscoped name was taken.
+- License: PolyForm Small Business 1.0.0 — source-available, commercial use limited to companies
+  under 100 people and 1,000,000 USD (2019) revenue. See `LICENSE`.
 - Runtime: Node.js 22.13 or newer; CI exercises Node.js 22 and 24 on Ubuntu and Windows.
 - Build: `tsup` emits ESM CLI, SDK, and job-runner bundles plus declarations into `dist/`.
 
 ## Shipped Surfaces
 
-- Subscription authentication over OAuth 2.0 (`book auth login | logout | status`), as an
-  alternative to an API key. Authorization-code with PKCE (S256) and a CSRF `state`, against a
-  listener bound to `127.0.0.1` only that serves exactly one callback whose state matches;
-  `--manual` skips the listener for a browser on another machine. Two built-in profiles —
-  `anthropic` and `codex` — plus fully user-declarable ones. **Book bundles no vendor client
-  ids**: the id is `BOOK_AUTH_CLIENT_ID_<PROFILE>` or `auth.profiles.<id>.clientId`, read only
-  from a trusted layer. Tokens live in `<BOOK_HOME>/auth.json` at mode 0600, refresh roughly two
-  minutes before expiry (once per profile even across parallel subagents), and are bound to their
-  profile's origin at the point the header is built, so no base-URL override can send one
-  elsewhere. Model discovery still covers configured `provider.<id>` entries only, so a
-  subscription-only setup has no catalog to refresh.
 - Interactive Ink/React TUI, print/headless mode, JSON and stream-JSON output, session resume,
   fork, rewind, production summary compaction, structured JSON-schema output, and prompt
-  suggestions. Zero-Mem retrieval remains available only as the explicitly named, default-off
-  `experimental.zeroMem` capability; it writes no summary checkpoints, disables auto-compaction for
-  the main agent, and retrieves query-specific evidence from the original transcript each turn.
+  suggestions.
 - The permission prompt shows what it is asking consent for: a shell command in full, every
   line hard-wrapped to the card with any row cut marked and openable with `D`, and for
   `Edit`/`MultiEdit`/`Write`/`ApplyPatch` the diff the call would make, computed from the pending
@@ -113,7 +101,7 @@ fresh verification pass.
   so nothing a repository ships can approve its own MCP servers, allow rules, hook entries, or
   shell-substituting slash commands — a force-added `.book/settings.local.json` reaches a clone the
   same way a checked-in file does, and `book config set` refuses those four paths rather than
-  writing a value nothing reads. Experimental capability opt-ins and the whole `auth` block are
+  writing a value nothing reads. Experimental capability opt-ins are
   likewise ignored from both workspace layers and must come from the user-global file, an explicit
   `--settings` document, or the process environment; all three writers (`book config set`, the
   `/config` slash command, and the TUI's local persistence) refuse them through one shared list. Other settings include hooks, the optional bubblewrap sandbox, themes,
@@ -161,11 +149,8 @@ fresh verification pass.
   leaves `sandbox.autoAllowBashIfSandboxed` (default `true`) inert under shipped defaults.
   `sandbox.allowUnsandboxedCommands` defaults to `true`, so unsandboxed execution stays permitted
   until it is explicitly refused.
-- Compaction: `compactStrategy` is fixed to the production `summary` path. Experimental Zero-Mem is
-  unavailable by default and requires `experimental.zeroMem: true` in the user-global
-  `<BOOK_HOME>/settings.json`, an explicit `--settings` document, or strict
-  `BOOK_EXPERIMENTAL_ZERO_MEM=true`; workspace settings and normal configuration UI/commands cannot
-  enable it. Every summary checkpoint now also carries a host-owned Carried Ledger
+- Compaction: `compactStrategy` is fixed to the production `summary` path and is the only
+  strategy. Every summary checkpoint carries a host-owned Carried Ledger
   (`src/agent/carried-ledger.ts`) of user-authored constraints, extracted deterministically from
   the user's own typed turns, readable but not writable by the reducer, not evictable by the
   fitter, capped at 32 entries / 1024 tokens / 35% of the checkpoint budget, and disclosed in the
@@ -180,8 +165,6 @@ fresh verification pass.
   `verbatimUserRetention` 1.0 on both arms, final retention 0.667 at 32k and 0.833 at 272k, and
   post-history utilization 0.47 and 0.48 against the loop's gate, recorded as per-arm floors in
   `FIDELITY_ARMS`. Design: `plans/carried-ledger-plan.md`.
-- Adaptive harness: `harness.mode` is `off`, which has no filesystem effect; `--harness-workflow`
-  fails closed while it stays off.
 - Tool discovery: `auto`; the practical core stays loaded and `ToolSearch` activates deferred
   authorized tools on the next turn.
 - Tool execution: serial by default; only the reviewed read-only/Git set is scheduled in bounded
@@ -190,8 +173,16 @@ fresh verification pass.
   and expanding a row reveals structured details or output rather than the parameters.
 - Skills: discovered skills start in `manual` activation mode. Enable `auto` per skill only after
   representative evaluation.
-- TUI renderer: `safe` on Windows, `incremental` on other interactive terminals. Windows users can
+- TUI renderer: `safe` on Windows, `incremental` on other interactive terminals — and `safe`
+  anywhere the Ink patch is absent, which is every npm install under npm 11, since it blocks the
+  postinstall that applies it (`isInkIncrementalRendererPatched`). Windows users can
   opt into incremental rendering with `BOOK_TUI_RENDERER=incremental`.
+- `Bash` shell: the platform default (`/bin/sh`) on macOS and Linux. On Windows, `BOOK_SHELL` or the
+  `shell` setting, then Git Bash when Book was launched from one, then PowerShell 7, then Windows
+  PowerShell 5.1, then an installed Git Bash, and `cmd.exe` only when nothing else exists
+  (`src/shell-selection.ts`). Resolved once per session onto `AgentConfig`, reported by
+  `book doctor`, and named in the Harness prompt section with that shell's own syntax rules. `shell`
+  is stripped from both workspace layers and refused by `book config` there, like `auth`.
 - Web access: HTTPS and public destinations by default; HTTP and private-network exceptions require
   explicit environment opt-ins.
 
@@ -222,16 +213,6 @@ Work aimed at running an objective unattended for days rather than hours. All of
 
 ## Known Boundaries
 
-- A subscription credential is bound to its profile's origin when the request header is built, not
-  when the profile is selected. That is deliberate: `BOOK_BASE_URL`, a repository-shipped legacy
-  `.bookrc.json`, and a named `provider.<id>` entry can each change the destination after
-  selection, and `.bookrc.json` bypasses the settings trust layers entirely. Guarding the settings
-  keys alone left every one of those routes open. A mismatch is refused with a message naming the
-  overrides that could have caused it.
-- The credential store is a whole-document read-modify-write with no lock, so two `book` processes
-  writing different profiles at the same moment can lose one update. A same-profile refresh race is
-  recovered from — the loser re-reads the store and uses the token the winner wrote — but a
-  cross-profile race is not yet.
 - Four classes of repository-controlled input carry an explicit trust boundary, each
   fingerprinted and requiring a one-time approval: project MCP declarations, project-declared
   allow rules, project-declared hook entries, and shell substitution in a project
@@ -239,13 +220,13 @@ Work aimed at running an objective unattended for days rather than hours. All of
   `~/.book/trust.json` and stripped from **both** workspace settings layers, so no file inside the
   working tree can answer for any of them, and a repository that force-adds
   `.book/settings.local.json` supplies nothing. `book trust hook|rule|command` records a decision
-  one at a time; `book config set` refuses all four paths — plus `experimental.*` and `auth.*` —
+  one at a time; `book config set` refuses all four paths — plus `shell` —
   rather than writing a value nothing reads. Command decisions are keyed by command name and validated by a fingerprint over the
   shell the body runs rather than its prose, so editing what runs re-asks under the same name.
 - Approvals recorded under `commands.projectCommands` before the move are not migrated: reading
   them back out of the workspace to convert them would extend exactly the trust the move
   withdraws. Each is asked once more, on the machine that decides.
-- Except for experimental capability flags, the local layer is otherwise ungated. Its own
+- Except for the `shell` key, the local layer is otherwise ungated. Its own
   `hooks.<event>` entries, allow rules, and env run as if the user had written them, because
   distrusting a Git-tracked local layer needs provenance
   the synchronous resolver cannot currently obtain. Provider blocks, project instructions, and a
@@ -260,6 +241,10 @@ Work aimed at running an objective unattended for days rather than hours. All of
   under `src/tui/`. Print/headless and SDK runs report what they are skipping; the TUI is silent,
   so the mode most likely to open an unfamiliar repository is the one mode that discloses nothing
   about what that repository declared.
+- The Windows shell ladder changes which interpreter parses a command, not what a command is
+  allowed to do: `permissions` rules still match the command string the model wrote, so a rule
+  written for one shell's syntax does not describe another's. The bubblewrap sandbox is unaffected
+  because it remains unavailable on Windows.
 - Bubblewrap is optional and currently Linux-oriented; when unavailable, behavior follows the
   configured `sandbox.failIfUnavailable` policy and may run unsandboxed. Where it is available the
   boundary is real: sandboxed commands are spawned as a direct argument vector rather than a shell
@@ -280,16 +265,13 @@ Work aimed at running an objective unattended for days rather than hours. All of
   model-chosen command can trip by itself — a matching command runs on the host, and the only
   control over that is refusing unsandboxed execution wholesale, not an independent per-command
   approval.
-- The default-off `experimental.zeroMem` capability needs the optional
-  `@huggingface/transformers` peer dependency and a locally cached embedding/NER pair under
-  `BOOK_HOME/models/zero-mem`; downloads are refused unless
-  `BOOK_ZERO_MEM_LOCAL_FILES_ONLY=false` is set once, and an unavailable model fails the turn with
-  that instruction. When enabled, auto-compaction is off for the main agent, `/compact` only warms
-  the index and reports that history was not replaced, and subagents keep the summary path. The
-  loop's context-overflow recovery is the one exception: a turn the provider refuses for size still
-  falls back to summary compaction, because warming an index cannot shrink that request. Legacy
-  `compactStrategy: zero-mem` and `BOOK_COMPACT_STRATEGY=zero-mem` selectors fail with migration
-  guidance rather than silently enabling the experiment.
+- Configuration for a removed feature is reported, never fatal. `src/settings-removed.ts` knows
+  which keys the subscription-auth, adaptive-harness and Zero-Mem removals left behind; validation
+  discards a removed block silently, so `book doctor` lists what is still on the machine and what
+  to delete — including `<BOOK_HOME>/auth.json`, which holds an OAuth refresh token nothing reads
+  or revokes any more. A removed *value* of a surviving key is coerced rather than rejected, since
+  `compactStrategy: "zero-mem"` would otherwise fail the whole document and stop Book from
+  starting. The credential error names the removal when an `auth` block was the only credential.
 - Managed-agent planning-task linkage, rerun, and task-aware cleanup from the background-job plan
   are not implemented; executable jobs and planning tasks remain separate.
 - Background-job termination is judged on the POSIX process group rather than the direct child, so
@@ -351,45 +333,6 @@ Work aimed at running an objective unattended for days rather than hours. All of
   `plan.status: not_applied` and exit code 0. The SDK `result` event does not carry that `plan`
   object yet — `query()` callers read the stop from the forwarded `tool_use` / `tool_result` pair —
   and `QueryOptions` does not surface `expandSlashCommands`.
-- The adaptive-harness roadmap is not a live learning system. Tier A/B attribution, accounting, and
-  evaluator preconditions are verified for trusted built-in, single-agent evaluation, but Phase 0
-  remains inactive until a dedicated status change. The edit-reliability, compaction, and skill
-  evaluation entry points use that boundary with bounded process-tree teardown; provider-backed
-  evaluations receive generated settings that retain effective provider model IDs, model metadata,
-  and retry policy without writing resolved secrets to settings. Edit trials also retain
-  provider-option explicitness, while compaction keeps its predeclared benchmark output limits.
-  Ambient snapshot schema version 2 records a bounded content identity for isolated evaluation
-  Book homes, fingerprints effective command and skill registries, and normalizes disposable paths
-  and evaluation IDs across otherwise equivalent arms. Evaluator reports retain runner-owned date,
-  seed, runtime, and fixture identities; provider-backed edit/compaction success is rejected when
-  run evidence is ineligible, and compact paired probes reject mismatched ambient/pricing/budget/
-  resolved-model identities, while offline skill observation marks provider eligibility as not
-  applicable. Tier C project-controlled execution, workspace trust, permission ceilings, and
-  container-grade isolation remain blocked; automatic workflow selection and evolution phases remain
-  inactive.
-  `harness.mode` accepts `off` (inert default, no filesystem effect) and `observe`, which records an
-  append-only per-root evidence ledger — hash-chained canonical JSONL with a signed seal, allowlist
-  redaction, drop/error counters, fail-closed eligibility, and OTel-mapped event names — without
-  changing user- or provider-visible run behavior. `shadow`, `active`, and `learn` still fail
-  before run setup. On the shipped ledger writer the eligibility check is always closed: it reports
-  directory sync as unavailable, so no observe run produces promotion-eligible evidence today.
-- Under `observe`, a run may use one of three built-in execution workflows selected manually through
-  `harness.workflow` (settings) or `--harness-workflow` (run-scoped, not persisted, does not survive
-  resume). `minimal` renders no prompt text and leaves provider messages byte-identical to a run with
-  no harness; `safe-edit` and `verify-heavy` add bounded guidance to the dynamic prompt zone only.
-  Nothing in the workflow surface is enforced: permissions, sandboxing, budgets, retries, compaction,
-  checkpoint/resume, and tool contracts stay host-owned, unsupported requests are clamped and
-  recorded as `capability_clamped` evidence, and a definition's free-form description is never
-  rendered as an instruction. Each run records the requested and effective workflow, source, reason,
-  registry and definition digests, override scope, and declared complexity. Selection fails closed at
-  config load, at the CLI flag, and at the session run boundary when the harness is `off` or the ID
-  is unknown or path-like. `book config set` rejects an unknown or path-like ID, and also the `off`
-  pairing: it now resolves the candidate layer through the real merge and runs the loader's own
-  assertions, so a write that would leave an unloadable configuration is refused before it lands. A
-  configuration that was *already* broken is still writable, since repairing one is the reason to
-  run the command.
-  Project-defined workflow files are not loaded, and there is still no automatic or learned
-  selection.
 
 ## Verification
 
@@ -401,10 +344,4 @@ Actions environment variables described in [stabilization.md](stabilization.md).
 Local verification for the previous snapshot (2026-08-25; tests were not re-run during this
 refresh): `npm run check` (230 unit files, 2640 tests, 5 skipped; 7 contract files, 59 tests),
 `npm run build`, and `npm run test:integration` (7 files, 97 tests, 10 skipped) all pass on Windows.
-The counts above are carried forward from that run, not advanced here. The
-`src/harness/evaluation/contract.test.ts` fixture-digest failures previously reported on some
-Windows working copies have a diagnosed cause and are not a code defect: `evals/harness/fixtures/**`
-is hashed byte-for-byte, and a working copy checked out before `.gitattributes` gained its `-text`
-rule holds those files with CRLF endings while the committed blobs use LF. CI checks out fresh and
-is unaffected. Repair a stale copy by deleting `evals/harness/fixtures` and running `git checkout --
-evals/harness/fixtures`.
+The counts above are carried forward from that run, not advanced here.

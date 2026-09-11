@@ -1,11 +1,11 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { runEvaluationProcess } from '../src/harness/evaluation/runner.js';
+import { runEvaluationProcess } from './eval-process.js';
 import { evaluateSkillActivation } from '../src/skill-evaluation.js';
 import { runSkillEvaluationIsolated } from './skill-eval.js';
 
-vi.mock('../src/harness/evaluation/runner.js', () => ({
+vi.mock('./eval-process.js', () => ({
   runEvaluationProcess: vi.fn(),
   evaluationControlsFromResult: vi.fn((result) => ({
     evaluationDate: result.evaluationDate,

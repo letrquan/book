@@ -4,6 +4,96 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Releases publish from CI with no token.** `.github/workflows/release.yml` publishes on a `v*`
+  tag using npm trusted publishing, which proves the workflow's identity over OIDC instead of
+  presenting a credential. 0.2.0 went out on a bypass-2FA granular token, the only thing that still
+  worked from a laptop — npm revoked classic tokens in December 2025 and retires direct publish for
+  bypass-2FA tokens in January 2027, so that path was already on a clock. The workflow refuses a tag
+  that disagrees with `package.json`, runs the full gate and the installed-artifact smoke test
+  before publishing, and gets provenance attached automatically.
+
+## [0.2.0] - 2026-09-08
+
+### Added
+
+- **Book is published: `npm install -g @letrquan/book`.** The first release anyone outside this
+  repository can install. The command is still `book`; the package is scoped because the unscoped
+  npm name was taken years ago. `private: true` is gone from `package.json`, deliberately.
+
+### Changed
+
+- **Licence: PolyForm Small Business 1.0.0, replacing "all rights reserved".** Publishing a package
+  invites people to install and run it, which the previous licence granted no permission to do —
+  a contradiction that would have made the release useless to the users it was meant to reach.
+  The new terms are source-available: read, modify and redistribute freely, and use it for your own
+  work or a company with fewer than 100 people and under 1,000,000 USD (2019) revenue. Larger
+  commercial use needs a separate licence. This is not an open-source licence, and does not pretend
+  to be one.
+
+  The published tarball contains source maps with the full TypeScript source. That is now a choice
+  rather than an oversight: the licence makes reading the source a right.
+
+### Fixed
+
+- **A published install would have had no `book` command.** `bin.book` carried a `./` prefix, and
+  `npm publish` drops a bin entry whose path it considers malformed — silently, after which the
+  package installs cleanly and provides nothing to run. `npm pack` keeps the entry verbatim and the
+  package smoke test invoked `dist/index.js` directly, so neither could see it; only the
+  publish-time warning named it. The path is fixed and `scripts/package-smoke.ts` now asserts the
+  format at pack time, verified by reintroducing the bug and watching the check fail.
+
+### Known
+
+- npm 11 blocks install scripts by default, so the Ink patch does not apply on a fresh
+  `npm install -g @letrquan/book`. Book already detects an unpatched Ink and falls back to the
+  full-frame `safe` renderer, so the TUI is correct either way — it simply redraws more on macOS
+  and Linux, where `incremental` would otherwise be the default. `npm approve-scripts` opts back in.
+
+### Removed
+
+- **The adaptive harness and the experimental Zero-Mem capability.** Both were default-off research
+  surfaces that no shipped configuration reached, and together they were roughly 10,600 lines —
+  about a ninth of the codebase — that every change to the live paths had to be reasoned around.
+
+  Neither was close to earning that. The harness ledger's own eligibility check reported directory
+  sync unavailable, so no `observe` run ever produced promotion-eligible evidence; of its ten
+  planned phases three were built and the selector that would have made it a learning system was
+  not among them. Zero-Mem needed an optional `@huggingface/transformers` peer and a locally cached
+  embedding/NER pair before it could answer a single turn.
+
+  Gone with them: the `harness.*` and `experimental.*` settings blocks, the `--harness-workflow`
+  flag, `BOOK_EXPERIMENTAL_ZERO_MEM`, `BOOK_ZERO_MEM_MODEL_CACHE`, `BOOK_ZERO_MEM_LOCAL_FILES_ONLY`,
+  `BOOK_COMPACT_STRATEGY`, the `eval:zero-mem` script, and the `@huggingface/transformers` peer
+  dependency. Production summary compaction is untouched, including the Carried Ledger and the
+  residual tail; `compactStrategy` remains `summary` and is now the only strategy.
+
+  **A removed setting costs you the key, not your install.** `compactStrategy: "zero-mem"` would
+  otherwise fail the whole settings document against the surviving literal type and stop Book from
+  starting, with a validator dump naming no remedy — so removed values are dropped and removed
+  blocks are reported instead. `book doctor` lists the removed keys still present in each settings
+  layer and in the environment, and says what to delete.
+
+- **Subscription authentication over OAuth.** Book supports API-key authentication only. The
+  `book auth` subcommand (`login`, `logout`, `status`), the `/login` slash command and TUI login
+  picker, the `auth` configuration block, and subscription credential resolution across provider
+  transports have been removed entirely, without shims or compatibility aliases.
+
+  The feature could not work as shipped. Book bundled no vendor client IDs, which required users to
+  supply their own OAuth client ID that neither Anthropic nor OpenAI publishes for third-party CLI
+  use. In addition, the built-in `codex` profile targeted an endpoint that the OpenAI-compatible client
+  cannot speak (it appends `/chat/completions`, whereas that host serves the Responses API). Carrying
+  a non-functional credential path is worse than not having one; Book now authenticates exclusively
+  via API keys (`BOOK_API_KEY`, `provider.<id>.apiKey`, and `{env:VAR}` references).
+
+  **If you ever ran `book auth login`, delete `<BOOK_HOME>/auth.json`** (normally
+  `~/.book/auth.json`) and revoke the token with the provider. It holds a long-lived OAuth refresh
+  token that nothing in Book reads, reports or revokes any more; the file is left in place rather
+  than deleted for you, because a tool that removes credentials without being asked is worse than
+  one that tells you they are there. `book doctor` names the file while it exists, and the "no
+  credential" error names the removal when a stale `auth` block was your only configured one.
+
 ### Changed
 
 - **Streamlined status line footer.** Dropped the remaining context window percentage, window source
@@ -26,6 +116,32 @@ All notable changes to this project are documented in this file.
   `mdInlineCodeBg` token is still accepted in custom theme files but no longer paints anything.
 
 ### Fixed
+
+- **`Bash` no longer runs through `cmd.exe` on Windows.** Node's `shell: true` means `%ComSpec%`,
+  so a tool named `Bash` was spawning `cmd.exe`: one command per line, `%VAR%` quoting, no
+  heredocs, and the shell models write worst. The system prompt told the model to expect that
+  rather than fixing it, which traded the model's strongest syntax for its weakest on the one
+  platform Book is developed on — where `Bash` is by some distance the most-failing tool.
+
+  Book now resolves a real shell once per session and tells the model which one it got. On Windows:
+  `BOOK_SHELL` or the `shell` setting, then **Git Bash when Book was launched from one**, then
+  **PowerShell 7**, then **Windows PowerShell 5.1**, then an installed Git Bash, and `cmd.exe` only
+  when nothing else exists. macOS and Linux keep the platform default. The resolved shell rides on
+  the config, so the tool, the system prompt, and `book doctor` cannot disagree about which shell
+  is in force, and the Harness prompt line now states that shell's actual syntax rules instead of
+  warning the model off Windows.
+
+  A real shell is spawned as an argument vector, reusing the form sandboxing already used;
+  `cmd.exe` and `/bin/sh` still go through `shell: true`, because `cmd.exe` quoting cannot be
+  reproduced from an argv. PowerShell is driven with `-EncodedCommand`, since 5.1 re-parses a
+  `-Command` argument and silently strips embedded double quotes. Under 5.1 the error stream is
+  merged and each record rendered as text: left alone, that shell serializes a redirected stderr as
+  CLIXML, so a failing `Get-Item` handed the model an XML document instead of `Cannot find path`.
+  Exit codes still follow the last statement, verified against the real interpreter.
+
+  `shell` is stripped from both workspace settings layers and refused by `book config` there, on
+  the same reasoning as `auth`: it names the program every command is handed to, so a repository
+  that could set it would run a binary it ships on the first call.
 
 - **Inline reasoning tags no longer leak into a subagent's live transcript.** Routers that inline
   a model's thinking as `<think>…</think>` emit an empty block ahead of every tool call. Each one

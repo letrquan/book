@@ -55,29 +55,6 @@ describe('built-in command contract', () => {
     });
   });
 
-  it('opens the login overlay, preselecting a named profile', () => {
-    const registry = createBuiltinCommandRegistry();
-    expect(registry.execute('login', '', context())).toEqual({
-      type: 'show-modal',
-      modal: 'login',
-      profile: undefined,
-    });
-    expect(registry.execute('login', 'codex', context())).toEqual({
-      type: 'show-modal',
-      modal: 'login',
-      profile: 'codex',
-    });
-  });
-
-  it('refuses an unknown /login profile instead of opening on a different vendor', () => {
-    const effect = createBuiltinCommandRegistry().execute('login', 'anthrpic', context());
-    expect(effect).toEqual({
-      type: 'local-message',
-      content: expect.stringContaining('Unknown auth profile "anthrpic"'),
-    });
-    expect((effect as { content: string }).content).toContain('anthropic, codex');
-  });
-
   it('returns typed session and UI effects', () => {
     const registry = createBuiltinCommandRegistry();
     expect(registry.execute('resume', '', context())).toEqual({
@@ -443,20 +420,8 @@ describe('built-in command contract', () => {
         registry.execute('config', '--local compact-model --global x', commandContext),
       ).toEqual(expect.objectContaining({ content: expect.stringContaining('at most one of') }));
 
-      const strategyResult = registry.execute(
-        'config',
-        'compact-strategy zero-mem',
-        commandContext,
-      );
-      expect(strategyResult).toEqual(
-        expect.objectContaining({ content: expect.stringContaining('BOOK_EXPERIMENTAL_ZERO_MEM') }),
-      );
-      const experimentalResult = registry.execute(
-        'config',
-        'experimental.zeroMem=true',
-        commandContext,
-      );
-      expect(experimentalResult).toEqual(
+      const shellResult = registry.execute('config', 'shell=pwsh', commandContext);
+      expect(shellResult).toEqual(
         expect.objectContaining({ content: expect.stringContaining('cannot be written') }),
       );
 

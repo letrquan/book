@@ -16,10 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
-import {
-  evaluationControlsFromResult,
-  runEvaluationProcess,
-} from '../src/harness/evaluation/runner.js';
+import { evaluationControlsFromResult, runEvaluationProcess } from './eval-process.js';
 import { slugifyWorkspace } from '../src/memory-store.js';
 import { formatFailureCounts } from '../src/pricing.js';
 import { isAnthropicProvider } from '../src/provider/index.js';

@@ -1,6 +1,5 @@
 import type { AgentConfig, PermissionMode } from '../types/runtime.js';
 import { systemClock, type Clock } from '../clock.js';
-import type { HarnessRunContext } from '../harness/contracts.js';
 import { createHash } from 'node:crypto';
 import type {
   ImageAttachment,
@@ -178,10 +177,6 @@ export async function runAgentLoop(
     runtime?: SessionRuntime;
     /** Frozen attribution for this root or linked child execution. */
     runContext?: AgentRunContext;
-    /** Optional frozen harness metadata; absent when harness mode is off. */
-    harnessContext?: Readonly<HarnessRunContext>;
-    /** Observe-only runtime sink for facts unavailable through public callbacks. */
-    harnessObserver?: import('../harness/contracts.js').HarnessRuntimeObserver;
     /** Override user-local oversized tool-output storage (primarily for isolated hosts/tests). */
     toolOutputRoot?: string;
     /** Override user-local tool-use telemetry storage (primarily for isolated hosts/tests). */
@@ -192,25 +187,6 @@ export async function runAgentLoop(
   },
 ): Promise<Message[]> {
   const signal = options?.signal;
-  const emitHarnessRuntimeEvent = (
-    type: import('../harness/contracts.js').HarnessEventType,
-    attributes?: Record<string, string | number | boolean | null>,
-  ): void => {
-    const harness = options?.harnessObserver;
-    if (!harness) return;
-    try {
-      harness.observer.enqueue({
-        type,
-        runId: harness.runId,
-        occurredAt: Date.now(),
-        sourceClass: 'derived',
-        payloadClass: 'safe-metadata',
-        attributes: attributes as never,
-      });
-    } catch {
-      // Observation may drop one fact, never alter the model/tool path.
-    }
-  };
   const newHistory = [...history];
   let assistantOutputProduced = false;
   let terminalEmitted = false;
@@ -493,6 +469,7 @@ export async function runAgentLoop(
     envOverrides: {},
     gitignorePatterns: loadGitignore(config.workspace).patterns,
     sandbox: config.settings.sandbox,
+    shell: config.shell,
     agentConfig: config,
     signal,
     nestedToolObserver: options?.nestedToolObserver,
@@ -513,7 +490,6 @@ export async function runAgentLoop(
     agentRole: options?.agentRole,
     parentSessionId: options?.parentSessionId,
     runContext: options?.runContext,
-    harnessObserver: options?.harnessObserver,
     onAgentEvent: callbacks.onAgentEvent,
     onHookEvent: callbacks.onHookEvent,
     runtime,
@@ -751,7 +727,6 @@ export async function runAgentLoop(
           planMode: effectiveMode === 'plan',
           planUnrestored: runtime.planUnrestored,
           runElapsedMs: clock.monotonicNowMs() - runStartedAt,
-          workflowPolicy: options?.harnessContext?.workflowPolicySection,
         },
         runtime.agentContextCache,
         options?.resolveAttachment,
@@ -772,7 +747,6 @@ export async function runAgentLoop(
             planMode: effectiveMode === 'plan',
             planUnrestored: runtime.planUnrestored,
             runElapsedMs: clock.monotonicNowMs() - runStartedAt,
-            workflowPolicy: options?.harnessContext?.workflowPolicySection,
           },
           runtime.agentContextCache,
           options?.resolveAttachment,
@@ -936,10 +910,6 @@ export async function runAgentLoop(
         onStreamResume: () => {
           callbacks.onStreamResume?.();
         },
-      });
-      emitHarnessRuntimeEvent('provider_requested', {
-        provider: provider.id,
-        requestedModel: effectiveConfig.model,
       });
 
       let streamError: string | null = null;
@@ -1730,10 +1700,6 @@ export async function runAgentLoop(
               chosenRule = permissionRuleOf(decision);
             }
             permission ??= 'deny';
-            emitHarnessRuntimeEvent('permission_resolved', {
-              toolName: canonName,
-              decision: permission,
-            });
 
             if (permission === 'deny') {
               log.debug('permission denied', { tool: canonName });
@@ -1812,10 +1778,6 @@ export async function runAgentLoop(
 
       const executeToolCall = async (entry: PreparedLoopCall): Promise<ToolResult> => {
         const toolStartMs = clock.monotonicNowMs();
-        emitHarnessRuntimeEvent('tool_started', {
-          toolName: entry.canonName,
-          toolCallId: entry.call.id,
-        });
         log.debug('tool start', {
           name: entry.canonName,
           id: entry.call.id,

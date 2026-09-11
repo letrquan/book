@@ -13,8 +13,8 @@ import { SettingsRepository, writeFileAtomic } from './settings-repository.js';
 import { resolveBookHome } from './book-home.js';
 import { partitionProjectAllowRules } from './permission-approvals.js';
 import { collectDeclaredHooks, partitionProjectHooks } from './hook-approvals.js';
-import { assertHarnessModeAvailable } from './harness/coordinator.js';
 import { defaultTrustStorePath, loadWorkspaceTrust } from './workspace-trust.js';
+import { normalizeRemovedSettings } from './settings-removed.js';
 
 const LEGACY_PERMISSIONS_MIGRATION_VERSION = 1;
 
@@ -114,10 +114,6 @@ const WORKSPACE_FORBIDDEN_PATHS: ReadonlyArray<readonly [string, string]> = [
   ['permissions', 'projectAllowRules'],
   ['hooks', 'projectEntries'],
   ['commands', 'projectCommands'],
-  // Experimental capabilities require an explicit user-global setting, an
-  // explicit --settings document, or a process environment opt-in. A clone
-  // and even a force-added settings.local.json must not enable them.
-  ['experimental', 'zeroMem'],
 ];
 
 function stripPaths(
@@ -140,16 +136,10 @@ function sanitizeLayer(
   const sanitized = structuredClone(settings);
   // Project/local settings cannot opt a session into the most permissive mode.
   if (sanitized.defaultMode === 'bypassPermissions') delete sanitized.defaultMode;
-  // The whole `auth` block, deleted as a subtree rather than key by key: a
-  // subscription token is an account-wide bearer credential, and every field
-  // under `auth` decides where one is obtained or sent - `profiles.<id>.baseUrl`
-  // is the host that receives the Authorization header on every inference
-  // request, `tokenUrl` receives the authorization code, `headers` rides along
-  // with the token, and `profile` picks which credential is spent at all. A
-  // clone that could set any of them could harvest the token by being opened,
-  // so a field added to the schema later must inherit the guard rather than
-  // need a second edit here.
-  delete sanitized.auth;
+  // `shell` names the program every Bash command is handed to. A clone that
+  // could point it at a binary it ships would run that binary on the first
+  // command, so the key is honoured from trusted layers only.
+  delete sanitized.shell;
   stripPaths(sanitized, WORKSPACE_FORBIDDEN_PATHS);
   return sanitized;
 }
@@ -195,21 +185,11 @@ function loadSettingsFile(path: string): BookSettings | null {
       `Invalid JSON in settings file: ${path}\n${e instanceof Error ? e.message : String(e)}`,
     );
   }
-  if (
-    parsed &&
-    typeof parsed === 'object' &&
-    !Array.isArray(parsed) &&
-    typeof (parsed as Record<string, unknown>).compactStrategy === 'string' &&
-    ((parsed as Record<string, unknown>).compactStrategy as string).trim().toLowerCase() ===
-      'zero-mem'
-  ) {
-    throw new Error(
-      `Invalid settings in ${path}:\n` +
-        'compactStrategy "zero-mem" is no longer supported. Enable the experiment with ' +
-        'experimental.zeroMem=true in ~/.book/settings.json or set ' +
-        'BOOK_EXPERIMENTAL_ZERO_MEM=true.',
-    );
-  }
+  // A setting that was removed must not brick a working install: an obsolete
+  // value of a surviving key would otherwise fail the whole document and stop
+  // Book from starting, with a schema dump that names no remedy. Removed keys
+  // are reported by `book doctor`, which reads the file itself.
+  parsed = normalizeRemovedSettings(parsed);
   const result = bookSettingsSchema.safeParse(parsed);
   if (!result.success) throw new Error(`Invalid settings in ${path}:\n${result.error.message}`);
   // Resolution owns defaults. Returning the source document preserves the distinction
@@ -231,6 +211,32 @@ export interface SettingsResolutionPaths {
   projectSettingsPath?: string;
   localSettingsPath?: string;
   trustStorePath?: string;
+}
+
+/**
+ * Every settings file this resolution would read, in layer order.
+ *
+ * Exported so callers that need to inspect the files themselves — `book doctor`
+ * reporting removed keys, the credential error checking for a stale `auth`
+ * block — resolve the same paths the loader does rather than rebuilding them.
+ */
+export function settingsLayerPaths(
+  workspace: string,
+  overridePath?: string,
+  paths: SettingsResolutionPaths = {},
+): string[] {
+  const userPath =
+    paths.userSettingsPath ??
+    (paths.home
+      ? join(paths.home, '.book', 'settings.json')
+      : join(resolveBookHome(), 'settings.json'));
+  const layers = [
+    userPath,
+    paths.projectSettingsPath ?? join(workspace, '.book', 'settings.json'),
+    paths.localSettingsPath ?? join(workspace, '.book', 'settings.local.json'),
+  ];
+  if (overridePath) layers.push(overridePath);
+  return layers;
 }
 
 export function resolveSettings(
@@ -334,7 +340,6 @@ export function resolveSettings(
   }
 
   const settings = bookSettingsSchema.parse(resolved) as ResolvedSettings;
-  assertHarnessModeAvailable(settings.harness.mode);
   return settings;
 }
 
@@ -357,9 +362,9 @@ export function migrateLegacyPermissions(
   // Direct callers must observe the same fail-before-storage boundary as the
   // normal startup path. Internal callers pass already-resolved settings to
   // avoid reading the layers twice on the common off path.
-  const settings =
-    validatedSettings ?? resolveSettings(workspace, undefined, home ? { home } : undefined);
-  assertHarnessModeAvailable(settings.harness.mode);
+  if (!validatedSettings) {
+    resolveSettings(workspace, undefined, home ? { home } : undefined);
+  }
 
   const legacyPath = join(home ? join(home, '.book') : resolveBookHome(), 'permissions.json');
   if (!existsSync(legacyPath)) return false;

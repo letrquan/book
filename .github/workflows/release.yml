@@ -1,0 +1,77 @@
+name: Release
+
+# Publishes to npm with trusted publishing (OIDC): GitHub Actions proves this
+# workflow's identity to the registry, so no npm token exists to leak, expire,
+# or be stolen. npm removes direct publish from bypass-2FA tokens in January
+# 2027, which is the path 0.2.0 shipped on; this replaces it.
+#
+# One-time setup on npmjs.com, under the package's Settings → Trusted Publisher:
+#   Organization or user: letrquan
+#   Repository:           book
+#   Workflow filename:    release.yml
+#
+# Publishing is driven by the tag, so a release is `git push origin vX.Y.Z`.
+# `workflow_dispatch` exists to re-run a failed publish without moving a tag.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  # `id-token: write` is what mints the OIDC token npm verifies. Nothing here
+  # writes to the repository, so `contents` stays read-only.
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+          # Deliberately no `registry-url`: it writes an .npmrc expecting
+          # NODE_AUTH_TOKEN, and a token is exactly what this workflow avoids.
+
+      # Trusted publishing needs npm 11.5.1 or newer. The Node image's bundled
+      # npm satisfies that today, but pinning the version the repository
+      # develops against keeps a future image bump from changing publish
+      # behaviour silently.
+      - run: npm install -g npm@11.16.0
+
+      - run: npm ci
+
+      # The tag is the only thing that decides what gets published, so a tag
+      # that disagrees with the manifest must stop the run before anything
+      # reaches the registry — an npm version cannot be republished or edited.
+      # `verify-release.ts` covers the rest: changelog entry, lockfile version,
+      # and that the CLI reports its version from the manifest.
+      - name: Verify the tag matches the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest="$(node -p 'require("./package.json").version')"
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$tag" != "$manifest" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $manifest." >&2
+            exit 1
+          fi
+          echo "Publishing $manifest"
+
+      - run: npm run check
+
+      - run: npm run test:integration
+
+      # Packs, installs the tarball, and runs the installed CLI and SDK. This is
+      # the check that would have caught 0.2.0's dropped `bin` entry, which npm
+      # strips at publish time while every local command keeps working.
+      - run: npm run release:check
+
+      # No token, no `--otp`: npm exchanges the OIDC token for publish rights
+      # and attaches provenance automatically.
+      - run: npm publish

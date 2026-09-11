@@ -24,7 +24,8 @@ src/
                         src/types.ts hub is FORBIDDEN by the architecture check.
   config.ts             Config loading (env vars, settings.json, legacy .bookrc.json)
   settings*.ts          schemas, layered resolution, atomic repository writes, migration,
-                        redaction, and CLI-safe configuration access
+                        redaction, CLI-safe configuration access, and settings-removed.ts
+                        (keys a removed feature left behind: reported, never fatal)
   book-home.ts          BOOK_HOME resolution for user-global state
   workspace-trust.ts    User-global trust store (<BOOK_HOME>/trust.json, keyed by workspace
                         path) holding every decision about repository-controlled input.
@@ -69,15 +70,6 @@ src/
                         profile-resolver.ts, capabilities.ts, git-isolation.ts (worktrees),
                         check.ts, evaluation.ts, completion-notification.ts, importer.ts,
                         activity.ts, projections.ts, diagnostics.ts, naming.ts, types.ts
-  harness/              Adaptive-harness boundary (inert while `harness.mode` is `off`):
-                        contracts.ts (modes, bounded text, event/workflow types),
-                        coordinator.ts (mode gate + run wiring), observer.ts (event capture),
-                        redaction.ts (allowlist payload policy), canonical-json.ts (deterministic
-                        serialization/digests), run-store.ts + ledger-durability.ts (sealed
-                        hash-chained run evidence ledger), telemetry.ts (OTel-mapped names),
-                        workflows.ts + registry.ts (validated built-in execution workflows),
-                        evaluation/ (isolated evaluation-run boundary: runner, worker, ambient
-                        identity, eligibility, reports)
   review/               Host-orchestrated /review pipeline:
                         scope.ts (argument parsing), target.ts (immutable review target: base sha,
                         changed files, unified diff), prompts.ts (single/lens/security builders),
@@ -166,8 +158,8 @@ Other conventions:
   - **Cached prefix** (`buildSystemPromptZones().cachedPrefix`) — session-stable kernel and
     session-context sections, tagged by zone. Adding per-turn text here re-bills the whole
     conversation every turn.
-  - **Uncached system suffix** (`dynamicSuffix`) — activation-class policy only: workflow
-    policy, active skill frames, the deferred-tool catalog.
+  - **Uncached system suffix** (`dynamicSuffix`) — activation-class policy only: active skill
+    frames and the deferred-tool catalog.
   - **`<session-state>` block** (`agent/session-state.ts`) — per-turn task state (date, git,
     plan mode, checkpoint drift, todos), appended to the newest user turn. Rendered once and
     memoized on the `Message`; every rebuild must reproduce earlier turns byte-for-byte.

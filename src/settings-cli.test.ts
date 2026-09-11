@@ -104,58 +104,30 @@ describe('CLI --settings flag', () => {
     expect(stdout.trim()).toBe('Key model is not set (no value).');
   }, 20000);
 
-  it('rejects an unavailable harness mode without creating project storage', () => {
+  it('rejects an invalid value without creating project storage', () => {
     newTempDirs();
     const result = spawnSync(
       process.execPath,
-      cliArgs(['config', '--workspace', dir, 'set', 'harness.mode', 'shadow']),
+      cliArgs(['config', '--workspace', dir, 'set', 'maxTurns', '0']),
       childOptions(),
     );
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('Harness mode "shadow"');
+    // Refused before anything is written: a rejected write must not leave the
+    // directory it would have written into behind.
     expect(existsSync(join(dir, '.book'))).toBe(false);
   }, 20000);
 
-  it('persists a workflow selection when the mode is enabled in another scope', () => {
-    // `book config set` validates one document, where `harness.mode` falls back
-    // to its schema default. It must not reject a workflow because the mode
-    // lives in a different settings layer.
-    newTempDirs();
-    const env = isolatedEnv();
-    // User-global scope: isolatedEnv points HOME/USERPROFILE at `dir`.
-    mkdirSync(join(dir, '.book'), { recursive: true });
-    writeFileSync(
-      join(dir, '.book', 'settings.json'),
-      JSON.stringify({ harness: { mode: 'observe' } }),
-    );
-    const result = spawnSync(
-      process.execPath,
-      cliArgs(['config', '--workspace', dir, 'set', 'harness.workflow', 'safe-edit']),
-      { ...childOptions(), env },
-    );
-
-    expect(result.stderr).not.toContain('requires an enabled harness mode');
-    expect(result.status).toBe(0);
-  }, 20000);
-
-  it('refuses to persist an unknown workflow id', () => {
+  it('refuses a key no settings layer reads', () => {
     newTempDirs();
     const result = spawnSync(
       process.execPath,
-      cliArgs([
-        'config',
-        '--workspace',
-        dir,
-        'set',
-        'harness',
-        JSON.stringify({ mode: 'observe', workflow: 'not-a-workflow' }),
-      ]),
+      cliArgs(['config', '--workspace', dir, 'set', 'notAKey', '1']),
       childOptions(),
     );
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('Unknown harness workflow "not-a-workflow"');
+    expect(result.stderr).toContain('Unknown top-level key');
   }, 20000);
 });
 
@@ -210,25 +182,17 @@ describe('subcommand --workspace targeting', () => {
   // the user-global layer, which is the same file whatever `--workspace` says.
   it('writes into the named workspace, in every placement', () => {
     newTempDirs();
-    const subcommandSide = workspaceWith({ harness: { mode: 'observe' } });
-    runCli([
-      'config',
-      '--workspace',
-      subcommandSide,
-      '--local',
-      'set',
-      'harness.workflow',
-      'safe-edit',
-    ]);
+    const subcommandSide = workspaceWith({ model: 'router/some-model' });
+    runCli(['config', '--workspace', subcommandSide, '--local', 'set', 'maxTurns', '7']);
     expect(existsSync(join(subcommandSide, '.book', 'settings.local.json'))).toBe(true);
 
     const rootSide = join(dir, 'root-side');
     mkdirSync(join(rootSide, '.book'), { recursive: true });
     writeFileSync(
       join(rootSide, '.book', 'settings.json'),
-      JSON.stringify({ harness: { mode: 'observe' } }),
+      JSON.stringify({ model: 'router/some-model' }),
     );
-    runCli(['--workspace', rootSide, 'config', '--local', 'set', 'harness.workflow', 'safe-edit']);
+    runCli(['--workspace', rootSide, 'config', '--local', 'set', 'maxTurns', '7']);
     expect(existsSync(join(rootSide, '.book', 'settings.local.json'))).toBe(true);
 
     // The child ran from `scratch`, so a placement the CLI silently dropped

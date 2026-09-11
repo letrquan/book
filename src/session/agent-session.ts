@@ -1,7 +1,7 @@
 import type { AgentRuntimeEvent } from '../agents/types.js';
 import { runAgentLoop } from '../agent/loop.js';
 import { runCompact, runPostCompactHooks, type RunCompactOptions } from '../agent/compact.js';
-import { resolveContextLimit } from '../models.js';
+
 import { runSessionEnd, runSessionStart } from './lifecycle.js';
 import type { SessionLifecycleOptions } from './lifecycle.js';
 import type { ToolRegistry } from '../tools/registry.js';
@@ -33,7 +33,7 @@ import {
   expandAtMentions,
   expandShellCommands,
 } from '../input/input-expansion.js';
-import { observationKey, workspaceIdentity } from '../tools/file-provenance.js';
+import { observationKey } from '../tools/file-provenance.js';
 import { AgentInteractionController } from './agent-interactions.js';
 import {
   AgentSessionOperations,
@@ -50,22 +50,9 @@ import { selectSession, type SessionBootstrap } from './resolve.js';
 import { SessionRuntime, type SessionRuntimeOptions } from './runtime.js';
 import { createRunAmbientSnapshot } from './run-ambient.js';
 import { deriveSessionName } from './name.js';
-import type { HarnessRunContext } from '../harness/contracts.js';
-import type {
-  FinalizeRunInput,
-  HarnessObserver,
-  HarnessCoordinator,
-  HarnessObserverFlushResult,
-  WorkflowProvenance,
-} from '../harness/contracts.js';
-import { builtinWorkflowRegistry, selectWorkflow } from '../harness/coordinator.js';
-import { createHarnessCoordinator, wrapAgentLoopCallbacks } from '../harness/coordinator.js';
-import { assertHarnessModeAvailable } from '../harness/coordinator.js';
 
 export type AgentLoopRunner = typeof runAgentLoop;
 
-/** Evidence preparation may not block the user path longer than this. */
-const HARNESS_PREPARE_TIMEOUT_MS = 2_000;
 type AgentLoopOptions = NonNullable<Parameters<AgentLoopRunner>[6]>;
 type SessionTimelineStore = Pick<SessionStoreInterface, 'append'> &
   Partial<Pick<SessionStoreInterface, 'patchMeta' | 'readImageAttachment'>>;
@@ -91,7 +78,6 @@ export interface AgentSessionRunCallbacks {
   onPlanHandoff?: AgentLoopCallbacks['onPlanHandoff'];
   onUserQuestionRequired?: AgentLoopCallbacks['onUserQuestionRequired'];
   userQuestionStatus?: 'pending' | 'unavailable';
-  onHarnessFinalized?: (result: HarnessObserverFlushResult) => void;
 }
 
 export interface AgentSessionRunRequest {
@@ -99,8 +85,6 @@ export interface AgentSessionRunRequest {
   registry: ToolRegistry;
   prompt: string;
   history: Message[];
-  /** Authoritative display transcript used when Zero-Mem builds query-time context. */
-  transcript?: readonly Message[];
   compactBoundaries?: readonly CompactBoundary[];
   mode?: PermissionMode;
   sessionId: string;
@@ -109,8 +93,6 @@ export interface AgentSessionRunRequest {
   callbacks: AgentSessionRunCallbacks;
   /** Frozen attribution for this request; created once when omitted. */
   runContext?: AgentRunContext;
-  /** Optional frozen harness metadata; absent when harness mode is off. */
-  harnessContext?: Readonly<HarnessRunContext>;
   /** Optional hard USD ceiling for this root run. */
   maxBudgetUsd?: number;
   source?: AgentRunSource;
@@ -118,11 +100,6 @@ export interface AgentSessionRunRequest {
   options?: Omit<AgentLoopOptions, 'signal'>;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
-  /** Internal host override; enabled observers are otherwise prepared at this boundary. */
-  harnessCoordinator?: HarnessCoordinator;
-  harnessObserver?: HarnessObserver;
-  /** Headless multi-turn hosts defer the root seal until linked child turns finish. */
-  harnessFinalize?: boolean;
 }
 
 export interface AgentSessionPrepareSendRequest {
@@ -136,9 +113,6 @@ export interface AgentSessionPrepareSendRequest {
   timelineStore?: SessionTimelineStore;
   signal?: AbortSignal;
   isCurrent?: () => boolean;
-  harnessCoordinator?: HarnessCoordinator;
-  harnessObserver?: HarnessObserver;
-  harnessFinalize?: boolean;
   runtime?: SessionRuntime;
   onUserMessagePersisted?: () => void;
 }
@@ -170,8 +144,6 @@ export interface AgentSessionSendRequest {
   contextMessage?: string;
   createUserMessage: () => Message;
   history: Message[] | (() => Message[]);
-  /** Authoritative display transcript used when Zero-Mem builds query-time context. */
-  transcript?: readonly Message[] | (() => readonly Message[]);
   compactBoundaries?: readonly CompactBoundary[];
   mode?: PermissionMode;
   sessionId: string;
@@ -182,8 +154,6 @@ export interface AgentSessionSendRequest {
   callbacks: AgentSessionRunCallbacks;
   /** Frozen attribution for this request; created once when omitted. */
   runContext?: AgentRunContext;
-  /** Optional frozen harness metadata; absent when harness mode is off. */
-  harnessContext?: Readonly<HarnessRunContext>;
   /** Optional hard USD ceiling for this root run. */
   maxBudgetUsd?: number;
   source?: AgentRunSource;
@@ -191,9 +161,6 @@ export interface AgentSessionSendRequest {
   /** Managed-continuation linkage: the originating root and parent execution run. */
   rootRunId?: string;
   parentRunId?: string;
-  harnessCoordinator?: HarnessCoordinator;
-  harnessObserver?: HarnessObserver;
-  harnessFinalize?: boolean;
   options?: Omit<
     AgentLoopOptions,
     | 'signal'
@@ -230,8 +197,6 @@ export type AgentSessionSendResult =
 export interface AgentSessionCompactRequest {
   config: AgentConfig;
   history: readonly Message[];
-  /** Authoritative trace used to initialize Zero-Mem without replacing history. */
-  sourceHistory?: readonly Message[];
   compactBoundaries?: readonly CompactBoundary[];
   sessionId?: string;
   transcriptOrdinal: number;
@@ -277,7 +242,6 @@ export interface AgentSessionDependencies {
     sessionId: string;
     registryStore?: SessionStoreInterface;
   }) => ToolRegistry;
-  harnessCoordinator?: HarnessCoordinator;
 }
 
 export interface AgentSessionTransitionRequest {
@@ -335,7 +299,6 @@ export class AgentSession {
   private lifecycleEndedSessionId?: string;
   private runtime: SessionRuntime;
   private readonly registryFactory?: AgentSessionDependencies['registryFactory'];
-  private readonly harnessCoordinator?: HarnessCoordinator;
 
   constructor(dependencies: AgentSessionDependencies = {}) {
     this.runLoop = dependencies.runLoop ?? runAgentLoop;
@@ -345,7 +308,6 @@ export class AgentSession {
     this.sessionEndRunner = dependencies.sessionEndRunner ?? runSessionEnd;
     this.runtime = dependencies.runtime ?? new SessionRuntime();
     this.registryFactory = dependencies.registryFactory;
-    this.harnessCoordinator = dependencies.harnessCoordinator;
   }
 
   startSend(): AgentSessionOperation | null {
@@ -420,8 +382,6 @@ export class AgentSession {
 
       try {
         const history = typeof request.history === 'function' ? request.history() : request.history;
-        const transcript =
-          typeof request.transcript === 'function' ? request.transcript() : request.transcript;
         const registry =
           request.registry ??
           this.registryFactory?.({
@@ -435,7 +395,6 @@ export class AgentSession {
           registry,
           prompt: prepared.contextMessage,
           history,
-          transcript,
           compactBoundaries: request.compactBoundaries,
           mode: request.mode,
           sessionId: request.sessionId,
@@ -448,10 +407,6 @@ export class AgentSession {
             },
           },
           runContext,
-          harnessContext: request.harnessContext,
-          harnessCoordinator: request.harnessCoordinator,
-          harnessObserver: request.harnessObserver,
-          harnessFinalize: request.harnessFinalize,
           maxBudgetUsd: request.maxBudgetUsd,
           options: {
             ...request.options,
@@ -738,26 +693,6 @@ export class AgentSession {
 
   async compact(request: AgentSessionCompactRequest): Promise<AgentSessionCompactOutcome> {
     const runtime = request.runtime ?? this.runtime;
-    // Zero-Mem replaces routine compaction, not the loop's last-resort recovery.
-    // An `auto` attempt reaching here has already been through the loop's own
-    // gate, which under Zero-Mem leaves exactly one caller: the context-overflow
-    // path, where replacing history with a checkpoint is the only way the run
-    // continues at all. Warming an index there returns `skipped` and the turn
-    // fails with the same overflow it started with.
-    if (request.config.experimentalZeroMem && request.options.trigger !== 'auto') {
-      const warmed = await runtime.zeroMemRuntime.warm(
-        request.sourceHistory ?? request.history,
-        request.sessionId ?? 'session',
-        request.compactBoundaries,
-      );
-      return {
-        result: {
-          status: 'skipped',
-          reason: 'disabled',
-          message: `Zero-Mem index ready for ${warmed.indexedMessages} trace message${warmed.indexedMessages === 1 ? '' : 's'}; history was not replaced.`,
-        },
-      };
-    }
     if (request.runContext) runtime.runAccounting.startRoot(request.runContext);
     const result = await this.compactRunner(request.config, request.history, {
       ...request.options,
@@ -842,19 +777,6 @@ export class AgentSession {
   }
 
   async run(request: AgentSessionRunRequest): Promise<Message[]> {
-    // `run()` is a public shared lifecycle boundary; direct hosts may not have
-    // passed through config loading, so reject unavailable modes before run ID,
-    // accounting, ambient, or runtime setup.
-    assertHarnessModeAvailable(request.config.settings.harness.mode);
-    // Selection is part of that same pre-setup gate. An unknown or unavailable
-    // workflow must fail the run rather than degrade to a silent baseline, and
-    // it must fail before accounting and ambient state exist — a throw after
-    // those are recorded would leave the host without a terminal event.
-    const workflowSelection = selectWorkflow(builtinWorkflowRegistry(), {
-      mode: request.config.settings.harness.mode,
-      runOverride: request.config.harnessWorkflowOverride,
-      settingsWorkflow: request.config.settings.harness.workflow,
-    });
     const { callbacks } = request;
     const runGeneration = ++this.runGeneration;
     let usage: Usage | null = null;
@@ -870,19 +792,15 @@ export class AgentSession {
         resumedFromRunId: request.resumedFromRunId,
       });
     const runtime = request.options?.runtime ?? this.runtime;
-    let effectiveHistory = request.history;
-    const usesZeroMem = request.config.experimentalZeroMem && !request.options?.isSubagent;
-    const loopConfig = usesZeroMem
-      ? { ...request.config, autoCompactEnabled: false }
-      : request.config;
+    const effectiveHistory = request.history;
     runtime.runAccounting.startRoot(runContext, request.maxBudgetUsd);
     const effectiveConfig = request.options?.modelOverride
       ? {
-          ...loopConfig,
+          ...request.config,
           model: request.options.modelOverride,
           modelSelection: request.options.modelOverride,
         }
-      : loopConfig;
+      : request.config;
     const ambient = runtime.recordRunAmbientSnapshot(
       runContext.runId,
       createRunAmbientSnapshot(effectiveConfig, request.registry, {
@@ -894,145 +812,12 @@ export class AgentSession {
         allowedTools: request.options?.allowedTools,
       }),
     );
-    let harnessObserver = request.harnessObserver;
-    let harnessContext = request.harnessContext;
-    let harnessPreparationError: string | undefined;
-    const harnessMode = request.config.settings.harness.mode;
-    const workflowProvenance: WorkflowProvenance = {
-      decision: workflowSelection.decision,
-      registryVersion: workflowSelection.registryVersion,
-      registryDigest: workflowSelection.registryDigest,
-      overrideScope: workflowSelection.overrideScope,
-      definitionDigest: workflowSelection.resolved?.definitionDigest,
-      policyRenderVersion: workflowSelection.resolved?.policyRenderVersion,
-      policySection: workflowSelection.resolved?.policySection,
-      clamps: workflowSelection.resolved?.clamps.map((entry) => ({
-        field: entry.field,
-        reason: entry.reason,
-      })),
-      activeFieldCount: workflowSelection.resolved?.complexity.activeFieldCount,
-      renderedChars: workflowSelection.resolved?.complexity.renderedChars,
-      requestedExtraCalls: workflowSelection.resolved?.complexity.requestedExtraCalls,
-    };
-    if (!harnessObserver && harnessMode !== 'off') {
-      try {
-        const coordinator =
-          request.harnessCoordinator ??
-          this.harnessCoordinator ??
-          createHarnessCoordinator(harnessMode, { workspace: request.config.workspace });
-        const preparePromise = coordinator.prepareRun({
-          mode: harnessMode,
-          workspace: request.config.workspace,
-          identity: {
-            workspaceId: workspaceIdentity(request.config.workspace),
-            rootRunId: runContext.rootRunId,
-            runId: runContext.runId,
-            parentRunId: runContext.parentRunId,
-            resumedFromRunId: runContext.resumedFromRunId,
-            sessionId: runContext.sessionId,
-          },
-          workflow: workflowProvenance,
-          metadata: {
-            mode: 'observe',
-            model: ambient.model.requestedModel,
-            provider: ambient.model.provider,
-            runtimeFingerprint: ambient.fingerprint,
-            environmentFingerprint: ambient.runtime.environmentFingerprint,
-            toolSurfaceFingerprint: ambient.tools.fingerprint,
-            contextCapabilitiesVersion: 'context-v1',
-            settingsFingerprint: ambient.settings.fingerprint,
-          },
-        });
-        // A hung evidence filesystem must degrade observation, not stall the run.
-        const prepared = await Promise.race([
-          preparePromise,
-          new Promise<null>((resolvePrepare) => {
-            const timer = setTimeout(() => resolvePrepare(null), HARNESS_PREPARE_TIMEOUT_MS);
-            timer.unref?.();
-          }),
-        ]);
-        if (prepared === null) {
-          harnessPreparationError = 'observer_preparation_timeout';
-          void preparePromise
-            .then((late) => {
-              if (late.status === 'prepared') void late.observer.close();
-            })
-            .catch(() => undefined);
-        } else if (prepared.status === 'prepared') {
-          harnessObserver = prepared.observer;
-          harnessContext = prepared.context;
-        }
-      } catch (error) {
-        // Observation is explicitly best-effort for the user task. The terminal
-        // callback below reports the degraded evidence state.
-        harnessPreparationError =
-          error instanceof Error ? error.message.slice(0, 256) : 'observer-init-failed';
-      }
-      // A failed or timed-out preparation leaves no harness context, so the
-      // selected workflow's guidance never reaches the prompt and the run
-      // proceeds as baseline. That is the intended direction — a workflow whose
-      // evidence stream does not exist must not silently change behavior — but
-      // the reversion is reported rather than hidden.
-      if (harnessPreparationError && workflowSelection.resolved?.policySection) {
-        harnessPreparationError = `${harnessPreparationError}; workflow_policy_not_applied`;
-      }
-    }
     const finalizeOutcome = (outcome: AgentTerminalOutcome): AgentTerminalOutcome => {
       if (!terminalOutcome) {
         terminalOutcome = outcome;
         callbacks.onTerminal?.(outcome);
       }
       return terminalOutcome;
-    };
-    // The host notification is harness-only surface; a throwing host callback
-    // must degrade observation reporting, never the user run's outcome.
-    const notifyHarnessFinalized = (result: HarnessObserverFlushResult): void => {
-      try {
-        callbacks.onHarnessFinalized?.(result);
-      } catch {
-        /* contained */
-      }
-    };
-    const finalizeHarness = async (outcome: AgentTerminalOutcome): Promise<void> => {
-      const result: FinalizeRunInput = {
-        status: outcome.status === 'timed_out' ? 'timed-out' : outcome.status,
-        reasonCode: harnessPreparationError ? 'observer_initialization_failed' : outcome.reason,
-      };
-      if (!harnessObserver) {
-        if (harnessMode !== 'off') {
-          notifyHarnessFinalized({
-            flushed: false,
-            status: 'failed',
-            droppedEventCount: 0,
-            incomplete: true,
-            failureReason: harnessPreparationError ?? 'observer-unavailable',
-            storageErrors: harnessPreparationError ? [harnessPreparationError] : [],
-          });
-        }
-        return;
-      }
-      try {
-        const finalized =
-          request.harnessFinalize === false
-            ? await harnessObserver.flush()
-            : harnessObserver.finalize
-              ? await harnessObserver.finalize(result)
-              : await harnessObserver.close();
-        notifyHarnessFinalized({
-          ...finalized,
-          failureReason: harnessPreparationError ?? finalized.failureReason,
-          incomplete: Boolean(harnessPreparationError) || finalized.incomplete,
-        });
-      } catch (error) {
-        notifyHarnessFinalized({
-          flushed: false,
-          status: 'failed',
-          droppedEventCount: 0,
-          incomplete: true,
-          failureReason:
-            error instanceof Error ? error.message.slice(0, 256) : 'observer-finalize-failed',
-        });
-      }
     };
     this.replaceSnapshot(createAgentSessionSnapshot());
     const emit = (event: AgentEvent) => {
@@ -1045,19 +830,6 @@ export class AgentSession {
     const unsubscribeShellEvents = runtime.shellManager.subscribe((event) => emit(event));
 
     try {
-      if (usesZeroMem) {
-        const contextLimit = resolveContextLimit(effectiveConfig);
-        const prepared = await runtime.zeroMemRuntime.prepare({
-          transcript: request.transcript ?? request.history,
-          query: request.options?.displayMessage ?? request.prompt,
-          sessionId: request.sessionId,
-          compactBoundaries: request.compactBoundaries,
-          currentMessageId: request.options?.userMessageId,
-          timestamp: request.options?.userMessageTimestamp,
-          maxContextTokens: Math.max(1, Math.min(32_000, Math.floor(contextLimit * 0.5))),
-        });
-        effectiveHistory = prepared.history;
-      }
       /**
        * Append a whole-plan snapshot. Both todo and task writers call this, and
        * the loader takes the last `plan` record, so an interleaved write cannot
@@ -1253,27 +1025,17 @@ export class AgentSession {
         onHookEvent: callbacks.onHookEvent,
         onAgentEvent: (event: AgentRuntimeEvent) => emit(event),
       };
-      const loopCallbacks = harnessObserver
-        ? wrapAgentLoopCallbacks(baseLoopCallbacks, {
-            observer: harnessObserver,
-            runId: runContext.runId,
-          })
-        : baseLoopCallbacks;
       const messages = await this.runLoop(
-        loopConfig,
+        request.config,
         request.registry,
         request.prompt,
         effectiveHistory,
-        loopCallbacks,
+        baseLoopCallbacks,
         request.mode,
         {
           ...request.options,
           runtime,
           runContext,
-          harnessContext: harnessContext ?? request.options?.harnessContext,
-          harnessObserver: harnessObserver
-            ? { observer: harnessObserver, runId: runContext.runId }
-            : undefined,
           resolveAttachment:
             request.options?.resolveAttachment ??
             (request.timelineStore?.readImageAttachment
@@ -1308,7 +1070,6 @@ export class AgentSession {
         runContext,
       });
       emit({ type: 'terminal', outcome, runContext });
-      await finalizeHarness(outcome);
       return messages;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1321,18 +1082,10 @@ export class AgentSession {
             : classifyRuntimeError(error, partialOutput)),
       );
       emit({ type: 'terminal', outcome, runContext });
-      await finalizeHarness(outcome);
       throw error;
     } finally {
       unsubscribeShellEvents();
       emit({ type: 'done' });
-      if (harnessObserver && !terminalOutcome) {
-        await finalizeHarness(
-          createTerminalOutcome('interrupted', 'missing_terminal', {
-            partialOutput: streamedAssistantText.length > 0,
-          }),
-        );
-      }
     }
   }
 

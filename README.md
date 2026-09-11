@@ -13,7 +13,7 @@ This repository is proprietary and is currently distributed from source/GitHub r
 - **Auto-memory**: file-based store under `~/.book/projects/<project>/memory/` with a `MEMORY.md` index (first 200 lines auto-loaded). Four memory types (`user` / `feedback` / `project` / `reference`), YAML frontmatter, auto-capture on user corrections/confirmations, and an **approval flow** (`/memory inbox` → `/memory approve|discard`). Secret/unfit text is rejected before writing.
 - **Sessions**: append-only JSONL persistence with automatic titles from the first prompt plus `--resume`, `--continue`, `--session-id`, `--name`, and `--fork-session`; in-TUI `/clear` / `/new` / `/reset`, `/resume`, reference-aware `/compact`, and Claude-style `/rewind` for conversation, code, or both. Compaction reduces provider context without deleting the scrollable transcript: recent turns stay exact, older evidence remains addressable by stable session references, remembered file facts are freshness-checked before reuse, and constraints you stated in your own words are carried verbatim in a host-owned ledger the summarizer can read but never rewrite (see "Carried constraints").
 - **Tools**: a provider-neutral capability catalog keeps a practical core loaded and uses `ToolSearch` to activate up to five authorized git, web, session, skill, agent, notebook, or MCP definitions on the next model turn. File, shell, task, clarification, and plan tools stay immediately available when permitted. Existing names such as `Read`, `Bash`, and `AgentSpawn` remain stable.
-- **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/login`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`. Print mode resolves commands through the same registries: `/init`, `/security-review`, `/review`, and custom commands run headlessly, and the interactive-only ones fail loudly instead of reaching the model as text.
+- **Slash commands**: built-ins including `/jobs`, `/agents`, `/agent`, `/init`, `/model`, `/effort`, `/config`, `/permissions`, `/cost`, `/usage`, `/context`, `/memory`, `/diff`, `/export`, `/skills`, `/review`, `/security-review`, `/release-notes`, `/feedback`, `/compact`, `/rewind`, `/clear`, `/resume`, plus custom commands from `.book/commands/*.md`. Print mode resolves commands through the same registries: `/init`, `/security-review`, `/review`, and custom commands run headlessly, and the interactive-only ones fail loudly instead of reaching the model as text.
 - **Permissions**: allow/ask/deny rule matching with six modes — `default`, `acceptEdits` (`accept-edits`), `plan`, `auto`, `dontAsk`, `bypassPermissions` — see `/permissions` or `--permission-mode`. At a tool prompt, `A` arms **Always allow** and presses again to widen the rule it will write (`Bash(npm run check)` → `Bash(npm run *)` → `Bash(npm *)`); the pattern is always shown before Enter commits it. The prompt shows the whole command, wrapped to the terminal, and for `Edit`/`MultiEdit`/`Write`/`ApplyPatch` the diff the call would make, computed against the file on disk before anything is written; `D` opens a cut the card had to make. `/permissions` lists the rules in force and removes the selected one with `x`.
 - **Sandbox & hooks**: optional bubblewrap sandbox for Bash; lifecycle hooks (JSON-over-stdio) for `PreToolUse` / `PostToolUse` / session events. Project-declared hooks require one-time approval per workspace; review provider/MCP settings and custom-command substitutions before opening an untrusted workspace.
 - **Verified managed agents**: adaptive model-directed routing, purpose-named runs, compact parent-facing results, live TUI monitoring, profile model overrides, read-only non-Git exploration, resumable isolated worktrees, strict capabilities, typed evidence, independent validation, and explicit patch application. Built-in `explorer`, `patcher`, and `validator` profiles can be overridden under `.book/agents/`.
@@ -29,19 +29,29 @@ See [`docs/current-state.md`](./docs/current-state.md) for the verified product 
 Requires **Node.js 22.13+**.
 
 ```bash
-# Clone (repo is currently private — use a machine with GitHub access)
+npm install -g @letrquan/book
+book --version
+```
+
+npm 11 blocks install scripts by default, so Book's Ink patch — which fixes a cursor bug in Ink's
+incremental renderer — is not applied on a fresh install. Book detects this and uses the full-frame
+`safe` renderer instead, which is correct but redraws more. To get incremental rendering on macOS
+and Linux, allow the script once:
+
+```bash
+npm approve-scripts @letrquan/book   # then reinstall, or run: npm rebuild @letrquan/book
+```
+
+The command is `book`; the package is scoped because the unscoped npm name was
+already taken. To work on Book itself:
+
+```bash
 git clone https://github.com/letrquan/book.git
 cd book
 npm install
 npm run build
-npm link   # makes `book` available globally
-
-# Or install a tagged release without linking
-npm install -g github:letrquan/book#v0.1.0
+npm link   # makes your checkout's `book` the global one
 ```
-
-> **Note:** The unscoped npm name `book` is already taken on the public registry.
-> v0.1.0 is distributed via GitHub only.
 
 ## Quick Start
 
@@ -71,11 +81,6 @@ book config set permissions.allow '["Read(*)","Glob(*)","Grep(*)"]'  # user-glob
 book config set --local permissions.allow '["Read(*)"]'              # just this checkout
 book config list --local                                             # what this checkout overrides
 book config unset --local permissions.allow                          # drop the override
-
-# Sign in with a provider subscription instead of an API key
-book auth status
-book auth login anthropic
-book auth logout anthropic
 
 # Manage MCP servers (JSON shape is compatible with the wider MCP ecosystem)
 book mcp list
@@ -195,11 +200,10 @@ preference you set once applies in every checkout. Pass `--project` to write the
 surfaces run the same guards through one shared write, so they cannot disagree about which file a
 preference lands in.
 
-A write is checked against the *merged* configuration, not just the file it lands in. A value can be
-valid on its own and still leave a configuration nothing can load — `harness.workflow` is rejected
-against an effective `harness.mode` of `off` — so such a write is refused before it lands rather
-than bricking every later command. A configuration that is already broken stays writable, since
-repairing one is what the command is for.
+A write is checked against the *merged* configuration, not just the file it lands in, so a value
+that is valid on its own but would leave a configuration nothing can load is refused before it
+lands rather than bricking every later command. A configuration that is already broken stays
+writable, since repairing one is what the command is for.
 
 `book config get` and `book config list` report the *resolved* merge of all layers by default.
 Given a scope they read that one file verbatim instead, which is how you find the stray value
@@ -211,8 +215,9 @@ it.
 Two groups of keys are refused in every scope. Trust decisions
 (`mcp.projectServers`, `permissions.projectAllowRules`, `hooks.projectEntries`,
 `commands.projectCommands`) live in `<BOOK_HOME>/trust.json` and are recorded with `book trust`.
-Experimental capability flags (`experimental.*`) are not writable by `book config` at all — edit the
-user-global file directly, pass `--settings`, or use the environment opt-in.
+The `shell` setting is not writable by `book config` in a workspace scope — it names the program
+every `Bash` command is handed to, so edit the user-global file directly, pass `--settings`, or
+use `BOOK_SHELL`.
 
 #### Model ids and provider prefixes
 
@@ -245,162 +250,6 @@ is learned or applied over it. `book doctor` lists every learned window with how
 learned, and `/context` and the status line mark which source the current window came from
 (`declared`, `learned`, `family`, or `default`). To discard one, delete its entry from
 `model-windows.json`, or delete the file to forget them all — it is rebuilt on demand.
-
-### Subscription authentication
-
-Book can authenticate with a provider **subscription** over OAuth instead of an API key. Tokens
-live in `~/.book/auth.json` (or `$BOOK_HOME/auth.json`), mode `0600` — never in a workspace, for
-the same reason trust decisions do not live there: a repository can force-add a tracked
-`.book/settings.local.json` into a clone, and nothing a repository controls may reach an account
-credential.
-
-```bash
-book auth login anthropic   # Claude subscription (Anthropic transport)
-book auth login codex       # ChatGPT subscription (OpenAI-compatible transport)
-book auth status            # what Book will use, with no secrets in the output
-book auth status --json
-book auth logout anthropic
-book auth logout --all
-```
-
-Inside the TUI, `/login` runs the same flow without leaving the session: it lists the configured
-profiles with their credential state, opens the browser, waits on the loopback redirect, and shows
-the outcome. `/login <profile>` preselects one. Esc cancels a login in flight, releasing the
-redirect port. `/status` names the credential the session is spending. Logging out, and the
-`--manual` paste-back flow for a browser on another machine, remain CLI-only.
-
-#### You must supply the OAuth client id
-
-**Book ships no vendor client ids.** A client id identifies *which application* an authorization
-server is releasing a subscription token to, so bundling a vendor's first-party id would make every
-Book user appear to that vendor as that vendor's own official CLI. Book will not do that. Supply the
-id issued to you, per profile:
-
-```bash
-export BOOK_AUTH_CLIENT_ID_ANTHROPIC=<client-id>
-```
-
-The `<PROFILE>` suffix is the profile id upper-cased with every run of non-alphanumeric characters
-replaced by `_` — so a profile named `my-corp-sso` reads `BOOK_AUTH_CLIENT_ID_MY_CORP_SSO`. A
-confidential client (common on a corporate authorization server, unusual for a CLI) also reads
-`BOOK_AUTH_CLIENT_SECRET_<PROFILE>`, or `auth.profiles.<id>.clientSecret`.
-
-or in `~/.book/settings.json`:
-
-```json
-{ "auth": { "profiles": { "anthropic": { "clientId": "<client-id>" } } } }
-```
-
-The `auth` block is read **only** from a trusted source — `<BOOK_HOME>/settings.json`, an explicit
-`--settings` file, or the environment. It is stripped from `.book/settings.json` and
-`.book/settings.local.json` alike, and `book config set auth.…` refuses rather than writing where it
-would be ignored. Every field in the block decides where an account-wide token is obtained or sent,
-so a repository that could set one could harvest it by being cloned.
-
-`book auth login` stops with both of these lines before it opens a browser or binds a port when no
-id is configured. Check that your provider's terms permit third-party clients to spend a
-subscription before enabling this.
-
-#### The login flow
-
-Authorization code with PKCE (S256) and a CSRF `state`, against a listener bound to `127.0.0.1`
-only. The listener serves exactly one matching callback and then stops; a callback whose `state`
-does not match is answered `400` and ignored, and the flow keeps waiting for the real one.
-
-| Flag | Purpose |
-| ---- | ------- |
-| `--no-browser` | Print the authorization URL instead of launching a browser |
-| `--manual` | Bind no listener; paste back the URL the browser landed on (use this when the browser is on a different machine — SSH, containers) |
-| `--timeout <seconds>` | How long to wait for the redirect (default 300) |
-
-#### Which credential a run spends
-
-Resolved once, at config load:
-
-1. `BOOK_AUTH_PROFILE`, then `auth.profile` in settings. `auth.profile: "api-key"` pins the run to
-   API-key auth and ignores everything stored.
-2. Otherwise, a stored credential is used **only** when no API key resolved *and* exactly one stored
-   credential matches the active provider. Adding a login never silently retargets a workspace that
-   already had a working key, and two logins with no stated preference resolve to nothing rather
-   than a guess.
-
-Because of rule 2, a session that is already authenticated will not start spending a new login on
-its own. `/login` therefore asks, once the credential is stored, whether to use it for future turns;
-accepting writes `auth.profile` to `~/.book/settings.json` and re-points the running session.
-Declining keeps the current credential and says how to switch later.
-
-The prompt names the model and endpoint the session will *actually* use, which is not always the
-profile's own — an explicit `BOOK_MODEL`, a `-m` flag, or a model chosen with `/model` outranks the
-profile's default, exactly as it would at startup. Activation is refused outright, before anything
-is persisted, when it could not work:
-
-- a base-URL override (`BOOK_BASE_URL`, a legacy `.bookrc.json`) points somewhere other than the
-  profile's origin, where the credential would be refused on every request;
-- the selected model belongs to a `provider/<id>` entry, which brings its own endpoint and key;
-- `BOOK_AUTH_PROFILE` names a different profile, and outranks the settings file.
-
-These refusals matter because activation is global and permanent: persisting `auth.profile` for a
-combination that cannot work would break every later session in every project. A configured compact
-model that would be posted to the new vendor is reported as a warning rather than a refusal.
-
-When a profile is active it supplies the API base and a default model, and the transports send
-`Authorization: Bearer <token>` *instead of* the API-key header — never alongside it. Selecting a
-model through a configured `provider/<id>` entry drops the profile, since that entry brings its own
-endpoint and key.
-
-**A credential is bound to its profile's origin**, checked where the request header is built. Several
-things can change a request's destination after the profile was chosen — `BOOK_BASE_URL`, a legacy
-`.bookrc.json` (which a repository ships, and which no settings trust layer covers), a
-`provider.<id>` entry — so the rule is enforced once, at the only place that knows both the
-credential and where it is about to go. A mismatch is refused with a message naming the override
-that caused it; point `auth.profiles.<id>.baseUrl` at the host you mean if the redirect is
-deliberate.
-
-#### Known limits
-
-- Model discovery (`/model`, the BYOK wizard) lists models for configured `provider.<id>` entries
-  only. A subscription profile creates no such entry, so there is no catalog to refresh for it —
-  set the model with `-m` or `auth.profiles.<id>.defaultModel`.
-- The OpenAI-compatible transport speaks Chat Completions. A profile whose endpoint expects a
-  different protocol needs a transport Book does not have, whatever its OAuth flow does.
-- The credential store is rewritten whole with no lock. A same-profile refresh race between two
-  `book` processes recovers (the loser re-reads and uses the winner's token); two processes writing
-  *different* profiles at the same instant can still lose one update. Access tokens
-are refreshed roughly two minutes before expiry, once per profile even across parallel subagents, and
-the refreshed token is written back so other `book` processes see it.
-
-#### Profiles
-
-Built-in: `anthropic` (Anthropic transport) and `codex` (OpenAI-compatible transport). Every field is
-overridable, and a wholly new profile only needs `authorizeUrl`, `tokenUrl`, and `baseUrl` — enough
-to point Book at a self-hosted or proxied authorization server without a fork. In
-`~/.book/settings.json` (never a workspace file):
-
-```json
-{
-  "auth": {
-    "profile": "internal",
-    "profiles": {
-      "internal": {
-        "label": "Internal gateway",
-        "providerType": "anthropic",
-        "clientId": "book-cli",
-        "authorizeUrl": "https://sso.example.com/authorize",
-        "tokenUrl": "https://sso.example.com/token",
-        "baseUrl": "https://gateway.example.com/v1",
-        "scopes": ["inference"],
-        "redirectPort": 54545,
-        "redirectPath": "/callback",
-        "defaultModel": "claude-sonnet-5",
-        "headers": { "x-org": "acme" }
-      }
-    }
-  }
-}
-```
-
-`book auth status` and `book doctor` report the active credential, its account label, and its
-expiry, and never print a token.
 
 ### MCP servers
 
@@ -601,31 +450,6 @@ compaction call, making it possible to test a cheaper reducer while keeping prob
 cheaper reducer or a higher-fidelity reducer can be evaluated independently from the probe model.
 The benchmark requires configured provider credentials and is not part of CI.
 
-`npm run eval:zero-mem` adds a paper-aligned experimental third arm based on Zero-Mem
-(arXiv:2607.29377v1). It uses BGE-M3 embeddings, non-generative BERT NER plus technical spans,
-occurrence-weighted entity/context edges, query-conditioned sentence propagation, PageRank with
-`gamma = 0.6`, semantic/session-aware trace regions, evidence closure, and deterministic evidence
-and answer calibration. Original messages, actions, reasoning, tool observations, attachments, and
-file observations remain the source of record; generated compact checkpoints are excluded.
-
-The paper's complete implementation is not public, so this is a defensible reproduction rather
-than an exact code replica. With provider credentials it compares full history, production
-compaction, and Zero-Mem using the same final reader and the compact arm's context size as the
-Zero-Mem evidence budget. Reader calls share a 1,024-token output cap across all arms.
-`--retrieval-only` (or `--offline`) skips the reader but still runs the real local NER and BGE-M3
-encoder. Model weights are cached outside the repository; set
-`BOOK_ZERO_MEM_MODEL_CACHE` to choose a persistent cache directory.
-The Zero-Mem runtime capability is unavailable by default and never silently starts a model
-download when explicitly enabled. Set `BOOK_ZERO_MEM_LOCAL_FILES_ONLY=false` for one run to
-populate the cache, then remove it or set it back to `true`. Zero-Mem uses the optional
-`@huggingface/transformers` peer; source checkouts install it for evaluation, while packaged
-installations that enable Zero-Mem must install that peer explicitly.
-
-```bash
-BOOK_ZERO_MEM_MODEL_CACHE=/path/to/model-cache npm run eval:zero-mem -- --retrieval-only --suite standard
-BOOK_ZERO_MEM_MODEL_CACHE=/path/to/model-cache npm run eval:zero-mem -- --model 9router/cmc/deepseek/deepseek-v4-flash --suite standard
-```
-
 `Write` remains appropriate for generated or intentional full-file replacement. The
 `apply_patch` provider alias maps to `ApplyPatch`; legacy tools are not silently reinterpreted.
 
@@ -825,37 +649,7 @@ Managed agents refuse to spawn rather than fill the disk: `agents.maxWorktrees` 
 simultaneous worktrees per repository and `agents.minFreeDiskBytes` (default 2 GB) is the free-space
 floor. Both raise an `alarm` notification when they bite, and 0 disables either check.
 
-`compactStrategy` supports only `summary`, the production default. Zero-Mem is retained as an
-explicitly named experiment and is unavailable under shipped defaults. Opt in for one process with
-`BOOK_EXPERIMENTAL_ZERO_MEM=true`, or put the following in the user-global
-`<BOOK_HOME>/settings.json` (normally `~/.book/settings.json`):
-
-```json
-{
-  "experimental": {
-    "zeroMem": true
-  }
-}
-```
-
-An explicit `--settings <path>` document may also enable it. Project `.book/settings.json` and
-workspace `.book/settings.local.json` cannot activate experimental capabilities, and neither the
-`/config` menu nor `/config`/`book config set` writes offer a local opt-in. This prevents merely
-opening a clone — including one that force-added a local settings file — from enabling unstable
-runtime behavior.
-
-When enabled, Zero-Mem keeps the original session transcript authoritative, builds a session-scoped
-BGE-M3/NER index, incrementally indexes completed turns, and retrieves query-specific evidence
-before each main-agent run. It does not persist retrieved evidence as a checkpoint. Manual
-`/compact` initializes or refreshes the index and reports readiness without replacing conversation
-history; managed subagents continue to use summary compaction. Routine auto-compaction stays off,
-but if the provider reports a context overflow the loop still falls back to summary compaction for
-that turn -- warming an index cannot shrink a request the provider has already refused.
-
-Migration: remove `compactStrategy: "zero-mem"` and replace it with the trusted
-`experimental.zeroMem` opt-in above. `BOOK_COMPACT_STRATEGY=zero-mem` is also rejected; use
-`BOOK_EXPERIMENTAL_ZERO_MEM=true` instead. The old setting, environment selector, TUI shortcut, and
-`/config compact-strategy` command no longer activate Zero-Mem.
+`compactStrategy` supports only `summary`, the production default; it is the only strategy.
 
 `compactModel` is optional. When set, manual and automatic `/compact` calls use that configured
 provider/model only for checkpoint generation while normal agent turns continue on `model`. The
@@ -982,6 +776,33 @@ config, and managed agents already report through `SubagentStop`. Like `SessionE
 skipped when a run ends early through a blocked prompt, context overflow, an exhausted run budget,
 or a provider stream error.
 
+### Which shell `Bash` runs
+
+Book picks one shell per session and tells the model which one it got, so the syntax the model
+writes matches the interpreter that will parse it. On macOS and Linux that is the platform default,
+`/bin/sh`. On Windows, Book resolves in this order and stops at the first hit:
+
+1. `BOOK_SHELL`, then the `shell` setting — a name (`bash`, `pwsh`, `powershell`, `cmd`, `sh`) or a
+   path to an executable. A request that cannot be found is reported by `book doctor` and the
+   automatic order continues, rather than failing every command.
+2. **Git Bash**, when Book was launched from one (`MSYSTEM` or a POSIX `SHELL` is set) — so the
+   shell you see in your own terminal is the shell the model writes for.
+3. **PowerShell 7** (`pwsh`), then **Windows PowerShell 5.1**.
+4. Git Bash if it is merely installed.
+5. `cmd.exe`, only when nothing else exists.
+
+`shell` is honoured from `~/.book/settings.json`, an explicit `--settings` document, or the
+environment only. A workspace file cannot set it and `book config set shell` refuses those scopes:
+it names the program every command is handed to, so a repository that could set it would run a
+binary it ships on your first command. `book doctor` prints the resolved shell and why it was
+chosen.
+
+PowerShell is driven with `-EncodedCommand`, because 5.1 re-parses a `-Command` argument and
+silently strips embedded double quotes. Under 5.1, Book also merges the error stream and renders
+each record as text: left alone, that shell serializes a redirected stderr as a CLIXML document, so
+a failing `Get-Item` handed the model XML instead of `Cannot find path`. Exit codes follow the last
+statement, as in bash.
+
 ### Shell command timeouts
 
 A foreground `Bash` command is killed after **300000 ms** (five minutes) by default. The model can
@@ -1087,47 +908,6 @@ Read            402      0    0.0%     15ms     34ms     0.0%
 
 Use `--json` for a machine-readable aggregate, `--since <days>` to change the window, `--all` for full history, and `--prune` to drop records older than the window from disk. `observability.toolTelemetryRetentionDays` sets the default reporting window and the `--prune` target; disk use is otherwise bounded by log rotation. Records store outcomes and hashes only, never prompts or file contents. This is separate from the ephemeral in-session counters shown by `/usage`.
 
-### Run evidence ledger (experimental)
-
-`harness.mode` defaults to `off`, which is fully inert: no run identity, no timers, no files. Setting
-it to `observe` records an append-only evidence ledger for each root request without changing what
-the model sees or how the run behaves. Records land in
-`~/.book/projects/<workspace-id>/harness/v1/runs/<yyyy-mm>/<root-run-id>.jsonl`, written by a single
-writer as canonical JSON lines chained by SHA-256 record hashes and closed by a signed seal that
-reports durability, dropped-event and storage-error counters, and evidence eligibility.
-
-Persisted events are an allowlist of bounded scalars — turn, model-usage, tool start/finish,
-permission decision, provider retry/stall, assistant-message, and managed-agent handoff facts, with
-OpenTelemetry-mapped names pinned to Semantic Conventions v1.44.0. Prompts, completions, tool
-arguments and output, file contents and paths, commands, URLs, and secrets are never written;
-ambiguous values are omitted and accounted for. Observation is best-effort: a storage failure marks
-the ledger incomplete and is reported to the host, but never fails or alters the user's run.
-`shadow`, `active`, and `learn` are accepted by the schema but rejected before run setup.
-
-### Execution workflows (experimental)
-
-With `harness.mode = observe`, a run can use one of three built-in execution workflows. Select one
-with `harness.workflow` in settings or `--harness-workflow <id>` for a single run; the CLI flag wins
-and is never persisted, so a resumed process starts again from the settings value.
-
-| Workflow       | Effect                                                                              |
-| -------------- | ----------------------------------------------------------------------------------- |
-| `minimal`      | Preserves current behavior. Adds no prompt text; provider messages match a run with no harness. |
-| `safe-edit`    | Short plan before mutating work, narrow edits, targeted verification, extra confirmation. |
-| `verify-heavy` | Explicit plan, deeper inspection, project verifiers, and stated evidence before completion. |
-
-Workflows are **behavioral guidance, not enforcement**. Permissions, sandboxing, budgets, retries,
-compaction, checkpoint/resume, and tool contracts stay owned by the trusted runtime; a workflow can
-never broaden them. Requests the runtime does not implement are clamped and recorded rather than
-silently ignored, and a workflow's free-form description is never rendered into the prompt.
-
-The active workflow renders into the dynamic prompt zone, so switching workflows does not invalidate
-the cached prompt prefix. Each run records the requested and effective workflow, its source and
-reason, the registry and definition digests, every clamp, the override scope, and declared
-complexity. Selection fails closed: a workflow chosen while `harness.mode` is `off` has no ledger to
-record it, so both `book config set` and startup reject it, as they do an unknown or path-like ID.
-Project-defined workflow files are not loaded; only built-in IDs resolve.
-
 ### Managed agents
 
 Adaptive mode keeps targeted work inline and nudges the parent toward the read-only `explorer` profile after three successful root `Glob`/`Grep` queries. The reminder is advisory: the fourth lookup is still allowed. Broad exploration receives a purpose name such as `Trace authentication flow`; the reusable profile (`explorer`, `patcher`, or `validator`) remains separate. `--agents manual` keeps the same lifecycle tools but requires explicit user delegation; `--agents off` removes managed-agent tools and routing guidance.
@@ -1183,16 +963,12 @@ Project themes can override any token in `.book/themes/<name>.json`:
 | `BOOK_BASE_URL`                                                                                   | Default OpenAI-compatible base URL                                |
 | `BOOK_MODEL`                                                                                      | Default model                                                     |
 | `BOOK_PROVIDER`                                                                                   | `anthropic` \| `openai` \| `auto`                                 |
-| `BOOK_AUTH_PROFILE`                                                                               | Subscription profile to spend, or `api-key` to force key auth     |
-| `BOOK_AUTH_CLIENT_ID_<PROFILE>`                                                                   | OAuth client id for that profile (see slug rule below)            |
-| `BOOK_AUTH_CLIENT_SECRET_<PROFILE>`                                                               | Client secret, only for a confidential client                     |
 | `BOOK_EFFORT`                                                                                     | Thinking effort level                                             |
 | `BOOK_HOME`                                                                                       | User-state root (default `~/.book`)                               |
+| `BOOK_SHELL`                                                                                      | Shell for `Bash`: `bash`, `pwsh`, `powershell`, `cmd`, or a path  |
 | `BOOK_WORKSPACE`                                                                                  | Default workspace                                                 |
 | `BOOK_MAX_TOKENS` / `BOOK_MAX_TURNS`                                                              | Generation / turn limits                                          |
-| `BOOK_EXPERIMENTAL_ZERO_MEM`                                                                      | Explicit `true`/`false` opt-in for experimental Zero-Mem          |
 | `BOOK_COMPACT_MODEL`                                                                              | Model used only for compaction checkpoints                        |
-| `BOOK_ZERO_MEM_MODEL_CACHE` / `BOOK_ZERO_MEM_LOCAL_FILES_ONLY`                                    | Zero-Mem model cache and download policy                          |
 | `BOOK_RETRY_*` / `BOOK_REQUEST_TIMEOUT_MS` / `BOOK_STREAM_STALL_TIMEOUT_MS` / `BOOK_TOOL_RETRIES` | Retry and timeout tuning                                          |
 | `BOOK_TOOL_TIMEOUT_MS` / `BOOK_TOOL_TELEMETRY_DIR`                                                | Tool timeout (`Bash` included) and telemetry location             |
 | `BOOK_WEB_ALLOW_HTTP`                                                                             | Opt into plain HTTP for `WebFetch` (disabled by default)          |
@@ -1256,7 +1032,7 @@ that substitutes no shell has nothing to approve.
 
 Built-ins include session controls (`/clear`, `/resume`, `/compact`, `/rewind`, `/exit`,
 `/help`), task and job controls (`/task`, `/jobs`, with `/tasks` as an alias), managed-agent
-controls (`/agents`, `/agent`), config (`/model`, `/providers`, `/login [profile]`,
+controls (`/agents`, `/agent`), config (`/model`, `/providers`,
 `/effort [low|medium|high|xhigh|max]`, `/config`, `/permissions`), inspection
 (`/status`, `/mcp`, `/cost`, `/usage` with `/stats` as an alias, `/context`, `/diff`, `/skills`,
 `/memory`), local output and reload (`/export`, `/reload-skills`), release/support
@@ -1535,7 +1311,7 @@ for await (const event of query('Explain this code', {
 
 `AskUserQuestion` supports 1-4 questions, described single/multi-select choices, and free-text answers in the TUI. Print mode emits `user_question` / `user_question_result` stream events and declines deterministically when no callback is supplied. When a callback is supplied, plan approval is routed through it as an ordinary question and emits the same two events; either way the decision is announced as `plan_approval`, whose `status` is one of `approve`, `approve-fresh`, `reject`, `revise`, or `stop` — see [Print mode](#print-mode). A slash command the host performed itself rather than sending to the model emits `command_result` (`{type, command, output, data}`) and is carried on the `result` event as `commandResults`. Managed workers additionally emit `agent_start`, `agent_update`, `agent_result`, `agent_question`, `evidence_update`, and `agent_apply`. Background shells emit `background_job_start`, `background_job_update`, `background_job_output`, `background_job_result`, and `background_job_dismiss` through stream JSON and the SDK.
 
-Auth and model selection come from settings / env (`BOOK_API_KEY`, `BOOK_MODEL`, provider blocks, and the `auth` block described under [Subscription authentication](#subscription-authentication) — an active profile supplies the base URL, a default model, and the request headers), not from `query()` options. See `src/sdk.ts` for the full `QueryEvent` / `QueryOptions` surface.
+Auth and model selection come from settings / env (`BOOK_API_KEY`, `BOOK_MODEL`, and provider blocks), not from `query()` options. See `src/sdk.ts` for the full `QueryEvent` / `QueryOptions` surface.
 
 For direct lifecycle control, create a manager with `createAgentManager(loadConfig(workspace))`; its public operations cover planning, spawning, listing, inspection, sending/resuming, waiting, stopping, evidence publishing/review, and validated application.
 
@@ -1562,7 +1338,6 @@ npm run deadcode:report # knip scan as Markdown (used for the CI job summary)
 npm run deadcode:json   # knip scan as JSON
 npm run eval:edit    # Edit reliability evaluation (configured provider)
 npm run eval:compact # Compaction paired evaluation (configured provider)
-npm run eval:zero-mem # Zero-Mem retrieval/compaction comparison
 npm run eval:skills  # Skill activation evaluation
 npm run verify:ink-patch
 npm run release:check # Version, audit, and package smoke checks
@@ -1586,8 +1361,33 @@ daily at 01:00 UTC and on every pull request:
   or above `high` appears, rewriting it as the set changes, and closing it once clear. A scan that
   fails to complete never closes the issue.
 
+### Releasing
+
+`.github/workflows/release.yml` publishes to npm on a `v*` tag, using **trusted publishing**: GitHub
+Actions proves the workflow's identity to the registry over OIDC, so no npm token exists to leak or
+expire. The workflow refuses a tag that disagrees with `package.json`, then runs `npm run check`,
+the integration tier, and `npm run release:check` — which packs the tarball, installs it, and runs
+the installed CLI and SDK — before publishing. Provenance is attached automatically.
+
+Cutting a release is therefore:
+
+```bash
+# version bump + changelog promotion committed on main
+git tag -a v0.3.0 -m "Book 0.3.0"
+git push origin v0.3.0
+```
+
+The one-time registry side is on npmjs.com under the package's Settings → Trusted Publisher:
+organization `letrquan`, repository `book`, workflow filename `release.yml`.
+
 ## License
 
-Copyright (c) 2026 letrquan. All rights reserved.
+Copyright (c) 2026 letrquan.
 
-Proprietary software. No permission is granted to use, copy, modify, or distribute this software without prior written authorization.
+[PolyForm Small Business License 1.0.0](LICENSE). Source-available: read it, change it, and use it
+for your own work or your company's, provided the company has fewer than 100 people and under
+1,000,000 USD (2019, inflation-adjusted) revenue in the prior tax year. Larger companies, and anyone
+wanting terms beyond that, need a separate licence — open an issue.
+
+This is not an open-source licence: it restricts who may use the software commercially. It does not
+restrict reading, modifying, or redistributing it under the same terms.
