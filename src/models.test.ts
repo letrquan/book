@@ -11,6 +11,7 @@ import {
   resolveContextWindow,
   resolveEditFormat,
   resolveFamilyContextWindow,
+  stripProvider,
 } from './models.js';
 import { defaultModelWindowStorePath, MemoryModelWindowStore } from './model-window-store.js';
 
@@ -52,6 +53,35 @@ describe('resolveEditFormat', () => {
     expect(resolveEditFormat('gpt-5', 'replace')).toBe('replace');
     expect(resolveEditFormat('qwen3.7-max', 'whole')).toBe('whole');
     expect(resolveEditFormat('qwen3.7-max', undefined)).toBe('replace');
+  });
+});
+
+describe('stripProvider', () => {
+  it('strips router prefixes of one or more segments', () => {
+    expect(stripProvider('9router/ag/gemini-3.8-flash-high')).toBe('gemini-3.8-flash-high');
+    expect(stripProvider('9router/cx/gpt-5.6-sol')).toBe('gpt-5.6-sol');
+    expect(stripProvider('openrouter/anthropic/claude-3.5-sonnet')).toBe('claude-3.5-sonnet');
+  });
+
+  it('strips single-segment provider prefixes', () => {
+    expect(stripProvider('openai/gpt-4o')).toBe('gpt-4o');
+    expect(stripProvider('anthropic/claude-sonnet-5')).toBe('claude-sonnet-5');
+    expect(stripProvider('z-ai/glm-5.2')).toBe('glm-5.2');
+  });
+
+  it('leaves plain model names without slashes untouched', () => {
+    expect(stripProvider('claude-opus-5')).toBe('claude-opus-5');
+    expect(stripProvider('gpt-4o')).toBe('gpt-4o');
+  });
+
+  it('preserves original casing of the model name', () => {
+    expect(stripProvider('my-provider/GPT-4o')).toBe('GPT-4o');
+    expect(stripProvider('Claude-Sonnet-5')).toBe('Claude-Sonnet-5');
+  });
+
+  it('handles empty or whitespace strings', () => {
+    expect(stripProvider('')).toBe('');
+    expect(stripProvider('   ')).toBe('');
   });
 });
 
