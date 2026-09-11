@@ -442,7 +442,7 @@ describe('App session commands', () => {
     expect(stripAnsi(view.lastFrame())).toContain('[image 1 0 KB]');
   });
 
-  it('uses the context-window fallback for status usage when model metadata is absent', () => {
+  it('renders the status line cleanly without context percentage when model metadata is absent', () => {
     const liveConfig = { ...config(), maxTokens: 64_000, modelInfo: undefined };
     useAgentMock.mockReturnValue({
       ...pendingAgentState(),
@@ -461,7 +461,9 @@ describe('App session commands', () => {
 
     const view = render(<App config={liveConfig} session={testSession} />);
 
-    expect(stripAnsi(view.lastFrame())).toContain('ctx 50%');
+    const frame = stripAnsi(view.lastFrame());
+    expect(frame).toContain('model-x');
+    expect(frame).not.toContain('ctx');
   });
 
   it('leaves one blank row between transcript output and the input bar', () => {

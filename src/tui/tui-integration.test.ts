@@ -356,7 +356,7 @@ describe('TUI keyboard input', () => {
     session = await startAndWait();
     const output = session.read();
     expect(output).toContain('Ask me anything');
-    expect(output).toContain('ctx');
+    expect(output).toContain('default');
   }, 20_000);
 
   it('fills a wide terminal without stretching its floating panels', async () => {
